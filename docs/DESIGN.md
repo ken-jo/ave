@@ -512,8 +512,9 @@ determine whether a tile can split or a panel can dock.
     - while a modal dialog is open (`DialogContent` registers in `modal-presence.ts`) queues are
       held: nothing shows, expires or is dropped, and the head shows with its full time once the
       modal closes. A notice never takes focus;
-    - a notice that repeats by nature (a re-applied low/medium approval, a set-aside conversation)
-      is marked `suppressible` and offers "Don't show again", persisted per kind; errors cannot be;
+    - a notice that repeats by nature (a re-applied low-risk approval, a set-aside conversation)
+      is marked `suppressible` and offers "Don't show again", persisted per kind; errors cannot be,
+      and Settings → Permissions → "Show hidden notices again" undoes every choice;
     - progress is drawn in context (the installing row, the running panel), never as a global toast;
     - width is capped at `min(100%, 24rem)` and the notice fades in on `--motion-fast`.
   - **Banner** for persistent, page-scoped conditions that need action (e.g. update available); dismissible, stays until resolved.

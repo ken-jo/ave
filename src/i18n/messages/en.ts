@@ -4934,6 +4934,8 @@ export const en = {
   "statusBar.toastDetailsAction": "Learn more",
   "statusBar.toastDismissAriaLabel": "Dismiss notification",
   "statusBar.toastSuppressAction": "Don't show again",
+  "notices.showHiddenAgain": "Show hidden notices again",
+  "notices.showHiddenHint": "Notices you chose not to see again, such as low-risk re-applied approvals, show again from the next one on.",
 
   /** Loading and failure copy for persisted child transcripts. */
   "subAgentCard.statusError": "Error",

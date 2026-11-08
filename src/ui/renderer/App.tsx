@@ -926,8 +926,8 @@ export function App() {
   );
   // Subscribe once per window to avoid duplicate permission-memory and reviewer disclosures across tiles.
   // A re-applied approval is disclosed in the window's notice queue. A reuse is not a failure, so no tier is an error: a
-  // high-risk reuse is a warning that stays until dismissed and cannot be silenced; low and medium reuses repeat on every
-  // cached hit, so they offer "Don't show again". One stable id per verdict tier: a newer hit of the same tier replaces the previous one, while a
+  // high-risk reuse is a warning that stays until dismissed; only a low-risk reuse, which repeats on every cached hit, offers
+  // "Don't show again" (undone from Settings → Permissions). Medium and high cannot be silenced. One stable id per verdict tier: a newer hit of the same tier replaces the previous one, while a
   // lower tier queues behind an unread high-risk notice instead of replacing (and so dismissing) it.
   const handleUserApprovalHit = useCallback((hit: UserApprovalHitPayload) => {
     const high = hit.verdictAtApproval === "high";
@@ -936,7 +936,9 @@ export function App() {
     statusUpsertToast(`approval-memory-hit:${hit.verdictAtApproval}`, {
       severity: high || hit.verdictAtApproval === "medium" ? "warning" : "success",
       message: `${t("chatView.approvalMemoryApplied")} · ${hit.toolName} · ${scope} · ${hit.verdictAtApproval.toUpperCase()}`,
-      ...(high ? { kind: "approval-memory-hit-high", sticky: true } : { kind: "approval-memory-hit", suppressible: true as const }),
+      ...(high ? { kind: "approval-memory-hit-high", sticky: true }
+        : hit.verdictAtApproval === "medium" ? { kind: "approval-memory-hit-medium" }
+        : { kind: "approval-memory-hit-low", suppressible: true as const }),
     });
   }, [statusUpsertToast, t]);
   const { reviewerSuggestion } = usePermissionSignals({ onUserApprovalHit: handleUserApprovalHit });

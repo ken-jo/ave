@@ -2790,16 +2790,18 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     }
   });
 
-  it("only low and medium hits, which repeat on every cached approval, offer Don't show again", async () => {
+  it("only a low hit, which repeats on every cached approval, offers Don't show again", async () => {
     const { container, fire } = await setupWithCallback();
-    await act(async () => {
-      fire({ toolName: "fs_write_sensitive", scope: "session", verdictAtApproval: "high" });
-    });
-    await waitFor(() => expect(container.querySelector(APPROVAL_HIT)).not.toBeNull());
-    expect(container.querySelector('[data-testid="status-toast-suppress"]')).toBeNull();
-    await act(async () => {
-      fireEvent.click(container.querySelector(`${APPROVAL_HIT} [data-testid="status-toast-dismiss"]`) as HTMLButtonElement);
-    });
+    for (const verdict of ["high", "medium"] as const) {
+      await act(async () => {
+        fire({ toolName: `fs_${verdict}`, scope: "session", verdictAtApproval: verdict });
+      });
+      await waitFor(() => expect(container.querySelector(APPROVAL_HIT)?.textContent).toContain(`fs_${verdict}`));
+      expect(container.querySelector('[data-testid="status-toast-suppress"]'), verdict).toBeNull();
+      await act(async () => {
+        fireEvent.click(container.querySelector(`${APPROVAL_HIT} [data-testid="status-toast-dismiss"]`) as HTMLButtonElement);
+      });
+    }
     await act(async () => {
       fire({ toolName: "fs_read", scope: "session", verdictAtApproval: "low" });
     });

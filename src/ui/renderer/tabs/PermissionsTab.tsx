@@ -53,6 +53,7 @@ import { EgressDenialsList } from "../components/permissions/EgressDenialsList.j
 import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
 import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
 import { HomeContentReview } from "../components/permissions/HomeContentReview.js";
+import { HiddenNoticesReset } from "../components/HiddenNoticesReset.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { WorkBoardApprovalSettingsContent } from "./WorkBoardApprovalSettingsContent.js";
@@ -1700,6 +1701,7 @@ export function PermissionsTab({
               onBlur={(event) => void handleOwnerAwayAutoSkip(event.currentTarget.value === "" ? Number.NaN : Number(event.currentTarget.value))}
             />
           </div>
+          <HiddenNoticesReset />
           {policyManaged && (
             <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning">
               {policyAdminReason

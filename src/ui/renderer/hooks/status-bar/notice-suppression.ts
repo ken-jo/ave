@@ -24,3 +24,13 @@ export function suppressNotice(kind: string): void {
   kinds.add(kind);
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify([...kinds]));
 }
+
+/** Whether any notice kind is silenced, so the settings reset can say there is nothing to undo. */
+export function hasSuppressedNotices(): boolean {
+  return read().size > 0;
+}
+
+/** Undo every "Don't show again": the silenced kinds show again from the next notice on. */
+export function clearSuppressedNotices(): void {
+  window.localStorage.removeItem(STORAGE_KEY);
+}

@@ -70,7 +70,7 @@ describe("permission disclosure toasts with two tiles", () => {
 
     await waitFor(() => {
       expect(
-        container.querySelectorAll('[data-notice-kind="approval-memory-hit"]'),
+        container.querySelectorAll('[data-notice-kind="approval-memory-hit-low"]'),
       ).toHaveLength(1);
     });
   });
@@ -1469,7 +1469,7 @@ describe("three tiles, every kind of surface at once", () => {
     });
 
     await waitFor(() => expect(count(container, "approval-dock")).toBe(1));
-    await waitFor(() => expect(container.querySelectorAll('[data-notice-kind="approval-memory-hit"]').length).toBe(1));
+    await waitFor(() => expect(container.querySelectorAll('[data-notice-kind="approval-memory-hit-low"]').length).toBe(1));
     expect(count(container, "skill-badge")).toBe(1);
     expect(count(container, "overlay-card-region")).toBe(1);
 
@@ -1503,7 +1503,7 @@ describe("three tiles, every kind of surface at once", () => {
     for (const tile of [first!, third!]) {
       expect(tile.element.querySelectorAll(BLOCKING_SURFACE_SELECTOR)).toHaveLength(0);
       expect(count(tile.element, "skill-badge")).toBe(0);
-      expect(tile.element.querySelectorAll('[data-notice-kind="approval-memory-hit"]').length).toBe(0);
+      expect(tile.element.querySelectorAll('[data-notice-kind="approval-memory-hit-low"]').length).toBe(0);
       expect(count(tile.element, "overlay-card-region")).toBe(tile === suggestions ? 1 : 0);
     }
     expect(count(suggestions.element, "overlay-card-region")).toBe(1);
