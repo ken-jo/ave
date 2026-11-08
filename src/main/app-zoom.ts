@@ -8,12 +8,14 @@ import { preserveBrowserGuestZoom } from "./browser/browser-guest-tracking.js";
 
 const log = createLogger("app-zoom");
 let pending: Promise<void> = Promise.resolve();
+let wheelBatch: { window: BrowserWindow; command: ZoomCommand; steps: number } | undefined;
 
 export function runAppZoomCommand(command: ZoomCommand): Promise<void> {
   return enqueueZoomCommand(command);
 }
 
 function enqueueZoomCommand(command: ZoomCommand, steps: () => number = () => 1): Promise<void> {
+  wheelBatch = undefined;
   const run = pending.then(async () => {
     const settingsService = getServices()?.settingsService;
     if (!settingsService) return;
@@ -41,19 +43,18 @@ export function bindAppWindowZoom(win: BrowserWindow): void {
   win.webContents.on("did-navigate", restoreLevel);
   win.webContents.on("did-finish-load", restoreLevel);
   void win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => log.warn("Could not disable visual zoom"));
-  let wheelBatch: { command: ZoomCommand; steps: number } | undefined;
   win.webContents.on("zoom-changed", (event, direction) => {
     event.preventDefault();
     const command = direction === "in" ? "in" : "out";
-    if (wheelBatch?.command === command) {
+    if (wheelBatch?.window === win && wheelBatch.command === command) {
       wheelBatch.steps = Math.min(MAX_ZOOM_LEVEL - MIN_ZOOM_LEVEL, wheelBatch.steps + 1);
       return;
     }
-    const batch: { command: ZoomCommand; steps: number } = { command, steps: 1 };
-    wheelBatch = batch;
+    const batch: NonNullable<typeof wheelBatch> = { window: win, command, steps: 1 };
     void enqueueZoomCommand(command, () => {
       if (wheelBatch === batch) wheelBatch = undefined;
       return batch.steps;
     }).catch(() => log.warn("Could not save app zoom"));
+    wheelBatch = batch;
   });
 }
