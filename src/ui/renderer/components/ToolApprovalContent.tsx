@@ -56,6 +56,7 @@ import {
 } from "../../../shared/mcp-elicitation-schema.js";
 import { isRecord } from "../../../shared/is-record.js";
 import { approvalActionSummary } from "../../../shared/approval-action-summary.js";
+import { approvalAction } from "./permissions/approval-action.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import type { RiskLevel, ToolCategory } from "../../../shared/permission-review-status.js";
 import { shellExecutionEnvironmentLines } from "../../../shared/shell-execution-environment.js";
@@ -899,6 +900,7 @@ export function ToolApprovalContent({
     && request.executionPlan.requiresExplicitUserApproval;
   const argsTruncated = !requiresHostConsent && argsStr.length > 500 && !expanded;
   const argsDisplay = argsTruncated ? argsStr.slice(0, 500) + "\n…" : argsStr;
+  const action = approvalAction(request, tHook);
   const source = request.source ?? "unknown";
   const sourceBadge = request.source ? SOURCE_BADGE[request.source] ?? request.source : tHook("toolApprovalDialog.unknown");
   const originLabel = trustOriginLabel(request.trustOrigin);
@@ -947,6 +949,8 @@ export function ToolApprovalContent({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="tool-approval-card">
         <section className={`min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-2 sm:px-4 sm:py-3 ${narrowLaneScroll ? "@max-[14rem]:overscroll-auto" : ""}`}>
           <div className="space-y-2">
+            <h3 className="break-words text-sm font-semibold" data-testid="approval-action-title">{action.title}</h3>
+            {action.primary ? <pre className="whitespace-pre-wrap break-all text-xs" data-testid="approval-action-primary">{action.primary}</pre> : null}
             {/* Identity is supplied by the host request for every card. */}
                 <div className="min-w-0 space-y-1">
                   <div className="flex min-w-0 items-center gap-2">
@@ -955,7 +959,7 @@ export function ToolApprovalContent({
                         : riskLevelKoLabel(finalVerdict as RiskLevel)}
                     </Badge>
                     <code
-                      className="min-w-0 flex-1 break-all font-mono text-xs font-semibold"
+                      className="min-w-0 flex-1 break-all font-mono text-tiny text-muted-foreground"
                       data-testid="approval-tool-identity"
                     >
                       {sourceToolToken(request)}

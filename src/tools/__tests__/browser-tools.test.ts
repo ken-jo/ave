@@ -815,8 +815,9 @@ describe("browser tools", () => {
     expect(page.calls.map((call) => call.action)).toEqual(["snapshot"]);
   });
 
-  it("opens an agent tab for navigate without a shown tab and asks only about the site", async () => {
-    const h = harness();
+  it.each([false, true])("opens an agent tab for navigate without a shown tab, including an empty bound pane: %s", async (pane) => {
+    const h = harness({ noTabOpener: pane });
+    if (pane) h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "renderer-610" } });
     const opening = h.run(BROWSER_TOOL.navigate, { url: "https://a.example/start" });
     await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("new"));
     const guest = new FakeGuest(610, "about:blank", "Start");

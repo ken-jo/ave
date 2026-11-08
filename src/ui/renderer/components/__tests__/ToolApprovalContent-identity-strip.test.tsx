@@ -4,10 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 
 /** Every approval card displays the host-owned tool identity. */
+const originalLocale = getLocale();
 afterEach(() => {
+  setLocale(originalLocale);
   vi.unstubAllGlobals();
 });
 
@@ -30,6 +33,47 @@ function baseRequest(): ApprovalRequest {
 }
 
 describe("ToolApprovalContent identity strip", () => {
+  it.each(["en", "ko"] as const)("frames shell commands before their tool identity in %s", (locale) => {
+    setLocale(locale);
+    renderApproval({ ...baseRequest(), toolName: "powershell", toolCategory: "shell", args: { command: "Get-Item ./report.md" } }, vi.fn());
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.commandActionTitle"));
+    const primary = screen.getByTestId("approval-action-primary");
+    expect(primary).toHaveTextContent("Get-Item ./report.md");
+    expect(primary.compareDocumentPosition(screen.getByTestId("approval-tool-identity")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it.each(["write_file", "edit_file", "append_file"])("frames %s around its path", (toolName) => {
+    renderApproval({ ...baseRequest(), toolName, toolCategory: "write", args: { path: "/workspace/report.md", content: "updated" } }, vi.fn());
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.fileActionTitle"));
+    expect(screen.getByTestId("approval-action-primary")).toHaveTextContent("/workspace/report.md");
+  });
+
+  it("names the external server and tool with the invocation arguments", () => {
+    renderApproval({ ...baseRequest(), source: "mcp", toolName: "mcp__docs__publish", args: { documentId: "report", public: true },
+      approvalMemory: { kind: "key", key: "external", scope: { kind: "mcp-tool", serverId: "docs", toolName: "publish" } } }, vi.fn());
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.externalActionTitle", { server: "docs", tool: "publish" }));
+    expect(screen.getByTestId("approval-action-primary")).toHaveTextContent('"documentId": "report"');
+  });
+
+  it("names a plugin action from the host-owned plugin identity", () => {
+    renderApproval({ ...baseRequest(), kind: "agent-action", sourcePluginId: "calendar", toolName: "create-event", args: { title: "Review" } }, vi.fn());
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.externalActionTitle", { server: "calendar", tool: "create-event" }));
+    expect(screen.getByTestId("approval-action-primary")).toHaveTextContent("Review");
+  });
+
+  it("keeps the generic fallback title", () => {
+    renderApproval(baseRequest(), vi.fn());
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.toolApprovalTitle"));
+  });
+
+  it("offers no remembered shell allow when the host supplies no command rule", () => {
+    renderApproval({ ...baseRequest(), toolName: "bash", toolCategory: "shell", args: { command: "printf ready" },
+      shellRule: { dialect: "bash", projectCwd: "/workspace", projectRoot: "/workspace", denyRule: null, denyAllowed: false, exactRule: null, sessionAllowed: false, persistentAllowed: false } }, vi.fn());
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
+    expect(screen.queryByText("Allow bash")).toBeNull();
+    expect(screen.queryByTestId("approval-edit-rule")).toBeNull();
+  });
+
   it("names the tool on a plain request (unchanged behavior)", () => {
     renderApproval(baseRequest(), vi.fn());
     expect(screen.getByTestId("approval-tool-identity")).toHaveTextContent("agent_spawn");

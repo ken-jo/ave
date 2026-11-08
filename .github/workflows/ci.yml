@@ -655,6 +655,8 @@ jobs:
           src/main/browser/__tests__/browser-actions.test.ts
           src/main/browser/__tests__/browser-tools-source.test.ts
           src/ui/renderer/components/__tests__/ToolApprovalContent-session-scope.test.tsx
+          src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx
+          src/ui/renderer/__tests__/ApprovalDock.test.tsx
           src/permissions/__tests__/allowed-directories-nfd-root.test.ts
           src/permissions/__tests__/mxc-extension-admission.test.ts
           src/permissions/__tests__/mxc-sdk-packaging.test.ts
