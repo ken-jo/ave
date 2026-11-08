@@ -5,6 +5,7 @@ import { buildTitlebarCss, TITLEBAR_COLORS } from "./window-titlebar-shell.js";
 import { hardenRemoteWebPreferences } from "./remote-browser-preferences.js";
 import { markAsAuthOwned } from "./auth-window-registry.js";
 import { escapeHtml } from "../shared/escape-html.js";
+import { BAND_EDGE_PAD, BAND_LEAD_PAD_DARWIN, TRAFFIC_LIGHT_POSITION } from "../shared/shell-geometry.js";
 import { t } from "../i18n/index.js";
 
 const requireFromHere = createRequire(import.meta.url);
@@ -35,7 +36,8 @@ export function authWindowChromeOptions(platform: NodeJS.Platform = process.plat
     frame: true,
     minWidth: 520,
     titleBarStyle: platform === "darwin" ? "hiddenInset" : "hidden",
-    ...(platform === "darwin" ? { trafficLightPosition: { x: 12, y: 11 } } : { titleBarOverlay: { height: AUTH_TITLEBAR_HEIGHT, color: colors.background, symbolColor: colors.foreground } }),
+    // The lights sit where the main window's do (`shared/shell-geometry.ts`), so the address row clears them with the band's own lead.
+    ...(platform === "darwin" ? { trafficLightPosition: { ...TRAFFIC_LIGHT_POSITION } } : { titleBarOverlay: { height: AUTH_TITLEBAR_HEIGHT, color: colors.background, symbolColor: colors.foreground } }),
   };
 }
 
@@ -83,7 +85,7 @@ export function buildAuthWindowShellHtml(input: {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(input.title)}</title>
   <style>${buildTitlebarCss()}
-    #oauth-location { display: flex; flex: 0 0 ${AUTH_TITLEBAR_HEIGHT}px; height: ${AUTH_TITLEBAR_HEIGHT}px; align-items: center; gap: 8px; padding: 0 ${platform === "darwin" ? "12px 0 80px" : "140px 0 12px"}; background: var(--ts-bg); color: var(--ts-fg); -webkit-app-region: drag; }
+    #oauth-location { display: flex; flex: 0 0 ${AUTH_TITLEBAR_HEIGHT}px; height: ${AUTH_TITLEBAR_HEIGHT}px; align-items: center; gap: 8px; padding: 0 ${platform === "darwin" ? `${BAND_EDGE_PAD}px 0 ${BAND_LEAD_PAD_DARWIN}px` : `140px 0 ${BAND_EDGE_PAD}px`}; background: var(--ts-bg); color: var(--ts-fg); -webkit-app-region: drag; }
     #oauth-security { flex: 0 0 16px; height: 16px; -webkit-app-region: no-drag; }
     #oauth-security svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
     #oauth-security[data-security="certificate-error"], #oauth-security[data-security="load-error"] { color: #d33c32; }
