@@ -212,6 +212,7 @@ function cleanupRootConfiguration(home: string): string[] {
             const copied = lstatSync(path);
             if (copied.ino !== identity.ino || copied.dev !== identity.dev || copied.size !== identity.size
               || copied.mtimeMs !== identity.mtimeMs || copied.ctimeMs !== identity.ctimeMs) throw new Error("Legacy configuration changed during preservation");
+            // POSIX cannot unlink by handle: a swap after this check deletes the swapped-in name; the verified copy stays preserved.
             unlinkSync(path);
             diagnostics.push(`Legacy configuration preserved at ${join(home, asideName)}`);
           }
