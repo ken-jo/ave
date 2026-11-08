@@ -66,7 +66,7 @@ describe("ToolApprovalContent identity strip", () => {
   });
 
   it("keeps the generic fallback title", () => {
-    renderApproval(baseRequest(), vi.fn());
+    renderApproval({ ...baseRequest(), toolName: "read_file", toolCategory: "read" }, vi.fn());
     expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.toolApprovalTitle"));
   });
 

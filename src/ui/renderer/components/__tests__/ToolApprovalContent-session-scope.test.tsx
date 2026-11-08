@@ -17,7 +17,8 @@ describe("ToolApprovalContent site scope", () => {
   it.each([["siteAllow", "this-site"], ["siteAllowAny", "any-site"]] as const)("sends %s as a site choice without recording a tool grant", (label, choice) => {
     const decide = vi.fn();
     renderApproval(REQUEST, decide);
-    expect(screen.getByRole("heading")).toHaveTextContent("https://a.example:443");
+    expect(screen.getByRole("dialog", { name: t("toolApprovalDialog.siteTitle", { origin: "https://a.example" }) })).toBeInTheDocument();
+    expect(screen.queryByRole("heading")).toBeNull();
     expect(decide).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: t(`toolApprovalDialog.${label}`) }));
     expect(decide).toHaveBeenCalledExactlyOnceWith("allow-once", undefined, { browserSiteChoice: choice });
