@@ -4638,8 +4638,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   // shellExecution
   "shellExecution.blocked": "현재 실행 계획에서는 셸을 실행할 수 없습니다.",
   "shellExecution.sandboxUnavailable": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령이 샌드박스 없이 일반 권한 규칙에 따라 실행됩니다.",
-  "shellExecution.boundaryUnverifiedAsk": "Ave 홈 경계를 확인할 수 없어, 셸 명령은 승인한 뒤에만 OS 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 이 세션 동안 승인해 샌드박스를 사용할 수 없는 동안 이 세션의 이후 셸 명령과 훅도 허용할 수 있습니다.",
-  "shellExecution.sandboxUnavailableAsk": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령은 승인한 뒤에만 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 이 세션 동안 승인해 샌드박스를 사용할 수 없는 동안 이 세션의 이후 셸 명령과 훅도 허용할 수 있습니다.",
+  "shellExecution.boundaryUnverifiedAsk": "Ave 홈 경계를 확인할 수 없어, 셸 명령은 승인한 뒤에만 OS 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 경계를 확인할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
+  "shellExecution.sandboxUnavailableAsk": "OS 샌드박스가 켜져 있지만 사용할 수 없어, 셸 명령은 승인한 뒤에만 샌드박스 없이 실행됩니다. 한 번만 승인하거나, 샌드박스를 사용할 수 없는 동안 이 세션의 이후 셸 명령과 훅에 대한 샌드박스 승인을 면제할 수 있습니다. 다른 권한 검사는 계속 적용되며 다시 승인을 요청할 수 있습니다.",
   "shellExecution.location": "실행 위치: 현재 호스트({platform}).",
   "shellExecution.temporaryHome": "셸 HOME과 설정: 명령마다 임시 공간을 사용하며 사용자 로그인 프로필은 읽지 않습니다.",
   "shellExecution.hostHome": "셸 HOME: 호스트 홈을 사용하며 환경변수를 선별하고 로그인 프로필은 읽지 않습니다.",

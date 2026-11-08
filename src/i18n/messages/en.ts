@@ -4636,8 +4636,8 @@ export const en = {
   // shellExecution
   "shellExecution.blocked": "Shell execution is unavailable under the current execution plan.",
   "shellExecution.sandboxUnavailable": "The OS sandbox is turned on but unavailable, so shell commands run without it under the normal permission rules.",
-  "shellExecution.boundaryUnverifiedAsk": "The Ave home boundary could not be verified, so a shell command runs without the OS sandbox only after you approve it: once, or for this session, which also allows later shell commands and hooks in this session while the sandbox is unavailable.",
-  "shellExecution.sandboxUnavailableAsk": "The OS sandbox is turned on but unavailable, so a shell command runs without it only after you approve it: once, or for this session, which also allows later shell commands and hooks in this session while the sandbox is unavailable.",
+  "shellExecution.boundaryUnverifiedAsk": "The Ave home boundary could not be verified, so a shell command runs without the OS sandbox only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the boundary stays unverified. Other permission checks still apply and may ask again.",
+  "shellExecution.sandboxUnavailableAsk": "The OS sandbox is turned on but unavailable, so a shell command runs without it only after you approve it. Approve it once, or waive this sandbox approval for later shell commands and hooks in this session while the sandbox is unavailable. Other permission checks still apply and may ask again.",
   "shellExecution.location": "Execution location: current host ({platform}).",
   "shellExecution.temporaryHome": "Shell HOME and configuration: temporary for each command; the user's login profile is not loaded.",
   "shellExecution.hostHome": "Shell HOME: host home with a filtered, non-login environment.",
