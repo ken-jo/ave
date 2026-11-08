@@ -490,7 +490,10 @@ determine whether a tile can split or a panel can dock.
 
 ## Interaction states
 - Loading: use compact progress or status text near the affected control.
-- Empty: state what is empty, not how the feature works.
+- Empty: state what is empty, not how the feature works. Every empty state is the `EmptyState`
+  primitive (`src/components/ui/empty-state.tsx`): one line renders muted; two lines render a
+  title (`text-body-sm`, medium) over a muted `text-dense` secondary line with a small gap; at
+  most one primary button, and every other action is a link.
 - Error: use destructive semantics and include the next actionable recovery when available.
 - Success: use success semantics sparingly; avoid celebratory motion.
 - Disabled: preserve legibility and explain disabled controls through tooltip or adjacent status only when the reason is not obvious.

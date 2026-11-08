@@ -3,6 +3,7 @@
 // the routine panel); this component decides nothing by itself and has no approve shortcut — a decision is always a button press, and a
 // queued plan is expanded into the card before it can be decided. Tool-execution approvals are never here; they stay in their
 // conversation's ApprovalDock.
+import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { Loader } from "../../../../components/ui/loader.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { CheckSquare } from "lucide-react";
@@ -828,9 +829,7 @@ export function WorkApprovalStack({
       )}
 
       {head === null ? (
-        <p className="rounded-md border border-dashed p-4 text-center text-sm text-muted-foreground" data-testid="work-approvals-empty">
-          {t("workApprovals.empty")}
-        </p>
+        <EmptyState align="center" className="rounded-md border border-dashed" data-testid="work-approvals-empty" title={t("workApprovals.empty")} />
       ) : allProjects ? (
         <div className="flex flex-wrap items-start gap-3">
           <div className="min-w-64 flex-1 basis-64 space-y-2">

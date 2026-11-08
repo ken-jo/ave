@@ -6,8 +6,8 @@ import type { ChatPreviewTarget } from "../preview/preview-targets.js";
 import { useVerticalSplit } from "../hooks/use-vertical-split.js";
 import { useNativeContextMenu, type NativeContextMenuHandlers } from "../hooks/use-native-context-menu.js";
 import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import {
-  EmptyState,
   PreviewDetail,
   previewFillsPanel,
   statusTone,
@@ -139,7 +139,7 @@ export function ListDetailWorkspace({
             {rows.length > 0 ? (
               <TargetRows targets={rows} selectedId={selectedTarget?.id} rowTestId={rowTestId} onSelect={onSelect} />
             ) : (
-              <EmptyState>{emptyText}</EmptyState>
+              <EmptyState title={emptyText} />
             )}
           </div>
         }
@@ -148,7 +148,7 @@ export function ListDetailWorkspace({
             {selectedTarget ? (
               <PreviewDetail api={api} sessionId={sessionId} target={selectedTarget} visible={visible} />
             ) : (
-              <div className="text-xs text-muted-foreground">{emptyText}</div>
+              <EmptyState title={emptyText} className="p-0" />
             )}
           </div>
         }

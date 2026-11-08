@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2, CircleStop, ListTree, PanelRight, Play, Plus, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
@@ -674,7 +675,7 @@ function BoardColumn({
         {loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">{t("workBoard.loadingLabel")}</div>
         ) : items.length === 0 && !hasSchedule ? (
-          <div className="py-8 text-center text-sm text-muted-foreground">{emptyLabel}</div>
+          <EmptyState align="center" className="py-8" title={emptyLabel} />
         ) : (
           <div className={narrow ? "grid grid-cols-2 gap-2 pt-2" : "space-y-2"}>
             {columnOrder(items, hasSchedule ? schedule.cards : []).map((entry) => (entry.kind === "schedule" ? entry.node : (

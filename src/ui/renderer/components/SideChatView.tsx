@@ -1,5 +1,6 @@
 /** Pane side chats bind every turn to their surface tab; rail side chats name no tab. Both use the shared transcript
  * renderer. */
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ChevronDown, Plus } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -521,9 +522,7 @@ function SideChatSession({
           <div className="text-xs text-destructive" role="alert" data-testid="side-chat-pane-error">{paneError}</div>
         ) : null}
         {entries.length === 0 ? (
-          <div className="pt-6 text-center text-xs text-muted-foreground">
-            {t("chatPreviewRail.sideChat.empty")}
-          </div>
+          <EmptyState align="center" className="pt-6" title={t("chatPreviewRail.sideChat.empty")} />
         ) : (
           <TranscriptRenderer
             observeTerminal={shown && !tileHidden && sessionOwned}

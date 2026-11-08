@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
 import { CUSTOM_PROVIDER_WIRES, customProviderWire, type CustomProviderWire } from "../../../shared/custom-provider.js";
 import { PROVIDER_PICKER_GROUPS, providerPickerEntries } from "../../../shared/provider-picker.js";
@@ -2933,9 +2934,7 @@ export function LlmTab(props: LlmTabProps) {
         </p>
       ) : null}
       {visibleRows.length === 0 ? (
-        <p className="rounded-md border px-3 py-4 text-center text-xs text-muted-foreground" data-testid="llm-tab:connections-empty">
-          {t("llmTab.connectionsEmpty")}
-        </p>
+        <EmptyState align="center" className="rounded-md border px-3 py-4" data-testid="llm-tab:connections-empty" title={t("llmTab.connectionsEmpty")} />
       ) : null}
       {/* ONE row renderer for every provider, however it is reached — and the
           SAME renderer the remote connections list uses, so a reader scanning

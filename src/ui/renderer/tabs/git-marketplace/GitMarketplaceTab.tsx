@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -599,9 +600,8 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
             {catalog === null ? (
               <p className="text-xs text-muted-foreground">{t("gitMarketplace.loading")}</p>
             ) : entries.length === 0 ? (
-              <p className="py-6 text-center text-xs text-muted-foreground" data-testid="git-marketplace:empty">
-                {sources.some((source) => source.status.state === "never-synced" || source.status.state === "syncing") ? t("gitMarketplace.emptySyncing") : t("gitMarketplace.empty")}
-              </p>
+              <EmptyState align="center" className="py-6" data-testid="git-marketplace:empty"
+                title={sources.some((source) => source.status.state === "never-synced" || source.status.state === "syncing") ? t("gitMarketplace.emptySyncing") : t("gitMarketplace.empty")} />
             ) : (
               <div className="grid grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] gap-2" data-testid="git-marketplace:cards">
                 {entries.map((entry) => (

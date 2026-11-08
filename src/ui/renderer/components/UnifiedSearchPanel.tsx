@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useEffect, useMemo, useState } from "react";
 import type React from "react";
 import { BookMarked, Clock3, FileText, Repeat2, Search, Pin, X } from "lucide-react";
@@ -379,9 +380,7 @@ export function UnifiedSearchPanel({
             </SearchSection>
 
             {noResults && (
-              <div className="px-3 py-8 text-center text-xs text-muted-foreground">
-                {trimmedQuery ? t("unifiedSearchPanel.noResults") : t("unifiedSearchPanel.noItems")}
-              </div>
+              <EmptyState align="center" className="px-3 py-8" title={trimmedQuery ? t("unifiedSearchPanel.noResults") : t("unifiedSearchPanel.noItems")} />
             )}
           </div>
         )}

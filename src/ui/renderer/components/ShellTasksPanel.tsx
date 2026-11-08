@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Terminal } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -90,7 +91,7 @@ export function ShellTasksPanel({ api, sessionId, composerRef }: {
       <p className="text-xs text-muted-foreground">{t("shellTasks.shortcut")}</p>
       <p className="text-xs text-muted-foreground">{t("shellTasks.limits")}</p>
       {error && <p role="alert" className="text-xs text-destructive">{t("shellTasks.unavailable")}</p>}
-      {tasks.length === 0 && <p role="status" className="text-xs text-muted-foreground">{t("shellTasks.empty")}</p>}
+      {tasks.length === 0 && <EmptyState role="status" className="p-0" title={t("shellTasks.empty")} />}
       <ul className="max-h-80 space-y-3 overflow-y-auto" aria-label={t("shellTasks.title")}>
         {tasks.map((task) => <li key={task.shellId} className="space-y-1 rounded border border-border p-2">
           <code className="block whitespace-pre-wrap break-all text-xs">{task.command}</code>

@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { Loader } from "../../../../components/ui/loader.js";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
@@ -795,7 +796,7 @@ export function LiveRunPanel(props: LiveRunPanelProps) {
       </header>
       <div className="shrink-0 border-b px-2 py-1.5">
         {entries.length === 0 ? (
-          <p className="px-1 py-1 text-dense text-muted-foreground" data-testid="live-step-empty">{t("workBoard.liveStepsEmpty")}</p>
+          <EmptyState className="px-1 py-1" data-testid="live-step-empty" title={t("workBoard.liveStepsEmpty")} />
         ) : (
           <ul className="max-h-40 space-y-0.5 overflow-y-auto" aria-label={t("workBoard.liveStepsRunList")} data-testid="live-step-runs">
             {entries.map((entry) => {

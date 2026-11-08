@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
@@ -1776,7 +1777,7 @@ export function PermissionsTab({
             </div>
           ) : null}
           {rules.length === 0 && userApprovals.length === 0 ? (
-            <p className="text-dense text-muted-foreground italic">{t("permissionsTab.rulesEmpty")}</p>
+            <EmptyState className="p-0" title={t("permissionsTab.rulesEmpty")} />
           ) : (
             <div className="min-w-0 overflow-x-auto rounded-md border">
               <table data-testid="permissions-rules-table" className="min-w-[560px] w-full text-xs">
@@ -1888,7 +1889,7 @@ export function PermissionsTab({
           {panelLoadNotice("directories", ["directories"]) ?? (
           <>
           {directories.length === 0 ? (
-            <p className="text-dense text-muted-foreground italic">{t("permissionsTab.directoriesEmpty")}</p>
+            <EmptyState className="p-0" title={t("permissionsTab.directoriesEmpty")} />
           ) : (
             <div className="rounded-md border">
               <table className="w-full text-xs">
