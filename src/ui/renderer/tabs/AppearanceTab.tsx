@@ -1,5 +1,6 @@
 /** Configure the shared interface and terminal appearance. */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
 import { useTheme } from "../theme/index.js";
 import { SCHEMES } from "../theme/index.js";
 import { DEFAULT_GLASS_TINT, GLASS_TINT_MAX, GLASS_TINT_MIN, isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
@@ -359,6 +360,7 @@ export function AppearanceTab() {
                   aria-checked={checked}
                   tabIndex={checked || (activePreset === "custom" && index === 0) ? 0 : -1}
                   data-value={opt.value}
+                  style={{ fontFamily: opt.stack || HOST_FONT_STACK }}
                   onClick={() => setFamily(opt.stack)}
                   className={`rounded-full border px-3 py-1 text-xs transition-colors ${
                     checked

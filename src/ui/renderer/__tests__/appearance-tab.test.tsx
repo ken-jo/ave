@@ -11,6 +11,8 @@ import type { InstalledContentView } from "../../../shared/installed-content.js"
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
 import { getLocale, setLocale } from "../../../i18n/runtime.js";
 
+import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
+
 const FRENCH = { sourceId: "ave", version: "1.0.0", name: "french", locale: "fr", nativeName: "Français", englishName: "French", missingKeys: [] };
 
 function install(content: Partial<InstalledContentView> & { languages?: typeof FRENCH[] }) {
@@ -209,4 +211,15 @@ it("renders size segments at one body size with nominal pixels and a default", (
     expect(chip).toHaveTextContent(["12px", "14px", "16px", "18px"][index]!);
   });
   expect(chips[1]).toHaveTextContent("기본값");
+});
+
+it("renders each interface preset in its saved stack with the host default", async () => {
+ const view = renderAppearance();
+ const presets = within(view.getByTestId("font-family-presets")).getAllByRole("radio");
+ expect(presets[0]!.style.fontFamily).toBe(HOST_FONT_STACK);
+ const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
+ for (const preset of presets.slice(1)) {
+   fireEvent.click(preset);
+   expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { font: { family: preset.style.fontFamily } } });
+ }
 });
