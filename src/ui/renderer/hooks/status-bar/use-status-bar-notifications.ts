@@ -18,18 +18,11 @@ export function useStatusBarNotifications({ api, pushToast }: Options): void {
   useEffect(() => {
     if (typeof api.onNotificationToast !== "function") return;
     const unsub = api.onNotificationToast((p) => {
-      const severity: StatusBarSeverity =
-        p.kind === "approval"
-          ? "warning"
-          : p.kind === "ask-user"
-            ? "info"
-            : p.kind === "routine"
-              ? "success"
-              : "info";
+      const severity: StatusBarSeverity = p.kind === "routine" ? "success" : "info";
       pushToast({
         severity,
         message: `${sanitizeToastField(p.title, 64)}: ${sanitizeToastField(p.body, 80)}`,
-        ttlMs: p.kind === "approval" ? 10_000 : 5_000,
+        ttlMs: 5_000,
         ...(p.sticky === true ? { sticky: true } : {}),
         notification: { kind: p.kind, contextRef: p.contextRef },
       });

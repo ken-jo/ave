@@ -188,6 +188,36 @@ describe("NotificationService — routing decision", () => {
     expect(log.input).not.toContain("hello world");
   });
 
+  it.each(["approval", "ask-user"] as const)("handles a focused %s with its card and preserves OS delivery when unfocused", (kind) => {
+    const win = makeMockWindow({ focused: true });
+    let focused = true;
+    const clock = vi.spyOn(performance, "now").mockReturnValue(100_000);
+    try {
+      const svc = createService(win, factoryStub.factory, { auditLogger, isAnyWindowFocused: () => focused });
+      const notice = { kind, title: "Request", body: "private request body" };
+      expect(svc.deliver(notice)).toEqual({ accepted: true });
+      expect(win.webContents.send).not.toHaveBeenCalled();
+      expect(factoryStub.calls).toHaveLength(0);
+      const logs = vi.mocked(auditLogger.log).mock.calls;
+      expect(JSON.parse(String(logs[0][0].input))).toMatchObject({
+        event: "notification.handled", kind, gate: "in-app", surface: "card",
+      });
+      expect(logs[0][0].input).not.toContain(notice.body);
+      if (kind === "approval") {
+        // Card handling still consumes the existing approval cooldown.
+        expect(svc.deliver(notice)).toEqual({ accepted: false });
+        expect(JSON.parse(String(logs[1][0].input))).toMatchObject({ event: "notification.suppressed", reason: "cooldown" });
+      }
+      focused = false;
+      clock.mockReturnValue(103_000);
+      expect(svc.deliver(notice)).toEqual({ accepted: true });
+      expect(factoryStub.calls).toHaveLength(1);
+      expect(factoryStub.calls[0].show).toHaveBeenCalledOnce();
+      expect(win.webContents.send).not.toHaveBeenCalled();
+      expect(JSON.parse(String(logs.at(-1)?.[0].input))).toMatchObject({ event: "notification.fired", kind, gate: "os" });
+    } finally { clock.mockRestore(); }
+  });
+
   it("focused turn-end is suppressed without composer toast or cooldown consumption", () => {
     const win = makeMockWindow({ focused: true, minimized: false });
     let anyFocused = true;
@@ -858,7 +888,7 @@ describe("turn completion notification", () => {
 });
 
 describe("NotificationService — fire() names the toast's window", () => {
-  const notice = { kind: "approval", title: "x", body: "y", contextRef: { approvalId: "a-1" } } as const;
+  const notice = { kind: "system", title: "x", body: "y" } as const;
 
   it("returns the window an in-app toast went to", () => {
     const win = makeMockWindow({ focused: true });

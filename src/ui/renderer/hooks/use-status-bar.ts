@@ -120,7 +120,7 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
   );
 
   /** Replace an existing toast in its current queue position, or append it when absent. A producer that reports the same
-   * subject again (an install result, a provider swap, a re-applied approval) uses a stable ID so the newer report replaces
+   * subject again (an install result or a provider swap) uses a stable ID so the newer report replaces
    * the older one instead of queueing behind it. */
   const upsertToast = useCallback(
     (id: string, input: ToastInput) => {
@@ -153,12 +153,6 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
   );
 
   const removeToast = useCallback((id: string) => removeToastsWhere((t) => t.id === id), [removeToastsWhere]);
-
-  /** Drop the toasts of settled approvals. */
-  const removeApprovalToasts = useCallback(
-    (approvalIds: ReadonlySet<string>) => removeToastsWhere((t) => approvalIds.has(t.notification?.contextRef?.approvalId ?? "")),
-    [removeToastsWhere],
-  );
 
   /** "Don't show again": silence this kind from now on and drop every queued notice of it. */
   const suppressToastKind = useCallback(
@@ -227,7 +221,6 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     pushToast,
     upsertToast,
     removeToast,
-    removeApprovalToasts,
     suppressToastKind,
     upsertPersistent,
     removePersistent,
