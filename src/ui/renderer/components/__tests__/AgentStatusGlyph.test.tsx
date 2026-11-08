@@ -17,7 +17,6 @@ const TABLE: ReadonlyArray<{ badge: AgentStatusBadge | null; tone: string | null
   { badge: "waiting", tone: "bg-warning", label: "답변 대기 중" },
   { badge: "blocked", tone: "bg-destructive", label: "막힘" },
   { badge: "error", tone: "bg-destructive", label: "오류" },
-  { badge: "connecting", tone: "bg-info", label: "연결 중" },
   { badge: "exited", tone: "bg-muted-foreground", label: "중지됨" },
 ];
 

@@ -46,7 +46,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "agentStatus.working": "작업 중",
   "agentStatus.blocked": "막힘",
   "agentStatus.error": "오류",
-  "agentStatus.connecting": "연결 중",
   "agentStatus.exited": "중지됨",
 
   // agentPluginPrompt

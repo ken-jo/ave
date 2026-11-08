@@ -8,13 +8,12 @@ import { PendingAnswerDot, StatusDot } from "./PendingAnswerDot.js";
  * The states that need a person, each drawn as a corner badge on the mark. Idle and done draw no badge, and working is not
  * a badge: it replaces the mark (see DESIGN.md, "Agent status slot").
  */
-export type AgentStatusBadge = "waiting" | "blocked" | "error" | "connecting" | "exited";
+export type AgentStatusBadge = "waiting" | "blocked" | "error" | "exited";
 
 /** One semantic token per meaning. `waiting` is the pending-answer dot itself, so it is not in this table. */
 const BADGE_STYLE: Record<Exclude<AgentStatusBadge, "waiting">, { tone: string; labelKey: string }> = {
   blocked: { tone: "bg-destructive", labelKey: "agentStatus.blocked" },
   error: { tone: "bg-destructive", labelKey: "agentStatus.error" },
-  connecting: { tone: "bg-info", labelKey: "agentStatus.connecting" },
   exited: { tone: "bg-muted-foreground", labelKey: "agentStatus.exited" },
 };
 

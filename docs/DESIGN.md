@@ -332,7 +332,6 @@ state never moves the row.
 | waiting (for an answer or an approval) | the mark | `--warning` (the pending-answer dot) |
 | blocked (denied, cannot go on) | the mark | `--destructive` |
 | error | the mark | `--destructive` |
-| connecting | the mark | `--info` |
 | exited / stopped | the mark | `--muted-foreground` |
 
 Working and a badge are separate inputs: a conversation can be running while one of its
@@ -363,7 +362,7 @@ toggle) carry the bare pending-answer dot; a terminal tab's unread notice is the
 primary dot (`TerminalAttentionDot`), which is read state; the app's own status is a
 toolbar pill; an agent controlling a browser tab (the tab's `Bot` mark and the control
 badge) is activity, drawn in the neutral working tone, never warning; spinners inside the transcript (tool groups, reasoning) are content, not
-session status. No conversation-level producer exists yet for blocked, connecting, or a
+session status. No conversation-level producer exists yet for blocked or a
 failed/exited conversation (a turn's error lives in the tile's transcript); those states
 are drawn only where a producer exists today (sub-agent and work-board runs).
 

@@ -44,7 +44,6 @@ export const en = {
   "agentStatus.working": "Working",
   "agentStatus.blocked": "Blocked",
   "agentStatus.error": "Error",
-  "agentStatus.connecting": "Connecting",
   "agentStatus.exited": "Stopped",
 
   // agentPluginPrompt
