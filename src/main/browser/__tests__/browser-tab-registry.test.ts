@@ -51,6 +51,50 @@ afterEach(() => {
 });
 
 describe("BrowserTabRegistry", () => {
+  it("opens concurrent child tabs with isolated leases and owner-specific defaults", async () => {
+    const { registry, ops } = setup();
+    const actors = ["child-a", "child-b"].map((sessionId) => ({ sessionId, directParentSessionId: "parent" }));
+    const openings = actors.map((actor) => registry.requestTabOp(1, { op: "new", url: "https://example.test/", sessionId: "parent", actor }));
+    for (const [index, actor] of actors.entries()) {
+      const op = ops[index];
+      if (!op) throw new Error("Missing open request");
+      expect(op.request).toMatchObject({ sessionId: "parent", ownerSessionId: actor.sessionId, active: false });
+      attachTab(registry, { tabId: actor.sessionId, webContentsId: 71 + index, requestId: op.request.requestId }, 1, "about:blank");
+    }
+    await Promise.all(openings);
+    const tabs = actors.map((actor) => {
+      const selected = registry.defaultBrowserTab(1, "parent", actor.sessionId);
+      const tab = selected.ok ? registry.liveTab(selected.handle) : undefined;
+      if (!tab) throw new Error("Missing child tab");
+      return tab;
+    });
+    for (const [index, tab] of tabs.entries()) {
+      const actor = actors[index];
+      const sibling = actors[1 - index];
+      if (!actor || !sibling) throw new Error("Missing child identity");
+      registry.acquireControl(tab, actor);
+      expect(() => registry.assertActorAccess(tab, sibling)).toThrow("another conversation");
+    }
+    registry.pause(1, "child-a");
+    expect(tabs.map((tab) => tab.controlMode)).toEqual(["human-paused", "agent-active"]);
+    expect(tabs[1]?.lease).not.toBeNull();
+    expect(registry.listSessionTabs(1, { sessionId: "parent" }, true)).toHaveLength(2);
+    for (const tab of tabs) if (tab.lease) registry.releaseControl(tab.handle, tab.lease.id);
+    const actor = actors[1];
+    const previous = tabs[1];
+    if (!actor || !previous) throw new Error("Missing child tab");
+    const extra = registry.requestTabOp(1, { op: "new", url: "https://example.test/second", sessionId: "parent", actor });
+    const request = ops.at(-1);
+    if (!request) throw new Error("Missing additional tab request");
+    attachTab(registry, { tabId: "second-page", webContentsId: 73, requestId: request.request.requestId }, 1, "about:blank");
+    await extra;
+    const count = ops.length;
+    await expect(registry.requestTabOp(1, { op: "select", tabId: previous.handle, actor })).resolves.toEqual({ ok: true, tabId: previous.handle });
+    expect(registry.defaultBrowserTab(1, "parent", actor.sessionId)).toEqual({ ok: true, handle: previous.handle });
+    expect(ops).toHaveLength(count);
+    expect(registry.activeBrowserTab(1)).toBeUndefined();
+  });
+
   it("binds a tab only to a live guest attached to the sender's own window", () => {
     const { registry } = setup();
     const guest = new FakeGuest(11);
@@ -651,11 +695,11 @@ describe("scoped browser control", () => {
     expect(registry.acquireControl(tab, ACTOR).lifetime).toBe("borrowed");
   });
 
-  it("permits a creator and its actual direct parent or child, with nonrecursive child listing", async () => {
+  it("isolates creator input while permitting parent observation", async () => {
     const child = { sessionId: "child", directParentSessionId: "parent" };
     const { registry, tab } = await owned(child);
-    expect(() => registry.assertActorAccess(tab, { sessionId: "parent" })).not.toThrow();
-    expect(() => registry.assertActorAccess(tab, { sessionId: "child-of-child", directParentSessionId: "child" })).not.toThrow();
+    expect(() => registry.assertActorAccess(tab, { sessionId: "parent" })).toThrow("another conversation");
+    expect(() => registry.assertActorAccess(tab, { sessionId: "child-of-child", directParentSessionId: "child" })).toThrow("another conversation");
     for (const actor of [ACTOR, { sessionId: "grandparent" },
       { sessionId: "sibling", directParentSessionId: "parent" },
       { sessionId: "grandchild", directParentSessionId: "child-of-child" }]) {
@@ -671,25 +715,13 @@ describe("scoped browser control", () => {
       .resolves.toEqual({ ok: false, error: "no-such-tab" });
   });
 
-  it("lets a direct child act on its parent's bound tab while retaining actual caller identity", async () => {
-    const parent = { sessionId: "parent", directParentSessionId: "grandparent" };
+  it("keeps a child off its parent's bound tab", async () => {
+    const parent = { sessionId: "parent" };
     const child = { sessionId: "child", directParentSessionId: "parent" };
     const { registry, tab } = await owned(parent);
     registry.bindConversationSurface(parent.sessionId, { windowId: 1, surface: { kind: "browser", tabId: "page" } });
-    expect(registry.defaultBrowserTab(1, child.directParentSessionId)).toEqual({ ok: true, handle: tab.handle });
-    const generation = tab.controlGeneration;
-    const lease = registry.acquireControl(tab, child);
-    expect(lease).toMatchObject({ actor: child, lifetime: "owned" });
-    expect(tab.owner).toEqual(parent);
-    expect(tab.controlGeneration).toBe(generation);
-    expect(parseBrowserTabControlState(registry.controlState(1))?.tabs[0]?.lease?.actor).toEqual(child);
-    registry.releaseControl(tab.handle, lease.id);
-    for (const actor of [
-      { sessionId: "grandchild", directParentSessionId: "child" },
-      { sessionId: "parent-sibling", directParentSessionId: "grandparent" },
-      { sessionId: "unrelated" },
-    ]) expect(() => registry.acquireControl(tab, actor)).toThrow("another conversation");
-    expect(tab.owner).toEqual(parent);
+    expect(registry.defaultBrowserTab(1, "parent", "child").ok).toBe(false);
+    expect(() => registry.acquireControl(tab, child)).toThrow("another conversation");
     expect(tab.lease).toBeNull();
   });
 
@@ -705,7 +737,7 @@ describe("scoped browser control", () => {
     expect(tab.owner).toEqual({ sessionId: "child", directParentSessionId: "parent" });
     state.registry.acquireControl(tab, { sessionId: "child", directParentSessionId: "parent" });
     expect(() => state.registry.acquireControl(tab, { sessionId: "child" })).toThrow("still controlling");
-    expect(() => state.registry.acquireControl(tab, { sessionId: "parent" })).toThrow("controlled by another conversation");
+    expect(() => state.registry.acquireControl(tab, { sessionId: "parent" })).toThrow("another conversation");
   });
 
   it("publishes revisioned independent snapshots and opens agent tabs in the background by default", async () => {

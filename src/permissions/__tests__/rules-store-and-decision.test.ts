@@ -524,8 +524,8 @@ describe("conversation-scoped exact decisions", () => {
   });
 });
 
-// Owner decision 2026-10-23: every session allow (not only shell) belongs to the root conversation, resolved by the one resolver the judge also uses.
-describe("non-shell session approvals are keyed by the root conversation", () => {
+// Session choices do not flow between agents, even when they share a conversation root.
+describe("non-shell session approvals are keyed by the requesting session", () => {
   const ROOT_A = "11111111-1111-4111-8111-111111111111";
   const ROOT_B = "22222222-2222-4222-8222-222222222222";
   const CHILD_A = "sub-aa-33333333-3333-4333-8333-333333333333";
@@ -548,15 +548,16 @@ describe("non-shell session approvals are keyed by the root conversation", () =>
     scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId,
   });
 
-  it.each(tools)("shares a parent's $tool allow with its sub-agents at any depth", async ({ tool, args }) => {
+  it.each(tools)("isolates a parent's $tool allow from sub-agents at any depth", async ({ tool, args }) => {
     await record(tool, args, ROOT_A);
-    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, CHILD_A)).toMatchObject({ sessionId: ROOT_A });
-    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, GRANDCHILD_A)).toMatchObject({ sessionId: ROOT_A });
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, CHILD_A)).toBeNull();
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, GRANDCHILD_A)).toBeNull();
   });
 
-  it.each(tools)("shares a sub-agent's $tool allow with its root conversation", async ({ tool, args }) => {
+  it.each(tools)("isolates a sub-agent's $tool allow from its parent", async ({ tool, args }) => {
     await record(tool, args, GRANDCHILD_A);
-    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, ROOT_A)).toMatchObject({ sessionId: ROOT_A });
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, GRANDCHILD_A)).toMatchObject({ sessionId: GRANDCHILD_A });
+    expect(await lookupApproval(tool, args, "builtin", undefined, undefined, undefined, ROOT_A)).toBeNull();
   });
 
   it.each(tools)("never lets a $tool allow reach a different root conversation", async ({ tool, args }) => {

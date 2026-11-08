@@ -33,9 +33,10 @@ export type BrowserTabOpRequest =
   /**
    * `sessionId` names the conversation the tab is opened for (a sub-agent's
    * parent), so a window with several chats opens it beside that one.
+   * `ownerSessionId` identifies the actual caller independently of that display host.
    */
   /** `inTabId` loads the page into that existing, still empty renderer tab (a pane chat's own page) instead of a new one. */
-  | { readonly requestId: string; readonly op: "new"; readonly url: string; readonly active: boolean; readonly sessionId?: string; readonly inTabId?: string }
+  | { readonly requestId: string; readonly op: "new"; readonly url: string; readonly active: boolean; readonly sessionId?: string; readonly ownerSessionId?: string; readonly inTabId?: string }
   | { readonly requestId: string; readonly op: "select"; readonly tabId: string }
   | { readonly requestId: string; readonly op: "close"; readonly tabId: string }
   | { readonly requestId: string; readonly op: "wake" | "sleep"; readonly tabId: string }
@@ -49,10 +50,12 @@ export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | 
   const record = value as { requestId?: unknown; op?: unknown; url?: unknown; active?: unknown; tabId?: unknown };
   if (typeof record.requestId !== "string" || record.requestId.length === 0) return null;
   if (record.op === "new") {
-    if (!hasOnlyKeys(value, ["requestId", "op", "url", "active", "sessionId", "inTabId"])) return null;
+    if (!hasOnlyKeys(value, ["requestId", "op", "url", "active", "sessionId", "ownerSessionId", "inTabId"])) return null;
     if (typeof record.url !== "string" || typeof record.active !== "boolean") return null;
     const sessionId = (value as { sessionId?: unknown }).sessionId;
     if (sessionId !== undefined && (typeof sessionId !== "string" || sessionId.length === 0)) return null;
+    const ownerSessionId = (value as { ownerSessionId?: unknown }).ownerSessionId;
+    if (ownerSessionId !== undefined && (typeof ownerSessionId !== "string" || ownerSessionId.length === 0)) return null;
     const inTabId = (value as { inTabId?: unknown }).inTabId;
     if (inTabId !== undefined && (typeof inTabId !== "string" || inTabId.length === 0)) return null;
     return {
@@ -61,6 +64,7 @@ export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | 
       url: record.url,
       active: record.active,
       ...(typeof sessionId === "string" ? { sessionId } : {}),
+      ...(typeof ownerSessionId === "string" ? { ownerSessionId } : {}),
       ...(typeof inTabId === "string" ? { inTabId } : {}),
     };
   }
@@ -202,8 +206,7 @@ export function parseBrowserTabControlState(value: unknown): BrowserTabControlSt
       const actor = parseBrowserSessionActor(item.lease.actor);
       if (actor === null || (item.lease.lifetime === "owned") !== (owner !== null)
         || item.mode === "human"
-        || (owner !== null && owner.sessionId !== actor.sessionId
-          && owner.directParentSessionId !== actor.sessionId && actor.directParentSessionId !== owner.sessionId)) return null;
+        || (owner !== null && owner.sessionId !== actor.sessionId)) return null;
       lease = { id: item.lease.id, actor, lifetime: item.lease.lifetime };
     }
     handles.add(item.tabId);

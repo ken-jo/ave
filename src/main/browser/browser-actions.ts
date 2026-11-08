@@ -1,6 +1,7 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
 import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
+import { browserLayoutReady } from "./browser-layout-probe.js";
 import { createBrowserTabActivity } from "./browser-tab-activity.js";
 import { gateBrowserSiteNavigation } from "./browser-site-navigation.js";
 import { stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadResult, type BrowserUploadSelection } from "./browser-upload.js";
@@ -1395,13 +1396,7 @@ export function createBrowserPageActions(
     if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
     if (live.tab.opener !== "agent" || live.tab.owner === null || live.tab.targetKind !== "embedded") return act();
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
-    return withActivity(guest, live.signal, async () => {
-      const result = await session.send("Runtime.evaluate", {
-        expression: "({ width: innerWidth, height: innerHeight, visible: document.visibilityState !== 'hidden' })", returnByValue: true,
-      }) as { result?: { value?: { width?: number; height?: number; visible?: boolean } } };
-      const viewport = result.result?.value;
-      return !!viewport && (viewport.width ?? 0) > 0 && (viewport.height ?? 0) > 0 && viewport.visible === true;
-    }, act);
+    return withActivity(guest, live.signal, () => browserLayoutReady(session), act);
   };
   const siteGates = new WeakMap<WebContents, () => void>();
   const installSiteGate = async (live: LiveTab, guest: WebContents, session: CdpSession) => {

@@ -808,11 +808,11 @@ describe("browser tools", () => {
     expect(listed.output).not.toContain(`"${elsewhere.handle}"`);
 
     // Hosting-window discovery does not confer authority over a parent-owned resource.
-    expect((await run(BROWSER_TOOL.snapshot, { tabId: agent.handle }, CHILD_SESSION)).isError).toBe(false);
+    expect((await run(BROWSER_TOOL.snapshot, { tabId: agent.handle }, CHILD_SESSION)).isError).toBe(true);
     const headless = await run(BROWSER_TOOL.tabs, {}, "routine-run");
     expect(headless.isError).toBe(true);
     expect(headless.output).toContain("this session has no browser");
-    expect(page.calls.map((call) => call.action)).toEqual(["snapshot"]);
+    expect(page.calls.map((call) => call.action)).toEqual([]);
   });
 
   it.each([false, true])("opens an agent tab for navigate without a shown tab, including an empty bound pane: %s", async (pane) => {
@@ -837,13 +837,13 @@ describe("browser tools", () => {
     expect(h.ops).toHaveLength(0);
   });
 
-  it("defaults to the window's shown browser tab", async () => {
+  it("defaults to an owned background tab when none is shown", async () => {
     const { run, page, agentTab, tabs } = harness();
     const agent = await agentTab("https://a.example/");
-    expect((await run(BROWSER_TOOL.snapshot, {})).output).toContain("no browser tab is shown");
+    expect((await run(BROWSER_TOOL.snapshot, {})).isError).toBe(false);
     tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${agent.guest.id}` });
     expect((await run(BROWSER_TOOL.snapshot, {})).isError).toBe(false);
-    expect(page.calls).toEqual([{ action: "snapshot", tab: agent.handle, args: [] }]);
+    expect(page.calls).toEqual([{ action: "snapshot", tab: agent.handle, args: [] }, { action: "snapshot", tab: agent.handle, args: [] }]);
   });
 
   it.each([BROWSER_TOOL.click, BROWSER_TOOL.navigate, BROWSER_TOOL.snapshot])("binds an omitted tabId to the tab approved for %s", async (name) => {

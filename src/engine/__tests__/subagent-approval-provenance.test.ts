@@ -4,7 +4,7 @@ import {
   buildSubAgentApprovalProvenanceForTest as buildSubAgentApprovalProvenance,
   makeSubAgentApprovalAdapter,
 } from "../subagent-runner.js";
-import type { ApprovalGate } from "../../permissions/approval-gate.js";
+import { ApprovalGate } from "../../permissions/approval-gate.js";
 
 const CHILD = "sub-0f93fa03-45fbc0aa-3c8e-4aed-8c1d-06428c73b143";
 const PARENT = "8f3b953b-2027-4da5-85e9-d862ee643356";
@@ -114,6 +114,32 @@ describe("sub-agent approval provenance", () => {
 });
 
 describe("sub-agent approval adapter", () => {
+  it("labels concurrent child cards and resolves only the addressed child", async () => {
+    const send = vi.fn();
+    const base = new ApprovalGate({ send, isDestroyed: () => false } as never);
+    const completed: string[] = [];
+    const children = [CHILD, "sub-other"];
+    const tasks = children.map((childSessionId) => {
+      const gate = makeSubAgentApprovalAdapter(base, childSessionId, { childSessionId, originSessionId: PARENT,
+        spawnTaskSummary: "read a page", background: true });
+      return gate.requestAndWait({ id: childSessionId, category: "tool", toolName: "browser_navigate", args: {},
+        reason: "open site", createdAt: Date.now(), sessionId: childSessionId }).then((decision) => { completed.push(decision.requestId); });
+    });
+    const cards = send.mock.calls.filter(([channel]) => channel === "ave:approval:request").map(([, card]) => card);
+    expect(cards).toHaveLength(2);
+    for (const [index, card] of cards.entries()) {
+      expect(card.sessionId).toBe(children[index]);
+      expect(card.reason).toContain(children[index]);
+    }
+    const first = cards[0];
+    const second = cards[1];
+    base.resolve(first.id, { requestId: first.id, choice: "allow-once", nonce: first.nonce, hmac: first.hmac });
+    await tasks[0];
+    expect(completed).toEqual([CHILD]);
+    base.resolve(second.id, { requestId: second.id, choice: "deny-once", nonce: second.nonce, hmac: second.hmac });
+    await tasks[1];
+    expect(completed).toEqual(children);
+  });
   function makeBase() {
     const requestAndWait = vi.fn(async (req: { id: string }) => ({
       requestId: req.id,

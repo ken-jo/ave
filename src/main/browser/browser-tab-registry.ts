@@ -226,6 +226,7 @@ export function isUserActionInputType(type: string): boolean {
 export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number }>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
+  private readonly selectedOwnedTabs = new Map<string, string>();
   private readonly handleByWindowTab = new Map<string, string>();
   // A takeover before bind must also prevent a pending new-tab request from granting control later.
   private readonly userOwnedTabs = new Set<string>();
@@ -473,6 +474,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       this.settlePending((op) => op.request.op === "close" && op.request.tabId === tab.handle, { ok: true, tabId: tab.handle });
       if (tab.targetKind === "popup") {
         this.pausedControllers.delete(tab.handle);
+        this.forgetOwnedSelection(tab.handle);
         this.tabs.delete(tab.handle);
       }
       this.broadcastControl(tab.windowId);
@@ -559,6 +561,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (pendingNew && pendingNew.windowId === senderWindowId && pendingNew.request.op === "new") {
       const actor = pendingNew.actor;
       tab.owner = actor ?? null;
+      if (actor) this.selectedOwnedTabs.set(windowTabKey(senderWindowId, actor.sessionId), tab.handle);
       this.bindingsChanged(senderWindowId);
       tab.opener = takenOver || actor === undefined ? "user" : "agent";
       tab.agentOrigin = takenOver || actor === undefined ? null : browserOrigin(pendingNew.request.url);
@@ -629,8 +632,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   assertActorAccess(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): void {
     validateActor(actor);
     if (this.tabs.get(tab.handle) !== tab || !this.isLive(tab)) throw new Error("no such live browser tab");
-    if (tab.owner !== null && tab.owner.sessionId !== actor.sessionId
-      && tab.owner.directParentSessionId !== actor.sessionId && actor.directParentSessionId !== tab.owner.sessionId) {
+    if (tab.owner !== null && tab.owner.sessionId !== actor.sessionId) {
       throw new Error("this browser tab belongs to another conversation");
     }
     if (tab.lease !== null && tab.lease.actor.sessionId !== actor.sessionId) {
@@ -1066,6 +1068,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       native?.close();
       if (tab.rendererTabId !== null) this.handleByWindowTab.delete(windowTabKey(windowId, tab.rendererTabId));
       this.pausedControllers.delete(tab.handle);
+      this.forgetOwnedSelection(tab.handle);
       this.tabs.delete(tab.handle);
     }
     for (const [guestId, attached] of this.attached) {
@@ -1094,11 +1097,17 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   // The tab a conversation's browser tools act on when the call names none: the tab its pane chat is bound to, else the window's active browser tab. A
   // binding that cannot be honoured is an error, never another tab.
-  defaultBrowserTab(windowId: number, sessionId: string): DefaultBrowserTab {
+  defaultBrowserTab(windowId: number, sessionId: string, ownerSessionId = sessionId): DefaultBrowserTab {
+    const owned = [...this.tabs.values()].filter((tab) => tab.windowId === windowId && tab.owner?.sessionId === ownerSessionId && this.isLive(tab));
+    const selected = this.selectedOwnedTabs.get(windowTabKey(windowId, ownerSessionId));
+    const lastOwned = owned.find((tab) => tab.handle === selected) ?? owned.at(-1);
+    if (ownerSessionId !== sessionId) return lastOwned ? { ok: true, handle: lastOwned.handle } : { ok: false, error: NO_SHOWN_BROWSER_TAB };
     const bound = this.conversationSurface(windowId, sessionId);
     if (bound === undefined) {
       const active = this.activeBrowserTab(windowId);
-      return active === undefined ? { ok: false, error: NO_SHOWN_BROWSER_TAB } : { ok: true, handle: active };
+      const activeOwner = active === undefined ? undefined : this.tabs.get(active)?.owner;
+      if (active !== undefined && (activeOwner == null || activeOwner.sessionId === ownerSessionId)) return { ok: true, handle: active };
+      return lastOwned ? { ok: true, handle: lastOwned.handle } : { ok: false, error: NO_SHOWN_BROWSER_TAB };
     }
     if (bound.kind !== "browser") {
       return { ok: false, error: "this chat is bound to a terminal, not a page; pass a tabId from browser_tabs to act on a page" };
@@ -1144,6 +1153,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     });
   }
 
+  private forgetOwnedSelection(handle: string): void {
+    for (const [key, selected] of this.selectedOwnedTabs) if (selected === handle) this.selectedOwnedTabs.delete(key);
+  }
+
   controlState(windowId: number): BrowserTabControlState {
     return {
       revision: this.revisions.get(windowId) ?? 0,
@@ -1167,6 +1180,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       if (actor) {
         try { this.assertActorAccess(target, actor); }
         catch { return Promise.resolve({ ok: false, error: "not-authorized" }); }
+        if (op.op === "select" && target.targetKind === "embedded" && target.owner?.sessionId === actor.sessionId) {
+          this.selectedOwnedTabs.set(windowTabKey(windowId, actor.sessionId), target.handle);
+          return Promise.resolve({ ok: true, tabId: target.handle });
+        }
         if (op.op === "close" && target.owner === null) {
           if (target.lease?.actor.sessionId === actor.sessionId) this.releaseControl(target.handle, target.lease.id);
           return Promise.resolve({ ok: true, tabId: target.handle, retained: true });
@@ -1188,7 +1205,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     const requestId = `browser-op-${this.nextRequest++}`;
     const request: BrowserTabOpRequest = op.op === "new"
-      ? { requestId, op: "new", url: "about:blank", active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }),
+      ? { requestId, op: "new", url: "about:blank", active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId, ownerSessionId: actor?.sessionId ?? op.sessionId }),
         ...(op.inTabId === undefined ? {} : { inTabId: op.inTabId }) }
       : { requestId, op: op.op, tabId: target!.rendererTabId ?? target!.handle };
     return new Promise<BrowserTabOpOutcome>((resolve) => {
@@ -1203,7 +1220,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       };
       // Keep the handle main knows (not the renderer id) for close/select.
       const pendingRequest: BrowserTabOpRequest = op.op === "new"
-        ? { requestId, op: "new", url: op.url, active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId }),
+        ? { requestId, op: "new", url: op.url, active: op.active ?? false, ...(op.sessionId === undefined ? {} : { sessionId: op.sessionId, ownerSessionId: actor?.sessionId ?? op.sessionId }),
           ...(op.inTabId === undefined ? {} : { inTabId: op.inTabId }) }
         : { requestId, op: op.op, tabId: op.tabId };
       this.pending.set(requestId, { windowId, request: pendingRequest, actor, attachmentSequence: this.nextAttachment, settle });
@@ -1331,6 +1348,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   __reset(): void {
     this.attached.clear();
     this.tabs.clear();
+    this.selectedOwnedTabs.clear();
     this.handleByWindowTab.clear();
     this.userOwnedTabs.clear();
     this.pausedControllers.clear();

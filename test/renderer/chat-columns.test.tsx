@@ -20,9 +20,9 @@ describe("chat columns", () => {
     });
     try {
       const view = await renderApp({ hasApiKey: true, shellWidth: 783, canvasWidth: 783 });
-      fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!);
+      fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLElement);
       const panel = await waitFor(() => {
-        const element = view.container.querySelector<HTMLElement>('[data-testid="chat-side-panel-motion"]')!;
+        const element = view.container.querySelector<HTMLElement>('[data-testid="chat-side-panel-motion"]') as HTMLElement;
         expect(element?.dataset.panelMode).toBe("overlay");
         expect(element.style.bottom).toBe("119px");
         return element;
@@ -45,7 +45,7 @@ describe("chat columns", () => {
     };
     await emitAgentTabNew(view.container, view.api, { requestId: "page-one", url: "https://one.example/", active: true });
     await emitAgentTabNew(view.container, view.api, { requestId: "page-two", url: "https://two.example/", active: true });
-    fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!);
+    fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLElement);
     const hosts = await waitFor(() => {
       const hosts = [...view.container.querySelectorAll<HTMLElement>('[data-testid="chat-side-panel-browser-tab-host"]')];
       expect(hosts).toHaveLength(2);

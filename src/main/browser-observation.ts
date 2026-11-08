@@ -62,6 +62,8 @@ interface ActiveCommand {
   overflowed: boolean;
 }
 
+function previewKey(view: BrowserView, tabId: string): string { return `${view.id}:${tabId}`; }
+
 /** Browser metadata shares the private observation transport and daemon. */
 export class BrowserObservationRuntime implements AgentBrowserObservationSink {
   private readonly adapter: BrowserObservationAdapter;
@@ -127,8 +129,7 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
     this.views.set(view.sessionId, view);
     timer = setInterval(() => {
       if (!this.current(view)) { this.release(view, true); return; }
-      const preview = this.previews.get(view.id);
-      if (preview && !this.previewAllowed(view, preview.tab, preview.guest)) this.stopPreview(preview, "stopped");
+      for (const preview of this.previews.values()) if (preview.view === view && !this.previewAllowed(view, preview.tab, preview.guest)) this.stopPreview(preview, "stopped");
     }, PREVIEW_DOCUMENT_LIMITS.frameCheckIntervalMs);
     timer.unref();
     sender.once("destroyed", release);
@@ -219,7 +220,8 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
       || event.sender !== view.event.sender || event.senderFrame !== view.event.senderFrame) {
       return { ok: false, error: "unauthorized" };
     }
-    const active = this.previews.get(view.id);
+    const key = previewKey(view, raw.tabId);
+    const active = this.previews.get(key);
     if (raw.action === "stop") {
       if (active?.tab.handle === raw.tabId) this.stopPreview(active);
       return { ok: true };
@@ -240,21 +242,21 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
     const handle = this.preview.start(guest, {
       isBlank: (data) => this.preview.isBlank(data),
       frame: (frame) => {
-        if (!preview || this.previews.get(view.id) !== preview) return;
+        if (!preview || this.previews.get(key) !== preview) return;
         if (!this.current(view) || !this.previewAllowed(view, tab, guest)) { this.stopPreview(preview, "stopped"); return; }
         this.sendPreview(view, { ...base, kind: "frame", mimeType: "image/jpeg", ...frame, ts: Date.now() });
       },
-      updating: () => { if (preview && this.previews.get(view.id) === preview) this.sendPreview(view, { ...base, kind: "state", state: "updating" }); },
+      updating: () => { if (preview && this.previews.get(key) === preview) this.sendPreview(view, { ...base, kind: "state", state: "updating" }); },
       ended: (error) => {
-        if (!preview || this.previews.get(view.id) !== preview) return;
-        this.previews.delete(view.id);
+        if (!preview || this.previews.get(key) !== preview) return;
+        this.previews.delete(key);
         // A closed page session (guest destroyed, debugger detached) is an ordinary end; any other failure is an error.
         this.sendPreview(view, { ...base, kind: "state", state: error instanceof ScreencastClosedError ? "stopped" : "error" });
         if (!(error instanceof ScreencastClosedError)) logger.error({ err: error }, "Browser preview failed.");
       },
     });
     preview = { view, tab, guest, handle };
-    this.previews.set(view.id, preview);
+    this.previews.set(key, preview);
     return { ok: true };
   }
 
@@ -267,8 +269,9 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
   }
 
   private stopPreview(preview: ActivePreview, notify?: "stopped"): void {
-    if (this.previews.get(preview.view.id) !== preview) return;
-    this.previews.delete(preview.view.id);
+    const key = previewKey(preview.view, preview.tab.handle);
+    if (this.previews.get(key) !== preview) return;
+    this.previews.delete(key);
     if (notify) this.sendPreview(preview.view, { targetId: preview.view.id, sessionId: preview.view.sessionId,
       tabId: preview.tab.handle, kind: "state", state: notify });
     preview.handle.stop().then(undefined, (error: unknown) => {
@@ -313,8 +316,7 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
         this.commands.delete(id);
       }
       for (const [dispose, owner] of this.downloads) if (owner === view) dispose();
-      const preview = this.previews.get(view.id);
-      if (preview) this.stopPreview(preview);
+      for (const preview of this.previews.values()) if (preview.view === view) this.stopPreview(preview);
       for (const [handle, activity] of this.activity) if (activity.sessionId === view.sessionId && activity.active === 0) this.activity.delete(handle);
       view.stop();
       this.adapter.release(view.id);

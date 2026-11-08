@@ -60,10 +60,17 @@ describe("browser tool CDP surface", () => {
 
   it.each(MODULES)("%s names only allow-listed DevTools methods", (path) => {
     const source = readFileSync(join(REPO, path), "utf8");
+    const layoutProbe = path === "src/main/browser/browser-layout-probe.ts";
+    if (layoutProbe) {
+      expect(source.match(/session\.send\(/g)).toHaveLength(1);
+      expect(source).toContain(`expression: "({ width: innerWidth, height: innerHeight, visible: document.visibilityState !== 'hidden' })", returnByValue: true`);
+      expect(source.match(/expression:/g)).toHaveLength(1);
+      expect(source).toContain('browserLayoutReady(session: CdpSession)');
+    }
     const named = [...source.matchAll(CDP_LITERAL)].map((match) => match[1]!);
     const siteNavigation = path === "src/main/browser/browser-site-navigation.ts";
     const siteMethods = new Set(["Fetch.requestPaused", "Fetch.continueRequest", "Fetch.failRequest", "Fetch.enable"]);
-    expect(named.filter((method) => !ALLOWED_CDP_METHODS.has(method) && !(siteNavigation && siteMethods.has(method)))).toEqual([]);
+    expect(named.filter((method) => !ALLOWED_CDP_METHODS.has(method) && !(siteNavigation && siteMethods.has(method)) && !(layoutProbe && method === "Runtime.evaluate"))).toEqual([]);
     for (const forbidden of [
       /\bRuntime\./,
       /\bNetwork\./,
@@ -74,6 +81,7 @@ describe("browser tool CDP surface", () => {
       /\bexecuteJavaScript\b/,
       /\.cookies\b/,
     ]) {
+      if (layoutProbe && forbidden.source === "\\bRuntime\\.") continue;
       if (siteNavigation && forbidden.source === "\\bFetch\\.") continue;
       expect(source, `${path} must not use ${forbidden}`).not.toMatch(forbidden);
     }

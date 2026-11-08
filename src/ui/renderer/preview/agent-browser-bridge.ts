@@ -118,9 +118,9 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
   }
   if (request.op === "new") {
     // Main names the conversation on every agent tab it opens; one that names none has no owner to give the tab.
-    const owner = request.sessionId;
+    const owner = request.ownerSessionId;
     if (owner === undefined) throw new Error(`browser-tab-op-unowned: new tab ${request.requestId} names no conversation`);
-    const host = candidates.find((candidate) => candidate.openAgentTab !== undefined && candidate.sessionId() === owner);
+    const host = candidates.find((candidate) => candidate.openAgentTab !== undefined && candidate.sessionId() === request.sessionId);
     host?.openAgentTab?.(request.url, request.requestId, request.active, owner);
     return;
   }

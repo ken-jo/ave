@@ -34,7 +34,7 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
   acquireControl(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): BrowserControlLease;
   releaseControl(tabId: string, leaseId: string): void;
   /** The tab a conversation acts on when a call names none (its pane chat's tab, else the shown one). */
-  defaultBrowserTab(windowId: number, sessionId: string): DefaultBrowserTab;
+  defaultBrowserTab(windowId: number, sessionId: string, ownerSessionId?: string): DefaultBrowserTab;
   /** The pane a pane chat is bound to, if any. */
   conversationSurface(windowId: number, sessionId: string): { kind: "browser" | "terminal"; tabId: string } | undefined;
   requestTabOp(
@@ -155,7 +155,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       const scope = resolveSessionWindow(sessionId, deps);
       if (!scope) return undefined;
       if (input.tabId !== undefined && (typeof input.tabId !== "string" || !BROWSER_TAB_ID_PATTERN.test(input.tabId))) return undefined;
-      const fallback = input.tabId === undefined ? deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId) : undefined;
+      const fallback = input.tabId === undefined ? deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, sessionId) : undefined;
       const handle = (input.tabId as string | undefined) ?? (fallback?.ok ? fallback.handle : undefined);
       if (handle === undefined) return undefined;
       const tab = deps.tabs.liveTabInWindow(handle, scope.windowId);
@@ -330,7 +330,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
         if (resolved) return urlScope(raw, resolved.opener, resolved.tab);
         const input = asInput(raw);
         const scope = policy.windowOf(ctx?.sessionId);
-        if (input.tabId === undefined && scope && !deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId).ok) {
+        if (input.tabId === undefined && scope && !deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, ctx?.sessionId).ok) {
           const opening = policy.tabNewTarget(scope);
           if (opening.ok && (deps.tabs.conversationSurface(scope.windowId, scope.hostSessionId) === undefined || opening.inTabId !== undefined)) return urlScope(raw, "agent");
         }

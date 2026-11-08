@@ -64,7 +64,7 @@ describe("WebSurfaceLayer", () => {
     render(<Harness where="side" />);
     const slot = screen.getByTestId("web-surface-slot");
     slot.style.visibility = "hidden";
-    const guest = guests()[0]!;
+    const guest = guests()[0] as HTMLElement;
     const src = guest.getAttribute("src");
     try {
       setWebSurfaceAwake("browser:1", true);

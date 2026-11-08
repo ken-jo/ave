@@ -192,7 +192,7 @@ function HarnessPanel({
 
 it("updates a bootstrap agent tab label from committed navigation and page titles without reloading", async () => {
   renderPanel(<HarnessPanel api={api()} sessionId="parent" targets={[]} files={[]} initialSelectedId={null} initialAgentTab />);
-  const guest = document.querySelector("webview")!;
+  const guest = document.querySelector("webview") as HTMLElement;
   expect(screen.getByRole("tab", { name: /about:blank/ })).toBeInTheDocument();
   act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://example.com/", isMainFrame: true })); });
   expect(screen.getByRole("tab", { name: /example.com/ })).toBeInTheDocument();

@@ -36,7 +36,7 @@ import { collectChatPreviewModel, type ChatPreviewTarget } from "./preview/previ
 import { useWorkspaceChanges } from "./hooks/use-workspace-changes.js";
 import type { FileWorkspaceReveal } from "./preview/workspace-changes.js";
 import { useAgentDocumentPanel } from "./preview/use-agent-document-panel.js";
-import { tabVisibleTo, useWorkspaceTabs } from "./preview/workspace-tabs.js";
+import { browserTabOwners, tabVisibleTo, useWorkspaceTabs } from "./preview/workspace-tabs.js";
 import { isMovableTabKind, registerSideTabsSink, useSurfaceMoves, type MovableTabKind } from "./preview/surface-moves.js";
 import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./preview/main-layout-restore.js";
 import { forgetActiveSurface } from "./preview/active-surface.js";
@@ -44,7 +44,7 @@ import { savedSurfaceOf } from "./preview/main-layout-snapshot.js";
 import { webSurfaceLocation } from "./preview/web-surfaces.js";
 import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
 import { agentDrivesBrowserTab, closeBrowserTab, registerBrowserTabHost, useBrowserControlState, useBrowserControlUnavailable } from "./preview/agent-browser-bridge.js";
-import { releaseBrowserObservationSession, useHostedBrowserObservation } from "./preview/browser-observation-bridge.js";
+import { releaseBrowserObservationSession, useHostedBrowserObservations } from "./preview/browser-observation-bridge.js";
 import { BrowserObservationLiveStrip } from "./preview/BrowserObservationLiveStrip.js";
 import { BrowserObservationPreview } from "./preview/BrowserObservationPreview.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
@@ -190,13 +190,10 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
     llmVendor, llmModel, llmRouteModalities,
   } = useChatContext();
 
-  const observation = useHostedBrowserObservation(currentSessionId ?? "");
+  const observations = useHostedBrowserObservations(currentSessionId ?? "");
   const browserControl = useBrowserControlState();
   const browserControlUnavailable = useBrowserControlUnavailable();
-  const observedHandle = observation?.kind === "action" && observation.after.action !== "tab-close"
-    && observation.target.hostSessionId === currentSessionId
-    ? { tabId: observation.after.tabId, rendererTabId: observation.after.rendererTabId, sessionId: observation.sessionId } : undefined;
-  const observedTabId = observedHandle?.rendererTabId;
+  const visibleBrowserOwners = useMemo(() => browserTabOwners(currentSessionId, browserControl.tabs.map((tab) => tab.owner)), [currentSessionId, browserControl.tabs]);
 
   // Checkpoint view mode owns both transcript slicing and auto-scroll suppression.
   const [viewMode, setViewMode] = useState<ViewModeState | null>(null);
@@ -257,11 +254,19 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
   // Keep workspace tabs in ChatView so closing the rail or navigating away does not destroy them.
   const workspaceTabs = useWorkspaceTabs();
-  const observedSideTab = workspaceTabs.tabs.find((tab) => tab.id === observedTabId);
-  const showObservedBrowser = !hidden && !!observedHandle && !!observedTabId && !browserControlUnavailable
-    && (observedSideTab ? !sidePanelOpen || workspaceTabs.activeTabId !== observedTabId : hiddenBrowserTabIds?.has(observedTabId))
-    && browserControl.tabs.some((tab) => tab.kind === "embedded" && tab.rendererTabId === observedTabId
-      && tab.tabId === observedHandle.tabId && agentDrivesBrowserTab(tab, observedHandle.sessionId));
+  const observedBrowsers = observations.flatMap((event) => {
+    if (hidden || browserControlUnavailable || event.kind !== "action" || event.after.action === "tab-close") return [];
+    const tabId = event.after.rendererTabId;
+    if (!tabId) return [];
+    const local = workspaceTabs.tabs.some((tab) => tab.id === tabId);
+    const unseen = local ? !sidePanelOpen || workspaceTabs.activeTabId !== tabId : hiddenBrowserTabIds?.has(tabId);
+    const controlled = browserControl.tabs.some((tab) => tab.kind === "embedded" && tab.rendererTabId === tabId
+      && tab.tabId === event.after.tabId && agentDrivesBrowserTab(tab, event.sessionId));
+    if (!unseen || !controlled) return [];
+    const child = subAgentSpawns.find((spawn) => spawn.childSessionId === event.sessionId);
+    if (child && (child.status === "done" || child.status === "error" || child.status === "interrupted")) return [];
+    return [{ tabId, sessionId: event.sessionId, child }];
+  });
   const focusObservedBrowser = (tabId: string) => {
     if (workspaceTabs.hasTab(tabId)) {
       workspaceTabs.setActiveTabId(tabId);
@@ -278,8 +283,8 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   const openSidePanelRef = useRef(onSidePanelOpenChange);
   openSidePanelRef.current = onSidePanelOpenChange;
   // Persist terminal directories and page addresses with the pane layout.
-  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId, currentSessionId });
-  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId, currentSessionId };
+  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId, currentSessionId, visibleBrowserOwners });
+  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId, currentSessionId, visibleBrowserOwners };
   const sidePanelVisibleRef = useRef(false);
   // A tab that moved away and left the panel empty takes the panel with it: an open panel with no tabs is the workspace
   // launcher, which nobody asked for here and which floats over the conversation once the move narrows it.
@@ -318,8 +323,8 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
       visibleTabId: () => {
         if (!sidePanelVisibleRef.current) return null;
         // The panel shows only this chat's tabs (ChatSidePanel's own rule), so another chat's active agent page is not visible here.
-        const { activeTabId, currentSessionId: shownSession } = savedTabsRef.current;
-        const tabs = savedTabsRef.current.tabs.filter((tab) => tabVisibleTo(tab, shownSession));
+        const { activeTabId, currentSessionId: shownSession, visibleBrowserOwners: shownOwners } = savedTabsRef.current;
+        const tabs = savedTabsRef.current.tabs.filter((tab) => tabVisibleTo(tab, shownSession, shownOwners));
         return (tabs.find((tab) => tab.id === activeTabId) ?? tabs[0])?.id ?? null;
       },
     });
@@ -362,7 +367,8 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   useLayoutEffect(() => {
     const root = chatViewRootRef.current;
     if (!root || panelLayout.mode !== "overlay") { setPanelOverlayBottom(0); return undefined; }
-    const anchors = [...root.querySelectorAll<HTMLElement>('[data-composer-placement], [data-approval-request-id]')];
+    const anchors = [...root.querySelectorAll<HTMLElement>('[data-composer-placement], [data-approval-request-id]')]
+      .filter((element) => !element.hasAttribute("data-approval-request-id") || element.dataset.approvalRequestId === approvalHead?.id);
     const measure = () => {
       const bounds = root.getBoundingClientRect();
       const tops = anchors.map((element) => element.getBoundingClientRect()).filter((rect) => rect.height > 0).map((rect) => rect.top);
@@ -373,7 +379,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
     observer.observe(root);
     for (const anchor of anchors) observer.observe(anchor);
     return () => observer.disconnect();
-  }, [panelLayout.mode, approvalHead?.id]);
+  }, [panelLayout.mode, approvalHead]);
   const dockedPanelWidth = revealedPanelOverlay
     ? Math.min(panelLayout.max, Math.max(panelLayout.min, sidePanelWidth)) : columns.panelWidth;
   const dockedPanelShouldOpen = columns.panelVisible || revealedPanelOverlay;
@@ -552,11 +558,11 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   panelOnSwitchRef.current = { tabs: workspaceTabs.tabs, onSidePanelOpenChange };
   useEffect(() => {
     const { tabs, onSidePanelOpenChange: setOpen } = panelOnSwitchRef.current;
-    if (tabs.some((tab) => !tabVisibleTo(tab, currentSessionId))
-      && !tabs.some((tab) => tab.kind !== "subagent" && tabVisibleTo(tab, currentSessionId))) setOpen(false);
-  }, [currentSessionId]);
+    if (tabs.some((tab) => !tabVisibleTo(tab, currentSessionId, visibleBrowserOwners))
+      && !tabs.some((tab) => tab.kind !== "subagent" && tabVisibleTo(tab, currentSessionId, visibleBrowserOwners))) setOpen(false);
+  }, [currentSessionId, visibleBrowserOwners]);
 
-  // Auto-open for new live sub-agent spawns, never for rows restored from disk.
+  // Register live sub-agent activity without opening the panel.
   useEffect(() => {
     let sawLiveSpawn = false;
     for (const spawn of subAgentSpawns) {
@@ -567,8 +573,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
     }
     if (!sawLiveSpawn) return;
     workspaceTabs.ensureContainerTab("subagent");
-    onSidePanelOpenChange(true);
-  }, [currentSessionId, subAgentSpawns, workspaceTabs, onSidePanelOpenChange]);
+  }, [currentSessionId, subAgentSpawns, workspaceTabs]);
 
   // Key side-chat requests only on nonce to prevent tab changes reopening the panel; refs keep browser registrations stable.
   const browserTabHostRef = useRef({ workspaceTabs, currentSessionId, onSidePanelOpenChange });
@@ -950,15 +955,15 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
       <ChatComposerDock
         dockColumnClass={dockColumnClass}
         notices={<>
-          {showObservedBrowser && observedTabId ? <div data-testid="conversation-browser-observation" className="mb-2 flex items-center gap-2">
-            <div className="min-w-0 flex-1"><BrowserObservationLiveStrip tabId={observedTabId} sessionId={currentSessionId} /></div>
+          {observedBrowsers.map(({ tabId: observedTabId, sessionId: observedSessionId, child }) => <div key={observedTabId} data-testid="conversation-browser-observation" className="mb-2 flex items-center gap-2">
+            <div className="min-w-0 flex-1">{child ? <span className="text-xs text-muted-foreground">{child.title}</span> : null}<BrowserObservationLiveStrip tabId={observedTabId} sessionId={observedSessionId} /></div>
             <button type="button" aria-label={t("agentBrowser.focusObservedPane")} onClick={() => focusObservedBrowser(observedTabId)}
               className="relative shrink-0 overflow-hidden rounded border" style={{ width: 128, height: 80 }}>
-              <BrowserObservationPreview tabId={observedTabId} sessionId={currentSessionId} observeHidden>
+              <BrowserObservationPreview tabId={observedTabId} sessionId={observedSessionId} observeHidden>
                 <span className="text-xs text-muted-foreground">{t("agentBrowser.observationPreviewUpdating")}</span>
               </BrowserObservationPreview>
             </button>
-          </div> : null}
+          </div>)}
           {appDraftSuggestion ? <AppDraftBanner {...appDraftSuggestion}
             onReplace={() => { appDraftSuggestion.onReplace(); composerRef.current?.focus(); }}
             onDismiss={() => { appDraftSuggestion.onDismiss(); composerRef.current?.focus(); }}

@@ -177,7 +177,8 @@ describe("browser snapshot refs", () => {
     const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
     const shot = await snapshot(target(cdp), {}, refs);
-    const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+    const ref = /\[ref=(e\d+)\]/.exec(shot.text)?.[1];
+    if (!ref) throw new Error("Snapshot has no action ref");
     cdp.viewport = { clientWidth: 0, clientHeight: 0 };
     await expect(click(target(cdp), ref, refs)).rejects.toMatchObject({ code: "tab-not-laid-out" });
     expect(cdp.calls.some(call => call.method === "DOM.getNodeForLocation")).toBe(false);

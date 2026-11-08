@@ -4,7 +4,8 @@ import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
 import { subscribeWebSurfaceLocations, webSurfaceLocation, webSurfaceTitle } from "../preview/web-surfaces.js";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
-import { tabVisibleTo, type WorkspaceTab, type WorkspaceTabKind, type WorkspaceTabsStore } from "../preview/workspace-tabs.js";
+import { useBrowserControlState } from "../preview/agent-browser-bridge.js";
+import { browserTabOwners, tabVisibleTo, type WorkspaceTab, type WorkspaceTabKind, type WorkspaceTabsStore } from "../preview/workspace-tabs.js";
 import {
   WORKSPACE_TAB_LAUNCHER,
   matchesLauncherShortcut,
@@ -992,7 +993,9 @@ export function ChatSidePanel({
   } = workspaceTabs;
   const [, setBrowserMetadataRevision] = useState(0);
   useEffect(() => subscribeWebSurfaceLocations(() => setBrowserMetadataRevision((revision) => revision + 1)), []);
-  const tabs = useMemo(() => allTabs.filter((tab) => tabVisibleTo(tab, sessionId)), [allTabs, sessionId]);
+  const browserControl = useBrowserControlState();
+  const visibleOwners = browserTabOwners(sessionId, browserControl.tabs.map((tab) => tab.owner));
+  const tabs = allTabs.filter((tab) => tabVisibleTo(tab, sessionId, visibleOwners));
 
   // #1444: closing a terminal tab must also kill its live PTY in the main
   // process (the store only drops the tab record). Non-terminal tabs are
@@ -1135,7 +1138,9 @@ export function ChatSidePanel({
               const showOrdinal =
                 !tab.content &&
                 tabs.filter((other) => !other.content && other.kind === tab.kind).length > 1;
-              const label = tabLabel(tab, targetById, t, showOrdinal);
+              const child = panelSubAgentSpawns.find((spawn) => spawn.childSessionId === tab.agentSessionId);
+              const title = tabLabel(tab, targetById, t, showOrdinal);
+              const label = child ? `${child.title} · ${subAgentStatusLabel(child.status, t)} · ${title}` : title;
               const isEphemeral = tab.mode === "ephemeral";
               const movable = canMoveSurfaces && isMovableTabKind(tab.kind);
               return (

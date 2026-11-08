@@ -646,6 +646,14 @@ jobs:
         run: >
           bun run test --
           src/tools/__tests__/browser-tools.test.ts
+          src/tools/__tests__/executor-approval-memory-skip-integration.test.ts
+          src/permissions/__tests__/session-scope-end.test.ts
+          src/main/__tests__/browser-observation-preview.test.ts
+          test/renderer/main-panels.test.tsx
+          src/tools/__tests__/agent-spawn-background.test.ts
+          src/engine/__tests__/subagent-approval-provenance.test.ts
+          src/ui/renderer/preview/__tests__/browser-observation-bridge.test.tsx
+          src/ui/renderer/preview/__tests__/agent-browser-bridge.test.ts
           src/permissions/__tests__/browser-site-permissions.test.ts
           src/permissions/__tests__/browser-site-card.test.ts
           src/engine/__tests__/suggested-replies.test.ts

@@ -1231,7 +1231,9 @@ describe("agent pages follow the chat that opened them", () => {
     // A turn gives the tile its conversation; the agent opens the page from it.
     await submitChatMessage(container, "find a flight");
     await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
-    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "agent-page", op: "new", url: "about:blank", active: true, sessionId: owner }));
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "agent-page", op: "new", url: "about:blank", active: true, sessionId: owner, ownerSessionId: owner }));
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    await act(async () => fireEvent.click(toggle()));
     await waitFor(() => expect(toggle().getAttribute("aria-pressed")).toBe("true"));
     expect(listed()).toBe(1);
 

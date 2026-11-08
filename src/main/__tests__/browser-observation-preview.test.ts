@@ -82,6 +82,21 @@ beforeEach(() => {
 afterEach(() => { runtime.dispose(); daemon.dispose(); vi.useRealTimers(); });
 
 describe("agent browser live preview", () => {
+  it("keeps concurrent screencasts for separate tabs of one owner and stops only the addressed one", async () => {
+    const first = await agentClick();
+    const other = makeTab("tab-2", 11, "browser-two");
+    tabs.set(other.handle, other);
+    const second = await agentClick(other);
+    expect(first.target.id).toBe(second.target.id);
+    expect(request("start", first.target.id)).toEqual({ ok: true });
+    expect(request("start", second.target.id, other.handle)).toEqual({ ok: true });
+    expect(started).toHaveLength(2);
+    expect(started.map((entry) => entry.stop.mock.calls.length)).toEqual([0, 0]);
+    request("stop", first.target.id);
+    expect(started.map((entry) => entry.stop.mock.calls.length)).toEqual([1, 0]);
+    runtime.dispose();
+    expect(started.map((entry) => entry.stop.mock.calls.length)).toEqual([1, 1]);
+  });
   it("binds only to the exact agent tab handle and never falls back to another tab", async () => {
     const observed = await agentClick();
     const other = makeTab("tab-2", 11, "browser-two");

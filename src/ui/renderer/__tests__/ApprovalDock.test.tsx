@@ -117,7 +117,7 @@ describe("ApprovalDock", () => {
     expect(dock?.getAttribute("data-approval-args")).toBe('{"path":"/tmp/test.txt"}');
   });
 
-  it("names the plugin action in the approval heading", async () => {
+  it("names plugin tool use in the approval heading", async () => {
     render(
       <ApprovalDock conversationLabel="conversation"
         queue={[
@@ -135,7 +135,7 @@ describe("ApprovalDock", () => {
       />,
     );
     await waitFor(() => {
-      expect(document.body.textContent).toContain("sample-plugin의 sample_plugin_decide_approval_with_host을(를) 실행해도 될까요?");
+      expect(document.body.textContent).toContain("sample-plugin의 sample_plugin_decide_approval_with_host을(를) 사용해도 될까요?");
       expect(document.body.textContent).toContain("sample_plugin_decide_approval_with_host");
       expect(document.body.textContent).toContain("sample-plugin");
       expect(document.body.textContent).toContain("agent_external_api_call");

@@ -91,7 +91,7 @@ export async function emitAgentTabNew(
     await waitFor(() => expect(chatSend.mock.calls.length).toBeGreaterThan(0));
   }
   const browserTabs = api.browserTabs as unknown as { emitBrowserTabOp: (request: unknown) => void };
-  await act(async () => browserTabs.emitBrowserTabOp({ op: "new", active: false, ...request, sessionId: MOCK_DEFAULT_SESSION_ID }));
+  await act(async () => browserTabs.emitBrowserTabOp({ op: "new", active: false, ...request, sessionId: MOCK_DEFAULT_SESSION_ID, ownerSessionId: MOCK_DEFAULT_SESSION_ID }));
 }
 
 export interface RenderedTile {

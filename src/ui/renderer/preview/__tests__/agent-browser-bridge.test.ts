@@ -49,6 +49,15 @@ describe("user browser navigation", () => {
   });
 });
 
+describe("child browser routing", () => {
+  it("opens sibling tabs beside their parent under distinct owners without selecting them", () => {
+    const parent = host("parent", []);
+    for (const owner of ["child-a", "child-b"]) routeBrowserTabOp({ requestId: owner, op: "new", url: "about:blank", active: false,
+      sessionId: "parent", ownerSessionId: owner }, [parent]);
+    expect(parent.calls).toEqual(["new about:blank child-a false child-a", "new about:blank child-b false child-b"]);
+  });
+});
+
 describe("guest binding", () => {
   it("shares data-only favicon metadata for every bound guest and clears it on main-frame navigation", () => {
     const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
@@ -155,8 +164,8 @@ describe("routeBrowserTabOp", () => {
   it("opens beside the exact named conversation, owned by it, and refuses a new tab that names none", () => {
     const first = host("s1", []);
     const second = host("s2", []);
-    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s2", active: false }, [first, second]);
-    routeBrowserTabOp({ requestId: "r2", op: "new", url: "https://b.example/", sessionId: "other", active: true }, [first, second]);
+    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s2", ownerSessionId: "s2", active: false }, [first, second]);
+    routeBrowserTabOp({ requestId: "r2", op: "new", url: "https://b.example/", sessionId: "other", ownerSessionId: "other", active: true }, [first, second]);
     // No guessing at an owner: the first view's chat is not the agent's.
     expect(() => routeBrowserTabOp({ requestId: "r3", op: "new", url: "https://c.example/", active: true }, [first, second]))
       .toThrow("browser-tab-op-unowned");
@@ -168,7 +177,7 @@ describe("routeBrowserTabOp", () => {
     const { openAgentTab: _unused, ...mainArea } = host(null, ["browser:7"]);
     const panels = mainArea as BrowserTabHost & { calls: string[] };
     const chat = host("s1", []);
-    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s1", active: false }, [panels, chat]);
+    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s1", ownerSessionId: "s1", active: false }, [panels, chat]);
     routeBrowserTabOp({ requestId: "r2", op: "select", tabId: "browser:7" }, [panels, chat]);
     expect(chat.calls).toEqual(["new https://a.example/ r1 false s1"]);
     expect(panels.calls).toEqual(["select browser:7"]);
@@ -178,13 +187,13 @@ describe("routeBrowserTabOp", () => {
     const loads: string[] = [];
     const panels = { ...host(null, ["browser:pane"]), loadAgentTab: (tabId: string, url: string, requestId: string) => { loads.push(`${tabId} ${url} ${requestId}`); return true; } };
     const chat = host("pane-chat", []);
-    expect(routeBrowserTabOp({ requestId: "r1", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:pane", active: false }, [chat, panels]))
+    expect(routeBrowserTabOp({ requestId: "r1", op: "new", url: "about:blank", sessionId: "pane-chat", ownerSessionId: "pane-chat", inTabId: "browser:pane", active: false }, [chat, panels]))
       .toBeUndefined();
     // A page that is gone, or one that will not take the load, is refused for main to answer at once.
-    expect(routeBrowserTabOp({ requestId: "r2", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:gone", active: false }, [chat, panels]))
+    expect(routeBrowserTabOp({ requestId: "r2", op: "new", url: "about:blank", sessionId: "pane-chat", ownerSessionId: "pane-chat", inTabId: "browser:gone", active: false }, [chat, panels]))
       .toBe("refused");
     const full = { ...host(null, ["browser:full"]), loadAgentTab: () => false };
-    expect(routeBrowserTabOp({ requestId: "r3", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:full", active: false }, [chat, full]))
+    expect(routeBrowserTabOp({ requestId: "r3", op: "new", url: "about:blank", sessionId: "pane-chat", ownerSessionId: "pane-chat", inTabId: "browser:full", active: false }, [chat, full]))
       .toBe("refused");
     expect(loads).toEqual(["browser:pane about:blank r1"]);
     expect(chat.calls).toEqual([]);

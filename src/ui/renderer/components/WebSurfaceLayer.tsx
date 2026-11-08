@@ -35,6 +35,7 @@ const WEB_SURFACE_LAYER_Z = 40;
 const SETTLE_FRAMES = 24;
 /** Low-rate safety pass while a guest is visible: catches moves nothing reported. */
 const IDLE_CHECK_MS = 1000;
+let lastContentSize = { width: "1024px", height: "768px" };
 
 interface Box {
   left: number;
@@ -178,6 +179,7 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
         guestStyle.top = `${s.top - v.top}px`;
         guestStyle.width = `${s.right - s.left}px`;
         guestStyle.height = `${s.bottom - s.top}px`;
+        lastContentSize = { width: guestStyle.width, height: guestStyle.height };
       }
     }
     if (key !== entry.key) moved += 1;
@@ -192,8 +194,8 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
       else entry.frame.removeAttribute("aria-hidden");
       entry.frame.style.pointerEvents = "none";
       if (observed) {
-        const width = entry.guest.style.width || "1024px";
-        const height = entry.guest.style.height || "768px";
+        const width = entry.guest.style.width || lastContentSize.width;
+        const height = entry.guest.style.height || lastContentSize.height;
         entry.frame.style.left = "0px";
         entry.frame.style.top = "0px";
         entry.frame.style.width = width;

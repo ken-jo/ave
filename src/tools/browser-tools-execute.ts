@@ -142,7 +142,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     const approvedTabId = approved?.kind === "browser-origin" || approved?.kind === "browser-agent-tabs" ? approved.tabId : undefined;
     let handle = (input.tabId as string | undefined) ?? approvedTabId;
     if (handle === undefined) {
-      const fallback = deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId);
+      const fallback = deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, sessionId);
       if (!fallback.ok) return { ok: false, result: failure(fallback.error) };
       handle = fallback.handle;
     }
