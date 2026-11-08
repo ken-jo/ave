@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
-import { join, sep } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join, sep, resolve } from "node:path";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { expandLeadingTilde, expandShellTildePaths } from "../../shared/home-tilde.js";
 import { buildSafeChildEnv } from "../../tools/safe-env.js";
@@ -12,6 +12,10 @@ import { getBuiltinShellReadPolicy, getDefaultSensitiveReadDenyPaths, getDefault
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { sensitivePathInArgumentText } from "../rules/shell-exfiltration.js";
 import { shellSensitivePathSignal } from "../rules/literal-shell-inspection.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+// The Windows Ave home read boundary pins its entries through the native helper.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -82,10 +86,16 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
     for (const shellHome of [explicitHome, undefined, home, home.toUpperCase(), join(home, ".")]) {
       vi.stubEnv("HOME", shellHome);
       const homes = shellHome === explicitHome ? [home, explicitHome] : [home];
-      for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+      for (const [floor, denied] of [["read", getDefaultSensitiveReadDenyPaths()], ["write", getDefaultSensitiveWriteDenyPaths()]] as const) {
         expect(new Set(denied.map((path) => path.replace(/\\/g, "/").replace(/\/$/, "").toLowerCase())).size).toBe(denied.length);
         for (const root of homes) {
-          for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root")) {
+          // The read floor denies an Ave home as one directory instead of its file rows, except one directly under the
+          // profile: its stamp would also stamp the profile root.
+          const directory = floor === "read" && root !== home;
+          if (directory) expect(denied).toContain(join(root, ".ave") + sep);
+          else expect(denied).not.toContain(join(root, ".ave") + sep);
+          for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root"
+            && !(directory && entry.anchor === "ave-home" && entry.kind === "file"))) {
             const path = join(root, ...(entry.anchor === "ave-home" ? [".ave"] : []), ...entry.segments);
             expect(denied).toContain(path + (entry.kind === "dir" ? sep : ""));
           }
@@ -146,6 +156,7 @@ describe.skipIf(process.platform !== "win32")("home policy with an absent HOME",
   });
 
   it("preserves missing directory kinds in deny projections", () => {
+    // The profile-child Ave home keeps its file rows on the read floor too.
     for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
       for (const entry of SENSITIVE_PATH_ENTRIES) {
         const path = entry.anchor === "root" ? "/" + entry.segments.join("/")
@@ -199,9 +210,12 @@ describe("independent home anchors", () => {
   });
 
   it("retains every sensitive table row and write floor at the passwd home", () => {
-    for (const denied of [getDefaultSensitiveReadDenyPaths(), getDefaultSensitiveWriteDenyPaths()]) {
+    for (const [floor, denied] of [["read", getDefaultSensitiveReadDenyPaths()], ["write", getDefaultSensitiveWriteDenyPaths()]] as const) {
       for (const root of [home, shellHome, passwd]) {
-        for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root")) {
+        // The read floor denies each Ave home as one directory instead of its file rows.
+        if (floor === "read") expect(denied).toContain(join(root, ".ave"));
+        for (const entry of SENSITIVE_PATH_ENTRIES.filter((entry) => entry.anchor !== "root"
+          && !(floor === "read" && entry.anchor === "ave-home" && entry.kind === "file"))) {
           expect(denied).toContain(join(root, ...(entry.anchor === "ave-home" ? [".ave"] : []), ...entry.segments));
         }
       }

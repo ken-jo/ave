@@ -86,6 +86,15 @@ describe("ordered admission, floors and explicit rules", () => {
     }
   }
   for (const [index, mode] of MODES.entries()) {
+    it(`a sandbox-unavailable session grant passes only that floor, and the ordinary stages still decide, in ${mode}`, () => {
+      const evidence = request({ mode, tool: SHELL, shell: { ...SAFE_SHELL, sandboxed: false }, floor: { code: "sandbox-unavailable", reason: "No sandbox." },
+        floorSessionEligible: true, rules: { floorSession: "Session grant." }, reviewer: { status: "success", level: "low" } });
+      expect(decidePermission(evidence).outcome).toBe(["ask-forced", "ask-forced", "ask-forced", "allow"][index]);
+      expect(decidePermission({ ...evidence, rules: { ...evidence.rules, allow: "Allow rule." } })).toMatchObject({ outcome: "allow", reasonCode: "floor-session-allow" });
+      expect(decidePermission({ ...evidence, rules: { ...evidence.rules, allow: "Allow rule." }, floorSessionEligible: undefined }).outcome).toBe("ask-forced");
+      expect(decidePermission({ ...evidence, rules: { ...evidence.rules, allow: "Allow rule." }, headless: true }).outcome).toBe("deny");
+      expect(decidePermission({ ...evidence, rules: { allow: "Allow rule." } }).outcome).toBe("ask-forced");
+    });
     it(`ordinary ask rules reach mode handling before read and grants in ${mode}`, () => {
       const result = decidePermission(request({ mode, rules: { ask: "Ask before reading.", allow: "Tool grant.", remembered: "Prior grant." } }));
       expect(result.outcome).toBe(["ask", "ask", "ask", "allow"][index]);

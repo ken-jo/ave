@@ -24,6 +24,7 @@ import {
   sandboxTempEnvLaunch,
   type SandboxWrapResult,
 } from "../../permissions/asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "../../permissions/ave-home-boundary-snapshot.js";
 import { openEgressInvocation } from "../../permissions/egress-invocations.js";
 import { getSandboxGeneration, isActiveSandboxShellContained } from "../../permissions/sandbox-capability.js";
 import { deriveSandboxWritePaths } from "../../permissions/sandbox-write-jail.js";
@@ -595,7 +596,8 @@ async function spawnNewTerminal(
     sandboxHome.path,
   ];
   const allowRead = [cwd, ...allowWrite];
-  const denyRead = getDefaultSensitiveReadDenyPaths();
+  const boundarySnapshot = createAveHomeBoundarySnapshot();
+  const denyRead = boundarySnapshot.run(() => getDefaultSensitiveReadDenyPaths());
   const denyWrite = getDefaultSensitiveWriteDenyPaths();
 
   // macOS only (terminal-tty-handoff.ts): the pty is spawned first, on a trampoline, so the wrap can grant the shell its own terminal by path.
@@ -655,8 +657,8 @@ async function spawnNewTerminal(
     });
     wrapped =
       ownTty === undefined
-        ? await wrapWorkerCommand(cmdline, { filesystem, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal })
-        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal });
+        ? await wrapWorkerCommand(cmdline, { filesystem, boundarySnapshot, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal })
+        : await wrapTerminalCommand(cmdline, { filesystem, ownTty, boundarySnapshot, commandId: egress.token, denyUnixSockets: true, abortSignal: owner.abort.signal });
     const { argv, env } = wrapped;
     const cleanupWrap = addCleanup(() => { void cleanupAsrtSandboxAfterCommand(); releaseEgress(); });
     const gitPolicyChanged = prepareTerminalGitPolicyCheck(wrapped.filesystemPolicy, wrapped.gitControlSnapshot);

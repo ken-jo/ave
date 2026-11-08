@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join, sep, resolve } from "node:path";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -14,6 +14,10 @@ import { assertReadableFilePath } from "../file-read-core.js";
 import { ensureFileAccess } from "../file-access-policy.js";
 import { DeleteFileTool, GrepFilesTool, ListFilesTool, MoveFileTool, ReadFileTool, WriteFileTool } from "../file-tools.js";
 import type { ToolExecutionContext } from "../types.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+// The Windows Ave home read boundary pins its entries through the native helper.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 let root: string;
 let profile: string;

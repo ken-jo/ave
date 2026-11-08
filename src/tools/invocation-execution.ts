@@ -1,6 +1,6 @@
 import { dispatchReviewerForInteractiveAuto } from "./pipeline/reviewer-dispatch.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
-import { NO_APPROVER_MESSAGE } from "../permissions/decision-pipeline.js";
+import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
 import { isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
@@ -658,6 +658,7 @@ export async function executeAuthorizedToolInvocation(
           plan: hostShellExecutionPlan,
           approvalDecision: hostShellApprovalDecision,
           allowRuleDecision: hostShellAllowRuleDecision,
+          floorSessionDecision: permissionResult,
           permissionManager: services.permissionManager,
           binding: hostShellExecutionPermitBinding,
         })
@@ -865,7 +866,8 @@ export async function executeAuthorizedToolInvocation(
       const refreshed = services.permissionManager.recheckPermission(recheckTarget);
       if (permissionRecheckResult) permissionRecheckResult = refreshed;
       const paused = refreshed.decision === "ask" && refreshed.pipelineRequest?.automationPause !== undefined;
-      const forced = refreshed.forceModal === true || refreshed.pipelineRequest?.floor !== undefined || refreshed.pipelineRequest?.manualRerun === true;
+      // A floor session allow is the person's own earlier answer on this floor's card, so it still stands.
+      const forced = refreshed.forceModal === true || refreshed.pipelineRequest?.floor !== undefined && refreshed.reasonCode !== "floor-session-allow" || refreshed.pipelineRequest?.manualRerun === true;
       if (!permissionRecheckResult || refreshed.decision === "deny" || paused || forced) permissionResult = refreshed;
       if (refreshed.decision === "deny") throw new Error(refreshed.reason);
       if (paused || refreshed.decision === "ask" && (refreshed.pipelineRequest?.floor !== undefined || refreshed.pipelineRequest?.userOwnedSurface !== undefined)) throw new HandlerPermissionAskError();
@@ -963,7 +965,8 @@ export async function executeAuthorizedToolInvocation(
       args: finalInput, reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${reason}` : reason,
       ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
       createdAt: Date.now(), abortSignal,
-      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
+      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
+        ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
       ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
       sensitivePathPattern, evaluationContext,
@@ -999,7 +1002,8 @@ export async function executeAuthorizedToolInvocation(
     const liveRequest: ApprovalRequestInput = { ...request,
       userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined,
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
-      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
+      ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
+        ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
       ...hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command),
       ...userOwnedSurfaceCardFacts(permissionResult),
     };

@@ -74,6 +74,8 @@ export type SandboxGateAction = "skip" | "activate" | "degrade" | "abort";
 /** Stable machine reason for the branch the boot gate took. */
 export type SandboxGateReason =
   | "degrade-ave-home-privacy-failed"
+  /** Windows: the Ave home read boundary cannot be projected (a link or unlistable entry); extensions refuse until approved, as for a privacy failure. */
+  | "degrade-ave-home-boundary-unverified"
   | "gate-off"
   | "deps-present"
   /** Windows: srt-win not installed, ASRT runs as the proxy for agent shells in MXC containers. */

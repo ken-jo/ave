@@ -72,6 +72,7 @@ import {
   ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
   ASRT_MAC_RUNTIME_PROBE_ERROR_CODE,
   appOwnedSandboxPrivateRoots,
+  aveHomeReadBoundaryCovering,
   buildPerCommandSandboxCustomConfig,
   getBuiltinShellReadPolicy,
   getBuiltinShellSessionReadPolicy,
@@ -802,9 +803,14 @@ describe.each([
     // The fixture is immutable during matching; canonicalize each deny once while retaining the per-path, per-ancestor oracle.
     const patterns = new Map([...sessions.denyRead, ...privateRoots].map(denied => [denied,
       /[\[\]]/.test(denied) ? denied : canonicalizePathForMatch(expandLeadingTilde(denied))]));
+    // The Ave home root deny is a boundary: inside it, the per-path check is the re-allow table.
+    const trimmed = (path: string): string => path.replace(/[\\/]+$/u, "");
+    const ordinaryDenies = sessions.denyRead.filter((denied) => /[*?[\]]/.test(denied)
+      || trimmed(aveHomeReadBoundaryCovering(denied) ?? "") !== trimmed(denied));
     const expected = [...reads, ...sessions.allowRead].filter((path) => {
       const resolved = canonicalizePathForMatch(path);
-      if (sessions.denyRead.some((denied) => referenceCovers(patterns.get(denied)!, resolved))) return false;
+      if (ordinaryDenies.some((denied) => referenceCovers(patterns.get(denied)!, resolved))) return false;
+      if (aveHomeReadBoundaryCovering(path) !== undefined) return false;
       const insideOwnHome = resolved === own || resolved.startsWith(`${own}/`);
       return insideOwnHome || !privateRoots.some((root) => referenceCovers(patterns.get(root)!, resolved));
     });
