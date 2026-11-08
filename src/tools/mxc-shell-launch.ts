@@ -5,7 +5,7 @@ import type { ChildProcess } from "node:child_process";
 import { lstatSync, readdirSync } from "node:fs";
 import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
-import { getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
+import { aveHomeReadBoundaryCovering, getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
 import {
   openInvocationProxyListener,
   type InvocationProxyListener,
@@ -69,7 +69,14 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
   if (!input.exists(wxcExec)) {
     throw new Error(`Microsoft Execution Containers launcher is missing: ${wxcExec}`);
   }
-  const grants = rankMxcFilesystem({ ...input.filesystem, protectedFloor: getProtectedReadDenyFloor() }, input.exists, input.list ?? listDirectory);
+  // A grant would carve the Ave home deny open, so inside that home only a re-allowed child is granted.
+  const insideBoundary = (path: string): boolean => aveHomeReadBoundaryCovering(path) !== undefined;
+  const grants = rankMxcFilesystem({
+    ...input.filesystem,
+    allowRead: input.filesystem.allowRead.filter((path) => !insideBoundary(path)),
+    allowWrite: input.filesystem.allowWrite.filter((path) => !insideBoundary(path)),
+    protectedFloor: getProtectedReadDenyFloor(),
+  }, input.exists, input.list ?? listDirectory);
   let listener: InvocationProxyListener | undefined;
   const relay = await openHostEgressListener(input.egressToken);
   try {

@@ -1,6 +1,7 @@
 // Reviewer relaxation requires live OS isolation; none forbids intent-only downgrades from MEDIUM/HIGH to LOW. Inactive gates publish verified none; audit stores the resulting verdict rather than the full capability (docs/architecture/permission-policy-design.md).
 
 import { assertSandboxWindowsExtensionPlan } from "../shared/sandbox-capability-info.js";
+import { isAveHomeBoundaryUnverifiedAtBoot } from "../shared/ave-home.js";
 import { t } from "../i18n/index.js";
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type {
@@ -324,6 +325,7 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
     activeCapability: mxc ?? detectShellSandboxCapability(),
     shellSubstrate: mxc === undefined ? "asrt" : "mxc",
     executionMode,
+    unavailableSandboxRequiresAsk: isAveHomeBoundaryUnverifiedAtBoot(),
   });
   recordIssuedHostShellExecutionPlan(plan, generation);
   return plan;

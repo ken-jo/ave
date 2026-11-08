@@ -1,13 +1,13 @@
 # Ave permission decision tree (v4)
 
-Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02.
+Status: owner-approved 2026-10-29. Mode names were updated 2026-10-30. Session surfaces, remote-user parity and shell-sandbox defaults: owner decision 2026-11-02. Ave home sandbox read boundary: owner decision 2026-11-07.
 Source design and reference comparison: artifact "에이전트 권한 결정 트리 비교", section 4.
 This file is the single source of truth for permission-decision work. Implementers and reviewers of any change
 to permission classification, approval cards, the reviewer, hooks or headless behaviour must read it and
 keep the code in this order. A change to this tree needs an owner decision.
 
 Outcomes: allow, sandbox-auto, ask (normal card), ask-forced (질문†: this time only, no reviewer, no allow-mode pass,
-no memory, deny when headless), deny.
+no memory, deny when headless; the `sandbox-unavailable` floor alone also offers this session, see below), deny.
 
 Modes: 기본 / Default (former 모두 확인 = strict; default for new installs) · 쓰기 허용 / Allow writes
 (former 쓰기만 확인) · auto · 허용 / Allow.
@@ -18,8 +18,8 @@ flowchart TD
   T -->|"위조 출처·봉투 불일치"| DENY
   T -->|통과| H{"입장 검사 · 본인 계정 일치·인증·세션 연결 · 훅 · deny 규칙"}
   H -->|차단| DENY["거부"]
-  H -->|통과| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴"}
-  F -->|예| ASKF["질문† (이번 한 번)"]
+  H -->|통과| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴 · 샌드박스 없는 셸(경계 미확인)"}
+  F -->|예| ASKF["질문† (이번 한 번; 예외: sandbox-unavailable가 유일한 질문†이면 이 세션의 이후 셸·훅을 이 세션 동안도 허용 가능, 사람 없으면 거부)"]
   F -->|아니오| U{"사용자 소유 브라우저 · 호스트 터미널?"}
   U -->|아니오| R{"ask / allow 규칙 · 기억된 승인"}
   U -->|예| UH{"사람 있음?"}
@@ -133,6 +133,54 @@ Notes that are part of the contract:
 - An owner-away turn means the card waits. The default is unlimited; an optional auto-skip after N minutes denies.
 - The user script PreToolUse hook runs in the first stage and is block-only. Argument hooks may rewrite input.
 - Credential stores owned by the host (encryption keys, credential DBs, cookie/token stores) stay admission-denied.
+- **Ave home sandbox read boundary (owner decision 2026-11-07):** the sandbox read deny covers the Ave home as one directory, not as
+  a list of file rows. Every child is denied by default, including children added later. A confined process is re-opened only the
+  children `src/permissions/ave-home-read-boundary.ts` lists (workspace, its own sandbox HOME and temp, its own plugin, agent plugin
+  or MCP server directories and a marketplace server's own data directory, the host runtime layout, Windows container staging), and
+  only where its own wrap grants them. A grant elsewhere in the Ave home is withheld, and a plugin-chosen directory there is refused.
+  `certs` and `sessions` stay on the protected floor and still need their own pierce. Windows stamps an inheritable deny on the root,
+  and the explicit allow on a granted child ranks above it. Linux masks the root with tmpfs and binds the granted children back.
+  macOS denies the subpath and allows the granted children inside it. Host features (preview, document observation) and the write
+  floor keep the per-file rows.
+- Limit of the Ave home boundary on Windows: an Ave home directly under the OS profile (the default `%USERPROFILE%\.ave`) gets no
+  root deny, because a stamp also denies `FILE_DELETE_CHILD` inheritably on the target's parent, and on the profile root that
+  propagates through the whole profile and exceeds the init timeout. Instead each existing top-level child directory that is not
+  wholly re-allowed is denied as its own directory row, so the parent stamp lands on the Ave home. File rows inside those children are
+  dropped; `sessions` and `certs` keep their floor rows; granted grandchildren (a plugin or MCP server directory) are re-opened by
+  their explicit allow exactly as under the relocated root. Each composition (one shell command, one extension or worker child
+  spawn) takes one boundary snapshot: it reads the home's top-level entries once (one readdir, no recursion) and pins the home and
+  each entry that is not wholly re-allowed through the shared non-following path facts, and the floor, session policy, masks,
+  evidence, read/write projections and deny targets of that composition all use it. Nothing is cached across commands or spawns;
+  the next invocation takes a fresh snapshot, and a refusal holds for the rest of its composition. Only a home the native walk
+  reports absent projects no child: a home that is, or lies beneath, a link or any other reparse point (dangling or not), a home
+  that cannot be listed or pinned, and an entry that is a link or any other reparse point or vanishes between listing and pinning
+  all refuse confinement instead of launching with fewer denies. The readdir may list a linked home's target before the refusal,
+  but no linked projection is ever accepted or stamped. Residual set: top-level files of the Ave home stay file rows (see the file-row limit below),
+  and a top-level child created after enumeration is not covered by that projection; the next projection denies it. Entry names
+  are case-folded, so case-distinct siblings in a case-sensitive directory are not supported and no coverage is claimed for them.
+  A relocated Ave home gets the root deny.
+- Unverifiable Ave home boundary (boot category boundary-link or boundary-unlisted): the OS sandbox cannot deny reads inside the
+  Ave home, so host shells (bash, PowerShell) run unconfined: on the unavailable-sandbox route, on the sandbox-off route when only
+  worker confinement was requested (shell scope off), and as an explicit host request. Each one runs only after a human approves it
+  on its card (the shell card for that route, or the out-of-directory card when the command leaves the allowed folders). The
+  `sandbox-unavailable` floor makes it ask-forced (질문†): allow once, allow for this session, or deny once; no saved-rule,
+  remembered, allow-mode, auto-review or sandbox auto-allow pass, no durable approval, deny when headless (owner decision
+  2026-11-08). The session choice records a grant of this floor for the root conversation (its sub-agents share it), kept in
+  memory only, never as a rule, and dropped when the conversation ends or Ave restarts. While the boundary stays unverified,
+  later shell commands and host hooks of that conversation pass this floor, whatever the command, dialect, default or
+  explicit-host plan, or background run (owner decision 2026-11-08: session-wide). The ordinary stages then decide without a
+  reviewer: an allow rule or the allow mode runs it without a card, under its own one-shot execution permit per run; anything
+  else (an ordinary ask in the default or auto mode) keeps the floor's card. Another conversation asks again. It does not need the rule grammar, so compound and interpreter
+  commands get it too. It answers only this floor: it never satisfies an ordinary ask, and an ordinary session allow never passes it.
+  When another 질문† floor also applies (protected path, project escape, critical delete, other principal), the card stays
+  once-only. Other 질문† floors remain once-only. Host command hooks use the same plan and ask the same way; a headless blocking hook (prompt submit, pre-tool) is
+  denied and can refuse its turn, which is the intended fail-closed result. The Permissions banner says shell commands will ask
+  for approval once or for the session. Other boot failures keep the ordinary unavailable-sandbox, sandbox-off and explicit-host routes.
+- Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home):
+  Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a
+  file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path
+  handling, which this boundary does not change. macOS seatbelt rules are path-based, so neither case reopens a denied path there.
+  Per-exec shells re-apply masks and stamps on every spawn.
 - User-typed terminal-tab commands are user actions and stay outside this tree.
 
 ## Mode behaviour matrix (owner clarification 2026-10-30)
@@ -152,7 +200,7 @@ Modes are behaviour, not labels. Each column matches the reference hosts' equiva
 | network / web fetch | ask | ask | reviewer | allow | Codex sandbox network off, Claude WebFetch rules |
 | MCP readOnlyHint (server or plugin) | allow | allow | allow | allow | Codex MCP read-only; owner "우리도 맞춰"; plugin read declaration: owner decision 2026-11-06 |
 | MCP other | ask (remember per tool) | ask (remember per tool) | reviewer | allow | Claude per-tool rules; owner "클로드에 맞춰" |
-| 질문† targets | ask-forced | ask-forced | ask-forced (no reviewer) | ask-forced | Claude protected paths, Hermes instruction-file gate |
+| 질문† targets (incl. host shells while the Ave home boundary is unverifiable) | ask-forced | ask-forced | ask-forced (no reviewer) | ask-forced | protected paths and instruction files need fresh human consent each time; boundary shells: lead decision 2026-11-08, with later shells and hooks of this session when sandbox-unavailable is the only 질문† (owner decision 2026-11-08) |
 | headless (no human), anything that would ask | deny + "do not retry" | same | same (the reviewer still decides first; a fallback to ask → deny) | n/a | Claude -p --permission-prompts none, Codex exec never, OpenCode run, Hermes cron |
 
 auto = 쓰기 허용 + automatic review: every non-† ask goes to the reviewer first. The reviewer never sees 질문†.

@@ -20,12 +20,14 @@ import {
   setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
+import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 
 const sandboxedHost = vi.hoisted(() => ({ active: false }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
@@ -246,6 +248,150 @@ describe("hook command permission admission", () => {
     // The hook's own approval is asked once, with no host-execution permit to bind.
     expect(p.requestAndWait).toHaveBeenCalledOnce();
     expect(p.requestAndWait).not.toHaveBeenCalledWith(expect.objectContaining({ hostShellExecutionPermitBinding: expect.anything() }));
+  });
+
+  describe.each(["boundary-link", "boundary-unlisted"] as const)("worker-only boot with an unverifiable boundary (%s)", (category) => {
+    // Worker confinement on, shell scope off: boot publishes the boundary state while the shell intent stays false.
+    function publish(): void {
+      setShellSandboxRequestedAtBoot(false);
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: "C:\\Users\\alice\\.ave", reason: "ave-home-boundary-unverified", category });
+    }
+    afterEach(() => _resetAveHomePrivacyForTest());
+
+    // A real authenticated gate answers each card once with `choice`.
+    async function runWithGate(p: ReturnType<typeof policy>, choice: "allow-once" | "deny-once") {
+      const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+      const gate = new ApprovalGate(wc as never);
+      const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+      const pending = runOneHookScript(hook, payload, { authorizeCommand });
+      const deadline = Date.now() + 3000;
+      while (wc.send.mock.calls.length === 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1));
+      const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+      expect(request?.nonce).toBeTruthy();
+      expect(request).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
+        executionPlan: { requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: true } });
+      gate.resolve(request.id, { requestId: request.id, choice, nonce: request.nonce, hmac: request.hmac });
+      const result = await pending;
+      return { result, cards: wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined).length };
+    }
+
+    function allowAll() {
+      const p = policy();
+      p.permissionManager.setMode("allow");
+      p.permissionManager.setRules([{ pattern: "Bash(node *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
+      return p;
+    }
+
+    it("runs the hook exactly once per gate-signed allow-once, and asks again next time", async () => {
+      publish();
+      const p = allowAll();
+      const first = await runWithGate(p, "allow-once");
+      expect(first.result.decision, first.result.reason).toBe("allow");
+      expect(JSON.parse(first.result.rawStdout).reason).toBe("received");
+      expect(first.cards).toBe(1);
+      expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+
+      const second = await runWithGate(p, "allow-once");
+      expect(second.cards).toBe(1);
+      expect(second.result.decision, second.result.reason).toBe("allow");
+      expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
+    });
+
+    // A plain command an ordinary exact rule can name, for the isolation check.
+    const exactHook = { ...hook, command: ["printf", "ready"] };
+    const exactHookRule = "Bash('printf' 'ready')";
+
+    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once", admitted: RunnableHook = hook, input: ScriptHookStdin = payload) {
+      const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+      const gate = new ApprovalGate(wc as never);
+      const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+      const pending = authorizeCommand(admitted, input, process.cwd());
+      const deadline = Date.now() + 3000;
+      while (wc.send.mock.calls.length === 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1));
+      const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+      expect(request).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
+        shellRule: { exactRule: null, sessionAllowed: true, persistentAllowed: false, denyAllowed: false, floorSessionOnly: true } });
+      const snapshot = gate.getRequestSnapshot(request.id);
+      if (!snapshot) throw new Error("request snapshot is missing");
+      if (answer === "allow-session") {
+        // The card can save nothing lasting.
+        expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "always" },
+          { decision: "allow", scope: "persistent", displayedVerdictAtApproval: snapshot.verdictAtApproval }, p.permissionManager))
+          .toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+        // As the approval IPC does: the save is the card's own policy transition.
+        const token = gate.beginApprovalRuleSave(request.id, p.permissionManager.getPolicyEpoch());
+        expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" },
+          { decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval }, p.permissionManager))
+          .toMatchObject({ ok: true, scope: "session" });
+        gate.completeApprovalRuleSave(token, p.permissionManager.getPolicyEpoch(), "session");
+      }
+      gate.resolve(request.id, { requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac });
+      return { result: await pending, gate, wc, authorizeCommand };
+    }
+
+    it("admits later hook commands in the same session without a card after allow for this session", async () => {
+      publish();
+      const p = allowAll();
+      const first = await admitOnGate(p, "allow-session");
+      expect(first.result.decision, first.result.reason).toBe("allow");
+      expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+
+      // The interpreter fixture itself: no ordinary rule can name it, and the floor grant still covers it.
+      const again = await runOneHookScript(hook, payload, { authorizeCommand: first.authorizeCommand });
+      expect(again.decision, again.reason).toBe("allow");
+      expect(JSON.parse(again.rawStdout).reason).toBe("received");
+      expect(first.wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined)).toHaveLength(1);
+      expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
+      // A different hook command in the same session: no card, its own permit.
+      const other = await first.authorizeCommand(exactHook, payload, process.cwd());
+      expect(other.decision, other.reason).toBe("allow");
+      expect(first.wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined)).toHaveLength(1);
+      expect(permits.minted).toBe(3);
+
+      // Headless still denies; another conversation, the ended conversation and a fresh permission state (a restart) ask again.
+      const headless = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
+        () => first.authorizeCommand(hook, payload, process.cwd()));
+      expect(headless.decision).toBe("deny");
+      expect((await admitOnGate(p, "deny-once", exactHook, { ...payload, sessionId: "hook-policy-other-session" })).result.decision).toBe("deny");
+      p.permissionManager.endSession("hook-policy-session");
+      expect((await admitOnGate(p, "deny-once", exactHook)).result.decision).toBe("deny");
+      expect((await admitOnGate(allowAll(), "deny-once")).result.decision).toBe("deny");
+    });
+
+    it("does not pass the floor with an ordinary session allow made earlier", async () => {
+      const p = allowAll();
+      p.permissionManager.addSessionRule("hook-policy-session", exactHookRule);
+      publish();
+      expect((await admitOnGate(p, "deny-once", exactHook)).result.decision).toBe("deny");
+      expect(permits.consumed).toEqual([]);
+    });
+
+    it("does not run the hook on deny-once", async () => {
+      publish();
+      const { result } = await runWithGate(allowAll(), "deny-once");
+      expect(result).toMatchObject({ decision: "deny", rawStdout: "" });
+      expect(permits.consumed).toEqual([]);
+    });
+
+    it("denies the hook headless without a card", async () => {
+      publish();
+      const p = allowAll();
+      const result = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
+        () => runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand }));
+      expect(result).toMatchObject({ decision: "deny", rawStdout: "" });
+      expect(p.requestAndWait).not.toHaveBeenCalled();
+    });
+  });
+
+  it("keeps the ordinary sandbox-off hook policy outside the boundary state", async () => {
+    setShellSandboxRequestedAtBoot(false);
+    expect(getHostShellExecutionPlan()).toMatchObject({ fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false });
+    const p = policy();
+    p.permissionManager.setMode("allow");
+    const result = await runOneHookScript(hook, payload, { authorizeCommand: p.authorizeCommand });
+    expect(result.decision, result.reason).toBe("allow");
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+    expect(permits.minted).toBe(0);
   });
 
   it("consumes a real gate-approved host execution receipt before spawning", async () => {

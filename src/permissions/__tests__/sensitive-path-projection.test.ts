@@ -1,10 +1,11 @@
 // Host guards and sandbox floors project one sensitive-path table; no secret may be readable through either. Saved history deliberately permits builtin reads only. Put the test target inside allowed scope so directory policy cannot hide a missing hard deny.
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { configureHostResources } from "../../main/host-resources.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
-import { getDefaultSensitiveReadDenyPaths } from "../asrt-sandbox.js";
+import { aveHomeReadBoundaryCovering, getDefaultSensitiveReadDenyPaths } from "../asrt-sandbox.js";
 import {
   SENSITIVE_PATH_ENTRIES,
   canonicalizePathForMatch,
@@ -13,6 +14,9 @@ import {
   sensitiveEntryOnSandboxFloor,
   type SensitiveEntry,
 } from "../sensitive-paths.js";
+
+// The Windows read boundary pins the Ave home entries through the native helper.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 const FAKE_AVE_HOME = join(tmpdir(), "ave-projection-test-home", ".ave");
 const HOME = homedir();
@@ -211,9 +215,11 @@ describe("sensitive paths — one table, two projections", () => {
     }
   });
 
-  it("still allows a non-secret path on both surfaces", () => {
+  it("still allows a non-secret path on the host, and lets a sandbox wrap re-open it", () => {
     const benign = join(FAKE_AVE_HOME, "plugins", "hello-world", "README.md");
     expect(hostDeniesAsSensitive(benign, FAKE_AVE_HOME)).toBe(false);
-    expect(sandboxDenies(benign)).toBe(false);
+    // The sandbox denies the Ave home as one directory; a plugin's own directory is a re-allowed child.
+    expect(sandboxDenies(benign)).toBe(true);
+    expect(aveHomeReadBoundaryCovering(benign)).toBeUndefined();
   });
 });

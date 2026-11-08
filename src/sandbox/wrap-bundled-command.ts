@@ -8,6 +8,7 @@ import {
   wrapWorkerCommand,
   type SandboxTempPrincipal,
 } from "../permissions/asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "../permissions/ave-home-boundary-snapshot.js";
 import { buildSandboxedChildEnv } from "../tools/safe-env.js";
 import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -75,15 +76,18 @@ export async function wrapBundledCommand(input: BundledWrapInput): Promise<{ arg
   const egress = openEgressInvocation(input.egressOwner);
   let result: { argv: string[]; env: NodeJS.ProcessEnv };
   try {
+    const boundarySnapshot = createAveHomeBoundarySnapshot();
     result = await wrapWorkerCommand(cmdline, {
       commandId: egress.token,
+      boundarySnapshot,
       filesystem: {
         allowWrite: [temp.dir, input.sandboxHome.path, ...input.allowWrite],
         // An ancestor grant can re-emit a protected deny after the exact hook file carve-out. User hooks need only their own temporary directory.
-        allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite,
+        // A host runtime program sits inside the Ave home read deny, so it reads its own runtime directories as on Windows.
+        allowRead: [temp.dir, input.sandboxHome.path, ...input.ownPluginReads, ...input.allowWrite, ...hostRuntimeReads(input.command),
           ...(tmpDir && input.tempPrincipal.kind !== "hook" ? [tmpDir] : [])],
         ...(input.tempPrincipal.kind === "hook" ? { floorPierces: input.ownPluginReads } : {}),
-        denyRead: getDefaultSensitiveReadDenyPaths(),
+        denyRead: boundarySnapshot.run(() => getDefaultSensitiveReadDenyPaths()),
         denyWrite: getDefaultSensitiveWriteDenyPaths(),
         // Bundled hooks and MCP stdio servers are plugin-owned (or third-party) code, and every root they
         // write into is one the host created: a plugin's data root, a server's sandbox root, the process HOME.

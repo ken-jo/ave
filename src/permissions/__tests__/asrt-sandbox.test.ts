@@ -21,7 +21,7 @@ import { lookup as lookupAll } from "node:dns/promises";
 // Ave patch test seam, reached by file path (not on the package entry).
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import type { SandboxManager as SandboxManagerType, SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as os from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
@@ -31,6 +31,7 @@ import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../_
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { windowsReadDenyKey, type WindowsReadDenyEvidence } from "../../shared/windows-read-deny-evidence.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
 import * as readDenyEvidenceModule from "../../shared/windows-read-deny-evidence.js";
 import { win32SystemBinary } from "../../shared/ave-home.js";
 import * as windowsStampTargets from "../windows-stamp-targets.js";
@@ -77,7 +78,7 @@ it.each(["linux", "darwin"] as const)("never rechecks native Windows evidence on
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const { simulatedConfigurationFs } = await import("../../__tests__/support/simulated-win32-drive.js");
-  return { ...simulatedConfigurationFs(actual), lstatSync: vi.fn(actual.lstatSync) };
+  return { ...simulatedConfigurationFs(actual), lstatSync: vi.fn(actual.lstatSync), readdirSync: vi.fn(actual.readdirSync) };
 });
 
 vi.mock("node:os", async (importOriginal) => {
@@ -113,6 +114,7 @@ import {
   getDefaultSensitiveWriteDenyPaths,
   getBuiltinShellReadPolicy,
   appOwnedSandboxPrivateRoots,
+  aveHomeReadBoundaryCovering,
   registerWorkerUnixSocketDir,
   unregisterWorkerUnixSocketDir,
   buildPerCommandSandboxCustomConfig,
@@ -222,6 +224,13 @@ afterEach(async () => {
 // Strip the directory marker only for comparisons with the literal floor.
 function bare(paths: readonly FilesystemPathEntry[]): string[] {
   return paths.map(path => (typeof path === "string" ? path : path.path).replace(/[\\/]$/, ""));
+}
+
+// On macOS an exactly spelled root (a sandbox private root or an Ave home boundary root) reaches ASRT canonical, its last character a glob class.
+function exactDenySpelling(path: string): string {
+  if (process.platform !== "darwin") return path;
+  const real = existsSync(path) ? realpathSync(path) : path;
+  return `${real.slice(0, -1)}[${real.slice(-1)}]`;
 }
 
 // Windows also omits absent targets at the handoff.
@@ -1289,9 +1298,12 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     expect(paths).toContain(join(FAKE_AVE_HOME, "sessions"));
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "sessions") + (process.platform === "win32" ? sep : ""));
     expect(paths).toContain(join(FAKE_AVE_HOME, "routine"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "audit.log"));
     expect(paths).toContain(join(FAKE_AVE_HOME, "audit"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "settings.json"));
+    // The Ave home is denied as one directory; its file rows stay on the write floor only.
+    expect(paths).toContain(FAKE_AVE_HOME);
+    expect(paths).not.toContain(join(FAKE_AVE_HOME, "audit.log"));
+    expect(paths).not.toContain(join(FAKE_AVE_HOME, "settings.json"));
+    expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, "settings.json"));
 
     // Standard credential / secret stores under the real home.
     expect(paths).toContain(join(home, ".ssh"));
@@ -1308,9 +1320,10 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
     // Ave ~/.ave permission / auth-partition namespaces.
     expect(paths).toContain(join(FAKE_AVE_HOME, "permissions"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "permissions.json"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "policy.json"));
-    expect(paths).toContain(join(FAKE_AVE_HOME, "plugins", "auth-partitions.json"));
+    for (const file of [["permissions.json"], ["policy.json"], ["plugins", "auth-partitions.json"]]) {
+      expect(paths).not.toContain(join(FAKE_AVE_HOME, ...file));
+      expect(getDefaultSensitiveWriteDenyPaths()).toContain(join(FAKE_AVE_HOME, ...file));
+    }
 
     // Literal pins on the sandbox projection of SENSITIVE_PATH_ENTRIES.
     expect(paths).toContain(join(FAKE_AVE_HOME, "certs"));
@@ -1453,8 +1466,11 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
       expect(bare(config.filesystem.denyRead)).toContain(bare([runtime])[0]);
       expect(bare(config.filesystem.denyWrite)).toContain(bare([runtime])[0]);
-      expect(config.filesystem.denyRead).not.toContain(profile);
-      expect(config.filesystem.denyWrite).not.toContain(profile);
+      // The read deny covers the whole custom profile as one directory, and subscription state is not a re-allowed child, so no
+      // grant reopens it. The write floor keeps its per-path rows and never denies the profile root.
+      if (reachesAsrt(profile)) expect(bare(config.filesystem.denyRead)).toContain(exactDenySpelling(profile));
+      expect(aveHomeReadBoundaryCovering(join(profile, "subscription-runtimes", "state.json"))).toBe(profile);
+      expect(bare(config.filesystem.denyWrite)).not.toContain(profile);
     } finally {
       vi.unstubAllEnvs();
       rmSync(profile, { recursive: true, force: true });
@@ -1521,10 +1537,14 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const sensitive = getDefaultSensitiveReadDenyPaths();
     const privateRoots = appOwnedSandboxPrivateRoots();
     for (const p of sensitive) {
-      // On macOS the sandbox private roots reach ASRT as exact globs, which it re-emits after the allows minus a wrap's own directory under them.
-      const spelled = process.platform === "darwin" && privateRoots.includes(p) ? `${p.slice(0, -1)}[${p.slice(-1)}]` : p;
+      // The sandbox private roots and the Ave home boundary roots are spelled exactly, so ASRT's late deny emission keeps the re-allows beneath them.
+      const spelled = privateRoots.includes(p) || aveHomeReadBoundaryCovering(p) === p ? exactDenySpelling(p) : p;
       if (reachesAsrt(p)) expect(bare(config.filesystem.denyRead)).toContain(bare([spelled])[0]);
     }
+    // The Ave home is one boundary row, so a file inside it and a child created later are both covered.
+    if (reachesAsrt(FAKE_AVE_HOME)) expect(bare(config.filesystem.denyRead)).toContain(exactDenySpelling(FAKE_AVE_HOME));
+    expect(aveHomeReadBoundaryCovering(join(FAKE_AVE_HOME, "settings.json"))).toBe(FAKE_AVE_HOME);
+    expect(aveHomeReadBoundaryCovering(join(FAKE_AVE_HOME, "future-child", "state.json"))).toBe(FAKE_AVE_HOME);
     // Secrets is part of the floor (the prior single-entry deny is subsumed).
     expect(bare(config.filesystem.denyRead)).toContain(join(FAKE_AVE_HOME, "secrets"));
   });
@@ -1815,6 +1835,19 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       }
       return nativeLstat(path, options);
     }) as typeof lstatSync);
+    const nativeReaddir = vi.mocked(readdirSync).getMockImplementation();
+    if (nativeReaddir === undefined) throw new Error("readdirSync has no native mock implementation");
+    vi.mocked(readdirSync).mockImplementation(((path, options) => {
+      if (/^\\\\server\\profiles(?:\\|$)/i.test(resolve(String(path)))) {
+        throw Object.assign(new Error("Synthetic network entry is absent"), { code: "ENOENT" });
+      }
+      return Reflect.apply(nativeReaddir, undefined, [path, options]);
+    }) as typeof readdirSync);
+    const nativePin = windowsPathFacts.pinWindowsPaths;
+    const pinFacts = vi.spyOn(windowsPathFacts, "pinWindowsPaths").mockImplementation(paths => paths.some(path => /^\\\\server\\profiles(?:\\|$)/i.test(resolve(path)))
+      ? paths.map(() => ({ exists: false, canonical: null, volumeSerial: null, fileId: null, volumeSerialNumber: null, fileIndex: null,
+        fileSystemName: null, changeTime: null, attributes: 0, reparseTag: 0, directory: false, reparseTarget: null, ancestors: [] }))
+      : nativePin(paths));
     const currentEvidence = readDenyEvidenceModule.windowsReadDenyEvidence;
     const evidence = vi.spyOn(readDenyEvidenceModule, "windowsReadDenyEvidence").mockImplementation((path, snapshot) =>
       /^\\\\server\\profiles\\tester(?:\\|$)/i.test(path) ? { status: "missing" } : currentEvidence(path, snapshot));
@@ -1831,6 +1864,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     } finally {
       pin.mockRestore();
       vi.mocked(lstatSync).mockImplementation(nativeLstat);
+      vi.mocked(readdirSync).mockImplementation(nativeReaddir);
+      pinFacts.mockRestore();
       realpath.mockRestore();
       evidence.mockRestore();
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);

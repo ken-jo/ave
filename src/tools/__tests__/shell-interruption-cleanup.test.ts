@@ -1,8 +1,8 @@
 import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
@@ -31,6 +31,10 @@ import { cleanupAsrtSandboxAfterCommand } from "../../permissions/asrt-sandbox.j
 import { egressInvocationOwner, onEgressInvocationReleased } from "../../permissions/egress-invocations.js";
 import { spawnWithSandbox } from "../shell-tools.js";
 import { prepareSandboxFixture } from "./support/prepared-shell.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+// The Windows Ave home read boundary pins its entries through the native helper.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 const roots: string[] = [];
 

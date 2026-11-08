@@ -10,7 +10,7 @@ import {
   type ApprovalDecision,
   type ApprovalRequest,
 } from "../approval-gate.js";
-import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { buildHostShellExecutionPlan, requiresExplicitHostShellApproval } from "../host-shell-execution-plan.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import {
   buildHostShellExecutionPermitBinding,
@@ -25,6 +25,7 @@ import {
 import {
   PermissionManager,
   consumeIssuedShellAllowRuleDecision,
+  isIssuedFloorSessionDecision,
   isIssuedShellAllowRuleDecision,
   type PermissionCheckResult,
 } from "../permission-manager.js";
@@ -311,6 +312,88 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(mintHostShellExecutionPermit({
       plan: planB, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding: planBBinding,
     })).toBeUndefined();
+  });
+
+  it("never lets a saved rule replace fresh consent for a host plan under an unverifiable Ave home boundary", () => {
+    const marked = buildHostShellExecutionPlan({
+      platform: "linux",
+      requestedSandbox: true,
+      executionMode: "host",
+      activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "worker-only boot" },
+      unavailableSandboxRequiresAsk: true,
+    });
+    expect(marked.identity.endsWith(":ask")).toBe(true);
+    const binding = hostBinding(marked);
+    expect(mintHostShellExecutionPermit({
+      plan: marked, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
+    })).toBeUndefined();
+  });
+
+  it("mints one permit per issued floor session decision for its own command, cwd and marked plan; the grant covers the session", () => {
+    const marked = buildHostShellExecutionPlan({
+      platform: "linux",
+      requestedSandbox: true,
+      executionMode: "host",
+      activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "worker-only boot" },
+      unavailableSandboxRequiresAsk: true,
+    });
+    const cwd = join(directory, "subdir");
+    pm.addFloorSessionGrant("floor-session", { code: "sandbox-unavailable" });
+    const floorDecision = (command = "echo one-shot", sessionId = "floor-session", dialect: "bash" | "powershell" = "bash"): PermissionCheckResult => pm.checkDetailed(dialect, "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect, command, cwd },
+      hostShellExecutionPlan: marked, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId,
+    });
+    const binding = hostBinding(marked);
+    const mint = (decision: PermissionCheckResult, plan = marked, bound = binding, manager = pm) => mintHostShellExecutionPermit({
+      plan, approvalDecision: undefined, floorSessionDecision: decision, permissionManager: manager, binding: bound,
+    });
+    // The grant answers only the floor: a command no rule allows keeps the floor's card in the default mode; the allow mode then decides.
+    expect(floorDecision("echo unruled")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    pm.setMode("allow");
+
+    const decision = floorDecision();
+    expect(decision).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
+    expect(isIssuedFloorSessionDecision(decision, pm)).toBe(true);
+    const permit = mint(decision);
+    expect(permit).toBeDefined();
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(true);
+    // Replay mints nothing; the next run needs its own decision.
+    expect(mint(decision)).toBeUndefined();
+    expect(mint(floorDecision())).toBeDefined();
+
+    // Without the grant (another conversation) the floor still asks.
+    expect(floorDecision("echo one-shot", "other-session")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    // Session-wide: any later command of this conversation, in either dialect, passes this floor with its own permit.
+    for (const [command, dialect, sessionId] of [["echo other", "bash", "floor-session"], ["echo one-shot && echo one-shot", "bash", "floor-session"],
+      ["echo one-shot | cat", "bash", "floor-session"], ["Write-Output later", "powershell", "floor-session"]] as const) {
+      const later = floorDecision(command, sessionId, dialect);
+      expect(later, command).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
+      expect(mint(later, marked, hostBinding(marked, { command, toolName: dialect })), command).toBeDefined();
+    }
+    // Another floor in the same command still asks on its own card.
+    expect(floorDecision("echo x > .git/config")).toMatchObject({ decision: "ask" });
+    expect(floorDecision("echo x > .git/config").reasonCode).not.toBe("floor-session-allow");
+    // An ordinary exact session rule for the same command never answers the floor.
+    pm.addSessionRule("rule-session", "Bash(echo one-shot)");
+    expect(floorDecision("echo one-shot", "rule-session")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    // A forged lookalike, another manager, another command or an unmarked plan mint nothing.
+    expect(mint({ decision: "allow", reason: "forged", reasonCode: "floor-session-allow" } as PermissionCheckResult)).toBeUndefined();
+    expect(mint(floorDecision(), marked, binding, new PermissionManager(join(directory, "other.json")))).toBeUndefined();
+    expect(mint(floorDecision(), marked, hostBinding(marked, { command: "echo other" }))).toBeUndefined();
+    const unmarked = explicitHostPlan();
+    expect(mint(floorDecision(), unmarked, hostBinding(unmarked))).toBeUndefined();
+    // The saved exact-rule proof lane stays closed for the marked plan.
+    expect(mintHostShellExecutionPermit({ plan: marked, approvalDecision: undefined, allowRuleDecision: floorDecision(), permissionManager: pm, binding })).toBeUndefined();
+    // Ending the conversation drops the grant.
+    const outstanding = floorDecision();
+    pm.endSession("floor-session");
+    expect(mint(outstanding)).toBeUndefined();
+    expect(floorDecision()).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+  });
+
+  it("refuses a floor session grant without its conversation or for another floor", () => {
+    expect(() => pm.addFloorSessionGrant("", { code: "sandbox-unavailable" })).toThrow();
+    expect(() => pm.addFloorSessionGrant("floor-session", { code: "protected-path" as never })).toThrow();
   });
 
   it("separates ordinary upload permission from host rule authority and retains protected floors", () => {
@@ -671,5 +754,39 @@ describe.skipIf(process.platform !== "win32")("host permits on a sandbox-capable
     } finally {
       cleanupTmpDir(directory);
     }
+  });
+});
+
+describe("shell-off plan under an unverifiable Ave home boundary", () => {
+  const sandboxOff = (askEveryCommand: boolean) => buildHostShellExecutionPlan({
+    platform: "win32",
+    requestedSandbox: false,
+    activeCapability: { kind: "none", confidence: "verified", platform: "win32", reason: "worker-only boot" },
+    unavailableSandboxRequiresAsk: askEveryCommand,
+  });
+
+  it("mints one spawn permit from a gate-signed allow-once and refuses its replay", async () => {
+    const binding = makeBinding(sandboxOff(true));
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: await issueHostApprovedDecision(binding) });
+    expect(permit).toBeDefined();
+    expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeDefined();
+    expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeUndefined();
+  });
+
+  it("refuses a missing receipt, a receipt for another action and a changed spawn", async () => {
+    const binding = makeBinding(sandboxOff(true));
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: undefined })).toBeUndefined();
+    const other = makeBinding(binding.plan, { command: "echo other" });
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: await issueHostApprovedDecision(other) })).toBeUndefined();
+    const permit = mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: await issueHostApprovedDecision(binding) });
+    expect(consumeHostShellExecutionPermitForSpawn({ ...permitInput(binding, permit), command: "echo changed" })).toBeUndefined();
+  });
+
+  it("needs no permit for the ordinary shell-off plan", () => {
+    const plan = sandboxOff(false);
+    expect(plan).toMatchObject({ requiresExplicitUserApproval: false });
+    expect(plan.identity.endsWith(":ask")).toBe(false);
+    expect(requiresExplicitHostShellApproval(plan, "bash")).toBe(false);
+    expect(requiresExplicitHostShellApproval(sandboxOff(true), "bash")).toBe(true);
   });
 });

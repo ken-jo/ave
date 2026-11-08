@@ -24,7 +24,7 @@ import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
-import { getAveHomePrivacyFailure, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
+import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
 import type { ProcessRunStateProbe } from "../../permissions/windows-process-start-time.js";
 
@@ -300,7 +300,9 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             await initializeAs(windowsStart);
           } catch (srtWinErr) {
             // A failed session setup clears runtime config, permitting clean proxy-only initialization for container shells.
-            if (windowsInputs === undefined || windowsStart === undefined || !canRetryWindowsAsProxyOnly(windowsInputs, windowsStart)) {
+            // An unverifiable Ave home boundary refuses every confined start, so a proxy-only retry cannot help.
+            if (windowsInputs === undefined || windowsStart === undefined || !canRetryWindowsAsProxyOnly(windowsInputs, windowsStart)
+              || aveHomeBoundaryFailure(srtWinErr) !== undefined) {
               throw srtWinErr;
             }
             log.warn(
@@ -367,51 +369,63 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             dependencyCauses,
           );
         } catch (initErr) {
-          // Reapply the same boot decision on initialization failure; no active capability may publish until initialization succeeds.
-          const failDecision = decideSandboxGate({
-            settingOn,
-            explicitEnv,
-            platform: process.platform,
-            depsOk: false,
-          });
-          const macRuntimeProbeFailed = process.platform === "darwin" && isAsrtMacRuntimeProbeError(initErr);
-          const runtimeProbeFailed =
-            process.platform === "linux" && isAsrtLinuxRuntimeProbeError(initErr);
-          const failureReason: SandboxGateReason = macRuntimeProbeFailed
-            ? failDecision.action === "abort" ? "abort-macos-runtime-probe-failed" : "degrade-macos-runtime-probe-failed"
-            : runtimeProbeFailed
-            ? failDecision.action === "abort"
-              ? "abort-linux-runtime-probe-failed"
-              : "degrade-linux-runtime-probe-failed"
-            : process.platform === "win32"
-              // Dependency checks passed, so report a start failure rather than missing installation.
-              ? "degrade-windows-init-failed"
-              : failDecision.reason;
-          const cause = errorMessage(initErr);
-          const failureCauses: SandboxStartFailureCause[] = [
-            runtimeProbeFailed ? "linux-runtime-probe-failed" : "init-failed",
-          ];
-          if (failDecision.action === "abort") {
-            // Explicit activation must fail closed on initialization errors.
-            log.error(
-              `boot: OS tool sandbox is ON via ${explicitEnvLabel} but ASRT initialization failed — refusing to start. ` +
+          const boundaryFailure = process.platform === "win32" ? aveHomeBoundaryFailure(initErr) : undefined;
+          if (boundaryFailure !== undefined) {
+            // Not the generic Windows degrade: publish it as an AVE_HOME privacy refusal, so confined extension starts refuse until the
+            // user approves running without isolation in Settings > Permissions. The log carries codes only; the error names paths.
+            setAveHomePrivacyAtBoot({ enforcement: "none", home: boundaryFailure.home, reason: AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE,
+              category: boundaryFailure.category });
+            log.warn("boot: extension isolation is OFF; the AVE_HOME read boundary could not be verified (%s, %s). Extensions require session approval in Settings > Permissions.",
+              AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, boundaryFailure.category);
+            recordWindows("none", true);
+            recordGate("degrade", "degrade-ave-home-boundary-unverified", [AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE], ["ave-home-privacy-failed"]);
+          } else {
+            // Reapply the same boot decision on initialization failure; no active capability may publish until initialization succeeds.
+            const failDecision = decideSandboxGate({
+              settingOn,
+              explicitEnv,
+              platform: process.platform,
+              depsOk: false,
+            });
+            const macRuntimeProbeFailed = process.platform === "darwin" && isAsrtMacRuntimeProbeError(initErr);
+            const runtimeProbeFailed =
+              process.platform === "linux" && isAsrtLinuxRuntimeProbeError(initErr);
+            const failureReason: SandboxGateReason = macRuntimeProbeFailed
+              ? failDecision.action === "abort" ? "abort-macos-runtime-probe-failed" : "degrade-macos-runtime-probe-failed"
+              : runtimeProbeFailed
+              ? failDecision.action === "abort"
+                ? "abort-linux-runtime-probe-failed"
+                : "degrade-linux-runtime-probe-failed"
+              : process.platform === "win32"
+                // Dependency checks passed, so report a start failure rather than missing installation.
+                ? "degrade-windows-init-failed"
+                : failDecision.reason;
+            const cause = errorMessage(initErr);
+            const failureCauses: SandboxStartFailureCause[] = [
+              runtimeProbeFailed ? "linux-runtime-probe-failed" : "init-failed",
+            ];
+            if (failDecision.action === "abort") {
+              // Explicit activation must fail closed on initialization errors.
+              log.error(
+                `boot: OS tool sandbox is ON via ${explicitEnvLabel} but ASRT initialization failed — refusing to start. ` +
+                  `Cause: ${cause}`,
+              );
+              recordGate("abort", failureReason, [cause], failureCauses);
+              await bootAuditLogger.flush();
+              throw initErr;
+            }
+            // Settings activation and Windows errors warn and continue without isolation.
+            log.warn(
+              "boot: OS tool sandbox is ON by default but ASRT initialization failed — " +
+                "tools run with NO OS isolation (unsandboxed, isolation=none) this session. " +
+                "(Set AVE_SANDBOX_ENABLED=1 for shells or AVE_PLUGIN_WORKER_CONFINEMENT=1 for extension processes " +
+                  "to make this fail-closed instead.) " +
                 `Cause: ${cause}`,
             );
-            recordGate("abort", failureReason, [cause], failureCauses);
-            await bootAuditLogger.flush();
-            throw initErr;
+            recordWindows(windowsStart ?? "none", true);
+            recordGate("degrade", failureReason, [cause], failureCauses);
+            // Probe failure must leave capability none for UI and reviewer.
           }
-          // Settings activation and Windows errors warn and continue without isolation.
-          log.warn(
-            "boot: OS tool sandbox is ON by default but ASRT initialization failed — " +
-              "tools run with NO OS isolation (unsandboxed, isolation=none) this session. " +
-              "(Set AVE_SANDBOX_ENABLED=1 for shells or AVE_PLUGIN_WORKER_CONFINEMENT=1 for extension processes " +
-                "to make this fail-closed instead.) " +
-              `Cause: ${cause}`,
-          );
-          recordWindows(windowsStart ?? "none", true);
-          recordGate("degrade", failureReason, [cause], failureCauses);
-          // Probe failure must leave capability none for UI and reviewer.
         }
       }
     } else {

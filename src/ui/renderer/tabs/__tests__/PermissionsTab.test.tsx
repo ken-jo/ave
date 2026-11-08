@@ -1459,6 +1459,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       "owner-claim-failed": null,
       "reparse-point": "permissionsTab.homePrivacyFixReparsePoint",
       "extra-principals": null,
+      "boundary-link": "permissionsTab.homePrivacyFixBoundaryLink",
+      "boundary-unlisted": "permissionsTab.homePrivacyFixBoundaryUnlisted",
     };
     const REASON: Record<string, string> = {
       "directory-failed": "permissionsTab.homePrivacyDirectoryFailed",
@@ -1471,6 +1473,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       "owner-claim-failed": "permissionsTab.homePrivacyOwnerClaimFailed",
       "reparse-point": "permissionsTab.homePrivacyReparsePoint",
       "extra-principals": "permissionsTab.homePrivacyExtraPrincipals",
+      "boundary-link": "permissionsTab.homePrivacyBoundaryLink",
+      "boundary-unlisted": "permissionsTab.homePrivacyBoundaryUnlisted",
     };
     const rows = (["en", "ko"] as const).flatMap((locale) => Object.keys(FIX).map((category) => [locale, category] as const));
     let previousLocale: ReturnType<typeof getLocale>;
@@ -1490,10 +1494,18 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         platform: "win32", enabled: true, available: true, kind: "partial", reason: "r", potentialReason: "r",
         runtime: { available: false, kind: "none", reason: "r" }, confines: { filesystem: true, process: false, network: true },
         homePrivacyError,
-        boot: { action: "degrade", reason: "degrade-ave-home-privacy-failed", onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
+        // An unverifiable read boundary reaches the same privacy refusal under its own gate reason.
+        boot: { action: "degrade", reason: category.startsWith("boundary-") ? "degrade-ave-home-boundary-unverified" : "degrade-ave-home-privacy-failed",
+          onSignal: "default-settings", causes: ["ave-home-privacy-failed"] },
       } as never);
       await act(async () => { render(<PermissionsTab />); });
+      if (category.startsWith("boundary-")) {
+        expect(screen.getByTestId("os-sandbox-boot-degraded").textContent)
+          .toContain(t("permissionsTab.osSandboxBootDegradedReason", { reason: "degrade-ave-home-boundary-unverified" }));
+      }
       const reason = t(REASON[category]!, { principals: "S-1-5-11" });
+      // Both boundary reasons tell the user that shell commands now ask, once or for the session.
+      if (category.startsWith("boundary-")) expect(reason).toContain(locale === "en" ? "shell commands will ask for approval once or for the session" : "셸 명령은 한 번 또는 이 세션 동안의 승인을 요청함");
       const fix = FIX[category];
       const tail = fix === null ? "" : ` ${t(fix)}`;
       if (fix !== null) expect(t(fix)).not.toBe(fix);

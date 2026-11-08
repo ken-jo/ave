@@ -161,11 +161,8 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("s
     expect(read.isError, read.output).toBe(false);
     expect(read.metadata.sandboxed).toBe(true);
     expect(read.output).toContain(CONTENT.trim());
-    const siblingRead = await run("/bin/cat " + shellQuote(sibling));
-    expect(siblingRead.isError, siblingRead.output).toBe(false);
-    expect(siblingRead.metadata.sandboxed).toBe(true);
-    expect(siblingRead.output).toContain("ordinary-neighbor-fixture");
-    for (const denied of [...neighbors, escape, nestedCredential, nestedEnvironment]) {
+    // The Ave home is one read boundary: an ordinary file beside the re-allowed sessions child is denied like the named namespaces.
+    for (const denied of [...neighbors, sibling, escape, nestedCredential, nestedEnvironment]) {
       const result = await run("/bin/cat " + shellQuote(denied));
       expect(result.isError, result.output).toBe(true);
       expect(result.output).not.toContain("neighbor-fixture");

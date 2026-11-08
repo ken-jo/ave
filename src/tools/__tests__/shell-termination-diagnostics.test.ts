@@ -2,9 +2,9 @@ import "../../__tests__/support/trusted-powershell.js";
 import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
 import { ChildProcess, spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/index.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
@@ -32,6 +32,10 @@ import * as sandbox from "../../permissions/asrt-sandbox.js";
 import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { POWER_SHELL_AST_PARSER } from "../powershell-ast.js";
 import { BashTool, PowerShellTool, backgroundShellManager as manager, createBashOutputTool, createBashKillTool, endShellSession } from "../shell-tools.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+// The Windows Ave home read boundary pins its entries through the native helper.
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 
 function childProcess() {
   return Object.assign(new ChildProcess(), {
