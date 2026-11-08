@@ -2267,7 +2267,10 @@ abstract class PluginRuntimeState {
 
   protected assertPluginDisableShutdownConfirmed(pluginId: string): void {
     if (this.pendingDisabledRetirements.has(this.resolveKnownPluginId(pluginId))) {
-      throw new Error(`plugin shutdown is unconfirmed for ${pluginId}; retry the enabled-state change`);
+      const recovery = this.isPluginLifecycleQuarantined(pluginId)
+        ? "host restart is required"
+        : "retry the enabled-state change";
+      throw new Error(`plugin shutdown is unconfirmed for ${pluginId}; ${recovery}`);
     }
   }
 
@@ -6711,11 +6714,13 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
         if (installClaim === undefined) {
           throw new Error(`Plugin install provenance unknown: ${pluginId}`);
         }
+        if (enabled) this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
         await assertDisableAllowed(enabled, installClaim, pluginId, this.deploymentGuard);
         const generationLifecycle = this.requireCapabilityCommitLifecycle(
           "plugin enabled-state change",
         );
         await generationLifecycle.runInLifecycleQueue(canonicalPluginId, async () => {
+          if (enabled) this.assertPluginDisableShutdownConfirmed(canonicalPluginId);
           if (this.pendingDisabledRetirements.has(canonicalPluginId)) {
             if (generationLifecycle.getActive(canonicalPluginId)) {
               throw new Error(`cannot retire disabled plugin with an active generation: ${canonicalPluginId}`);

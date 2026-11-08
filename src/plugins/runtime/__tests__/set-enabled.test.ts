@@ -550,6 +550,37 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
         loadStatus: "failed", installFailureMessage: expect.stringContaining("unconfirmed; retry"),
       });
       await expect(runtime.restartPlugin("se-plugin")).rejects.toThrow("shutdown is unconfirmed");
+      if (releaseMs === 12000 && !queuedEnable && action === "recover") {
+        const lifecycleQueue = vi.spyOn(lifecycle, "runInLifecycleQueue");
+        const retirement = vi.spyOn(lifecycle, "deactivateWithCommit");
+        let enableOutcome: { error?: unknown } | undefined;
+        const earlyEnable = runtime.setPluginEnabled("se-plugin", true).then(
+          () => { enableOutcome = {}; }, error => { enableOutcome = { error }; },
+        );
+        try {
+          await vi.waitFor(() => expect(enableOutcome).toBeDefined(), { timeout: 4000 });
+        } finally {
+          if (!enableOutcome) await vi.advanceTimersByTimeAsync(releaseMs);
+          await earlyEnable;
+        }
+        const enableError = enableOutcome?.error;
+        expect(enableError).toBeInstanceOf(Error);
+        expect((enableError as Error).message).toBe(
+          "plugin shutdown is unconfirmed for se-plugin; retry the enabled-state change",
+        );
+        expect(lifecycleQueue).not.toHaveBeenCalled();
+        expect(retirement).not.toHaveBeenCalled();
+        lifecycleQueue.mockRestore();
+        retirement.mockRestore();
+        await withPluginInstallLock("se-plugin", async () => undefined);
+        expect(stopped).toBe(false);
+        expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
+        expect(lifecycle.getActive("se-plugin")).toBeUndefined();
+        expect(JSON.parse(await readFile(registryPath, "utf8")).plugins[0].enabled).toBe(false);
+        expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("failed");
+        expect(stop).toHaveBeenCalledTimes(1);
+        expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.lifecycleQuarantined).toBeUndefined();
+      }
     }
     expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
     expect(lifecycle.getActive("se-plugin")).toBeUndefined();
@@ -587,7 +618,10 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       await new Promise<void>(resolve => { unlock = resolve; });
     }) : undefined;
     if (lockHeld) await lockReady;
-    const enable = queuedEnable ? runtime.setPluginEnabled("se-plugin", true) : undefined;
+    let queuedEnableError: unknown;
+    const enable = queuedEnable ? runtime.setPluginEnabled("se-plugin", true).catch(error => {
+      queuedEnableError = error;
+    }) : undefined;
     const cancelPendingRestart = vi.spyOn(runtime, "cancelPendingRestart");
     await vi.advanceTimersByTimeAsync(releaseMs);
     await vi.waitFor(() => expect(stopped).toBe(true), { timeout: 20000 });
@@ -603,7 +637,15 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       expect(runtime.listPluginCards().find(card => card.id === "se-plugin")).toMatchObject({
         active: false, runtimeLoaded: false, loadStatus: "failed", lifecycleQuarantined: { grantsRetained: false },
       });
-      await expect(runtime.restartPlugin("se-plugin")).rejects.toThrow("shutdown is unconfirmed");
+      await expect(runtime.restartPlugin("se-plugin")).rejects.toThrow(
+        "shutdown is unconfirmed for se-plugin; host restart is required",
+      );
+      await expect(runtime.setPluginEnabled("se-plugin", true)).rejects.toThrow(
+        "shutdown is unconfirmed for se-plugin; host restart is required",
+      );
+      expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
+      expect(lifecycle.getActive("se-plugin")).toBeUndefined();
+      expect(JSON.parse(await readFile(registryPath, "utf8")).plugins[0].enabled).toBe(false);
       expect(stop).toHaveBeenCalledTimes(1);
       const journal = JSON.parse(await readFile(join(testDir, "plugin-retirement-journal.json"), "utf8"));
       expect(journal.retirements).not.toEqual([]);
@@ -611,7 +653,20 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     }
     if (enable) {
       await enable;
-      await withPluginInstallLock("se-plugin", async () => undefined);
+      expect(queuedEnableError).toBeInstanceOf(Error);
+      expect((queuedEnableError as Error).message).toBe(
+        "plugin shutdown is unconfirmed for se-plugin; retry the enabled-state change",
+      );
+      expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
+      expect(lifecycle.getActive("se-plugin")).toBeUndefined();
+      await vi.waitFor(() => {
+        expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("disabled");
+      }, { timeout: 20000 });
+      let confirmedEnable: Promise<void> | undefined;
+      await withPluginInstallLock("se-plugin", async () => {
+        confirmedEnable = runtime.setPluginEnabled("se-plugin", true);
+      });
+      await confirmedEnable;
       expect(runtime.isPluginEnabled("se-plugin")).toBe(true);
     } else {
       await vi.waitFor(() => {
