@@ -17,7 +17,7 @@ import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
 import { McpAppPanelContent } from "./components/McpAppPanelContent.js";
 import { ChatGroupSession, type ChatGroupEnvironment } from "./components/ChatGroupSession.js";
-import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement, type NewChatOpening } from "./components/chat-group-session-registry.js";
+import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, workingSessionIds as selectWorkingSessionIds, type OverlayCardPlacement, type NewChatOpening } from "./components/chat-group-session-registry.js";
 import { leafIds } from "./components/pane-tree.js";
 import type { ChatEntry } from "../../lib/chat-stream-state.js";
 // One mounted singleton per away display mode; empty slots render nothing.
@@ -48,6 +48,7 @@ import { FolderView } from "./components/folder-view/FolderView.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
 import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
+import { AgentStatusGlyph } from "./components/AgentStatusGlyph.js";
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
 import type { DropTarget } from "./components/pane-drop.js";
 import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/use-sessions.js";
@@ -75,7 +76,7 @@ import { useAppUpdate } from "./hooks/use-app-update.js";
 import { useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { useSidebarState } from "./hooks/use-sidebar-state.js";
 import { Button } from "../../components/ui/button.js";
-import { PanelLeftOpen } from "lucide-react";
+import { MessageSquareText, PanelLeftOpen } from "lucide-react";
 import { SIDEBAR_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { useActiveView } from "./hooks/use-active-view.js";
 import { useSettingsTab } from "./hooks/use-settings-tab.js";
@@ -915,6 +916,7 @@ export function App() {
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
   }), [approvalQueue, tileSessions, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  const workingSessions = useMemo(() => selectWorkingSessionIds(tileSessions, sessions), [tileSessions, sessions]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   const suggestionsPendingCount = useMemo(
     () => overlayQueue.filter((card) => isSuggestionsSession(card.originSessionId)).length,
@@ -1754,8 +1756,7 @@ export function App() {
     return {
       isArchived: (sessionId) => Boolean(findSession(sessionId)?.archivedAt),
       isUnread: (sessionId) => Boolean(findSession(sessionId)?.unreadSince),
-      isResponding: (sessionId) =>
-        tileSessions.some((tile) => tile.sessionId === sessionId && tile.streaming),
+      isResponding: (sessionId) => workingSessions.has(sessionId),
       onRename: (sessionId, title) => applyUpdate({ sessionId, title }),
       onSetArchived: (sessionId, archived) => applyUpdate({ sessionId, archived }),
       onSetUnread: (sessionId, unread) => applyUpdate({ sessionId, unread }),
@@ -1799,7 +1800,7 @@ export function App() {
         await refreshSessions();
       },
     };
-  }, [api, sessions, tileSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView]);
+  }, [api, sessions, tileSessions, workingSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView]);
   // Turns ending off screen mark their rows unread; viewing the conversation clears the mark.
   useTurnAttention({
     tiles: tileSessions,
@@ -2767,6 +2768,17 @@ export function App() {
                                             t,
                                           )
                                           ?? t("mainToolbar.newChat")
+                                        }
+                                        icon={
+                                          // The sidebar row's glyph, so the tile and the row that opened it read as one; the loader while
+                                          // any of its chats is working. No badge: the tile draws its own cards.
+                                          <AgentStatusGlyph
+                                            size="md"
+                                            mark={<MessageSquareText className="h-4 w-4" aria-hidden="true" />}
+                                            working={workingSessions.has(tileSessionId)}
+                                            badge={null}
+                                            testId="pane-agent-status"
+                                          />
                                         }
                                         focused={chatGroups.focusedId === group.id}
                                         onFocus={() => chatGroups.focus(group.id)}

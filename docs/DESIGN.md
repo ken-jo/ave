@@ -338,11 +338,14 @@ state never moves the row.
 Working and a badge are separate inputs: a conversation can be running while one of its
 side chats waits on a card, and the square then shows the loader with the warning badge.
 `--warning` means "needs your answer" and nothing else; a running agent is never warning.
-Every badge carries an aria-label and the same text as its tooltip. The loader stops
-spinning under reduced motion and the label carries the state. A conversation stays
+Every badge carries an aria-label and the same text as its tooltip; where the surface's own
+accessible name already says the state (a sidebar row's button, a sub-agent's or a run's
+status text), the slot is hidden from assistive tech so it is not read twice. The loader
+stops spinning under reduced motion and the label carries the state. A conversation stays
 working while any of its chats is — the main turn or its side chat — and one selector
-(`workingSessionIds` in `chat-group-session-registry.ts`) decides it for every surface, the
-way `pendingAnswers` decides the dot. Unread stays on the row's title (dot and weight); it
+(`workingSessionIds` in `chat-group-session-registry.ts`) decides it for the sidebar rows
+and the tile headers, the way `pendingAnswers` decides the dot; the side-chat tab reads the
+same flag the side chat publishes to that selector. Unread stays on the row's title (dot and weight); it
 is read state, not agent state.
 
 Where it is drawn: the sidebar conversation row (main and family rows), a chat tile's

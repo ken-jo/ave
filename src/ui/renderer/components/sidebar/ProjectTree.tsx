@@ -21,7 +21,7 @@ import type { SessionSummary } from "../../hooks/use-sessions.js";
 import type { SidebarSurface } from "../../hooks/use-sidebar-items.js";
 import { useActiveSurface, surfaceUsedAt } from "../../preview/active-surface.js";
 import { useExitedTerminals, useTerminalAttention } from "../../preview/terminal-attention.js";
-import { PendingAnswerDot } from "../PendingAnswerDot.js";
+import { AgentStatusGlyph, agentStatusLabels } from "../AgentStatusGlyph.js";
 import { SidebarPreviewTarget, sidebarPreviewRowProps, useSidebarPreview } from "../SidebarPreview.js";
 import { CHAT_SESSION_DRAG_TYPE } from "../pane-drop.js";
 import { projectTestId } from "./ProjectCombobox.js";
@@ -172,12 +172,12 @@ function SessionRow({
   onOpenMenu?: (event: MouseEvent<HTMLElement>) => void;
   /** Marked unread — drawn as a dot plus a heavier title. */
   unread?: boolean;
-  /** This conversation's turn is parked on a request, on screen or not — the yellow dot says "interrupted here, something is
-   * waiting for an answer". */
+  /** This conversation's turn is parked on a request, on screen or not — the warning badge on the glyph says "interrupted
+   * here, something is waiting for an answer". */
   pendingAnswer?: boolean;
   /** Suggestions waiting in this conversation — drawn as a count. Only the dedicated Suggestions conversation has any. */
   pendingCount?: number;
-  /** A turn is running here — the kind glyph gives way to a pulsing dot. */
+  /** A turn is running here, in this conversation or one of its chats — the kind glyph gives way to the loader. */
   responding?: boolean;
   /** Archived — kept legible but visibly set aside. */
   archived?: boolean;
@@ -191,6 +191,10 @@ function SessionRow({
   const familyLabel = t(SESSION_FAMILY_LABEL_KEYS[family]);
   const preview = useSidebarPreview({ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding });
   const rowPreview = sidebarPreviewRowProps(renaming ? null : preview);
+  // The Suggestions row's count stands in for the waiting badge. The row's button names the slot's state, so the way to the
+  // conversation says what is happening there.
+  const statusBadge = pendingAnswer && pendingCount === 0 ? "waiting" : null;
+  const statusLabels = agentStatusLabels(t, Boolean(responding), statusBadge);
   return (
     <div
       role="treeitem"
@@ -250,38 +254,31 @@ function SessionRow({
             <Pin className={`h-3 w-3 ${isPinned ? "fill-current" : ""}`} />
           </button>
         ) : null}
-        {responding ? (
-          /** A turn is running here. The pulse is the signal; with reduced motion the dot stands still and the label carries it. Same
-           * square as the glyph, hidden the same way under the pin. */
-          <span
-            role="img"
-            aria-label={t("sidebar.sessionResponding")}
-            title={t("sidebar.sessionResponding")}
-            data-testid={`sidebar-session-responding-${session.id}`}
-            className={[
-              "flex h-3.5 w-3.5 items-center justify-center",
-              isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible",
-            ].join(" ")}
-          >
-            <span className="h-2 w-2 rounded-full bg-primary animate-pulse motion-reduce:animate-none" />
-          </span>
-        ) : (
-          /* Family labels remain available to assistive tech. The main chat
-             glyph stays hidden from it: on a list that is mostly chats, naming each
-             one would read the same word down the whole column. */
-          <MessageSquareText
-            className={[
-              "h-3.5 w-3.5",
-              // Hidden — not removed. The glyph keeps reserving the square so the swap costs no layout.
-              isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible",
-            ].join(" ")}
-            data-testid={`sidebar-conversation-glyph-${session.id}`}
-            data-session-family={family}
-            {...(family === "main"
-              ? { "aria-hidden": "true" as const }
-              : { role: "img", "aria-label": familyLabel })}
-          />
-        )}
+        {/* The agent status slot: the kind glyph at rest, the loader in its place while a turn runs, and the corner badge
+            while a turn is parked on a card. Mark and loader are hidden — not removed — under the pin, so the swap costs no
+            layout; the badge stays readable over it. */}
+        <AgentStatusGlyph
+          working={Boolean(responding)}
+          badge={statusBadge}
+          hiddenFromAccessibility
+          workingTestId={`sidebar-session-responding-${session.id}`}
+          badgeTestId={`sidebar-pending-answer-${session.id}`}
+          markClassName={isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible"}
+          // Positioned after the pin, so it must let the pin take the click.
+          className="pointer-events-none"
+          mark={
+            /* Family labels remain available to assistive tech. The main chat glyph stays hidden from it: on a list that is
+               mostly chats, naming each one would read the same word down the whole column. */
+            <MessageSquareText
+              className="h-3.5 w-3.5"
+              data-testid={`sidebar-conversation-glyph-${session.id}`}
+              data-session-family={family}
+              {...(family === "main"
+                ? { "aria-hidden": "true" as const }
+                : { role: "img", "aria-label": familyLabel })}
+            />
+          }
+        />
       </span>
       {renaming && onCommitRename && onCancelRename ? (
         <div className="flex min-w-0 flex-1 items-center px-2 py-1">
@@ -334,6 +331,7 @@ function SessionRow({
           <span className={`min-w-0 flex-1 truncate ${unread ? "font-semibold text-foreground" : ""}`}>
             {session.title}
           </span>
+          {statusLabels.length > 0 ? <span className="sr-only">{statusLabels.join(", ")}</span> : null}
           {pendingCount > 0 ? (
             <span
               className="shrink-0 rounded-full bg-primary px-1.5 text-tiny font-semibold leading-4 text-primary-foreground tabular-nums"
@@ -342,8 +340,6 @@ function SessionRow({
             >
               {pendingCount}
             </span>
-          ) : pendingAnswer ? (
-            <PendingAnswerDot inline testId={`sidebar-pending-answer-${session.id}`} />
           ) : null}
         </button>
         </SidebarPreviewTarget>
@@ -717,6 +713,7 @@ export function ProjectTree({
           active={false}
           family={session.family}
           pendingAnswer={pendingAnswerSessionIds?.has(session.id) ?? false}
+          responding={conversationActions?.isResponding(session.id)}
           {...(open ? { onOpenFamilyRow: open } : {})}
           onOpenMenu={(event) => openNativeContextMenu(event, "conversation", familyMenu)}
           t={t}

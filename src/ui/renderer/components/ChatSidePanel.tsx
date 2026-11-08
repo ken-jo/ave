@@ -10,7 +10,6 @@ import {
 import {
   Bot,
   LayoutGrid,
-  Loader2,
   PanelLeftOpen,
   Pin,
   Plus,
@@ -36,7 +35,7 @@ import { SidePanelTerminal } from "./SidePanelTerminal.js";
 import { SideChatView, type SideChatOpenRequest } from "./SideChatView.js";
 import { ActiveSurfaceChip } from "./ActiveSurfaceChip.js";
 import { SURFACE_DRAG_TYPE, decodeSurfaceDrag, encodeSurfaceDrag, isMovableTabKind, useSurfaceMoves, type MovableTabKind } from "../preview/surface-moves.js";
-import { PendingAnswerDot } from "./PendingAnswerDot.js";
+import { AgentStatusGlyph, type AgentStatusBadge } from "./AgentStatusGlyph.js";
 import { TerminalAttentionDot } from "./TerminalAttentionDot.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { showActiveSurface } from "../preview/active-surface.js";
@@ -75,12 +74,30 @@ import type { AttachTextResult } from "../preview/composer-targets.js";
 const drawsNoCard = (): boolean => false;
 
 /** Status tone for the sub-agent list row badge. */
+/** The label's tone follows the status slot's badge: warning only for "needs your answer", never for a running agent. */
 function subAgentStatusTone(status: SubAgentSpawn["status"]): string {
   if (status === "error") return "text-destructive";
-  if (status === "interrupted") return "text-warning";
   if (status === "waiting") return "text-warning";
-  if (status === "done") return "text-muted-foreground";
-  return "text-warning";
+  return "text-muted-foreground";
+}
+
+/** A sub-agent's state as the agent status slot draws it. Exhaustive, so a new status must decide its badge. */
+function subAgentStatusBadge(status: SubAgentSpawn["status"]): AgentStatusBadge | null {
+  switch (status) {
+    case "running":
+    case "done":
+      return null;
+    case "waiting":
+      return "waiting";
+    case "error":
+      return "error";
+    case "interrupted":
+      return "exited";
+    default: {
+      const unhandled: never = status;
+      throw new Error(`unhandled sub-agent status: ${String(unhandled)}`);
+    }
+  }
 }
 
 /**
@@ -121,11 +138,15 @@ const SubAgentRow = memo(function SubAgentRow({
       )}
       onClick={() => onSelect(spawn.spawnId)}
     >
-      {spawn.status === "running" ? (
-        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-warning" aria-hidden="true" />
-      ) : (
-        <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      )}
+      <AgentStatusGlyph
+        mark={<Bot className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+        working={spawn.status === "running"}
+        badge={subAgentStatusBadge(spawn.status)}
+        className="text-muted-foreground"
+        testId="chat-side-panel-subagent-status"
+        // The row's status text names the state; the slot would only repeat it.
+        hiddenFromAccessibility
+      />
       <span className="min-w-0 flex-1 truncate font-medium" title={spawn.title}>
         {spawn.title}
       </span>
@@ -772,6 +793,9 @@ export interface ChatSidePanelProps {
   onSessionsChanged?: (() => void | Promise<void>) | undefined;
   /** The side chat holds a card the user cannot see — its tab carries the attention dot while it is not the active one. */
   sideChatPendingAnswer?: boolean;
+  /** A turn is running in the side chat — its tab's glyph gives way to the loader. The flag the side chat publishes, the
+   * same one `workingSessionIds` reads for its sidebar row. */
+  sideChatWorking?: boolean;
   /**
    * What this conversation did — the empty launcher shows it above the tab
    * picker, so an open panel with nothing in it still says something, and the
@@ -815,6 +839,7 @@ export function ChatSidePanel({
   sideChatOpenRequest,
   onSessionsChanged,
   sideChatPendingAnswer = false,
+  sideChatWorking = false,
   activity,
   onOpenActivityItem,
   onOpenActivityItemPinned,
@@ -1143,11 +1168,21 @@ export function ChatSidePanel({
                       },
                     } : {})}
                   >
-                    <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    {tab.kind === "side-chat" && !tab.content ? (
+                      // The side chat's status slot: the loader while its turn runs, the warning badge while a card waits
+                      // behind this tab.
+                      <AgentStatusGlyph
+                        mark={<Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+                        working={sideChatWorking}
+                        badge={sideChatPendingAnswer && !active ? "waiting" : null}
+                        testId="chat-side-panel-tab-side-chat-status"
+                        workingTestId="chat-side-panel-tab-side-chat-working"
+                        badgeTestId="chat-side-panel-tab-side-chat-pending-answer"
+                      />
+                    ) : (
+                      <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    )}
                     <span className={`max-w-24 truncate ${isEphemeral ? "italic" : ""}`}>{label}</span>
-                    {tab.kind === "side-chat" && !tab.content && sideChatPendingAnswer && !active ? (
-                      <PendingAnswerDot inline testId="chat-side-panel-tab-side-chat-pending-answer" />
-                    ) : null}
                     {agentControlledTabIds.has(tab.id) ? (
                       <Bot
                         className="h-3 w-3 shrink-0 text-warning"

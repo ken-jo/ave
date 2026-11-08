@@ -1,17 +1,17 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   AlertTriangle,
+  Bot,
   Check,
-  CheckCircle2,
   ChevronRight,
   CircleStop,
   Loader2,
   Pin,
   Square,
   X,
-  XCircle,
 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
+import { AgentStatusGlyph, type AgentStatusBadge } from "../AgentStatusGlyph.js";
 import { Button } from "../../../../components/ui/button.js";
 import type { ApprovalRequest } from "../../types.js";
 import type { WorkBoardCancelIpcResult, WorkBoardSteerIpcResult, WorkItemResolved } from "../../../../shared/work-board-types.js";
@@ -128,24 +128,46 @@ const TONE_TEXT: Record<ReturnType<typeof rowStatus>["tone"], string> = {
   success: "text-success",
 };
 
-function RowIcon({ entry }: { entry: LiveRunEntry }) {
+/** A run's state as the agent status slot draws it: stopping is still working, a waiting approval (plan or tool) is the
+ * pending-answer badge, a denied plan is blocked, a cancelled run is stopped. Done is the plain mark — the row's text says
+ * how it ended. Exhaustive, so a new phase must decide its badge. */
+export function runAgentStatus(entry: LiveRunEntry): { working: boolean; badge: AgentStatusBadge | null } {
   const { run } = entry;
-  if (run.stopping) return <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />;
-  if (entry.approvals.length > 0 || run.phase === "awaiting_approval") {
-    return <span aria-hidden="true" className="mx-[3px] h-2 w-2 shrink-0 rounded-full bg-warning" />;
-  }
+  if (run.stopping) return { working: true, badge: null };
+  if (entry.approvals.length > 0 || run.phase === "awaiting_approval") return { working: false, badge: "waiting" };
   switch (run.phase) {
+    case undefined:
+    case "planning":
+    case "executing":
+      return { working: true, badge: null };
     case "done":
-      return <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-success" />;
+      return { working: false, badge: null };
     case "cancelled":
-      return <CircleStop aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />;
+      return { working: false, badge: "exited" };
     case "error":
-      return <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-destructive" />;
+      return { working: false, badge: "error" };
     case "denied":
-      return <XCircle aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-destructive" />;
-    default:
-      return <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />;
+      return { working: false, badge: "blocked" };
+    default: {
+      const unhandled: never = run.phase;
+      throw new Error(`unhandled work board run phase: ${String(unhandled)}`);
+    }
   }
+}
+
+function RowIcon({ entry }: { entry: LiveRunEntry }) {
+  const { working, badge } = runAgentStatus(entry);
+  return (
+    <AgentStatusGlyph
+      mark={<Bot aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />}
+      working={working}
+      badge={badge}
+      className="text-muted-foreground"
+      testId="live-run-row-status"
+      // The row's status text names the state; the slot would only repeat it.
+      hiddenFromAccessibility
+    />
+  );
 }
 
 /** "12:21 시작 · 경과 4:12 · 실행 2턴째 · 지시 1" while in flight; start, end, length and turns once it settled. */

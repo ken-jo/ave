@@ -2059,8 +2059,10 @@ describe("Sidebar pending-answer dot", () => {
       expect(getByTestId("sidebar-pending-answer-routine-run-1")).toBeTruthy();
       expect(queryByTestId("sidebar-pending-answer-sess-2")).toBeNull();
       expect(getByTestId("sidebar-pending-answer-sess-1").getAttribute("aria-label")).toBe("답변 대기 중");
-      // Inside the row's button, so the way to the card is the row itself.
-      expect(getByTestId("sidebar-session-sess-1").contains(getByTestId("sidebar-pending-answer-sess-1"))).toBe(true);
+      // The badge sits on the row's glyph (the agent status slot), and the row's button names the state, so the way to the
+      // card is the row itself.
+      expect(getByTestId("sidebar-row-session-sess-1").contains(getByTestId("sidebar-pending-answer-sess-1"))).toBe(true);
+      expect(getByTestId("sidebar-session-sess-1").textContent).toContain("답변 대기 중");
     } finally {
       restore();
     }

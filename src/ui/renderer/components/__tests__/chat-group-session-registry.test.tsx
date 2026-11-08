@@ -349,7 +349,7 @@ describe("tileDrawsSession", () => {
 
   it("never adopts a side chat's session — the side chat is a drawing surface of its own", () => {
     const withSideChat = [
-      tile("main", "s-main", { sideChat: { sessionId: "s-side", askQuestions: [], shown: true } }),
+      tile("main", "s-main", { sideChat: { sessionId: "s-side", askQuestions: [], shown: true, streaming: false } }),
       tile("group-2", "s-other"),
     ];
     // The tile beside it, focused, leaves it alone…
@@ -431,7 +431,7 @@ describe("pendingAnswers", () => {
 
   it("marks a side chat AND its parent row when the side chat is not on screen", () => {
     // Collapsed panel or another tab active: the tile says `shown: false`.
-    const tiles = [tile("main", "s-main", { sideChat: { sessionId: "s-side", askQuestions: [question("q1", "s-side")], shown: false } })];
+    const tiles = [tile("main", "s-main", { sideChat: { sessionId: "s-side", askQuestions: [question("q1", "s-side")], shown: false, streaming: false } })];
     const result = pendingAnswers({ ...empty, tiles, approvals: [approval("a1", { sessionId: "s-side" })] });
     expect([...result.sessionIds].sort()).toEqual(["s-main", "s-side"]);
     expect([...result.sideChatSessionIds]).toEqual(["s-side"]);
@@ -439,7 +439,7 @@ describe("pendingAnswers", () => {
   });
 
   it("marks the rows but not the toggle or tab for a side chat the user is looking at", () => {
-    const tiles = [tile("main", "s-main", { sideChat: { sessionId: "s-side", askQuestions: [question("q1", "s-side")], shown: true } })];
+    const tiles = [tile("main", "s-main", { sideChat: { sessionId: "s-side", askQuestions: [question("q1", "s-side")], shown: true, streaming: false } })];
     const result = pendingAnswers({ ...empty, tiles, approvals: [approval("a1", { sessionId: "s-side" })] });
     expect([...result.sessionIds].sort()).toEqual(["s-main", "s-side"]);
     expect(result.sideChatSessionIds.size).toBe(0);
@@ -461,7 +461,7 @@ describe("pendingAnswers", () => {
   });
 
   it("marks the hidden pane too when the side chat's tile is one the tree hides", () => {
-    const tiles = [tile("g2", "s-other", { hidden: true, paneHidden: true, sideChat: { sessionId: "s-side", askQuestions: [], shown: true } })];
+    const tiles = [tile("g2", "s-other", { hidden: true, paneHidden: true, sideChat: { sessionId: "s-side", askQuestions: [], shown: true, streaming: false } })];
     const result = pendingAnswers({ ...empty, tiles, approvals: [approval("a1", { sessionId: "s-side" })] });
     expect([...result.sessionIds].sort()).toEqual(["s-main", "s-side"]);
     expect([...result.hiddenPaneIds]).toEqual(["g2"]);

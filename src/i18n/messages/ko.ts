@@ -42,6 +42,13 @@ export const ko: Record<MessageCatalogKey, string> = {
   "agentBrowser.workspace": "브라우저 도구",
   "agentBrowser.controlMenu": "에이전트 제어",
 
+  // agentStatus
+  "agentStatus.working": "작업 중",
+  "agentStatus.blocked": "막힘",
+  "agentStatus.error": "오류",
+  "agentStatus.connecting": "연결 중",
+  "agentStatus.exited": "중지됨",
+
   // agentPluginPrompt
   "agentPluginPrompt.argsTitle": "{name} 실행",
   "agentPluginPrompt.argsDescription": "{package} 플러그인의 템플릿에 넣을 텍스트를 입력하세요.",
@@ -4720,7 +4727,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "sidebar.unpinProject": "프로젝트 고정 해제",
   "sidebar.pinConversation": "대화 고정",
   "sidebar.unpinConversation": "대화 고정 해제",
-  "sidebar.sessionResponding": "응답 생성 중",
   "sidebar.mainConversation": "대화",
   "sidebar.routineConversation": "루틴 실행",
   "sidebar.workBoardConversation": "워크보드 작업",

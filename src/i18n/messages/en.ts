@@ -40,6 +40,13 @@ export const en = {
   "agentBrowser.workspace": "Browser tools",
   "agentBrowser.controlMenu": "Agent control",
 
+  // agentStatus
+  "agentStatus.working": "Working",
+  "agentStatus.blocked": "Blocked",
+  "agentStatus.error": "Error",
+  "agentStatus.connecting": "Connecting",
+  "agentStatus.exited": "Stopped",
+
   // agentPluginPrompt
   "agentPluginPrompt.argsTitle": "Run {name}",
   "agentPluginPrompt.argsDescription": "Enter text for the template from {package}.",
@@ -4718,7 +4725,6 @@ export const en = {
   "sidebar.unpinProject": "Unpin project",
   "sidebar.pinConversation": "Pin conversation",
   "sidebar.unpinConversation": "Unpin conversation",
-  "sidebar.sessionResponding": "Responding…",
   "sidebar.mainConversation": "Conversation",
   "sidebar.routineConversation": "Routine run",
   "sidebar.workBoardConversation": "Work board item",

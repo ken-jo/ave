@@ -154,6 +154,8 @@ export interface ChatViewProps {
   onSessionsChanged?: (() => void | Promise<void>) | undefined;
   /** Use the window's hidden-card verdict so panel tabs and pane toggles show the same attention dot. */
   sideChatPendingAnswer?: boolean;
+  /** A turn is running in the side chat — its tab shows the loader. */
+  sideChatWorking?: boolean;
   /** Active project — drives the empty-state composer's project selector trigger label. */
   activeProject?: ProjectIdentity;
   /** Use the sidebar's project list so both selectors agree. */
@@ -164,7 +166,7 @@ export interface ChatViewProps {
 }
 
 
-export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
+export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, sideChatWorking = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -1103,6 +1105,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
             sideChatOpenRequest={sideChatOpenRequest}
             onSessionsChanged={onSessionsChanged}
             sideChatPendingAnswer={sideChatPendingAnswer}
+            sideChatWorking={sideChatWorking}
             activity={toolActivity}
             onOpenActivityItem={routeActivityItem}
             onOpenActivityItemPinned={routeActivityItemPinned}
