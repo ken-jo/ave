@@ -29,6 +29,7 @@
     "resources/skills/xlsx-edit/SKILL.md"
   ],
   "referencedOnly": [
+    "docs/DESIGN.md",
     "docs/README.md",
     "docs/architecture/architecture.md",
     "docs/architecture/hook-runtime-expansion-design.md",
