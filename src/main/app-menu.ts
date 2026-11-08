@@ -14,7 +14,7 @@ import { NO_SHORTCUT_OVERRIDES, resolveShortcut, shortcutPlatformOf } from "../s
 
 /** A menu item's accelerator is the user's binding for its registry row. Before services exist (the first menu at boot)
  * no settings are loaded yet, so the row's default applies; the menu is rebuilt once settings change. */
-export function menuAccelerator(id: "menu.settings" | "menu.newWindow"): string | undefined {
+function menuAccelerator(id: "menu.settings" | "menu.newWindow"): string | undefined {
   const shortcuts = getServices()?.settingsService.get("shortcuts") ?? NO_SHORTCUT_OVERRIDES;
   return resolveShortcut(id, shortcuts, shortcutPlatformOf(process.platform)) ?? undefined;
 }

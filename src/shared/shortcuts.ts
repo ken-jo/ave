@@ -171,7 +171,7 @@ function resolveChord(parsed: ParsedAccelerator, platform: ShortcutPlatform): Re
 }
 
 /** Equal for two accelerators that press the same keys on `platform` (`CommandOrControl+K` and `Command+K` on macOS). */
-export function chordSignature(accelerator: string, platform: ShortcutPlatform): string | null {
+function chordSignature(accelerator: string, platform: ShortcutPlatform): string | null {
   const parsed = parseAccelerator(accelerator);
   if (!parsed) return null;
   const chord = resolveChord(parsed, platform);
@@ -427,7 +427,7 @@ export function shortcutDefinition(id: ShortcutId): ShortcutDefinition {
   return entry;
 }
 
-export function isRebindableShortcut(id: ShortcutId): boolean {
+function isRebindableShortcut(id: ShortcutId): boolean {
   return shortcutDefinition(id).readOnly === undefined;
 }
 

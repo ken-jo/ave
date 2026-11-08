@@ -46,7 +46,7 @@ export function isShortcutCaptureActive(): boolean {
   return captureActive;
 }
 
-export function shortcutAccelerator(id: ShortcutId): string | null {
+function shortcutAccelerator(id: ShortcutId): string | null {
   return resolveShortcut(id, current, rendererShortcutPlatform());
 }
 
