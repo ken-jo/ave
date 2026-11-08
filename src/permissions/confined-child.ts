@@ -22,6 +22,7 @@ import {
   type SandboxTempPrincipal,
   type WrapOptions,
 } from "./asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { openEgressInvocation, type EgressInvocation, type WorkerEgressOwner } from "./egress-invocations.js";
 import {
   getHostShellExecutionPlan,
@@ -295,11 +296,12 @@ export async function spawnMxcConfinedChild(spec: MxcConfinedChildSpec): Promise
   assertParent();
   spec.assertStillValid?.();
   assertManagedChildProcessAdmissionOpen(spec.label);
-  const admitted = admitMxcExtensionFilesystem({
+  // The floor and the admission share one Ave home boundary snapshot.
+  const admitted = createAveHomeBoundarySnapshot().run(() => admitMxcExtensionFilesystem({
     allowRead: [...(spec.allowRead ?? [])], allowWrite: [...(spec.allowWrite ?? [])],
     denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
     floorPierces: spec.floorPierces, denyPluginsRoot: true, pinWriteRoots: true,
-  }, spec.filesystemOwnership);
+  }, spec.filesystemOwnership));
   const grants = rankMxcFilesystem(admitted.policy, existsSync);
   assertWritesInsideEnvelope(grants, spec.filesystemOwnership);
   assertMxcHolderPrivateDirectories({ home: spec.home, temp: spec.temp, ownership: spec.filesystemOwnership,
@@ -582,11 +584,14 @@ async function resolveSpawnLine(
   const launch = relay?.launch ?? (temp ? sandboxTempEnvLaunch(temp.dir, spec.command, spec.args) : spec);
   const { cmdline, binShell } = buildConfinedCommandLine(launch.command, launch.args, relay?.launch ?? spec);
   const egress = openEgressInvocation(spec.egressOwner);
+  // The child's floor and its wrap share one Ave home boundary snapshot.
+  const boundarySnapshot = createAveHomeBoundarySnapshot();
   let argv: string[];
   let env: NodeJS.ProcessEnv;
   try {
     ({ argv, env } = await wrapWorkerCommand(cmdline, {
-      filesystem: buildFilesystemConfinement(spec, temp),
+      filesystem: boundarySnapshot.run(() => buildFilesystemConfinement(spec, temp)),
+      boundarySnapshot,
       ...(binShell !== undefined ? { binShell } : {}),
       commandId: egress.token,
     }));

@@ -50,6 +50,15 @@ describe("approval decision models", () => {
     expect(allowRefusalKey(model)).toBe("toolApprovalDialog.shellExactRuleUnavailable");
   });
 
+  it("a sandbox-unavailable floor card offers only this session, with no rule to show or edit, even for a command no rule can name", () => {
+    const model = shellDecisionModel(shell({ exactRule: null, denyRule: null, denyAllowed: false, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true }));
+    expect(offeredChoices(model)).toEqual(["allow-session"]);
+    expect(model.options["allow-session"]).toMatchObject({ rule: null, editing: null, needsEdit: false });
+    expect(defaultAllowChoice(model)).toBe("allow-session");
+    expect(ruleSaveFor("allow-session", undefined)).toEqual({ action: "allow", scope: "session" });
+    expect(offeredChoices(shellDecisionModel(shell({ exactRule: null, sessionAllowed: false, persistentAllowed: false, floorSessionOnly: true })))).toEqual([]);
+  });
+
   it("a shell card without Always deny (a remote controller) refuses it", () => {
     expect(shellDecisionModel(shell({ denyAllowed: false })).options["deny-always"].offered).toBe(false);
   });

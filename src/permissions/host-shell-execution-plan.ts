@@ -190,6 +190,9 @@ export function buildHostShellExecutionPlan(input: {
   // What would confine a sandboxed child: `mxc` only when the host's MXC route is live and `activeCapability` is that route's capability. Defaults to the ASRT wrap.
   shellSubstrate?: "asrt" | "mxc";
   executionMode?: HostShellExecutionRequest;
+  // Boot could not verify the Ave home read boundary: every plain host shell (unavailable sandbox, shell scope off, Windows partial
+  // shell or explicit host) then needs a human ask for every command.
+  unavailableSandboxRequiresAsk?: boolean;
 }): HostShellExecutionPlan {
   const shellSubstrate = input.shellSubstrate ?? "asrt";
   if (shellSubstrate === "mxc" && input.platform !== "win32") {
@@ -200,6 +203,7 @@ export function buildHostShellExecutionPlan(input: {
     throw new Error("Invalid host shell execution request");
   }
   const requestedSandbox = input.requestedSandbox;
+  const askEveryCommand = input.unavailableSandboxRequiresAsk === true;
 
   if (executionRequest === "host") {
     return Object.freeze({
@@ -213,7 +217,7 @@ export function buildHostShellExecutionPlan(input: {
       capability: noneCapability(input.platform, "Explicit host execution runs as the current user without OS confinement."),
       fallbackReason: "none" as const,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host",
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":explicit-host" + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
     });
   }
 
@@ -231,12 +235,13 @@ export function buildHostShellExecutionPlan(input: {
       substrate: "none" as const,
       capability: noneCapability(input.platform, "The OS shell sandbox is disabled for this host."),
       fallbackReason,
-      requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
+      // Worker-only confinement can publish the boundary state with the shell scope off; that plain child asks every command too.
+      requiresExplicitUserApproval: askEveryCommand,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
     });
   }
 
-  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: a saved exact or prefix allow rule runs it unasked and everything else asks (decision tree, host shell row; this replaces the 2026-10-25 exact-only rule). The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
+  // A requested sandbox that is unavailable (missing bwrap/socat, start failure) yields an honest plain child on every platform. It takes the same policy path as explicit sandbox-off, floor and deny rules included, so it needs no one-shot permit: a saved exact or prefix allow rule runs it unasked and everything else asks (decision tree, host shell row; this replaces the 2026-10-25 exact-only rule). Exception: while boot cannot verify the Ave home read boundary, the plan requires explicit approval and the permission floor asks for every command, with no saved-rule or mode pass. The fallback reason stays on the plan so the approval card, the tool result and audit can say the sandbox was unavailable.
   if (requestedSandbox && input.activeCapability.kind === "none") {
     const fallbackReason: HostShellFallbackReason = "requested-sandbox-unavailable";
     const capability = noneCapability(
@@ -253,8 +258,8 @@ export function buildHostShellExecutionPlan(input: {
       substrate: "none" as const,
       capability,
       fallbackReason,
-      requiresExplicitUserApproval: false,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
+      requiresExplicitUserApproval: askEveryCommand,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
     });
   }
 
@@ -297,7 +302,7 @@ export function buildHostShellExecutionPlan(input: {
       capability,
       fallbackReason,
       requiresExplicitUserApproval: true,
-      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason,
+      identity: HOST_SHELL_EXECUTION_PLAN_VERSION + ":" + input.platform + ":" + fallbackReason + (askEveryCommand ? ASK_EVERY_COMMAND_SUFFIX : ""),
     });
   }
 
@@ -322,13 +327,27 @@ export function buildHostShellExecutionPlan(input: {
   });
 }
 
+const ASK_EVERY_COMMAND_SUFFIX = ":ask";
+
+// An unconfined plan (unavailable sandbox, shell scope off, or explicit host) that boot marked for a human ask on every command (an unverifiable
+// Ave home boundary). The permission floor reads this, so saved allows, auto review and mode allows cannot run it unasked.
+// Outside that state an explicit-host plan keeps its ordinary rule and mode handling.
+export function requiresUnsandboxedShellAsk(plan: HostShellExecutionPlan | undefined): boolean {
+  if (plan === undefined || plan.mode !== "plain" || plan.sandboxed || plan.capability.kind !== "none" ||
+    plan.requiresExplicitUserApproval !== true || !plan.identity.endsWith(ASK_EVERY_COMMAND_SUFFIX)) return false;
+  return plan.executionRequest === "host"
+    ? plan.fallbackReason === "none"
+    : plan.executionRequest === "default" && plan.fallbackReason !== "none";
+}
+
 // An unpinned native parser needs one-shot authority before startup. Existing
 // explicit-host and partial-sandbox gates remain independent of startup proof.
+// A plan marked for the unverifiable Ave home boundary (including shell scope off) needs the same one-shot authority.
 export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan, toolName?: string): boolean {
   return (plan.mode === "plain" && toolName === "powershell" && !isPowerShellStartupPinned(plan.platform, plan)) || (plan.mode === "plain" &&
     (plan.executionRequest === "host" || plan.requestedSandbox === true) &&
     plan.capability.kind === "none" &&
-    plan.requiresExplicitUserApproval === true);
+    plan.requiresExplicitUserApproval === true) || requiresUnsandboxedShellAsk(plan);
 }
 
 // Schema-relevant input normalization shared by the host approval surface and the final native shell permit. It lives in this leaf module (which imports neither approval-gate nor the permit module) so the two host boundaries never form a runtime cycle through their shared parser.

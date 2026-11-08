@@ -2,7 +2,7 @@ import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { UserOwnedSurface, UserOwnedSurfaceChoice } from "../shared/permissions-events.js";
 
 export type PermissionPipelineOutcome = "allow" | "sandbox-auto" | "ask" | "ask-forced" | "deny";
-export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal";
+export type PermissionFloorCode = "protected-path" | "critical-delete" | "project-escape" | "other-principal" | "sandbox-unavailable";
 
 export interface PermissionDecisionRequest {
   tool: { name: string; source: ToolSource; kind: ToolCategory | "mcp" | "file-write"; readOnlyHint?: boolean };
@@ -15,8 +15,11 @@ export interface PermissionDecisionRequest {
   paths?: readonly { lexical: string; canonical: string; effect: "read" | "write" }[];
   admissionDenial?: { code: string; reason: string };
   floor?: { code: PermissionFloorCode; reason: string };
+  // The floor is sandbox-unavailable with no other floor behind it, so its card may offer "This session".
+  floorSessionEligible?: true;
   exfiltration?: { reason: string };
-  rules?: { deny?: string; ask?: string; allow?: string; remembered?: string };
+  // `floorSession`: a "This session" allow approved on this floor's own card in this conversation; ordinary rules never pass a floor.
+  rules?: { deny?: string; ask?: string; allow?: string; remembered?: string; floorSession?: string };
   secretRead?: boolean;
   fileWrite?: { insideProject: boolean; checkpointAvailable: boolean; directoryApproved?: boolean };
   shell?: { sandboxed: boolean; readOnlyProven: boolean; unproven: boolean; destructive: boolean; escalated?: boolean };
@@ -31,6 +34,12 @@ export interface PermissionPipelineDecision {
   reason: string;
   reviewRequired?: true;
   requiresCodeCheckpoint?: true;
+}
+
+// Whether a forced card for `result` may offer "This session": only the sandbox-unavailable floor with no other floor behind it.
+export function offersFloorSessionAllow(result: { readonly pipelineRequest?: PermissionDecisionRequest } | undefined): boolean {
+  const request = result?.pipelineRequest;
+  return request?.floorSessionEligible === true && request.floor?.code === "sandbox-unavailable";
 }
 
 export const NO_APPROVER_MESSAGE = "Nobody can approve this request; do not retry.";
@@ -72,9 +81,16 @@ export function decidePermission(request: PermissionDecisionRequest): Permission
     return { outcome: "deny", reasonCode: "unsupported-tool-kind", reason: "The tool kind is not supported by the permission contract." };
   }
   if (request.floor) {
-    return request.headless
-      ? { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE }
-      : { outcome: "ask-forced", reasonCode: request.floor.code, reason: request.floor.reason };
+    if (request.headless) return { outcome: "deny", reasonCode: "no-approver", reason: NO_APPROVER_MESSAGE };
+    if (request.floor.code === "sandbox-unavailable" && request.floorSessionEligible && request.rules?.floorSession !== undefined &&
+      request.rules.ask === undefined && !request.manualRerun && !request.exfiltration) {
+      // The grant answers only this floor: the ordinary stages still decide without a reviewer, and anything short of their allow keeps the floor's card.
+      const { floor: _floor, floorSessionEligible: _eligible, reviewer: _reviewer, ...ordinary } = request;
+      const decided = decidePermission(ordinary);
+      if (decided.outcome === "allow") return { outcome: "allow", reasonCode: "floor-session-allow", reason: request.rules.floorSession };
+      if (decided.outcome === "deny") return decided;
+    }
+    return { outcome: "ask-forced", reasonCode: request.floor.code, reason: request.floor.reason };
   }
   if (request.manualRerun) return askHuman(request, "manual-rerun", "The rerun requires fresh human approval.");
   if (request.rules?.ask !== undefined) {

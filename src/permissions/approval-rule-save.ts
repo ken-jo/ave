@@ -113,6 +113,27 @@ export async function saveApprovalCardRule(
   if (answer.decision !== action || answer.scope !== (scope === "session" ? "session" : "persistent")) {
     return fail("invalid-rule", "The rule's action and scope do not match the recorded decision");
   }
+  // The sandbox-unavailable floor card saves only its session grant for this conversation; no rule text is involved.
+  const floorGrant = snapshot.floorSessionGrant;
+  if (floorGrant !== undefined) {
+    if (action !== "allow" || scope !== "session" || edited !== undefined) {
+      return fail("one-shot-not-recordable", "This request can only allow shell commands for this session");
+    }
+    if (answer.displayedVerdictAtApproval !== snapshot.verdictAtApproval) return fail("verdict-mismatch");
+    if (!permissionManager) return fail("no-permission-manager");
+    const sessionId = snapshot.sessionId;
+    if (sessionId === undefined) return fail("missing-session", "This request has no conversation session");
+    const saved = { ok: true, action: "allow", scope: "session", pattern: floorGrant.code, edited: false } as const;
+    try {
+      await refreshApprovalPersistence(authority);
+      await beforePersist?.(saved);
+      await refreshApprovalPersistence(authority);
+      permissionManager.addFloorSessionGrant(sessionId, floorGrant);
+    } catch (error) {
+      return fail("rule-save-failed", errorMessage(error));
+    }
+    return saved;
+  }
   const target = targetOf(snapshot);
   if (target === undefined) return fail("invalid-rule", "This request has no rule a card can save");
   if (target.kind === "shell" && action === "deny" && !target.context.denyAllowed) return fail("one-shot-not-recordable", "This request cannot create a deny rule");

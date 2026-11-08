@@ -230,6 +230,8 @@ function homePrivacyReasonText(error: NonNullable<SandboxWindowsStatusInfo["home
     case "owner-claim-failed": return t("permissionsTab.homePrivacyOwnerClaimFailed");
     case "reparse-point": return t("permissionsTab.homePrivacyReparsePoint");
     case "posix-root-unsafe": return t("permissionsTab.homePrivacyPosixRootUnsafe");
+    case "boundary-link": return t("permissionsTab.homePrivacyBoundaryLink");
+    case "boundary-unlisted": return t("permissionsTab.homePrivacyBoundaryUnlisted");
     case "extra-principals": return t("permissionsTab.homePrivacyExtraPrincipals", {
       principals: (error.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
     });
@@ -251,6 +253,8 @@ const HOME_PRIVACY_FIX_KEY = {
   "owner-claim-failed": null,
   "reparse-point": "permissionsTab.homePrivacyFixReparsePoint",
   "posix-root-unsafe": "permissionsTab.homePrivacyFixPosixRoot",
+  "boundary-link": "permissionsTab.homePrivacyFixBoundaryLink",
+  "boundary-unlisted": "permissionsTab.homePrivacyFixBoundaryUnlisted",
   "extra-principals": null,
   "workspace-extra-principals": null,
 } as const satisfies Record<NonNullable<SandboxWindowsStatusInfo["homePrivacyError"]>["category"], string | null>;

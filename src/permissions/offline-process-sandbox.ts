@@ -9,6 +9,7 @@ import {
   buildPerCommandSandboxCustomConfig, getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths, isOfflineProcessConfinementActive,
 } from "./asrt-sandbox.js";
+import { createAveHomeBoundarySnapshot } from "./ave-home-boundary-snapshot.js";
 import { detectSandboxCapability } from "./sandbox-capability.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
@@ -81,11 +82,11 @@ export async function wrapOfflineProcess(input: OfflineProcessInput): Promise<Of
   const systemReads = process.platform === "darwin"
     ? ["/bin/sh", "/usr/bin/env", "/private/var/select/sh", "/usr/lib", "/System/Library", "/Library/Fonts", "/dev/null", "/dev/random", "/dev/urandom"]
     : ["/bin/sh", "/usr/bin/env", "/usr/lib", "/usr/lib64", "/lib", "/lib64", "/usr/share/fonts", "/usr/share/fontconfig", "/etc/fonts", "/etc/ld.so.cache", "/etc/localtime", "/etc/passwd", "/dev/null", "/dev/random", "/dev/urandom"];
-  const policy = buildPerCommandSandboxCustomConfig({
+  const policy = createAveHomeBoundarySnapshot().run(() => buildPerCommandSandboxCustomConfig({
     allowWrite: [output], allowRead: [source, output, ...systemReads],
     denyRead: getDefaultSensitiveReadDenyPaths(), denyWrite: getDefaultSensitiveWriteDenyPaths(),
     pinWriteRoots: true,
-  });
+  }));
   if (!policy?.filesystem || !(policy.filesystem.allowWrite ?? []).some(entry => entry === output)) {
     throw new TableDocumentError("engine-confinement-unavailable", "Offline output directory was not admitted.");
   }
