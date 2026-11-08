@@ -59,7 +59,7 @@ import { DevConsoleToggle } from "./components/DevConsoleToggle.js";
 import { ApprovalLaneCard, unattributedRequestLabel } from "./components/permissions/ApprovalDock.js";
 import { OverlayCardRegion } from "./components/OverlayCardRegion.js";
 import type { ApprovalRequest } from "./types.js";
-import type { UserApprovalVerdict } from "../../shared/permissions-events.js";
+import type { UserApprovalHitPayload, UserApprovalVerdict } from "../../shared/permissions-events.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
 
 import { getApi, getPluginViewDescription, getPluginViewLabel, isDarwin, toViewKey } from "./api-client.js";
@@ -167,8 +167,10 @@ export function App() {
     visibleToast: statusVisibleToast,
     pendingCount: statusPendingCount,
     pushToast: statusPushToast,
+    upsertToast: statusUpsertToast,
     removeToast: statusRemoveToast,
     removeApprovalToasts: statusRemoveApprovalToasts,
+    suppressToastKind: statusSuppressToastKind,
   } = useStatusBar({ api });
 
   // Notification clicks restore and focus the window through notifyClick; other toasts carry no notification.
@@ -406,6 +408,8 @@ export function App() {
         severity: "info",
         message: t("app.conversationSetAside"),
         ttlMs: 8_000,
+        kind: "conversation-set-aside",
+        suppressible: true,
       });
     }
     return adopted.chatGroupId;
@@ -921,7 +925,20 @@ export function App() {
     [overlayQueue],
   );
   // Subscribe once per window to avoid duplicate permission-memory and reviewer disclosures across tiles.
-  const { userApprovalHitToast, reviewerSuggestion } = usePermissionSignals();
+  // A re-applied approval is disclosed in the window's notice queue. The verdict tier sets the severity: a high-risk reuse is
+  // an alert that stays until dismissed and cannot be silenced; low and medium reuses repeat on every cached hit, so they
+  // offer "Don't show again". One stable id: the newest hit replaces the previous one instead of queueing behind it.
+  const handleUserApprovalHit = useCallback((hit: UserApprovalHitPayload) => {
+    const high = hit.verdictAtApproval === "high";
+    const scope = hit.scope === "persistent" ? t("chatView.approvalScopePersistent")
+      : hit.scope === "global" ? t("chatView.approvalScopeGlobal") : t("chatView.approvalScopeSession");
+    statusUpsertToast("approval-memory-hit", {
+      severity: high ? "error" : hit.verdictAtApproval === "medium" ? "warning" : "success",
+      message: `${t("chatView.approvalMemoryApplied")} · ${hit.toolName} · ${scope} · ${hit.verdictAtApproval.toUpperCase()}`,
+      ...(high ? { kind: "approval-memory-hit-high" } : { kind: "approval-memory-hit", suppressible: true as const }),
+    });
+  }, [statusUpsertToast, t]);
+  const { reviewerSuggestion } = usePermissionSignals({ onUserApprovalHit: handleUserApprovalHit });
   const [exactDenyDraft, setExactDenyDraft] = useState<ExactDenyDraft | null>(null);
   // Only out-of-directory cards consume /allow proposals; other approval forms cannot display them.
   const approvalSentenceTarget = useMemo(() => {
@@ -2539,40 +2556,16 @@ export function App() {
                       onDismiss={handleMarketplaceAnnouncementDismiss}
                       onAction={handleMarketplaceAnnouncementAction}
                     />
-                    {/* Verdict-tier tint surfaces the trust gradient:
-                        low → --success (informational re-approval), medium →
-                        --warning, high → --destructive + role="alert" (the user
-                        is re-using a high-risk approval). Semantic tokens, so a
-                        theme bundle supplies the actual color. */}
-                    {userApprovalHitToast && (() => {
-                      const verdict = userApprovalHitToast.verdictAtApproval;
-                      const isHigh = verdict === "high";
-                      const token =
-                        verdict === "high" ? "destructive"
-                        : verdict === "medium" ? "warning"
-                        : "success";
-                      const tone = `border-[hsl(var(--${token})/0.4)] bg-[hsl(var(--${token})/0.1)] text-[hsl(var(--${token}))]`;
-                      return (
-                        <div
-                          data-testid="user-approval-hit-toast"
-                          data-verdict={verdict}
-                          role={isHigh ? "alert" : "status"}
-                          aria-live={isHigh ? "assertive" : "polite"}
-                          className={`rounded-md border px-3 py-2 text-xs ${tone}`}
-                        >
-                          <span className="font-medium">{t("chatView.approvalMemoryApplied")}</span>
-                          <span className="ml-2 text-muted-foreground">
-                            {userApprovalHitToast.toolName} · {userApprovalHitToast.scope === "persistent" ? t("chatView.approvalScopePersistent") : userApprovalHitToast.scope === "global" ? t("chatView.approvalScopeGlobal") : t("chatView.approvalScopeSession")} · {verdict.toUpperCase()}
-                          </span>
-                        </div>
-                      );
-                    })()}
                     <StatusBar
                       persistent={statusPersistent}
                       visibleToast={statusVisibleToast}
                       pendingCount={statusPendingCount}
                       onToastClick={handleStatusToastClick}
                       onToastDismiss={(toast) => statusRemoveToast(toast.id)}
+                      onToastSuppress={(toast) => {
+                        if (toast.kind === undefined) throw new Error("[notices] a suppressible notice reached the strip without a kind");
+                        statusSuppressToastKind(toast.kind);
+                      }}
                     />
                   </div>
                   <DevToolsPanel

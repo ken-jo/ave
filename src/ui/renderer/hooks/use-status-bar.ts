@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useModalOpen } from "../../../components/ui/modal-presence.js";
+import { isNoticeSuppressed, suppressNotice } from "./status-bar/notice-suppression.js";
 import type { AveApi } from "../types.js";
 import { LONG_TOAST_TTL_MS } from "../constants.js";
 import type { PersistentItem, ToastItem } from "./status-bar/types.js";
@@ -53,17 +55,26 @@ type ToastInput = {
   sticky?: boolean;
   notification?: ToastItem["notification"];
   action?: ToastItem["action"];
+  kind?: string;
+  suppressible?: true;
 };
 
 function createToastItem(id: string, input: ToastInput, defaultToastTtlMs: number): ToastItem {
+  if (input.suppressible === true && (input.kind === undefined || input.severity === "error")) {
+    throw new Error(`[notices] a suppressible notice needs a kind and cannot be an error: ${input.message}`);
+  }
   const ttlMs = resolveToastTtlMs(input.message, input.ttlMs ?? defaultToastTtlMs);
+  // An error stays until it is dismissed: a person who looked away must still find it. Brief confirmations keep their TTL.
+  const sticky = input.sticky === true || input.severity === "error";
   return {
     id,
     severity: input.severity,
     message: input.message,
     ttlMs,
     expiresAt: Date.now() + ttlMs,
-    ...(input.sticky === true ? { sticky: true as const } : {}),
+    ...(sticky ? { sticky: true as const } : {}),
+    ...(input.kind !== undefined ? { kind: input.kind } : {}),
+    ...(input.suppressible === true ? { suppressible: true as const } : {}),
     notification: input.notification,
     ...(input.action ? { action: input.action } : {}),
   };
@@ -99,6 +110,7 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     (input: ToastInput) => {
       const id = `toast:${++toastCounterRef.current}`;
       const item = createToastItem(id, input, defaultToastTtlMs);
+      if (item.suppressible && item.kind !== undefined && isNoticeSuppressed(item.kind)) return id;
       setToasts((prev) => {
         return appendToast(prev, item);
       });
@@ -107,11 +119,13 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     [defaultToastTtlMs],
   );
 
-  /** Replace an existing toast in its current queue position, or append it when absent. Install progress uses a stable ID so
-   * every download chunk updates one live status item instead of creating a growing notification backlog. */
+  /** Replace an existing toast in its current queue position, or append it when absent. A producer that reports the same
+   * subject again (an install result, a provider swap, a re-applied approval) uses a stable ID so the newer report replaces
+   * the older one instead of queueing behind it. */
   const upsertToast = useCallback(
     (id: string, input: ToastInput) => {
       const item = createToastItem(id, input, defaultToastTtlMs);
+      if (item.suppressible && item.kind !== undefined && isNoticeSuppressed(item.kind)) return id;
       setToasts((prev) => {
         const index = prev.findIndex((toast) => toast.id === id);
         if (index === -1) return appendToast(prev, item);
@@ -146,14 +160,35 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     [removeToastsWhere],
   );
 
-  // Only the queue head (toasts[0]) is exposed as `visibleToast`. When the
-  // head's TTL elapses (or removeToast dismisses it early), the next item
-  // in the queue becomes the new head and gets its own timer. This prevents
-  // a burst of install-result events from rendering multiple toasts at once.
-  const visibleToast = toasts[0] ?? null;
+  /** "Don't show again": silence this kind from now on and drop every queued notice of it. */
+  const suppressToastKind = useCallback(
+    (kind: string) => {
+      suppressNotice(kind);
+      removeToastsWhere((t) => t.kind === kind);
+    },
+    [removeToastsWhere],
+  );
+
+  // While a modal dialog is open the queue is held: nothing shows, nothing expires, and nothing is dropped. The modal owns
+  // the person's attention and focus; a notice drawn behind its backdrop would expire unread. The moment it closes the head
+  // shows with its full time, measured from the release. Tracked during render (not in an effect) so the first frame
+  // after the close already carries the release time and cannot schedule an already-elapsed timer.
+  const modalOpen = useModalOpen();
+  const [heldByModal, setHeldByModal] = useState(modalOpen);
+  const [releasedAt, setReleasedAt] = useState(0);
+  if (heldByModal !== modalOpen) {
+    setHeldByModal(modalOpen);
+    if (!modalOpen) setReleasedAt(Date.now());
+  }
+
+  // Only the queue head (toasts[0]) is exposed as `visibleToast`, so at most one notice is visible per queue. When the
+  // head's TTL elapses (or removeToast dismisses it early), the next item in the queue becomes the new head and gets its
+  // own timer, so a burst of events never renders several notices at once.
+  const visibleToast = modalOpen ? null : (toasts[0] ?? null);
   useEffect(() => {
     if (visibleToast === null || visibleToast.sticky) return;
-    const delay = Math.max(0, visibleToast.expiresAt - Date.now());
+    const shownUntil = Math.max(visibleToast.expiresAt, releasedAt + (visibleToast.ttlMs ?? defaultToastTtlMs));
+    const delay = Math.max(0, shownUntil - Date.now());
     const id = setTimeout(() => {
       setToasts((prev) => {
         if (prev[0]?.id !== visibleToast.id) return prev;
@@ -164,7 +199,7 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
       });
     }, delay);
     return () => clearTimeout(id);
-  }, [defaultToastTtlMs, visibleToast]);
+  }, [defaultToastTtlMs, releasedAt, visibleToast]);
 
   const upsertPersistent = useCallback((item: PersistentItem) => {
     setPersistent((prev) => {
@@ -188,14 +223,29 @@ export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
     /** The single toast currently visible in the status bar (queue head). */
     visibleToast,
     /** Number of queued toasts waiting behind the visible one. */
-    pendingCount: Math.max(0, toasts.length - 1),
+    pendingCount: visibleToast === null ? 0 : Math.max(0, toasts.length - 1),
     pushToast,
     upsertToast,
     removeToast,
     removeApprovalToasts,
+    suppressToastKind,
     upsertPersistent,
     removePersistent,
   };
+}
+
+/** A notice drawn inline beside the controls it reports on (a settings tab's last action). The newest report replaces the
+ * previous one, and it obeys the same rules as every other notice because it is the same queue. */
+export function useInlineNotice() {
+  const { upsertToast, removeToast, visibleToast } = useStatusNotices();
+  const show = useCallback(
+    (severity: ToastItem["severity"], message: string) => {
+      upsertToast("inline-notice", { severity, message });
+    },
+    [upsertToast],
+  );
+  const dismiss = useCallback((toast: ToastItem) => removeToast(toast.id), [removeToast]);
+  return { show, notice: visibleToast, dismiss };
 }
 
 /** The WINDOW's notice queue: `useStatusNotices` with the producers that report on the window attached. Subscribed once,

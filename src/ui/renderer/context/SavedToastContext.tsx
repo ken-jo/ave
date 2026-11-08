@@ -1,5 +1,7 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext } from "react";
 import { useTranslation } from "../../../i18n/react.js";
+import { NoticeToast } from "../components/StatusBar.js";
+import { useStatusNotices, type ToastItem } from "../hooks/use-status-bar.js";
 
 const SavedToastContext = createContext<(() => void) | null>(null);
 
@@ -22,25 +24,30 @@ export function useNotifySaved(): () => void {
   return cb;
 }
 
-export function SavedToastFloating({ at }: { at: number | null }) {
+/** How long "Saved" stays: a confirmation of what the person just did, read at a glance. */
+export const SAVED_NOTICE_TTL_MS = 2400;
+
+/**
+ * The settings save confirmation: its own notice queue, so it obeys the shared notice rules (one at a time, held behind a
+ * modal, auto-dismissing) while staying where the eye lands after Save — the top of the settings route, not the window's
+ * strip at the foot of the canvas. Repeated saves replace the one "Saved" notice rather than queueing copies of it.
+ */
+export function useSavedNotice() {
   const { t } = useTranslation();
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    if (at == null) return;
-    setVisible(true);
-    const timer = setTimeout(() => setVisible(false), 2400);
-    return () => clearTimeout(timer);
-  }, [at]);
-  if (!visible) return null;
+  const notices = useStatusNotices({ defaultToastTtlMs: SAVED_NOTICE_TTL_MS });
+  const { upsertToast, removeToast } = notices;
+  const notifySaved = useCallback(() => {
+    upsertToast("settings-saved", { severity: "success", message: t("savedToast.saved"), kind: "settings-saved" });
+  }, [t, upsertToast]);
+  const dismiss = useCallback((toast: ToastItem) => removeToast(toast.id), [removeToast]);
+  return { notifySaved, visibleToast: notices.visibleToast, dismiss };
+}
+
+export function SavedToastFloating({ toast, onDismiss }: { toast: ToastItem | null; onDismiss: (toast: ToastItem) => void }) {
+  if (toast === null) return null;
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      data-testid="settings-saved-toast"
-      className="pointer-events-none absolute left-1/2 top-2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-success px-4 py-1.5 text-sm font-medium text-success-foreground shadow-lg ring-1 ring-success/(--opacity-medium) motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-top-2 motion-safe:duration-[var(--motion-normal)]"
-    >
-      <span aria-hidden="true">✓</span>
-      <span>{t("savedToast.saved")}</span>
+    <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center px-4" data-testid="settings-saved-toast">
+      <NoticeToast key={toast.id} toast={toast} onDismiss={onDismiss} wrap className="pointer-events-auto shadow-lg" />
     </div>
   );
 }

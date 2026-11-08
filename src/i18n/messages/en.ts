@@ -4933,6 +4933,7 @@ export const en = {
   // statusBar
   "statusBar.toastDetailsAction": "Learn more",
   "statusBar.toastDismissAriaLabel": "Dismiss notification",
+  "statusBar.toastSuppressAction": "Don't show again",
 
   /** Loading and failure copy for persisted child transcripts. */
   "subAgentCard.statusError": "Error",

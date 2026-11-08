@@ -502,6 +502,20 @@ determine whether a tile can split or a panel can dock.
 - Notification hierarchy (pick the narrowest surface that fits; it serves the Attention principle — when no surface is necessary, send nothing):
   - **Inline status** next to the affected control — the default for operation results.
   - **Toast** for transient confirmations of a user-initiated action (e.g. saved); auto-dismissing, never load-bearing.
+  - Notice rules. Every transient notice is a notice queue (`useStatusNotices`) drawn by `NoticeToast`
+    (`src/ui/renderer/components/StatusBar.tsx`), so the rules are enforced once:
+    - severity sets the role: an error is `role="alert"`, everything else `role="status"`;
+    - an error stays until dismissed and every notice has a close button; brief confirmations auto-dismiss;
+    - a queue shows one notice at a time and later ones wait behind it (`+N`). Each strip owns one
+      queue — the window strip, each tile's composer dock, the side chat, the settings save
+      confirmation — so a tile's notice never repeats in the tile beside it;
+    - while a modal dialog is open (`DialogContent` registers in `modal-presence.ts`) queues are
+      held: nothing shows, expires or is dropped, and the head shows with its full time once the
+      modal closes. A notice never takes focus;
+    - a notice that repeats by nature (a re-applied low/medium approval, a set-aside conversation)
+      is marked `suppressible` and offers "Don't show again", persisted per kind; errors cannot be;
+    - progress is drawn in context (the installing row, the running panel), never as a global toast;
+    - width is capped at `min(100%, 24rem)` and the notice fades in on `--motion-fast`.
   - **Banner** for persistent, page-scoped conditions that need action (e.g. update available); dismissible, stays until resolved.
   - **OS notification** only for events the user must see while the window is unfocused; always mirrored by in-app state.
 

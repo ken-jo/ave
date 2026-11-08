@@ -20,7 +20,9 @@ import {
   SelectValue,
 } from "../../../components/ui/select.js";
 import type { UserApprovalScope, UserApprovalVerdict } from "../../../shared/permissions-events.js";
-import { EXEC_MODE_OPTIONS, LONG_TOAST_TTL_MS } from "../constants.js";
+import { EXEC_MODE_OPTIONS } from "../constants.js";
+import { NoticeToast } from "../components/StatusBar.js";
+import { useInlineNotice } from "../hooks/use-status-bar.js";
 import {
   isExecutionMode,
   normalizeExecutionMode,
@@ -466,21 +468,11 @@ export function PermissionsTab({
   const [panelLoad, setPanelLoad] = useState<Record<PanelLoad, PanelLoadState>>(INITIAL_PANEL_LOAD);
 
 
-  const [banner, setBanner] = useState<{ type: "error" | "warn"; msg: string } | null>(null);
-  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => {
-    if (bannerTimerRef.current !== null) {
-      clearTimeout(bannerTimerRef.current);
-      bannerTimerRef.current = null;
-    }
-  }, []);
-
-  const showBanner = useCallback((type: "error" | "warn", msg: string) => {
-    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    setBanner({ type, msg });
-    bannerTimerRef.current = setTimeout(() => setBanner(null), LONG_TOAST_TTL_MS);
-  }, []);
+  const { show: showNotice, notice: banner, dismiss: dismissBanner } = useInlineNotice();
+  const showBanner = useCallback(
+    (type: "error" | "warn", msg: string) => showNotice(type === "warn" ? "warning" : "error", msg),
+    [showNotice],
+  );
 
   // "unknown" until the first host read lands, and whenever the host reports a mode this tab cannot name: no radio is selected rather than a wrong one.
   const [mode, setMode] = useState<ExecutionModeDisplay>("unknown");
@@ -1451,27 +1443,7 @@ export function PermissionsTab({
         <HomeContentReview />
 
         {/* ── 인라인 배너 (§F9 — alert 대체) ── */}
-        {banner && (
-          <div
-            role={banner.type === "error" ? "alert" : "status"}
-            aria-live={banner.type === "error" ? "assertive" : "polite"}
-            aria-atomic="true"
-            className={`flex items-start gap-2 rounded-md border px-3 py-2 text-body-sm ${banner.type === "error" ? "border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) text-destructive" : "border-warning/(--opacity-medium) bg-warning/(--opacity-soft) text-warning"}`}
-          >
-            <span className="mt-0.5 flex-shrink-0">{banner.type === "error" ? "⚠" : "🔒"}</span>
-            <span>{banner.msg}</span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="ml-auto h-6 w-6 flex-shrink-0 opacity-60 hover:opacity-100"
-              onClick={() => setBanner(null)}
-              aria-label={t("permissionsTab.closeBannerAriaLabel")}
-            >
-              ✕
-            </Button>
-          </div>
-        )}
+        {banner && <NoticeToast key={banner.id} toast={banner} onDismiss={dismissBanner} wrap />}
 
         {exactDenyDraft ? (
           <div

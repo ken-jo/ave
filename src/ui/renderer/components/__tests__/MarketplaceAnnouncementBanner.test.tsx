@@ -32,6 +32,17 @@ describe("MarketplaceAnnouncementBanner", () => {
     expect(banner.textContent).toContain("Scheduled maintenance");
   });
 
+  it("lets severity set the role: critical is an alert, the rest are status", () => {
+    const { rerender } = render(
+      <MarketplaceAnnouncementBanner announcements={[announcement(1, "Outage", "critical")]} onDismiss={vi.fn()} onAction={vi.fn()} />,
+    );
+    expect(screen.getByTestId("marketplace-announcement-banner")).toHaveAttribute("role", "alert");
+    rerender(
+      <MarketplaceAnnouncementBanner announcements={[announcement(2, "Notes", "info")]} onDismiss={vi.fn()} onAction={vi.fn()} />,
+    );
+    expect(screen.getByTestId("marketplace-announcement-banner")).toHaveAttribute("role", "status");
+  });
+
   it("uses destructive tokens for critical announcements", () => {
     render(
       <MarketplaceAnnouncementBanner

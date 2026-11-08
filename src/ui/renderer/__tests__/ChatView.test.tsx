@@ -2713,6 +2713,9 @@ describe("ChatView", () => {
 });
 
 describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/3)", () => {
+  // The disclosure is a notice in the window's queue; its kind names it, its severity carries the verdict tier.
+  const APPROVAL_HIT = '[data-notice-kind^="approval-memory-hit"]';
+
   type HitCb = (payload: {
     toolName: string;
     scope: "session" | "persistent";
@@ -2736,7 +2739,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       fire({ toolName: "fs_write", scope: "persistent", verdictAtApproval: "low" });
     });
     const toast = await waitFor(() => {
-      const el = container.querySelector('[data-testid="user-approval-hit-toast"]');
+      const el = container.querySelector(APPROVAL_HIT);
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -2752,7 +2755,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       fire({ toolName: "bash_run", scope: "session", verdictAtApproval: "medium" });
     });
     const toast = await waitFor(() => {
-      const el = container.querySelector('[data-testid="user-approval-hit-toast"]');
+      const el = container.querySelector(APPROVAL_HIT);
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -2761,30 +2764,53 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     expect(toast.textContent).toContain("MEDIUM");
   });
 
-  it("verdict-tier tint uses semantic theme tokens (low=success, medium=warning, high=destructive)", async () => {
+  it("verdict tier sets the notice severity (low=success, medium=warning, high=error)", async () => {
     const { container, fire } = await setupWithCallback();
     const cases: Array<["low" | "medium" | "high", string]> = [
       ["low", "success"],
       ["medium", "warning"],
-      ["high", "destructive"],
+      ["high", "error"],
     ];
-    for (const [verdict, expectedToken] of cases) {
+    for (const [verdict, severity] of cases) {
       await act(async () => {
         fire({ toolName: `tool_${verdict}`, scope: "session", verdictAtApproval: verdict });
       });
-      const toast = await waitFor(() => {
-        const el = container.querySelector(
-          `[data-testid="user-approval-hit-toast"][data-verdict="${verdict}"]`,
-        );
-        expect(el).not.toBeNull();
-        return el as HTMLElement;
+      await waitFor(() => {
+        const el = container.querySelector(APPROVAL_HIT);
+        expect(el?.textContent).toContain(`tool_${verdict}`);
+        expect(el?.getAttribute("data-severity"), `verdict=${verdict}`).toBe(severity);
       });
-      // Class string uses `hsl(var(--<token>)/...)` form — assert the token name appears (theme system v2 — bundle-invariant, no
-      // palette literals).
-      expect(
-        toast.className,
-        `verdict=${verdict} expected token "--${expectedToken}"`,
-      ).toContain(`--${expectedToken}`);
+    }
+  });
+
+  it("only low and medium hits, which repeat on every cached approval, offer Don't show again", async () => {
+    const { container, fire } = await setupWithCallback();
+    await act(async () => {
+      fire({ toolName: "fs_write_sensitive", scope: "session", verdictAtApproval: "high" });
+    });
+    await waitFor(() => expect(container.querySelector(APPROVAL_HIT)).not.toBeNull());
+    expect(container.querySelector('[data-testid="status-toast-suppress"]')).toBeNull();
+    await act(async () => {
+      fire({ toolName: "fs_read", scope: "session", verdictAtApproval: "low" });
+    });
+    const suppress = await waitFor(() => {
+      const el = container.querySelector<HTMLButtonElement>('[data-testid="status-toast-suppress"]');
+      expect(el).not.toBeNull();
+      return el as HTMLButtonElement;
+    });
+    try {
+      await act(async () => {
+        fireEvent.click(suppress);
+      });
+      // The strip draws its last content once more while it leaves; only a notice outside that exit copy is "shown".
+      const shown = () => container.querySelector(`[data-testid="status-bar-presence"]:not([data-leaving]) ${APPROVAL_HIT}`);
+      expect(shown()).toBeNull();
+      await act(async () => {
+        fire({ toolName: "fs_read_again", scope: "session", verdictAtApproval: "low" });
+      });
+      expect(container.textContent).not.toContain("fs_read_again");
+    } finally {
+      window.localStorage.removeItem("ave.notices.suppressed");
     }
   });
 
@@ -2795,7 +2821,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     });
     const toast = await waitFor(() => {
       const el = container.querySelector(
-        '[data-testid="user-approval-hit-toast"][data-verdict="high"]',
+        '[data-notice-kind="approval-memory-hit-high"]',
       );
       expect(el).not.toBeNull();
       return el as HTMLElement;
@@ -2810,7 +2836,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       fire({ toolName: "fs_read", scope: "persistent", verdictAtApproval: "low" });
     });
     const toast = await waitFor(() => {
-      const el = container.querySelector('[data-testid="user-approval-hit-toast"]');
+      const el = container.querySelector(APPROVAL_HIT);
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
@@ -2829,7 +2855,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
         verdictAtApproval: null as unknown as "low",
       });
     });
-    const toast = container.querySelector('[data-testid="user-approval-hit-toast"]');
+    const toast = container.querySelector(APPROVAL_HIT);
     expect(toast).toBeNull();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
@@ -2847,7 +2873,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       fire({ toolName: "second_tool", scope: "persistent", verdictAtApproval: "high" });
     });
     await waitFor(() => {
-      const el = container.querySelector('[data-testid="user-approval-hit-toast"]');
+      const el = container.querySelector(APPROVAL_HIT);
       expect(el).not.toBeNull();
       expect(el!.textContent).toContain("second_tool");
       expect(el!.textContent).not.toContain("first_tool");

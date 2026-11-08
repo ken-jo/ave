@@ -115,9 +115,11 @@ describe("McpTab browser authentication", () => {
     expect(mcp.servers).toHaveBeenCalledTimes(2);
     mcp.servers.mockResolvedValue([{ id: "remote-a", status: "connected", registeredTools: [], authStatus: "authenticated" }]);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "인증하기" })); });
-    expect(screen.getByRole("status")).toHaveTextContent("인증됨");
+    // The auth badge, not the polite "authenticated" notice that now sits beside it.
+    expect(screen.getAllByRole("status").find((el) => el.getAttribute("data-testid") !== "status-toast")).toHaveTextContent("인증됨");
     await act(async () => { resolve([{ id: "remote-a", status: "disconnected", registeredTools: [], authStatus: "required" }]); });
-    expect(screen.getByRole("status")).toHaveTextContent("인증됨");
+    // The auth badge, not the polite "authenticated" notice that now sits beside it.
+    expect(screen.getAllByRole("status").find((el) => el.getAttribute("data-testid") !== "status-toast")).toHaveTextContent("인증됨");
   });
 
   it("replaces authentication error details with localized guidance", async () => {

@@ -100,7 +100,7 @@ describe("useStatusBar — toast TTL eviction", () => {
 
     vi.setSystemTime(0);
     act(() => {
-      result.current.pushToast({ severity: "error", message: longMessage, ttlMs: 5000 });
+      result.current.pushToast({ severity: "warning", message: longMessage, ttlMs: 5000 });
     });
 
     const ttlMs = result.current.visibleToast?.ttlMs ?? 0;

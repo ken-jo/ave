@@ -24,7 +24,7 @@ import {
 import { cn } from "../../lib/utils.js";
 import { useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { SETTINGS_NARROW_ENTER_WIDTH, SETTINGS_NARROW_EXIT_WIDTH } from "../../shared/shell-geometry.js";
-import { SavedToastFloating, SavedToastProvider } from "./context/SavedToastContext.js";
+import { SavedToastFloating, SavedToastProvider, useSavedNotice } from "./context/SavedToastContext.js";
 import type { AveApi } from "./types.js";
 import { RolesTab } from "./tabs/RolesTab.js";
 import { PermissionsTab } from "./tabs/PermissionsTab.js";
@@ -184,9 +184,8 @@ export function SettingsContent({
   const [marketplaceKind, setMarketplaceKind] = useState<PackageKind | null>(null);
   const [pendingPermissions, setPendingPermissions] = useState(0);
 
-  // Count save notifications monotonically so two saves in one millisecond still retrigger the toast.
-  const [savedAt, setSavedAt] = useState<number | null>(null);
-  const notifySaved = useCallback(() => setSavedAt((n) => (n ?? 0) + 1), []);
+  // Each save replaces the one "Saved" notice in its own queue, so a second save restarts its time.
+  const { notifySaved, visibleToast: savedToast, dismiss: dismissSavedToast } = useSavedNotice();
   const handleSaved = useCallback(() => {
     notifySaved();
     onSaved();
@@ -351,7 +350,7 @@ export function SettingsContent({
           right pane) so the user sees it even after scrolling deep into
           a tab. Top-center placement keeps it in the spot the eye lands
           immediately after clicking Save. */}
-      <SavedToastFloating at={savedAt} />
+      <SavedToastFloating toast={savedToast} onDismiss={dismissSavedToast} />
 
       {/* Nav column. Wide: fixed sidebar (w-48 + border-r) that scrolls
           independently and stays put while the right pane scrolls. Narrow: the

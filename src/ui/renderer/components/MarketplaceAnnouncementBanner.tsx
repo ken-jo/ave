@@ -31,6 +31,8 @@ export function MarketplaceAnnouncementBanner({
       className={`flex h-11 items-center justify-between gap-2 overflow-hidden text-sm px-4 py-1.5 rounded-md mx-2 mt-2 shadow-lg ave-anim-slide-down border bg-popover ${palette.container}`}
       data-testid="marketplace-announcement-banner"
       data-level={current.level}
+      // Severity sets the role, as for every notice: a critical announcement is an alert, the rest are status.
+      role={current.level === "critical" ? "alert" : "status"}
     >
       <span className="min-w-0 flex-1">
         <MarqueeText

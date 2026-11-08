@@ -4935,6 +4935,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   // statusBar
   "statusBar.toastDetailsAction": "자세히 알아보기",
   "statusBar.toastDismissAriaLabel": "알림 닫기",
+  "statusBar.toastSuppressAction": "다시 표시 안 함",
 
   /** Loading and failure copy for persisted child transcripts. */
   "subAgentCard.statusError": "오류",

@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { NoticeToast } from "../components/StatusBar.js";
+import { useInlineNotice } from "../hooks/use-status-bar.js";
 import ReactMarkdown from "react-markdown";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -25,7 +27,6 @@ import {
 import { requestDirectInstall, requestUpdateReview } from "./git-marketplace/update-review-request.js";
 import { PluginConfigSchemaForm } from "./PluginConfigSchemaForm.js";
 import { PluginPerfTab } from "./PluginPerfTab.js";
-import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { isPluginInstallKey } from "../utils/plugin-install-aliases.js";
@@ -239,13 +240,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const [saving, setSaving] = useState(false);
   const [doctoringId, setDoctoringId] = useState<string | null>(null);
   const [protocolUpdatePath, setProtocolUpdatePath] = useState<PluginProtocolUpdatePath | null>(null);
-  const [banner, setBanner] = useState<{ type: BannerType; msg: string } | null>(null);
-  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showBanner = useCallback((type: BannerType, msg: string) => {
-    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    setBanner({ type, msg });
-    bannerTimerRef.current = setTimeout(() => setBanner(null), DEFAULT_TOAST_TTL_MS);
-  }, []);
+  const { show: showNotice, notice: banner, dismiss: dismissBanner } = useInlineNotice();
+  const showBanner = useCallback((type: BannerType, msg: string) => showNotice(type, msg), [showNotice]);
 
   const refreshContributionTrust = useCallback(async (pluginId: string | null): Promise<void> => {
     const refreshId = ++contributionTrustRefreshRef.current;
@@ -306,12 +302,6 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       setTrustUpdating(null);
     }
   }, [refreshContributionTrust, showBanner]);
-
-  useEffect(() => {
-    return () => {
-      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    };
-  }, []);
 
   // Refresh cards on install/uninstall results; only the latest read may replace visible state, while callers still receive
   // their own result.
@@ -698,17 +688,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         onConfirm={(id) => handleUninstall(id, uninstallTarget?.name ?? id)}
       />
       {banner && (
-        <div
-          data-testid="plugin-config:banner"
-          className={`rounded-md px-3 py-2 text-sm ${
-            banner.type === "error"
-              ? "bg-destructive/(--opacity-soft) text-destructive"
-              : banner.type === "warning"
-                ? "bg-warning/(--opacity-soft) text-warning"
-                : "bg-success/(--opacity-soft) text-success"
-          }`}
-        >
-          {banner.msg}
+        <div data-testid="plugin-config:banner" data-severity={banner.severity}>
+          <NoticeToast key={banner.id} toast={banner} onDismiss={dismissBanner} wrap />
         </div>
       )}
 
