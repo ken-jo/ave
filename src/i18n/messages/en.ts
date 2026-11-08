@@ -56,8 +56,6 @@ export const en = {
   "agentPluginPrompt.extensionFailed": "Could not run the Extension prompt.",
 
   /** Alert interface strings and the host's declared due-soon templates. */
-  "alerts.turnCompletionSound": "Turn completion sound",
-  "alerts.turnCompletionSoundHelp": "Play the system notification sound when a response completes in the background. System sound and notification preferences apply.",
   "alerts.title": "Alerts",
   "alerts.builtIn": "Built-in",
   "alerts.new": "New",
@@ -1381,6 +1379,23 @@ export const en = {
   "chatPreviewRail.operation.tool": "Tool",
 
   // chatTab
+  "accessibilitySignals.title": "Sound signals",
+  "accessibilitySignals.description": "Play a short sound for agent events, so you know what happened while you work in another window.",
+  "accessibilitySignals.keywords": "sound, audio, chime, beep, accessibility, notification",
+  "accessibilitySignals.turnFinished": "Turn finished",
+  "accessibilitySignals.turnFinishedHint": "An agent finished its turn in a conversation.",
+  "accessibilitySignals.approvalNeeded": "Decision needed",
+  "accessibilitySignals.approvalNeededHint": "An approval or question card is waiting for you.",
+  "accessibilitySignals.turnFailed": "Turn failed",
+  "accessibilitySignals.turnFailedHint": "An agent turn ended with an error.",
+  "accessibilitySignals.modeOff": "Off",
+  "accessibilitySignals.modeUnfocused": "When window is unfocused",
+  "accessibilitySignals.modeOn": "On",
+  "accessibilitySignals.modeAriaLabel": "When to play the {signal} sound",
+  "accessibilitySignals.play": "Play",
+  "accessibilitySignals.playAriaLabel": "Play the {signal} sound",
+  "accessibilitySignals.playFailed": "The sound could not play.",
+  "accessibilitySignals.saveFailed": "The sound setting was not saved.",
   "chatTab.title": "Chat",
   "chatTab.description": "Configure auto-compact, stream smoothing, and experimental features",
   "chatTab.conversationOptimizationTitle": "Conversation Optimization",

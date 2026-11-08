@@ -369,10 +369,11 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         const message = mappedKey ? t(mappedKey) : t("app.errorGeneric", { message: rawMessage });
         // On refusal remove the optimistic bubble before adding its notice and restore the draft because main recorded no turn.
         if (mode === "default") dropUserEntry(displayText);
+        // An interrupting send that failed took the badge (and the user-stop mark) back unless the host reports it did abort the
+        // running turn: refused after the abort, that turn's own closing frame finalizes it as interrupted.
+        if (interrupt && !(err instanceof ChatSendRefusedError && err.interrupted)) unmarkLastAssistantInterrupted?.();
         if (interrupt && err instanceof ChatSendRefusedError) {
-          // The running turn is not closed here with an error: refused at admission it goes on untouched, and refused after the
-          // abort its own closing frame finalizes it. Only the first case takes the badge back.
-          if (!err.interrupted) unmarkLastAssistantInterrupted?.();
+          // The running turn is not closed here with an error: refused at admission it goes on untouched.
           appendSystemEntry(message);
         } else {
           setErrorWithThought(message);

@@ -58,8 +58,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "agentPluginPrompt.extensionFailed": "익스텐션 프롬프트를 실행하지 못했습니다.",
 
   /** Alert interface strings and the host's declared due-soon templates. */
-  "alerts.turnCompletionSound": "응답 완료 소리",
-  "alerts.turnCompletionSoundHelp": "백그라운드에서 응답이 완료되면 시스템 알림음을 재생합니다. 시스템 소리 및 알림 설정이 적용됩니다.",
   "alerts.title": "알림",
   "alerts.builtIn": "기본 기능",
   "alerts.new": "새 알림",
@@ -1383,6 +1381,23 @@ export const ko: Record<MessageCatalogKey, string> = {
   "chatPreviewRail.operation.tool": "도구",
 
   // chatTab
+  "accessibilitySignals.title": "소리 신호",
+  "accessibilitySignals.description": "에이전트 이벤트에 짧은 소리를 재생해, 다른 창에서 작업하는 중에도 무슨 일이 있었는지 알 수 있습니다.",
+  "accessibilitySignals.keywords": "소리, 오디오, 알림음, 효과음, 접근성, 알림",
+  "accessibilitySignals.turnFinished": "응답 완료",
+  "accessibilitySignals.turnFinishedHint": "대화에서 에이전트가 응답을 마쳤습니다.",
+  "accessibilitySignals.approvalNeeded": "결정 필요",
+  "accessibilitySignals.approvalNeededHint": "승인 카드나 질문 카드가 답을 기다리고 있습니다.",
+  "accessibilitySignals.turnFailed": "응답 실패",
+  "accessibilitySignals.turnFailedHint": "에이전트 응답이 오류로 끝났습니다.",
+  "accessibilitySignals.modeOff": "끔",
+  "accessibilitySignals.modeUnfocused": "창이 비활성일 때",
+  "accessibilitySignals.modeOn": "켬",
+  "accessibilitySignals.modeAriaLabel": "{signal} 소리를 재생할 때",
+  "accessibilitySignals.play": "재생",
+  "accessibilitySignals.playAriaLabel": "{signal} 소리 재생",
+  "accessibilitySignals.playFailed": "소리를 재생하지 못했습니다.",
+  "accessibilitySignals.saveFailed": "소리 설정을 저장하지 못했습니다.",
   "chatTab.title": "채팅",
   "chatTab.description": "자동 컴팩트, 스트리밍 표시, 실험적 기능을 설정합니다",
   "chatTab.conversationOptimizationTitle": "대화 최적화",

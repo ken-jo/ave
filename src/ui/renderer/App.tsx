@@ -106,6 +106,7 @@ import { usePluginAuthStatuses } from "./hooks/use-plugin-auth-status.js";
 import { useRolePresets } from "./hooks/use-role-presets.js";
 import { useAppBootstrap } from "./hooks/use-app-bootstrap.js";
 import { useWindowFileDropGuard } from "./hooks/use-window-file-drop-guard.js";
+import { useAccessibilitySignalModes } from "./accessibility-signal-engine.js";
 import { normalizeSettingsTab, type SettingsPath } from "../../shared/settings-tabs.js";
 import {
   BUILTIN_LABEL_KEYS,
@@ -155,6 +156,8 @@ export function App() {
 
   // Prevent dropped files from navigating the window to file://.
   useWindowFileDropGuard();
+  // Accessibility signals follow the stored modes; the sources are the chat groups and the approval queue below.
+  useAccessibilitySignalModes(api);
 
   // Read the focused tile through the session registry; see chat-group-session-registry.ts for store lifetime.
   const chatGroupSessions = useMemo(() => new ChatGroupSessionRegistry(), []);

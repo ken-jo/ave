@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import { DocumentSettingsContent } from "./DocumentSettingsContent.js";
 import { PrivacyTab } from "./PrivacyTab.js";
+import { AccessibilitySignalsSettings } from "./AccessibilitySignalsSettings.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
 import { Input } from "../../../components/ui/input.js";
@@ -113,6 +114,8 @@ export function ChatTab({
       </SettingsSection>
 
       <DocumentSettingsContent />
+
+      <AccessibilitySignalsSettings />
 
       <SettingsSection
         data-settings-section="chat-stream-smoothing"

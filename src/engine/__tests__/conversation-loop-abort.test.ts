@@ -252,25 +252,23 @@ describe("ConversationLoop abort (B4)", () => {
   });
 });
 
-describe("turn completion notification sound delivery", () => {
+describe("turn completion notification delivery", () => {
+  // The turn-end banner is always silent: the renderer's turn-finished accessibility signal owns the sound.
   it.each([
-    { outcome: "complete", masterEnabled: true, enabled: true, focused: false, count: 1, silent: false },
-    { outcome: "complete", masterEnabled: true, enabled: false, focused: false, count: 1, silent: true },
-    { outcome: "complete", masterEnabled: false, enabled: true, focused: false, count: 0 },
-    { outcome: "complete", masterEnabled: false, enabled: false, focused: false, count: 0 },
-    { outcome: "complete", masterEnabled: true, enabled: true, focused: true, count: 0 },
-    { outcome: "interrupted", masterEnabled: true, enabled: true, focused: false, count: 0 },
-    { outcome: "stream-error", masterEnabled: true, enabled: true, focused: false, count: 0 },
-    { outcome: "context-error", masterEnabled: true, enabled: true, focused: false, count: 0 },
-    { outcome: "authorization-required", masterEnabled: true, enabled: true, focused: false, count: 0 },
-    { outcome: "empty", masterEnabled: true, enabled: true, focused: false, count: 0 },
-  ])("$outcome, master=$masterEnabled, sound=$enabled, focused=$focused", async ({ outcome, masterEnabled, enabled, focused, count, silent }) => {
+    { outcome: "complete", masterEnabled: true, focused: false, count: 1 },
+    { outcome: "complete", masterEnabled: false, focused: false, count: 0 },
+    { outcome: "complete", masterEnabled: true, focused: true, count: 0 },
+    { outcome: "interrupted", masterEnabled: true, focused: false, count: 0 },
+    { outcome: "stream-error", masterEnabled: true, focused: false, count: 0 },
+    { outcome: "context-error", masterEnabled: true, focused: false, count: 0 },
+    { outcome: "authorization-required", masterEnabled: true, focused: false, count: 0 },
+    { outcome: "empty", masterEnabled: true, focused: false, count: 0 },
+  ])("$outcome, master=$masterEnabled, focused=$focused", async ({ outcome, masterEnabled, focused, count }) => {
     const show = vi.fn();
     const notificationFactory = vi.fn(() => ({ show, on: vi.fn() }));
     const notificationService = new NotificationService({
       getMainWindow: () => ({ isDestroyed: () => false, isMinimized: () => false }) as Electron.BrowserWindow,
       notificationFactory,
-      isTurnCompletionSoundEnabled: () => enabled,
       isOsNotificationsEnabled: () => masterEnabled,
       isAnyWindowFocused: () => focused,
       isReady: () => true,
@@ -319,6 +317,6 @@ describe("turn completion notification sound delivery", () => {
     if (outcome === "authorization-required") expect(result.text).not.toBe("");
     expect(notificationFactory).toHaveBeenCalledTimes(count);
     expect(show).toHaveBeenCalledTimes(count);
-    if (count) expect(notificationFactory).toHaveBeenCalledWith(expect.objectContaining({ silent, urgency: "normal" }));
+    if (count) expect(notificationFactory).toHaveBeenCalledWith(expect.objectContaining({ silent: true, urgency: "normal" }));
   });
 });

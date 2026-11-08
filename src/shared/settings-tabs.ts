@@ -43,6 +43,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
   chat: [
     "chat-optimization",
     "chat-documents",
+    "chat-signals",
     "chat-stream-smoothing",
     "chat-processing-display",
     "chat-experimental",

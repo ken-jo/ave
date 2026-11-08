@@ -264,7 +264,7 @@ describe("NotificationService — routing decision", () => {
     expect(factoryStub.calls.length).toBe(1);
     const call = factoryStub.calls[0];
     expect(call.title).toBe("승인 필요");
-    expect(call.silent).toBe(false);
+    expect(call.silent).toBe(true);
     expect(call.urgency).toBe("critical");
     // body capped
     expect(call.body.length).toBe(81);
@@ -296,11 +296,11 @@ describe("NotificationService — routing decision", () => {
     expect(factoryStub.calls.length).toBe(1);
   });
 
-  it("approval kind defaults urgent=true (silent=false, urgency=critical)", () => {
+  it("approval kind defaults urgent=true (urgency=critical) and leaves its sound to the approval-needed signal", () => {
     const win = makeMockWindow({ focused: false });
     const svc = createService(win, factoryStub.factory, { auditLogger });
     svc.fire({ kind: "approval", title: "승인 필요", body: "do thing?" });
-    expect(factoryStub.calls[0].silent).toBe(false);
+    expect(factoryStub.calls[0].silent).toBe(true);
     expect(factoryStub.calls[0].urgency).toBe("critical");
   });
 });
@@ -807,12 +807,11 @@ describe("NotificationService — never-throw contract (#2103)", () => {
   });
 });
 
-describe("turn completion sound", () => {
+describe("turn completion notification", () => {
   it("reads the master live and suppresses without consuming cooldown even for a focus bypass", () => {
     const factory = makeNotificationFactoryStub();
     const log = vi.fn();
     let enabled = false;
-    const soundEnabled = vi.fn(() => true);
     const service = new NotificationService({
       getMainWindow: () => null,
       notificationFactory: factory.factory,
@@ -820,47 +819,40 @@ describe("turn completion sound", () => {
       isReady: () => true,
       isTestEnv: () => false,
       isOsNotificationsEnabled: () => enabled,
-      isTurnCompletionSoundEnabled: soundEnabled,
     });
     service.fire({ kind: "turn-end", title: "Done", body: "Complete", bypassFocusGate: true });
     expect(factory.calls).toHaveLength(0);
-    expect(soundEnabled).not.toHaveBeenCalled();
     expect(JSON.parse(log.mock.calls[0][0].input)).toMatchObject({
       event: "notification.suppressed", reason: "os-notifications-disabled",
     });
     enabled = true;
     service.fire({ kind: "turn-end", title: "Done", body: "Complete" });
     expect(factory.calls).toHaveLength(1);
-    expect(factory.calls[0].silent).toBe(false);
     expect(factory.calls[0].show).toHaveBeenCalledOnce();
     enabled = false;
     service.fire({ kind: "turn-end", title: "Done", body: "Complete", bypassFocusGate: true });
     expect(factory.calls).toHaveLength(1);
   });
 
-  it("uses one normal-priority audible notification and shares the cooldown", () => {
+  // The renderer's turn-finished accessibility signal owns the completion sound; an audible banner too would sound twice.
+  it("is always a silent normal-priority notification and shares the cooldown", () => {
     const factory = makeNotificationFactoryStub();
-    let enabled = true;
     const service = new NotificationService({
       getMainWindow: () => null,
       notificationFactory: factory.factory,
       isReady: () => true,
       isTestEnv: () => false,
-      isTurnCompletionSoundEnabled: () => enabled,
     });
     const clock = vi.spyOn(performance, "now").mockReturnValue(100_000);
     try {
       service.fire({ kind: "turn-end", title: "Done", body: "Complete" });
       service.fire({ kind: "turn-end", title: "Done", body: "Duplicate" });
       expect(factory.calls).toHaveLength(1);
-      expect(factory.calls[0]).toMatchObject({ silent: false, urgency: "normal" });
-      expect(factory.calls[0].show).toHaveBeenCalledOnce();
-      enabled = false;
+      expect(factory.calls[0]).toMatchObject({ silent: true, urgency: "normal" });
       clock.mockReturnValue(100_000 + __test.COOLDOWN_MS_BY_KIND["turn-end"] + 1);
-      service.fire({ kind: "turn-end", title: "Done", body: "Next", urgent: true });
+      service.fire({ kind: "turn-end", title: "Done", body: "Next", urgent: true, bypassFocusGate: true });
       expect(factory.calls).toHaveLength(2);
-      expect(factory.calls[1].silent).toBe(true);
-      expect(factory.calls[1].show).toHaveBeenCalledOnce();
+      expect(factory.calls[1]).toMatchObject({ silent: true, urgency: "critical" });
     } finally { clock.mockRestore(); }
   });
 });
