@@ -2,8 +2,12 @@ export const MIN_ZOOM_LEVEL = -8;
 export const MAX_ZOOM_LEVEL = 8;
 export type ZoomCommand = "in" | "out" | "reset";
 
+export function isZoomLevel(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= MIN_ZOOM_LEVEL && value <= MAX_ZOOM_LEVEL;
+}
+
 export function normalizeZoomLevel(value: unknown): number {
-  return typeof value === "number" && Number.isInteger(value) && value >= MIN_ZOOM_LEVEL && value <= MAX_ZOOM_LEVEL ? value : 0;
+  return isZoomLevel(value) ? value : 0;
 }
 
 export function zoomLevelToZoomFactor(level: number): number {

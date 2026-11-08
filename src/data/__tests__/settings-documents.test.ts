@@ -102,6 +102,6 @@ describe("app zoom persistence", () => {
   expect(observed).toEqual([-4]);
   expect(load().get("appearance")).toMatchObject({ zoomLevel: -4, font: { family: "Example Sans" } });
   await settings.patch({ appearance: { zoomLevel: 8.5 } });
-  expect(load().get("appearance")).toMatchObject({ zoomLevel: 0, font: { family: "Example Sans" } });
+  expect(load().get("appearance")).toMatchObject({ zoomLevel: -4, font: { family: "Example Sans" } });
  });
 });

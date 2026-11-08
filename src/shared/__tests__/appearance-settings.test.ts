@@ -69,3 +69,13 @@ it("normalizes missing and invalid zoom levels to zero without changing valid in
    expect(normalizeAppearance({ ...DEFAULT_APPEARANCE, zoomLevel }).zoomLevel).toBe(zoomLevel);
  }
 });
+
+it("warns on invalid zoom values and leaves an absent zoom field quiet", () => {
+ const warnings: string[] = [];
+ expect(normalizeAppearance({ ...DEFAULT_APPEARANCE, zoomLevel: 8.5 }, (field) => warnings.push(field)).zoomLevel).toBe(0);
+ expect(warnings).toContain("zoomLevel");
+ warnings.length = 0;
+ const { zoomLevel: _level, ...appearance } = DEFAULT_APPEARANCE;
+ normalizeAppearance(appearance, (field) => warnings.push(field));
+ expect(warnings).not.toContain("zoomLevel");
+});

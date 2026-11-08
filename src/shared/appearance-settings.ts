@@ -1,4 +1,4 @@
-import { normalizeZoomLevel } from "./app-zoom.js";
+import { isZoomLevel, normalizeZoomLevel } from "./app-zoom.js";
 import { normalizeLocale, type Locale } from "../i18n/locale.js";
 import { FONT_SIZE_SCALE_VALUES, isValidFontFamilyOverride, type FontSizeScale, type AppearanceFontSettings } from "./appearance-font.js";
 
@@ -79,6 +79,7 @@ export function normalizeAppearance(input: unknown, warn: (field: string) => voi
   const obj = isAppearanceRecord(input) ? input : {};
   const result: AppearanceSettings = { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont }, language: normalizeLocale(obj.language) };
   result.zoomLevel = normalizeZoomLevel(obj.zoomLevel);
+  if ("zoomLevel" in obj && !isZoomLevel(obj.zoomLevel)) warn("zoomLevel");
   const font = normalizeAppearanceFont(obj.font);
   if (font) result.font = font;
   if (obj.schemaVersion === 2) {
