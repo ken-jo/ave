@@ -5,7 +5,7 @@ import { validateExternalUrl } from "../../shared/external-url.js";
 export interface BrowserNavigationPolicy {
   active(): boolean;
   userControlled?(): boolean;
-  authorize(url: string): Promise<void>;
+  authorize(url: string, signal?: AbortSignal): Promise<void>;
   signal?: AbortSignal;
 }
 
@@ -48,7 +48,7 @@ export async function gateBrowserSiteNavigation(cdp: CdpSession, mainFrameId: st
             const aborted = () => reject(signal?.reason ?? new Error("Browser navigation cancelled"));
             signal?.addEventListener("abort", aborted, { once: true });
             if (signal?.aborted) { aborted(); return; }
-            void policy.authorize(request.url as string).then(resolve, reject).finally(() => signal?.removeEventListener("abort", aborted));
+            void policy.authorize(request.url as string, signal).then(resolve, reject).finally(() => signal?.removeEventListener("abort", aborted));
           });
           if (stopped || !policy.active()) throw new Error("Browser navigation authority changed");
         }

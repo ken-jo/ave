@@ -24,6 +24,8 @@ import { isSessionOnlyApprovalMemoryScope, type ApprovalMemoryScope } from "../.
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { browserOrigin, createBrowserTools, type BrowserActionTab, type BrowserPageActions } from "../browser-tools.js";
+import { gateBrowserSiteNavigation } from "../../main/browser/browser-site-navigation.js";
+import type { CdpSession } from "../../main/browser/browser-action-guard.js";
 import { fenceBrowserContent } from "../browser-tools-execute.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { runWithAgentObservationTurn } from "../agent-observation-context.js";
@@ -197,10 +199,12 @@ describe("browser tools", () => {
       recentlyDenied: makeRecentlyDeniedStore(join(aveHomeDir, "deferred.jsonl")),
     });
     const cards: ApprovalRequest[] = [];
+    const settled: unknown[] = [];
     const recordings: Promise<void>[] = [];
     const nativeWebContents = {
       isDestroyed: () => false,
       send: (channel: string, request: ApprovalRequest) => {
+        if (channel === "ave:approval:settled") settled.push(request);
         if (channel !== "ave:approval:request") return;
         cards.push(request);
         recordings.push((async () => {
@@ -269,7 +273,7 @@ describe("browser tools", () => {
       guest.url = url;
       return { handle: outcome.tabId, guest };
     };
-    return { run, cards, page, tabs, userTab, agentTab, ops, browserTools, manager };
+    return { run, cards, settled, gate, page, tabs, userTab, agentTab, ops, browserTools, manager };
   }
 
   it("asks for a new site once and lets later tools and same-origin navigation run", async () => {
@@ -326,6 +330,49 @@ describe("browser tools", () => {
     resolve();
     expect((await action).isError).toBe(answer !== "allow");
     expect(continued).toBe(answer === "allow");
+  });
+
+  it.each(["this-site", "any-site", "destination-ask"] as const)("retracts cancelled native navigation approval without late grants: %s", async choice => {
+    for (const loss of ["takeover", "destroy", "release"] as const) {
+      let answer = () => {};
+      const delayed = new Promise<void>(resolve => { answer = resolve; });
+      const h = harness({ siteChoice: choice === "any-site" ? "any-site" : "this-site", onCard: () => delayed });
+      const tab = await h.agentTab("https://a.example/");
+      if (choice === "destination-ask") await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "ask" }, { kind: "user" });
+      const calls: string[] = [];
+      let event: Parameters<CdpSession["onEvent"]>[0] = () => {};
+      const cdp: CdpSession = { send: async method => { calls.push(method); }, onEvent: listener => { event = listener; return () => {}; } };
+      h.page.actions.click = async target => {
+        if (!target.authorizeSite) throw new Error("Missing site authorization");
+        const gate = await gateBrowserSiteNavigation(cdp, "main", { active: () => !target.signal.aborted, signal: target.signal, authorize: target.authorizeSite });
+        event("Fetch.requestPaused", { requestId: "original", frameId: "main", resourceType: "Document", request: { url: "https://restricted.example/" } });
+        try {
+          await vi.waitFor(() => expect(gate.waiting()).toBe(false));
+          gate.assertAllowed();
+        } finally { gate(); }
+      };
+      const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+      await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+      const card = h.cards.at(-1);
+      if (!card) throw new Error("Missing pending card");
+      if (loss === "takeover") h.tabs.userInput(tab.guest.id, { type: "keyDown" });
+      else if (loss === "destroy") { tab.guest.destroyed = true; h.tabs.guestDestroyed(tab.guest.id); }
+      else {
+        const live = h.tabs.liveTabInWindow(tab.handle, 1);
+        if (!live?.lease) throw new Error("Missing lease");
+        h.tabs.releaseControl(tab.handle, live.lease.id);
+      }
+      try {
+        await vi.waitFor(() => expect(h.gate.pendingCount).toBe(0));
+        expect(h.gate.getRequestSnapshot(card.id)).toBeNull();
+        expect(h.settled).toHaveLength(1);
+      } finally { answer(); }
+      expect((await action).isError).toBe(true);
+      expect(calls).toContain("Fetch.failRequest");
+      expect(calls).not.toContain("Fetch.continueRequest");
+      expect(h.manager.browserSites.allows(HOST_SESSION, "https://restricted.example/")).toBe(false);
+      expect(h.manager.browserSites.allows(HOST_SESSION, "https://another.example/")).toBe(false);
+    }
   });
 
   it("asks a human for exfiltration even after any-site consent", async () => {

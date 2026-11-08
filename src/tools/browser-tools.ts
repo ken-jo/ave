@@ -50,7 +50,7 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
   readonly signal: AbortSignal;
   readonly leaseId?: string;
   readonly callerSignal?: AbortSignal;
-  readonly authorizeSite?: (url: string) => Promise<void>;
+  readonly authorizeSite?: (url: string, signal?: AbortSignal) => Promise<void>;
   readonly openSitePopup?: (url: string) => Promise<void>;
   readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number; readonly controlGeneration: number };
   readonly onObservationTarget?: (element: BrowserObservationElement, downloadUrl?: string) => void;

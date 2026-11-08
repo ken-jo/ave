@@ -59,7 +59,7 @@ export interface ToolExecutionContext {
   /** Host-derived execution surface; UI-opening tools must refuse unattended calls. */
   headless?: boolean;
   /** Host-built per-hop permission gate for mediated network requests. */
-  authorizeBrowserSite?: (url: string) => Promise<void>;
+  authorizeBrowserSite?: (url: string, signal?: AbortSignal) => Promise<void>;
   authorizeNetworkTarget?: (url: URL) => Promise<void>;
   /** User-authorized filesystem roots beyond `cwd` for this invocation. The executor derives this once from `permissions.additionalDirectories` and
    * every native file/shell tool reuses the same extra scope for its internal sandbox check. The full allow-list is `cwd ∪ extraAllowedDirectories`. */

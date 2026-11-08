@@ -198,12 +198,12 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       tab: target.resolved.tab,
       signal: target.signal,
       ...(target.resolved.opener === "agent" ? {
-        authorizeSite: async (url: string) => {
+        authorizeSite: async (url: string, signal?: AbortSignal) => {
           const tab = target.resolved.tab;
           const guest = tab.guest;
           const leaseId = tab.lease?.id;
           if (!ctx.authorizeBrowserSite || !leaseId) throw new Error("Missing browser site authority");
-          await ctx.authorizeBrowserSite(url);
+          await ctx.authorizeBrowserSite(url, signal ?? target.signal);
           if (tab.guest !== guest || guest?.isDestroyed() || tab.lease?.id !== leaseId || tab.controlMode === "human-paused" || ctx.abortSignal?.aborted) throw new Error("Browser site authority changed");
           tab.agentOrigin = browserOrigin(url);
         },
@@ -304,7 +304,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           if (fresh.guest !== guest || guest?.isDestroyed() || fresh.lease?.id !== lease.id || fresh.controlMode === "human-paused" || ctx.abortSignal?.aborted) throw new Error("Browser site authority changed");
         };
         const loaded = await actions.navigate({ tab: fresh, signal, leaseId: lease.id,
-          authorizeSite: async (destination) => { await authorizeSite(destination); current(); fresh.agentOrigin = browserOrigin(destination); },
+          authorizeSite: async (destination, lifecycleSignal) => { await authorizeSite(destination, lifecycleSignal ?? signal); current(); fresh.agentOrigin = browserOrigin(destination); },
           openSitePopup: async (destination) => {
             const next = validUrl(destination);
             if (!next.ok) throw new Error("Invalid browser popup destination");
@@ -479,7 +479,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (changed) return changed;
         if (fresh.resolved.opener === "agent") {
           if (!ctx.authorizeBrowserSite) return failure("Missing browser site authorization");
-          await ctx.authorizeBrowserSite(url.url);
+          await ctx.authorizeBrowserSite(url.url, fresh.signal);
           const current = recheck(input, ctx, fresh);
           if (!current.ok) return current.result;
           const changed = navigationUnchangedSinceApproval(ctx, current.resolved, url.origin);
