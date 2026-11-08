@@ -356,7 +356,8 @@ square (a sub-agent's "Waiting", a run's phase chip) stay, in the same tone as t
 Not drawn as the slot: action buttons that lead to a hidden card (maximize, work-panel
 toggle) carry the bare pending-answer dot; a terminal tab's unread notice is the
 primary dot (`TerminalAttentionDot`), which is read state; the app's own status is a
-toolbar pill; spinners inside the transcript (tool groups, reasoning) are content, not
+toolbar pill; an agent controlling a browser tab (the tab's `Bot` mark and the control
+badge) is activity, drawn in the neutral working tone, never warning; spinners inside the transcript (tool groups, reasoning) are content, not
 session status. No conversation-level producer exists yet for blocked, connecting, or a
 failed/exited conversation (a turn's error lives in the tile's transcript); those states
 are drawn only where a producer exists today (sub-agent and work-board runs).

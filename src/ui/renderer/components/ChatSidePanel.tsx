@@ -1185,7 +1185,7 @@ export function ChatSidePanel({
                     <span className={`max-w-24 truncate ${isEphemeral ? "italic" : ""}`}>{label}</span>
                     {agentControlledTabIds.has(tab.id) ? (
                       <Bot
-                        className="h-3 w-3 shrink-0 text-warning"
+                        className="h-3 w-3 shrink-0 text-muted-foreground"
                         role="img"
                         aria-label={t("agentBrowser.controlling")}
                         data-testid="chat-side-panel-tab-agent-controlled"
