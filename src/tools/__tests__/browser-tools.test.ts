@@ -153,7 +153,8 @@ describe("browser tools", () => {
     denySurface?: boolean;
     logicalReview?: (input: import("../../permissions/reviewer/user-owned-surface-reviewer.js").UserOwnedSurfaceReviewInput) => Promise<{ consistent: boolean; reason: string }>;
     headless?: boolean;
-    onCard?: (card: ApprovalRequest) => void;
+    onCard?: (card: ApprovalRequest) => void | Promise<void>;
+    denyAction?: boolean;
     beforeActions?: () => void | Promise<void>;
     onPrepare?: (target: BrowserActionTab<FakeGuest>) => void | Promise<void>;
     mode?: "default" | "strict" | "auto" | "allow";
@@ -218,10 +219,10 @@ describe("browser tools", () => {
               riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
             });
           }
-          options.onCard?.(request);
+          await options.onCard?.(request);
           gate.resolveFromDesktopRenderer(request.id, {
             requestId: request.id,
-            choice: options.denySurface && request.userOwnedSurface || options.denySite && request.browserSite ? "deny-once" : "allow-once",
+            choice: options.denyAction && !request.browserSite || options.denySurface && request.userOwnedSurface || options.denySite && request.browserSite ? "deny-once" : "allow-once",
             ...(!options.denySite && request.browserSite ? { browserSiteChoice: options.siteChoice ?? "this-site" } : {}),
             ...(!options.denySurface && request.userOwnedSurface && !request.userOwnedSurfaceReviewFallback ? { userOwnedSurfaceChoice: options.surfaceChoice ?? "ask" } : {}),
             nonce: request.nonce,
@@ -301,6 +302,29 @@ describe("browser tools", () => {
     const before = h.page.calls.length;
     expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "file:///example" })).isError).toBe(true);
     expect(h.page.calls).toHaveLength(before);
+  });
+
+  it.each(["allow", "deny", "revoke"])("enforces destination ask before remembered site consent: %s", async (answer) => {
+    let resolve!: () => void;
+    const wait = new Promise<void>(done => { resolve = done; });
+    const h = harness({ denyAction: answer === "deny", onCard: () => wait });
+    const tab = await h.agentTab("https://a.example/");
+    h.manager.browserSites.allow(HOST_SESSION, "https://a.example/", "any-site");
+    await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "ask" }, { kind: "user" });
+    let continued = false;
+    h.page.actions.click = async target => {
+      await target.authorizeSite!("https://restricted.example/redirect");
+      continued = true;
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(h.cards).toHaveLength(1));
+    expect(continued).toBe(false);
+    expect(h.cards[0]?.browserSite).toBeUndefined();
+    expect(h.cards[0]).toMatchObject({ exactRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
+    if (answer === "revoke") await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "deny" }, { kind: "user" });
+    resolve();
+    expect((await action).isError).toBe(answer !== "allow");
+    expect(continued).toBe(answer === "allow");
   });
 
   it("asks a human for exfiltration even after any-site consent", async () => {

@@ -743,10 +743,10 @@ export async function executeAuthorizedToolInvocation(
         const rules = await manager.checkNetworkRules(url, executionCwd, false);
         if (rules.admissionDenial || rules.decision === "deny") throw new Error(rules.admissionDenial ?? "Browser destination denied");
         const screened = screenEgressRequest({ url, allowPrivateNetwork: false });
-        if ((rules.exfiltration || screened.outcome === "screened") && !(humanApproved && url === finalInput.url)) {
+        if (rules.decision === "ask" || (rules.exfiltration || screened.outcome === "screened") && !(humanApproved && url === finalInput.url)) {
           const actionDecision = await gate.requestAndWait({
             id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network", args: { url },
-            reason: "This navigation carries an exfiltration signal and requires human consent.", createdAt: Date.now(), sessionId, abortSignal,
+            reason: rules.decision === "ask" ? "A destination rule requires approval for this navigation." : "This navigation carries an exfiltration signal and requires human consent.", createdAt: Date.now(), sessionId, abortSignal,
             remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, forceExplicit: true,
             durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
           });
