@@ -128,3 +128,14 @@ it("keeps one live chat preview above both font sections before saving completes
  fireEvent.click(within(screen.getByTestId("code-font-presets")).getAllByRole("radio")[1] as HTMLButtonElement);
  expect(screen.getByTestId("terminal-font-preview").style.fontFamily).toContain("JetBrains Mono");
 });
+
+it("uses equally compact plain font chips without primary fill on unselected code presets", () => {
+ render(<AppearanceTab />);
+ const ui = within(screen.getByTestId("font-family-presets")).getAllByRole("radio");
+ const code = within(screen.getByTestId("code-font-presets")).getAllByRole("radio");
+ for (const button of [...ui, ...code]) {
+  expect(button).toHaveClass("rounded-full", "px-3", "py-1", "text-xs", "transition-colors");
+  expect(button).not.toHaveClass("h-10");
+  if (button.getAttribute("aria-checked") === "false") expect(button).not.toHaveClass("bg-primary");
+ }
+});
