@@ -104,6 +104,8 @@ interface EgressHostApproval {
 
 export interface ApprovalRequest {
   browserSite?: string;
+  // Display-only title derived from host-tracked child provenance.
+  requestingAgentTitle?: string;
   id: string;
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;
@@ -216,7 +218,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle"
 > & {
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
@@ -972,13 +974,14 @@ export class ApprovalGate {
       remoteControllerAuthority,
       abortSignal,
       childProvenance,
+      requestingAgentTitle: _requestedAgentTitle,
       reviewerOutcome,
       reviewerApprovalBasis,
       approvalRuleBasis,
       verifiedShellCommand,
       hostShellExecutionPlan,
       ...request
-    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown };
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
@@ -1177,6 +1180,7 @@ export class ApprovalGate {
       : builtShellRule;
     const fullReq: ApprovalRequest = {
       ...request,
+      ...(childProvenance === undefined ? {} : { requestingAgentTitle: maskSensitiveData(childProvenance.childTitle).masked.slice(0, 240) }),
       ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
       ...(isAveHomeConfigurationRefused(aveHome()) ? { homeFolderRefused: true as const } : {}),
       ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),

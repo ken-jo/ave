@@ -873,7 +873,7 @@ export function ToolApprovalContent({
   ]);
 
   if (!open || !request) return null;
-  if (request.browserSite !== undefined) return <BrowserSiteApprovalCard key={request.id} request={request} interactionLocked={interactionLocked} onDecide={onDecide} />;
+  if (request.browserSite !== undefined) return <BrowserSiteApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} />;
   if (request.userOwnedSurface !== undefined && request.userOwnedSurfaceReviewFallback !== true) {
     return <UserOwnedSurfaceApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} pendingCount={pendingCount}
       targetDescription={request.userOwnedSurface === "browser" ? browserTargetText(tHook, request) : terminalTargetText(tHook, request)}

@@ -4,7 +4,7 @@ import type { ApprovalRequest } from "../../types.js";
 
 export function approvalAction(request: ApprovalRequest, t: TranslateFn): { title: string; primary: string | null } {
   const args = isRecord(request.args) ? request.args : {};
-  if (request.browserSite) return { title: t("toolApprovalDialog.siteTitle", { origin: request.browserSite }), primary: null };
+  if (request.browserSite) return { title: t("toolApprovalDialog.siteTitle", { origin: new URL(request.browserSite).origin }), primary: null };
   if (request.kind === "egress-host") return { title: t("egressApprovalCard.dockTitle"), primary: null };
   const scope = request.approvalMemory?.kind === "key" ? request.approvalMemory.scope : undefined;
   if (request.source === "mcp" || request.source === "plugin" || request.kind === "agent-action") {

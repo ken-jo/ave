@@ -116,13 +116,14 @@ describe("sub-agent approval provenance", () => {
 describe("sub-agent approval adapter", () => {
   it("labels concurrent child cards and resolves only the addressed child", async () => {
     const send = vi.fn();
-    const base = new ApprovalGate({ send, isDestroyed: () => false } as never);
+    const native = { send, isDestroyed: () => false };
+    const base = new ApprovalGate(native as never);
     const completed: string[] = [];
     const children = [CHILD, "sub-other"];
     const tasks = children.map((childSessionId) => {
       const gate = makeSubAgentApprovalAdapter(base, childSessionId, { childSessionId, originSessionId: PARENT,
         spawnTaskSummary: "read a page", background: true });
-      return gate.requestAndWait({ id: childSessionId, category: "tool", toolName: "browser_navigate", args: {},
+      return gate.requestAndWait({ id: childSessionId, category: "tool", toolName: "browser_navigate", source: "builtin", browserSite: "https://a.example:443", forceExplicit: true, durableApprovalRecordAllowed: false, args: {},
         reason: "open site", createdAt: Date.now(), sessionId: childSessionId }).then((decision) => { completed.push(decision.requestId); });
     });
     const cards = send.mock.calls.filter(([channel]) => channel === "ave:approval:request").map(([, card]) => card);
@@ -130,16 +131,31 @@ describe("sub-agent approval adapter", () => {
     for (const [index, card] of cards.entries()) {
       expect(card.sessionId).toBe(children[index]);
       expect(card.reason).toContain(children[index]);
+      expect(card.requestingAgentTitle).toBe(children[index]);
+      expect(card.childProvenance).toBeUndefined();
     }
     const first = cards[0];
     const second = cards[1];
-    base.resolve(first.id, { requestId: first.id, choice: "allow-once", nonce: first.nonce, hmac: first.hmac });
+    base.resolveFromDesktopRenderer(first.id, { requestId: first.id, choice: "allow-once", browserSiteChoice: "this-site", nonce: first.nonce, hmac: first.hmac }, native as never);
     await tasks[0];
     expect(completed).toEqual([CHILD]);
-    base.resolve(second.id, { requestId: second.id, choice: "deny-once", nonce: second.nonce, hmac: second.hmac });
+    expect(base.getRequestSnapshot(second.id)).toBeDefined();
+    base.resolveFromDesktopRenderer(second.id, { requestId: second.id, choice: "deny-once", nonce: second.nonce, hmac: second.hmac }, native as never);
     await tasks[1];
     expect(completed).toEqual(children);
   });
+  it("drops caller-supplied display attribution without host provenance", async () => {
+    const send = vi.fn();
+    const base = new ApprovalGate({ send, isDestroyed: () => false } as never);
+    const input = { id: "unattributed", category: "tool" as const, toolName: "read_file", args: {},
+      reason: "Read a file", createdAt: Date.now(), requestingAgentTitle: "forged child" };
+    const pending = base.requestAndWait(input);
+    const card = send.mock.calls.find(([channel]) => channel === "ave:approval:request")![1];
+    expect(card.requestingAgentTitle).toBeUndefined();
+    base.resolve(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
+    await pending;
+  });
+
   function makeBase() {
     const requestAndWait = vi.fn(async (req: { id: string }) => ({
       requestId: req.id,
