@@ -550,14 +550,14 @@ export function ToolGroupCard({
                     className="flex min-w-0 max-w-full items-center gap-2 text-left"
                     aria-expanded={isExpanded}
                   >
-                    {isExpanded ? <ChevronDown className="h-2.5 w-2.5 flex-shrink-0" /> : <ChevronRight className="h-2.5 w-2.5 flex-shrink-0" />}
+                    {isExpanded ? <ChevronDown className="h-3 w-3 flex-shrink-0" /> : <ChevronRight className="h-3 w-3 flex-shrink-0" />}
                     <span className="min-w-0 truncate">{getToolCallLabel(tool.name, tool.input)}</span>
                     <ToolSourceBadge tool={tool} />
                     <ToolSandboxBadge mode={sandboxModes?.get(tool.toolUseId)} />
                   </button>
                   {review && <PermissionReviewStatusCard entry={review} variant="attached" />}
                   {tool.status === "running" ? (
-                    <Loader2 className="h-2.5 w-2.5 shrink-0 animate-spin" />
+                    <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
                   ) : (
                     <ToolStatusBadge status={tool.status} />
                   )}

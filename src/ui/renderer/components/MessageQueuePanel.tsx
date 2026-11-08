@@ -265,7 +265,7 @@ function MessageQueueRow({
         aria-label={item.selected ? t("messageQueuePanel.deselectAriaLabel") : t("messageQueuePanel.selectAriaLabel")}
         aria-pressed={item.selected}
       >
-        {item.selected ? <Check className="h-2.5 w-2.5" strokeWidth={3} /> : null}
+        {item.selected ? <Check className="h-3 w-3" strokeWidth={3} /> : null}
       </button>
       {editing ? (
         <input
@@ -370,7 +370,7 @@ function MessageQueueRow({
             title={t("messageQueuePanel.sendNowTitle")}
             data-testid="message-queue-row-send-now-button"
           >
-            <ArrowUp className="h-2.5 w-2.5" />
+            <ArrowUp className="h-3 w-3" />
             {t("messageQueuePanel.sendNowLabel")}
           </button>
           <button

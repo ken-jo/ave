@@ -166,7 +166,7 @@ function PluginPreparationStatusPanel({ plugin }: { plugin: PluginCardSummary })
         {/* Determinate fill flows through --progress so the geometry stays
             in classes; the indeterminate state keeps the pulsing w-1/3. */}
         <div
-          className={`h-full rounded-full bg-warning transition-all ${progressPct === null ? "w-1/3 animate-pulse" : "w-[var(--progress)]"}`}
+          className={`h-full rounded-full bg-warning transition-[width] ${progressPct === null ? "w-1/3 animate-pulse" : "w-[var(--progress)]"}`}
           style={progressPct === null ? undefined : ({ "--progress": `${progressPct}%` } as CSSProperties)}
         />
       </div>

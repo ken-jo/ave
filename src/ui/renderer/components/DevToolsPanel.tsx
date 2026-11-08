@@ -100,7 +100,7 @@ export function DevToolsPanel({ api, open, onClose, labelsOn, onToggleLabels }: 
   return (
     <div
       data-testid="dev-tools-panel"
-      className="fixed right-4 top-14 z-50 w-[360px] rounded-lg border bg-card p-4 shadow-xl"
+      className="fixed right-4 top-14 z-50 w-[360px] rounded-lg border bg-card p-4 ave-surface-floating"
     >
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-sm font-semibold">{t("devToolsPanel.title")}</h3>

@@ -62,7 +62,7 @@ function ImageThumb({ att }: { att: Extract<Attachment, { kind: "image" }> }) {
 function FileThumb() {
   return (
     <div className="flex h-12 w-12 items-center justify-center rounded border border-border bg-muted text-muted-foreground">
-      <FileIcon className="h-5 w-5" />
+      <FileIcon className="h-4 w-4" />
     </div>
   );
 }
@@ -70,7 +70,7 @@ function FileThumb() {
 function PasteThumb() {
   return (
     <div className="flex h-12 w-12 items-center justify-center rounded border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) text-warning">
-      <ClipboardPaste className="h-5 w-5" />
+      <ClipboardPaste className="h-4 w-4" />
     </div>
   );
 }
@@ -78,7 +78,7 @@ function PasteThumb() {
 function ResourceThumb() {
   return (
     <div className="flex h-12 w-12 items-center justify-center rounded border border-border bg-muted text-muted-foreground">
-      <Database className="h-5 w-5" />
+      <Database className="h-4 w-4" />
     </div>
   );
 }

@@ -38,7 +38,7 @@ export function PlannedScheduleCardView({ card, onOpen }: { card: PlannedSchedul
   return (
     <button
       type="button"
-      className={`w-full rounded-lg border border-dashed border-border bg-background p-3 text-left shadow-sm transition-all hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      className={`w-full rounded-lg border border-dashed border-border bg-background p-3 text-left shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         card.routine.targetSessionId ? CONNECTED_BAR : ""}`}
       data-testid={`board-schedule-card-${card.routine.id}`}
       data-connected={card.routine.targetSessionId ? "true" : undefined}

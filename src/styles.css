@@ -523,6 +523,9 @@
     --input-bar-subtle: var(--muted);
     --input-bar-action: var(--foreground);
     --motion-base: var(--motion-normal);
+    /* Dev-only stacking tier above the z-50 overlay band. Only development tooling
+     * (component labels) may use it, so a dev overlay still covers dialogs opened after it. */
+    --z-dev-overlay: 60;
   }
 
   /* ── Tier B-derived: composite tokens ─────────────────────────────────

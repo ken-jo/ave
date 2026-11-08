@@ -191,7 +191,7 @@ export function SidebarPreviewCard({ id, preview }: { id: string; preview: Sideb
     const url = new URL(preview.url);
     domain = url?.protocol === "file:" ? t("sidebarPreview.localFile") : url?.hostname ?? "";
   }
-  return <div id={id} role="tooltip" data-testid="sidebar-preview" className="overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-xl text-body-sm motion-reduce:transition-none">
+  return <div id={id} role="tooltip" data-testid="sidebar-preview" className="overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground ave-surface-floating text-body-sm motion-reduce:transition-none">
     {preview.kind === "browser" && preview.imageDataUrl && <img className="h-[150px] w-full object-cover object-top border-b border-border" src={preview.imageDataUrl} alt="" />}
     {preview.kind === "terminal" && preview.command && <div className="truncate px-3 py-2 font-mono text-xs" style={{ background: "hsl(var(--p-code-dark-bg))", color: "hsl(var(--p-code-dark-fg))" }}>❯ {preview.command}</div>}
     <div className="flex flex-col gap-1 px-3 py-2.5">

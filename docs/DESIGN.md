@@ -93,9 +93,12 @@
 - Stacking (z-order ladder):
   - Canvas content stays at `z-0`–`z-30` (sticky headers/rails at `z-10`–`z-30`).
   - Docked auxiliary panels use `z-40`; all floating overlays (dialog, popover, command picker, tooltip, toast) share the `z-50` band and rely on portal/mount order within it.
-  - Arbitrary escapes (`z-[9000]`-style) are drift, not a tier — fold the remaining outliers back into the ladder when touched.
+  - Dev-only tier: `--z-dev-overlay` (60, `z-(--z-dev-overlay)`) sits above the overlay band so development tooling such as the component labels stays on top of dialogs. Product UI never uses it.
+  - Arbitrary escapes (`z-[9000]`-style) are drift, not a tier.
 - Motion:
-  - Use `--motion-fast`, `--motion-base`, `--motion-slow`, `--motion-ease-out`, and `--motion-ease-standard`.
+  - Use `--motion-fast`, `--motion-base`, `--motion-slow`, `--motion-layout`, `--motion-ease-out`, and `--motion-ease-standard`
+    (`duration-[var(--motion-fast)]`), never raw `duration-200` or `300ms ease`: the reduced-motion rule collapses the tokens, not literals.
+  - Transition the properties that change (`transition-colors`, `transition-[width]`), not `transition-all`.
   - `prefers-reduced-motion` is authoritative.
   - An in-flow surface that appears and disappears (the status bar, the window's notice
     strip) animates its height too — `ave-anim-notice-in/-out`, a grid row from 0fr to
@@ -429,7 +432,6 @@ Plugin UIs own their components and styles. The host provides standard MCP Apps 
   - Adding a new design-token package.
   - Moving every spacing utility to CSS variables before a repeated semantic need exists.
 - Future migration target:
-  - Replace remaining raw `shadow-xl`/`shadow-2xl` in floating panels with `ave-surface-*` utilities.
   - Continue replacing route-local page chrome with `PageShell`/`SettingsSection` when new top-level surfaces are added.
 
 ## Accessibility

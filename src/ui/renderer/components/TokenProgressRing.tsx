@@ -106,7 +106,7 @@ export function TokenProgressRing({
           strokeDasharray={circumference}
           strokeDashoffset={fillOffset}
           strokeLinecap="round"
-          style={{ transition: "stroke-dashoffset 300ms ease" }}
+          style={{ transition: "stroke-dashoffset var(--motion-layout) var(--motion-ease-standard)" }}
         />
       </svg>
     </button>

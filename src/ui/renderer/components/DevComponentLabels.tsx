@@ -175,7 +175,7 @@ export function DevComponentLabels(): React.JSX.Element | null {
     <div
       ref={rootRef}
       data-testid="dev-component-labels"
-      className="pointer-events-none fixed inset-0 z-[9999]"
+      className="pointer-events-none fixed inset-0 z-(--z-dev-overlay)"
       aria-hidden="true"
     >
       {labels.map((label) => (

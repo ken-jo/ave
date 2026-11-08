@@ -520,7 +520,7 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
                     <span className="min-w-0 truncate font-semibold">{routineTitle(e.routine)}</span>
                     {e.routine.targetSessionId && (
                       <span className="inline-flex shrink-0 items-center gap-0.5 rounded bg-info/(--opacity-subtle) px-1 text-tiny font-medium text-info">
-                        <AlarmClock className="h-2.5 w-2.5" aria-hidden="true" />{t("schedulePanel.connectedBadge")}
+                        <AlarmClock className="h-3 w-3" aria-hidden="true" />{t("schedulePanel.connectedBadge")}
                       </span>
                     )}
                   </span>

@@ -466,7 +466,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
   return (
     <button
       type="button"
-      className={`w-full rounded-lg border bg-background p-3 text-left shadow-sm transition-all hover:border-border hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      className={`w-full rounded-lg border bg-background p-3 text-left shadow-sm transition-[border-color,box-shadow] hover:border-border hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         overdue ? "border-destructive/(--opacity-half) bg-destructive/(--opacity-faint)" : "border-border/(--opacity-strong)"
       }`}
       data-testid="work-board-card"

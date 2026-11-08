@@ -352,7 +352,7 @@ function SubAgentViewer({
   if (orderedSpawns.length === 0) {
     return (
       <div className="flex h-full min-h-0 w-full min-w-0 flex-col items-center justify-center p-6 text-center" data-testid="chat-side-panel-subagent-empty">
-        <Bot className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+        <Bot className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
         <div className="mt-2 text-xs text-muted-foreground">{t("chatPreviewRail.subagentEmpty")}</div>
       </div>
     );
@@ -650,7 +650,7 @@ function WorkspaceLauncher({
       ) : null}
       <div className={cn("w-full max-w-xs space-y-3", (showActivity || showVisited) && "self-center")}>
         <div className="flex flex-col items-center gap-1 text-center">
-          <LayoutGrid className="h-6 w-6 text-muted-foreground" aria-hidden="true" />
+          <LayoutGrid className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
           <div className="text-sm font-semibold">{t("chatPreviewRail.launcher.title")}</div>
           <div className="text-dense text-muted-foreground">{t("chatPreviewRail.launcher.subtitle")}</div>
         </div>

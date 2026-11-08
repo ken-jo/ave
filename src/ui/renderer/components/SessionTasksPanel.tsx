@@ -222,7 +222,7 @@ export function SessionTasksPanel({
             return (
               <li
                 key={it.id}
-                className={`flex items-start gap-2 transition-opacity duration-200 ${
+                className={`flex items-start gap-2 transition-opacity duration-[var(--motion-normal)] ${
                   active ? activePulse : ""
                 }`}
                 data-testid={active ? "session-tasks-active-row" : "session-tasks-row"}
@@ -249,7 +249,7 @@ export function SessionTasksPanel({
                   {t(meta.labelKey)}
                 </span>
                 <span
-                  className={`min-w-0 flex-1 transition-opacity duration-200 ${
+                  className={`min-w-0 flex-1 transition-opacity duration-[var(--motion-normal)] ${
                     it.status === "completed" ? "line-through opacity-70" : ""
                   }`}
                 >

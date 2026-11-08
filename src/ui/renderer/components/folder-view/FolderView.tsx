@@ -378,7 +378,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
           </div>
         ) : !viewing && state.columns.length === 1 && rootColumn?.status === "ok" && rootColumn.entries.length > 0 ? (
           <div className="flex min-w-0 flex-1 flex-col items-center justify-center gap-2 text-xs text-muted-foreground" data-testid="folder-hint">
-            <FileText aria-hidden="true" className="h-6 w-6" />
+            <FileText aria-hidden="true" className="h-4 w-4" />
             <div className="text-body-sm text-foreground">{t("folderView.hintTitle")}</div>
             <div>{t("folderView.hintKeys")}</div>
           </div>
