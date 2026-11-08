@@ -1193,7 +1193,7 @@ describe("mandatory sandbox control-file writes", () => {
       const entries = Array.from({ length: 800 }, (_, index) => `/p/${index}-${"x".repeat(100)}`);
       expect(() => withPlatform("darwin", () => buildSandboxConfig({ denyWrite: entries })))
         .toThrow(t("sandboxPolicy.configuredDeniesTooLarge"));
-      expect(() => assertSandboxWritePolicySize(entries, undefined, [entries[0]!]))
+      expect(() => assertSandboxWritePolicySize(entries, undefined, entries.slice(0, 1)))
         .toThrow(t("sandboxPolicy.tooLarge"));
     } finally { setLocale(previous); }
   });

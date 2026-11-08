@@ -25,7 +25,7 @@ function entry(path: string): ReturnType<typeof lstatSync> | undefined {
 /**
  * Boot completes this before settings or policy readers can observe the new paths. A commit never imports root files: it writes
  * default documents that carry over only the closed restriction field set of the root candidates, writes the trust-state files
- * fresh, commits the marker and then moves the roots aside. A `config/` that already holds a document this commit would not
+ * fresh, commits the marker and then preserves roots in fresh aside files. A `config/` that already holds a document this commit would not
  * write is a home that needs recovery: nothing is committed or overwritten and the home is refused (§5).
  */
 export function migrateAveHomeConfiguration(home: string, privacy?: AveHomePrivacy): string[] {
@@ -180,12 +180,14 @@ function cleanupRootConfiguration(home: string): string[] {
           }
           const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
           let identical: boolean;
+          let contents: Buffer;
           try {
             const opened = fstatSync(descriptor);
             if (!opened.isFile() || opened.ino !== identity.ino || opened.dev !== identity.dev) throw new Error("Legacy configuration changed before cleanup");
             // A sandbox deny placeholder is absent, not a source: leave it for the sandbox to re-stamp.
             if (opened.size === 0) continue;
-            identical = createHash("sha256").update(readFileSync(descriptor)).digest("base64") === hashes[name];
+            contents = readFileSync(descriptor);
+            identical = createHash("sha256").update(contents).digest("base64") === hashes[name];
           } finally { closeSync(descriptor); }
           const current = lstatSync(path);
           if (current.ino !== identity.ino || current.dev !== identity.dev) throw new Error("Legacy configuration changed before cleanup");
@@ -194,8 +196,13 @@ function cleanupRootConfiguration(home: string): string[] {
             const asideName = `${name}.post-migration-${new Date().toISOString().replace(/[-:.]/g, "")}`;
             const aside = join(sourceRoot, asideName);
             const reservation = openSync(aside, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-            closeSync(reservation);
-            replaceStagedFile(path, aside);
+            try { writeFileSync(reservation, contents); fsyncSync(reservation); }
+            finally { closeSync(reservation); }
+            fsyncSync(root);
+            const copied = lstatSync(path);
+            if (copied.ino !== identity.ino || copied.dev !== identity.dev || copied.size !== identity.size
+              || copied.mtimeMs !== identity.mtimeMs || copied.ctimeMs !== identity.ctimeMs) throw new Error("Legacy configuration changed during preservation");
+            unlinkSync(path);
             diagnostics.push(`Legacy configuration preserved at ${join(home, asideName)}`);
           }
           fsyncSync(root);
@@ -209,6 +216,8 @@ function cleanupRootConfiguration(home: string): string[] {
   }
   return diagnostics;
 }
+
+export const _cleanupRootConfigurationForTest = cleanupRootConfiguration;
 
 function commitPosixConfiguration(home: string, documents: Record<(typeof CONFIGURATION_FILES)[number], string>, manifest: string): string[] {
   const destination = join(home, AVE_HOME_CONFIGURATION_DIRECTORY);

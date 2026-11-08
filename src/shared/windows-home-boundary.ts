@@ -374,7 +374,14 @@ public static class HomeDirectoryDacl {
                   if (!Delete(source, user)) diagnostics.Add("Legacy configuration cleanup failed: " + oldPath);
                 } else {
                   string aside = name + ".post-migration-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffffffZ");
-                  Rename(source, home, aside, false);
+                  // A fresh file inherits the parent DACL; copying bytes never transfers source ACEs.
+                  using (var copy = OpenRelative(home, aside, user, 2, false, true, false))
+                  using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
+                    input.Position = 0;
+                    input.CopyTo(output);
+                    output.Flush(true);
+                  }
+                  if (!Delete(source, user)) throw new InvalidOperationException("Legacy configuration source deletion failed");
                   diagnostics.Add("Legacy configuration preserved at " + System.IO.Path.Combine(path, aside));
                 }
               }

@@ -2151,7 +2151,7 @@ function windowsAclTargetLabel(target: string): string {
     && aveHomeReadBoundaryRoots().some(root => windowsAclTargetKey(join(root, ...entry.segments)) === key));
   if (!entry) return key;
   return key + (entry.rotations
-    ? " (expected per-file write floor; move-aside rotation)"
+    ? " (expected per-file write floor; protected rotation names)"
     : " (expected per-file write floor)");
 }
 

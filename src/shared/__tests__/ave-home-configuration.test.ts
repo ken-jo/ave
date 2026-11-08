@@ -10,7 +10,7 @@ import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { AVE_HOME_PROTECTED_DIRECTORIES, aveHomeRefusalReason, ensureAveHomePrivate, isAveHomeConfigurationRefused, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
-import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
+import { _cleanupRootConfigurationForTest, migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { permissionSettingsPath, writePermissionSettings } from "../../permissions/permission-settings-store.js";
 import { loadPolicy, savePolicy, userPolicyPath } from "../../permissions/policy-store.js";
 import { isPathAllowed } from "../../permissions/allowed-directories.js";
@@ -64,6 +64,52 @@ function exposeConfiguration(dir: string): void {
 }
 
 describe("protected home configuration", () => {
+  it.each(["settings.json", "policy.json", "ave-secrets.json"])("preserves %s in a new file and deletes the original", name => {
+    const dir = fixture();
+    migrateAveHomeConfiguration(dir);
+    const path = join(dir, name);
+    writeFileSync(path, "outside edit");
+    const original = statSync(path, { bigint: true });
+    const aside = asideOf(migrateAveHomeConfiguration(dir), dir, name);
+    expect(readFileSync(aside, "utf8")).toBe("outside edit");
+    expect(statSync(aside, { bigint: true }).ino).not.toBe(original.ino);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("keeps a safe copy when deletion is interrupted and retries on the next boot", () => {
+    const dir = home();
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, "settings.json");
+    writeFileSync(path, "outside edit");
+    const original = statSync(path, { bigint: true }).ino;
+    const unlink = vi.mocked(unlinkSync).getMockImplementation();
+    if (!unlink) throw new Error("Expected unlink implementation");
+    vi.mocked(unlinkSync).mockImplementation(target => {
+      if (String(target).endsWith("/settings.json")) throw new Error("Interrupted source deletion");
+      unlink(target);
+    });
+    expect(_cleanupRootConfigurationForTest(dir).join("\n")).toContain("Interrupted source deletion");
+    expect(existsSync(path)).toBe(true);
+    const first = readdirSync(dir).find(name => name.startsWith("settings.json.post-migration-"));
+    if (!first) throw new Error("Expected preserved copy");
+    expect(statSync(join(dir, first), { bigint: true }).ino).not.toBe(original);
+    vi.mocked(unlinkSync).mockImplementation(unlink);
+    expect(_cleanupRootConfigurationForTest(dir).join("\n")).toContain("Legacy configuration preserved at");
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32").each(["settings.json", "policy.json", "ave-secrets.json"])("copies POSIX root %s into a new inode before unlinking", name => {
+    const dir = home();
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, name);
+    writeFileSync(path, "outside edit");
+    const original = statSync(path, { bigint: true }).ino;
+    const aside = asideOf(_cleanupRootConfigurationForTest(dir), dir, name);
+    expect(statSync(aside, { bigint: true }).ino).not.toBe(original);
+    expect(readFileSync(aside, "utf8")).toBe("outside edit");
+    expect(existsSync(path)).toBe(false);
+  });
+
   it("commits explicit default documents for a new home", () => {
     const dir = fixture();
     expect(migrateAveHomeConfiguration(dir)).toEqual([]);

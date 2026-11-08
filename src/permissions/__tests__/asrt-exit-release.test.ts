@@ -139,7 +139,7 @@ describe("sandbox runtime release at exit", () => {
       await releaseAsrtSandboxForExit();
       expect(isSrtWinRuntimeReleasePending()).toBe(false);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"),
-        expect.stringMatching(/^grant revoke missing x1 \[<ave-home>\\settings\.json\], deny restore mismatch x5 \[<ave-home>\\settings\.json \(expected per-file write floor; move-aside rotation\),<home>\\\.config\\ave\\hooks,<home>\\\.config\\ave\\hooks,(<outside-home>:[a-f0-9]{24}),\1\]$/));
+        expect.stringMatching(/^grant revoke missing x1 \[<ave-home>\\settings\.json\], deny restore mismatch x5 \[<ave-home>\\settings\.json \(expected per-file write floor; protected rotation names\),<home>\\\.config\\ave\\hooks,<home>\\\.config\\ave\\hooks,(<outside-home>:[a-f0-9]{24}),\1\]$/));
       const logged = JSON.stringify(warn.mock.calls);
       expect(logged).not.toContain("private-target");
       expect(logged.toLowerCase()).not.toContain("alice");
@@ -154,11 +154,11 @@ describe("sandbox runtime release at exit", () => {
   });
 
   it.each([
-    ["settings.json", " (expected per-file write floor; move-aside rotation)"],
-    ["permissions.json", " (expected per-file write floor; move-aside rotation)"],
-    ["policy.json", " (expected per-file write floor; move-aside rotation)"],
-    ["ave-secrets.json", " (expected per-file write floor; move-aside rotation)"],
-    ["mcp/servers.json", " (expected per-file write floor; move-aside rotation)"],
+    ["settings.json", " (expected per-file write floor; protected rotation names)"],
+    ["permissions.json", " (expected per-file write floor; protected rotation names)"],
+    ["policy.json", " (expected per-file write floor; protected rotation names)"],
+    ["ave-secrets.json", " (expected per-file write floor; protected rotation names)"],
+    ["mcp/servers.json", " (expected per-file write floor; protected rotation names)"],
     ["AGENTS.md", " (expected per-file write floor)"],
     ["settings.json.other", ""],
     ["config", ""],
