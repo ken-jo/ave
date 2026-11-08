@@ -925,18 +925,18 @@ export function App() {
     [overlayQueue],
   );
   // Subscribe once per window to avoid duplicate permission-memory and reviewer disclosures across tiles.
-  // A re-applied approval is disclosed in the window's notice queue. The verdict tier sets the severity: a high-risk reuse is
-  // an alert that stays until dismissed and cannot be silenced; low and medium reuses repeat on every cached hit, so they
-  // offer "Don't show again". One stable id per verdict tier: a newer hit of the same tier replaces the previous one, while a
+  // A re-applied approval is disclosed in the window's notice queue. A reuse is not a failure, so no tier is an error: a
+  // high-risk reuse is a warning that stays until dismissed and cannot be silenced; low and medium reuses repeat on every
+  // cached hit, so they offer "Don't show again". One stable id per verdict tier: a newer hit of the same tier replaces the previous one, while a
   // lower tier queues behind an unread high-risk notice instead of replacing (and so dismissing) it.
   const handleUserApprovalHit = useCallback((hit: UserApprovalHitPayload) => {
     const high = hit.verdictAtApproval === "high";
     const scope = hit.scope === "persistent" ? t("chatView.approvalScopePersistent")
       : hit.scope === "global" ? t("chatView.approvalScopeGlobal") : t("chatView.approvalScopeSession");
     statusUpsertToast(`approval-memory-hit:${hit.verdictAtApproval}`, {
-      severity: high ? "error" : hit.verdictAtApproval === "medium" ? "warning" : "success",
+      severity: high || hit.verdictAtApproval === "medium" ? "warning" : "success",
       message: `${t("chatView.approvalMemoryApplied")} · ${hit.toolName} · ${scope} · ${hit.verdictAtApproval.toUpperCase()}`,
-      ...(high ? { kind: "approval-memory-hit-high" } : { kind: "approval-memory-hit", suppressible: true as const }),
+      ...(high ? { kind: "approval-memory-hit-high", sticky: true } : { kind: "approval-memory-hit", suppressible: true as const }),
     });
   }, [statusUpsertToast, t]);
   const { reviewerSuggestion } = usePermissionSignals({ onUserApprovalHit: handleUserApprovalHit });

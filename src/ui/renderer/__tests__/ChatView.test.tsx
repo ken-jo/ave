@@ -2764,12 +2764,12 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     expect(toast.textContent).toContain("MEDIUM");
   });
 
-  it("verdict tier sets the notice severity (low=success, medium=warning, high=error)", async () => {
+  it("verdict tier sets the notice severity (low=success, medium=warning, high=warning) — a reuse is never an error", async () => {
     const { container, fire } = await setupWithCallback();
     const cases: Array<["low" | "medium" | "high", string]> = [
       ["low", "success"],
       ["medium", "warning"],
-      ["high", "error"],
+      ["high", "warning"],
     ];
     for (const [verdict, severity] of cases) {
       // Each tier has its own notice; close the one shown so the next tier reaches the head.
@@ -2824,20 +2824,27 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     }
   });
 
-  it("HIGH verdict promotes role to 'alert' + aria-live 'assertive' (urgent disclosure)", async () => {
-    const { container, fire } = await setupWithCallback();
-    await act(async () => {
-      fire({ toolName: "fs_write_sensitive", scope: "session", verdictAtApproval: "high" });
-    });
-    const toast = await waitFor(() => {
-      const el = container.querySelector(
-        '[data-notice-kind="approval-memory-hit-high"]',
-      );
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    expect(toast.getAttribute("role")).toBe("alert");
-    expect(toast.getAttribute("aria-live")).toBe("assertive");
+  it("HIGH verdict is a polite warning that stays until it is dismissed", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const { container, fire } = await setupWithCallback();
+      await act(async () => {
+        fire({ toolName: "fs_write_sensitive", scope: "session", verdictAtApproval: "high" });
+      });
+      const toast = await waitFor(() => {
+        const el = container.querySelector('[data-notice-kind="approval-memory-hit-high"]');
+        expect(el).not.toBeNull();
+        return el as HTMLElement;
+      });
+      expect(toast.getAttribute("data-severity")).toBe("warning");
+      expect(toast.querySelector('[data-testid="status-toast-suppress"]')).toBeNull();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(container.querySelector('[data-notice-kind="approval-memory-hit-high"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("non-HIGH stays role='status' + aria-live='polite'", async () => {
