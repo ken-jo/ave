@@ -92,10 +92,10 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(turnLines).toHaveLength(1);
     expect(releaseLines).toHaveLength(1);
     expect(turnLines[0]?.[1]).toEqual({
-      preflightMs: 0, srtWinPrepMs: 0, userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: duration, grantRevokeMs: 0, totalMs: duration, rows: expect.any(Number),
+      preflightMs: 0, srtWinPrepMs: 0, userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: duration, grantRevokeMs: 0, configMs: 0, liveGrants: 0, totalMs: duration, rows: expect.any(Number),
     });
     expect(turnLines[0]?.[1].rows).toBeGreaterThan(0);
-    expect(releaseLines[0]?.[1]).toEqual({ revokeMs: duration, totalMs: duration });
+    expect(releaseLines[0]?.[1]).toEqual({ revokeMs: duration, configMs: 0, liveGrants: 1, totalMs: duration });
     for (const [, fields] of [...turnLines, ...releaseLines]) {
       for (const value of Object.values(fields)) {
         expect(typeof value).toBe("number");
@@ -141,13 +141,37 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(denyAcl.readWindowsDenyAcls).toHaveBeenCalledTimes(2);
     expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", {
       preflightMs: expect.any(Number), srtWinPrepMs: 12, userStatusMs: 11, pinsMs: 0,
-      denyReadMs: 34, stampMs: 23, assertMs: 38, grantMs: 29, grantRevokeMs: 0,
+      denyReadMs: 34, stampMs: 23, assertMs: 38, grantMs: 29, grantRevokeMs: 0, configMs: expect.any(Number), liveGrants: 0,
       totalMs: now, rows: expect.any(Number),
     });
     const fields = info.mock.calls.find(([message]) => message === "[asrt-sandbox] windows grant turn timing")?.[1];
     expect(fields.preflightMs).toBeGreaterThanOrEqual(3);
-    expect(Object.entries(fields).filter(([key]) => key !== "totalMs" && key !== "rows").reduce((sum, [, value]) => sum + Number(value), 0)).toBe(fields.totalMs);
+    expect(Object.entries(fields).filter(([key]) => key !== "totalMs" && key !== "rows" && key !== "liveGrants").reduce((sum, [, value]) => sum + Number(value), 0)).toBe(fields.totalMs);
     grant.release();
+  });
+
+  it("times config builds and updates and counts holders rather than paths", async () => {
+    const other = join(fixture, "other");
+    mkdirSync(other);
+    await initializeAsrtSandbox({});
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.mocked(integrity.prepareSrtWinExecutable).mockImplementation(source => { now += 5; return source; });
+    vi.mocked(runtime.SandboxManager.updateConfig).mockImplementation(next => { now += 37; config = next; });
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const first = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target, other] });
+    const second = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] });
+    first.release();
+    second.release();
+    const turns = info.mock.calls.filter(([message]) => message === "[asrt-sandbox] windows grant turn timing");
+    const releases = info.mock.calls.filter(([message]) => message === "[asrt-sandbox] windows grant release timing");
+    expect(turns.map(([, fields]) => fields.liveGrants)).toEqual([0, 1]);
+    expect(releases.map(([, fields]) => fields.liveGrants)).toEqual([2, 1]);
+    for (const [, fields] of turns) expect(fields.configMs).toBe(47);
+    for (const [, fields] of releases) {
+      expect(fields.configMs).toBe(42);
+      expect(fields.totalMs).toBe(fields.configMs + fields.revokeMs);
+    }
   });
 
   it("logs elapsed grant time when the native grant throws", async () => {

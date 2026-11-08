@@ -333,6 +333,7 @@ interface WindowsLiveGrantCounts {
 
 interface AsrtSandboxSession {
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
+  windowsLiveGrantCount: number;
   readonly windowsWrapDenyRead: Set<string>;
   readonly windowsWrapDenyWrite: Set<string>;
   windowsDenyRevision: number;
@@ -1984,7 +1985,7 @@ export async function initializeAsrtSandbox(
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
-  sandboxSession = { windowsLiveGrants: new Map(), windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
+  sandboxSession = { windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
   windowsProfileReadDenyWarnings.clear();
   windowsReadDenyWarnings.clear();
   windowsAbsentDenyWarnings.clear();
@@ -2420,7 +2421,7 @@ export function grantWindowsWorkerFilesystemAccess(
   return windowsGrantTurns(() => grantWindowsWorkerFilesystemAccessInTurn(opts));
 }
 
-type WindowsGrantTimingStep = "preflightMs" | "srtWinPrepMs" | "userStatusMs" | "pinsMs" | "denyReadMs" | "stampMs" | "assertMs" | "grantMs" | "grantRevokeMs";
+type WindowsGrantTimingStep = "preflightMs" | "srtWinPrepMs" | "userStatusMs" | "pinsMs" | "denyReadMs" | "stampMs" | "assertMs" | "grantMs" | "grantRevokeMs" | "configMs";
 
 interface WindowsGrantTiming {
   readonly steps: Record<WindowsGrantTimingStep, number>;
@@ -2432,8 +2433,9 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
   request: WindowsWorkerFilesystemGrantRequest,
 ): Promise<WindowsWorkerFilesystemGrant> {
   const started = performance.now();
+  const liveGrants = sandboxSession?.windowsLiveGrantCount ?? 0;
   const timing: WindowsGrantTiming = {
-    steps: { preflightMs: 0, srtWinPrepMs: 0, userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: 0, grantRevokeMs: 0 },
+    steps: { preflightMs: 0, srtWinPrepMs: 0, userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: 0, grantRevokeMs: 0, configMs: 0 },
     rows: 0,
     timeStep: (key, operation) => {
       const stepStarted = performance.now();
@@ -2444,7 +2446,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
   try { return await grantWindowsWorkerFilesystemAccessTurnBody(request, timing); }
   finally {
     // totalMs is turn wall time, including the dynamic import yield.
-    const fields = { ...timing.steps, totalMs: performance.now() - started, rows: timing.rows };
+    const fields = { ...timing.steps, liveGrants, totalMs: performance.now() - started, rows: timing.rows };
     log.info(fields, "windows grant turn timing");
     if (fields.totalMs > 5000) log.warn(fields, "windows grant turn timing");
   }
@@ -2519,12 +2521,14 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   assertWindowsGrantBoundaries(allowRead, allowWrite);
   timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
 
-  const settings = withWorkerUnixSockets(_baseTrustedSettings);
+  const settings = timeStep("configMs", () => withWorkerUnixSockets(_baseTrustedSettings));
   const revision = session.windowsDenyRevision;
-  const liveGrants = snapshotWindowsLiveGrants(session);
-  const pending = buildSandboxConfig(settings, _baseReadDenyEvidence, {
-    allowRead: [...(liveGrants.allowRead ?? []), ...allowRead.map(path => ({ path, literal: true as const }))],
-    allowWrite: [...(liveGrants.allowWrite ?? []), ...allowWrite.map(path => ({ path, literal: true as const }))],
+  const pending = timeStep("configMs", () => {
+    const liveGrants = snapshotWindowsLiveGrants(session);
+    return buildSandboxConfig(settings, _baseReadDenyEvidence, {
+      allowRead: [...(liveGrants.allowRead ?? []), ...allowRead.map(path => ({ path, literal: true as const }))],
+      allowWrite: [...(liveGrants.allowWrite ?? []), ...allowWrite.map(path => ({ path, literal: true as const }))],
+    });
   });
   const rows: { path: string; read: boolean }[] = [];
   for (const kind of ["denyRead", "denyWrite"] as const) {
@@ -2615,6 +2619,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
   }
 
   const writable = new Set(allowWrite);
+  session.windowsLiveGrantCount += 1;
   for (const path of allowRead) {
     const counts = session.windowsLiveGrants.get(path) ?? { read: 0, write: 0 };
     counts.read += 1;
@@ -2624,6 +2629,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
 
   let released = false;
   let revokeMs = 0;
+  let configMs = 0;
   const revokeGrant = (): boolean => {
     let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
     let cleanupError: unknown;
@@ -2643,9 +2649,10 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     if (released) return;
     released = true;
     const releaseStarted = performance.now();
+    const liveGrants = session.windowsLiveGrantCount;
     try { releaseBody(); }
     finally {
-      const fields = { revokeMs, totalMs: performance.now() - releaseStarted };
+      const fields = { revokeMs, configMs, liveGrants, totalMs: performance.now() - releaseStarted };
       log.info(fields, "windows grant release timing");
       if (fields.totalMs > 5000) log.warn(fields, "windows grant release timing");
     }
@@ -2654,6 +2661,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
     allowRead,
     allowWrite,
     release: () => releaseWithTiming(() => {
+      session.windowsLiveGrantCount -= 1;
       for (const path of allowRead) {
         const counts = session.windowsLiveGrants.get(path);
         if (counts === undefined) continue;
@@ -2663,6 +2671,7 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
       }
       if (!revokeGrant()) return;
       if (sandboxSession === session && active && _baseTrustedSettings !== undefined) {
+        const configStarted = performance.now();
         try {
           SandboxManager.updateConfig(
             buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
@@ -2670,14 +2679,16 @@ async function grantWindowsWorkerFilesystemAccessTurnBody(
         } catch (cause) {
           session.windowsDenyFailure = new Error(`Windows filesystem grant config cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause });
           log.error(session.windowsDenyFailure);
+        } finally {
+          configMs += performance.now() - configStarted;
         }
       }
     }),
   };
   try {
-    SandboxManager.updateConfig(
+    timeStep("configMs", () => SandboxManager.updateConfig(
       buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
-    );
+    ));
   } catch (error) {
     grant.release();
     throw error;
