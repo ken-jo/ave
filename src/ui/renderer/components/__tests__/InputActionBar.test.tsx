@@ -880,16 +880,16 @@ describe("model card (status-row model cell)", () => {
       ...settingsWithPins(),
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
     });
-    hasApiKey.mockRejectedValueOnce(new Error("credential-query-failed")).mockResolvedValueOnce(true);
+    hasApiKey.mockClear();
     const view = renderBar();
     fireEvent.click(view.getByTestId("iab-status-model"));
     const subscription = await view.findByTestId("model-quick-picker-option:claude-code");
-    const failed = await view.findByTestId("model-quick-picker-option:openai-compatible:qwen3.8-27b-nvfp4");
-    const verified = await view.findByTestId("model-quick-picker-option:openai-compatible:qwen3.8-27b-gguf");
+    const nvfp4 = await view.findByTestId("model-quick-picker-option:openai-compatible:qwen3.8-27b-nvfp4");
+    const gguf = await view.findByTestId("model-quick-picker-option:openai-compatible:qwen3.8-27b-gguf");
     await waitFor(() => expect(subscription).toHaveTextContent("API 키가 아닌 본인의 Claude 구독으로 청구됩니다."));
-    expect(verified).not.toHaveTextContent("설정한 본인의 API 키로 청구됩니다.");
+    expect(gguf).not.toHaveTextContent("설정한 본인의 API 키로 청구됩니다.");
     expect(hasApiKey).not.toHaveBeenCalled();
-    expect(failed).not.toHaveTextContent("설정한 본인의 API 키로 청구됩니다.");
+    expect(nvfp4).not.toHaveTextContent("설정한 본인의 API 키로 청구됩니다.");
   });
 
   it("names the subscription provider in the primary column when the runtime has no model of its own", async () => {
