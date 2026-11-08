@@ -5484,6 +5484,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "toolApprovalDialog.rememberScopeTransfer": "{source}에서 {destination}(으)로의 {toolName}을(를) 덮어쓰기 없이 다음 작업 경로에서 기억합니다: {path}",
   "toolApprovalDialog.rememberScopeTransferOverwrite": "{source}에서 {destination}(으)로의 {toolName}을(를) 대상 덮어쓰기와 함께 다음 작업 경로에서 기억합니다: {path}",
   "toolApprovalDialog.rememberScopeCommand": "이 샌드박스에서 실행하는 이 명령 그대로를 타임아웃과 관계없이 다음 작업 경로에서 기억합니다: {path}",
+  "toolApprovalDialog.spawnActionTitle": "하위 에이전트를 시작할까요? {title}",
+  "toolApprovalDialog.spawnActionUntitled": "하위 에이전트를 시작할까요?",
   "toolApprovalDialog.requestingAgent": "요청한 하위 에이전트: {title}",
   "toolApprovalDialog.siteTitle": "이 사이트를 열어도 될까요? {origin}",
   "toolApprovalDialog.siteSessionOnly": "이 세션에만 적용합니다. 다른 세션과 하위 세션은 별도로 묻습니다.",

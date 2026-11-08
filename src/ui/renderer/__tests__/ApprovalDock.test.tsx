@@ -102,6 +102,22 @@ describe("ApprovalDock", () => {
     } finally { shown.unmount(); setLocale(previous); }
   });
 
+  it.each(["en", "ko"] as const)("frames a builtin sub-agent approval as the action in %s", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    const request = makeRequest({ source: "builtin", toolName: "agent_spawn", toolCategory: "write", args: { title: "Read two pages" },
+      exactRecordAllowed: false, persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
+    const decide = vi.fn();
+    const shown = render(<ApprovalDock conversationLabel="conversation" queue={[request]} onDecide={decide} />);
+    try {
+      expect(shown.getByRole("heading", { level: 2, name: t("toolApprovalDialog.spawnActionTitle", { title: "Read two pages" }) })).toBeInTheDocument();
+      expect(shown.queryByRole("heading", { name: t("toolApprovalDialog.toolApprovalTitle") })).toBeNull();
+      expect(shown.getByTestId("approval-tool-identity")).toHaveTextContent("agent_spawn");
+      expect(shown.queryByTestId("approval-remember-selector")).toBeNull();
+      expect(decide).not.toHaveBeenCalled();
+    } finally { shown.unmount(); setLocale(previous); }
+  });
+
   it("renders without crashing with empty queue", () => {
     const { container } = render(
       <ApprovalDock conversationLabel="conversation" queue={[]} onDecide={vi.fn()} />,

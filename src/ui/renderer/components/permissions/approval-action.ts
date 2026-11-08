@@ -6,6 +6,10 @@ export function approvalAction(request: ApprovalRequest, t: TranslateFn): { titl
   const args = isRecord(request.args) ? request.args : {};
   if (request.browserSite) return { title: t("toolApprovalDialog.siteTitle", { origin: new URL(request.browserSite).origin }), primary: null };
   if (request.kind === "egress-host") return { title: t("egressApprovalCard.dockTitle"), primary: null };
+  if (request.source === "builtin" && request.toolName === "agent_spawn") {
+    const title = typeof args.title === "string" ? args.title.trim() : "";
+    return { title: title ? t("toolApprovalDialog.spawnActionTitle", { title }) : t("toolApprovalDialog.spawnActionUntitled"), primary: null };
+  }
   const scope = request.approvalMemory?.kind === "key" ? request.approvalMemory.scope : undefined;
   if (request.source === "mcp" || request.source === "plugin" || request.kind === "agent-action") {
     const server = scope?.kind === "mcp-tool" ? scope.serverId : request.sourcePluginId;

@@ -5482,6 +5482,8 @@ export const en = {
   "toolApprovalDialog.rememberScopeTransfer": "Remember {toolName} from {source} to {destination}, without overwriting, in this working directory: {path}",
   "toolApprovalDialog.rememberScopeTransferOverwrite": "Remember {toolName} from {source} to {destination}, overwriting the destination, in this working directory: {path}",
   "toolApprovalDialog.rememberScopeCommand": "Remember this exact command in this sandbox, with any timeout, in this working directory: {path}",
+  "toolApprovalDialog.spawnActionTitle": "Start a sub-agent for: {title}?",
+  "toolApprovalDialog.spawnActionUntitled": "Start a sub-agent?",
   "toolApprovalDialog.requestingAgent": "Requesting sub-agent: {title}",
   "toolApprovalDialog.siteTitle": "Open this site: {origin}?",
   "toolApprovalDialog.siteSessionOnly": "Applies to this session only. Other sessions and child sessions ask separately.",
