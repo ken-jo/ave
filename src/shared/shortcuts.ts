@@ -48,16 +48,20 @@ export function normalizeAccelerator(input: unknown): string | null {
   return trimmed;
 }
 
+/** `onDroppedBindings` hears every stored rebind the load gate discarded, so the store can log what it lost. */
 export function normalizeShortcuts(
   input: unknown,
   fallback: ShortcutSettings,
   platform: ShortcutPlatform,
+  onDroppedBindings: (dropped: readonly DroppedShortcutBinding[]) => void,
 ): ShortcutSettings {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return { ...fallback, bindings: { ...fallback.bindings } };
   }
   const obj = input as { toggleWindow?: unknown; enabled?: unknown; bindings?: unknown };
-  const result: ShortcutSettings = { ...fallback, bindings: loadShortcutBindings(obj.bindings, platform) };
+  const loaded = loadShortcutBindings(obj.bindings, platform);
+  if (loaded.dropped.length > 0) onDroppedBindings(loaded.dropped);
+  const result: ShortcutSettings = { ...fallback, bindings: loaded.bindings };
   if (obj.toggleWindow === null) {
     result.toggleWindow = null;
   } else if (obj.toggleWindow !== undefined) {
@@ -559,16 +563,42 @@ export function shortcutBindingRefusal(
 
 /** Load-boundary gate for persisted rebinds. A row this build no longer has, a row that became fixed, a key that became
  * reserved, or a value equal to the default is dropped and the rest kept, so one stale entry cannot discard the others. */
-export function loadShortcutBindings(input: unknown, platform: ShortcutPlatform): ShortcutBindings {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
-  const result: ShortcutBindings = {};
-  for (const [id, value] of Object.entries(input as Record<string, unknown>)) {
-    if (typeof value !== "string" || !isShortcutId(id)) continue;
-    if (shortcutBindingRefusal(id, value, platform, NO_SHORTCUT_OVERRIDES) !== null) continue;
-    if (value === defaultAccelerator(id, platform)) continue;
-    result[id] = value;
+export function loadShortcutBindings(input: unknown, platform: ShortcutPlatform): { bindings: ShortcutBindings; dropped: DroppedShortcutBinding[] } {
+  const bindings: ShortcutBindings = {};
+  const dropped: DroppedShortcutBinding[] = [];
+  if (input === undefined) return { bindings, dropped };
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    dropped.push({ id: "*", value: input, reason: "not-an-object" });
+    return { bindings, dropped };
   }
-  return result;
+  for (const [id, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!isShortcutId(id)) {
+      dropped.push({ id, value, reason: "unknown-id" });
+      continue;
+    }
+    if (typeof value !== "string") {
+      dropped.push({ id, value, reason: "malformed" });
+      continue;
+    }
+    const refusal = shortcutBindingRefusal(id, value, platform, NO_SHORTCUT_OVERRIDES);
+    if (refusal !== null) {
+      dropped.push({ id, value, reason: refusal.reason });
+      continue;
+    }
+    if (value === defaultAccelerator(id, platform)) {
+      dropped.push({ id, value, reason: "equals-default" });
+      continue;
+    }
+    bindings[id] = value;
+  }
+  return { bindings, dropped };
+}
+
+/** A stored rebind the load gate discarded, and why. */
+export interface DroppedShortcutBinding {
+  id: string;
+  value: unknown;
+  reason: "not-an-object" | "unknown-id" | "malformed" | "equals-default" | ShortcutBindingRefusal["reason"];
 }
 
 export class ShortcutBindingsPatchError extends Error {

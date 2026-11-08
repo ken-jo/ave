@@ -1726,7 +1726,9 @@ export class SettingsService {
         documents: normalizeDocuments(parsed.documents),
         workBoard: normalizeWorkBoard(parsed.workBoard),
         system: normalizeSystem(parsed.system),
-        shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts, shortcutPlatformOf(process.platform)),
+        shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts, shortcutPlatformOf(process.platform), (dropped) => {
+          log.warn(`shortcuts.bindings: dropped ${dropped.length} stored rebind(s) this build refuses: ${JSON.stringify(dropped)}`);
+        }),
         plugins: {},
         pluginConfigs: { ...DEFAULT_SETTINGS.pluginConfigs, ...pluginConfigs },
         alerts: normalizeAlertSettings(parsed.alerts, appVersion),

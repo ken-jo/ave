@@ -56,18 +56,19 @@ describe("normalizeAccelerator", () => {
 
 describe("normalizeShortcuts", () => {
   const fallback = { toggleWindow: "Alt+F1", enabled: true, bindings: {} } as const;
+  const noDrops = () => { throw new Error("no binding should be dropped"); };
 
   it("returns fallback for non-object input", () => {
-    expect(normalizeShortcuts(null, { ...fallback }, "darwin")).toEqual(fallback);
-    expect(normalizeShortcuts([], { ...fallback }, "darwin")).toEqual(fallback);
+    expect(normalizeShortcuts(null, { ...fallback }, "darwin", noDrops)).toEqual(fallback);
+    expect(normalizeShortcuts([], { ...fallback }, "darwin", noDrops)).toEqual(fallback);
   });
 
   it("accepts null toggleWindow (explicit clear)", () => {
-    expect(normalizeShortcuts({ toggleWindow: null }, { ...fallback }, "darwin").toggleWindow).toBeNull();
+    expect(normalizeShortcuts({ toggleWindow: null }, { ...fallback }, "darwin", noDrops).toggleWindow).toBeNull();
   });
 
   it("keeps fallback when an invalid accelerator is supplied", () => {
-    const out = normalizeShortcuts({ toggleWindow: "Shift" }, { ...fallback }, "darwin");
+    const out = normalizeShortcuts({ toggleWindow: "Shift" }, { ...fallback }, "darwin", noDrops);
     expect(out.toggleWindow).toBe("Alt+F1");
   });
 
@@ -76,6 +77,7 @@ describe("normalizeShortcuts", () => {
       { toggleWindow: "CommandOrControl+K", enabled: false },
       { ...fallback },
       "darwin",
+      noDrops,
     );
     expect(out).toEqual({ toggleWindow: "CommandOrControl+K", enabled: false, bindings: {} });
   });
@@ -300,21 +302,30 @@ describe("formatAccelerator", () => {
 describe("persisted bindings", () => {
   const settings = { toggleWindow: null, enabled: false, bindings: {} };
 
-  it("loads valid rebinds and drops what this build would refuse", () => {
-    expect(loadShortcutBindings({
+  it("loads valid rebinds and reports each one it drops, with the reason", () => {
+    const loaded = loadShortcutBindings({
       "app.search": "CommandOrControl+Shift+Y",
       "gone.row": "CommandOrControl+J",
       "edit.copy": "CommandOrControl+J",
       "app.commandPalette": "J",
       "menu.settings": "CommandOrControl+,",
       "app.viewBack": 3,
-    }, "darwin")).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
-    expect(loadShortcutBindings("nonsense", "darwin")).toEqual({});
+    }, "darwin");
+    expect(loaded.bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+    expect(loaded.dropped).toEqual([
+      { id: "gone.row", value: "CommandOrControl+J", reason: "unknown-id" },
+      { id: "edit.copy", value: "CommandOrControl+J", reason: "read-only" },
+      { id: "app.commandPalette", value: "J", reason: "needs-modifier" },
+      { id: "menu.settings", value: "CommandOrControl+,", reason: "equals-default" },
+      { id: "app.viewBack", value: 3, reason: "malformed" },
+    ]);
+    expect(loadShortcutBindings("nonsense", "darwin")).toEqual({ bindings: {}, dropped: [{ id: "*", value: "nonsense", reason: "not-an-object" }] });
+    expect(loadShortcutBindings(undefined, "darwin")).toEqual({ bindings: {}, dropped: [] });
   });
 
   it("drops a rebind equal to the platform default, which differs by platform", () => {
-    expect(loadShortcutBindings({ "app.viewBack": "Alt+Left" }, "other")).toEqual({});
-    expect(loadShortcutBindings({ "app.viewBack": "Alt+Left" }, "darwin")).toEqual({ "app.viewBack": "Alt+Left" });
+    expect(loadShortcutBindings({ "app.viewBack": "Alt+Left" }, "other").bindings).toEqual({});
+    expect(loadShortcutBindings({ "app.viewBack": "Alt+Left" }, "darwin").bindings).toEqual({ "app.viewBack": "Alt+Left" });
   });
 
   it("applies a rebind, stores a default as no override, and resets with null", () => {

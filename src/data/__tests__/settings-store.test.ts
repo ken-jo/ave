@@ -3143,8 +3143,17 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
       }),
       "utf-8",
     );
-    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(s.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+      const logged = JSON.stringify(warn.mock.calls.filter((call) => JSON.stringify(call).includes("shortcuts.bindings: dropped")));
+      expect(logged).toContain("dropped 4 stored rebind");
+      for (const reason of ["unknown-id", "read-only", "equals-default", "malformed"]) expect(logged).toContain(reason);
+      expect(logged).toContain("removed.row");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
