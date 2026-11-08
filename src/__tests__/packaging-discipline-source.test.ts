@@ -1977,6 +1977,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run check:i18n-catalog",
       "node scripts/check-no-tls-bypass.mjs",
       "node scripts/check-color-tokens.mjs",
+      "node scripts/check-type-tokens.mjs",
       "node scripts/check-shell-geometry-tokens.mjs",
       "node scripts/check-no-inline-channels.mjs",
       "node scripts/check-sandboxed-preloads.mjs",

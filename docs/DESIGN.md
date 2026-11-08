@@ -79,6 +79,7 @@
     size ignores the user's font-size scale and splits the ladder. Add a step to the scale
     instead; a new step also needs a `TYPE_SCALE` entry in `src/lib/utils.ts`, or `cn()` reads
     it as a text colour and drops the real one.
+    `scripts/check-type-tokens.mjs` fails `bun run build` on any `text-[Npx]` there.
   - No viewport-scaled type and no negative letter spacing in app UI.
   - Compact panels use compact headings; hero-scale type belongs only to real hero surfaces, which the app generally should not need.
 - Spacing/layout rhythm:
