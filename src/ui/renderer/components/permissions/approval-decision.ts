@@ -71,6 +71,20 @@ const label = (choice: RememberingChoice): string => DECISION_LABEL_KEYS[choice]
 
 /** A bash or PowerShell card: every remembering choice saves a `Bash(...)` / `PowerShell(...)` rule, editable in the card. Always deny saves the command's literal argv, or a rule the person writes when there is none. */
 export function shellDecisionModel(rule: ShellRuleApproval): ApprovalDecisionModel {
+  if (rule.floorSessionOnly === true) {
+    // The host saves the exact invocation it holds for this card; there is no rule to show or edit.
+    const once = (choice: RememberingChoice) => refused("toolApprovalDialog.persistentUnavailableOneShot", label(choice));
+    return {
+      variant: "shell",
+      options: {
+        "deny-always": once("deny-always"),
+        "allow-session": rule.sessionAllowed ? offered(null, null, label("allow-session")) : once("allow-session"),
+        "allow-project": once("allow-project"),
+        "allow-everywhere": once("allow-everywhere"),
+      },
+      warnsOnWildcardAllow: false,
+    };
+  }
   const exact = rule.exactRule;
   const allow = (choice: RememberingChoice, allowed: boolean): DecisionOption =>
     exact === null

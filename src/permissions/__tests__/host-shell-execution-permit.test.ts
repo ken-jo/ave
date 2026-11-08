@@ -338,7 +338,7 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
       unavailableSandboxRequiresAsk: true,
     });
     const cwd = join(directory, "subdir");
-    pm.addSessionRule("floor-session", "Bash(echo one-shot)", { code: "sandbox-unavailable", planIdentity: marked.identity });
+    pm.addFloorSessionGrant("floor-session", { code: "sandbox-unavailable", planIdentity: marked.identity, dialect: "bash", command: "echo one-shot" });
     const floorDecision = (command = "echo one-shot", sessionId = "floor-session"): PermissionCheckResult => pm.checkDetailed("bash", "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd },
       hostShellExecutionPlan: marked, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId,
@@ -358,8 +358,15 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(mint(decision)).toBeUndefined();
     expect(mint(floorDecision())).toBeDefined();
 
-    // Without the tagged row (another conversation) the floor still asks.
+    // Without the grant (another conversation) the floor still asks.
     expect(floorDecision("echo one-shot", "other-session")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    // Equality only: a repeat, a sequence or a pipeline built from the approved command is a new invocation and asks.
+    for (const changed of ["echo one-shot && echo one-shot", "echo one-shot; echo one-shot", "echo one-shot | echo one-shot", "echo one-shot ", "echo  one-shot"]) {
+      expect(floorDecision(changed), changed).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    }
+    // An ordinary exact session rule for the same command never answers the floor.
+    pm.addSessionRule("rule-session", "Bash(echo one-shot)");
+    expect(floorDecision("echo one-shot", "rule-session")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
     // A forged lookalike, another manager, another command or an unmarked plan mint nothing.
     expect(mint({ decision: "allow", reason: "forged", reasonCode: "floor-session-allow" } as PermissionCheckResult)).toBeUndefined();
     expect(mint(floorDecision(), marked, binding, new PermissionManager(join(directory, "other.json")))).toBeUndefined();
@@ -375,9 +382,13 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(floorDecision()).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
   });
 
-  it("refuses a floor session row that is not an exact shell rule", () => {
-    expect(() => pm.addSessionRule("floor-session", "Bash(echo *)", { code: "sandbox-unavailable", planIdentity: "plan:ask" })).toThrow();
-    expect(() => pm.addSessionRule("floor-session", "Bash(echo one-shot)", { code: "sandbox-unavailable", planIdentity: "" })).toThrow();
+  it("refuses a floor session grant without its floor, plan identity, dialect or command", () => {
+    const grant = { code: "sandbox-unavailable", planIdentity: "plan:ask", dialect: "bash", command: "echo one-shot" } as const;
+    expect(() => pm.addFloorSessionGrant("", grant)).toThrow();
+    expect(() => pm.addFloorSessionGrant("floor-session", { ...grant, planIdentity: "" })).toThrow();
+    expect(() => pm.addFloorSessionGrant("floor-session", { ...grant, command: "" })).toThrow();
+    expect(() => pm.addFloorSessionGrant("floor-session", { ...grant, dialect: "zsh" as never })).toThrow();
+    expect(() => pm.addFloorSessionGrant("floor-session", { ...grant, code: "protected-path" as never })).toThrow();
   });
 
   it("separates ordinary upload permission from host rule authority and retains protected floors", () => {

@@ -1043,7 +1043,8 @@ export class ApprovalGate {
       hostTerminal === undefined && typeof req.sessionId === "string" && req.sessionId.length > 0 && req.source === "builtin" &&
       (req.toolName === "bash" || req.toolName === "powershell") && req.toolCategory === "shell" &&
       req.category === "tool" && (req.kind === undefined || req.kind === "tool")
-      ? Object.freeze({ code: "sandbox-unavailable" as const, planIdentity: hostShellExecutionPermitBinding.plan.identity })
+      ? Object.freeze({ code: "sandbox-unavailable" as const, planIdentity: hostShellExecutionPermitBinding.plan.identity,
+        dialect: hostShellExecutionPermitBinding.toolName, command: hostShellExecutionPermitBinding.command })
       : undefined;
     if (
       hostShellExecutionPermitBinding !== undefined &&
@@ -1154,9 +1155,9 @@ export class ApprovalGate {
         deny: !forceExplicit,
       }, req.sessionId, verifiedShellCommand, hostShellExecutionPlan)
       : undefined;
-    // The floor's session allow is never a project or global rule.
+    // The floor's session allow is this exact invocation for this conversation, saved by the host from the pending card: no rule text, no project or global rule.
     const shellRule = builtShellRule !== undefined && floorSessionGrant !== undefined
-      ? { ...builtShellRule, persistentAllowed: false }
+      ? { ...builtShellRule, exactRule: null, sessionAllowed: true, persistentAllowed: false, floorSessionOnly: true as const }
       : builtShellRule;
     const fullReq: ApprovalRequest = {
       ...request,

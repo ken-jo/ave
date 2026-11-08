@@ -43,8 +43,12 @@ const HOME = "C:\\Users\\alice\\.ave";
 let testRoot: string;
 
 const DIALECTS = [
-  { toolName: "bash", create: () => new BashTool(), command: "echo boundary", prefixRule: "Bash(echo *)", writeCommand: "echo x > out.txt" },
-  { toolName: "powershell", create: () => new PowerShellTool(), command: "Write-Output boundary", prefixRule: "PowerShell(Write-Output *)", writeCommand: "Set-Content out.txt x" },
+  { toolName: "bash", create: () => new BashTool(), command: "echo boundary", prefixRule: "Bash(echo *)", writeCommand: "echo x > out.txt",
+    other: "echo done", sequences: ["echo boundary && echo boundary", "echo boundary; echo boundary", "echo boundary | echo boundary"],
+    compose: (a: string, b: string) => [`${a} && ${b}`, `${a}; ${b}`, `${a} | ${b}`], protectedWrite: "echo x > .git/config" },
+  { toolName: "powershell", create: () => new PowerShellTool(), command: "Write-Output boundary", prefixRule: "PowerShell(Write-Output *)", writeCommand: "Set-Content out.txt x",
+    other: "Write-Output done", sequences: ["Write-Output boundary; Write-Output boundary", "Write-Output boundary | Write-Output boundary"],
+    compose: (a: string, b: string) => [`${a}; ${b}`, `${a} | ${b}`], protectedWrite: "Set-Content .git/config x" },
 ] as const;
 
 function defined<T>(value: T | undefined, what: string): T {
@@ -373,11 +377,12 @@ describe("host shells under an unverifiable Ave home boundary", () => {
 
   // Owner decision 2026-11-08: the sandbox-unavailable floor also offers "this session", for that exact command only.
   const sessionCases = (["boundary-link", "boundary-unlisted"] as const).flatMap(category => DIALECTS.flatMap(dialect => ([
-    { category, dialect, route: "default", mode: "default" as const, label: "saved prefix and tool allows", rules: [dialect.prefixRule, dialect.toolName] },
-    { category, dialect, route: "default", mode: "auto" as const, label: "auto review", rules: [] },
-    { category, dialect, route: "default", mode: "allow" as const, label: "allow mode", rules: [] },
-    { category, dialect, route: "host", mode: "allow" as const, label: "allow mode", rules: [] },
-    { category, dialect, route: "worker-only", mode: "allow" as const, label: "allow mode and a saved prefix", rules: [dialect.prefixRule] },
+    { category, dialect, route: "default", mode: "default" as const, label: "saved prefix and tool allows", rules: [dialect.prefixRule, dialect.toolName], command: dialect.command as string },
+    { category, dialect, route: "default", mode: "auto" as const, label: "auto review", rules: [], command: dialect.command as string },
+    { category, dialect, route: "default", mode: "allow" as const, label: "allow mode", rules: [], command: dialect.command as string },
+    { category, dialect, route: "host", mode: "allow" as const, label: "allow mode", rules: [], command: dialect.command as string },
+    { category, dialect, route: "worker-only", mode: "allow" as const, label: "allow mode and a saved prefix", rules: [dialect.prefixRule], command: dialect.command as string },
+    { category, dialect, route: "default", mode: "allow" as const, label: "a compound command", rules: [], command: `${dialect.command}; ${dialect.other}` as string },
   ])));
 
   function sessionRun(dialect: (typeof DIALECTS)[number], route: string, sessionId: string, command: string = dialect.command) {
@@ -390,13 +395,13 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       ));
   }
 
-  it.each(sessionCases)("$category, $route route: $dialect.toolName allowed for this session runs the same command again without a card ($label)", async ({ category, dialect, route, mode, rules }) => {
+  it.each(sessionCases)("$category, $route route: $dialect.toolName allowed for this session runs the same command again without a card ($label)", async ({ category, dialect, route, mode, rules, command }) => {
     if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
     publishBoundary(category);
     const execute = vi.fn();
     const registry = probe(dialect.create, execute);
     const pm = manager(mode, rules);
-    const run = sessionRun(dialect, route, "boundary-session");
+    const run = sessionRun(dialect, route, "boundary-session", command);
 
     const first = sessionGate(pm);
     await run(pm, first.gate, registry);
@@ -404,7 +409,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(first.cards()).toHaveLength(1);
     const card = defined(first.cards()[0], "approval card");
     expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
-    expect(card.shellRule).toMatchObject({ sessionAllowed: true, persistentAllowed: false, denyAllowed: false });
+    expect(card.shellRule).toMatchObject({ exactRule: null, sessionAllowed: true, persistentAllowed: false, denyAllowed: false, floorSessionOnly: true });
     expect(card).not.toHaveProperty("floorSessionGrant");
     expect(first.saves).toEqual([expect.objectContaining({ ok: true, scope: "session", action: "allow" })]);
     expect(pm.dispatchReviewer).not.toHaveBeenCalled();
@@ -425,11 +430,11 @@ describe("host shells under an unverifiable Ave home boundary", () => {
 
     // A different command asks again.
     const other = cardGate("deny-once");
-    await sessionRun(dialect, route, "boundary-session", `${dialect.command}2`)(pm, other.gate, registry);
+    await sessionRun(dialect, route, "boundary-session", `${command}2`)(pm, other.gate, registry);
     expect(other.cards()).toHaveLength(1);
     // Another conversation asks again.
     const otherSession = cardGate("deny-once");
-    await sessionRun(dialect, route, "boundary-other-session")(pm, otherSession.gate, registry);
+    await sessionRun(dialect, route, "boundary-other-session", command)(pm, otherSession.gate, registry);
     expect(otherSession.cards()).toHaveLength(1);
     // A restart (fresh permission state) asks again.
     const restarted = cardGate("deny-once");
@@ -471,6 +476,49 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect(ordinary.cards()).toHaveLength(1);
     expect(defined(ordinary.cards()[0], "ordinary card").executionPlan).toMatchObject({ requiresExplicitUserApproval: false });
     expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it.each(DIALECTS)("a floor session grant covers only its exact invocation for $toolName: repeats, compositions and pipelines ask", async (dialect) => {
+    publishBoundary("boundary-link");
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager("allow", []);
+    for (const granted of [dialect.command, dialect.other]) {
+      const gate = sessionGate(pm);
+      await sessionRun(dialect, "default", "boundary-exact", granted)(pm, gate.gate, registry);
+      expect(gate.saves).toEqual([expect.objectContaining({ ok: true })]);
+    }
+    expect(execute).toHaveBeenCalledTimes(2);
+    for (const changed of [...dialect.sequences, ...dialect.compose(dialect.command, dialect.other), ...dialect.compose(dialect.other, dialect.command)]) {
+      const asked = cardGate("deny-once");
+      await sessionRun(dialect, "default", "boundary-exact", changed)(pm, asked.gate, registry);
+      expect(asked.cards(), changed).toHaveLength(1);
+    }
+    expect(execute).toHaveBeenCalledTimes(2);
+    // Each approved invocation still reruns without a card, one permit per run.
+    for (const granted of [dialect.command, dialect.other]) {
+      const again = cardGate("deny-once");
+      await sessionRun(dialect, "default", "boundary-exact", granted)(pm, again.gate, registry);
+      expect(again.cards()).toHaveLength(0);
+    }
+    expect(execute).toHaveBeenCalledTimes(4);
+    const permits = execute.mock.calls.map((call) => (call[0] as ToolExecutionContext).hostShellExecutionPermit);
+    expect(permits.every((permit) => permit !== undefined)).toBe(true);
+    expect(new Set(permits).size).toBe(4);
+  });
+
+  it.each(DIALECTS)("keeps the card once-only when another forced floor also applies for $toolName", async (dialect) => {
+    publishBoundary("boundary-link");
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const approvals = cardGate("deny-once");
+    await sessionRun(dialect, "default", "boundary-protected", dialect.protectedWrite)(manager("allow", []), approvals.gate, registry);
+    expect(approvals.cards()).toHaveLength(1);
+    const card = defined(approvals.cards()[0], "approval card");
+    expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(card.shellRule?.sessionAllowed ?? false).toBe(false);
+    expect(card.shellRule?.floorSessionOnly).toBeUndefined();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it.each(DIALECTS)("keeps the out-of-directory card once-only for $toolName", async (dialect) => {

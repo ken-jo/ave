@@ -297,20 +297,20 @@ describe("hook command permission admission", () => {
       expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
     });
 
-    // An interpreter command (the node fixture above) has no exact rule, so no card offers it for the session; a plain command does.
+    // A plain command an ordinary exact rule can name, for the isolation check.
     const exactHook = { ...hook, command: ["printf", "ready"] };
     const exactHookRule = "Bash('printf' 'ready')";
 
-    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once") {
+    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once", admitted: RunnableHook = hook) {
       const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
       const gate = new ApprovalGate(wc as never);
       const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
-      const pending = authorizeCommand(exactHook, payload, process.cwd());
+      const pending = authorizeCommand(admitted, payload, process.cwd());
       const deadline = Date.now() + 3000;
       while (wc.send.mock.calls.length === 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1));
       const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
       expect(request).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
-        shellRule: { exactRule: exactHookRule, sessionAllowed: true, persistentAllowed: false, denyAllowed: false } });
+        shellRule: { exactRule: null, sessionAllowed: true, persistentAllowed: false, denyAllowed: false, floorSessionOnly: true } });
       const snapshot = gate.getRequestSnapshot(request.id);
       if (!snapshot) throw new Error("request snapshot is missing");
       if (answer === "allow-session") {
@@ -336,14 +336,16 @@ describe("hook command permission admission", () => {
       expect(first.result.decision, first.result.reason).toBe("allow");
       expect(permits).toMatchObject({ minted: 1, consumed: [true] });
 
-      const again = await first.authorizeCommand(exactHook, payload, process.cwd());
+      // The interpreter fixture itself: no ordinary rule can name it, and the floor grant still covers it, by equality.
+      const again = await runOneHookScript(hook, payload, { authorizeCommand: first.authorizeCommand });
       expect(again.decision, again.reason).toBe("allow");
+      expect(JSON.parse(again.rawStdout).reason).toBe("received");
       expect(first.wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined)).toHaveLength(1);
       expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
 
       // Headless still denies, and a fresh permission state (a restart) asks again.
       const headless = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
-        () => first.authorizeCommand(exactHook, payload, process.cwd()));
+        () => first.authorizeCommand(hook, payload, process.cwd()));
       expect(headless.decision).toBe("deny");
       expect((await admitOnGate(allowAll(), "deny-once")).result.decision).toBe("deny");
     });
@@ -352,7 +354,7 @@ describe("hook command permission admission", () => {
       const p = allowAll();
       p.permissionManager.addSessionRule("hook-policy-session", exactHookRule);
       publish();
-      expect((await admitOnGate(p, "deny-once")).result.decision).toBe("deny");
+      expect((await admitOnGate(p, "deny-once", exactHook)).result.decision).toBe("deny");
       expect(permits.consumed).toEqual([]);
     });
 
