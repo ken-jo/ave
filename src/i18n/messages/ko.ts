@@ -5441,7 +5441,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "toolApprovalDialog.agentActionTitle": "에이전트 작업 승인",
   "toolApprovalDialog.commandActionTitle": "이 명령을 실행해도 될까요?",
   "toolApprovalDialog.fileActionTitle": "이 파일을 수정해도 될까요?",
-  "toolApprovalDialog.externalActionTitle": "{server}의 {tool}을(를) 실행해도 될까요?",
+  "toolApprovalDialog.externalActionTitle": "{server}의 {tool}을(를) 사용해도 될까요?",
   "toolApprovalDialog.toolApprovalTitle": "도구 실행 승인",
   "toolApprovalDialog.unknown": "알 수 없음",
   "toolApprovalDialog.dialogDescription": "현재 대화 루프에서 실행 전 사용자 승인이 필요한 도구 요청입니다.",

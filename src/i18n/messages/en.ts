@@ -5439,7 +5439,7 @@ export const en = {
   "toolApprovalDialog.agentActionTitle": "Approve Agent Action",
   "toolApprovalDialog.commandActionTitle": "Run this command?",
   "toolApprovalDialog.fileActionTitle": "Modify this file?",
-  "toolApprovalDialog.externalActionTitle": "Run {tool} on {server}?",
+  "toolApprovalDialog.externalActionTitle": "Use {tool} from {server}?",
   "toolApprovalDialog.toolApprovalTitle": "Approve Tool Execution",
   "toolApprovalDialog.unknown": "Unknown",
   "toolApprovalDialog.dialogDescription": "A tool request in the current conversation loop that requires user approval before execution.",

@@ -48,16 +48,20 @@ describe("ToolApprovalContent identity strip", () => {
     expect(screen.getByTestId("approval-action-primary")).toHaveTextContent("/workspace/report.md");
   });
 
-  it("names the external server and tool with the invocation arguments", () => {
+  it.each(["en", "ko"] as const)("asks to use the external tool in %s", (locale) => {
+    setLocale(locale);
     renderApproval({ ...baseRequest(), source: "mcp", toolName: "mcp__docs__publish", args: { documentId: "report", public: true },
       approvalMemory: { kind: "key", key: "external", scope: { kind: "mcp-tool", serverId: "docs", toolName: "publish" } } }, vi.fn());
     expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.externalActionTitle", { server: "docs", tool: "publish" }));
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(locale === "ko" ? "docs의 publish을(를) 사용해도 될까요?" : "Use publish from docs?");
     expect(screen.getByTestId("approval-action-primary")).toHaveTextContent('"documentId": "report"');
   });
 
-  it("names a plugin action from the host-owned plugin identity", () => {
+  it.each(["en", "ko"] as const)("asks to use the host-owned plugin tool in %s", (locale) => {
+    setLocale(locale);
     renderApproval({ ...baseRequest(), kind: "agent-action", sourcePluginId: "calendar", toolName: "create-event", args: { title: "Review" } }, vi.fn());
     expect(screen.getByTestId("approval-action-title")).toHaveTextContent(t("toolApprovalDialog.externalActionTitle", { server: "calendar", tool: "create-event" }));
+    expect(screen.getByTestId("approval-action-title")).toHaveTextContent(locale === "ko" ? "calendar의 create-event을(를) 사용해도 될까요?" : "Use create-event from calendar?");
     expect(screen.getByTestId("approval-action-primary")).toHaveTextContent("Review");
   });
 
