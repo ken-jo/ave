@@ -132,6 +132,10 @@ renderer-supplied session metadata cannot create agent provenance. A live
 sub-agent routes delivery through its nearest hosted ancestor while events
 retain the actual acting session. That validated host binding survives the end
 of the child run; session end or loss of window/frame ownership releases it.
+Browser live targets end with their acting model turn, even when the conversation
+continues. Each new turn retires the prior browser target and its download
+listeners before publishing a new target. Turn ownership is tracked independently
+of renderer view subscriptions, so releasing a view cannot skip control cleanup.
 The existing native input correlation limit still applies: a human click
 indistinguishable from an armed agent click cannot
 be separately identified. Observation does not strengthen that source proof.
@@ -158,7 +162,7 @@ downloads arriving after the command are excluded. Only state transitions are
 retained: started, completed, cancelled or interrupted.
 Filenames, destination paths and file contents are omitted. The original
 admitted item may complete after the command. Completion listeners end with
-the item, session, owning frame/window or observation runtime. Listener-capacity
+the item, acting model turn, session, owning frame/window or observation runtime. Listener-capacity
 overload emits resynchronization without interrupting the native download or
 throwing through its Save callback. Observation adds no download approval or
 automatic open behavior.
@@ -177,7 +181,7 @@ grandparent or sibling session is refused), that is not paused by the user, and
 on which that session ran a command within the last 30 seconds. Recognized user
 input, address-bar navigation and Stop pause an agent-owned tab; the agent's own
 cross-origin navigation does not. User takeover, user navigation, idleness,
-session end and window or frame loss stop it. It reuses the guest's existing in-
+model-turn completion/interruption/error, session end and window or frame loss stop it. It reuses the guest's existing in-
 process debugger session through Chromium's screencast: it never attaches a
 debugger and opens no remote debugging port. Frames are JPEG, at most 640x400,
 including the first compositor frame of a static page, and at most four forwarded per second with one
@@ -1480,6 +1484,14 @@ within that authorized one-step relationship. Closing a borrowed tab
 through the tool releases its association and reports that the page was retained.
 User chrome close destroys the actual tab; window/app shutdown releases its
 resources.
+
+At model-turn end, the host clears that turn's live browser presentation and
+returns its idle owned tabs to human control without clearing creator identity,
+opener provenance or the retained guest. Human-paused tabs keep their explicit
+Resume requirement. Exact-turn held leases retire publicly at once, while a
+private settlement fence excludes new actions until the old handler releases;
+late release cannot reactivate control. Newer-turn and non-model leases remain
+untouched. Subsequent actions still pass the same owner and permission gates.
 
 Agent new-window callbacks queue site admission and tab opening under the
 originating command's exact guest and lease. The command awaits that outcome

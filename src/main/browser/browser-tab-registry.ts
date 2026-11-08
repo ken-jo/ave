@@ -18,6 +18,7 @@ import { isSavedTerminalOrPage, type MainLayoutSnapshot, type SavedMainSurface, 
 import { createLogger } from "../../lib/logger.js";
 import type { BrowserTabOpener } from "../../shared/permissions-events.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
+import { currentAgentObservationIdentity } from "../../tools/agent-observation-context.js";
 
 const log = createLogger("session-tab-bindings");
 
@@ -230,6 +231,8 @@ export function isUserActionInputType(type: string): boolean {
 export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number; parked?: boolean }>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
+  private readonly leaseTurns = new WeakMap<BrowserControlLease, string>();
+  private readonly settlingLeases = new Map<string, BrowserControlLease>();
   private readonly selectedOwnedTabs = new Map<string, string>();
   private readonly scopedFocusLeases = new Map<number, string>();
   private readonly focusReceipts = new Map<number, { windowId: number; tabId: string; leaseId: string; receiptId: string }>();
@@ -476,6 +479,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const tab of this.tabs.values()) {
       if (tab.guest !== guest) continue;
       tab.guest = null;
+      this.settlingLeases.delete(tab.handle);
       this.invalidateActions(tab, "the tab's page was closed");
       tab.lease = null;
       if (this.activePopup.get(tab.windowId) === tab.handle) this.activePopup.delete(tab.windowId);
@@ -555,6 +559,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const other of this.tabs.values()) {
       if (other !== tab && other.guest?.id === entry.guest.id) {
         other.guest = null;
+        this.settlingLeases.delete(other.handle);
         other.documentId++;
         this.invalidateActions(other, "the tab's page moved");
         other.lease = null;
@@ -562,6 +567,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       }
     }
     if (tab.guest !== entry.guest) {
+      this.settlingLeases.delete(tab.handle);
       tab.documentId++;
       this.invalidateActions(tab, "the tab's page was replaced");
       tab.lease = null;
@@ -654,11 +660,14 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.assertActorAccess(tab, actor);
     if (tab.controlMode === "human-paused") throw new Error("browser control is paused; ask the user to resume this tab");
     if (tab.lease !== null) throw new Error("another browser action is still controlling this tab");
+    if (this.settlingLeases.has(tab.handle)) throw new Error("the previous browser action is still settling");
     const lease: BrowserControlLease = Object.freeze({
       id: `browser-lease-${this.nextLease++}`,
       actor: copyActor(actor),
       lifetime: tab.owner === null ? "borrowed" : "owned",
     });
+    const identity = currentAgentObservationIdentity();
+    if (identity?.sessionId === actor.sessionId) this.leaseTurns.set(lease, identity.turnId);
     tab.lease = lease;
     tab.controlMode = "agent-active";
     this.broadcastControl(tab.windowId);
@@ -666,6 +675,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   releaseControl(tabId: string, leaseId: string): void {
+    if (this.settlingLeases.get(tabId)?.id === leaseId) {
+      this.settlingLeases.delete(tabId);
+      return;
+    }
     const tab = this.tabs.get(tabId);
     if (!tab || tab.lease?.id !== leaseId) return;
     if (tab.guest && this.scopedFocusLeases.get(tab.guest.id) === leaseId) this.scopedFocusLeases.delete(tab.guest.id);
@@ -674,6 +687,27 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     tab.actions.abort(new Error("browser control was released"));
     if (tab.controlMode !== "human-paused") tab.actions = new AbortController();
     this.broadcastControl(tab.windowId);
+  }
+
+  /** A finished turn leaves its pages open and creator-owned, without advertising active agent control. */
+  endTurnControl(sessionId: string, turnId: string, idleOwned = true): void {
+    const windows = new Set<number>();
+    for (const tab of this.tabs.values()) {
+      if (tab.controlMode === "human-paused") continue;
+      const lease = tab.lease;
+      if (lease !== null) {
+        if (lease.actor.sessionId !== sessionId || this.leaseTurns.get(lease) !== turnId) continue;
+        // Retire presentation now while keeping the page exclusive until the old handler actually settles.
+        this.settlingLeases.set(tab.handle, lease);
+        tab.lease = null;
+      } else if (!idleOwned || tab.controlMode !== "agent-active" || tab.owner?.sessionId !== sessionId) continue;
+      if (tab.guest) this.scopedFocusLeases.delete(tab.guest.id);
+      tab.controlMode = "human";
+      tab.actions.abort(new Error("the browser agent turn ended"));
+      tab.actions = new AbortController();
+      windows.add(tab.windowId);
+    }
+    for (const windowId of windows) this.broadcastControl(windowId);
   }
 
   // Only a validated native child callback may register a popup.
@@ -1137,6 +1171,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const tab of this.tabs.values()) {
       if (tab.windowId !== windowId) continue;
       this.invalidateActions(tab, "the browser window was closed");
+      this.settlingLeases.delete(tab.handle);
       tab.lease = null;
       const native = this.nativeTabs.get(tab.handle);
       this.nativeTabs.delete(tab.handle);
@@ -1444,6 +1479,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.scopedFocusLeases.clear();
     this.attached.clear();
     this.tabs.clear();
+    this.settlingLeases.clear();
     this.selectedOwnedTabs.clear();
     this.awakeGuests.clear();
     this.handleByWindowTab.clear();

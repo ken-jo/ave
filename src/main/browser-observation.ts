@@ -17,12 +17,14 @@ import { createLogger } from "../lib/logger.js";
 import { isUniformJpeg, startBrowserPreview, type BrowserPreviewHandle, type PreviewGuest } from "./browser-observation-preview.js";
 import { findSessionMainWindowContents } from "./app-state.js";
 import { resolveSessionWindow } from "../tools/session-window-scope.js";
+import { onAgentObservationTurnEnd, onAgentObservationTurnStart } from "../tools/agent-observation-context.js";
 
 const logger = createLogger("browser-observation");
 
 interface BrowserView {
   id: string;
   sessionId: string;
+  turnId: string;
   hostSessionId: string;
   windowId: number;
   event: IpcMainInvokeEvent;
@@ -68,14 +70,31 @@ function previewKey(view: BrowserView, tabId: string): string { return `${view.i
 export class BrowserObservationRuntime implements AgentBrowserObservationSink {
   private readonly adapter: BrowserObservationAdapter;
   private readonly views = new Map<string, BrowserView>();
+  private readonly turns = new Map<string, string>();
   private readonly commands = new Map<number, ActiveCommand>();
   private readonly downloads = new Map<() => void, BrowserView>();
   private readonly previews = new Map<string, ActivePreview>();
   private readonly activity = new Map<string, TabActivity>();
   private disposed = false;
+  private readonly stopTurnEnd: () => void;
+  private readonly stopTurnStart: () => void;
 
   constructor(private readonly deps: IpcDeps, daemon: ObservationDaemon, private readonly preview: BrowserPreviewDeps = NATIVE_PREVIEW) {
     this.adapter = new BrowserObservationAdapter(daemon);
+    this.stopTurnStart = onAgentObservationTurnStart((sessionId, turnId) => {
+      this.turns.set(sessionId, turnId);
+      const previous = this.views.get(sessionId);
+      if (previous && previous.turnId !== turnId) this.release(previous, true);
+    });
+    this.stopTurnEnd = onAgentObservationTurnEnd((sessionId, turnId) => {
+      const latest = this.turns.get(sessionId) === turnId;
+      const view = this.views.get(sessionId);
+      try { browserTabRegistry.endTurnControl(sessionId, turnId, latest); }
+      finally {
+        if (latest && view?.turnId === turnId) this.release(view, true);
+        if (this.turns.get(sessionId) === turnId) this.turns.delete(sessionId);
+      }
+    });
     setAgentBrowserObservationSink(this);
   }
 
@@ -97,6 +116,8 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
   }
 
   private viewFor(identity: ObservationIdentity, tab: BrowserTabRecord<BrowserGuest>): BrowserView {
+    const turnId = this.turns.get(identity.sessionId);
+    if (turnId !== identity.turnId) throw new Error("Browser observation turn is no longer current.");
     const host = this.hostFor(identity.sessionId);
     const sender = host ? findSessionMainWindowContents(host.hostSessionId) : null;
     if (!sender) throw new Error("Browser observation session has no window.");
@@ -108,14 +129,16 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
     const event = { sender, senderFrame: sender.mainFrame } as IpcMainInvokeEvent;
     if (!validateAppWindowMainFrameSender(event, this.deps)) throw new Error("Unauthorized browser observation frame.");
     const existing = this.views.get(identity.sessionId);
-    if (existing && this.current(existing) && existing.event.senderFrame === event.senderFrame) return existing;
+    if (existing && existing.turnId === identity.turnId && this.current(existing) && existing.event.senderFrame === event.senderFrame) {
+      return existing;
+    }
     if (existing) this.release(existing, true);
     for (const view of this.views.values()) if (!this.current(view)) this.release(view, true);
     const id = randomUUID();
     const release = (): void => this.release(view);
     const navigate = (_event: unknown, _url: string, _status: number, _text: string, mainFrame: boolean): void => { if (mainFrame) release(); };
     let timer: ReturnType<typeof setInterval> | undefined;
-    const view: BrowserView = { id, sessionId: identity.sessionId, hostSessionId: host!.hostSessionId, windowId: window.id, event, stop: () => {
+    const view: BrowserView = { id, sessionId: identity.sessionId, turnId: identity.turnId, hostSessionId: host!.hostSessionId, windowId: window.id, event, stop: () => {
       if (timer) clearInterval(timer);
       sender.removeListener("destroyed", release);
       sender.removeListener("render-process-gone", release);
@@ -317,7 +340,7 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
       }
       for (const [dispose, owner] of this.downloads) if (owner === view) dispose();
       for (const preview of this.previews.values()) if (preview.view === view) this.stopPreview(preview);
-      for (const [handle, activity] of this.activity) if (activity.sessionId === view.sessionId && activity.active === 0) this.activity.delete(handle);
+      for (const [handle, activity] of this.activity) if (activity.sessionId === view.sessionId) this.activity.delete(handle);
       view.stop();
       this.adapter.release(view.id);
     }
@@ -326,6 +349,8 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.stopTurnStart();
+    this.stopTurnEnd();
     const errors: unknown[] = [];
     for (const view of this.views.values()) {
       try { this.release(view, true); }
@@ -333,6 +358,7 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
     }
     this.commands.clear();
     this.activity.clear();
+    this.turns.clear();
     setAgentBrowserObservationSink(undefined);
     this.adapter.dispose();
     if (errors.length > 0) throw new AggregateError(errors, "Browser observation cleanup failed.");

@@ -7,7 +7,7 @@ import { ScreencastClosedError, type ScreencastCallbacks } from "../../observati
 import { OBSERVATION_LIMITS, type BrowserObservationEvent, type BrowserObservationPreviewMessage } from "../../shared/agent-observation.js";
 import { PREVIEW_DOCUMENT_LIMITS } from "../../shared/preview-document.js";
 import { agentDrivesTab, observeAgentBrowserCommand, endAgentBrowserObservationSessions } from "../../tools/agent-browser-observation.js";
-import { runAdmittedAgentWork } from "../../__tests__/support/agent-observation-admission.js";
+import { openAgentObservationTurn } from "../../__tests__/support/agent-observation-admission.js";
 import type { BrowserGuest, BrowserTabRecord } from "../browser/browser-tab-registry.js";
 
 const state = vi.hoisted(() => ({ defaultSession: {}, holder: null as unknown }));
@@ -36,6 +36,8 @@ let tab: BrowserTabRecord<BrowserGuest>;
 let url: string;
 let runtime: BrowserObservationRuntime;
 let daemon: ObservationDaemon;
+let turn: ReturnType<typeof openAgentObservationTurn>;
+function runAdmittedAgentWork<T>(identity: { toolUseId: string }, run: () => Promise<T>): Promise<T> { return turn.run(identity, run); }
 const preview: BrowserPreviewDeps = {
   lookupTab: (handle, windowId) => { const found = tabs.get(handle); return found?.windowId === windowId ? found : undefined; },
   start: (guest, callbacks) => {
@@ -78,8 +80,9 @@ beforeEach(() => {
   tabs = new Map([[tab.handle, tab]]);
   daemon = new ObservationDaemon();
   runtime = new BrowserObservationRuntime(deps, daemon, preview);
+  turn = openAgentObservationTurn(identity);
 });
-afterEach(() => { runtime.dispose(); daemon.dispose(); vi.useRealTimers(); });
+afterEach(async () => { await turn.finish(); runtime.dispose(); daemon.dispose(); vi.useRealTimers(); });
 
 describe("agent browser live preview", () => {
   it("keeps concurrent screencasts for separate tabs of one owner and stops only the addressed one", async () => {

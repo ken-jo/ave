@@ -2,6 +2,7 @@ import { deferred } from "../../../__tests__/support/deferred.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserDocumentChangedError, BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";
 import { parseBrowserTabControlState, parseBrowserTabOpRequest, type BrowserTabControlState, type BrowserTabOpRequest } from "../../../shared/browser-surface.js";
+import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
 
 const ACTOR = { sessionId: "conversation" };
 
@@ -58,6 +59,123 @@ afterEach(() => {
 });
 
 describe("BrowserTabRegistry", () => {
+
+  it("ends only the finished actor's active control while preserving ownership and human pauses", async () => {
+    const { registry, ops, control } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "owned", webContentsId: 81, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing owned tab");
+    const owned = registry.liveTab(opened.tabId);
+    if (!owned) throw new Error("Missing live tab");
+    attachTab(registry, { tabId: "borrowed", webContentsId: 82 });
+    const borrowed = registry.liveTab("tab-2");
+    if (!borrowed) throw new Error("Missing borrowed tab");
+    const other = registry.acquireControl(borrowed, { sessionId: "other" });
+    const lease = registry.acquireControl(owned, ACTOR);
+    const previousSignal = owned.actions.signal;
+    const creator = owned.owner;
+    const origin = owned.agentOrigin;
+    registry.releaseControl(owned.handle, lease.id);
+    registry.endTurnControl(ACTOR.sessionId, "finished-turn");
+    expect(owned).toMatchObject({ controlMode: "human", lease: null, owner: creator, opener: "agent", agentOrigin: origin });
+    expect(previousSignal.aborted).toBe(true);
+    expect(owned.actions.signal.aborted).toBe(false);
+    expect(borrowed.lease).toBe(other);
+    expect(registry.liveTab(owned.handle)).toBe(owned);
+    expect(control.at(-1)?.state.tabs.find((tab) => tab.tabId === owned.handle)?.mode).toBe("human");
+    registry.releaseControl(owned.handle, lease.id);
+    expect(owned.controlMode).toBe("human");
+    const next = registry.acquireControl(owned, ACTOR);
+    registry.userInput(81, { type: "keyDown" });
+    expect(owned.controlMode).toBe("human-paused");
+    registry.endTurnControl(ACTOR.sessionId, "finished-turn");
+    expect(owned.controlMode).toBe("human-paused");
+    expect(() => registry.acquireControl(owned, ACTOR)).toThrow("paused");
+    registry.releaseControl(owned.handle, next.id);
+    registry.releaseControl(borrowed.handle, other.id);
+  });
+  it.each(["host", "model"] as const)("does not end a newer %s lease held by the same session before its observation begins", async (kind) => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "newer-lease", webContentsId: 83, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing owned tab");
+    const owned = registry.liveTab(opened.tabId);
+    if (!owned) throw new Error("Missing live tab");
+    const check = async () => {
+      const next = registry.acquireControl(owned, ACTOR);
+      const nextSignal = owned.actions.signal;
+      registry.endTurnControl(ACTOR.sessionId, "finished-turn");
+      expect(owned.lease).toBe(next);
+      expect(nextSignal.aborted).toBe(false);
+      expect(owned.controlMode).toBe("agent-active");
+      registry.releaseControl(owned.handle, next.id);
+    };
+    if (kind === "model") await runWithAgentObservationTurn({ sessionId: ACTOR.sessionId, turnId: "newer-turn" }, () =>
+      runWithAgentObservationInvocation({ sessionId: ACTOR.sessionId, toolUseId: "newer-action" }, check));
+    else await check();
+  });
+  it("retires a finished turn's held lease without reactivating after delayed settlement", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "settling-turn", webContentsId: 84, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing owned tab");
+    const owned = registry.liveTab(opened.tabId);
+    if (!owned) throw new Error("Missing live tab");
+    const settlement = deferred<void>();
+    let pending: Promise<void> | undefined;
+    let actionSignal: AbortSignal | undefined;
+    try {
+      await runWithAgentObservationTurn({ sessionId: ACTOR.sessionId, turnId: "finished-turn" }, async () => {
+        pending = runWithAgentObservationInvocation({ sessionId: ACTOR.sessionId, toolUseId: "slow-browser-action" }, async () => {
+          const lease = registry.acquireControl(owned, ACTOR);
+          actionSignal = owned.actions.signal;
+          try { await settlement.promise; }
+          finally { registry.releaseControl(owned.handle, lease.id); }
+        });
+      });
+      registry.endTurnControl(ACTOR.sessionId, "finished-turn");
+      expect(owned.controlMode).toBe("human");
+      expect(owned.lease).toBeNull();
+      expect(actionSignal?.aborted).toBe(true);
+      expect(parseBrowserTabControlState(registry.controlState(1))).not.toBeNull();
+      expect(() => registry.acquireControl(owned, ACTOR)).toThrow("settling");
+      settlement.resolve();
+      await pending;
+      expect(owned.controlMode).toBe("human");
+      expect(owned.lease).toBeNull();
+      const next = registry.acquireControl(owned, ACTOR);
+      expect(owned.controlMode).toBe("agent-active");
+      registry.releaseControl(owned.handle, next.id);
+    } finally { settlement.resolve(); await pending; }
+  });
+  it.each(["replace", "destroy"] as const)("clears retired exclusion on guest %s without letting old settlement touch its replacement", async (change) => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "retired-guest", webContentsId: 85, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing owned tab");
+    const owned = registry.liveTab(opened.tabId);
+    if (!owned) throw new Error("Missing live tab");
+    let previousId = "";
+    await runWithAgentObservationTurn({ sessionId: ACTOR.sessionId, turnId: "retired-turn" }, () =>
+      runWithAgentObservationInvocation({ sessionId: ACTOR.sessionId, toolUseId: "retired-action" }, async () => {
+        previousId = registry.acquireControl(owned, ACTOR).id;
+      }));
+    registry.endTurnControl(ACTOR.sessionId, "retired-turn");
+    expect(() => registry.acquireControl(owned, ACTOR)).toThrow("settling");
+    if (change === "destroy") registry.guestDestroyed(85);
+    attachTab(registry, { tabId: "retired-guest", webContentsId: 86 }, 1, "about:blank");
+    const next = registry.acquireControl(owned, ACTOR);
+    const nextSignal = owned.actions.signal;
+    registry.releaseControl(owned.handle, previousId);
+    expect(owned.lease).toBe(next);
+    expect(nextSignal.aborted).toBe(false);
+    expect(owned.controlMode).toBe("agent-active");
+    registry.releaseControl(owned.handle, next.id);
+  });
 
   it("closes an owned guest without waiting for renderer work, unrelated timers or leases", async () => {
     vi.useFakeTimers();

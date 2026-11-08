@@ -118,8 +118,27 @@ test("paints a parked main-session page while its panel stays closed", async () 
     await expect.poll(() => preview.locator("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
     await test.info().attach("static-cross-site-preview.png", { body: await page.screenshot(), contentType: "image/png" });
     await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
+    const beforeEnd = await page.evaluate(async handle => (await window.aveApi.browserTabs?.getState())?.tabs.find(tab => tab.tabId === handle), tabId);
+    expect(beforeEnd?.mode).toBe("agent-active");
     releaseFinish?.();
     await expect(page.getByTestId("chat-main-column").getByText("Static preview task complete.", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("conversation-browser-observation")).toHaveCount(0, { timeout: 3_000 });
+    await expect(page.getByTestId("browser-observation-preview")).toHaveCount(0);
+    await expect.poll(() => page.evaluate(async handle => (await window.aveApi.browserTabs?.getState())?.tabs.find(tab => tab.tabId === handle)?.mode, tabId)).toBe("human");
+    const afterEnd = await page.evaluate(async handle => (await window.aveApi.browserTabs?.getState())?.tabs.find(tab => tab.tabId === handle), tabId);
+    expect(afterEnd).toMatchObject({ tabId, owner: beforeEnd?.owner, url: secondUrl });
+    await panelToggle.click();
+    if (!afterEnd?.rendererTabId) throw new Error("Retained browser slot unavailable");
+    await page.locator(`[role="presentation"][data-tab-id="${afterEnd.rendererTabId}"]`).getByRole("tab").click();
+    const retainedFrame = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${afterEnd.rendererTabId}"]`);
+    await expect(retainedFrame).toHaveCSS("visibility", "visible");
+    await expect(retainedFrame).toHaveCSS("opacity", "1");
+    await expect(page.getByTestId("agent-browser-control-badge")).toHaveCount(0);
+    await expect(page.getByTestId("chat-side-panel-tab-agent-controlled")).toHaveCount(0);
+    const retained = await ctx.app.evaluate(({ webContents }, url) => webContents.getAllWebContents().filter(contents => contents.getType() === "webview" && contents.getURL() === url).map(contents => ({ id: contents.id, url: contents.getURL(), destroyed: contents.isDestroyed() })), secondUrl);
+    expect(retained).toHaveLength(1);
+    expect(retained[0]).toMatchObject({ url: secondUrl, destroyed: false });
+    await test.info().attach("turn-ended-retained-tab.png", { body: await page.screenshot(), contentType: "image/png" });
   } finally {
     approving = false;
     if (approvals) await approvals;
