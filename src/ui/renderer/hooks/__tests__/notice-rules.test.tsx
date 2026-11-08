@@ -146,6 +146,29 @@ describe("notice rules", () => {
     expect(fresh.current.toasts).toHaveLength(0);
   });
 
+  it.each([["not json", "{"], ["not an array", '{"a":1}'], ["not strings", "[1,2]"]])(
+    "(e) recovers from a stored value that is %s: warns with the key, drops it, and shows the notice",
+    (_label, stored) => {
+      window.localStorage.setItem("ave.notices.suppressed", stored);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        const { result } = renderHook(() => useStatusNotices());
+        act(() => {
+          result.current.pushToast({ severity: "info", message: "repeat", kind: "repeat", suppressible: true });
+        });
+        expect(result.current.visibleToast?.message).toBe("repeat");
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("ave.notices.suppressed"));
+        expect(window.localStorage.getItem("ave.notices.suppressed")).toBeNull();
+        act(() => {
+          result.current.upsertToast("again", { severity: "info", message: "upserted", kind: "repeat", suppressible: true });
+        });
+        expect(result.current.toasts.map((toast) => toast.message)).toContain("upserted");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
+
   it("(e) refuses to make an error suppressible", () => {
     const { result } = renderHook(() => useStatusNotices());
     expect(() =>

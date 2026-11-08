@@ -5,12 +5,22 @@
  */
 const STORAGE_KEY = "ave.notices.suppressed";
 
+/** Read the silenced kinds. The value is user-local state at an external boundary (another build, a hand edit, a cleared
+ * profile can leave anything there), so an unreadable value has one deterministic recovery: warn with the key, drop it, and
+ * continue with nothing silenced. Reading never throws into a notice producer. */
 function read(): Set<string> {
   const raw = window.localStorage.getItem(STORAGE_KEY);
   if (raw === null) return new Set();
-  const parsed: unknown = JSON.parse(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
   if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
-    throw new Error(`[notices] ${STORAGE_KEY} is not a string array`);
+    console.warn(`[notices] ${STORAGE_KEY} held an unreadable value; it was removed and no notice is silenced`);
+    window.localStorage.removeItem(STORAGE_KEY);
+    return new Set();
   }
   return new Set(parsed);
 }
