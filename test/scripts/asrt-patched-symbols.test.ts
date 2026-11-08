@@ -148,7 +148,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
         { step: "grant revoke", status: "missing", count: 2, targets: [PRIVATE_PATH, PRIVATE_PATH] },
         { step: "deny restore", status: "mismatch", count: 1, targets: [PRIVATE_PATH] },
       ] });
-      expect(readInstalled("dist/sandbox/sandbox-manager.js")).not.toContain("${step}: '${e.path}'");
+      expect(readInstalled("dist/sandbox/sandbox-manager.js")).not.toMatch(/\$\{step\}: '\$\{e\.path\}'/);
       await SandboxManager.reset();
       expect(stub.calls()).toEqual(["revoke", "restore"]);
     });
