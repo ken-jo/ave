@@ -25,6 +25,7 @@ import {
 import {
   PermissionManager,
   consumeIssuedShellAllowRuleDecision,
+  isIssuedFloorSessionDecision,
   isIssuedShellAllowRuleDecision,
   type PermissionCheckResult,
 } from "../permission-manager.js";
@@ -326,6 +327,57 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     expect(mintHostShellExecutionPermit({
       plan: marked, approvalDecision: undefined, allowRuleDecision: ruleDecision(), permissionManager: pm, binding,
     })).toBeUndefined();
+  });
+
+  it("mints one permit per issued floor session decision for its own command, cwd and marked plan", () => {
+    const marked = buildHostShellExecutionPlan({
+      platform: "linux",
+      requestedSandbox: true,
+      executionMode: "host",
+      activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "worker-only boot" },
+      unavailableSandboxRequiresAsk: true,
+    });
+    const cwd = join(directory, "subdir");
+    pm.addSessionRule("floor-session", "Bash(echo one-shot)", { code: "sandbox-unavailable", planIdentity: marked.identity });
+    const floorDecision = (command = "echo one-shot", sessionId = "floor-session"): PermissionCheckResult => pm.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd },
+      hostShellExecutionPlan: marked, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId,
+    });
+    const binding = hostBinding(marked);
+    const mint = (decision: PermissionCheckResult, plan = marked, bound = binding, manager = pm) => mintHostShellExecutionPermit({
+      plan, approvalDecision: undefined, floorSessionDecision: decision, permissionManager: manager, binding: bound,
+    });
+
+    const decision = floorDecision();
+    expect(decision).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
+    expect(isIssuedFloorSessionDecision(decision, pm)).toBe(true);
+    const permit = mint(decision);
+    expect(permit).toBeDefined();
+    expect(consumeHostShellExecutionPermit(permitInput(binding, permit))).toBe(true);
+    // Replay mints nothing; the next run needs its own decision.
+    expect(mint(decision)).toBeUndefined();
+    expect(mint(floorDecision())).toBeDefined();
+
+    // Without the tagged row (another conversation) the floor still asks.
+    expect(floorDecision("echo one-shot", "other-session")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    // A forged lookalike, another manager, another command or an unmarked plan mint nothing.
+    expect(mint({ decision: "allow", reason: "forged", reasonCode: "floor-session-allow" } as PermissionCheckResult)).toBeUndefined();
+    expect(mint(floorDecision(), marked, binding, new PermissionManager(join(directory, "other.json")))).toBeUndefined();
+    expect(mint(floorDecision(), marked, hostBinding(marked, { command: "echo other" }))).toBeUndefined();
+    const unmarked = explicitHostPlan();
+    expect(mint(floorDecision(), unmarked, hostBinding(unmarked))).toBeUndefined();
+    // The saved exact-rule proof lane stays closed for the marked plan.
+    expect(mintHostShellExecutionPermit({ plan: marked, approvalDecision: undefined, allowRuleDecision: floorDecision(), permissionManager: pm, binding })).toBeUndefined();
+    // Ending the conversation drops the grant.
+    const outstanding = floorDecision();
+    pm.endSession("floor-session");
+    expect(mint(outstanding)).toBeUndefined();
+    expect(floorDecision()).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+  });
+
+  it("refuses a floor session row that is not an exact shell rule", () => {
+    expect(() => pm.addSessionRule("floor-session", "Bash(echo *)", { code: "sandbox-unavailable", planIdentity: "plan:ask" })).toThrow();
+    expect(() => pm.addSessionRule("floor-session", "Bash(echo one-shot)", { code: "sandbox-unavailable", planIdentity: "" })).toThrow();
   });
 
   it("separates ordinary upload permission from host rule authority and retains protected floors", () => {

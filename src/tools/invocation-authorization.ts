@@ -76,7 +76,7 @@ import type {
 import type { ResolvedPluginOperation } from "./plugin-operation-governance.js";
 import type { PluginOperationPrincipal } from "../permissions/plugin-operation-grant.js";
 import { errorMessage } from "../shared/error-message.js";
-import { NO_APPROVER_MESSAGE, type PermissionDecisionRequest } from "../permissions/decision-pipeline.js";
+import { NO_APPROVER_MESSAGE, offersFloorSessionAllow, type PermissionDecisionRequest } from "../permissions/decision-pipeline.js";
 import { issueAuthorizationRequiredControl } from "../shared/authorization-required.js";
 
 const log = createLogger("executor");
@@ -916,10 +916,11 @@ export async function authorizeToolInvocation(
           id: context.cardRequestId ?? randomUUID(),
           ...(permissionResult.forceModal === true
             ? {
-                // Forced floors consume consent for this invocation only.
+                // Forced floors consume consent for this invocation only; the sandbox-unavailable floor may also allow this exact command for the session.
                 allowedChoices: ["allow-once", "deny-once"] as const,
                 durableApprovalRecordAllowed: false as const,
                 forceExplicit: true as const,
+                ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}),
               }
             : {}),
           ...(hostShellExecutionPermitBinding === undefined ? {} : { hostShellExecutionPermitBinding }),

@@ -455,7 +455,7 @@ export function isIssuedShellAllowRuleDecision(
 export function consumeIssuedShellAllowRuleDecision(
   result: PermissionCheckResult | undefined,
   expected: ShellAllowRuleSubject,
-  issuer: PermissionManager | undefined,
+  issuer: Pick<PermissionManager, "getPolicyEpoch"> | undefined,
 ): ShellAllowRuleAuthorization | undefined {
   if (result === undefined) return undefined;
   const actual = issuedShellAllowRuleDecisions.get(result);
@@ -467,6 +467,50 @@ export function consumeIssuedShellAllowRuleDecision(
     actual.dialect === expected.dialect &&
     actual.command === expected.command &&
     actual.cwd === expected.cwd ? actual : undefined;
+}
+
+// The sandbox-unavailable floor a "This session" grant was approved under: it answers only that floor, for the same plan identity.
+export interface FloorSessionGrant {
+  readonly code: "sandbox-unavailable";
+  readonly planIdentity: string;
+}
+
+type SessionRuleRow = PermissionRule & { readonly floorGrant?: FloorSessionGrant };
+
+// A floor session allow that `checkDetailed` issued for one shell action. Its provenance is the person's own "This session" answer on
+// the floor card for this exact command and plan identity; it stays live only under the issuing manager's policy epoch.
+export interface FloorSessionAuthorization extends ShellAllowRuleSubject {
+  readonly issuer: PermissionManager;
+  readonly policyEpoch: string;
+  readonly planIdentity: string;
+}
+
+const issuedFloorSessionDecisions = new WeakMap<PermissionCheckResult, FloorSessionAuthorization>();
+
+// True when `result` is a live floor session allow issued by `checkDetailed`.
+export function isIssuedFloorSessionDecision(result: PermissionCheckResult | undefined, issuer?: Pick<PermissionManager, "getPolicyEpoch">): boolean {
+  const authorization = result === undefined ? undefined : issuedFloorSessionDecisions.get(result);
+  return authorization !== undefined && (issuer === undefined || authorization.issuer === issuer) &&
+    authorization.issuer.getPolicyEpoch() === authorization.policyEpoch;
+}
+
+// Verify and burn a floor session allow for one shell action. Delete before comparison so a mismatched or replayed attempt cannot probe or reuse it.
+export function consumeIssuedFloorSessionDecision(
+  result: PermissionCheckResult | undefined,
+  expected: ShellAllowRuleSubject & { readonly planIdentity: string },
+  issuer: Pick<PermissionManager, "getPolicyEpoch"> | undefined,
+): FloorSessionAuthorization | undefined {
+  if (result === undefined) return undefined;
+  const actual = issuedFloorSessionDecisions.get(result);
+  if (actual === undefined) return undefined;
+  issuedFloorSessionDecisions.delete(result);
+  return actual.issuer === issuer &&
+    actual.issuer.getPolicyEpoch() === actual.policyEpoch &&
+    actual.toolName === expected.toolName &&
+    actual.dialect === expected.dialect &&
+    actual.command === expected.command &&
+    actual.cwd === expected.cwd &&
+    actual.planIdentity === expected.planIdentity ? actual : undefined;
 }
 
 // Where a `Network(...)` rule is stored: the user rules, a project's rules, or a conversation's "This session" rules.
@@ -532,7 +576,8 @@ export class PermissionManager {
   // "Allow always" grants keyed by pattern → highest granted {@link GrantTier}. Was a flat `Set<string>` (category-blind). The Map structurally enforces the "1 grant, highest tier" invariant so a re-grant can only widen coverage (monotone), never desynchronize.
   private readonly alwaysAllowed = new Map<string, GrantTier>();
   // "This session" allow rules (`addSessionRule`), by root conversation. Held in memory only: they end with the conversation (`endSession`) or the app.
-  private readonly sessionRules = new Map<string, PermissionRule[]>();
+  // A row with `floorGrant` answers only the sandbox-unavailable floor it was approved under and is never an ordinary session rule.
+  private readonly sessionRules = new Map<string, SessionRuleRow[]>();
 
 
   private readonly permissionsFilePath: string;
@@ -929,20 +974,28 @@ export class PermissionManager {
   }
 
   // Add a validated shell or network allow rule for one conversation; prefixes apply on host and sandbox routes.
-  addSessionRule(sessionId: string, pattern: string): void {
+  // With `floorGrant` the rule is an exact shell allow that answers only that sandbox-unavailable floor (the floor card's "This session").
+  addSessionRule(sessionId: string, pattern: string, floorGrant?: FloorSessionGrant): void {
     if (sessionId.length === 0) throw new Error("A session rule requires its conversation session");
     const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern, action: "allow" }));
     const spec = isRuleSpecifier(validated.pattern) ? parseRuleSpecifier(validated.pattern) : undefined;
     if (spec?.kind !== "bash" && spec?.kind !== "powershell" && spec?.kind !== "network") {
       throw new Error(`A session rule must be a Bash(...), PowerShell(...) or Network(...) rule; got ${validated.pattern}`);
     }
+    if (floorGrant !== undefined && (floorGrant.code !== "sandbox-unavailable" || floorGrant.planIdentity.length === 0 ||
+      (spec.kind !== "bash" && spec.kind !== "powershell") || spec.wildcard)) {
+      throw new Error(`A floor session rule must be an exact Bash(...) or PowerShell(...) rule; got ${validated.pattern}`);
+    }
+    const row: SessionRuleRow = floorGrant === undefined ? validated : { ...validated, floorGrant: Object.freeze({ ...floorGrant }) };
+    const samePartition = (rule: SessionRuleRow) => rule.pattern === validated.pattern &&
+      rule.floorGrant?.planIdentity === floorGrant?.planIdentity;
     // Keyed like a session approval: the root conversation and the sub-agents it spawned share it.
     const root = approvalConversationRoot(sessionId);
     const rules = this.sessionRules.get(root) ?? [];
-    if (!rules.some((rule) => rule.pattern === validated.pattern && isCurrentShellRule(rule))) {
-      const previous = rules.findIndex((rule) => rule.pattern === validated.pattern);
+    if (!rules.some((rule) => samePartition(rule) && isCurrentShellRule(rule))) {
+      const previous = rules.findIndex(samePartition);
       if (previous >= 0) rules.splice(previous, 1);
-      rules.push(validated);
+      rules.push(row);
     }
     this.sessionRules.set(root, rules);
     this.policyGeneration += 1;
@@ -953,8 +1006,15 @@ export class PermissionManager {
   // the conversation's session allows (permission tree, delegated work), and the decision order is unchanged.
   private sessionRulesInScope(sessionId: string | undefined): readonly PermissionRule[] {
     if (sessionId === undefined) return [];
-    const rules = this.sessionRules.get(approvalConversationRoot(sessionId)) ?? [];
+    const rules = (this.sessionRules.get(approvalConversationRoot(sessionId)) ?? []).filter((rule) => rule.floorGrant === undefined);
     return sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId)) ? rules.filter((rule) => rule.action !== "allow") : rules;
+  }
+
+  // The floor session allows approved under this plan identity. A scheduled wake turn inherits none, like the other session allows.
+  private floorSessionRulesInScope(sessionId: string | undefined, planIdentity: string): readonly PermissionRule[] {
+    if (sessionId === undefined || sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId))) return [];
+    return (this.sessionRules.get(approvalConversationRoot(sessionId)) ?? [])
+      .filter((rule) => rule.floorGrant?.code === "sandbox-unavailable" && rule.floorGrant.planIdentity === planIdentity);
   }
 
   // The "This session" rules a conversation holds.
@@ -1364,11 +1424,16 @@ export class PermissionManager {
     }, issued.hostTerminalContext);
     const shellRule = issuedShellAllowRuleDecisions.get(result);
     issuedShellAllowRuleDecisions.delete(result);
+    const floorSession = issuedFloorSessionDecisions.get(result);
+    issuedFloorSessionDecisions.delete(result);
     if (!stale) {
       if (result.reviewer) refreshed.reviewer = result.reviewer;
       if (result.denyReasons) refreshed.denyReasons = result.denyReasons;
       if (shellRule && refreshed.decision === "allow" && refreshed.reasonCode === "rule-allow") {
         issuedShellAllowRuleDecisions.set(refreshed, shellRule);
+      }
+      if (floorSession && refreshed.decision === "allow" && refreshed.reasonCode === "floor-session-allow") {
+        issuedFloorSessionDecisions.set(refreshed, floorSession);
       }
     }
     return refreshed;
@@ -1421,9 +1486,8 @@ export class PermissionManager {
   ): PermissionCheckResult {
     let admissionDenial = context.admissionDenial;
     let floor = context.floor;
-    if (requiresUnsandboxedShellAsk(context.hostShellExecutionPlan)) {
-      floor ??= { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval each time." };
-    }
+    // Raised after the other floors are known (it still wins over them, as before): only a sandbox-unavailable floor with nothing behind it may offer "This session".
+    const sandboxUnavailableAsk = requiresUnsandboxedShellAsk(context.hostShellExecutionPlan);
     let exfiltration = context.exfiltration;
     const invalidMeta = category === "meta" && (source !== "builtin" || context.decisionOverride === undefined);
     if (invalidMeta) admissionDenial ??= { code: "invalid-meta", reason: "The tool has no valid host decision contract." };
@@ -1524,6 +1588,16 @@ export class PermissionManager {
       if (evidence.protectedControl) floor ??= { code: "protected-path", reason: evidence.protectedControl };
       secretRead ||= evidence.effect === "read" && evidence.secret !== null;
     }
+    const competingFloor = floor !== undefined;
+    if (sandboxUnavailableAsk) {
+      floor = context.floor ?? { code: "sandbox-unavailable", reason: "The OS sandbox is unavailable, so this shell command would run without isolation; it needs your approval once or for this session." };
+    }
+    const floorSessionEligible = sandboxUnavailableAsk && !competingFloor;
+    const floorRules = floorSessionEligible && context.hostShellExecutionPlan !== undefined
+      ? this.floorSessionRulesInScope(context.sessionId, context.hostShellExecutionPlan.identity) : [];
+    const floorSessionRules = floorRules.length === 0 ? undefined
+      : !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: true }, floorRules)
+        : !analysisLimited && parsedPowerShell ? evaluatePowerShellSubject({ command: parsedPowerShell, cwd: ruleSubject?.cwd, hostShellExecutionPlan: context.hostShellExecutionPlan, exactAllowOnly: true }, floorRules) : undefined;
     const sessionRules = this.sessionRulesInScope(context.sessionId);
     const shellRules = !analysisLimited && parsed ? evaluateShellSubject({ command: parsed, cwd: ruleSubject?.cwd, exactAllowOnly: shellSignals?.exactLiteralEvaluation === true,
         ...(ruleSubject?.hostTerminal === undefined ? {} : { hostTerminal: ruleSubject.hostTerminal }) }, this.rules, projectRules, sessionRules)
@@ -1541,6 +1615,7 @@ export class PermissionManager {
     if (deny || shellRules?.decision === "deny" || scopedRules?.decision === "deny") rules.deny = deny?.pattern ?? (shellRules?.decision === "deny" ? shellRules.pattern : undefined) ?? scopedRules?.pattern ?? "Deny rule matched";
     if (ask || shellRules?.decision === "ask" || scopedRules?.decision === "ask") rules.ask = ask?.pattern ?? (shellRules?.decision === "ask" ? shellRules.pattern : undefined) ?? scopedRules?.pattern ?? "Ask rule matched";
     if (allow || shellRules?.decision === "allow" || scopedRules?.decision === "allow") rules.allow = allow?.pattern ?? (shellRules?.decision === "allow" ? shellRules.patterns.join(", ") : scopedRules?.pattern) ?? "Allow rule matched";
+    if (floorSessionRules?.decision === "allow") rules.floorSession = floorSessionRules.patterns.join(", ");
     if (source === "builtin" && category === "meta" && context.decisionOverride === "always-allow-with-audit") rules.allow ??= "The host operation supplies its own audited decision.";
     if (context.fileWritePolicy?.directoryApproved) rules.remembered = "The user approved this write together with its directory grant.";
     const grant = this.alwaysAllowed.get(allowTarget);
@@ -1562,10 +1637,15 @@ export class PermissionManager {
       rationaleAvailable: context.rationaleAvailable === true,
       headless: context.headless === true || context.approvalSurface === "unavailable", ownerAway: context.ownerUnattended, paths: [...(context.paths ?? []), ...(shellPaths?.paths ?? []), ...(powerShellPaths?.paths ?? [])].map(({lexical,canonical,effect}) => ({lexical,canonical,effect})),
       admissionDenial, floor, exfiltration, rules, secretRead, manualRerun: context.manualRerun,
+      ...(floorSessionEligible ? { floorSessionEligible: true as const } : {}),
       ...(context.fileWritePolicy ? { fileWrite: { ...context.fileWritePolicy, checkpointAvailable: context.fileWritePolicy.checkpointAvailable === true } } : {}),
       ...(category === "shell" ? { shell: { sandboxed: shellExecution.runsSandboxed, readOnlyProven, unproven: analysisLimited || ruleProofLimited || shellPaths?.unproven != null || powerShellPaths?.unproven === true || !hostBoundWriteTargets && !readOnlyProven && (shellSignals?.outcome === "unproven" || Boolean(shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason)), destructive: shellDestructive, escalated: context.shellEscalated } } : {}),
     };
     const result = this.pipelineResult(request, context);
+    if (result.decision === "allow" && result.reasonCode === "floor-session-allow" && requestedRuleSubject?.cwd !== undefined && context.hostShellExecutionPlan !== undefined) {
+      issuedFloorSessionDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd,
+        planIdentity: context.hostShellExecutionPlan.identity, issuer: this, policyEpoch: this.getPolicyEpoch() }));
+    }
     if (result.decision === "allow" && result.reasonCode === "rule-allow" && context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined && cwdIdentity && this.userRulesVersion && projectPolicyVersion && isPersistedPolicyVersionCurrent(this.userRulesVersion) && isPersistedPolicyVersionCurrent(projectPolicyVersion)) {
       issuedShellAllowRuleDecisions.set(result, Object.freeze({ toolName, dialect: requestedRuleSubject.dialect, command: requestedRuleSubject.command, cwd: requestedRuleSubject.cwd, cwdIdentity, issuer: this, policyEpoch: this.getPolicyEpoch(), persistedPolicyVersions: Object.freeze([this.userRulesVersion, projectPolicyVersion]) }));
     }

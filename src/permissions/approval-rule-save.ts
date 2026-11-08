@@ -115,6 +115,10 @@ export async function saveApprovalCardRule(
   }
   const target = targetOf(snapshot);
   if (target === undefined) return fail("invalid-rule", "This request has no rule a card can save");
+  // The sandbox-unavailable floor card saves only its own exact command for this session; an edited rule would widen the person's answer.
+  if (snapshot.floorSessionGrant !== undefined && (action !== "allow" || scope !== "session" || edited !== undefined)) {
+    return fail("one-shot-not-recordable", "This request can only allow its exact command for this session");
+  }
   if (target.kind === "shell" && action === "deny" && !target.context.denyAllowed) return fail("one-shot-not-recordable", "This request cannot create a deny rule");
   // Host rules are shell-origin, like shell grants: a terminal tab's card saves none (its connections are decided by its grants).
   if (target.kind === "network" && target.context.terminalTabId !== undefined) {
@@ -155,7 +159,8 @@ export async function saveApprovalCardRule(
     if (scope === "session") {
       if (snapshot.sessionId === undefined) return fail("missing-session", "This request has no conversation session");
       await refreshApprovalPersistence(authority);
-      permissionManager.addSessionRule(snapshot.sessionId, pattern);
+      if (snapshot.floorSessionGrant === undefined) permissionManager.addSessionRule(snapshot.sessionId, pattern);
+      else permissionManager.addSessionRule(snapshot.sessionId, pattern, snapshot.floorSessionGrant);
     } else if (scope === "project") {
       const projectCwd = target.context.projectCwd;
       if (projectCwd === undefined) return fail("scope-not-offered", "This request has no project");

@@ -14,6 +14,8 @@ import {
   type ApprovalDecision,
 } from "./approval-gate.js";
 import {
+  consumeIssuedFloorSessionDecision,
+  isIssuedFloorSessionDecision,
   consumeIssuedShellAllowRuleDecision,
   isShellAllowRuleAuthorizationCurrent,
   isShellAllowRulePolicyCurrent,
@@ -134,7 +136,9 @@ export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
   approvalDecision: ApprovalDecision | undefined;
   allowRuleDecision?: PermissionCheckResult | undefined;
-  permissionManager?: PermissionManager | undefined;
+  // A floor session allow `checkDetailed` issued for this action: the person's own "This session" answer on the sandbox-unavailable floor card.
+  floorSessionDecision?: PermissionCheckResult | undefined;
+  permissionManager?: Pick<PermissionManager, "getPolicyEpoch"> | undefined;
   binding: HostShellExecutionPermitBinding;
 }): HostShellExecutionPermit | undefined {
   // The public TypeScript surface declares these fields as required, but module consumers can still arrive through untyped JavaScript or a stale compiled caller. Treat any incomplete input as an unauthorised request instead of throwing before the fail-closed decision.
@@ -142,8 +146,19 @@ export function mintHostShellExecutionPermit(input: {
   let allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
   // Consumed on every mint attempt, so a recorded authorization never outlives it.
   const policyApproved = policyAuthorizations.delete(input.binding);
+  let floorSessionAuthorized = false;
   if (input.approvalDecision === undefined && policyApproved) {
     // The policy lane already decided this exact action.
+  } else if (input.approvalDecision === undefined && isIssuedFloorSessionDecision(input.floorSessionDecision, input.permissionManager)) {
+    // Burn the floor session proof before any plan check, so a mismatch cannot be probed or replayed.
+    floorSessionAuthorized = consumeIssuedFloorSessionDecision(input.floorSessionDecision, {
+      toolName: input.binding.toolName,
+      dialect: input.binding.toolName,
+      command: input.binding.command,
+      cwd: input.binding.resolvedCwd,
+      planIdentity: input.binding.planIdentity,
+    }, input.permissionManager) !== undefined;
+    if (!floorSessionAuthorized) return undefined;
   } else if (input.approvalDecision === undefined) {
     if (input.allowRuleDecision === undefined) return undefined;
     // Burn the rule proof before any plan check, so a mismatch cannot be probed or replayed.
@@ -165,6 +180,8 @@ export function mintHostShellExecutionPermit(input: {
   if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName)) return undefined;
   // Under the unverifiable Ave home boundary a saved rule never stands in for fresh consent; policy records are made only after a human card.
   if (allowRuleAuthorization !== undefined && requiresUnsandboxedShellAsk(input.plan)) return undefined;
+  // A floor session allow answers only the marked plan it was approved under.
+  if (floorSessionAuthorized && (!requiresUnsandboxedShellAsk(input.plan) || input.plan.identity !== input.binding.planIdentity)) return undefined;
   if (
     input.binding.plan !== input.plan ||
     input.binding.planIdentity !== input.plan.identity

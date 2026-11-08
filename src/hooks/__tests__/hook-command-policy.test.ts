@@ -27,6 +27,7 @@ import { PermissionTestResources } from "../../permissions/__tests__/test-resour
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
 import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
+import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 
 const sandboxedHost = vi.hoisted(() => ({ active: false }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
@@ -294,6 +295,65 @@ describe("hook command permission admission", () => {
       expect(second.cards).toBe(1);
       expect(second.result.decision, second.result.reason).toBe("allow");
       expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
+    });
+
+    // An interpreter command (the node fixture above) has no exact rule, so no card offers it for the session; a plain command does.
+    const exactHook = { ...hook, command: ["printf", "ready"] };
+    const exactHookRule = "Bash('printf' 'ready')";
+
+    async function admitOnGate(p: ReturnType<typeof policy>, answer: "allow-session" | "deny-once") {
+      const wc = { isDestroyed: vi.fn(() => false), send: vi.fn() };
+      const gate = new ApprovalGate(wc as never);
+      const authorizeCommand = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+      const pending = authorizeCommand(exactHook, payload, process.cwd());
+      const deadline = Date.now() + 3000;
+      while (wc.send.mock.calls.length === 0 && Date.now() < deadline) await new Promise((done) => setTimeout(done, 1));
+      const request = wc.send.mock.calls[0]?.[1] as ApprovalRequest;
+      expect(request).toMatchObject({ allowedChoices: ["allow-once", "deny-once"],
+        shellRule: { exactRule: exactHookRule, sessionAllowed: true, persistentAllowed: false, denyAllowed: false } });
+      const snapshot = gate.getRequestSnapshot(request.id);
+      if (!snapshot) throw new Error("request snapshot is missing");
+      if (answer === "allow-session") {
+        // The card can save nothing lasting.
+        expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "always" },
+          { decision: "allow", scope: "persistent", displayedVerdictAtApproval: snapshot.verdictAtApproval }, p.permissionManager))
+          .toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+        // As the approval IPC does: the save is the card's own policy transition.
+        const token = gate.beginApprovalRuleSave(request.id, p.permissionManager.getPolicyEpoch());
+        expect(await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" },
+          { decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval }, p.permissionManager))
+          .toMatchObject({ ok: true, scope: "session" });
+        gate.completeApprovalRuleSave(token, p.permissionManager.getPolicyEpoch(), "session");
+      }
+      gate.resolve(request.id, { requestId: request.id, choice: answer === "allow-session" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac });
+      return { result: await pending, gate, wc, authorizeCommand };
+    }
+
+    it("admits the same hook command again in the same session without a card after allow for this session", async () => {
+      publish();
+      const p = allowAll();
+      const first = await admitOnGate(p, "allow-session");
+      expect(first.result.decision, first.result.reason).toBe("allow");
+      expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+
+      const again = await first.authorizeCommand(exactHook, payload, process.cwd());
+      expect(again.decision, again.reason).toBe("allow");
+      expect(first.wc.send.mock.calls.filter(([, sent]) => (sent as ApprovalRequest | undefined)?.nonce !== undefined)).toHaveLength(1);
+      expect(permits).toMatchObject({ minted: 2, consumed: [true, true] });
+
+      // Headless still denies, and a fresh permission state (a restart) asks again.
+      const headless = await turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(undefined, true),
+        () => first.authorizeCommand(exactHook, payload, process.cwd()));
+      expect(headless.decision).toBe("deny");
+      expect((await admitOnGate(allowAll(), "deny-once")).result.decision).toBe("deny");
+    });
+
+    it("does not pass the floor with an ordinary session allow made earlier", async () => {
+      const p = allowAll();
+      p.permissionManager.addSessionRule("hook-policy-session", exactHookRule);
+      publish();
+      expect((await admitOnGate(p, "deny-once")).result.decision).toBe("deny");
+      expect(permits.consumed).toEqual([]);
     });
 
     it("does not run the hook on deny-once", async () => {

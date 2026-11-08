@@ -7,7 +7,7 @@ to permission classification, approval cards, the reviewer, hooks or headless be
 keep the code in this order. A change to this tree needs an owner decision.
 
 Outcomes: allow, sandbox-auto, ask (normal card), ask-forced (질문†: this time only, no reviewer, no allow-mode pass,
-no memory, deny when headless), deny.
+no memory, deny when headless; the `sandbox-unavailable` floor alone also offers this session, see below), deny.
 
 Modes: 기본 / Default (former 모두 확인 = strict; default for new installs) · 쓰기 허용 / Allow writes
 (former 쓰기만 확인) · auto · 허용 / Allow.
@@ -163,10 +163,15 @@ Notes that are part of the contract:
   Ave home, so host shells (bash, PowerShell) run unconfined: on the unavailable-sandbox route, on the sandbox-off route when only
   worker confinement was requested (shell scope off), and as an explicit host request. Each one runs only after a human approves it
   on its card (the shell card for that route, or the out-of-directory card when the command leaves the allowed folders). The
-  `sandbox-unavailable` floor makes it ask-forced (질문†): allow once or deny once, no saved-rule, remembered, allow-mode,
-  auto-review or sandbox auto-allow pass, no durable approval, deny when headless. Host command hooks use the same plan and ask the same way; a headless blocking hook (prompt submit, pre-tool) is
+  `sandbox-unavailable` floor makes it ask-forced (질문†): allow once, allow for this session, or deny once; no saved-rule,
+  remembered, allow-mode, auto-review or sandbox auto-allow pass, no durable approval, deny when headless (owner decision
+  2026-11-08). The session choice records an exact-command grant tagged with this floor and the host plan identity, kept in
+  memory for the current session only: it lets that same command on that same plan skip the card again, still under a
+  one-shot execution permit per run. It never satisfies an ordinary ask, and an ordinary session allow never passes this floor.
+  When another 질문† floor also applies (protected path, project escape, critical delete, other principal), the card stays
+  once-only. Other 질문† floors remain once-only. Host command hooks use the same plan and ask the same way; a headless blocking hook (prompt submit, pre-tool) is
   denied and can refuse its turn, which is the intended fail-closed result. The Permissions banner says shell commands will ask
-  each time. Other boot failures keep the ordinary unavailable-sandbox, sandbox-off and explicit-host routes.
+  for approval once or for the session. Other boot failures keep the ordinary unavailable-sandbox, sandbox-off and explicit-host routes.
 - Limit of file rows (home dotfiles such as `.gitconfig` and `.npmrc`, and the top-level files of a Windows profile-child Ave home):
   Linux bind masks and Windows ACL stamps are bound to the file object present at spawn, so a long-lived confined child can read a
   file the host replaces by rename-over. A file absent at spawn has no object to bind; it is held only by that backend's absent-path

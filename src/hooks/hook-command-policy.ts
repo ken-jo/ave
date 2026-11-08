@@ -7,7 +7,7 @@ import { getHostShellExecutionPlanAuditProjection, requiresUnsandboxedShellAsk, 
 import { buildHostShellExecutionPermitBinding, mintHostShellExecutionPermit, consumeHostShellExecutionPermit, recordHostShellPolicyAuthorization } from "../permissions/host-shell-execution-permit.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity } from "../permissions/shell-working-directory-identity.js";
 import { buildPermissionEvaluationContext } from "../permissions/evaluation-context.js";
-import { NO_APPROVER_MESSAGE } from "../permissions/decision-pipeline.js";
+import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { shellQuote } from "../lib/shell-resolver.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import type { RunnableHook } from "./script-hook-runner.js";
@@ -95,7 +95,8 @@ export function createHookCommandAuthorizer(deps: {
         remoteControllerAuthority, remoteControllerOrigin: remoteControllerOriginOf(remoteControllerAuthority),
         reviewerVerdict: result.reviewer?.verdict, reviewerOutcome: result.reviewer?.outcome,
         reviewerApprovalBasis: result.reviewer?.approvalBasis,
-        ...(result.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false } : {}),
+        ...(result.forceModal ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
+          ...(offersFloorSessionAllow(result) ? { floorSessionAllowed: true as const } : {}) } : {}),
         executionPlan: getHostShellExecutionPlanAuditProjection(plan),
         ...(binding ? { hostShellExecutionPermitBinding: binding } : {}),
       });
@@ -113,7 +114,7 @@ export function createHookCommandAuthorizer(deps: {
     if (!matchesShellWorkingDirectoryIdentity(cwd, cwdIdentity)) return { decision: "deny", reason: "Hook working directory changed during approval" };
     if (binding) {
       if (!humanApproved && !requiresUnsandboxedShellAsk(plan)) recordHostShellPolicyAuthorization(binding);
-      const permit = mintHostShellExecutionPermit({ plan, approvalDecision: approval, binding });
+      const permit = mintHostShellExecutionPermit({ plan, approvalDecision: approval, floorSessionDecision: current, permissionManager: deps.permissionManager, binding });
       if (!consumeHostShellExecutionPermit({ ...binding, permit })) {
         return { decision: "deny", reason: "Hook host execution approval receipt is invalid" };
       }

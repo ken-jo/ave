@@ -1,4 +1,4 @@
-// An unverifiable Ave home read boundary leaves host shells unconfined only through a human ask, every command.
+// An unverifiable Ave home read boundary leaves host shells unconfined only through a human ask: once, or the same command for this session.
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationFs(await original()));
@@ -15,6 +15,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 
 import { NO_APPROVER_MESSAGE } from "../../permissions/decision-pipeline.js";
+import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
 import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { makeRecentlyDeniedStore } from "../../__tests__/support/recently-denied.js";
@@ -71,6 +72,28 @@ function cardGate(choice: "allow-once" | "deny-once" | "allow-session") {
   const webContents = { isDestroyed: () => false, send };
   gate = new ApprovalGate(webContents as never);
   return { gate, cards: () => sentApprovalCards<ApprovalRequest>({ send } as never) };
+}
+
+// The person picks "This session": the card saves its exact rule for the session through the pending request, then answers allow once.
+function sessionGate(pm: PermissionManager) {
+  let gate: ApprovalGate;
+  const saves: unknown[] = [];
+  const send = vi.fn((channel: string, request: ApprovalRequest) => {
+    if (channel !== "ave:approval:request") return;
+    void (async () => {
+      const snapshot = defined(gate.getRequestSnapshot(request.id) ?? undefined, "request snapshot");
+      // As the approval IPC does: the save is the card's own policy transition.
+      const token = gate.beginApprovalRuleSave(request.id, pm.getPolicyEpoch());
+      const saved = await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" },
+        { decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval }, pm);
+      gate.completeApprovalRuleSave(token, pm.getPolicyEpoch(), saved.ok ? saved.scope : undefined);
+      saves.push(saved);
+      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, webContents as never);
+    })();
+  });
+  const webContents = { isDestroyed: () => false, send };
+  gate = new ApprovalGate(webContents as never);
+  return { gate, saves, cards: () => sentApprovalCards<ApprovalRequest>({ send } as never) };
 }
 
 function manager(mode: "default" | "auto" | "allow", rules: readonly string[]): PermissionManager {
@@ -346,5 +369,120 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     expect((defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({
       fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false });
     expect(result[0]?.is_error).toBeUndefined();
+  });
+
+  // Owner decision 2026-11-08: the sandbox-unavailable floor also offers "this session", for that exact command only.
+  const sessionCases = (["boundary-link", "boundary-unlisted"] as const).flatMap(category => DIALECTS.flatMap(dialect => ([
+    { category, dialect, route: "default", mode: "default" as const, label: "saved prefix and tool allows", rules: [dialect.prefixRule, dialect.toolName] },
+    { category, dialect, route: "default", mode: "auto" as const, label: "auto review", rules: [] },
+    { category, dialect, route: "default", mode: "allow" as const, label: "allow mode", rules: [] },
+    { category, dialect, route: "host", mode: "allow" as const, label: "allow mode", rules: [] },
+    { category, dialect, route: "worker-only", mode: "allow" as const, label: "allow mode and a saved prefix", rules: [dialect.prefixRule] },
+  ])));
+
+  function sessionRun(dialect: (typeof DIALECTS)[number], route: string, sessionId: string, command: string = dialect.command) {
+    const input = route === "host" ? { command, ...HOST } : { command };
+    let serial = 0;
+    return (pm: PermissionManager, gate: ApprovalGate, registry: ToolRegistry, headless = false) => runWithToolExecutionCwd(testRoot, () =>
+      new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+        [{ id: `${sessionId}-${++serial}`, name: dialect.toolName, input }],
+        { sessionId, permissionContext: permissionContext(headless ? { headless: true } : {}) },
+      ));
+  }
+
+  it.each(sessionCases)("$category, $route route: $dialect.toolName allowed for this session runs the same command again without a card ($label)", async ({ category, dialect, route, mode, rules }) => {
+    if (route === "worker-only") setShellSandboxRequestedAtBoot(false);
+    publishBoundary(category);
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager(mode, rules);
+    const run = sessionRun(dialect, route, "boundary-session");
+
+    const first = sessionGate(pm);
+    await run(pm, first.gate, registry);
+    // Saved rules, allow mode and auto review still bring the floor's card; it offers this session but no lasting rule.
+    expect(first.cards()).toHaveLength(1);
+    const card = defined(first.cards()[0], "approval card");
+    expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(card.shellRule).toMatchObject({ sessionAllowed: true, persistentAllowed: false, denyAllowed: false });
+    expect(card).not.toHaveProperty("floorSessionGrant");
+    expect(first.saves).toEqual([expect.objectContaining({ ok: true, scope: "session", action: "allow" })]);
+    expect(pm.dispatchReviewer).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
+    const firstPermit = (defined(execute.mock.calls[0], "first call")[0] as ToolExecutionContext).hostShellExecutionPermit;
+    expect(firstPermit).toBeDefined();
+
+    // The same command in the same session: no card, and still its own one-shot spawn permit.
+    const next = cardGate("deny-once");
+    const ran = await run(pm, next.gate, registry);
+    expect(next.cards()).toHaveLength(0);
+    expect(ran[0]?.is_error).toBeUndefined();
+    expect(execute).toHaveBeenCalledTimes(2);
+    const secondCtx = defined(execute.mock.calls[1], "second call")[0] as ToolExecutionContext;
+    expect(secondCtx.hostShellExecutionPermit).toBeDefined();
+    expect(secondCtx.hostShellExecutionPermit).not.toBe(firstPermit);
+    expect(secondCtx.hostShellExecutionPlan).toMatchObject({ mode: "plain", sandboxed: false });
+
+    // A different command asks again.
+    const other = cardGate("deny-once");
+    await sessionRun(dialect, route, "boundary-session", `${dialect.command}2`)(pm, other.gate, registry);
+    expect(other.cards()).toHaveLength(1);
+    // Another conversation asks again.
+    const otherSession = cardGate("deny-once");
+    await sessionRun(dialect, route, "boundary-other-session")(pm, otherSession.gate, registry);
+    expect(otherSession.cards()).toHaveLength(1);
+    // A restart (fresh permission state) asks again.
+    const restarted = cardGate("deny-once");
+    await run(manager(mode, rules), restarted.gate, registry);
+    expect(restarted.cards()).toHaveLength(1);
+    // Headless is still denied, grant or not.
+    const headless = await run(pm, cardGate("allow-once").gate, registry, true);
+    expect(headless[0]?.content).toContain(NO_APPROVER_MESSAGE);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(DIALECTS)("an ordinary session allow made before the boundary state does not pass the floor for $toolName", async (dialect) => {
+    const pm = manager("default", []);
+    pm.addSessionRule("boundary-prior", `${dialect.toolName === "bash" ? "Bash" : "PowerShell"}(${dialect.command})`);
+    publishBoundary("boundary-link");
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const approvals = cardGate("deny-once");
+    await sessionRun(dialect, "default", "boundary-prior")(pm, approvals.gate, registry);
+    expect(approvals.cards()).toHaveLength(1);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(DIALECTS)("a floor session grant does not satisfy the ordinary ask once the boundary state clears for $toolName", async (dialect) => {
+    publishBoundary("boundary-unlisted");
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const pm = manager("default", []);
+    const run = sessionRun(dialect, "default", "boundary-leak");
+    const granted = sessionGate(pm);
+    await run(pm, granted.gate, registry);
+    expect(granted.saves).toEqual([expect.objectContaining({ ok: true })]);
+    expect(execute).toHaveBeenCalledOnce();
+
+    // Another boot failure: the ordinary unavailable-sandbox plan, which asks in the default mode with no rules.
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: HOME, reason: "icacls failed", category: "icacls-failed" });
+    const ordinary = cardGate("deny-once");
+    await run(pm, ordinary.gate, registry);
+    expect(ordinary.cards()).toHaveLength(1);
+    expect(defined(ordinary.cards()[0], "ordinary card").executionPlan).toMatchObject({ requiresExplicitUserApproval: false });
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it.each(DIALECTS)("keeps the out-of-directory card once-only for $toolName", async (dialect) => {
+    publishBoundary("boundary-link");
+    const execute = vi.fn();
+    const registry = probe(dialect.create, execute);
+    const approvals = cardGate("deny-once");
+    await new ToolExecutor(registry, undefined, manager("allow", []), undefined, approvals.gate).executeAll(
+      [{ id: "directory-session", name: dialect.toolName, input: { command: dialect.command, cwd: testRoot } }],
+      { sessionId: "boundary-directory-session", permissionContext: permissionContext() },
+    );
+    expect(approvals.cards()[0]).toMatchObject({ kind: "out-of-allowed-dir", allowedChoices: ["allow-once", "deny-once"] });
+    expect(approvals.cards()[0]?.shellRule?.sessionAllowed ?? false).toBe(false);
   });
 });
