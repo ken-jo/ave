@@ -44,6 +44,8 @@ class Guest extends EventEmitter {
   }
   isDestroyed() { return this.destroyed; }
   getURL() { return this.url; }
+  getZoomFactor() { return 1; }
+  setZoomFactor() {}
   getTitle() { return this.title; }
   isFocused() { return this.focused; }
   focus() { this.focused = true; this.emit("focus"); }
