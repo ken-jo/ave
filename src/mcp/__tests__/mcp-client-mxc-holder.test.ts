@@ -279,12 +279,12 @@ describe("pinned 0.0.80 fallback and other platforms", () => {
       state.selected = false;
       state.legacySpawn.mockRejectedValue(new Error("legacy route reached"));
       await expect(client().connect()).rejects.toThrow("legacy route reached");
-      expect(state.legacySpawn.mock.calls[0]![0]).toMatchObject({ allowRead: [own], allowWrite: ["C:\\ave\\mcp\\fs\\sandbox"] });
+      expect(state.legacySpawn.mock.calls[0]?.[0]).toMatchObject({ allowRead: [own], allowWrite: ["C:\\ave\\mcp\\fs\\sandbox"] });
 
       setProcessPlatform("linux");
       state.posixWrap.mockRejectedValue(new Error("posix wrap reached"));
       await expect(client({ sandboxRoot: "/ave/mcp/fs/sandbox" }).connect()).rejects.toThrow("posix wrap reached");
-      const wrap = state.posixWrap.mock.calls[0]![0] as { ownPluginReads: string[]; allowWrite: string[] };
+      const wrap = state.posixWrap.mock.calls[0]?.[0] as { ownPluginReads: string[]; allowWrite: string[] };
       expect(wrap.ownPluginReads).toEqual(["/ave/mcp/fs", own]);
       expect(wrap.allowWrite).toEqual(["/ave/mcp/fs/sandbox"]);
     } finally {

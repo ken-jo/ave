@@ -43,5 +43,9 @@ export const AVE_HOME_READ_REALLOWS: readonly AveHomeReadReallow[] = Object.free
 /** Whether `segments` (relative to the Ave home, case-folded like the path they came from) lie inside a re-allowed child. */
 export function isAveHomeReadReallowed(segments: readonly string[]): boolean {
   return AVE_HOME_READ_REALLOWS.some((row) => row.segments.length <= segments.length
-    && row.segments.every((segment, index) => typeof segment === "string" ? segment === segments[index] : segment(segments[index]!)));
+    && row.segments.every((segment, index) => {
+      const value = segments[index];
+      if (value === undefined) throw new Error("Ave home re-allow match ran past the path segments");
+      return typeof segment === "string" ? segment === value : segment(value);
+    }));
 }

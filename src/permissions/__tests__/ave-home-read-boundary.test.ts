@@ -6,7 +6,7 @@ vi.mock("../../shared/windows-path-facts.js", async original => {
   // A seam for reparse tags no fixture can create: the named paths report the given tag on their own native facts.
   const pinWindowsPaths: typeof facts.pinWindowsPaths = (paths) => {
     if (paths[0] !== undefined) pinnedFirstPaths.push(paths[0]);
-    return facts.pinWindowsPaths(paths).map((row, index) => ({ ...row, ...factsOverride.get(paths[index]!) }));
+    return facts.pinWindowsPaths(paths).map((row, index) => ({ ...row, ...factsOverride.get(paths[index] ?? "") }));
   };
   return { ...facts, pinWindowsPaths };
 });
@@ -48,7 +48,7 @@ vi.mock("../../shared/policy-home.js", async (importOriginal) => {
 
 import { aveHome } from "../../shared/ave-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
-import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { useVerifiedAveHomePrivacy as installVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { AVE_HOME_READ_REALLOWS, isAveHomeReadReallowed } from "../ave-home-read-boundary.js";
 import {
   aveHomeReadBoundaryCovering,
@@ -70,7 +70,7 @@ import { windowsReadDenyEvidence, windowsReadDenyKey } from "../../shared/window
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 
-useVerifiedAveHomePrivacy();
+installVerifiedAveHomePrivacy();
 
 const HOST_PLATFORM = process.platform;
 const trim = (path: string): string => path.replace(/[\\/]+$/, "");
@@ -458,7 +458,9 @@ describe.runIf(HOST_PLATFORM === "darwin")("the Ave home read boundary in a macO
       commandId: TEST_COMMAND_ID,
       filesystem: { allowRead: [child], denyRead: getDefaultSensitiveReadDenyPaths() },
     });
-    const run = spawnSync(argv[0]!, argv.slice(1), { env, encoding: "utf-8", timeout: 30_000 });
+    const [command, ...args] = argv;
+    if (command === undefined) throw new Error("sandboxed argv is empty");
+    const run = spawnSync(command, args, { env, encoding: "utf-8", timeout: 30_000 });
     await cleanupAsrtSandboxAfterCommand();
     expect(run.stdout).toContain("CHILD");
     expect(run.stdout).not.toContain("OTHER");

@@ -1820,7 +1820,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       }
       return nativeLstat(path, options);
     }) as typeof lstatSync);
-    const nativeReaddir = vi.mocked(readdirSync).getMockImplementation()!;
+    const nativeReaddir = vi.mocked(readdirSync).getMockImplementation();
+    if (nativeReaddir === undefined) throw new Error("readdirSync has no native mock implementation");
     vi.mocked(readdirSync).mockImplementation(((path, options) => {
       if (/^\\\\server\\profiles(?:\\|$)/i.test(resolve(String(path)))) {
         throw Object.assign(new Error("Synthetic network entry is absent"), { code: "ENOENT" });

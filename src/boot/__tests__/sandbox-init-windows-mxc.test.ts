@@ -261,7 +261,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
       h.detectMxc.mockResolvedValue(MXC_OK);
       h.initialize.mockRejectedValue(Object.assign(new Error("sandbox: refusing confinement"),
-        { code: "ave-home-boundary-unverified", reason, home: "C:\Users\alice\.ave" }));
+        { code: "ave-home-boundary-unverified", reason, home: "C:\\Users\\alice\\.ave" }));
 
       // Worker confinement on, shell scope off: the shell intent stays false.
       await initSandboxGate(harness.context(false, true));

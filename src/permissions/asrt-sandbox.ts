@@ -1113,16 +1113,18 @@ function projectAveHomeProfileChildren(roots: readonly string[]): ReadonlyMap<st
     }
     const candidates = (names ?? []).filter((name) => !isAveHomeReadReallowed([caseFoldForMatch(name)]));
     const [home, ...entries] = pinBoundaryFacts(root, [root, ...candidates.map((name) => join(root, name))]);
-    admitBoundaryEntry(home!, root, root);
-    if (home!.exists === false && names === undefined) {
+    if (home === undefined) throw new AveHomeBoundaryUnverifiedError("unlisted", root, `${root} has no pinned path facts`);
+    admitBoundaryEntry(home, root, root);
+    if (home.exists === false && names === undefined) {
       children.set(caseFoldForMatch(resolve(root)), []);
       continue;
     }
-    if (home!.exists !== true || !home!.directory || names === undefined) {
+    if (home.exists !== true || !home.directory || names === undefined) {
       throw new AveHomeBoundaryUnverifiedError("unlisted", root, `${root} changed or is not a directory during enumeration`);
     }
     children.set(caseFoldForMatch(resolve(root)), candidates.filter((name, index) => {
-      const entry = entries[index]!;
+      const entry = entries[index];
+      if (entry === undefined) throw new AveHomeBoundaryUnverifiedError("unlisted", root, `${join(root, name)} has no pinned path facts`);
       admitBoundaryEntry(entry, root, join(root, name));
       if (entry.exists !== true) throw new AveHomeBoundaryUnverifiedError("unlisted", root, `${join(root, name)} vanished during enumeration`);
       return entry.directory;
@@ -1693,7 +1695,10 @@ function getDefaultSensitiveDenyPaths(
     const key = caseFoldForMatch(resolve(home));
     if (directoryRoots.has(key)) return true;
     const denied = profileChildren.get(key);
-    return denied !== undefined && segments.length > 1 && denied.some((name) => caseFoldForMatch(name) === caseFoldForMatch(segments[0]!));
+    if (denied === undefined || segments.length <= 1) return false;
+    const child = segments[0];
+    if (child === undefined) throw new Error("Ave home file row has no top-level segment");
+    return denied.some((name) => caseFoldForMatch(name) === caseFoldForMatch(child));
   };
   // Electron userData dir — see electronUserDataDirs.
   const electronUserData = electronUserDataDirs(userDataDir, homes);

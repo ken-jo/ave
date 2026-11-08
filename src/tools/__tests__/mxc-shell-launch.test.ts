@@ -118,8 +118,8 @@ describe("prepareMxcShellLaunch", () => {
     } });
     try {
       const request = decodeRequest(launch.argv);
-      expect(request["filesystem"]["readwritePaths"]).toEqual([workspace]);
-      expect(JSON.stringify(request["filesystem"])).not.toMatch(/logs|traces/);
+      expect(request.filesystem.readwritePaths).toEqual([workspace]);
+      expect(JSON.stringify(request.filesystem)).not.toMatch(/logs|traces/);
     } finally {
       await launch.release();
     }

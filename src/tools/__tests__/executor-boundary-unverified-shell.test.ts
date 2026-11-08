@@ -46,6 +46,11 @@ const DIALECTS = [
   { toolName: "powershell", create: () => new PowerShellTool(), command: "Write-Output boundary", prefixRule: "PowerShell(Write-Output *)", writeCommand: "Set-Content out.txt x" },
 ] as const;
 
+function defined<T>(value: T | undefined, what: string): T {
+  if (value === undefined) throw new Error(`${what} is missing`);
+  return value;
+}
+
 function probe(create: () => Tool, execute: (ctx: ToolExecutionContext) => void): ToolRegistry {
   const tool = create();
   vi.spyOn(tool, "execute").mockImplementation(async (_input, ctx) => {
@@ -125,11 +130,11 @@ describe("host shells under an unverifiable Ave home boundary", () => {
 
     const refused = await run(denied.gate, "boundary-deny");
     expect(denied.cards()).toHaveLength(1);
-    const card = denied.cards()[0]!;
+    const card = defined(denied.cards()[0], "approval card");
     expect(card.kind ?? "tool").toBe("tool");
     expect(card.executionPlan).toMatchObject({ mode: "plain", fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: true });
     expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
-    expect(shellExecutionEnvironmentLines(card.executionPlan!)).toContain(t("shellExecution.sandboxUnavailableAsk"));
+    expect(shellExecutionEnvironmentLines(defined(card.executionPlan, "card execution plan"))).toContain(t("shellExecution.sandboxUnavailableAsk"));
     expect(execute).not.toHaveBeenCalled();
     expect(refused[0]?.is_error).toBe(true);
     expect(pm.dispatchReviewer).not.toHaveBeenCalled();
@@ -138,7 +143,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     const ran = await run(approved.gate, "boundary-allow");
     expect(approved.cards()).toHaveLength(1);
     expect(execute).toHaveBeenCalledOnce();
-    const ctx = execute.mock.calls[0]![0] as ToolExecutionContext;
+    const ctx = defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext;
     expect(ctx.hostShellExecutionPermit).toBeDefined();
     expect(ctx.hostShellExecutionPlan).toMatchObject({ mode: "plain", sandboxed: false, substrate: "none",
       capability: { kind: "none", confines: { filesystem: false, process: false, network: false } } });
@@ -195,7 +200,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     const denied = cardGate("deny-once");
     const refused = await run(denied.gate, "host-deny");
     expect(denied.cards()).toHaveLength(1);
-    const card = denied.cards()[0]!;
+    const card = defined(denied.cards()[0], "approval card");
     expect(card.executionPlan).toMatchObject({ mode: "plain", executionRequest: "host", requiresExplicitUserApproval: true,
       capability: { kind: "none" } });
     expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
@@ -207,7 +212,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     await run(approved.gate, "host-allow");
     expect(approved.cards()).toHaveLength(1);
     expect(execute).toHaveBeenCalledOnce();
-    expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ executionRequest: "host", sandboxed: false });
+    expect((defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ executionRequest: "host", sandboxed: false });
 
     const again = cardGate("deny-once");
     await run(again.gate, "host-again");
@@ -225,7 +230,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
       { sessionId: "boundary-background", permissionContext: permissionContext() },
     ));
     expect(approvals.cards()).toHaveLength(1);
-    expect(approvals.cards()[0]!.allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(defined(approvals.cards()[0], "approval card").allowedChoices).toEqual(["allow-once", "deny-once"]);
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -250,10 +255,10 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     const denied = cardGate("deny-once");
     await run(denied.gate, "worker-only-deny");
     expect(denied.cards()).toHaveLength(1);
-    const card = denied.cards()[0]!;
+    const card = defined(denied.cards()[0], "approval card");
     expect(card.executionPlan).toMatchObject({ mode: "plain", requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: true });
     expect(card.allowedChoices).toEqual(["allow-once", "deny-once"]);
-    expect(shellExecutionEnvironmentLines(card.executionPlan!)).toContain(t("shellExecution.boundaryUnverifiedAsk"));
+    expect(shellExecutionEnvironmentLines(defined(card.executionPlan, "card execution plan"))).toContain(t("shellExecution.boundaryUnverifiedAsk"));
     expect(execute).not.toHaveBeenCalled();
     expect(pm.dispatchReviewer).not.toHaveBeenCalled();
 
@@ -324,7 +329,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     ));
     expect(approvals.cards()).toHaveLength(0);
     expect(execute).toHaveBeenCalledOnce();
-    expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ executionRequest: "host" });
+    expect((defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({ executionRequest: "host" });
   });
 
   it.each(DIALECTS)("keeps the ordinary unavailable-sandbox route for $toolName under any other boot failure", async (dialect) => {
@@ -338,7 +343,7 @@ describe("host shells under an unverifiable Ave home boundary", () => {
     ));
     expect(approvals.cards()).toHaveLength(0);
     expect(execute).toHaveBeenCalledOnce();
-    expect((execute.mock.calls[0]![0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({
+    expect((defined(execute.mock.calls[0], "execute call")[0] as ToolExecutionContext).hostShellExecutionPlan).toMatchObject({
       fallbackReason: "requested-sandbox-unavailable", requiresExplicitUserApproval: false });
     expect(result[0]?.is_error).toBeUndefined();
   });
