@@ -3,7 +3,7 @@ import { SavedToastProvider } from "../../context/SavedToastContext.js";
  * holding the typed draft. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { within } from "@testing-library/react";
 import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
 import { AppearanceTab } from "../AppearanceTab.js";
@@ -138,4 +138,17 @@ it("uses equally compact plain font chips without primary fill on unselected cod
   expect(button).not.toHaveClass("h-10");
   if (button.getAttribute("aria-checked") === "false") expect(button).not.toHaveClass("bg-primary");
  }
+});
+
+it("does not roll back a newer successful code size when an earlier save fails", async () => {
+ let rejectFirst!: (error: Error) => void;
+ api.updateSettings.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }));
+ render(<AppearanceTab />);
+ const size = within(screen.getByRole("group", { name: "크기 (px)" }));
+ fireEvent.click(size.getByRole("button", { name: /\+/ }));
+ fireEvent.click(size.getByRole("button", { name: /\+/ }));
+ await waitFor(() => expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "14px" }));
+ await act(async () => { rejectFirst(new Error("earlier-save-failed")); });
+ expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "14px" });
+ expect(screen.queryByRole("alert")).toBeNull();
 });

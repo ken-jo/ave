@@ -527,12 +527,25 @@ function useTerminalFontPreferences() {
   const { appearance } = useTheme();
   const [font, setFont] = useState(appearance.terminalFont);
   const [failed, setFailed] = useState(false);
-  useEffect(() => { setFont(appearance.terminalFont); }, [appearance.terminalFont]);
+  const fontRef = useRef(font);
+  const revisionRef = useRef(0);
+  useEffect(() => {
+    revisionRef.current++;
+    fontRef.current = appearance.terminalFont;
+    setFont(appearance.terminalFont);
+  }, [appearance.terminalFont]);
   const updateFont = (patch: Partial<typeof font>) => {
-    const next = { ...font, ...patch };
+    const next = { ...fontRef.current, ...patch };
+    fontRef.current = next;
+    const revision = ++revisionRef.current;
     setFont(next);
     setFailed(false);
-    void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => { setFailed(true); setFont(appearance.terminalFont); });
+    void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => {
+      if (revision !== revisionRef.current) return;
+      fontRef.current = appearance.terminalFont;
+      setFailed(true);
+      setFont(fontRef.current);
+    });
   };
   return { font, failed, updateFont };
 }
