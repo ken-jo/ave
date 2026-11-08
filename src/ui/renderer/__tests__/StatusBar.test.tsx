@@ -42,12 +42,12 @@ describe("StatusBar", () => {
   it("stays mounted, leaving, after its content is gone and unmounts when the exit animation ends", () => {
     const { rerender } = render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ message: "로그인이 취소되었습니다" })} />);
     const presence = screen.getByTestId("status-bar-presence");
-    expect(presence.className).toBe("ave-anim-notice-in");
+    expect(presence.className).toContain("ave-anim-notice-in");
     expect(presence.dataset.leaving).toBeUndefined();
 
     rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     // The last content is still drawn, now on its way out.
-    expect(screen.getByTestId("status-bar-presence").className).toBe("ave-anim-notice-out");
+    expect(screen.getByTestId("status-bar-presence").className).toContain("ave-anim-notice-out");
     expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
     expect(screen.getByTestId("status-toast-message")).toHaveTextContent("로그인이 취소되었습니다");
 
@@ -60,8 +60,30 @@ describe("StatusBar", () => {
     rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
     rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ id: "toast:2", message: "두 번째" })} />);
-    expect(screen.getByTestId("status-bar-presence").className).toBe("ave-anim-notice-in");
+    expect(screen.getByTestId("status-bar-presence").className).toContain("ave-anim-notice-in");
     expect(screen.getByTestId("status-toast-message")).toHaveTextContent("두 번째");
+  });
+
+  it("floats only the toast while persistent indicators stay in flow", () => {
+    const { rerender } = render(<StatusBar persistent={[persistent()]} visibleToast={toast()} onToastDismiss={() => {}} />);
+    const overlay = screen.getByTestId("status-bar-presence");
+    expect(overlay.className).toContain("absolute");
+    expect(overlay.className).toContain("z-50");
+    expect(overlay.className).toContain("top-2");
+    expect(overlay.className).toContain("pointer-events-none");
+    expect(screen.getByTestId("status-toast").className).toContain("pointer-events-auto");
+    expect(overlay.contains(screen.getByText("04:42 KST"))).toBe(false);
+
+    rerender(<StatusBar persistent={[persistent()]} visibleToast={null} onToastDismiss={() => {}} />);
+    expect(screen.getByTestId("status-bar-presence")).toHaveAttribute("data-leaving", "true");
+    endAnimation(screen.getByTestId("status-bar-presence"));
+    expect(screen.queryByTestId("status-toast")).toBeNull();
+    expect(screen.getByText("04:42 KST")).toBeVisible();
+  });
+
+  it("floats composer notices above their anchor", () => {
+    render(<StatusBar persistent={[]} visibleToast={toast()} onToastDismiss={() => {}} toastPlacement="above" />);
+    expect(screen.getByTestId("status-bar-presence").className).toContain("bottom-full");
   });
 
   it("renders persistent items with label and value", () => {

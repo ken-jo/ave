@@ -2515,41 +2515,27 @@ export function App() {
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
                   style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
                 >
-                  {/* The window's notice strip — the announcement banner, the
-                      permission-memory toast and the window status toasts
-                      (host notifications, installs, the app update). Each is
-                      about the WINDOW, so it is subscribed once and drawn once,
-                      here, IN FLOW: a flex sibling above the route canvas that
-                      takes its height from the canvas. It used to float over
-                      the canvas's top-right corner — the corner every pane
-                      keeps for its own floating lane — so a tall stack covered
-                      the rightmost tile's cards, and a tile's own dock drew the
-                      window toasts once per tile. Nothing here is positioned,
-                      so nothing here needs a sidebar inset: <main>'s leading
-                      padding keeps in-flow content clear of the rail, and an
-                      overlaying sidebar card covers this strip exactly as it
-                      covers the tile below it. `empty:hidden` gives the strip
-                      no height while every child renders null. Plugin updates
-                      and managed-plugin bootstrap are toolbar pills, beside the
-                      app-update pill (see MainToolbar). */}
+                  {/* Persistent banners reserve space; transient notices float at the content column's top-right. */}
                   <div
-                    className="flex shrink-0 flex-col gap-2 px-(--chrome-gap) pt-2 empty:hidden [&>*]:m-0"
+                    className="shrink-0 px-(--chrome-gap)"
                     data-testid="window-notice-strip"
                   >
-                    {documentEngineOnboardingOpen ? <DocumentEngineInstallContent onDismiss={dismissDocumentEngineOnboarding} /> : null}
-                    <RetiredProviderNotice
-                      retiredProvider={subscriptionRuntimeSelected ? null : retiredLlmProvider}
-                      onChooseProvider={() => onOpenSettings("llm")}
-                    />
-                    <DeprecatedModelNotice
-                      model={subscriptionRuntimeSelected ? null : deprecatedLlmModel}
-                      onChooseModel={() => onOpenSettings("llm")}
-                    />
-                    <MarketplaceAnnouncementBanner
-                      announcements={marketplaceAnnouncements}
-                      onDismiss={handleMarketplaceAnnouncementDismiss}
-                      onAction={handleMarketplaceAnnouncementAction}
-                    />
+                    <div className="flex flex-col gap-2 pt-2 empty:hidden [&>*]:m-0" data-testid="window-notice-banners">
+                      {documentEngineOnboardingOpen ? <DocumentEngineInstallContent onDismiss={dismissDocumentEngineOnboarding} /> : null}
+                      <RetiredProviderNotice
+                        retiredProvider={subscriptionRuntimeSelected ? null : retiredLlmProvider}
+                        onChooseProvider={() => onOpenSettings("llm")}
+                      />
+                      <DeprecatedModelNotice
+                        model={subscriptionRuntimeSelected ? null : deprecatedLlmModel}
+                        onChooseModel={() => onOpenSettings("llm")}
+                      />
+                      <MarketplaceAnnouncementBanner
+                        announcements={marketplaceAnnouncements}
+                        onDismiss={handleMarketplaceAnnouncementDismiss}
+                        onAction={handleMarketplaceAnnouncementAction}
+                      />
+                    </div>
                     <NoticeLiveRegion toast={statusVisibleToast} />
                     <StatusBar
                       persistent={statusPersistent}

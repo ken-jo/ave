@@ -110,16 +110,13 @@
   - Motion budget: a UI transition (enter, exit, hover, state swap) takes at most about 200ms —
     `--motion-fast` (120ms) or `--motion-base` (180ms) — and animates `transform` and `opacity`
     only. `--motion-slow` and `--motion-layout` are the only steps above it and are kept for
-    in-flow size changes; the notice strip's height animation below is that exception, not a
-    licence for other properties.
+    in-flow size changes.
   - One loader: every in-progress spin is the `Loader` primitive (`src/components/ui/loader.tsx`),
     at the 12/14/16 icon steps, never a raw `animate-spin`. Under `prefers-reduced-motion` it
     stands still and the adjacent label or disabled control carries the busy state; pulses on
     skeletons and activity dots stop the same way (`motion-reduce:animate-none`).
-  - An in-flow surface that appears and disappears (the status bar, the window's notice
-    strip) animates its height too — `ave-anim-notice-in/-out`, a grid row from 0fr to
-    1fr with a fade — and stays mounted through its exit, so what sits below it moves
-    with it instead of jumping.
+  - Transient notices float and fade on `--motion-fast` using opacity and transform only;
+    `ave-anim-notice-in/-out` keeps the toast mounted through its exit without changing layout.
 - Imagery/iconography:
   - Use lucide icons for actions and categories when available.
   - Icon sizes (de-facto standard): 14px (`h-3.5 w-3.5`) is the default in dense chrome and buttons; 12px (`h-3 w-3`) inline beside captions/metadata; 16px (`h-4 w-4`) in comfortable rows and dialogs. Larger sizes are reserved for identity marks (plugin/app icons), not actions.
@@ -566,6 +563,8 @@ determine whether a tile can split or a panel can dock.
       follows the queue head — errors in its `role="alert"` region, everything else in its
       `role="status"` region — and the visible notice itself is not live, so a remounted notice
       can never swallow the next announcement;
+    - transient notices float in the `z-50` band and never move the layout; persistent banners stay in flow;
+    - a request with its own card (approval or ask-user question) sends no in-app toast;
     - an error stays until dismissed and every notice has a close button; brief confirmations auto-dismiss;
     - a queue shows one notice at a time and later ones wait behind it (`+N`). Each strip owns one
       queue — the window strip, each tile's composer dock, the side chat, the settings save

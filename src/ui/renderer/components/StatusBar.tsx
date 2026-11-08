@@ -11,10 +11,11 @@ const EMOJI_FONT_STACK =
   "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', 'Twemoji Mozilla', sans-serif";
 const EMOJI_STYLE = { fontFamily: EMOJI_FONT_STACK };
 
-/** Render the toast queue head in flow so notices do not cover neighboring panes; notification metadata alone enables
- * click-through IPC. */
+/** Persistent indicators stay in flow; the transient queue head floats without moving its owning surface. */
 export interface StatusBarProps {
   persistent: PersistentItem[];
+  /** Composer docks float notices above their anchor; the window floats them below it. */
+  toastPlacement?: "above" | "below";
   /** The single toast currently at the front of the queue (or null). */
   visibleToast: ToastItem | null;
   /** Number of toasts queued behind the visible one. */
@@ -43,7 +44,7 @@ const SEVERITY_TEXT: Record<StatusBarSeverity, string> = {
 };
 
 export function StatusBar(props: StatusBarProps) {
-  const hasContent = (props.persistent?.length ?? 0) > 0 || props.visibleToast !== null;
+  const hasContent = props.visibleToast !== null;
 
   // Presence: what the bar last showed is drawn once more, leaving, when the
   // content goes away. Derived during render (not in an effect) so the frame
@@ -61,24 +62,16 @@ export function StatusBar(props: StatusBarProps) {
     if (event.target === event.currentTarget && leaving) setLeaving(false);
   };
 
-  // Render nothing once there is no persistent indicator, no toast and the exit has played, so the composer dock does not
-  // reserve empty space.
-  if (!hasContent && !leaving) return null;
+  if (props.persistent.length === 0 && !hasContent && !leaving) return null;
 
-  const { persistent, visibleToast, pendingCount = 0, onToastClick, onToastDismiss, onToastSuppress } =
+  const { visibleToast, pendingCount = 0, onToastClick, onToastDismiss, onToastSuppress } =
     hasContent ? props : lastContentRef.current;
+  const { persistent, toastPlacement = "below" } = props;
 
   return (
     <TooltipProvider>
-    <div
-      className={leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}
-      data-testid="status-bar-presence"
-      data-leaving={leaving ? "true" : undefined}
-      onAnimationEnd={onAnimationEnd}
-    >
-    <div className="min-h-0 overflow-hidden">
     <footer
-      className="flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground"
+      className="relative flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground"
       data-testid="status-bar"
     >
       {persistent.length > 0 ? (
@@ -159,21 +152,25 @@ export function StatusBar(props: StatusBarProps) {
           })}
         </div>
       ) : null}
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        {visibleToast !== null ? (
+      {visibleToast !== null && (hasContent || leaving) ? (
+        <div
+          className={`pointer-events-none absolute inset-x-0 z-50 flex justify-end ${toastPlacement === "above" ? "bottom-full mb-2" : "top-2"} ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
+          data-testid="status-bar-presence"
+          data-leaving={leaving ? "true" : undefined}
+          onAnimationEnd={onAnimationEnd}
+        >
           <NoticeToast
             key={visibleToast.id}
             toast={visibleToast}
+            className="pointer-events-auto"
             pendingCount={pendingCount}
             onDismiss={onToastDismiss}
             {...(onToastClick ? { onOpen: onToastClick } : {})}
             {...(onToastSuppress ? { onSuppress: onToastSuppress } : {})}
           />
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </footer>
-    </div>
-    </div>
     </TooltipProvider>
   );
 }

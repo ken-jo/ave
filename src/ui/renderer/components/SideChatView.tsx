@@ -562,6 +562,8 @@ function SideChatSession({
         data-testid="side-chat-composer-dock"
         data-composer-surface="side"
       >
+        <NoticeLiveRegion toast={visibleToast} />
+        <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} toastPlacement="above" />
         <MessageQueuePanel
           store={messageQueueStore}
           onSendNow={handleMessageQueueSendNow}
@@ -583,12 +585,6 @@ function SideChatSession({
         ) : null}
         {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : targetChip}
         <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={runtime?.autoCompactEnabled} />
-        <NoticeLiveRegion toast={visibleToast} />
-        {visibleToast !== null || persistent.length > 0 ? (
-          <div className="mb-1.5 min-w-0">
-            <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} />
-          </div>
-        ) : null}
         <ComposerFrame>
           <Composer
             ref={composerRef}

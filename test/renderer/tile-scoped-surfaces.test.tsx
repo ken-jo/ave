@@ -2270,13 +2270,13 @@ describe("notices with two tiles", () => {
     await splitIntoTwoTiles(container);
 
     await act(async () => {
-      emitNotificationToast({ kind: "ask-user", title: "질문", body: "창 전체에 한 번", contextRef: { questionId: "q-1" } });
+      emitNotificationToast({ kind: "system", title: "완료", body: "창 전체에 한 번" });
     });
 
     // Window notifications render once regardless of tile count.
     await waitFor(() => expect(toasts(container)).toHaveLength(1));
     expect(toasts(strip(container))).toHaveLength(1);
-    expect(container.querySelectorAll('[data-testid="composer-toast-dock"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid="composer-toast-dock"] [data-testid="status-toast"]')).toHaveLength(0);
   });
 
   it("draws a provider fallback in the tile whose turn swapped, focused or not", async () => {
@@ -2292,17 +2292,15 @@ describe("notices with two tiles", () => {
     expect(toasts(strip(container))).toHaveLength(0);
     expect(toasts(container)).toHaveLength(1);
 
-    // Notices occupy their own flow row so they cannot cover the selector strip.
-    const toastRow = first!.element.querySelector<HTMLElement>('[data-testid="composer-toast-dock"]')!;
-    const selectorSlot = first!.element.querySelector<HTMLElement>('[data-testid="composer-project-selector-slot"]')!;
-    expect(selectorSlot).not.toBeNull();
-    expect(toastRow.className).not.toMatch(/\b(absolute|fixed)\b/);
-    expect(toastRow.contains(selectorSlot)).toBe(false);
-    expect(toastRow.nextElementSibling?.contains(selectorSlot)).toBe(true);
-    expect(toastRow.parentElement!.className).toMatch(/\bflex-col\b/);
+    const toastDock = first!.element.querySelector<HTMLElement>('[data-testid="composer-toast-dock"]')!;
+    const overlay = toastDock.querySelector<HTMLElement>('[data-testid="status-bar-presence"]')!;
+    expect(overlay.className).toMatch(/\babsolute\b/);
+    expect(overlay.className).toContain("bottom-full");
+    expect(overlay.className).toContain("z-50");
+    expect(toastDock.parentElement!.closest(".overflow-x-hidden")).toBeNull();
   });
 
-  it("keeps the window strip in flow above the panes, never floating over a pane's lane", async () => {
+  it("keeps persistent window banners in flow above the panes", async () => {
     const { container, api } = await renderApp({ hasApiKey: true });
     await splitIntoTwoTiles(container);
     const listener = api.onMarketplaceAnnouncements.mock.calls[0]?.[0] as
