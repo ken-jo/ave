@@ -401,7 +401,7 @@ describe("Sidebar legacy default-root session handling", () => {
 
 describe("Sidebar card placement", () => {
   it.each([false, true])("starts one band down on every platform (isDarwin=%s)", (isDarwin) => {
-    (window as unknown as { avePlatform?: unknown }).avePlatform = { isDarwin };
+    (window as unknown as { avePlatform?: unknown }).avePlatform = { isDarwin, windowControls: isDarwin ? "native" : "trailing" };
     const { getByTestId, restore } = renderSidebar();
     try {
       const aside = getByTestId("primary-sidebar");

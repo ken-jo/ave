@@ -19,7 +19,7 @@ import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { getPluginViewLabel, toViewKey } from "../api-client.js";
+import { getPluginViewLabel, isDarwin, toViewKey } from "../api-client.js";
 import { toPluginDoctorViewKey, toPluginSettingsViewKey } from "../utils/plugin-doctor-view.js";
 import { pluginIconFor } from "../utils/plugin-icon.js";
 import { BUILTIN_LABEL_KEYS, BUILTIN_VIEW_ICONS } from "../utils/view-location.js";
@@ -211,13 +211,6 @@ export interface SidebarProps {
   /** Cards waiting in the dedicated Suggestions conversation — the count its row carries. Derived from the window's card
    * queue. */
   suggestionsPendingCount?: number;
-}
-
-// Shortcut labels follow the OS modifier; without a preload bridge they read as Ctrl.
-function isDarwinPlatform(): boolean {
-  return (
-    (window as unknown as { avePlatform?: { isDarwin: boolean } }).avePlatform?.isDarwin ?? false
-  );
 }
 
 /**
@@ -1050,7 +1043,8 @@ export function Sidebar({
     : runtimeUnavailable
       ? t("formatIpcError.subscriptionChatUnavailable")
       : settingsNeedsApiKey ? t("mainToolbar.apiKeyRequired") : undefined;
-  const darwin = isDarwinPlatform();
+  // Shortcut labels follow the OS modifier; without a preload bridge they read as Ctrl.
+  const darwin = isDarwin();
   const homeChord = darwin ? "⌘0" : "Ctrl+0";
 
   // The scroller the conversation list reveals itself against, handed down rather than looked up: the list is inside this
