@@ -1,7 +1,7 @@
 vi.mock("../../shared/windows-path-facts.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedWindowsPathFacts(await original()));
 vi.mock("../../shared/windows-configuration-handles.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedConfigurationHandles(await original()));
 
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as filesystem from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -1186,12 +1186,13 @@ describe("mandatory sandbox control-file writes", () => {
     vi.mocked(filesystem.opendirSync).mockImplementation((...args) => {
       const directory = openDirectory(...args);
       if (String(args[0]) === original) {
-        rmSync(alias); symlinkSync(replacement, alias, "dir");
+        unlinkSync(alias); symlinkSync(replacement, alias, "dir");
         if (exhausted) vi.spyOn(directory, "readSync").mockReturnValue(file);
       }
       return directory;
     });
     const policy = buildMandatorySandboxWritePolicy([alias]);
+    expect(realpathSync(alias)).toBe(replacement);
     expect(policy.allowWrite).toEqual(exhausted ? [] : [original]);
     if (!exhausted && process.platform !== "linux") expect(policy.denyWrite).toContain(join(original, ".git"));
     expect(policy.denyWrite).not.toContain(join(replacement, ".git"));
