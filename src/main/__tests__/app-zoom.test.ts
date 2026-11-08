@@ -12,9 +12,8 @@ vi.mock("../app-state.js", () => ({
  getMainWindow: () => state.windows[0],
  getServices: () => ({ settingsService: { get: () => state.appearance, patch: state.patch } }),
 }));
-vi.mock("../../ipc/domains/settings.js", () => ({ broadcastSettingsSnapshot: state.broadcast }));
 vi.mock("../browser/browser-tab-registry.js", () => ({ browserTabRegistry: { guestAttached: vi.fn(), guestDestroyed: vi.fn() } }));
-import { applyAppZoomLevel, bindAppWindowZoom, runAppZoomCommand } from "../app-zoom.js";
+import { applyAppZoomLevel, bindAppWindowZoom, configureAppZoom, runAppZoomCommand } from "../app-zoom.js";
 import { setBrowserGuestZoomFactor, trackBrowserGuest } from "../browser/browser-guest-tracking.js";
 
 beforeEach(() => {
@@ -25,6 +24,7 @@ beforeEach(() => {
   applyAppZoomLevel(state.appearance.zoomLevel);
  });
  state.broadcast.mockReset().mockResolvedValue(undefined);
+ configureAppZoom(state.broadcast);
 });
 
 describe("persisted app zoom commands", () => {
@@ -200,4 +200,19 @@ it.each(["setting", "did-navigate", "did-finish-load"])("preserves both shells' 
  } finally {
   for (const guest of guests) guest.emit("destroyed");
  }
+});
+
+it("awaits the injected broadcast before advancing the command queue", async () => {
+ let release: (() => void) | undefined;
+ state.broadcast.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+ const first = runAppZoomCommand("in");
+ const second = runAppZoomCommand("out");
+ await vi.waitFor(() => expect(release).toBeDefined());
+ expect(state.patch).toHaveBeenCalledTimes(1);
+ expect(state.appearance.zoomLevel).toBe(1);
+ if (!release) throw new Error("Missing blocked broadcast");
+ release();
+ await Promise.all([first, second]);
+ expect(state.patch.mock.calls.map(([patch]) => patch.appearance.zoomLevel)).toEqual([1, 0]);
+ expect(state.broadcast).toHaveBeenCalledTimes(2);
 });

@@ -1,14 +1,18 @@
 import type { BrowserWindow } from "electron";
 import { MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, nextZoomLevel, normalizeZoomLevel, type ZoomCommand } from "../shared/app-zoom.js";
-import { getMainWindow, getMainWindows, getServices } from "./app-state.js";
-import { broadcastSettingsSnapshot } from "../ipc/domains/settings.js";
+import { getMainWindows, getServices } from "./app-state.js";
 import { createLogger } from "../lib/logger.js";
 
 import { preserveBrowserGuestZoom } from "./browser/browser-guest-tracking.js";
 
 const log = createLogger("app-zoom");
+let broadcastSettings: (() => Promise<void>) | undefined;
 let pending: Promise<void> = Promise.resolve();
 let wheelBatch: { window: BrowserWindow; levels: number[] } | undefined;
+
+export function configureAppZoom(onSettingsApplied: () => Promise<void>): void {
+  broadcastSettings = onSettingsApplied;
+}
 
 export function runAppZoomCommand(command: ZoomCommand): Promise<void> {
   return enqueueZoomCommand(command);
@@ -19,9 +23,11 @@ function enqueueZoomCommand(command: ZoomCommand, resolveLevel = (level: number)
   const run = pending.then(async () => {
     const settingsService = getServices()?.settingsService;
     if (!settingsService) return;
+    const broadcast = broadcastSettings;
+    if (!broadcast) throw new Error("App zoom is not configured");
     const level = resolveLevel(normalizeZoomLevel(settingsService.get("appearance").zoomLevel));
     await settingsService.patch({ appearance: { zoomLevel: level } });
-    await broadcastSettingsSnapshot({ settingsService, getAppWindows: getMainWindows, getMainWindow });
+    await broadcast();
   });
   pending = run.catch(() => {});
   return run;
