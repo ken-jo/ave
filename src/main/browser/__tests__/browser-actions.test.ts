@@ -578,11 +578,12 @@ describe("settle", () => {
 });
 
 describe("action navigation", () => {
+  let nextGuestId = 2_000;
   // A guest whose link activation is acknowledged before the browser commits the navigation it requested, as Chromium reports it.
   function linkPage() {
     const cdp = new FakeCdp();
     let url = "https://a.example/page";
-    const guest = Object.assign(new EventEmitter(), { getURL: () => url, isLoading: () => false });
+    const guest = Object.assign(new EventEmitter(), { id: nextGuestId++, isDestroyed: () => false, getURL: () => url, isLoading: () => false });
     const request = (frameId = "main", disposition = "currentTab") =>
       cdp.events.emit("message", "Page.frameRequestedNavigation", { frameId, reason: "anchorClick", url: "https://a.example/next", disposition });
     const commit = (next = "https://a.example/next") => { url = next; guest.emit("did-navigate", {}, next, 200, "OK"); };

@@ -67,6 +67,10 @@ export class BrowserScreencast {
     this.armed = true;
     this.stopEvents = this.transport.onEvent((method, params) => this.onEvent(method, params));
     this.stopCloseListener = this.transport.onClose((reason) => this.close(reason));
+    if (this.finished) {
+      this.releaseClose();
+      return;
+    }
     this.track(this.command("Page.startScreencast", START_PARAMS));
     this.watch();
   }

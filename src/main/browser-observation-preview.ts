@@ -1,5 +1,6 @@
 import type { WebContents } from "electron";
 import { BrowserScreencast, type ScreencastCallbacks, type ScreencastTransport } from "../observation/browser-screencast.js";
+import { subscribeBrowserGuestDestroyed } from "./browser/browser-guest-lifecycle.js";
 
 /** The parts of an agent guest a preview uses: its already attached page session and main-frame commits. */
 export type PreviewGuest = Pick<WebContents, "id" | "isDestroyed" | "debugger" | "on" | "removeListener" | "once">;
@@ -27,8 +28,8 @@ export function startBrowserPreview(guest: PreviewGuest, callbacks: ScreencastCa
       const detached = (_event: unknown, reason: string) => listener(reason || "detached");
       const destroyed = () => listener("target-destroyed");
       pageDebugger.on("detach", detached);
-      guest.once("destroyed", destroyed);
-      return () => { pageDebugger.removeListener("detach", detached); guest.removeListener("destroyed", destroyed); };
+      const unsubscribe = subscribeBrowserGuestDestroyed(guest, destroyed);
+      return () => { pageDebugger.removeListener("detach", detached); unsubscribe(); };
     },
   };
   // `did-navigate` is main-frame only and fires at commit; same-document navigation keeps its screencast client.

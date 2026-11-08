@@ -1,6 +1,7 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
 import { browserControlLifecycle } from "./browser-control-lifecycle.js";
+import { subscribeBrowserGuestDestroyed, type BrowserLifecycleGuest } from "./browser-guest-lifecycle.js";
 import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
 import { browserLayoutReady } from "./browser-layout-probe.js";
 import { createBrowserTabActivity } from "./browser-tab-activity.js";
@@ -812,7 +813,7 @@ export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = S
 }
 
 // What waiting for an action's navigation needs of a guest. Production passes Electron `WebContents`.
-export interface NavigationGuest extends LoadingGuest {
+export interface NavigationGuest extends LoadingGuest, BrowserLifecycleGuest {
   on(event: string, listener: (...args: unknown[]) => void): unknown;
   removeListener(event: string, listener: (...args: unknown[]) => void): unknown;
 }
@@ -859,11 +860,12 @@ export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSess
       });
     }) as never],
     ["did-stop-loading", (() => end({ kind: "stopped" })) as never],
-    ["destroyed", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab was closed while its page was loading", true) })) as never],
     ["render-process-gone", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab's page crashed while loading", true) })) as never],
   ];
   for (const [event, listener] of listeners) guest.on(event, listener);
+  const unsubscribe = subscribeBrowserGuestDestroyed(guest, () => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab was closed while its page was loading", true) }));
   const stop = () => {
+    unsubscribe();
     stopCdp();
     for (const [event, listener] of listeners) guest.removeListener(event, listener);
   };
@@ -940,12 +942,15 @@ const wedgedWindows = new Map<number, symbol>();
 function markWedged(windowId: number, guest: WebContents, cancelled: Promise<unknown>): void {
   const mark = Symbol("wedged");
   wedgedWindows.set(windowId, mark);
-  const events = ["did-navigate", "destroyed", "render-process-gone"] as const;
+  const events = ["did-navigate", "render-process-gone"] as const;
+  let unsubscribe = () => {};
   const clear = () => {
     if (wedgedWindows.get(windowId) === mark) wedgedWindows.delete(windowId);
     for (const event of events) guest.removeListener(event as never, clear);
+    unsubscribe();
   };
   for (const event of events) guest.once(event as never, clear);
+  unsubscribe = subscribeBrowserGuestDestroyed(guest, clear);
   cancelled.then(clear, clear);
 }
 
@@ -1384,7 +1389,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       if (!focused) throw new BrowserActionError("no-focus", "the approved main frame did not take native keyboard focus");
     },
     preparePageFocus,
-    onDestroyed: (listener) => { guest.once("destroyed", listener); return () => { guest.removeListener("destroyed", listener); }; },
+    onDestroyed: (listener) => subscribeBrowserGuestDestroyed(guest, listener),
     signal: live.signal,
     documentId: () => live.tab.documentId,
     navigationOutcome: () => !live.callerSignal?.aborted && live.tab.controlMode !== "human-paused" && live.tab.guest === guest && !guest.isDestroyed() && live.tab.lease?.id === live.leaseId,
@@ -1424,9 +1429,10 @@ export function createBrowserPageActions(
       authorize: live.authorizeSite,
       signal,
     });
-    const dispose = () => { stop(); guest.removeListener("destroyed", dispose); };
+    let unsubscribe = () => {};
+    const dispose = () => { stop(); unsubscribe(); };
     siteGates.set(guest, Object.assign(dispose, { waiting: stop.waiting, pausedMs: stop.pausedMs, assertAllowed: stop.assertAllowed }));
-    guest.once("destroyed", dispose);
+    unsubscribe = subscribeBrowserGuestDestroyed(guest, dispose);
   };
   // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
   // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
@@ -1434,10 +1440,7 @@ export function createBrowserPageActions(
     const guest = live.tab.guest;
     if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
-    const lifecycle = browserControlLifecycle(live, guest, listener => {
-      guest.once("destroyed", listener);
-      return () => { guest.removeListener("destroyed", listener); };
-    });
+    const lifecycle = browserControlLifecycle(live, guest, listener => subscribeBrowserGuestDestroyed(guest, listener));
     actionNavigations.get(guest)?.stop();
     actionNavigations.delete(guest);
     const navigation = await watchActionNavigation(guest as unknown as NavigationGuest, session);
@@ -1490,10 +1493,7 @@ export function createBrowserPageActions(
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
       const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
-      const lifecycle = browserControlLifecycle(live, guest, listener => {
-        guest.once("destroyed", listener);
-        return () => { guest.removeListener("destroyed", listener); };
-      });
+      const lifecycle = browserControlLifecycle(live, guest, listener => subscribeBrowserGuestDestroyed(guest, listener));
       try {
         await installSiteGate(live, guest, session, lifecycle.signal);
         return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined);

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { createServer, type ServerResponse } from "node:http";
+import type { EventEmitter } from "node:events";
 import { TOOL_TIMEOUT_POLICY } from "../../../src/shared/tool-timeout-policy.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron, setWindowSize } from "./seeded-electron.js";
@@ -98,11 +99,19 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
   try {
     ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [], launchArgs: ["--use-mock-keychain", `--force-device-scale-factor=${deviceScale}`] });
     await ctx.app.evaluate(({ app }, delayHitMs) => {
-      const capture = globalThis as unknown as { clickMeasurements: unknown[]; pointerEchoes: unknown[] };
+      const capture = globalThis as unknown as { clickMeasurements: unknown[]; pointerEchoes: unknown[]; destructionPeaks: Record<string, number>; listenerWarnings: string[] };
       capture.clickMeasurements = [];
       capture.pointerEchoes = [];
+      capture.destructionPeaks = {};
+      capture.listenerWarnings = [];
+      process.on("warning", warning => { if (warning.name === "MaxListenersExceededWarning") capture.listenerWarnings.push(warning.message); });
       app.on("web-contents-created", (_event, contents) => {
         if (contents.getType() !== "webview") return;
+        const id = String(contents.id);
+        capture.destructionPeaks[id] = contents.listenerCount("destroyed");
+        (contents as unknown as EventEmitter).on("newListener", (event: string | symbol) => {
+          if (event === "destroyed") capture.destructionPeaks[id] = Math.max(capture.destructionPeaks[id] ?? 0, contents.listenerCount("destroyed") + 1);
+        });
         contents.on("input-event", (_event, input) => {
           if (input.type === "mouseMove") capture.pointerEchoes.push({ input, guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor() });
         });
@@ -237,6 +246,16 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
       expect(hit.hostZoom).toBeCloseTo(appZoom);
       expect(hit.guestZoom).toBeCloseTo(guestZoom);
     }
+    const destruction = await ctx.app.evaluate(async () => {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const state = globalThis as unknown as { destructionPeaks: Record<string, number>; listenerWarnings: string[] };
+      return { peaks: Object.values(state.destructionPeaks), warnings: state.listenerWarnings };
+    });
+    await test.info().attach("guest-destruction-listeners.json", { body: JSON.stringify(destruction), contentType: "application/json" });
+    console.log("Guest destruction listener budget", JSON.stringify(destruction));
+    expect(destruction.peaks).toHaveLength(1);
+    for (const peak of destruction.peaks) { expect(peak).toBeGreaterThan(0); expect(peak).toBeLessThanOrEqual(7); }
+    expect(destruction.warnings).toEqual([]);
     expect(requestedTools).toEqual(["browser_navigate", "browser_snapshot", "browser_click", "browser_snapshot"]);
     expect(toolResults[2]).toContain(secondUrl);
     expect(toolResults[3]).toContain("Example destination");

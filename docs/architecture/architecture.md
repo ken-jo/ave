@@ -1534,6 +1534,15 @@ focus movement. Painting activity belongs to the physical guest across action
 adapter instances. Only its final participant may start the idle grace or restore
 the guest's original throttling state.
 
+Managed guest owners share one native destruction subscription. The dispatcher
+indexes guest IDs with physical identity guards; each owner has an independent
+registration and the last unsubscribe removes the native subscription. Destruction
+retires the record before notifying a snapshot of owners, so reentrancy, one
+owner's cleanup failure, or an old guest's late cleanup cannot skip another owner
+or affect a replacement. Already-destroyed registrations notify immediately;
+preview startup releases its returned close disposer before issuing commands or
+arming timers if that notification closes it during registration.
+
 Pointer input uses guest-local viewport coordinates. Native node hit testing adds
 the measured document scroll offset to that point; host placement is never added.
 The exact main-frame subtree and live document lease remain checked before input.

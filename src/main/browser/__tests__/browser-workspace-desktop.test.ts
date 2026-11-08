@@ -246,7 +246,8 @@ describe("native popup desktop controls", () => {
     const destructionListeners = popupGuest.listeners("destroyed");
     const selected = browserTabRegistry.requestTabOp(window.id, { op: "select", tabId: handle });
     expect(popupGuest.listenerCount("focus")).toBe(focusListeners.length + 1);
-    expect(popupGuest.listenerCount("destroyed")).toBe(destructionListeners.length + 1);
+    expect(destructionListeners).toHaveLength(1);
+    expect(popupGuest.listeners("destroyed")).toEqual(destructionListeners);
     popup.destroyed = true;
     expect(() => popup.emit("closed")).not.toThrow();
     await expect(selected).resolves.toEqual({ ok: false, error: "native-operation-failed" });

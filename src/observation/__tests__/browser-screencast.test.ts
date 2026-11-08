@@ -53,6 +53,22 @@ beforeEach(() => {
 afterEach(async () => { await screencast.stop(); vi.useRealTimers(); });
 
 describe("agent browser screencast", () => {
+  it("releases a close subscription that closes synchronously during registration", () => {
+    const subscribe = session.onClose.bind(session);
+    vi.spyOn(session, "onClose").mockImplementation(listener => {
+      const unsubscribe = subscribe(listener);
+      listener("target-destroyed");
+      return unsubscribe;
+    });
+    screencast.start();
+    expect(callbacks.ended).toHaveBeenCalledOnce();
+    expect(callbacks.ended).toHaveBeenCalledWith(expect.any(ScreencastClosedError));
+    expect(session.listening).toBe(0);
+    expect(session.closing).toBe(0);
+    expect(session.sent).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("starts one bounded JPEG screencast on the existing session", () => {
     screencast.start();
     expect(session.sent).toEqual([{ method: "Page.startScreencast", params: { format: "jpeg", quality: OBSERVATION_LIMITS.previewJpegQuality,

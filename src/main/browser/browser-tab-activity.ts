@@ -1,5 +1,6 @@
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { BrowserActionError, throwIfAborted } from "./browser-action-guard.js";
+import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 
 interface LayoutGuest {
   readonly id: number;
@@ -34,18 +35,19 @@ export function createBrowserTabActivity(setAwake: (guestId: number, awake: bool
       }
       if (!setAwake(guest.id, true)) throw new BrowserActionError("tab-not-laid-out", "the tab is not laid out; reopen its conversation or show the tab and retry");
       const throttled = guest.getBackgroundThrottling();
+      let unsubscribe = () => {};
       const sleep = () => {
         const current = activities.get(guest);
         if (!current || current !== activity) return;
         clearTimeout(current.timer);
         activities.delete(guest);
-        guest.removeListener("destroyed", sleep);
+        unsubscribe();
         setAwake(guest.id, false);
         if (!guest.isDestroyed()) guest.setBackgroundThrottling(throttled);
       };
       activity = { users: 0, sleep };
       activities.set(guest, activity);
-      guest.once("destroyed", sleep);
+      unsubscribe = subscribeBrowserGuestDestroyed(guest, sleep);
       guest.setBackgroundThrottling(false);
     }
     clearTimeout(activity.timer);
