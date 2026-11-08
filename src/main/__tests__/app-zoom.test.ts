@@ -63,3 +63,21 @@ describe("persisted app zoom commands", () => {
   expect(event.preventDefault).toHaveBeenCalledTimes(2);
  });
 });
+
+it("reapplies the current setting after reset and reload or renderer recovery", async () => {
+ const listeners = new Map<string, () => void>();
+ const setZoomLevel = vi.fn();
+ bindAppWindowZoom({ webContents: { setZoomLevel, setVisualZoomLevelLimits: vi.fn(async () => {}), on: (name: string, handler: () => void) => listeners.set(name, handler) } } as never);
+ state.appearance.zoomLevel = -3;
+ listeners.get("did-navigate")?.();
+ expect(setZoomLevel).toHaveBeenLastCalledWith(-3);
+ await runAppZoomCommand("reset");
+ for (const event of ["did-navigate", "did-finish-load"]) {
+  setZoomLevel.mockClear();
+  listeners.get(event)?.();
+  expect(setZoomLevel).toHaveBeenCalledWith(0);
+ }
+ state.appearance.zoomLevel = 2;
+ listeners.get("did-finish-load")?.();
+ expect(setZoomLevel).toHaveBeenLastCalledWith(2);
+});

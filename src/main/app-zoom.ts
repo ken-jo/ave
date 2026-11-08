@@ -26,6 +26,9 @@ export function applyAppZoomLevel(level: number | undefined): void {
 }
 
 export function bindAppWindowZoom(win: BrowserWindow): void {
+  const restoreLevel = () => win.webContents.setZoomLevel(normalizeZoomLevel(getServices()?.settingsService.get("appearance").zoomLevel));
+  win.webContents.on("did-navigate", restoreLevel);
+  win.webContents.on("did-finish-load", restoreLevel);
   void win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => log.warn("Could not disable visual zoom"));
   win.webContents.on("zoom-changed", (event, direction) => {
     event.preventDefault();
