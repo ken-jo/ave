@@ -125,13 +125,14 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   //   integrate with) so the toolbar is never silently dropped. When no
   //   children are passed there is nothing to show, so render nothing.
   // - Fullscreen → OS/Electron draws fullscreen chrome.
+  // No variant draws a bottom rule: the band is part of the window ground, and the shell cards below it carry their own edges.
   if (isFullscreen && !keepVisibleInFullscreen) return null;
   if (!platformBridge || isFullscreen) {
     if (children === undefined || children === null) return null;
     return (
       <div
         data-testid="custom-titlebar-plain"
-        className="flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) border-b border-border/(--opacity-half) bg-background text-foreground select-none"
+        className="flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_EDGE_PAD, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
@@ -148,7 +149,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     return (
       <div
         data-testid="custom-titlebar-darwin"
-        className="ave-glass-clear flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) border-b border-border/(--opacity-half) bg-background text-foreground select-none"
+        className="ave-glass-clear flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_LEAD_PAD_DARWIN, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
@@ -167,7 +168,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   return (
     <div
       data-testid="custom-titlebar"
-      className="ave-glass-clear flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) border-b border-border/(--opacity-half) bg-background text-foreground select-none"
+      className="ave-glass-clear flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
       style={{
         paddingLeft: `${Math.max(BAND_EDGE_PAD, leadClearance)}px`,
         // @ts-expect-error — Electron-specific CSS extension
