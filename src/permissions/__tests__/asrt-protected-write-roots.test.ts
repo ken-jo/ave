@@ -178,10 +178,10 @@ describe("the shared layer withholds grants under the protected floor", () => {
     ownHome.cleanup();
   });
 
-  it("preserves protected write and read separation beneath long hosted paths", () => {
+  it.each([24, 48])("preserves protected write and read separation beneath hosted paths with %s extra characters", (length) => {
     setProcessPlatform("darwin");
     const parent = root;
-    root = join(parent, "hosted-checkout-" + "x".repeat(24));
+    root = join(parent, "hosted-checkout-" + "x".repeat(length));
     let ownHome: ReturnType<typeof createSandboxProcessHome> | undefined;
     try {
       const layoutValue = layout();

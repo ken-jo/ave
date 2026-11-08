@@ -1149,6 +1149,16 @@ describe("mandatory sandbox control-file writes", () => {
     expect(Buffer.byteLength(JSON.stringify(policy.denyWrite))).toBeLessThan(32_768);
   });
 
+  it("refuses aggregate metadata growth with actionable folder guidance", () => {
+    const grants = Array.from({ length: 48 }, (_, index) => join(root, `project-${index}`));
+    for (const grant of grants) {
+      mkdirSync(join(grant, ".git"), { recursive: true });
+      writeFileSync(join(grant, ".git", "HEAD"), "ref: refs/heads/main\n");
+    }
+    expect(() => withPlatform("darwin", () => buildMandatorySandboxWritePolicy(grants)))
+      .toThrow("Sandbox repository protection is too large; grant fewer or narrower write folders and retry");
+  });
+
   it.each(["gitdir", "commondir"])("keeps a discovered %s deny above a retained child grant", (kind) => {
     const broad = join(root, "broad");
     const checkout = join(root, "workspace", "checkout");
