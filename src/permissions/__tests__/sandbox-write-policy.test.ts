@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildMandatorySandboxWritePolicy, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import { assertSandboxWritePolicySize, buildMandatorySandboxWritePolicy, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import { getLocale, setLocale, t } from "../../i18n/index.js";
 import { PROTECTED_ROOT_ENTRIES } from "../sensitive-paths.js";
 import { buildPerCommandSandboxCustomConfig, buildSandboxConfig, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { permissionSettingsPath } from "../permission-settings-store.js";
@@ -1150,13 +1151,45 @@ describe("mandatory sandbox control-file writes", () => {
   });
 
   it("refuses aggregate metadata growth with actionable folder guidance", () => {
-    const grants = Array.from({ length: 48 }, (_, index) => join(root, `project-${index}`));
+    const grants = Array.from({ length: 48 }, (_, index) => join(root, `project-${index}-${"x".repeat(100)}`));
     for (const grant of grants) {
       mkdirSync(join(grant, ".git"), { recursive: true });
       writeFileSync(join(grant, ".git", "HEAD"), "ref: refs/heads/main\n");
     }
     expect(() => withPlatform("darwin", () => buildMandatorySandboxWritePolicy(grants)))
-      .toThrow("Sandbox repository protection is too large; grant fewer or narrower write folders and retry");
+      .toThrow(t("sandboxPolicy.tooLarge"));
+  });
+
+  it.each([65_536, 65_537])("bounds the whole serialized policy at %i bytes independently of discovery", bytes => {
+    const target = `/p/${"x".repeat(bytes - 7)}`;
+    expect(Buffer.byteLength(JSON.stringify([target]))).toBe(bytes);
+    const check = () => assertSandboxWritePolicySize([target], new Set([target]));
+    if (bytes === 65_536) expect(check).not.toThrow();
+    else expect(check).toThrow(t("sandboxPolicy.tooLarge"));
+  });
+
+  it("overflows discovery even with a two-character simulated temp root", () => {
+    const simulatedTemp = "/p";
+    const entries = Array.from({ length: 48 }, (_, index) =>
+      ["config", "config.worktree", "hooks", "commondir", "gitdir", "remotes", "branches"].map(name =>
+        `${simulatedTemp}/project-${index}-${"x".repeat(100)}/.git/${name}`)).flat();
+    expect(Buffer.byteLength(JSON.stringify(entries))).toBeGreaterThan(32_768);
+    expect(() => assertSandboxWritePolicySize(entries, new Set())).toThrow(t("sandboxPolicy.tooLarge"));
+  });
+
+  it.each(["en", "ko"] as const)("localizes policy overflow guidance in %s", locale => {
+    const previous = getLocale();
+    try {
+      setLocale(locale);
+      expect(() => assertSandboxWritePolicySize(["x".repeat(65_536)], new Set()))
+        .toThrow(locale === "en" ? "grant fewer or narrower write folders" : "쓰기 허용 폴더 수를 줄이거나");
+    } finally { setLocale(previous); }
+  });
+
+  it("bounds the final union including explicitly configured denies", () => {
+    const entries = Array.from({ length: 800 }, (_, index) => `/p/${index}-${"x".repeat(100)}`);
+    expect(() => withPlatform("darwin", () => buildSandboxConfig({ denyWrite: entries })))
+      .toThrow(t("sandboxPolicy.tooLarge"));
   });
 
   it.each(["gitdir", "commondir"])("keeps a discovered %s deny above a retained child grant", (kind) => {

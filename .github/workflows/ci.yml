@@ -766,6 +766,7 @@ jobs:
           src/tools/__tests__/prepared-shell-invocation.test.ts
           src/permissions/__tests__/windows-sandbox-logic.test.ts
           src/permissions/__tests__/sandbox-write-policy.test.ts
+          src/permissions/__tests__/macos-sandbox-wrap.test.ts
           src/permissions/__tests__/asrt-protected-write-roots.test.ts
           src/permissions/__tests__/asrt-exit-release.test.ts
           test/scripts/asrt-patched-symbols.test.ts

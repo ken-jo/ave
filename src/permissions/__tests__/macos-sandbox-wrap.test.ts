@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { hardenMacSandboxGitMetadata } from "../macos-sandbox-wrap.js";
 import { parseSandboxWrappedWords, quoteSandboxWrappedWord } from "../sandbox-wrapped-command.js";
+import { t } from "../../i18n/index.js";
 
 function wrap(profile = "(version 1)\n(allow default)", command = "printf 'safe ! $HOME'\n") {
   return {
@@ -38,6 +39,13 @@ describe("typed repository marker rules", () => {
 
   it("rejects an unexpected profile before launching anything", () => {
     expect(() => hardenMacSandboxGitMetadata(wrap("(allow default)"))).toThrow("unexpected profile shape");
+  });
+
+  it("bounds the expanded wrapper before a backend can launch", () => {
+    const small = hardenMacSandboxGitMetadata(wrap(`(version 1)\n;${"x".repeat(190_000)}`));
+    expect(Buffer.byteLength(small.argv[2] ?? "")).toBeLessThan(196_608);
+    expect(() => hardenMacSandboxGitMetadata(wrap(`(version 1)\n;${"x".repeat(196_608)}`)))
+      .toThrow(t("sandboxPolicy.tooLarge"));
   });
 });
 
