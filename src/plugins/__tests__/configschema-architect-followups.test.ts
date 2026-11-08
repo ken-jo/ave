@@ -228,6 +228,7 @@ import { servedAgentPluginsDocument } from "./test-helpers.js";
 function makeServicesForListSecretKeys(secretsMap: Record<string, string | null>) {
   return {
     pluginRuntime: {
+      subscribePluginStateChange: vi.fn(() => () => undefined),
       call: vi.fn(),
       listToolNames: vi.fn(() => []),
       listPluginIds: vi.fn(() => []),

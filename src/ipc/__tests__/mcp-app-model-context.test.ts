@@ -45,7 +45,7 @@ function makeDeps() {
       sessionId === ACTIVE_SESSION || sessionId === TILE_SESSION
         ? { getSessionId: () => sessionId, ...loopSpies }
         : undefined,
-    pluginRuntime: { on: vi.fn(), listPluginCards: () => [], getMethodOwner: () => undefined },
+    pluginRuntime: { subscribePluginStateChange: vi.fn(() => () => undefined), on: vi.fn(), listPluginCards: () => [], getMethodOwner: () => undefined },
     pluginMarketplace: { list: async () => [], getFetcher: () => ({}) },
     settingsService: { get: () => ({}), getSettings: () => ({}) },
     mcpManager: { readUiResource: vi.fn(), namespacedToolName: vi.fn(), listServers: () => [] },

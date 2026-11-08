@@ -47,7 +47,8 @@ async function setup(
     }));
 
   const deps = {
-    pluginRuntime: { getPerfStats: vi.fn(() => ({})) },
+    pluginRuntime: {
+      subscribePluginStateChange: vi.fn(() => () => undefined), getPerfStats: vi.fn(() => ({})) },
     pluginLoopbackManager: { has: vi.fn(() => true), readUiResource: vi.fn() },
     mcpManager: {
       readUiResource: vi.fn(),

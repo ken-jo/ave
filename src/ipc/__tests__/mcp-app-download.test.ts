@@ -31,6 +31,7 @@ function makeDeps() {
     auditLogger: { log: auditLog },
     getMainWindow: () => null,
     pluginRuntime: {
+      subscribePluginStateChange: vi.fn(() => () => undefined),
       on: vi.fn(),
       listPluginCards: () => [],
       getRuntimePlugin: () => undefined,

@@ -48,7 +48,8 @@ async function setup(opts?: { queueGuidance?: () => string; sessionId?: string }
   };
 
   const deps = {
-    pluginRuntime: { getPerfStats: vi.fn(() => ({})) },
+    pluginRuntime: {
+      subscribePluginStateChange: vi.fn(() => () => undefined), getPerfStats: vi.fn(() => ({})) },
     pluginLoopbackManager: { has: vi.fn(() => true), readUiResource: vi.fn() },
     mcpManager: { readUiResource: vi.fn(), listServers: vi.fn(() => []), namespacedToolName: vi.fn() },
     toolRegistry: { size: 0, findByName: vi.fn() },

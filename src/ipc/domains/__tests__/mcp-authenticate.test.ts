@@ -20,7 +20,8 @@ async function setup() {
   const auditLogger = { log: vi.fn() };
   const { registerPluginsHandlers } = await import("../plugins.js");
   registerPluginsHandlers({
-    pluginRuntime: { getPerfStats: vi.fn(() => ({})) },
+    pluginRuntime: {
+      subscribePluginStateChange: vi.fn(() => () => undefined), getPerfStats: vi.fn(() => ({})) },
     pluginLoopbackManager: { has: vi.fn(() => false), readUiResource: vi.fn() },
     mcpManager: { authenticate },
     toolRegistry: { size: 0, findByName: vi.fn() },

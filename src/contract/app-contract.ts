@@ -801,7 +801,7 @@ export const CHANNELS = {
  * classification, or a public channel's payload shape) changes in a way an
  * external SDK/CLI must react to. Read-first callers pin this.
  */
-export const CONTRACT_VERSION = "2.0.0";
+export const CONTRACT_VERSION = "2.1.0";
 
 /**
  * The versioned allowlist of channels an external surface (SDK / CLI / local

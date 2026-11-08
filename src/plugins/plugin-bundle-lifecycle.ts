@@ -186,6 +186,7 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
   private readonly healthJournal: PluginGenerationHealthJournal;
   private readonly retirementTasks = new Set<Promise<void>>();
   private readonly retirementProgress = new Map<string, Set<RetirementPhase>>();
+  private readonly incompleteRetirements = new Map<string, ActivePluginGeneration<HostPluginGenerationState>>();
   private readonly pendingConsents = new Map<string, readonly ExtensionComponentConsent[]>();
 
   constructor(private readonly deps: PluginBundleLifecycleDeps) {
@@ -1019,7 +1020,11 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
         throw new Error(`plugin '${pluginId}' has live projections without an active bundle generation`);
       }
       if (durableCommit) result = await durableCommit();
-      const completion = Promise.resolve();
+      const completion = this.trackRetirement((async () => {
+        for (const generation of this.incompleteRetirements.values()) {
+          if (generation.pluginId === pluginId) await this.retireWithRetries(generation);
+        }
+      })());
       return Object.freeze({
         result,
         retirement: completion,
@@ -1235,9 +1240,12 @@ export class PluginBundleLifecycle implements PluginBundleLifecycleHandler {
   private async retireWithRetries(
     generation: ActivePluginGeneration<HostPluginGenerationState>,
   ): Promise<void> {
+    const key = `${generation.pluginId}\0${generation.generationId}`;
+    this.incompleteRetirements.set(key, generation);
     for (let attempt = 1; ; attempt += 1) {
       try {
         await this.retire(generation);
+        this.incompleteRetirements.delete(key);
         return;
       } catch (error) {
         log.error(
