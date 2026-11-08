@@ -1,7 +1,7 @@
 import { SidebarPreviewProvider, SidebarPreviewTrigger, type SidebarPreviewData } from "./SidebarPreview.js";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
-import { PendingAnswerDot } from "./PendingAnswerDot.js";
+import { AgentStatusGlyph } from "./AgentStatusGlyph.js";
 import {
   Blocks,
   ChevronDown,
@@ -439,8 +439,13 @@ function NavGroup({ group, label, icon, containsActive, attention = false, colla
       {containsActive && (
         <span className={`absolute left-0 top-2 bottom-2 w-0.5 rounded-full ${toneStyle.bar}`} />
       )}
-      <span className="h-4 w-4 flex items-center justify-center">{icon}</span>
-      {attention ? <PendingAnswerDot testId={`sidebar-group-${group}-pending-answer`} /> : null}
+      <AgentStatusGlyph
+        size="md"
+        mark={icon}
+        working={false}
+        badge={attention ? "waiting" : null}
+        badgeTestId={`sidebar-group-${group}-pending-answer`}
+      />
     </button>
   ) : (
     <button
@@ -454,9 +459,14 @@ function NavGroup({ group, label, icon, containsActive, attention = false, colla
       {containsActive && (
         <span className={`absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full ${toneStyle.bar}`} />
       )}
-      <span className="shrink-0 h-4 w-4 flex items-center justify-center">{icon}</span>
+      <AgentStatusGlyph
+        size="md"
+        mark={icon}
+        working={false}
+        badge={attention ? "waiting" : null}
+        badgeTestId={`sidebar-group-${group}-pending-answer`}
+      />
       <span className="min-w-0 truncate flex-1 text-left">{label}</span>
-      {attention ? <PendingAnswerDot inline testId={`sidebar-group-${group}-pending-answer`} /> : null}
       <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 opacity-60" />
     </button>
   );

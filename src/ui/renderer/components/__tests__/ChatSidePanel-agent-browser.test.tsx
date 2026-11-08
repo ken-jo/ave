@@ -255,6 +255,10 @@ describe("ChatSidePanel agent browser", () => {
     const marks = screen.getAllByTestId("chat-side-panel-tab-agent-controlled");
     expect(marks).toHaveLength(1);
     expect(marks[0]!.closest("[data-tab-id]")).toHaveAttribute("data-tab-id", agentTabId);
+    // Agent control is activity, not "needs your answer": neither mark takes the warning token.
+    expect(marks[0]?.getAttribute("class")).toContain("text-muted-foreground");
+    expect(marks[0]?.getAttribute("class")).not.toContain("text-warning");
+    expect(badge.innerHTML).not.toContain("text-warning");
     fireEvent.click(screen.getByTestId("agent-browser-control-stop"));
     expect(api.browserTabs!.pause).toHaveBeenCalledWith(agentTabId);
     // A successful RPC alone does not alter control; only main's newer snapshot does.

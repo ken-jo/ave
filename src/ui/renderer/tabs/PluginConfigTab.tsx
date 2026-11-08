@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { NoticeLiveRegion, NoticeToast } from "../components/StatusBar.js";
+import { useInlineNotice } from "../hooks/use-status-bar.js";
 import ReactMarkdown from "react-markdown";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -25,7 +27,6 @@ import {
 import { requestDirectInstall, requestUpdateReview } from "./git-marketplace/update-review-request.js";
 import { PluginConfigSchemaForm } from "./PluginConfigSchemaForm.js";
 import { PluginPerfTab } from "./PluginPerfTab.js";
-import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { isPluginInstallKey } from "../utils/plugin-install-aliases.js";
@@ -166,7 +167,7 @@ function PluginPreparationStatusPanel({ plugin }: { plugin: PluginCardSummary })
         {/* Determinate fill flows through --progress so the geometry stays
             in classes; the indeterminate state keeps the pulsing w-1/3. */}
         <div
-          className={`h-full rounded-full bg-warning transition-[width] ${progressPct === null ? "w-1/3 animate-pulse" : "w-[var(--progress)]"}`}
+          className={`h-full rounded-full bg-warning transition-[width] ${progressPct === null ? "w-1/3 animate-pulse motion-reduce:animate-none" : "w-[var(--progress)]"}`}
           style={progressPct === null ? undefined : ({ "--progress": `${progressPct}%` } as CSSProperties)}
         />
       </div>
@@ -239,13 +240,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
   const [saving, setSaving] = useState(false);
   const [doctoringId, setDoctoringId] = useState<string | null>(null);
   const [protocolUpdatePath, setProtocolUpdatePath] = useState<PluginProtocolUpdatePath | null>(null);
-  const [banner, setBanner] = useState<{ type: BannerType; msg: string } | null>(null);
-  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showBanner = useCallback((type: BannerType, msg: string) => {
-    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    setBanner({ type, msg });
-    bannerTimerRef.current = setTimeout(() => setBanner(null), DEFAULT_TOAST_TTL_MS);
-  }, []);
+  const { show: showNotice, notice: banner, dismiss: dismissBanner } = useInlineNotice();
+  const showBanner = useCallback((type: BannerType, msg: string) => showNotice(type, msg), [showNotice]);
 
   const refreshContributionTrust = useCallback(async (pluginId: string | null): Promise<void> => {
     const refreshId = ++contributionTrustRefreshRef.current;
@@ -306,12 +302,6 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       setTrustUpdating(null);
     }
   }, [refreshContributionTrust, showBanner]);
-
-  useEffect(() => {
-    return () => {
-      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    };
-  }, []);
 
   // Refresh cards on install/uninstall results; only the latest read may replace visible state, while callers still receive
   // their own result.
@@ -697,18 +687,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         }}
         onConfirm={(id) => handleUninstall(id, uninstallTarget?.name ?? id)}
       />
+      <NoticeLiveRegion toast={banner} />
       {banner && (
-        <div
-          data-testid="plugin-config:banner"
-          className={`rounded-md px-3 py-2 text-sm ${
-            banner.type === "error"
-              ? "bg-destructive/(--opacity-soft) text-destructive"
-              : banner.type === "warning"
-                ? "bg-warning/(--opacity-soft) text-warning"
-                : "bg-success/(--opacity-soft) text-success"
-          }`}
-        >
-          {banner.msg}
+        <div data-testid="plugin-config:banner" data-severity={banner.severity}>
+          <NoticeToast key={banner.id} toast={banner} onDismiss={dismissBanner} wrap />
         </div>
       )}
 
@@ -1346,13 +1328,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         </div>
       )}
       {alerts.failed && <div role="alert" className="text-xs text-destructive">{t("alerts.loadFailed")} <Button size="sm" variant="outline" onClick={() => void alerts.refresh()}>{t("alerts.retry")}</Button></div>}
-      {alertsApi?.alerts && alerts.loaded && <PluginAlertsSection pluginId={ALERT_HOST_PLUGIN_ID} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} completionSound={{
-        enabled: alerts.turnCompletionSoundEnabled,
-        onChange: async (enabled) => {
-          const result = await alertsApi.updateSettings({ system: { turnCompletionSoundEnabled: enabled } });
-          if ("error" in result) throw new Error("Completion sound setting could not be saved");
-        },
-      }} />}
+      {alertsApi?.alerts && alerts.loaded && <PluginAlertsSection pluginId={ALERT_HOST_PLUGIN_ID} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} />}
       {/* Performance section — the former standalone plugin-perf tab was
           merged here ("성능만 병합"); it renders as a section below the
           config content and pulls its own perf stats via the api. */}

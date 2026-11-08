@@ -148,6 +148,7 @@ function HarnessPanel({
   activity = emptyToolActivity(),
   onOpenActivityItem,
   sideChatPendingAnswer,
+  sideChatWorking,
   sideChatOpenRequest,
 }: {
   api: AveApi;
@@ -161,6 +162,7 @@ function HarnessPanel({
   activity?: ToolActivityState;
   onOpenActivityItem?: (target: string, web: boolean) => void;
   sideChatPendingAnswer?: boolean;
+  sideChatWorking?: boolean;
   sideChatOpenRequest?: SideChatOpenRequest;
 }) {
   const [selectedId, setSelectedId] = useState(initialSelectedId);
@@ -182,6 +184,7 @@ function HarnessPanel({
       onClose={onClose}
       activity={activity}
       sideChatPendingAnswer={sideChatPendingAnswer}
+      sideChatWorking={sideChatWorking}
       sideChatOpenRequest={sideChatOpenRequest}
       onOpenActivityItem={onOpenActivityItem}
     />
@@ -1666,6 +1669,69 @@ describe("ChatSidePanel", () => {
       expect(detail.textContent).not.toContain("internal profile preamble");
       expect(within(detail).getByTestId("chat-side-panel-subagent-transcript")).toBeTruthy();
     });
+  });
+
+  it("side-chat tab: its status slot shows the loader while the side chat works, with the badge only behind another tab", () => {
+    const panel = (working: boolean, pending: boolean) => (
+      <HarnessPanel
+        api={api()}
+        sessionId="session-1"
+        targets={[]}
+        files={[]}
+        initialSelectedId={null}
+        sideChatWorking={working}
+        sideChatPendingAnswer={pending}
+      />
+    );
+    const view = renderPanel(panel(false, false));
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
+    const slot = () => screen.getByTestId("chat-side-panel-tab-side-chat-status");
+    expect(slot().getAttribute("data-agent-status")).toBe("idle");
+    expect(screen.queryByTestId("chat-side-panel-tab-side-chat-working")).toBeNull();
+
+    // Working on the active tab: the loader replaces the tab's glyph and names the state.
+    view.rerender(panel(true, true));
+    expect(slot().getAttribute("data-agent-status")).toBe("working");
+    const loader = screen.getByTestId("chat-side-panel-tab-side-chat-working");
+    expect(loader.getAttribute("aria-label")).toBe("작업 중");
+    expect(loader.getAttribute("title")).toBe("작업 중");
+    expect(loader.querySelector("svg")?.getAttribute("class")).toContain("motion-reduce:animate-none");
+    // The card is on screen while the tab is in front — no badge.
+    expect(screen.queryByTestId("chat-side-panel-tab-side-chat-pending-answer")).toBeNull();
+
+    // Another tab in front: working and the waiting badge together, in the slot's corner.
+    openLauncherMenu();
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("menu-browser")));
+    expect(slot().getAttribute("data-agent-status")).toBe("working");
+    const badge = screen.getByTestId("chat-side-panel-tab-side-chat-pending-answer");
+    expect(slot().contains(badge)).toBe(true);
+    expect(badge.className).toContain("bg-warning");
+    expect(badge.getAttribute("title")).toBe("답변 대기 중");
+  });
+
+  it.each([
+    { status: "running", working: true, badge: null, label: "실행 중", tone: "text-muted-foreground" },
+    { status: "waiting", working: false, badge: "waiting", label: "대기 중", tone: "text-warning" },
+    { status: "error", working: false, badge: "error", label: "오류", tone: "text-destructive" },
+    { status: "interrupted", working: false, badge: "exited", label: "중단됨", tone: "text-muted-foreground" },
+    { status: "done", working: false, badge: null, label: "완료", tone: "text-muted-foreground" },
+  ] as const)("subagent tab: a $status row draws its status slot and a $tone label", ({ status, working, badge, label, tone }) => {
+    const subAgentSpawns: SubAgentSpawn[] = [
+      { spawnId: "s-1", title: "Agent", status, entries: [], toolCallCount: 0 },
+    ];
+    renderPanel(
+      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} subAgentSpawns={subAgentSpawns} />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("subagent")));
+    const row = screen.getByTestId("chat-side-panel-subagent-row");
+    const slot = within(row).getByTestId("chat-side-panel-subagent-status");
+    expect(slot.getAttribute("data-agent-status")).toBe(working ? "working" : "idle");
+    expect(slot.getAttribute("data-agent-badge")).toBe(badge);
+    // The status text names the state, so the slot stays out of the accessible name.
+    expect(slot.getAttribute("aria-hidden")).toBe("true");
+    expect(within(row).getByText(label).className).toContain(tone);
+    // Warning is "needs your answer" only: a running agent never draws in it.
+    if (status === "running") expect(row.innerHTML).not.toContain("text-warning");
   });
 
   it("subagent tab: renders a localized status label, not the raw enum", () => {

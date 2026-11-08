@@ -1,9 +1,11 @@
 // The schedule panel: one project's schedule items as a day, week or month grid. Chips are projected occurrences and past
 // runs from ROUTINES.listOccurrences; clicking an empty slot adds an item there, clicking a chip opens its popover.
+import { EmptyState } from "../../../../components/ui/empty-state.js";
+import { Loader } from "../../../../components/ui/loader.js";
 import { RunMetrics } from "./RunMetrics.js";
 import type { RoutineRunMetrics } from "../../../../shared/routines-types.js";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
-import { AlarmClock, AlertCircle, ChevronLeft, ChevronRight, Loader2, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
+import { AlarmClock, AlertCircle, ChevronLeft, ChevronRight, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../../components/ui/popover.js";
@@ -107,7 +109,7 @@ function statusClass(status: EntryStatus): string {
 }
 
 function StatusIcon({ status }: { status: EntryStatus }) {
-  if (status === "running") return <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" aria-hidden="true" />;
+  if (status === "running") return <Loader size={12} />;
   if (status === "paused") return <Pause className="h-3 w-3 shrink-0" aria-hidden="true" />;
   if (status === "failed" || status === "missed" || status === "orphaned") return <AlertCircle className="h-3 w-3 shrink-0" aria-hidden="true" />;
   return <Repeat2 className="h-3 w-3 shrink-0" aria-hidden="true" />;
@@ -644,11 +646,9 @@ export function SchedulePanel({ api, project, onOpenSession, focusRoutineId, onF
 
       {loaded && visibleCount === 0 && invalid.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center" data-testid="schedule-empty">
-          <div className="pointer-events-auto max-w-sm rounded-lg border bg-background p-5 text-center shadow-e3">
-            <div className="text-sm font-semibold">{t("schedulePanel.emptyTitle")}</div>
-            <p className="mt-1 text-xs text-muted-foreground">{t("schedulePanel.emptyHint")}</p>
-            <Button size="sm" className="mt-3" onClick={() => setCreate({})}><Plus className="mr-1 h-3.5 w-3.5" />{t("schedulePanel.add")}</Button>
-          </div>
+          <EmptyState align="center" className="pointer-events-auto max-w-sm rounded-lg border bg-background p-5 shadow-e3"
+            title={t("schedulePanel.emptyTitle")} description={t("schedulePanel.emptyHint")}
+            action={{ label: t("schedulePanel.add"), icon: <Plus className="h-3.5 w-3.5" aria-hidden="true" />, onClick: () => setCreate({}) }} />
         </div>
       )}
 

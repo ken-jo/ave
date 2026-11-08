@@ -60,6 +60,7 @@ import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import type { ProcessingDisplayLevel } from "../../../shared/processing-display-level.js";
 import type { MemoryFixTarget } from "./MemoryFixCard.js";
 import { ScheduleChatChip } from "./schedule/ScheduleChatChip.js";
+import { getAccessibilitySignalEngine, TurnSignalTracker } from "../accessibility-signal-engine.js";
 
 /** A new chat's opening text, followed by any unsent text that came along with it, so neither is lost. */
 function withOpeningText(opening: string, carried: string): string {
@@ -530,10 +531,22 @@ export function ChatGroupSession({
     outputLimitSource: env.maxOutputTokensSource,
     enabled: env.apiUsageProjectionAvailable,
   });
+  // An interrupting send is the user's own stop of the running turn: that turn's closing frames stay silent, unless the host
+  // refuses the send and the turn goes on.
+  const turnSignalTracker = useMemo(() => new TurnSignalTracker(chatGroupId), [chatGroupId]);
+  const markInterruptedBySend = useCallback(() => {
+    turnSignalTracker.noteUserStop();
+    markLastAssistantInterrupted();
+  }, [turnSignalTracker, markLastAssistantInterrupted]);
+  const unmarkInterruptedBySend = useCallback(() => {
+    turnSignalTracker.clearUserStop();
+    unmarkLastAssistantInterrupted();
+  }, [turnSignalTracker, unmarkLastAssistantInterrupted]);
   const { handleAsk } = useSendMessage({
     api, t, streaming, checkApiKey: env.checkApiKey, composeOutgoing,
     appendUserEntry, dropUserEntry, resetStreamAccumulators,
-    beginStreamingRequest, finishStreamingRequest, markLastAssistantInterrupted, unmarkLastAssistantInterrupted,
+    beginStreamingRequest, finishStreamingRequest,
+    markLastAssistantInterrupted: markInterruptedBySend, unmarkLastAssistantInterrupted: unmarkInterruptedBySend,
     appendSystemEntry, setErrorWithThought, handleCompactCommand, sessionLoad, applyLoadedSession,
     refreshSessionId, refreshSessions: env.refreshSessions, attachments, setAttachments,
     llmVendor: env.llmVendor, llmModel: env.llmModel, llmRouteModalities: env.llmRouteModalities,
@@ -615,12 +628,25 @@ export function ChatGroupSession({
     [env, entries, currentSessionId],
   );
 
+  // Accessibility signals: one cue per agent turn of this group. A stop the user pressed is theirs, so the frames that close
+  // that turn stay silent; the tracker is told before the abort is sent, ahead of those frames.
+  useEffect(() => api.onChatStream((ev) => {
+    const cue = turnSignalTracker.observe(ev);
+    if (cue) getAccessibilitySignalEngine().signal(cue.id, cue.eventKey);
+  }), [api, turnSignalTracker]);
+
   const handleAbort = useCallback(async () => {
+    turnSignalTracker.noteUserStop();
     // chatAbort resolves only after the turn settles as interrupted, so the badge lands exactly when the stream stops — the
     // initiator marks it, not a "[중단됨]" literal pushed through the delta stream by the engine.
-    try { await api.chatAbort(); } catch { /* no-op */ }
+    try {
+      await api.chatAbort();
+    } catch {
+      // The abort never reached the turn, so it is still running and its end is the agent's again.
+      turnSignalTracker.clearUserStop();
+    }
     markLastAssistantInterrupted();
-  }, [api, markLastAssistantInterrupted]);
+  }, [api, markLastAssistantInterrupted, turnSignalTracker]);
 
   const handleGuide = useCallback(async (
     text: string,
@@ -1062,6 +1088,7 @@ export function ChatGroupSession({
         approvalSentenceInterceptSubmit={env.approvalSentenceInterceptSubmit}
         pendingApprovals={pendingApprovals}
         sideChatPendingAnswer={sideChatPendingAnswer}
+        sideChatWorking={sideChat?.streaming ?? false}
         plugins={env.plugins}
         onSelectPlugin={env.onSelectPlugin}
         onOpenApprovalQueue={env.onOpenApprovalQueue}

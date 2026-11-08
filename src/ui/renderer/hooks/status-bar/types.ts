@@ -53,8 +53,12 @@ export interface ToastItem {
   ttlMs?: number;
   /** Wall-clock ms when the current queue-head toast should auto-evict. */
   expiresAt: number;
-  /** Never auto-evicts: it stays at the head until the user dismisses it. */
+  /** Never auto-evicts: it stays at the head until the user dismisses it. Every error is sticky. */
   sticky?: true;
+  /** A stable name for what this notice reports, drawn as `data-notice-kind`; required when `suppressible`. */
+  kind?: string;
+  /** The notice repeats, so it offers "Don't show again"; the choice persists per `kind`. Never set on errors. */
+  suppressible?: true;
   /** Notification metadata enables notifyClick and dismissal; install producers omit it. */
   notification?: NotificationToastMeta;
   /** One follow-up the toast offers, such as "이전 프로젝트로"; running it dismisses the toast. */

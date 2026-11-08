@@ -14,6 +14,7 @@ import {
   freshVendorBlocks,
 } from "../shared/llm-vendor-defaults.js";
 import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
+import { DEFAULT_ACCESSIBILITY_SIGNAL_MODES } from "../shared/accessibility-signals.js";
 import { DEFAULT_LOCALE } from "../i18n/index.js";
 import { DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../shared/processing-display-level.js";
@@ -108,7 +109,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     preferredFlow: "in-app",
   },
   system: {
-    turnCompletionSoundEnabled: true,
+    signalTurnFinished: DEFAULT_ACCESSIBILITY_SIGNAL_MODES.turnFinished,
+    signalApprovalNeeded: DEFAULT_ACCESSIBILITY_SIGNAL_MODES.approvalNeeded,
+    signalTurnFailed: DEFAULT_ACCESSIBILITY_SIGNAL_MODES.turnFailed,
     closeBehavior: "hide-to-tray",
     // Opt-in loopback API server; OFF by default (also enabled by env AVE_LOCAL_API=1). #1409/#1436.
     localApiServer: false,

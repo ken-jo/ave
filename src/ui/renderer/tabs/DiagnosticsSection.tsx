@@ -1,4 +1,5 @@
 /** Diagnostics exports and log tails are redacted; map host error codes to localized messages. */
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
@@ -211,9 +212,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           </div>
         )}
         {logLines.length === 0 && !logErr ? (
-          <p className="py-3 text-center text-xs text-muted-foreground italic">
-            {t("auditTab.logEmpty")}
-          </p>
+          <EmptyState align="center" className="px-0 py-3" title={t("auditTab.logEmpty")} />
         ) : (
           <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/(--opacity-medium) p-2 text-tiny font-mono">
             {logLines.join("\n")}
@@ -237,9 +236,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
           </div>
         )}
         {crashes.length === 0 && !crashErr ? (
-          <p className="py-3 text-center text-xs text-muted-foreground italic">
-            {t("auditTab.crashEmpty")}
-          </p>
+          <EmptyState align="center" className="px-0 py-3" title={t("auditTab.crashEmpty")} />
         ) : (
           <div className="rounded-md border text-xs">
             <table className="w-full">

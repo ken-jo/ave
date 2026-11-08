@@ -7,6 +7,7 @@
  * lazily-loaded virtualized grid. Every cap the reader applied is stated to the
  * user — nothing is cut silently.
  */
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -339,9 +340,7 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
           ))}
         </div>
       ) : null}
-      {sheet.rows.length === 0 ? <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-table-empty">
-        {t("chatPreviewRail.tableEmpty")}
-      </div> : <Suspense fallback={loading}>
+      {sheet.rows.length === 0 ? <EmptyState className="p-0" data-testid="chat-side-panel-table-empty" title={t("chatPreviewRail.tableEmpty")} /> : <Suspense fallback={loading}>
         <LazyTableDocumentGrid sheet={sheet} label={t("chatPreviewRail.tableGridLabel", { name: sheet.name })} changes={changes} onRendered={acknowledgeRendered} />
       </Suspense>}
       <PreviewDocumentFooter>

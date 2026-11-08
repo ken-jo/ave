@@ -404,6 +404,30 @@ describe("Work Board — opened from the row while the run still plans", () => {
   });
 });
 
+describe("Work Board — a run row's status slot", () => {
+  afterEach(() => cleanup());
+
+  it("draws a running run as the loader, and one waiting on a tool approval as the warning badge", async () => {
+    const PLAN_CHILD = "child-plan-slot";
+    const queue = [approvalRequest({ id: "req-slot", sessionId: PLAN_CHILD, toolName: "read_file" }) as unknown as ApprovalRequest];
+    const surface = { ...approvalSurfaceStub(), queue };
+    const other = runningItem({ id: 5, title: "Tune the order API timeout", runId: "run-c" });
+    const harness = boardApi({ items: [runningItem({ runStatus: "planning", runSessionId: PLAN_CHILD }), other] });
+    render(withApprovalSurface(<WorkBoardPanel api={harness.api} focusItemId={4} onFocusConsumed={vi.fn()} />, surface));
+    const panel = await screen.findByTestId("live-step-panel");
+    const slotFor = (id: string) => {
+      const row = within(panel).getAllByTestId("live-step-run-row").find((each) => each.dataset.itemId === id);
+      if (row === undefined) throw new Error(`no run row for ${id}`);
+      return within(row).getByTestId("live-run-row-status");
+    };
+    await waitFor(() => expect(slotFor("4").getAttribute("data-agent-badge")).toBe("waiting"));
+    expect(slotFor("4").getAttribute("data-agent-status")).toBe("idle");
+    expect(within(slotFor("4")).getByTestId("live-run-row-status-badge").className).toContain("bg-warning");
+    expect(slotFor("5").getAttribute("data-agent-status")).toBe("working");
+    expect(slotFor("5").hasAttribute("data-agent-badge")).toBe(false);
+  });
+});
+
 describe("Work Board — the composer belongs to one run", () => {
   afterEach(() => cleanup());
 

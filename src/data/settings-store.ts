@@ -88,6 +88,7 @@ import type { MainLayoutSnapshot } from "../shared/main-layout.js";
 import { SecretDocumentStore, type SecretDocumentIdentity, type SecretEncryption, type SecretPolicy } from "./secret-document-store.js";
 import { isOwnerAwayAutoSkipMinutes, DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES } from "../shared/owner-away-permission.js";
 import { DEFAULT_SETTINGS } from "./settings-defaults.js";
+import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode, type AccessibilitySignalMode } from "../shared/accessibility-signals.js";
 import {
   marketplaceProviderPresetSecretInvalidationIds,
   mergeLlmPatch,
@@ -567,8 +568,12 @@ export interface WebViewSettings {
 export type SystemCloseBehavior = "hide-to-tray" | "quit";
 
 export interface SystemSettings {
-  /** Use the default OS sound for background turn-completion notifications. Default true. */
-  turnCompletionSoundEnabled?: boolean;
+  /** Accessibility signal modes (`../shared/accessibility-signals.js`): a short sound when an agent turn completes, when a
+   * decision card waits for the user, and when a turn fails. The renderer plays them; turn-end OS notifications stay silent so
+   * a background completion never sounds twice. Defaults "unfocused", "unfocused", "off". */
+  signalTurnFinished?: AccessibilitySignalMode;
+  signalApprovalNeeded?: AccessibilitySignalMode;
+  signalTurnFailed?: AccessibilitySignalMode;
   closeBehavior: SystemCloseBehavior;
   /** Launch Ave automatically at OS login. Applied via `app.setLoginItemSettings({ openAtLogin })` (see
    * `src/main/startup-launch.ts`). Default `false`. No-op in dev (unpackaged) builds; the login item would point at the Electron dev binary. */
@@ -1145,7 +1150,9 @@ export class SettingsService {
           log.warn("system.corpCaCommonName patch ignored (not a usable certificate name)");
         }
       }
-      acceptField(next, "turnCompletionSoundEnabled", partial.system.turnCompletionSoundEnabled, isBooleanValue, "system", PATCHED_FIELD);
+      for (const key of Object.values(ACCESSIBILITY_SIGNAL_SETTING_KEYS)) {
+        acceptField(next, key, partial.system[key], isAccessibilitySignalMode, "system", PATCHED_FIELD);
+      }
       // Launch-at-startup + launch-minimized booleans (same validate-at- boundary pattern as localApiServer: invalid → keep prior value).
       const rawLaunchAtStartup = partial.system.launchAtStartup;
       acceptField(next, "launchAtStartup", rawLaunchAtStartup, isBooleanValue, "system", PATCHED_FIELD);

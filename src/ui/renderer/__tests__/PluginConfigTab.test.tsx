@@ -322,7 +322,7 @@ describe("PluginConfigTab", () => {
         ).toBeInTheDocument();
       });
       expect(screen.queryByText("Sample Hub 복구 완료")).toBeNull();
-      expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
+      expect(screen.getByTestId("plugin-config:banner")).toHaveAttribute("data-severity", "warning");
     },
   );
 
@@ -360,7 +360,7 @@ describe("PluginConfigTab", () => {
     expect(market.listCatalog).toHaveBeenCalledWith({ kind: "plugin", installedOnly: true });
     expect(market.planInstall).not.toHaveBeenCalled();
     expect(cards).toHaveBeenCalledOnce();
-    expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
+    expect(screen.getByTestId("plugin-config:banner")).toHaveAttribute("data-severity", "warning");
   });
 
   it("keeps a card refresh failure instead of overwriting it with repair success", async () => {
@@ -400,7 +400,7 @@ describe("PluginConfigTab", () => {
     expect(
       screen.queryByText("Sample Hub: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
     ).toBeNull();
-    expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-destructive");
+    expect(screen.getByTestId("plugin-config:banner")).toHaveAttribute("data-severity", "error");
   });
 
   it("reports a non-reinstallable diagnosis as repaired only after the refreshed runtime is loaded", async () => {
@@ -438,7 +438,7 @@ describe("PluginConfigTab", () => {
       expect(market.planInstall).not.toHaveBeenCalled();
       expect(cards).toHaveBeenCalledTimes(2);
       expect(screen.getByText("Meeting 복구 완료")).toBeInTheDocument();
-      expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-success");
+      expect(screen.getByTestId("plugin-config:banner")).toHaveAttribute("data-severity", "success");
     });
     expect(
       screen.queryByText("Meeting: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
@@ -513,7 +513,7 @@ describe("PluginConfigTab", () => {
       expect(
         screen.getByText("Meeting: 진단 완료 — 익스텐션을 아직 실행할 수 없습니다."),
       ).toBeInTheDocument();
-      expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
+      expect(screen.getByTestId("plugin-config:banner")).toHaveAttribute("data-severity", "warning");
     });
   });
 
@@ -658,7 +658,7 @@ describe("PluginConfigTab", () => {
     await waitFor(() => {
       expect(cards).toHaveBeenCalledTimes(2);
       expect(market.planInstall).not.toHaveBeenCalled();
-      expect(screen.getByTestId("plugin-config:banner")).toHaveClass("text-warning");
+      expect(screen.getByTestId("plugin-config:banner")).toHaveAttribute("data-severity", "warning");
     });
   });
 
@@ -1517,7 +1517,7 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
   let changed = () => {};
   setRendererApi({
     gitMarketplace: market,
-    getSettings: async () => ({ alerts: { osNotificationsEnabled: false }, system: { turnCompletionSoundEnabled: true } }),
+    getSettings: async () => ({ alerts: { osNotificationsEnabled: false }, system: {} }),
     alerts: { listKinds: async () => [{ ...row, choice: { ...row.choice } }], onKindsChanged: (callback: () => void) => { changed = callback; return () => {}; } },
   });
   render(<PluginConfigTab initialPluginId="meeting" />);

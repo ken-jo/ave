@@ -24,6 +24,13 @@ function setup(
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
+/** The server's auth badge; the settings notice region (`data-notice-live`) is also a status but never the badge. */
+function statusBadge(): HTMLElement {
+  const badge = screen.getAllByRole("status").find((el) => !el.hasAttribute("data-notice-live"));
+  if (!badge) throw new Error("no auth status badge");
+  return badge;
+}
+
 describe("McpTab browser authentication", () => {
   it.each<McpServerConfigDto>([
     { id: "remote-a", transport: "http", url: "https://example.test/mcp", oauth: {} },
@@ -53,7 +60,7 @@ describe("McpTab browser authentication", () => {
 
   it("labels a step-up request and keeps the Authenticate action available", async () => {
     setup(undefined, [{ id: "remote-a", status: "connected", registeredTools: ["mcp_remote_read"], authStatus: "insufficient_scope" }]);
-    expect(await screen.findByRole("status")).toHaveTextContent("추가 권한 필요");
+    expect(await waitFor(statusBadge)).toHaveTextContent("추가 권한 필요");
     expect(screen.getByRole("button", { name: "인증하기" })).toBeEnabled();
   });
 
@@ -62,7 +69,7 @@ describe("McpTab browser authentication", () => {
     let resolve!: (value: { connected: boolean }) => void;
     mcp.authenticate.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
     const button = await screen.findByRole("button", { name: "인증하기" });
-    expect(screen.getByRole("status")).toHaveTextContent("인증 필요");
+    expect(statusBadge()).toHaveTextContent("인증 필요");
     fireEvent.click(button);
     fireEvent.click(button);
     expect(mcp.authenticate).toHaveBeenCalledTimes(1);
@@ -99,10 +106,10 @@ describe("McpTab browser authentication", () => {
     await act(async () => { mcp = setup(); });
     mcp.servers.mockResolvedValue([{ id: "remote-a", status: "disconnected", registeredTools: [], authStatus: "authenticated" }]);
     await act(() => vi.advanceTimersByTimeAsync(3_000));
-    expect(screen.getByRole("status")).toHaveTextContent("인증됨");
+    expect(statusBadge()).toHaveTextContent("인증됨");
     mcp.servers.mockResolvedValue([{ id: "remote-a", status: "disconnected", registeredTools: [], authStatus: "required" }]);
     await act(() => vi.advanceTimersByTimeAsync(3_000));
-    expect(screen.getByRole("status")).toHaveTextContent("인증 필요");
+    expect(statusBadge()).toHaveTextContent("인증 필요");
   });
 
   it("ignores a stale poll response after authentication refreshes the server", async () => {
@@ -115,14 +122,14 @@ describe("McpTab browser authentication", () => {
     expect(mcp.servers).toHaveBeenCalledTimes(2);
     mcp.servers.mockResolvedValue([{ id: "remote-a", status: "connected", registeredTools: [], authStatus: "authenticated" }]);
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "인증하기" })); });
-    expect(screen.getByRole("status")).toHaveTextContent("인증됨");
+    expect(statusBadge()).toHaveTextContent("인증됨");
     await act(async () => { resolve([{ id: "remote-a", status: "disconnected", registeredTools: [], authStatus: "required" }]); });
-    expect(screen.getByRole("status")).toHaveTextContent("인증됨");
+    expect(statusBadge()).toHaveTextContent("인증됨");
   });
 
   it("replaces authentication error details with localized guidance", async () => {
     setup(undefined, [{ id: "remote-a", status: "error", registeredTools: [], authStatus: "error", lastError: "private-value" }]);
-    expect(await screen.findByRole("status")).toHaveTextContent("인증 오류");
+    expect(await waitFor(statusBadge)).toHaveTextContent("인증 오류");
     expect(screen.getByText("인증 또는 연결에 실패했습니다. 다시 시도하세요.")).toBeInTheDocument();
     expect(screen.queryByText(/private-value/)).toBeNull();
   });

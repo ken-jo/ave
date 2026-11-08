@@ -35,6 +35,109 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
   }
   const DEFAULT_POLICY = '{"version":1,"requireExplicitApproval":true,"managed":false}\n';
   const FRESH_MANIFEST = '{"version":1,"state":"bootstrapped:false","entries":{}}';
+  it("preserves bytes in a new inherited file without the source explicit ACE", () => {
+    const dir = fixture();
+    migrateAveHomeConfiguration(dir);
+    const source = join(dir, "settings.json");
+    writeFileSync(source, "outside edit");
+    const original = statSync(source, { bigint: true }).ino;
+    const explicit = (path: string) => Number(command("@((Get-Acl -LiteralPath $env:AVE_TEST_TARGET).GetAccessRules($true,$false,[System.Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-1-0' }).Count", path));
+    let preserved: string | undefined;
+    grant(source, "R");
+    try {
+      expect(explicit(source)).toBe(1);
+      const aside = asideOf(migrateAveHomeConfiguration(dir), dir, "settings.json");
+      preserved = aside;
+      expect(statSync(aside, { bigint: true }).ino).not.toBe(original);
+      expect(readFileSync(aside, "utf8")).toBe("outside edit");
+      expect(explicit(aside)).toBe(0);
+      expect(command("[int](Get-Acl -LiteralPath $env:AVE_TEST_TARGET).AreAccessRulesProtected", aside)).toBe("0");
+      expect(existsSync(source)).toBe(false);
+    } finally {
+      for (const path of [source, preserved]) {
+        if (path !== undefined && existsSync(path)) execFileSync(win32SystemBinary("icacls"), [path, "/remove:g", "*S-1-1-0", "/q"], { windowsHide: true, stdio: "pipe" });
+      }
+    }
+  });
+
+  it("leaves a fresh copy and retries safely after interrupted source deletion", () => {
+    const dir = fixture();
+    migrateAveHomeConfiguration(dir);
+    const source = join(dir, "settings.json");
+    writeFileSync(source, "outside edit");
+    const original = statSync(source, { bigint: true }).ino;
+    const interrupted = WINDOWS_HOME_BOUNDARY_SOURCE.replace(
+      'if (!Delete(source, user)) throw new InvalidOperationException("Legacy configuration source deletion failed");',
+      'if (input.Length > 0) throw new InvalidOperationException("Interrupted source deletion");',
+    );
+    expect(interrupted).not.toBe(WINDOWS_HOME_BOUNDARY_SOURCE);
+    expect(native("[HomeDirectoryDacl]::CleanupConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false)", dir, interrupted))
+      .toContain("Interrupted source deletion");
+    expect(existsSync(source)).toBe(true);
+    const first = readdirSync(dir).find(name => name.startsWith("settings.json.post-migration-"));
+    if (!first) throw new Error("Expected preserved copy");
+    expect(statSync(join(dir, first), { bigint: true }).ino).not.toBe(original);
+    expect(readFileSync(join(dir, first), "utf8")).toBe("outside edit");
+    expect(native("[HomeDirectoryDacl]::CleanupConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false)", dir, interrupted))
+      .toContain("Interrupted source deletion");
+    expect(readdirSync(dir).filter(name => name.startsWith("settings.json.post-migration-"))).toEqual([first]);
+    expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("Legacy configuration preserved at");
+    expect(existsSync(source)).toBe(false);
+    expect(readdirSync(dir).filter(name => name.startsWith("settings.json.post-migration-"))).toHaveLength(1);
+  });
+
+  it("does not reuse an aside with different bytes", () => {
+    const dir = fixture();
+    migrateAveHomeConfiguration(dir);
+    const source = join(dir, "settings.json");
+    const previous = join(dir, "settings.json.post-migration-prior");
+    writeFileSync(source, "outside edit");
+    writeFileSync(previous, "different bytes");
+    const aside = asideOf(migrateAveHomeConfiguration(dir), dir, "settings.json");
+    expect(aside).not.toBe(previous);
+    expect(readFileSync(aside, "utf8")).toBe("outside edit");
+    expect(readFileSync(previous, "utf8")).toBe("different bytes");
+    expect(existsSync(source)).toBe(false);
+  });
+
+  it.each(["source hardlink", "other hardlink", "reparse", "directory", "vanished", "explicit ACE", "proper"])("validates Windows preserved candidate: %s", kind => {
+    const dir = fixture();
+    migrateAveHomeConfiguration(dir);
+    const source = join(dir, "settings.json");
+    const previous = join(dir, "settings.json.post-migration-prior");
+    const outside = join(dir, "retained");
+    writeFileSync(source, "outside edit");
+    const original = statSync(source, { bigint: true }).ino;
+    if (kind === "source hardlink") linkSync(source, previous);
+    else if (kind === "reparse") {
+      mkdirSync(outside);
+      symlinkSync(outside, previous, "junction");
+    } else if (kind === "directory") mkdirSync(previous);
+    else {
+      writeFileSync(previous, "outside edit");
+      setFixtureOwner(previous);
+      if (kind === "other hardlink") linkSync(previous, outside);
+      if (kind === "explicit ACE") grant(previous, "R");
+    }
+    let diagnostics: string[];
+    if (kind === "vanished") {
+      const interrupted = WINDOWS_HOME_BOUNDARY_SOURCE.replace(
+        "using (var preserved = OpenRelative(home, candidate, user, 1, false, true, false, true, 1)) {",
+        "System.IO.File.Delete(System.IO.Path.Combine(path, candidate)); using (var preserved = OpenRelative(home, candidate, user, 1, false, true, false, true, 1)) {",
+      );
+      expect(interrupted).not.toBe(WINDOWS_HOME_BOUNDARY_SOURCE);
+      diagnostics = native("[HomeDirectoryDacl]::CleanupConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false)", dir, interrupted).split(/\r?\n/);
+    } else diagnostics = migrateAveHomeConfiguration(dir);
+    const aside = asideOf(diagnostics, dir, "settings.json");
+    expect(aside === previous).toBe(kind === "proper");
+    expect(statSync(aside, { bigint: true }).ino).not.toBe(original);
+    expect(statSync(aside).nlink).toBe(1);
+    expect(readFileSync(aside, "utf8")).toBe("outside edit");
+    expect(command("$s=Get-Acl -LiteralPath $env:AVE_TEST_TARGET; $s.Owner -eq [System.Security.Principal.WindowsIdentity]::GetCurrent().Name; @($s.Access | Where-Object { -not $_.IsInherited }).Count", aside)).toBe("True\r\n0");
+    expect(existsSync(source)).toBe(false);
+    if (kind === "other hardlink") expect(readFileSync(outside, "utf8")).toBe("outside edit");
+  });
+
   it("moves a large root source aside and commits the defaults", () => {
     const dir = fixture();
     const bytes = JSON.stringify({ padding: "x".repeat(1024 * 1024 + 1) });

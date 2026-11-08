@@ -11,7 +11,7 @@ import { SessionGoalPanel } from "./SessionGoalPanel.js";
 import { LatestTurnSummary } from "./LatestTurnSummary.js";
 import type { WorkspaceChanges } from "../preview/workspace-changes.js";
 import { MessageQueuePanel } from "./MessageQueuePanel.js";
-import { StatusBar, type StatusBarProps } from "./StatusBar.js";
+import { NoticeLiveRegion, StatusBar, type StatusBarProps } from "./StatusBar.js";
 import { Composer, ComposerFrame, type ComposerHandle } from "./Composer.js";
 import { ComposerStatusRow, InputActionBar } from "./InputActionBar.js";
 import { QuestionOverlay } from "./QuestionOverlay.js";
@@ -381,6 +381,7 @@ export function ChatComposerDock({
             strip painted over the project selector and the runtime pill and
             was clipped by them; in flow it pushes them down instead, the same
             rule the window's notice strip follows. */}
+        {statusBar ? <NoticeLiveRegion toast={statusBar.visibleToast} /> : null}
         {statusBar && (statusBar.visibleToast !== null || statusBar.persistent.length > 0) ? (
           <div
             className="mx-3 mb-2 min-w-0"

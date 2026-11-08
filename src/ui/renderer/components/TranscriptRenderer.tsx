@@ -1,3 +1,4 @@
+import { Loader } from "../../../components/ui/loader.js";
 import { useMemo, useState } from "react";
 import type React from "react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -6,7 +7,7 @@ import ReactMarkdown from "react-markdown";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { parseStagedEnvelope } from "../../../shared/staged-origins.js";
 import { Button } from "../../../components/ui/button.js";
-import { Bot, Brain, ChevronDown, ChevronRight, GitBranch, Loader2, Pencil, Undo2 } from "lucide-react";
+import { Bot, Brain, ChevronDown, ChevronRight, GitBranch, Pencil, Undo2 } from "lucide-react";
 import type { ChatEntry, CheckpointTrigger } from "../../../lib/chat-stream-state.js";
 import type { LLMVendor } from "../../../shared/llm-vendor-defaults.js";
 import { debugLog } from "../../../lib/debug-stream.js";
@@ -1018,7 +1019,7 @@ export function ReasoningCard({
         aria-expanded={bodyVisible}
       >
         {streaming
-          ? <Loader2 className="h-3 w-3 flex-shrink-0 animate-spin" />
+          ? <Loader size={12} />
           : <Brain className="h-3 w-3 flex-shrink-0" />}
         <span className="min-w-0 font-medium">{title}</span>
         {/* Chevron always shown (even while streaming) so the folded block reads

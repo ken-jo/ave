@@ -1,6 +1,7 @@
 /** Folder view: the project's files as Finder columns with a file viewer in the last slot (sidebar cases 15, 23–27, 32–38).
  * Listing goes through `workspace.listDir`, previews through the existing preview readers, and "open in default app"
  * through `workspace.openPath` from a click or key handler only. */
+import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from "react";
 import { ChevronRight, FileText, MessageSquare, Search } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
@@ -323,7 +324,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
           {matches !== null ? (
             <div role="listbox" aria-label={t("folderView.searchResults")} data-testid="folder-search-results"
               className="absolute right-0 top-8 z-20 max-h-72 w-72 overflow-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
-              {matches.length === 0 ? <div className="px-2 py-1.5 text-xs text-muted-foreground">{t("folderView.searchNone")}</div>
+              {matches.length === 0 ? <EmptyState className="px-2 py-1.5" title={t("folderView.searchNone")} />
                 : matches.map((match) => (
                   <button key={match.path} type="button" role="option" aria-selected={false} onClick={() => reveal(match.path)}
                     className="flex w-full min-w-0 items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-muted">

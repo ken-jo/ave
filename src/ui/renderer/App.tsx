@@ -11,13 +11,13 @@ import { MainToolbar } from "./MainToolbar.js";
 import { Sidebar, type SidebarLaunchKind } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
 import { DeprecatedModelNotice, RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
-import { StatusBar } from "./components/StatusBar.js";
+import { NoticeLiveRegion, StatusBar } from "./components/StatusBar.js";
 import { DevToolsPanel } from "./components/DevToolsPanel.js";
 import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
 import { McpAppPanelContent } from "./components/McpAppPanelContent.js";
 import { ChatGroupSession, type ChatGroupEnvironment } from "./components/ChatGroupSession.js";
-import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, type OverlayCardPlacement, type NewChatOpening } from "./components/chat-group-session-registry.js";
+import { ChatGroupSessionRegistry, useChatGroupSession, useTileSessions, tileHoldingSession, pruneGroupRequests, overlayCardTile, pendingAnswers as selectPendingAnswers, workingSessionIds as selectWorkingSessionIds, type OverlayCardPlacement, type NewChatOpening } from "./components/chat-group-session-registry.js";
 import { leafIds } from "./components/pane-tree.js";
 import type { ChatEntry } from "../../lib/chat-stream-state.js";
 // One mounted singleton per away display mode; empty slots render nothing.
@@ -49,6 +49,7 @@ import { useMainLayout } from "./hooks/use-main-layout.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
 import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
 import { matchesShortcut, useShortcutSettings, useShortcutSettingsSync, withShortcutHint } from "./hooks/use-shortcuts.js";
+import { AgentStatusGlyph } from "./components/AgentStatusGlyph.js";
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
 import type { DropTarget } from "./components/pane-drop.js";
 import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/use-sessions.js";
@@ -60,7 +61,7 @@ import { DevConsoleToggle } from "./components/DevConsoleToggle.js";
 import { ApprovalLaneCard, unattributedRequestLabel } from "./components/permissions/ApprovalDock.js";
 import { OverlayCardRegion } from "./components/OverlayCardRegion.js";
 import type { ApprovalRequest } from "./types.js";
-import type { UserApprovalVerdict } from "../../shared/permissions-events.js";
+import type { UserApprovalHitPayload, UserApprovalVerdict } from "../../shared/permissions-events.js";
 import type { ExactDenyDraft } from "./exact-permission-decision.js";
 
 import { getApi, getPluginViewDescription, getPluginViewLabel, isDarwin, toViewKey } from "./api-client.js";
@@ -76,7 +77,7 @@ import { useAppUpdate } from "./hooks/use-app-update.js";
 import { useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { useSidebarState } from "./hooks/use-sidebar-state.js";
 import { Button } from "../../components/ui/button.js";
-import { PanelLeftOpen } from "lucide-react";
+import { MessageSquareText, PanelLeftOpen } from "lucide-react";
 import { SIDEBAR_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { useActiveView } from "./hooks/use-active-view.js";
 import { useSettingsTab } from "./hooks/use-settings-tab.js";
@@ -106,6 +107,7 @@ import { usePluginAuthStatuses } from "./hooks/use-plugin-auth-status.js";
 import { useRolePresets } from "./hooks/use-role-presets.js";
 import { useAppBootstrap } from "./hooks/use-app-bootstrap.js";
 import { useWindowFileDropGuard } from "./hooks/use-window-file-drop-guard.js";
+import { useAccessibilitySignalModes } from "./accessibility-signal-engine.js";
 import { normalizeSettingsTab, type SettingsPath } from "../../shared/settings-tabs.js";
 import {
   BUILTIN_LABEL_KEYS,
@@ -157,6 +159,8 @@ export function App() {
 
   // Prevent dropped files from navigating the window to file://.
   useWindowFileDropGuard();
+  // Accessibility signals follow the stored modes; the sources are the chat groups and the approval queue below.
+  useAccessibilitySignalModes(api);
 
   // Read the focused tile through the session registry; see chat-group-session-registry.ts for store lifetime.
   const chatGroupSessions = useMemo(() => new ChatGroupSessionRegistry(), []);
@@ -170,8 +174,10 @@ export function App() {
     visibleToast: statusVisibleToast,
     pendingCount: statusPendingCount,
     pushToast: statusPushToast,
+    upsertToast: statusUpsertToast,
     removeToast: statusRemoveToast,
     removeApprovalToasts: statusRemoveApprovalToasts,
+    suppressToastKind: statusSuppressToastKind,
   } = useStatusBar({ api });
 
   // Notification clicks restore and focus the window through notifyClick; other toasts carry no notification.
@@ -409,6 +415,8 @@ export function App() {
         severity: "info",
         message: t("app.conversationSetAside"),
         ttlMs: 8_000,
+        kind: "conversation-set-aside",
+        suppressible: true,
       });
     }
     return adopted.chatGroupId;
@@ -918,13 +926,30 @@ export function App() {
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
   }), [approvalQueue, tileSessions, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  const workingSessions = useMemo(() => selectWorkingSessionIds(tileSessions, sessions), [tileSessions, sessions]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   const suggestionsPendingCount = useMemo(
     () => overlayQueue.filter((card) => isSuggestionsSession(card.originSessionId)).length,
     [overlayQueue],
   );
   // Subscribe once per window to avoid duplicate permission-memory and reviewer disclosures across tiles.
-  const { userApprovalHitToast, reviewerSuggestion } = usePermissionSignals();
+  // A re-applied approval is disclosed in the window's notice queue. A reuse is not a failure, so no tier is an error: a
+  // high-risk reuse is a warning that stays until dismissed; only a low-risk reuse, which repeats on every cached hit, offers
+  // "Don't show again" (undone from Settings → Permissions). Medium and high cannot be silenced. One stable id per verdict tier: a newer hit of the same tier replaces the previous one, while a
+  // lower tier queues behind an unread high-risk notice instead of replacing (and so dismissing) it.
+  const handleUserApprovalHit = useCallback((hit: UserApprovalHitPayload) => {
+    const high = hit.verdictAtApproval === "high";
+    const scope = hit.scope === "persistent" ? t("chatView.approvalScopePersistent")
+      : hit.scope === "global" ? t("chatView.approvalScopeGlobal") : t("chatView.approvalScopeSession");
+    statusUpsertToast(`approval-memory-hit:${hit.verdictAtApproval}`, {
+      severity: high || hit.verdictAtApproval === "medium" ? "warning" : "success",
+      message: `${t("chatView.approvalMemoryApplied")} · ${hit.toolName} · ${scope} · ${hit.verdictAtApproval.toUpperCase()}`,
+      ...(high ? { kind: "approval-memory-hit-high", sticky: true }
+        : hit.verdictAtApproval === "medium" ? { kind: "approval-memory-hit-medium" }
+        : { kind: "approval-memory-hit-low", suppressible: true as const }),
+    });
+  }, [statusUpsertToast, t]);
+  const { reviewerSuggestion } = usePermissionSignals({ onUserApprovalHit: handleUserApprovalHit });
   const [exactDenyDraft, setExactDenyDraft] = useState<ExactDenyDraft | null>(null);
   // Only out-of-directory cards consume /allow proposals; other approval forms cannot display them.
   const approvalSentenceTarget = useMemo(() => {
@@ -1757,8 +1782,7 @@ export function App() {
     return {
       isArchived: (sessionId) => Boolean(findSession(sessionId)?.archivedAt),
       isUnread: (sessionId) => Boolean(findSession(sessionId)?.unreadSince),
-      isResponding: (sessionId) =>
-        tileSessions.some((tile) => tile.sessionId === sessionId && tile.streaming),
+      isResponding: (sessionId) => workingSessions.has(sessionId),
       onRename: (sessionId, title) => applyUpdate({ sessionId, title }),
       onSetArchived: (sessionId, archived) => applyUpdate({ sessionId, archived }),
       onSetUnread: (sessionId, unread) => applyUpdate({ sessionId, unread }),
@@ -1802,7 +1826,7 @@ export function App() {
         await refreshSessions();
       },
     };
-  }, [api, sessions, tileSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView]);
+  }, [api, sessions, tileSessions, workingSessions, chatGroupSessions, refreshSessions, handleExport, handleImportAndLoad, setActiveView]);
   // Turns ending off screen mark their rows unread; viewing the conversation clears the mark.
   useTurnAttention({
     tiles: tileSessions,
@@ -2542,40 +2566,17 @@ export function App() {
                       onDismiss={handleMarketplaceAnnouncementDismiss}
                       onAction={handleMarketplaceAnnouncementAction}
                     />
-                    {/* Verdict-tier tint surfaces the trust gradient:
-                        low → --success (informational re-approval), medium →
-                        --warning, high → --destructive + role="alert" (the user
-                        is re-using a high-risk approval). Semantic tokens, so a
-                        theme bundle supplies the actual color. */}
-                    {userApprovalHitToast && (() => {
-                      const verdict = userApprovalHitToast.verdictAtApproval;
-                      const isHigh = verdict === "high";
-                      const token =
-                        verdict === "high" ? "destructive"
-                        : verdict === "medium" ? "warning"
-                        : "success";
-                      const tone = `border-[hsl(var(--${token})/0.4)] bg-[hsl(var(--${token})/0.1)] text-[hsl(var(--${token}))]`;
-                      return (
-                        <div
-                          data-testid="user-approval-hit-toast"
-                          data-verdict={verdict}
-                          role={isHigh ? "alert" : "status"}
-                          aria-live={isHigh ? "assertive" : "polite"}
-                          className={`rounded-md border px-3 py-2 text-xs ${tone}`}
-                        >
-                          <span className="font-medium">{t("chatView.approvalMemoryApplied")}</span>
-                          <span className="ml-2 text-muted-foreground">
-                            {userApprovalHitToast.toolName} · {userApprovalHitToast.scope === "persistent" ? t("chatView.approvalScopePersistent") : userApprovalHitToast.scope === "global" ? t("chatView.approvalScopeGlobal") : t("chatView.approvalScopeSession")} · {verdict.toUpperCase()}
-                          </span>
-                        </div>
-                      );
-                    })()}
+                    <NoticeLiveRegion toast={statusVisibleToast} />
                     <StatusBar
                       persistent={statusPersistent}
                       visibleToast={statusVisibleToast}
                       pendingCount={statusPendingCount}
                       onToastClick={handleStatusToastClick}
                       onToastDismiss={(toast) => statusRemoveToast(toast.id)}
+                      onToastSuppress={(toast) => {
+                        if (toast.kind === undefined) throw new Error("[notices] a suppressible notice reached the strip without a kind");
+                        statusSuppressToastKind(toast.kind);
+                      }}
                     />
                   </div>
                   <DevToolsPanel
@@ -2770,6 +2771,17 @@ export function App() {
                                             t,
                                           )
                                           ?? t("mainToolbar.newChat")
+                                        }
+                                        icon={
+                                          // The sidebar row's glyph, so the tile and the row that opened it read as one; the loader while
+                                          // any of its chats is working. No badge: the tile draws its own cards.
+                                          <AgentStatusGlyph
+                                            size="md"
+                                            mark={<MessageSquareText className="h-4 w-4" aria-hidden="true" />}
+                                            working={workingSessions.has(tileSessionId)}
+                                            badge={null}
+                                            testId="pane-agent-status"
+                                          />
                                         }
                                         focused={chatGroups.focusedId === group.id}
                                         onFocus={() => chatGroups.focus(group.id)}

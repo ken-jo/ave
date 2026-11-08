@@ -137,7 +137,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
       await expect(SandboxManager.reset()).resolves.toEqual({ windowsAclUnreleased: [] });
     });
 
-    it("reports rows srt-win dropped without release, counted and without paths, and does not retry them", async () => {
+    it("reports dropped release targets only in-process for host redaction and does not retry them", async () => {
       const stub = stubSrtWin({
         revoke: { code: 0, json: entries("missing", "missing", "revoked") },
         restore: { code: 0, json: entries("mismatch") },
@@ -145,10 +145,10 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
       const SandboxManager = await releaseWith(stub.srtWin);
       const report = await SandboxManager.reset();
       expect(report).toEqual({ windowsAclUnreleased: [
-        { step: "grant revoke", status: "missing", count: 2 },
-        { step: "deny restore", status: "mismatch", count: 1 },
+        { step: "grant revoke", status: "missing", count: 2, targets: [PRIVATE_PATH, PRIVATE_PATH] },
+        { step: "deny restore", status: "mismatch", count: 1, targets: [PRIVATE_PATH] },
       ] });
-      expect(JSON.stringify(report)).not.toContain("private-target");
+      expect(readInstalled("dist/sandbox/sandbox-manager.js")).not.toMatch(/\$\{step\}: '\$\{e\.path\}'/);
       await SandboxManager.reset();
       expect(stub.calls()).toEqual(["revoke", "restore"]);
     });

@@ -1,5 +1,6 @@
+import { Loader } from "../../../components/ui/loader.js";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ExternalLink, Loader2 } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import {
   RENDER_HTML_THEME_TOKEN_NAMES,
@@ -101,7 +102,7 @@ export function HtmlPreview({
           disabled={openState === "opening"}
         >
           {openState === "opening" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <Loader size={14} />
           ) : (
             <ExternalLink className="h-3.5 w-3.5" />
           )}
