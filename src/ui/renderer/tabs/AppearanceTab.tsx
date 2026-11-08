@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
 import { useTheme } from "../theme/index.js";
 import { SCHEMES } from "../theme/index.js";
-import { DEFAULT_GLASS_TINT, GLASS_TINT_MAX, GLASS_TINT_MIN, isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
+import { DEFAULT_APPEARANCE, DEFAULT_GLASS_TINT, GLASS_TINT_MAX, GLASS_TINT_MIN, isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
 import { getApi, isDarwin } from "../api-client.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
@@ -13,7 +13,7 @@ import {
 } from "../../../i18n/index.js";
 import { useInstalledContent } from "../installed-content.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { FONT_SIZE_SCALE_DEFAULT, type FontSizeScale } from "../../../shared/appearance-font.js";
+import { FONT_SIZE_SCALE_DEFAULT, isValidFontFamilyOverride, type FontSizeScale } from "../../../shared/appearance-font.js";
 
 function handleRadioGroupKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
   const directions = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as const;
@@ -155,9 +155,11 @@ function useFontPreferences() {
 function FontFamilyCustomInput({
   initial,
   onCommit,
+  label,
 }: {
   initial: string;
   onCommit: (value: string) => void;
+  label?: string;
 }) {
   const { t } = useTranslation();
   const [raw, setRaw] = useState(initial);
@@ -182,6 +184,7 @@ function FontFamilyCustomInput({
   const commit = () => {
     const value = raw.trim();
     if (value === initial.trim()) return;
+    if (value && !isValidFontFamilyOverride(value)) return;
     onCommit(value);
   };
 
@@ -194,6 +197,7 @@ function FontFamilyCustomInput({
         value={raw}
         placeholder={t("appearanceTab.fontFamilyCustomPlaceholder")}
         maxLength={256}
+        aria-invalid={raw.trim() !== "" && !isValidFontFamilyOverride(raw.trim())}
         onChange={(e) => setRaw(e.target.value)}
         onBlur={() => {
           // Escape sets this flag and then calls blur(); skip the cascaded commit so the typed-but-cancelled value never reaches
@@ -213,7 +217,7 @@ function FontFamilyCustomInput({
           }
         }}
         className="mt-2 w-full rounded border border-input bg-background px-2 py-1 font-mono text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-        aria-label={t("appearanceTab.fontFamilyCustomAriaLabel")}
+        aria-label={label ?? t("appearanceTab.fontFamilyCustomAriaLabel")}
       />
       <p className="mt-1 text-tiny">
         {t("appearanceTab.fontFamilyCustomHint")}
@@ -495,6 +499,14 @@ function GlassTintControl() {
   );
 }
 
+const CODE_FONT_PRESETS: ReadonlyArray<FontFamilyPreset> = [
+  { value: "system", label: "appearanceTab.codeFontSystem", stack: DEFAULT_APPEARANCE.terminalFont.family },
+  ...["JetBrains Mono", "Fira Code", "D2Coding", "Cascadia Code"].map((family) => ({
+    value: family, label: family, stack: '"' + family + '", ' + DEFAULT_APPEARANCE.terminalFont.family,
+  })),
+  { value: "sf-mono", label: "SF Mono / Menlo", stack: '"SF Mono", Menlo, ui-monospace, monospace' },
+];
+
 function TerminalFontSection() {
   const { t } = useTranslation();
   const notifySaved = useNotifySaved();
@@ -508,24 +520,28 @@ function TerminalFontSection() {
     setFailed(false);
     void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => { setFailed(true); setFont(appearance.terminalFont); });
   };
+  const activePreset = presetForStack(font.family, CODE_FONT_PRESETS);
   return <SettingsSection data-settings-section="appearance-terminal" title={t("appearanceTab.terminalTitle")}>
     {failed && <p role="alert" className="text-sm text-destructive">{t("appearanceTab.fontSaveFailed")}</p>}
-    <div className="grid gap-3 sm:grid-cols-3">
-      <label className="space-y-1 text-xs">{t("appearanceTab.terminalFamily")}
-        <input className="w-full rounded border border-input bg-background p-2" value={font.family} maxLength={256}
-          onChange={(event) => setFont({ ...font, family: event.target.value })}
-          onBlur={() => updateFont({ family: font.family.trim() })} />
-      </label>
-      <label className="space-y-1 text-xs">{t("appearanceTab.terminalSize")}
-        <TerminalNumberInput value={font.size} validate={isTerminalFontSize} inputMode="numeric"
-          onPreview={(size) => setFont({ ...font, size })} onCommit={(size) => updateFont({ size })}
-          onInvalid={() => setFont({ ...font, size: appearance.terminalFont.size })} />
-      </label>
-      <label className="space-y-1 text-xs">{t("appearanceTab.terminalLineHeight")}
-        <TerminalNumberInput value={font.lineHeight} validate={isTerminalLineHeight} inputMode="decimal"
-          onPreview={(lineHeight) => setFont({ ...font, lineHeight })} onCommit={(lineHeight) => updateFont({ lineHeight })}
-          onInvalid={() => setFont({ ...font, lineHeight: appearance.terminalFont.lineHeight })} />
-      </label>
+    <div className="space-y-2">
+      <label className="text-dense text-muted-foreground">{t("appearanceTab.terminalFamily")}</label>
+      <div role="radiogroup" aria-label={t("appearanceTab.terminalFamily")} data-testid="code-font-presets"
+        onKeyDown={handleRadioGroupKeyDown} className="flex flex-wrap gap-2">
+        {CODE_FONT_PRESETS.map((preset, index) => <button key={preset.value} type="button" role="radio"
+          aria-checked={activePreset === preset.value} tabIndex={activePreset === preset.value || (activePreset === "custom" && index === 0) ? 0 : -1}
+          style={{ fontFamily: preset.stack }} onClick={() => updateFont({ family: preset.stack })}
+          className={activePreset === preset.value ? "rounded-full border border-primary bg-primary px-3 py-1 text-xs text-primary-foreground" : "rounded-full border border-border px-3 py-1 text-xs text-muted-foreground hover:bg-muted/(--opacity-half) hover:text-foreground"}>
+          {t(preset.label)}
+        </button>)}
+      </div>
+      <FontFamilyCustomInput initial={activePreset === "custom" ? font.family : ""}
+        label={t("appearanceTab.codeFontCustomAriaLabel")} onCommit={(family) => updateFont({ family: family || DEFAULT_APPEARANCE.terminalFont.family })} />
+    </div>
+    <div className="flex flex-wrap gap-6">
+      <FontMetricStepper label={t("appearanceTab.terminalSize")} value={font.size} step={1} validate={isTerminalFontSize}
+        format={(value) => String(value) + "px"} onChange={(size) => updateFont({ size })} />
+      <FontMetricStepper label={t("appearanceTab.terminalLineHeight")} value={font.lineHeight} step={0.1} validate={isTerminalLineHeight}
+        format={(value) => value.toFixed(1)} onChange={(lineHeight) => updateFont({ lineHeight })} />
     </div>
     <pre data-testid="terminal-font-preview" className="overflow-x-auto rounded border border-border p-4"
       style={{ fontFamily: font.family, fontSize: font.size, lineHeight: font.lineHeight }}>
@@ -534,40 +550,20 @@ function TerminalFontSection() {
   </SettingsSection>;
 }
 
-
-/** Preserve incomplete numeric drafts while previewing only valid values. */
-function TerminalNumberInput({ value, validate, inputMode, onPreview, onCommit, onInvalid }: {
-  value: number;
-  validate: (value: unknown) => boolean;
-  inputMode: "numeric" | "decimal";
-  onPreview: (value: number) => void;
-  onCommit: (value: number) => void;
-  onInvalid: () => void;
+function FontMetricStepper({ label, value, step, validate, format, onChange }: {
+  label: string; value: number; step: number; validate: (value: unknown) => boolean;
+  format: (value: number) => string; onChange: (value: number) => void;
 }) {
-  const [raw, setRaw] = useState(String(value));
-  const focusedRef = useRef(false);
-  useEffect(() => {
-    if (!focusedRef.current) setRaw(String(value));
-  }, [value]);
-  const validNumber = (draft: string): number | null => {
-    if (!/^\d+(?:\.\d+)?$/.test(draft.trim())) return null;
-    const parsed = Number(draft);
-    return validate(parsed) ? parsed : null;
-  };
-  return <input className="w-full rounded border border-input bg-background p-2" type="text" inputMode={inputMode} value={raw}
-    onFocus={() => { focusedRef.current = true; }}
-    onChange={(event) => {
-      const draft = event.target.value;
-      setRaw(draft);
-      const parsed = validNumber(draft);
-      if (parsed !== null) onPreview(parsed);
-    }}
-    onBlur={() => {
-      focusedRef.current = false;
-      const parsed = validNumber(raw);
-      setRaw(String(parsed ?? value));
-      if (parsed !== null) onCommit(parsed);
-      else onInvalid();
-    }}
-    onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />;
+  const previous = Math.round((value - step) * 10) / 10;
+  const next = Math.round((value + step) * 10) / 10;
+  return <div role="group" aria-label={label} className="space-y-1">
+    <div className="text-dense text-muted-foreground">{label}</div>
+    <div className="flex items-center gap-2 text-sm">
+      <button type="button" aria-label={label + " −"} disabled={!validate(previous)} onClick={() => onChange(previous)}
+        className="rounded border border-input px-2 py-1 disabled:opacity-(--opacity-half)">−</button>
+      <span className="min-w-12 text-center tabular-nums">{format(value)}</span>
+      <button type="button" aria-label={label + " +"} disabled={!validate(next)} onClick={() => onChange(next)}
+        className="rounded border border-input px-2 py-1 disabled:opacity-(--opacity-half)">+</button>
+    </div>
+  </div>;
 }

@@ -1,5 +1,5 @@
 // Attribution and licenses: resources/licenses/appearance/NOTICE.
-import { DEFAULT_GLASS_TINT, glassTintAlpha, type AppearanceSettings } from "../../../shared/appearance-settings.js";
+import { DEFAULT_APPEARANCE, DEFAULT_GLASS_TINT, glassTintAlpha, type AppearanceSettings } from "../../../shared/appearance-settings.js";
 import { FONT_SIZE_SCALE_DEFAULT } from "../../../shared/appearance-font.js";
 import { THEME_TOKEN_NAMES, THEME_SURFACE_NAMES } from "../../../shared/theme-tokens.js";
 import type { ThemeTokens, ThemeSurfaces } from "../../../shared/theme-tokens.js";
@@ -141,6 +141,7 @@ export function applySchemeColors(scheme: ColorScheme, doc: Document = document)
 export function applyAppearance(appearance: AppearanceSettings, doc: Document = document, prefersDark = doc.defaultView?.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false): ResolvedTheme {
   const theme = applySchemeColors(resolveAppearanceScheme(appearance, prefersDark), doc);
   applyUiFont(appearance.font, doc);
+  doc.documentElement.style.setProperty("--font-mono", appearance.terminalFont?.family || DEFAULT_APPEARANCE.terminalFont.family);
   // The one glass token, for the shell being painted. Only `html[data-glass]` rules read it, so a window without the material
   // carries it unused.
   doc.documentElement.style.setProperty("--glass-tint-alpha", String(glassTintAlpha(appearance.glassTint ?? DEFAULT_GLASS_TINT, theme.shell)));
