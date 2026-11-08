@@ -1,6 +1,7 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
 import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
+import { createBrowserTabActivity } from "./browser-tab-activity.js";
 import { gateBrowserSiteNavigation } from "./browser-site-navigation.js";
 import { stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadResult, type BrowserUploadSelection } from "./browser-upload.js";
 import type { WebContents } from "electron";
@@ -894,6 +895,7 @@ const actionNavigations = new WeakMap<object, ActionNavigation>();
 
 // What the adapter needs of the tab registry.
 interface InputAttribution {
+  setAgentTabAwake(guestId: number, awake: boolean): boolean;
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
   releaseFocus(guestId: number): void;
   focusGuest(guestId: number): Promise<void>;
@@ -1387,6 +1389,20 @@ export function createBrowserPageActions(
   hostContentOrigin: HostContentOrigin,
   previewHost: AgentPreviewHost,
 ): BrowserPageActions<WebContents> {
+  const withActivity = createBrowserTabActivity((guestId, awake) => attribution.setAgentTabAwake(guestId, awake));
+  const awake = async <T>(live: LiveTab, act: () => Promise<T>): Promise<T> => {
+    const guest = live.tab.guest;
+    if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+    if (live.tab.opener !== "agent" || live.tab.owner === null || live.tab.targetKind !== "embedded") return act();
+    const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+    return withActivity(guest, live.signal, async () => {
+      const result = await session.send("Runtime.evaluate", {
+        expression: "({ width: innerWidth, height: innerHeight, visible: document.visibilityState !== 'hidden' })", returnByValue: true,
+      }) as { result?: { value?: { width?: number; height?: number; visible?: boolean } } };
+      const viewport = result.result?.value;
+      return !!viewport && (viewport.width ?? 0) > 0 && (viewport.height ?? 0) > 0 && viewport.visible === true;
+    }, act);
+  };
   const siteGates = new WeakMap<WebContents, () => void>();
   const installSiteGate = async (live: LiveTab, guest: WebContents, session: CdpSession) => {
     if (!live.authorizeSite) return;
@@ -1404,7 +1420,7 @@ export function createBrowserPageActions(
   };
   // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
   // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
-  const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => {
+  const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => awake(live, async () => {
     const guest = live.tab.guest;
     if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
@@ -1422,7 +1438,7 @@ export function createBrowserPageActions(
       throw err;
     }
     actionNavigations.set(guest, navigation);
-  };
+  });
   return {
     prepare: async (live) => {
       const guest = live.tab.guest;
@@ -1432,26 +1448,26 @@ export function createBrowserPageActions(
       if (live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was replaced");
     },
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
-      snapshot(await targetFor(live, attribution, hostContentOrigin), options),
-    screenshot: async (live: LiveTab, options) => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options),
+      awake(live, async () => snapshot(await targetFor(live, attribution, hostContentOrigin), options)),
+    screenshot: async (live: LiveTab, options) => awake(live, async () => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options)),
     capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),
     hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
     drag: async (live, sourceRef, targetRef) => tracked(live, async () => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef)),
     select: async (live, ref, value) => tracked(live, async () => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value)),
     scroll: async (live, ref, direction, pixels) => tracked(live, async () => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels)),
-    upload: async (live, ref, options) => {
+    upload: async (live, ref, options) => awake(live, async () => {
       if (!live.approval) throw new BrowserActionError("upload-unapproved", "upload requires approval for the current document");
       return upload(await targetFor(live, attribution, hostContentOrigin, true), ref, { ...options, ...live.approval, ref, signal: live.signal });
-    },
+    }),
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
-      waitFor(await targetFor(live, attribution, hostContentOrigin), options),
+      awake(live, async () => waitFor(await targetFor(live, attribution, hostContentOrigin), options)),
     click: async (live: LiveTab, ref: string) =>
       tracked(live, async () => click(await targetFor(live, attribution, hostContentOrigin, true), ref, browserRefs, live.onObservationTarget)),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
       tracked(live, async () => type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options, browserRefs, live.onObservationTarget)),
     pressKey: async (live: LiveTab, key: string, ref?: string) =>
       tracked(live, async () => pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref)),
-    navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
+    navigate: async (live: LiveTab, url: string, approvedOrigin: string) => awake(live, async () => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
       const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
@@ -1459,7 +1475,7 @@ export function createBrowserPageActions(
       const lifecycle = navigationLifecycle(live, guest);
       try { return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined); }
       finally { lifecycle.stop(); }
-    },
+    }),
     settle: async (live: LiveTab) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");

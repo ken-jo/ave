@@ -190,6 +190,19 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
       if (observed) entry.frame.setAttribute("aria-hidden", "true");
       else entry.frame.removeAttribute("aria-hidden");
       entry.frame.style.pointerEvents = "none";
+      if (observed) {
+        const width = entry.guest.style.width || "1024px";
+        const height = entry.guest.style.height || "768px";
+        entry.frame.style.left = "0px";
+        entry.frame.style.top = "0px";
+        entry.frame.style.width = width;
+        entry.frame.style.height = height;
+        entry.frame.style.clipPath = "";
+        entry.guest.style.left = "0px";
+        entry.guest.style.top = "0px";
+        entry.guest.style.width = width;
+        entry.guest.style.height = height;
+      }
     }
     entry.key = key;
   }

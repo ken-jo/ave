@@ -13,6 +13,7 @@ import { WebSurfaceLayer, WebSurfaceSlot, placeWebSurfaces } from "../WebSurface
 import { EdgeResizeBar } from "../EdgeResizeBar.js";
 import {
   setHiddenWebSurfaceObserved,
+  setWebSurfaceAwake,
   beginSurfaceDrag,
   committedWebSurfaceLocation,
   endSurfaceDrag,
@@ -58,6 +59,37 @@ const bindTab = vi.fn(async (_request: { tabId: string; webContentsId: number; r
 const layerApi = { browserTabs: { bindTab } } as unknown as AveApi;
 
 describe("WebSurfaceLayer", () => {
+  it("lays out a never-shown background guest invisibly and reveals that same guest mid-action", () => {
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    render(<Harness where="side" />);
+    const slot = screen.getByTestId("web-surface-slot");
+    slot.style.visibility = "hidden";
+    const guest = guests()[0]!;
+    const src = guest.getAttribute("src");
+    try {
+      setWebSurfaceAwake("browser:1", true);
+      act(() => { placeWebSurfaces(); });
+      expect(frame("browser:1").style).toMatchObject({ width: "1024px", height: "768px", opacity: "0", visibility: "visible", pointerEvents: "none" });
+      expect(guest.style).toMatchObject({ width: "1024px", height: "768px" });
+      expect(frame("browser:1").hasAttribute("inert")).toBe(true);
+      Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
+      Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+      stubBox(slot, { left: 10, top: 20, width: 640, height: 480 });
+      slot.style.visibility = "visible";
+      act(() => { placeWebSurfaces(); });
+      expect(guests()[0]).toBe(guest);
+      expect(guest.getAttribute("src")).toBe(src);
+      expect(frame("browser:1").style).toMatchObject({ opacity: "", pointerEvents: "auto", width: "640px" });
+      expect(frame("browser:1").hasAttribute("inert")).toBe(false);
+      slot.style.visibility = "hidden";
+      setWebSurfaceAwake("browser:1", false);
+      act(() => { placeWebSurfaces(); });
+      expect(frame("browser:1").style.visibility).toBe("hidden");
+      setWebSurfaceAwake("browser:1", true);
+      act(() => { placeWebSurfaces(); });
+      expect(guest.style).toMatchObject({ width: "640px", height: "480px" });
+    } finally { setWebSurfaceAwake("browser:1", false); }
+  });
   it("keeps host favicon helper schemes aligned with the renderer img-src CSP", () => {
     const html = readFileSync("src/index.html", "utf8");
     const policy = html.match(/content="([^"]*default-src[^"]*)"/)![1]!;

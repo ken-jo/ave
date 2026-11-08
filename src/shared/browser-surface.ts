@@ -38,6 +38,7 @@ export type BrowserTabOpRequest =
   | { readonly requestId: string; readonly op: "new"; readonly url: string; readonly active: boolean; readonly sessionId?: string; readonly inTabId?: string }
   | { readonly requestId: string; readonly op: "select"; readonly tabId: string }
   | { readonly requestId: string; readonly op: "close"; readonly tabId: string }
+  | { readonly requestId: string; readonly op: "wake" | "sleep"; readonly tabId: string }
   /** Focus this existing renderer slot without selecting or moving another surface. */
   | { readonly requestId: string; readonly op: "focus"; readonly tabId: string }
   /** Restore the window’s prior keyboard focus after tool actions without awaiting a renderer acknowledgement. */
@@ -63,7 +64,7 @@ export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | 
       ...(typeof inTabId === "string" ? { inTabId } : {}),
     };
   }
-  if ((record.op === "select" || record.op === "close" || record.op === "focus" || record.op === "restore-focus") && typeof record.tabId === "string") {
+  if ((record.op === "select" || record.op === "close" || record.op === "wake" || record.op === "sleep" || record.op === "focus" || record.op === "restore-focus") && typeof record.tabId === "string") {
     if (record.tabId.length === 0 || !hasOnlyKeys(value, ["requestId", "op", "tabId"])) return null;
     return { requestId: record.requestId, op: record.op, tabId: record.tabId };
   }

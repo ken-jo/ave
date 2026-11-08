@@ -559,12 +559,10 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
     sessionId: () => browserTabHostRef.current.currentSessionId ?? null,
     hasTab: (tabId) => browserTabHostRef.current.workspaceTabs.tabs.some((tab) => tab.id === tabId),
     openAgentTab: (url, requestId, active, owner) => {
-      const { workspaceTabs: store, onSidePanelOpenChange: openPanel } = browserTabHostRef.current;
-      if (store.openAgentBrowserTab(url, requestId, active, owner) !== null && active) openPanel(true);
+      browserTabHostRef.current.workspaceTabs.openAgentBrowserTab(url, requestId, active, owner);
     },
     selectTab: (tabId) => {
       browserTabHostRef.current.workspaceTabs.setActiveTabId(tabId);
-      browserTabHostRef.current.onSidePanelOpenChange(true);
     },
     closeTab: (tabId) => browserTabHostRef.current.workspaceTabs.closeTab(tabId),
   }), [api]);

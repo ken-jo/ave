@@ -1248,6 +1248,15 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     });
   }
 
+  setAgentTabAwake(guestId: number, awake: boolean): boolean {
+    const tab = [...this.tabs.values()].find((entry) => entry.guest?.id === guestId);
+    if (!tab || tab.rendererTabId === null || !this.isLive(tab)
+      || awake && (tab.opener !== "agent" || tab.owner === null || tab.controlMode === "human-paused")) return false;
+    return this.link?.sendTabOp(tab.windowId, {
+      requestId: `browser-layout-${this.nextRequest++}`, op: awake ? "wake" : "sleep", tabId: tab.rendererTabId,
+    }) === true;
+  }
+
   private isLive(tab: BrowserTabRecord<G>): boolean {
     return tab.guest !== null && !tab.guest.isDestroyed();
   }

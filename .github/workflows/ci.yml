@@ -653,6 +653,8 @@ jobs:
           src/main/browser/__tests__/browser-popup-navigation.test.ts
           src/main/browser/__tests__/browser-tab-registry.test.ts
           src/main/browser/__tests__/browser-actions.test.ts
+          src/main/browser/__tests__/browser-tab-activity.test.ts
+          src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx
           src/main/browser/__tests__/browser-tools-source.test.ts
           src/ui/renderer/components/__tests__/ToolApprovalContent-session-scope.test.tsx
           src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx

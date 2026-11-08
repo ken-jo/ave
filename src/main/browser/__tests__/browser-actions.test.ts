@@ -46,6 +46,7 @@ class FakeCdp implements CdpSession {
   hit = { backendNodeId: 0, frameId: "main" };
   // How far the page is scrolled, as the layout metrics report it.
   scroll = { x: 0, y: 0 };
+  viewport = { clientWidth: 1024, clientHeight: 768 };
   readonly events = new EventEmitter();
   onEvent(listener: (method: string, params: Record<string, unknown>) => void): () => void {
     this.events.on("message", listener);
@@ -73,7 +74,7 @@ class FakeCdp implements CdpSession {
         if (params?.type === "touchEnd") this.pressed = true;
         return {};
       case "Page.getFrameTree": return { frameTree: this.frameTree };
-      case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX: this.scroll.x, pageY: this.scroll.y } };
+      case "Page.getLayoutMetrics": return { cssVisualViewport: { pageX: this.scroll.x, pageY: this.scroll.y, ...this.viewport } };
       case "DOM.getNodeForLocation":
         // Chromium rejects a fractional point.
         if (!Number.isInteger(params?.x) || !Number.isInteger(params?.y)) throw new Error("Invalid parameters");
@@ -172,6 +173,15 @@ function snapshotFixture() {
 }
 
 describe("browser snapshot refs", () => {
+  it("refuses a zero layout viewport before the location hit test", async () => {
+    const { refs, cdp } = snapshotFixture();
+    cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
+    const shot = await snapshot(target(cdp), {}, refs);
+    const ref = /\[ref=(e\d+)\]/.exec(shot.text)![1]!;
+    cdp.viewport = { clientWidth: 0, clientHeight: 0 };
+    await expect(click(target(cdp), ref, refs)).rejects.toMatchObject({ code: "tab-not-laid-out" });
+    expect(cdp.calls.some(call => call.method === "DOM.getNodeForLocation")).toBe(false);
+  });
   it("gives interactive elements refs that stay the same across snapshots", async () => {
     const { refs, cdp } = snapshotFixture();
     cdp.nodes = page([
@@ -1085,6 +1095,7 @@ function modelFocusRelease(registry: BrowserTabRegistry<never>, guestId: number,
 }
 
 function adapterFixture(options: {
+  agent?: boolean;
   hostKnown?: boolean;
   registry?: BrowserTabRegistry<never>;
   router?: WindowTouchRouter;
@@ -1092,6 +1103,8 @@ function adapterFixture(options: {
   tabId?: string;
 } = {}) {
   const cdp = new FakeCdp();
+  let laidOut = false;
+  const layoutOps: string[] = [];
   cdp.nodes = page([ax("f", "textbox", "Replacement", { backendDOMNodeId: 5 })]);
   cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
   const router = options.router ?? new WindowTouchRouter();
@@ -1104,6 +1117,7 @@ function adapterFixture(options: {
     detach: vi.fn(() => { attached = false; }),
     isAttached: () => attached,
     sendCommand: async (method: string, params?: Record<string, unknown>) => {
+      if (method === "Runtime.evaluate") return { result: { value: { width: laidOut ? 1024 : 0, height: laidOut ? 768 : 0, visible: laidOut } } };
       const result = await cdp.send(method, params);
       if (method === "Input.dispatchMouseEvent" && (params?.type === "mousePressed" || params?.type === "mouseReleased")) {
         registry.userInput(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: params.x as number, y: params.y as number, button: "left", clickCount: 1 });
@@ -1129,6 +1143,7 @@ function adapterFixture(options: {
   const guest = Object.assign(guestEvents, {
     id: options.guestId ?? 101, isDestroyed: () => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
     mainFrame, focusedFrame: mainFrame, debugger: debuggerEvents, touches,
+    getBackgroundThrottling: () => true, setBackgroundThrottling: vi.fn(),
     // What the guest tracking does with a page's native touch input.
     report: (input: { type: string; _modifiers: number }) => {
       if (input.type === "touchStart") touches.push("touchStart");
@@ -1137,8 +1152,19 @@ function adapterFixture(options: {
   });
   registry.guestAttached(guest as never, 1);
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
+  registry.setRendererLink({ sendControl: () => {}, sendTabOp: (_windowId, request) => {
+    layoutOps.push(request.op);
+    if (request.op === "wake") laidOut = true;
+    if (request.op === "sleep") laidOut = false;
+    return true;
+  } });
   modelFocusRelease(registry, guest.id, cdp);
   const tab = registry.listTabs(1).map((entry) => registry.liveTab(entry.tabId)!).find((entry) => entry.guest === (guest as never))!;
+  if (options.agent) {
+    tab.opener = "agent";
+    tab.owner = { sessionId: "conversation" };
+    tab.agentOrigin = browserOrigin(url);
+  }
   const actions = createBrowserPageActions(registry, browserOrigin, () => (options.hostKnown === false ? null : HOST_CONTENT), {
     // These cases assert page actions, not thumbnails; a capture attempt fails and leaves the tool result as it is.
     decodePng: () => { throw new Error("no image decoder in this fixture"); },
@@ -1161,13 +1187,38 @@ function adapterFixture(options: {
       approval: { tabId: tab.handle, origin: scope.origin, documentId: scope.documentId, controlGeneration: scope.controlGeneration },
     } as unknown as Parameters<typeof actions.pressKey>[0];
   };
-  return { cdp, guest, registry, router, tab, actions, approve, tool, echo, navigate: (next: string) => {
+  return { cdp, guest, registry, router, tab, actions, approve, tool, echo, layoutOps, navigate: (next: string) => {
     url = next;
     cdp.frameTree.frame = { ...cdp.frameTree.frame, url, loaderId: "loader-2" };
     registry.navigationStarted(guest.id, url);
     cdp.events.emit("message", "Page.frameNavigated", { frame: cdp.frameTree.frame });
   } };
 }
+
+it("wakes a background agent guest for input without selecting or opening its panel", async () => {
+  vi.useFakeTimers();
+  try {
+    const { actions, approve, registry, tab, layoutOps, cdp, guest } = adapterFixture({ agent: true });
+    const live = await approve("browser_press_key");
+    await actions.pressKey(live, "Escape");
+    expect(cdp.inputs()).toEqual(["Input.dispatchKeyEvent", "Input.dispatchKeyEvent"]);
+    expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
+    expect(layoutOps.filter(op => op === "wake")).toEqual(["wake"]);
+    expect(layoutOps).not.toContain("select");
+    await actions.pressKey(live, "Escape");
+    expect(layoutOps.filter(op => op === "wake")).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(layoutOps).toContain("sleep");
+    expect(guest.setBackgroundThrottling).toHaveBeenLastCalledWith(true);
+  } finally { vi.useRealTimers(); }
+});
+
+it("leaves user-owned guests on their existing painting and throttle path", async () => {
+  const { actions, approve, layoutOps, guest } = adapterFixture();
+  await actions.pressKey(await approve("browser_press_key"), "Escape");
+  expect(layoutOps).not.toContain("wake");
+  expect(guest.setBackgroundThrottling).not.toHaveBeenCalled();
+});
 
 it("executes the first cold action with an unchanged page after one approval binding", async () => {
   const { cdp, tab, actions, approve } = adapterFixture();

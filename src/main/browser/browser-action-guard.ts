@@ -156,7 +156,10 @@ export async function withGuardedAction(
               if (!position) wrongTarget();
               // Input points are in the viewport; the hit test takes document points (measured: on a page scrolled sideways the viewport point found nothing). The
               // scroll offset turns one into the other. The offset is fractional on a scaled display, and CDP takes only whole pixels: the one holding the point.
-              const metrics = await read("Page.getLayoutMetrics") as { cssVisualViewport?: { pageX?: unknown; pageY?: unknown } };
+              const metrics = await read("Page.getLayoutMetrics") as { cssVisualViewport?: { pageX?: unknown; pageY?: unknown; clientWidth?: number; clientHeight?: number } };
+              if (metrics.cssVisualViewport?.clientWidth === 0 || metrics.cssVisualViewport?.clientHeight === 0) {
+                throw new BrowserActionError("tab-not-laid-out", "the tab is not laid out; show the tab and retry");
+              }
               const scrollX = metrics.cssVisualViewport?.pageX;
               const scrollY = metrics.cssVisualViewport?.pageY;
               if (typeof scrollX !== "number" || typeof scrollY !== "number") wrongTarget();

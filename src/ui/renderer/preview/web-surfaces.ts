@@ -20,6 +20,14 @@ const liveSources = new Map<symbol, ReadonlySet<string>>();
 const occluders = new Set<HTMLElement>();
 let dragActive = false;
 const observedHiddenTabs = new Set<string>();
+const awakeTabs = new Set<string>();
+
+export function setWebSurfaceAwake(tabId: string, awake: boolean): void {
+  if (awakeTabs.has(tabId) === awake) return;
+  if (awake) awakeTabs.add(tabId);
+  else awakeTabs.delete(tabId);
+  requestWebSurfaceLayout();
+}
 
 /** Only a shown conversation preview may keep its hidden guest painting. */
 export function setHiddenWebSurfaceObserved(tabId: string, observed: boolean): void {
@@ -29,7 +37,7 @@ export function setHiddenWebSurfaceObserved(tabId: string, observed: boolean): v
   requestWebSurfaceLayout();
 }
 
-export function isHiddenWebSurfaceObserved(tabId: string): boolean { return observedHiddenTabs.has(tabId); }
+export function isHiddenWebSurfaceObserved(tabId: string): boolean { return observedHiddenTabs.has(tabId) || awakeTabs.has(tabId); }
 
 /** React-facing listeners: the entry list and the element map changed. */
 const listeners = new Set<() => void>();
@@ -188,6 +196,8 @@ function scheduleReconcile(): void {
     for (const surface of surfaces) if (!live.has(surface.tabId)) {
       locations.delete(surface.tabId);
       favicons.delete(surface.tabId);
+      awakeTabs.delete(surface.tabId);
+      observedHiddenTabs.delete(surface.tabId);
     }
     surfaces = next;
     emit();

@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import type { AveApi } from "../types.js";
-import { getWebSurfaceElement, noteWebSurfaceFavicon } from "./web-surfaces.js";
+import { getWebSurfaceElement, noteWebSurfaceFavicon, setWebSurfaceAwake } from "./web-surfaces.js";
 import { guestFaviconSource } from "./favicon-source.js";
 
 export interface BrowserTabHost {
@@ -93,6 +93,10 @@ let hostFocus: HostFocusMemory | null = null;
  * (`inTabId`) that no host can load into, so the caller tells main at once instead of letting the agent wait out the
  * timeout. */
 export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: readonly BrowserTabHost[] = hosts): "refused" | undefined {
+  if (request.op === "wake" || request.op === "sleep") {
+    setWebSurfaceAwake(request.tabId, request.op === "wake");
+    return;
+  }
   if (request.op === "focus") {
     const guest = getWebSurfaceElement(request.tabId);
     if (!guest?.isConnected || document.visibilityState !== "visible" || guest.closest("[inert]")) return;
