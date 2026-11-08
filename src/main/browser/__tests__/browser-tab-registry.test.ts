@@ -20,6 +20,10 @@ class FakeGuest implements BrowserGuest {
   }
   isFocused(): boolean { return this.focused; }
   focus(): void { this.focused = true; }
+  close(options: { waitForBeforeUnload: boolean }): void {
+    expect(options.waitForBeforeUnload).toBe(false);
+    this.destroyed = true;
+  }
 }
 
 function setup() {
@@ -53,6 +57,29 @@ afterEach(() => {
 });
 
 describe("BrowserTabRegistry", () => {
+
+  it("closes an owned guest without waiting for renderer work, unrelated timers or leases", async () => {
+    vi.useFakeTimers();
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "owned", webContentsId: 91, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    await opening;
+    attachTab(registry, { tabId: "unrelated", webContentsId: 92 });
+    const unrelated = registry.liveTab("tab-2")!;
+    const lease = registry.acquireControl(unrelated, { sessionId: "other" });
+    const timer = vi.fn();
+    const pendingTimer = setTimeout(timer, 60_000);
+    let outcome: unknown;
+    void registry.requestTabOp(1, { op: "close", tabId: "tab-1", actor: ACTOR }).then((result) => { outcome = result; });
+    await Promise.resolve();
+    expect(outcome).toEqual({ ok: true, tabId: "tab-1" });
+    expect(registry.liveTab("tab-1")).toBeUndefined();
+    expect(unrelated.lease).toEqual(lease);
+    expect(timer).not.toHaveBeenCalled();
+    clearTimeout(pendingTimer);
+    registry.__reset();
+  });
+
   it.each([ACTOR, { sessionId: "child", directParentSessionId: "conversation" }])("retains agent mode after approval, wake and lease release for %j", async (actor) => {
     const { registry, ops } = setup();
     const answer = deferred<void>();
