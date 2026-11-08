@@ -51,7 +51,7 @@ describe("queued app provenance", () => {
     act(() => { store.add("Older guidance", "app:older"); });
     await s.emit({ type: "tool_end", name: "read_file", result: "done" });
     act(() => { store.toggleSelect(store.add("Selected app text", "app:other").id); });
-    await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
     expect(s.onAsk.mock.calls).toEqual([
       ["Selected app text", expect.anything(), { injectHint: "interrupt", appSource: "app:other" }],
       ["App draft", undefined, { injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE }],
@@ -65,7 +65,7 @@ describe("queued app provenance", () => {
     const s = setup({ streaming: true });
     const text = "a".repeat(8_001);
     act(() => s.result.current.setDraft({ text, appSource: SOURCE }));
-    await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
     expect(s.onAsk).toHaveBeenCalledExactlyOnceWith(text, expect.anything(), { injectHint: "interrupt", appSource: SOURCE });
     expect(s.result.current.draft).toEqual({ text: "" });
     expect(s.result.current.queue.messageQueueStore.getPending()).toEqual([]);
@@ -80,7 +80,7 @@ describe("queued app provenance", () => {
       store.toggleSelect(item.id);
       s.result.current.setDraft({ text, appSource: SOURCE });
     });
-    await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
     expect(s.onAsk).not.toHaveBeenCalled();
     expect(s.result.current.draft).toEqual({ text, appSource: SOURCE });
     expect(s.result.current.queue.messageQueueStore.getPending()).toMatchObject([{ text: "Other source", appSource: "app:other", selected: true }]);
@@ -94,7 +94,7 @@ describe("queued app provenance", () => {
       const store = s.result.current.queue.messageQueueStore;
       store.toggleSelect(store.add("Selected app text", "app:other").id);
     });
-    await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
     expect(s.onAsk).toHaveBeenCalledExactlyOnceWith("Selected app text", expect.anything(), { injectHint: "interrupt", appSource: "app:other" });
     expect(s.result.current.queue.messageQueueStore.getPending()).toMatchObject([{ text: "App draft", appSource: SOURCE }]);
     await act(async () => { firstTurn.resolve(); await firstTurn.promise; });
@@ -117,7 +117,7 @@ describe("queued app provenance", () => {
       if (delivery === "auto") await s.emit({ type: "done" });
       else await act(async () => {
         if (delivery === "interrupt") s.result.current.queue.flushQueueAsUserMessage();
-        else s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }));
+        else s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true }));
       });
       expect(store.getPending().map((item) => item.text)).toEqual(["B"]);
       act(() => { store.add("C", "app:third"); });
@@ -180,7 +180,7 @@ describe("queued app provenance", () => {
       else if (delivery === "guide") await s.emit({ type: "tool_end", name: "read_file", result: "done" });
       else await act(async () => {
         if (delivery === "interrupt") s.result.current.queue.flushQueueAsUserMessage();
-        else s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }));
+        else s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true }));
       });
       const calls = delivery === "guide" ? s.inject.mock.calls : s.onAsk.mock.calls;
       expect(calls).toHaveLength(3);
@@ -253,7 +253,7 @@ describe("queued app provenance", () => {
 
   it("carries the composer snapshot through the guide shortcut", async () => {
     const s = setup({ streaming: true });
-    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, cancelable: true })));
+    await act(async () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, cancelable: true })));
     expect(s.inject).toHaveBeenCalledWith("App draft", undefined, SOURCE);
     expect(s.result.current.draft).toEqual({ text: "" });
   });
@@ -262,7 +262,7 @@ describe("queued app provenance", () => {
     const reply = deferred<{ ok: true }>();
     const s = setup({ streaming: true });
     s.inject.mockImplementationOnce(() => reply.promise);
-    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, cancelable: true })));
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, cancelable: true })));
     act(() => s.result.current.setDraft({ text: "App draft", appSource: "app:other" }));
     await act(async () => { reply.resolve({ ok: true }); await reply.promise; });
     expect(s.result.current.draft).toEqual({ text: "App draft", appSource: "app:other" });
@@ -272,7 +272,7 @@ describe("queued app provenance", () => {
     const reply = deferred<{ ok: true }>();
     const s = setup({ streaming: true });
     s.inject.mockImplementationOnce(() => reply.promise);
-    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, cancelable: true })));
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, cancelable: true })));
     act(() => s.result.current.setDraft({ ...s.result.current.draft }));
     const replacement = s.result.current.draft;
     await act(async () => { reply.resolve({ ok: true }); await reply.promise; });
@@ -285,7 +285,7 @@ describe("queued app provenance", () => {
     s.send();
     const store = s.result.current.queue.messageQueueStore;
     act(() => { store.toggleSelect(store.getPending()[0].id); s.result.current.setQuestion("Additional text"); });
-    act(() => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true })));
+    act(() => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
     expect(s.onAsk).toHaveBeenCalledWith("App draft\nAdditional text", expect.anything(), { injectHint: "interrupt", appSource: SOURCE });
     expect(s.interceptSubmit).not.toHaveBeenCalled();
   });

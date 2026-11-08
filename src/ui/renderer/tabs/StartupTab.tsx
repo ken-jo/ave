@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { Switch } from "../../../components/ui/switch.js";
@@ -14,8 +14,8 @@ import { SettingsTextField } from "../components/SettingsTextField.js";
 import { getApi } from "../api-client.js";
 import { DEFAULT_CORP_CA_COMMON_NAME } from "../../../shared/corp-ca-common-name.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
-import { normalizeAccelerator } from "../../../shared/shortcuts.js";
-import { eventToAccelerator } from "../utils/accelerator-capture.js";
+import { acceleratorFromEvent, normalizeAccelerator } from "../../../shared/shortcuts.js";
+import { rendererShortcutPlatform, setShortcutCaptureActive } from "../hooks/use-shortcuts.js";
 import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
 
@@ -74,6 +74,11 @@ export function StartupTab() {
   // halfway through typing.
   const [corpCaCommonName, setCorpCaCommonName] = useState(DEFAULT_CORP_CA_COMMON_NAME);
   const [capturing, setCapturing] = useState(false);
+  // App shortcuts stay quiet while a key is being recorded, or recording ⌘⇧T would also reopen a closed surface.
+  useEffect(() => {
+    setShortcutCaptureActive(capturing);
+    return () => setShortcutCaptureActive(false);
+  }, [capturing]);
   const captureInputRef = useRef<HTMLDivElement | null>(null);
 
   const applySnapshot = useCallback((s: AppSettings) => {
@@ -220,9 +225,9 @@ export function StartupTab() {
         setCapturing(false);
         return;
       }
-      const accel = eventToAccelerator(e);
-      if (accel === null) return; // modifier-only press — keep waiting for a key.
-      const normalized = normalizeAccelerator(accel);
+      const recorded = acceleratorFromEvent(e, rendererShortcutPlatform());
+      if (recorded.kind !== "accelerator") return; // modifier-only or unbindable press — keep waiting for a key.
+      const normalized = normalizeAccelerator(recorded.accelerator);
       if (normalized === null) return;
       setToggleWindow(normalized);
       setCapturing(false);

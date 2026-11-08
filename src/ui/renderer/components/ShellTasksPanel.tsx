@@ -7,6 +7,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { ShellTask, ShellTaskAction } from "../../../shared/shell-tasks.js";
 import type { AveApi } from "../types.js";
 import type { ComposerHandle } from "./Composer.js";
+import { matchesShortcut, useShortcutHint } from "../hooks/use-shortcuts.js";
 
 export function ShellTasksPanel({ api, sessionId, composerRef }: {
   api: Pick<AveApi, "chatListShellTasks" | "chatControlShellTask">;
@@ -14,6 +15,7 @@ export function ShellTasksPanel({ api, sessionId, composerRef }: {
   composerRef: RefObject<ComposerHandle | null>;
 }) {
   const { t } = useTranslation();
+  const backgroundHint = useShortcutHint("composer.backgroundCommand") ?? "";
   const [open, setOpen] = useState(false);
   const [tasks, setTasks] = useState<ShellTask[]>([]);
   const [error, setError] = useState(false);
@@ -71,8 +73,8 @@ export function ShellTasksPanel({ api, sessionId, composerRef }: {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || event.isComposing || !event.ctrlKey || event.metaKey || event.altKey || event.shiftKey ||
-          event.key.toLowerCase() !== "b" || event.target !== composerRef.current?.textarea()) return;
+      if (event.defaultPrevented || event.repeat || event.isComposing || !matchesShortcut("composer.backgroundCommand", event) ||
+          event.target !== composerRef.current?.textarea()) return;
       event.preventDefault();
       void handleAction("background");
     };
@@ -82,14 +84,14 @@ export function ShellTasksPanel({ api, sessionId, composerRef }: {
 
   return <Popover open={open} onOpenChange={setOpen}>
     <PopoverTrigger asChild>
-      <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-xs" data-testid="shell-tasks-trigger" aria-label={t("shellTasks.title")} title={t("shellTasks.shortcut")}>
+      <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-xs" data-testid="shell-tasks-trigger" aria-label={t("shellTasks.title")} title={t("shellTasks.shortcut", { shortcut: backgroundHint })}>
         <Terminal className="h-3 w-3" aria-hidden="true" />{t("shellTasks.title")}
       </Button>
     </PopoverTrigger>
     <PopoverContent className="w-96 max-w-[90vw] space-y-3" aria-label={t("shellTasks.title")}>
       <h3 className="text-sm font-semibold">{t("shellTasks.title")}</h3>
-      <p className="text-xs text-muted-foreground">{t("shellTasks.shortcut")}</p>
-      <p className="text-xs text-muted-foreground">{t("shellTasks.limits")}</p>
+      <p className="text-xs text-muted-foreground">{t("shellTasks.shortcut", { shortcut: backgroundHint })}</p>
+      <p className="text-xs text-muted-foreground">{t("shellTasks.limits", { shortcut: backgroundHint })}</p>
       {error && <p role="alert" className="text-xs text-destructive">{t("shellTasks.unavailable")}</p>}
       {tasks.length === 0 && <EmptyState role="status" className="p-0" title={t("shellTasks.empty")} />}
       <ul className="max-h-80 space-y-3 overflow-y-auto" aria-label={t("shellTasks.title")}>

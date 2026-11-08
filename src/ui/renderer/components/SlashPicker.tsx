@@ -14,6 +14,7 @@ import { buildComposerMenuSections } from "./slash-picker-data.js";
 import { loadSlashPickerRuntime } from "../hooks/use-slash-picker-runtime.js";
 import { useNativeMenu } from "../hooks/use-native-context-menu.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
+import { useShortcutHint } from "../hooks/use-shortcuts.js";
 
 export interface SlashPickerProps {
   /** Every selectable persona, the "no persona" default included — the first submenu. */
@@ -123,6 +124,7 @@ export function SlashPicker({
     void openMenu();
   }, [open, openMenu]);
 
+  const paletteHint = useShortcutHint("app.commandPalette") ?? "";
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -131,7 +133,7 @@ export function SlashPicker({
           variant="outline"
           size="sm"
           className="h-7 w-7 shrink-0 bg-input-bar p-0"
-          aria-label={t("slashPicker.ariaLabel")}
+          aria-label={t("slashPicker.ariaLabel", { shortcut: paletteHint })}
           aria-haspopup="menu"
           data-testid={TEST_IDS.slashPickerTrigger}
           // SpotlightTour anchor: step 3 of the `first-boot-essentials` scenario highlights this toggle, see
@@ -142,7 +144,7 @@ export function SlashPicker({
           <CommandIcon className="h-3.5 w-3.5" />
         </Button>
       </TooltipTrigger>
-      <TooltipContent side="top">{t("slashPicker.shortcutHint")}</TooltipContent>
+      <TooltipContent side="top">{paletteHint}</TooltipContent>
     </Tooltip>
   );
 }

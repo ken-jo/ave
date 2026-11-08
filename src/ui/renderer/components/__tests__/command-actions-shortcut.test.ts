@@ -1,45 +1,56 @@
-import { describe, it, expect } from "vitest";
-import {
-  WORKSPACE_TAB_LAUNCHER,
-  matchesLauncherShortcut,
-  type WorkspaceLauncherShortcut,
-} from "../command-actions.js";
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it } from "vitest";
+import { NO_SHORTCUT_OVERRIDES } from "../../../../shared/shortcuts.js";
+import { __resetShortcutsForTest, matchesShortcut, setShortcutCaptureActive, setShortcutSettings, shortcutHint } from "../../hooks/use-shortcuts.js";
+import { WORKSPACE_TAB_LAUNCHER } from "../command-actions.js";
 
-function keyEvent(over: Partial<KeyboardEvent>): Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey"> {
-  return { key: "a", metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...over };
+function keyEvent(over: Partial<KeyboardEvent>): Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey"> {
+  return { key: "a", code: "", metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...over };
 }
 
-describe("workspace launcher shortcut matcher — alt field", () => {
-  it("side-chat is a launcher item bound to ⌥⌘S", () => {
-    const sideChat = WORKSPACE_TAB_LAUNCHER.find((i) => i.kind === "side-chat");
-    expect(sideChat).toBeTruthy();
-    expect(sideChat!.shortcut).toEqual({ key: "s", meta: true, ctrl: false, shift: false, alt: true });
-    expect(sideChat!.shortcutHint).toBe("⌥⌘S");
+function setPlatform(isDarwin: boolean): void {
+  (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin };
+}
+
+afterEach(() => {
+  __resetShortcutsForTest();
+  delete (window as unknown as { avePlatform?: unknown }).avePlatform;
+});
+
+describe("workspace launcher shortcuts", () => {
+  it("binds the side chat to ⌥⌘S through the registry", () => {
+    setPlatform(true);
+    const sideChat = WORKSPACE_TAB_LAUNCHER.find((item) => item.kind === "side-chat");
+    expect(sideChat?.shortcutId).toBe("workspace.openSideChat");
+    expect(shortcutHint("workspace.openSideChat")).toBe("⌥⌘S");
+    // Option turns S into ß on a Mac; the physical key still matches.
+    expect(matchesShortcut("workspace.openSideChat", keyEvent({ key: "ß", code: "KeyS", metaKey: true, altKey: true }))).toBe(true);
+    expect(matchesShortcut("workspace.openSideChat", keyEvent({ key: "s", code: "KeyS", metaKey: true }))).toBe(false);
   });
 
-  it("⌥⌘S matches the side-chat shortcut", () => {
-    const sc = WORKSPACE_TAB_LAUNCHER.find((i) => i.kind === "side-chat")!.shortcut!;
-    expect(matchesLauncherShortcut(sc, keyEvent({ key: "s", metaKey: true, altKey: true }))).toBe(true);
-    // Ctrl+Alt+S also matches (non-mac meta acceptance).
-    expect(matchesLauncherShortcut(sc, keyEvent({ key: "s", ctrlKey: true, altKey: true }))).toBe(true);
+  it("uses Ctrl off macOS and shows it in words", () => {
+    setPlatform(false);
+    expect(shortcutHint("workspace.openSideChat")).toBe("Ctrl+Alt+S");
+    expect(matchesShortcut("workspace.openSideChat", keyEvent({ key: "s", code: "KeyS", ctrlKey: true, altKey: true }))).toBe(true);
   });
 
-  it("⌘S without Alt does NOT match the ⌥⌘S binding", () => {
-    const sc = WORKSPACE_TAB_LAUNCHER.find((i) => i.kind === "side-chat")!.shortcut!;
-    expect(matchesLauncherShortcut(sc, keyEvent({ key: "s", metaKey: true, altKey: false }))).toBe(false);
+  it("follows a rebind and drops the old key", () => {
+    setPlatform(true);
+    setShortcutSettings({ ...NO_SHORTCUT_OVERRIDES, bindings: { "workspace.openBrowser": "CommandOrControl+Shift+Y" } });
+    expect(matchesShortcut("workspace.openBrowser", keyEvent({ key: "y", code: "KeyY", metaKey: true, shiftKey: true }))).toBe(true);
+    expect(matchesShortcut("workspace.openBrowser", keyEvent({ key: "t", code: "KeyT", metaKey: true }))).toBe(false);
+    expect(shortcutHint("workspace.openBrowser")).toBe("⇧⌘Y");
   });
 
-  it("a non-alt binding still rejects a stray Alt press", () => {
-    const browser: WorkspaceLauncherShortcut = { key: "t", meta: true, ctrl: false, shift: false, alt: false };
-    expect(matchesLauncherShortcut(browser, keyEvent({ key: "t", metaKey: true, altKey: false }))).toBe(true);
-    expect(matchesLauncherShortcut(browser, keyEvent({ key: "t", metaKey: true, altKey: true }))).toBe(false);
+  it("matches nothing while a new key is being recorded", () => {
+    setPlatform(true);
+    setShortcutCaptureActive(true);
+    expect(matchesShortcut("workspace.openBrowser", keyEvent({ key: "t", code: "KeyT", metaKey: true }))).toBe(false);
   });
 
-  it("every launcher shortcut declares an explicit alt field (Field-Addition Sweep)", () => {
+  it("gives every launcher row with a key a registry id", () => {
     for (const item of WORKSPACE_TAB_LAUNCHER) {
-      if (item.shortcut) {
-        expect(typeof item.shortcut.alt).toBe("boolean");
-      }
+      if (item.shortcutId !== null) expect(shortcutHint(item.shortcutId)).not.toBeNull();
     }
   });
 });

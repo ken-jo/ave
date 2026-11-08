@@ -41,10 +41,11 @@ async function renderBackgroundApp() {
       return stop;
     });
   };
-  // ⌘⏎ while a turn runs: the user's own interruption ("inject now"), as opposed to Enter, which queues.
+  // The send-now key while a turn runs (⌘⏎ on a Mac, Ctrl+Enter here, a non-Mac renderer): the user's own interruption
+  // ("inject now"), as opposed to Enter, which queues.
   const interrupt = async (text: string) => {
     fireEvent.change(textarea, { target: { value: text } });
-    await act(async () => { fireEvent.keyDown(textarea, { key: "Enter", metaKey: true }); });
+    await act(async () => { fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true }); });
   };
   return { ...app, play, send, startTurn, interrupt };
 }

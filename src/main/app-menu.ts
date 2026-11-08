@@ -11,6 +11,14 @@ import {
   requestOpenNewMainWindow,
   requestShowOrCreateMainWindow,
 } from "./native-window-coordinator.js";
+import { NO_SHORTCUT_OVERRIDES, resolveShortcut, shortcutPlatformOf } from "../shared/shortcuts.js";
+
+/** A menu item's accelerator is the user's binding for its registry row. Before services exist (the first menu at boot)
+ * no settings are loaded yet, so the row's default applies; the menu is rebuilt once settings change. */
+function menuAccelerator(id: "menu.settings" | "menu.newWindow"): string | undefined {
+  const shortcuts = getServices()?.settingsService.get("shortcuts") ?? NO_SHORTCUT_OVERRIDES;
+  return resolveShortcut(id, shortcuts, shortcutPlatformOf(process.platform)) ?? undefined;
+}
 
 function activateView(viewKey: string) {
   getMainWindow()?.webContents.send(CHANNELS.view.activate, { viewKey });
@@ -59,7 +67,7 @@ function createViewMenu() {
 export function createSettingsMenuItem(): MenuItemConstructorOptions {
   return {
     label: t("be_main.menuSettings"),
-    accelerator: "CommandOrControl+,",
+    accelerator: menuAccelerator("menu.settings"),
     click: () => {
       activateInlineSettings("llm");
     },
@@ -121,7 +129,7 @@ function createHelpMenu(): MenuItemConstructorOptions {
 function createNewWindowMenuItem(): MenuItemConstructorOptions {
   return {
     label: t("be_main.menuNewWindow"),
-    accelerator: "CommandOrControl+Shift+N",
+    accelerator: menuAccelerator("menu.newWindow"),
     click: () => {
       requestOpenNewMainWindow("menu-new-window");
     },

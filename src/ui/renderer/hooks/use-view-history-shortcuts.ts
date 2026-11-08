@@ -1,7 +1,16 @@
 import { useEffect, useRef } from "react";
+import {
+  matchesAccelerator,
+  resolveShortcut,
+  type ShortcutKeyEvent,
+  type ShortcutPlatform,
+  type ShortcutResolutionInput,
+} from "../../../shared/shortcuts.js";
 import { isDarwin } from "../api-client.js";
+import { getShortcutSettings, isShortcutCaptureActive } from "./use-shortcuts.js";
 
-/** Use Cmd+[ / ] on macOS to avoid Option-arrow word navigation; ignore history chords while editable elements have focus. */
+/** Back/forward keys come from the registry (⌘[ / ⌘] on macOS by default, to avoid Option-arrow word navigation); ignore
+ * history chords while editable elements have focus. */
 export interface ViewHistoryShortcutHandlers {
   canGoBack: boolean;
   canGoForward: boolean;
@@ -21,19 +30,14 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 /** Which navigation a keystroke asks for, or null. Exported so the decision can be tested directly on both platforms
  * without synthesizing a whole app. */
 export function viewHistoryIntent(
-  event: Pick<KeyboardEvent, "key" | "altKey" | "metaKey" | "ctrlKey" | "shiftKey">,
+  event: ShortcutKeyEvent,
   darwin: boolean,
+  input: ShortcutResolutionInput = getShortcutSettings(),
 ): "back" | "forward" | null {
-  if (event.shiftKey) return null;
-  if (darwin) {
-    if (!event.metaKey || event.altKey || event.ctrlKey) return null;
-    if (event.key === "[") return "back";
-    if (event.key === "]") return "forward";
-    return null;
-  }
-  if (!event.altKey || event.metaKey || event.ctrlKey) return null;
-  if (event.key === "ArrowLeft") return "back";
-  if (event.key === "ArrowRight") return "forward";
+  if (isShortcutCaptureActive()) return null;
+  const platform: ShortcutPlatform = darwin ? "darwin" : "other";
+  if (matchesAccelerator(resolveShortcut("app.viewBack", input, platform), event, platform)) return "back";
+  if (matchesAccelerator(resolveShortcut("app.viewForward", input, platform), event, platform)) return "forward";
   return null;
 }
 

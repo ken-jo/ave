@@ -378,13 +378,40 @@ describe("SideChatView — the main composer's input system", () => {
     emit({ type: "text_delta", text: "working…", streamId: 1 });
 
     fireEvent.change(textarea, { target: { value: "now instead" } });
-    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
 
     await waitFor(() => expect(spies.send).toHaveBeenCalledTimes(2));
     expect(spies.abort).toHaveBeenCalledTimes(1);
     expect(spies.abort.mock.invocationCallOrder[0]).toBeLessThan(spies.send.mock.invocationCallOrder[1]);
     expect(spies.send.mock.calls[1][0]).toBe("now instead");
     expect(textarea.value).toBe("");
+  });
+
+  it("on a Mac, ⌘⏎ interrupts and sends while ⌃⏎ does nothing", async () => {
+    // The case above runs as a non-Mac renderer; this one pins the Mac wiring of the same registry row.
+    (window as unknown as { avePlatform?: unknown }).avePlatform = { isDarwin: true };
+    try {
+      const { api, emit, spies, acceptTurn } = makeApi();
+      renderView(api);
+      const { textarea } = sideComposer();
+
+      await startTurn("first");
+      acceptTurn(1);
+      emit({ type: "text_delta", text: "working…", streamId: 1 });
+
+      fireEvent.change(textarea, { target: { value: "now instead" } });
+      fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
+      await act(async () => { await Promise.resolve(); });
+      expect(spies.send).toHaveBeenCalledTimes(1);
+      expect(spies.abort).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+      await waitFor(() => expect(spies.send).toHaveBeenCalledTimes(2));
+      expect(spies.abort).toHaveBeenCalledTimes(1);
+      expect(spies.send.mock.calls[1][0]).toBe("now instead");
+    } finally {
+      delete (window as unknown as { avePlatform?: unknown }).avePlatform;
+    }
   });
 
   it("aborts the running turn on Esc inside the field when nothing is queued", async () => {

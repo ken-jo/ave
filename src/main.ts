@@ -207,6 +207,11 @@ async function main() {
     syncNativeThemeSource(appearance.mode);
     applyAppZoomLevel(appearance.zoomLevel);
   });
+  // Menu accelerators follow the user's shortcut bindings, so a rebind rebuilds the application and tray menus.
+  services.settingsService.onChanged("shortcuts", () => {
+    refreshApplicationMenu();
+    refreshTrayMenu();
+  });
 
   updateSplashStatus(t("be_main.splashOpeningWorkspace"));
 
