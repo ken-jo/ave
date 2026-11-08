@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 /**
  * "Don't show again" for notices that repeat. The choice is a per-window-profile view preference, like the work board's
  * schedule toggle, so it lives in renderer storage rather than host settings. Only notices whose producer marks them
@@ -33,6 +35,7 @@ export function suppressNotice(kind: string): void {
   const kinds = read();
   kinds.add(kind);
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify([...kinds]));
+  emit();
 }
 
 /** Whether any notice kind is silenced, so the settings reset can say there is nothing to undo. */
@@ -43,4 +46,23 @@ export function hasSuppressedNotices(): boolean {
 /** Undo every "Don't show again": the silenced kinds show again from the next notice on. */
 export function clearSuppressedNotices(): void {
   window.localStorage.removeItem(STORAGE_KEY);
+  emit();
+}
+
+// Subscribers learn of every change this window makes to the set, so a surface showing it (the settings reset) follows a
+// "Don't show again" pressed elsewhere while it is open.
+const listeners = new Set<() => void>();
+
+function emit(): void {
+  for (const listener of listeners) listener();
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/** Whether any notice kind is silenced, kept current as the set changes. */
+export function useHasSuppressedNotices(): boolean {
+  return useSyncExternalStore(subscribe, hasSuppressedNotices, () => false);
 }

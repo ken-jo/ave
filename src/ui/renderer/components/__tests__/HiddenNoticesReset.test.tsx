@@ -35,6 +35,19 @@ describe("HiddenNoticesReset", () => {
     expect(result.current.visibleToast?.message).toBe("repeat again");
   });
 
+  it("enables itself when Don't show again is pressed elsewhere while Settings is open", () => {
+    render(<HiddenNoticesReset />);
+    const reset = screen.getByTestId("show-hidden-notices");
+    expect(reset).toBeDisabled();
+    const { result } = renderHook(() => useStatusNotices());
+    act(() => {
+      result.current.suppressToastKind("repeat");
+    });
+    expect(reset).toBeEnabled();
+    fireEvent.click(reset);
+    expect(reset).toBeDisabled();
+  });
+
   it("is found by settings search in both locales", () => {
     const en: Record<string, string> = englishMessages;
     const ko: Record<string, string> = koreanMessages;
