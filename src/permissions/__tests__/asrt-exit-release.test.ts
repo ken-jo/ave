@@ -139,7 +139,7 @@ describe("sandbox runtime release at exit", () => {
       await releaseAsrtSandboxForExit();
       expect(isSrtWinRuntimeReleasePending()).toBe(false);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("Windows ACE rows dropped without release (%s)"),
-        expect.stringMatching(/^grant revoke missing x1 \[<ave-home>\\settings\.json\], deny restore mismatch x5 \[<ave-home>\\settings\.json,<home>\\\.config\\ave\\hooks,<home>\\\.config\\ave\\hooks,(<outside-home>:[a-f0-9]{24}),\1\]$/));
+        expect.stringMatching(/^grant revoke missing x1 \[<ave-home>\\settings\.json\], deny restore mismatch x5 \[<ave-home>\\settings\.json \(expected per-file write floor; move-aside rotation\),<home>\\\.config\\ave\\hooks,<home>\\\.config\\ave\\hooks,(<outside-home>:[a-f0-9]{24}),\1\]$/));
       const logged = JSON.stringify(warn.mock.calls);
       expect(logged).not.toContain("private-target");
       expect(logged.toLowerCase()).not.toContain("alice");
@@ -149,6 +149,40 @@ describe("sandbox runtime release at exit", () => {
       warn.mockRestore();
       vi.unstubAllEnvs();
     }
+  });
+
+  it.each([
+    ["settings.json", " (expected per-file write floor; move-aside rotation)"],
+    ["permissions.json", " (expected per-file write floor; move-aside rotation)"],
+    ["policy.json", " (expected per-file write floor; move-aside rotation)"],
+    ["ave-secrets.json", " (expected per-file write floor; move-aside rotation)"],
+    ["mcp/servers.json", " (expected per-file write floor; move-aside rotation)"],
+    ["AGENTS.md", " (expected per-file write floor)"],
+    ["settings.json.other", ""],
+    ["config", ""],
+  ])("labels the retained write-floor row for %s without changing release outcomes", async (name, label) => {
+    const target = join(aveHome(), ...name.split("/"));
+    const restore = vi.fn(({ onExit }: { onExit?: (ok: boolean) => void }) => {
+      onExit?.(true);
+      return [{ path: target, status: "mismatch" }];
+    });
+    setWindowsAclReleaseForTesting({
+      sandboxUserSid: "S-1-5-21-1", srtWin: executable,
+      revoke: ({ onExit }) => { onExit(true); return []; }, restore,
+    });
+    manager.reset.mockImplementation(() => RealSandboxManager.reset());
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await releaseAsrtSandboxForExit();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("an explicit ACE may remain on a moved-aside copy"),
+        `deny restore mismatch x1 [<ave-home>\\${name.replace(/\//g, "\\").toLowerCase()}${label}]`,
+      );
+      expect(restore).toHaveBeenCalledOnce();
+      await RealSandboxManager.reset();
+      expect(restore).toHaveBeenCalledOnce();
+      expect(isSrtWinRuntimeReleasePending()).toBe(false);
+    } finally { warn.mockRestore(); }
   });
 
   it("does nothing once the runtime is already reset", async () => {
