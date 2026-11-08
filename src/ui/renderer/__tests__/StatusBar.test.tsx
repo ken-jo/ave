@@ -2,7 +2,7 @@ import "../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { endAnimation } from "../../../../test/renderer/helpers.js";
-import { StatusBar } from "../components/StatusBar.js";
+import { NoticeLiveRegion, StatusBar } from "../components/StatusBar.js";
 import type { PersistentItem, ToastItem } from "../hooks/use-status-bar.js";
 
 function persistent(overrides: Partial<PersistentItem> = {}): PersistentItem {
@@ -29,23 +29,23 @@ describe("StatusBar", () => {
   // wb-final removed the Ave brand mark from app chrome. The empty status bar renders no brand logo/text — only a
   // zero-footprint spacer that keeps the flex layout stable until the first persistent item arrives.
   it("renders no Ave brand placeholder when there are no persistent items", () => {
-    render(<StatusBar persistent={[]} visibleToast={null} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     expect(screen.queryByText("Ave")).toBeNull();
     expect(screen.queryByRole("img", { name: "Ave" })).toBeNull();
   });
 
   it("renders nothing when empty (notifications moved to the top-right banner stack)", () => {
-    render(<StatusBar persistent={[]} visibleToast={null} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     expect(screen.queryByTestId("status-bar")).toBeNull();
   });
 
   it("stays mounted, leaving, after its content is gone and unmounts when the exit animation ends", () => {
-    const { rerender } = render(<StatusBar persistent={[]} visibleToast={toast({ message: "로그인이 취소되었습니다" })} />);
+    const { rerender } = render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ message: "로그인이 취소되었습니다" })} />);
     const presence = screen.getByTestId("status-bar-presence");
     expect(presence.className).toBe("ave-anim-notice-in");
     expect(presence.dataset.leaving).toBeUndefined();
 
-    rerender(<StatusBar persistent={[]} visibleToast={null} />);
+    rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     // The last content is still drawn, now on its way out.
     expect(screen.getByTestId("status-bar-presence").className).toBe("ave-anim-notice-out");
     expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
@@ -56,16 +56,16 @@ describe("StatusBar", () => {
   });
 
   it("new content during the exit brings the bar back without unmounting it", () => {
-    const { rerender } = render(<StatusBar persistent={[]} visibleToast={toast({ id: "toast:1", message: "첫 번째" })} />);
-    rerender(<StatusBar persistent={[]} visibleToast={null} />);
+    const { rerender } = render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ id: "toast:1", message: "첫 번째" })} />);
+    rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
-    rerender(<StatusBar persistent={[]} visibleToast={toast({ id: "toast:2", message: "두 번째" })} />);
+    rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ id: "toast:2", message: "두 번째" })} />);
     expect(screen.getByTestId("status-bar-presence").className).toBe("ave-anim-notice-in");
     expect(screen.getByTestId("status-toast-message")).toHaveTextContent("두 번째");
   });
 
   it("renders persistent items with label and value", () => {
-    render(<StatusBar persistent={[persistent()]} visibleToast={null} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[persistent()]} visibleToast={null} />);
     expect(screen.getByText("다음 루틴")).toBeInTheDocument();
     expect(screen.getByText("04:42 KST")).toBeInTheDocument();
   });
@@ -73,7 +73,7 @@ describe("StatusBar", () => {
   it("renders only the visible toast message on the right slot", () => {
     const t1 = toast({ id: "toast:1", message: "samplehub 설치 중…" });
     // Only visibleToast (t1) is shown; one more toast is queued (pendingCount=1).
-    render(<StatusBar persistent={[]} visibleToast={t1} pendingCount={1} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={t1} pendingCount={1} />);
     expect(screen.getByTestId("status-toast-message")).toHaveTextContent("samplehub 설치 중…");
     expect(screen.queryByText("samplehub 설치 완료")).not.toBeInTheDocument();
     // pending badge shows +1
@@ -82,7 +82,7 @@ describe("StatusBar", () => {
 
   it("renders toast text through the marquee surface so long messages can flow", () => {
     const message = "Plugin login failed. code: non-corp-network. Corporate network or VPN is required.";
-    render(<StatusBar persistent={[]} visibleToast={toast({ message })} pendingCount={0} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ message })} pendingCount={0} />);
     const text = screen.getByTestId("status-toast-message");
     expect(text).toHaveAttribute("title", message);
     expect(text).toHaveTextContent(message);
@@ -90,29 +90,29 @@ describe("StatusBar", () => {
 
   it("keeps a shared notice frame while the status mark carries severity", () => {
     const { container, rerender } = render(
-      <StatusBar persistent={[]} visibleToast={toast({ severity: "warning" })} />,
+      <StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ severity: "warning" })} />,
     );
     const toastCard = () => container.querySelector('[data-testid="status-toast-message"]')?.parentElement;
     expect(toastCard()?.className).toContain("bg-input-bar");
     expect(toastCard()?.querySelector("[aria-hidden]")?.className).toContain("bg-warning");
 
-    rerender(<StatusBar persistent={[]} visibleToast={toast({ severity: "error" })} />);
+    rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ severity: "error" })} />);
     expect(toastCard()?.className).toContain("bg-input-bar");
     expect(toastCard()?.querySelector("[aria-hidden]")?.className).toContain("bg-destructive");
   });
 
   it("shows no toast when visibleToast is null", () => {
-    render(<StatusBar persistent={[]} visibleToast={null} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("shows no pending badge when pendingCount is 0", () => {
-    render(<StatusBar persistent={[]} visibleToast={toast()} pendingCount={0} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast()} pendingCount={0} />);
     expect(screen.queryByText(/\+\d/)).not.toBeInTheDocument();
   });
 
   it("shows pending badge with correct count", () => {
-    render(<StatusBar persistent={[]} visibleToast={toast()} pendingCount={2} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast()} pendingCount={2} />);
     expect(screen.getByText("+2")).toBeInTheDocument();
   });
 
@@ -122,7 +122,7 @@ describe("StatusBar", () => {
     // tone this row reads in. Merging failures here are silent — the badge's
     // own `text-xs` / `font-semibold` / `text-foreground` surviving the merge
     // is a heavier, brighter chip that still passes every other assertion.
-    render(<StatusBar persistent={[]} visibleToast={toast()} pendingCount={2} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast()} pendingCount={2} />);
     const badge = screen.getByText("+2");
     expect(badge.className).toContain("rounded-full");
     expect(badge.className).toContain("text-dense");
@@ -143,7 +143,7 @@ describe("StatusBar", () => {
       severity: "info",
       notification: { kind: "ask-user", contextRef: { questionId: "q-9" } },
     });
-    render(<StatusBar persistent={[]} visibleToast={notif} onToastClick={onToastClick} />);
+    render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={notif} onToastClick={onToastClick} />);
     const btn = screen.getByRole("button", {
       name: /자세히 알아보기|Learn more/,
     });
@@ -182,17 +182,18 @@ describe("StatusBar", () => {
         persistent={[]}
         visibleToast={toast({ id: "toast:i", message: "samplehub 설치 완료", severity: "success" })}
         onToastClick={onToastClick}
+        onToastDismiss={() => {}}
       />,
     );
-    // Plain producer toasts have no role=button, so clicking the text doesn't invoke the handler.
-    expect(screen.queryByRole("button")).toBeNull();
+    // Plain producer toasts offer no "Learn more": the only button is the close button.
+    expect(screen.getAllByRole("button").map((button) => button.getAttribute("data-testid"))).toEqual(["status-toast-dismiss"]);
     expect(onToastClick).not.toHaveBeenCalled();
   });
 
   it("renders a clickable persistent item as a button and invokes onClick (PR-X1)", () => {
     const onClick = vi.fn();
     render(
-      <StatusBar
+      <StatusBar onToastDismiss={() => {}}
         persistent={[persistent({ id: "vendor:llm", label: "🟧", value: "Claude · sonnet-4-6", onClick })]}
         visibleToast={null}
       />,
@@ -204,7 +205,7 @@ describe("StatusBar", () => {
 
   it("renders a persistent item without onClick as a plain span", () => {
     render(
-      <StatusBar
+      <StatusBar onToastDismiss={() => {}}
         persistent={[persistent({ id: "vendor:llm", label: "🟧", value: "Claude · sonnet-4-6" })]}
         visibleToast={null}
       />,
@@ -222,7 +223,7 @@ describe("StatusBar", () => {
       tooltip: "LLM: online\nMarket: online",
     };
     const { container, rerender } = render(
-      <StatusBar persistent={[onlineItem]} visibleToast={null} />,
+      <StatusBar onToastDismiss={() => {}} persistent={[onlineItem]} visibleToast={null} />,
     );
     expect(screen.queryByText("Market")).toBeNull();
     expect(screen.getByText("LLM: online, Market: online")).toBeInTheDocument();
@@ -242,7 +243,7 @@ describe("StatusBar", () => {
       a11yLabel: "LLM: offline, Market: online",
       tooltip: "LLM: offline\nMarket: online",
     };
-    rerender(<StatusBar persistent={[offlineItem]} visibleToast={null} />);
+    rerender(<StatusBar onToastDismiss={() => {}} persistent={[offlineItem]} visibleToast={null} />);
     const dotOffline = container.querySelector(
       '[data-testid="status-bar-dot-health:services"]',
     );
@@ -250,12 +251,113 @@ describe("StatusBar", () => {
     expect(screen.getByText("LLM: offline, Market: online")).toBeInTheDocument();
   });
 
-  it("uses role=status with aria-live=polite for screen-reader updates", () => {
-    const { container } = render(<StatusBar persistent={[]} visibleToast={toast()} />);
-    // Query the footer directly — rendering surfaces it with role="status".
-    const footer = container.querySelector("footer");
-    expect(footer).not.toBeNull();
-    expect(footer).toHaveAttribute("role", "status");
-    expect(footer).toHaveAttribute("aria-live", "polite");
+  it("announces a non-error notice through the polite region and leaves the visual notice non-live", () => {
+    render(
+      <>
+        <NoticeLiveRegion toast={toast({ severity: "success", message: "saved" })} />
+        <StatusBar persistent={[]} visibleToast={toast({ severity: "success", message: "saved" })} onToastDismiss={() => {}} />
+      </>,
+    );
+    const polite = screen.getByTestId("notice-live-polite");
+    expect(polite).toHaveAttribute("role", "status");
+    expect(polite).toHaveAttribute("aria-live", "polite");
+    expect(polite).toHaveTextContent("saved");
+    expect(screen.getByTestId("notice-live-assertive")).toHaveTextContent("");
+    const notice = screen.getByTestId("status-toast");
+    expect(notice).not.toHaveAttribute("role");
+    expect(notice).not.toHaveAttribute("aria-live");
+  });
+
+  it("announces an error through the assertive region and still offers a close button", () => {
+    const onDismiss = vi.fn();
+    const error = toast({ severity: "error", message: "write failed" });
+    render(
+      <>
+        <NoticeLiveRegion toast={error} />
+        <StatusBar persistent={[]} visibleToast={error} onToastDismiss={onDismiss} />
+      </>,
+    );
+    const assertive = screen.getByTestId("notice-live-assertive");
+    expect(assertive).toHaveAttribute("role", "alert");
+    expect(assertive).toHaveAttribute("aria-live", "assertive");
+    expect(assertive).toHaveTextContent("write failed");
+    expect(screen.getByTestId("notice-live-polite")).toHaveTextContent("");
+    fireEvent.click(screen.getByTestId("status-toast-dismiss"));
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the same live region nodes while the queue advances, so the next notice is announced", () => {
+    const first = toast({ id: "toast:1", severity: "info", message: "first" });
+    const second = toast({ id: "toast:2", severity: "info", message: "second" });
+    const third = toast({ id: "toast:3", severity: "error", message: "third" });
+    const strip = (head: ToastItem | null) => (
+      <>
+        <NoticeLiveRegion toast={head} />
+        <StatusBar persistent={[]} visibleToast={head} onToastDismiss={() => {}} />
+      </>
+    );
+    const { rerender } = render(strip(null));
+    const polite = screen.getByTestId("notice-live-polite");
+    const assertive = screen.getByTestId("notice-live-assertive");
+    rerender(strip(first));
+    expect(screen.getByTestId("notice-live-polite")).toBe(polite);
+    expect(polite).toHaveTextContent("first");
+    rerender(strip(second));
+    expect(screen.getByTestId("notice-live-polite")).toBe(polite);
+    expect(polite).toHaveTextContent("second");
+    rerender(strip(third));
+    expect(screen.getByTestId("notice-live-assertive")).toBe(assertive);
+    expect(assertive).toHaveTextContent("third");
+    expect(polite).toHaveTextContent("");
+  });
+
+  it("never takes focus when a notice appears, even an alert", () => {
+    const { rerender } = render(
+      <>
+        <button type="button" data-testid="typing-here">x</button>
+        <StatusBar persistent={[]} visibleToast={null} onToastDismiss={() => {}} />
+      </>,
+    );
+    screen.getByTestId("typing-here").focus();
+    rerender(
+      <>
+        <button type="button" data-testid="typing-here">x</button>
+        <StatusBar persistent={[]} visibleToast={toast({ severity: "error" })} onToastDismiss={() => {}} />
+      </>,
+    );
+    expect(document.activeElement).toBe(screen.getByTestId("typing-here"));
+  });
+
+  it("caps the notice width at min(100%, 24rem) and fades it in on a motion token", () => {
+    render(<StatusBar persistent={[]} visibleToast={toast()} onToastDismiss={() => {}} />);
+    const notice = screen.getByTestId("status-toast");
+    expect(notice.className).toContain("max-w-[min(100%,24rem)]");
+    expect(notice.className).toContain("ave-anim-fade-in");
+  });
+
+  it("offers Don't show again only on a suppressible notice", () => {
+    const onSuppress = vi.fn();
+    const { rerender } = render(
+      <StatusBar persistent={[]} visibleToast={toast()} onToastDismiss={() => {}} onToastSuppress={onSuppress} />,
+    );
+    expect(screen.queryByTestId("status-toast-suppress")).toBeNull();
+    rerender(
+      <StatusBar
+        persistent={[]}
+        visibleToast={toast({ kind: "repeat", suppressible: true })}
+        onToastDismiss={() => {}}
+        onToastSuppress={onSuppress}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("status-toast-suppress"));
+    expect(onSuppress).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the persistent chips in their own polite status region", () => {
+    const { container } = render(
+      <StatusBar persistent={[persistent({ id: "p", label: "x", value: "y" })]} visibleToast={null} onToastDismiss={() => {}} />,
+    );
+    expect(container.querySelector("footer")).not.toHaveAttribute("role");
+    expect(container.querySelector('footer > [role="status"]')).toHaveAttribute("aria-live", "polite");
   });
 });

@@ -39,6 +39,7 @@ import {
 } from "../hooks/use-add-project-folder.js";
 import { useNativeContextMenu } from "../hooks/use-native-context-menu.js";
 import { incompleteToolStatusLabelKey } from "../utils/tool-status-label.js";
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import {
   ListDetailWorkspace,
   SearchInput,
@@ -46,7 +47,6 @@ import {
 } from "./ChatSidePanelLayout.js";
 import {
   BrowserDocumentViewer,
-  EmptyState,
   PreviewDetail,
   previewFillsPanel,
   UrlDocumentViewer,
@@ -689,10 +689,8 @@ function ProjectRootsBrowser({
         {activeRoot ? <>
           {loadingPaths.has(activeRoot) && !childrenByPath[activeRoot] ? <div className="px-2 py-1 text-dense text-muted-foreground">{t("chatPreviewRail.filePreviewLoading")}</div> : errorByPath[activeRoot] ? <button type="button" className="flex w-full items-center gap-1 px-2 py-1 text-left text-dense text-destructive hover:underline" data-testid="chat-side-panel-fs-error" onClick={() => retryDir(activeRoot)}>{t("chatPreviewRail.dirLoadError")} · {t("common.retry")}</button> : null}
           {renderEntries(activeRoot, 0, tree.nodes)}
-        </> : <div className="flex flex-col items-start gap-2 px-2 py-3 text-dense text-muted-foreground" data-testid="chat-side-panel-roots-empty">
-          <p>{t("chatPreviewRail.projectRootsEmpty")}</p>
-          <Button type="button" size="sm" variant="outline" onClick={() => void addFolder()}><FolderPlus className="h-3.5 w-3.5" />{t("chatPreviewRail.addProjectRoot")}</Button>
-        </div>}
+        </> : <EmptyState className="px-2 py-3" data-testid="chat-side-panel-roots-empty" title={t("chatPreviewRail.projectRootsEmpty")}
+          action={{ label: t("chatPreviewRail.addProjectRoot"), icon: <FolderPlus className="h-3.5 w-3.5" aria-hidden="true" />, onClick: () => void addFolder() }} />}
         {tree.outsideNodes.length > 0 ? <div className="mt-2 border-t border-border pt-2" data-testid="chat-side-panel-outside-project">
           <div role="presentation" className="px-2 pb-1 text-dense font-medium text-muted-foreground">{t("chatPreviewRail.outsideProject")}</div>
           {renderEntries("", 0, tree.outsideNodes)}
@@ -725,7 +723,7 @@ function MatchedFileList({ files, changes, query, selectedPath, onOpenFile }: {
     return flat;
   }, [root, files, changes.changedFiles, changes.workspaceRoot, query]);
   const selected = selectedPath ? normalizeWorkspaceTreePath(selectedPath, root) : null;
-  if (rows.length === 0) return <EmptyState>{t("chatPreviewRail.emptyState")}</EmptyState>;
+  if (rows.length === 0) return <EmptyState title={t("chatPreviewRail.emptyState")} />;
   return <div role="list" data-testid="chat-side-panel-matched-files">
     {rows.map((node) => {
       const opened = node.path === selected;
@@ -870,9 +868,9 @@ export function FileBrowserWorkspace({
       }}>
       {narrow ? <button type="button" className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3 text-left text-xs text-primary" onClick={goBack} data-testid="chat-side-panel-file-back"><ArrowLeft className="h-3.5 w-3.5" />{t("chatPreviewRail.fileTreeBack")}</button> : null}
       {selectedChange?.review && selectedChange.turnId && (selectedChange.review.referenceable || selectedChange.review.hunks.length > 0 || selectedChange.review.operation === "delete") ? <TurnChangeDetail file={selectedChange.review} turnId={selectedChange.turnId} onReference={onReference} onFileReference={onFileReference} />
-        : emptyDetail !== undefined ? <EmptyState>{selectedPath ? emptyDetail : t("chatPreviewRail.emptyState")}</EmptyState>
+        : emptyDetail !== undefined ? <EmptyState title={selectedPath ? emptyDetail : t("chatPreviewRail.emptyState")} />
           : previewTarget ? <div className={cn("min-h-0 flex-1 overflow-auto p-3", previewFillsPanel(previewTarget) && "flex flex-col")}><PreviewDetail api={api} sessionId={sessionId} target={previewTarget} visible={visible} /></div>
-          : <EmptyState>{t("chatPreviewRail.emptyState")}</EmptyState>}
+          : <EmptyState title={t("chatPreviewRail.emptyState")} />}
     </div>
   </div>;
 }
@@ -973,7 +971,7 @@ export function VisitedSites({
             }}
           />
         ) : (
-          <EmptyState>{t("chatPreviewRail.noBrowserTargets")}</EmptyState>
+          <EmptyState title={t("chatPreviewRail.noBrowserTargets")} />
         )}
       </div>
     </div>
@@ -1175,7 +1173,7 @@ export function BrowserWorkspace({
         ) : displayedTarget?.kind === "url" ? (
           <UrlDocumentViewer api={api} target={displayedTarget} showHeader={false} surfaceTabId={tabId} browserTab={{ tabId }} />
         ) : (
-          <div className="p-4 text-xs text-muted-foreground" data-testid="chat-side-panel-browser-blank">{t("mainPanels.webEmpty")}</div>
+          <EmptyState data-testid="chat-side-panel-browser-blank" title={t("mainPanels.webEmpty")} />
         )}
       </div>
     </div>

@@ -1,5 +1,6 @@
 /** Pane side chats bind every turn to their surface tab; rail side chats name no tab. Both use the shared transcript
  * renderer. */
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { ChevronDown, Plus } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -35,7 +36,7 @@ import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-to
 import { useContextBudget } from "../hooks/use-context-budget.js";
 import { ComposerContextNotice } from "./ComposerContextNotice.js";
 import { useStatusNotices, type ToastItem } from "../hooks/use-status-bar.js";
-import { StatusBar } from "./StatusBar.js";
+import { NoticeLiveRegion, StatusBar } from "./StatusBar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 
 /**
@@ -521,9 +522,7 @@ function SideChatSession({
           <div className="text-xs text-destructive" role="alert" data-testid="side-chat-pane-error">{paneError}</div>
         ) : null}
         {entries.length === 0 ? (
-          <div className="pt-6 text-center text-xs text-muted-foreground">
-            {t("chatPreviewRail.sideChat.empty")}
-          </div>
+          <EmptyState align="center" className="p-0 pt-6" title={t("chatPreviewRail.sideChat.empty")} />
         ) : (
           <TranscriptRenderer
             observeTerminal={shown && !tileHidden && sessionOwned}
@@ -584,6 +583,7 @@ function SideChatSession({
         ) : null}
         {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : targetChip}
         <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={runtime?.autoCompactEnabled} />
+        <NoticeLiveRegion toast={visibleToast} />
         {visibleToast !== null || persistent.length > 0 ? (
           <div className="mb-1.5 min-w-0">
             <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} />

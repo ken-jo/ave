@@ -119,7 +119,7 @@ it("exposes search results as list buttons and announces their count", async () 
   const results = getByRole("list", { name: "설정 검색" }).querySelectorAll("li > button");
   expect(results.length).toBeGreaterThan(0);
   expect(container.querySelector('[role="listitem"]')).toBeNull();
-  const announcement = container.querySelector('[role="status"][aria-live="polite"][aria-atomic="true"]');
+  const announcement = container.querySelector('[role="status"][aria-live="polite"][aria-atomic="true"]:not([data-notice-live])');
   expect(announcement?.textContent).toBe(`설정 ${results.length}개 검색됨`);
   fireEvent.change(getByRole("searchbox"), { target: { value: "unmatchable search phrase" } });
   expect(announcement?.textContent).toBe("설정 0개 검색됨");

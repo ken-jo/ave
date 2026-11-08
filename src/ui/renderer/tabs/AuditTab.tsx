@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import React, { useCallback, useEffect, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
@@ -262,7 +263,7 @@ export function AuditTab() {
           )}
 
           {!loading && result.entries.length === 0 && !error && (
-            <p className="py-4 text-center text-xs text-muted-foreground italic">{t("auditTab.emptyState")}</p>
+            <EmptyState align="center" className="px-0 py-4" title={t("auditTab.emptyState")} />
           )}
 
           {result.entries.length > 0 && (

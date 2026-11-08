@@ -1,4 +1,5 @@
-import { AlertTriangle, CheckCircle2, Loader2, ShieldQuestion } from "lucide-react";
+import { Loader } from "../../../components/ui/loader.js";
+import { AlertTriangle, CheckCircle2, ShieldQuestion } from "lucide-react";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { t } from "../../../i18n/runtime.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -36,7 +37,7 @@ function toneClass(entry: PermissionReviewEntry): string {
 }
 
 function StatusIcon({ entry }: { entry: PermissionReviewEntry }) {
-  if (entry.status === "reviewing") return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />;
+  if (entry.status === "reviewing") return <Loader size={14} />;
   if (entry.status === "auto_approved") {
     return <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />;
   }

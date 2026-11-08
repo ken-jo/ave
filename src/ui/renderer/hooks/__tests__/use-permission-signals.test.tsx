@@ -55,7 +55,7 @@ describe("usePermissionSignals — reviewer suggestion", () => {
     // Expiring it in that gap would spend the whole tracker cooldown on a band nobody ever saw.
     vi.useFakeTimers();
     const { permission, fire } = permissionApi();
-    const { result } = renderHook(() => usePermissionSignals());
+    const { result } = renderHook(() => usePermissionSignals({ onUserApprovalHit: vi.fn() }));
     // Subscription happens in the mount effect, which `renderHook` already flushed — a `waitFor` here would spin against the
     // faked clock.
     expect(permission.onReviewSuggestion).toHaveBeenCalled();
@@ -71,7 +71,7 @@ describe("usePermissionSignals — reviewer suggestion", () => {
 
   it("carries the host's own reason and window to the band", async () => {
     const { permission, fire } = permissionApi();
-    const { result } = renderHook(() => usePermissionSignals());
+    const { result } = renderHook(() => usePermissionSignals({ onUserApprovalHit: vi.fn() }));
     await waitFor(() => expect(permission.onReviewSuggestion).toHaveBeenCalled());
 
     act(() => fire({ reason: "allow-always", allowCount: 1, allowAlwaysCount: 1 }));
@@ -86,7 +86,7 @@ describe("usePermissionSignals — reviewer suggestion", () => {
   it("enables the reviewer before switching the mode that relies on it", async () => {
     // Configure review before enabling the mode that uses its fixed low/medium policy.
     const { permission, fire } = permissionApi();
-    const { result } = renderHook(() => usePermissionSignals());
+    const { result } = renderHook(() => usePermissionSignals({ onUserApprovalHit: vi.fn() }));
     await waitFor(() => expect(permission.onReviewSuggestion).toHaveBeenCalled());
     act(() => fire());
 
@@ -107,7 +107,7 @@ describe("usePermissionSignals — reviewer suggestion", () => {
     // A silent failure would leave the user believing the reviewer is on while every later ask still lands on them by hand.
     const reviewerDispatch = vi.fn(async () => ({ ok: false, error: "reviewer key missing" }));
     const { permission, fire } = permissionApi({ reviewerDispatch });
-    const { result } = renderHook(() => usePermissionSignals());
+    const { result } = renderHook(() => usePermissionSignals({ onUserApprovalHit: vi.fn() }));
     await waitFor(() => expect(permission.onReviewSuggestion).toHaveBeenCalled());
     act(() => fire());
 
@@ -122,7 +122,7 @@ describe("usePermissionSignals — reviewer suggestion", () => {
 
   it("clears the suggestion on dismiss without touching permission settings", async () => {
     const { permission, fire } = permissionApi();
-    const { result } = renderHook(() => usePermissionSignals());
+    const { result } = renderHook(() => usePermissionSignals({ onUserApprovalHit: vi.fn() }));
     await waitFor(() => expect(permission.onReviewSuggestion).toHaveBeenCalled());
     act(() => fire());
 
@@ -136,7 +136,7 @@ describe("usePermissionSignals — reviewer suggestion", () => {
   it("drops a suggestion whose metrics are not numbers it can render", async () => {
     const { permission, fire } = permissionApi();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const { result } = renderHook(() => usePermissionSignals());
+    const { result } = renderHook(() => usePermissionSignals({ onUserApprovalHit: vi.fn() }));
     await waitFor(() => expect(permission.onReviewSuggestion).toHaveBeenCalled());
 
     act(() => fire({ allowCount: Number.NaN }));

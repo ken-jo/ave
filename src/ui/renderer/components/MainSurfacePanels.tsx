@@ -1,4 +1,5 @@
 /** Terminal views hand over a single mount; web pages remain in the window layer when their panes are hidden. */
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -134,9 +135,7 @@ function WebPanelBody({
         <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`}
           {...(surface.agentRequestId === undefined ? {} : { bindRequestId: surface.agentRequestId })} />
       ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-4 text-sm text-muted-foreground" data-testid="web-panel-empty">
-          {t("mainPanels.webEmpty")}
-        </div>
+        <EmptyState align="center" className="min-h-0 flex-1" data-testid="web-panel-empty" title={t("mainPanels.webEmpty")} />
       )}
     </div>
   );

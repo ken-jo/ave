@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -393,10 +394,8 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
                 {loading ? (
                   <p className="py-4 text-xs text-muted-foreground">{t("memorySearchPanel.searching")}</p>
                 ) : (projectEmpty || visibleNotes.filter((note) => !note.isIndex).length === 0) && !query.trim() ? (
-                  <div className="flex min-h-64 flex-col items-center justify-center gap-4 px-4 py-8 text-center">
-                    <p className="max-w-md text-sm text-muted-foreground">{t("memorySearchPanel.noNotesEmpty")}</p>
-                    <Button size="sm" variant="outline" disabled={busy || !onStartConversation} onClick={() => void startConversation()}>{t("memorySearchPanel.startConversation")}</Button>
-                  </div>
+                  <EmptyState align="center" className="min-h-64 px-4 py-8" title={t("memorySearchPanel.noNotesEmpty")}
+                    action={{ label: t("memorySearchPanel.startConversation"), disabled: busy || !onStartConversation, onClick: () => void startConversation() }} />
                 ) : visibleNotes.length === 0 ? <p className="py-4 text-xs text-muted-foreground">{t("memorySearchPanel.noResults")}</p> : (
                   <>
                   {originFilter && <Button size="sm" variant="outline" onClick={() => setOriginFilter(null)}>{t("memorySearchPanel.clearOriginFilter")}</Button>}
@@ -448,9 +447,7 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
                 {loading ? (
                   <p className="py-4 text-xs text-muted-foreground">{t("memorySearchPanel.searching")}</p>
                 ) : sessionResults.length === 0 ? (
-                  <p className="py-4 text-xs text-muted-foreground">
-                    {query === "" ? t("memorySearchPanel.noSessionsEmpty") : t("memorySearchPanel.noResults")}
-                  </p>
+                  <EmptyState className="px-0 py-4" title={query === "" ? t("memorySearchPanel.noSessionsEmpty") : t("memorySearchPanel.noResults")} />
                 ) : (
                   sessionResults.map((s) => (
                     <SessionRow

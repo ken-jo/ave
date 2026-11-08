@@ -1,3 +1,5 @@
+import { EmptyState } from "../../../../components/ui/empty-state.js";
+import { Loader } from "../../../../components/ui/loader.js";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   AlertTriangle,
@@ -5,7 +7,6 @@ import {
   Check,
   ChevronRight,
   CircleStop,
-  Loader2,
   Pin,
   Square,
   X,
@@ -246,7 +247,7 @@ function segments(entry: LiveRunEntry): [Segment, Segment, Segment] {
 
 const SEGMENT_BAR: Record<Segment["state"], string> = {
   done: "bg-foreground",
-  active: "bg-foreground animate-pulse",
+  active: "bg-foreground animate-pulse motion-reduce:animate-none",
   idle: "bg-border",
   attention: "bg-warning",
   stopping: "bg-muted-foreground",
@@ -301,7 +302,7 @@ function ToolStepRow({ step }: { step: RunToolStep }) {
   const started = step.startedAt;
   const elapsed = running && started !== undefined ? formatElapsed(now - started) : step.durationMs !== undefined ? formatToolDuration(step.durationMs) : "";
   const icon = running
-    ? <Loader2 aria-hidden="true" className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+    ? <Loader size={12} className="text-muted-foreground" />
     : step.status === "done"
     ? <Check aria-hidden="true" className="h-3 w-3 shrink-0 text-success" />
     : step.status === "error"
@@ -684,7 +685,7 @@ function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent
           onClick={stop}
           data-testid="live-step-stop"
         >
-          {stopping ? <Loader2 aria-hidden="true" className="mr-1 h-3 w-3 animate-spin" /> : <Square aria-hidden="true" className="mr-1 h-3 w-3 fill-current" />}
+          {stopping ? <Loader size={12} className="mr-1" /> : <Square aria-hidden="true" className="mr-1 h-3 w-3 fill-current" />}
           {stopping ? t("workBoard.liveStopping") : t("workBoard.liveStop")}
         </Button>
       </div>
@@ -817,7 +818,7 @@ export function LiveRunPanel(props: LiveRunPanelProps) {
       </header>
       <div className="shrink-0 border-b px-2 py-1.5">
         {entries.length === 0 ? (
-          <p className="px-1 py-1 text-dense text-muted-foreground" data-testid="live-step-empty">{t("workBoard.liveStepsEmpty")}</p>
+          <EmptyState className="px-1 py-1" data-testid="live-step-empty" title={t("workBoard.liveStepsEmpty")} />
         ) : (
           <ul className="max-h-40 space-y-0.5 overflow-y-auto" aria-label={t("workBoard.liveStepsRunList")} data-testid="live-step-runs">
             {entries.map((entry) => {

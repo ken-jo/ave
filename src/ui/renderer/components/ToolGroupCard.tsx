@@ -1,5 +1,6 @@
+import { Loader } from "../../../components/ui/loader.js";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Loader2, Wrench } from "lucide-react";
+import { ChevronDown, ChevronRight, Wrench } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { cn } from "../../../lib/utils.js";
 import { Badge } from "../../../components/ui/badge.js";
@@ -356,7 +357,7 @@ function SingleToolInline({
         </button>
         {review && <PermissionReviewStatusCard entry={review} variant="attached" />}
         {isRunning ? (
-          <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+          <Loader size={12} />
         ) : (
           <ToolStatusBadge status={tool.status} />
         )}
@@ -517,7 +518,7 @@ export function ToolGroupCard({
           {groupStatus === "running" ? `${doneCount}/${group.tools.length}` : t("toolGroupCard.toolCount", { count: group.tools.length })}
         </Badge>
         {groupStatus === "running" ? (
-          <Loader2 className="h-3 w-3 animate-spin flex-shrink-0" />
+          <Loader size={12} />
         ) : (
           <Badge
             variant={groupStatus === "error" ? "secondary" : "default"}
@@ -557,7 +558,7 @@ export function ToolGroupCard({
                   </button>
                   {review && <PermissionReviewStatusCard entry={review} variant="attached" />}
                   {tool.status === "running" ? (
-                    <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                    <Loader size={12} />
                   ) : (
                     <ToolStatusBadge status={tool.status} />
                   )}

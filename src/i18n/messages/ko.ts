@@ -4957,6 +4957,9 @@ export const ko: Record<MessageCatalogKey, string> = {
   // statusBar
   "statusBar.toastDetailsAction": "자세히 알아보기",
   "statusBar.toastDismissAriaLabel": "알림 닫기",
+  "statusBar.toastSuppressAction": "다시 표시 안 함",
+  "notices.showHiddenAgain": "숨긴 알림 다시 보기",
+  "notices.showHiddenHint": "다시 표시하지 않기로 한 알림(위험이 낮은 승인 재적용 등)을 다음 알림부터 다시 표시합니다.",
 
   /** Loading and failure copy for persisted child transcripts. */
   "subAgentCard.statusError": "오류",

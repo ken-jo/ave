@@ -160,10 +160,6 @@ export function PreviewDetail({ api, sessionId, target, visible }: { api: AveApi
   );
 }
 
-export function EmptyState({ children }: { children: string }) {
-  return <div className="p-4 text-xs text-muted-foreground">{children}</div>;
-}
-
 /** "Open file" for an image preview: absent for a type the default app is not given, and a refusal says why. */
 function OpenInDefaultAppButton({ path }: { path: string }) {
   const { t } = useTranslation();

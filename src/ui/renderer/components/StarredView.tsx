@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, MessageSquareText, Pin, RefreshCw, X as XIcon } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -631,7 +632,7 @@ export function StarredView({
             className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
           >
             {conversationsForDay.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">{t("starredView.projectChatsEmpty")}</div>
+              <EmptyState align="center" className="px-0 py-8" title={t("starredView.projectChatsEmpty")} />
             ) : (
               <div className="space-y-1.5 p-2">
                 {conversationsForDay.map((conversation) => (
@@ -682,7 +683,7 @@ export function StarredView({
             className="min-h-0 flex-1 [&_[data-radix-scroll-area-viewport]>div]:!block [&_[data-radix-scroll-area-viewport]>div]:!min-w-0"
           >
             {starredForDay.length === 0 ? (
-              <div className="py-8 text-center text-sm text-muted-foreground">{t("starredView.emptyState")}</div>
+              <EmptyState align="center" className="px-0 py-8" title={t("starredView.emptyState")} />
             ) : (
               <div className="space-y-2 p-2">
                 {starredForDay.map((s) => (

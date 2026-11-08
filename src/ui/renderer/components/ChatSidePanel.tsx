@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../components/ui/empty-state.js";
 import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
@@ -372,10 +373,8 @@ function SubAgentViewer({
 
   if (orderedSpawns.length === 0) {
     return (
-      <div className="flex h-full min-h-0 w-full min-w-0 flex-col items-center justify-center p-6 text-center" data-testid="chat-side-panel-subagent-empty">
-        <Bot className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-        <div className="mt-2 text-xs text-muted-foreground">{t("chatPreviewRail.subagentEmpty")}</div>
-      </div>
+      <EmptyState align="center" className="h-full min-h-0 w-full p-6" data-testid="chat-side-panel-subagent-empty"
+        icon={<Bot className="h-4 w-4" />} title={t("chatPreviewRail.subagentEmpty")} />
     );
   }
 

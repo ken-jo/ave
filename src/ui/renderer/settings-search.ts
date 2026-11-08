@@ -35,7 +35,7 @@ const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {"tab":"permissions","section":"permissions-os-sandbox","title":"permissionsTab.osSandboxTitle","labels":["permissionsTab.osSandboxCheckboxAriaLabel","permissionsTab.osSandboxShellLabel","permissionsTab.workerConfinementCheckboxAriaLabel","permissionsTab.workerConfinementLabel","permissionsTab.pageTitle","permissionsTab.closeBannerAriaLabel","permissionsTab.exactDenyDraftTitle","permissionsTab.hookQuarantineTitle"]},
   {"tab":"permissions","section":"permissions-policy-summary","title":"permissionsTab.currentPolicySummaryTitle","labels":["permissionsTab.reviewerModeFaultTitle"]},
   {"tab":"permissions","section":"permissions-policy","title":"permissionsTab.policyTitle","labels":["permissionsTab.policyAriaLabel","permissionsTab.frameworkSystemPromptTitle"]},
-  {"tab":"permissions","section":"permissions-approval-dialog","title":"permissionsTab.approvalDialogTitle","labels":["permissionsTab.approvalDialogCheckboxAriaLabel","permissionsTab.adminManagedTitle","permissionsTab.ownerAwayAutoSkipLabel"]},
+  {"tab":"permissions","section":"permissions-approval-dialog","title":"permissionsTab.approvalDialogTitle","labels":["permissionsTab.approvalDialogCheckboxAriaLabel","permissionsTab.adminManagedTitle","permissionsTab.ownerAwayAutoSkipLabel","notices.showHiddenAgain"]},
   {"tab":"permissions","section":"permissions-network","title":"permissionsTab.networkTitle","labels":[]},
   {"tab":"permissions","section":"permissions-rules","title":"permissionsTab.unifiedRulesTitle","labels":["permissionsTab.exactApprovalLabel"]},
   {"tab":"permissions","section":"permissions-directories","title":"permissionsTab.directoriesTitle","labels":["permissionsTab.directoryWarningTitle"]},

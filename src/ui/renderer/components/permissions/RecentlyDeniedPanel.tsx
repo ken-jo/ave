@@ -1,3 +1,4 @@
+import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -35,7 +36,7 @@ export function RecentlyDeniedPanel({ showEmpty = false, onRerun }: { showEmpty?
     <h3 className="text-base font-semibold">{t("recentlyDenied.title")}</h3>
     <p className="text-sm text-muted-foreground">{t("recentlyDenied.description")}</p>
     {error && <p role="alert" className="text-sm text-destructive">{t("recentlyDenied.error")}</p>}
-    {!entries.length && <p className="text-sm text-muted-foreground">{t("recentlyDenied.empty")}</p>}
+    {!entries.length && <EmptyState className="p-0" title={t("recentlyDenied.empty")} />}
     <ul className="space-y-3">{entries.map((entry) => <li key={entry.id} data-testid={`recently-denied-entry-${entry.id}`} className="min-w-0 rounded border p-3 space-y-2">
       <div className="flex justify-between gap-2"><code>{entry.toolName}</code><time className="text-xs text-muted-foreground" dateTime={entry.ts}>{new Date(entry.ts).toLocaleString()}</time></div>
       <p className="text-sm">{entry.reason}</p>

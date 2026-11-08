@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { Loader } from "../../../components/ui/loader.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 
 /** Lifecycle subjects share one pill shape and height; tones come from semantic theme tokens. */
@@ -84,7 +85,7 @@ export function ToolbarStatusPill({
           aria-label={ariaLabel}
           data-testid={testId}
         >
-          <Icon className={busy ? "h-3 w-3 animate-spin" : "h-3 w-3"} />
+          {busy ? <Loader size={12} icon={Icon} /> : <Icon className="h-3 w-3" />}
           <span>{label}</span>
           {trailing}
         </Button>

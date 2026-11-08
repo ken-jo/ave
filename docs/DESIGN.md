@@ -55,6 +55,13 @@
    - New colors, shadows, focus rings, and motion values must enter through shared tokens when they represent reusable UI language.
 6. Localization is a product requirement.
    - New user-facing strings must be added to both src/i18n/messages/en.ts and ko.ts.
+7. Attention is spent on decisions, not on activity.
+   - The next decision a person must make is visible without visiting each pane: a waiting
+     card is marked wherever it is hidden (see `PendingAnswerDot`).
+   - Normal execution stays quiet. A notice is sent only when it is absolutely necessary,
+     following VS Code's notification guideline ("only sending notifications when absolutely
+     necessary", https://code.visualstudio.com/api/ux-guidelines/notifications); the
+     notification hierarchy under Interaction states picks the narrowest surface that fits.
 
 ## Visual language
 - Color:
@@ -100,6 +107,15 @@
     (`duration-[var(--motion-fast)]`), never raw `duration-200` or `300ms ease`: the reduced-motion rule collapses the tokens, not literals.
   - Transition the properties that change (`transition-colors`, `transition-[width]`), not `transition-all`.
   - `prefers-reduced-motion` is authoritative.
+  - Motion budget: a UI transition (enter, exit, hover, state swap) takes at most about 200ms —
+    `--motion-fast` (120ms) or `--motion-base` (180ms) — and animates `transform` and `opacity`
+    only. `--motion-slow` and `--motion-layout` are the only steps above it and are kept for
+    in-flow size changes; the notice strip's height animation below is that exception, not a
+    licence for other properties.
+  - One loader: every in-progress spin is the `Loader` primitive (`src/components/ui/loader.tsx`),
+    at the 12/14/16 icon steps, never a raw `animate-spin`. Under `prefers-reduced-motion` it
+    stands still and the adjacent label or disabled control carries the busy state; pulses on
+    skeletons and activity dots stop the same way (`motion-reduce:animate-none`).
   - An in-flow surface that appears and disappears (the status bar, the window's notice
     strip) animates its height too — `ave-anim-notice-in/-out`, a grid row from 0fr to
     1fr with a fade — and stays mounted through its exit, so what sits below it moves
@@ -344,8 +360,8 @@ what it shows. In a sidebar row the whole slot is pointer-transparent too, so th
 gets the click, and the row's hover preview carries the state instead ("running", "awaiting
 your answer"). Where the surface's own accessible name already says the state (a sidebar row's
 button, which also names a non-main family; a sub-agent's or a run's status text), the slot is
-hidden from assistive tech so it is not read twice. The loader
-stops spinning under reduced motion and the label carries the state. A conversation stays
+hidden from assistive tech so it is not read twice. The loader is the shared `Loader` (see
+Motion) at the slot's 14/16px step; it stops spinning under reduced motion and the label carries the state. A conversation stays
 working while any of its chats is — the main turn or its side chat — and one selector
 (`workingSessionIds` in `chat-group-session-registry.ts`) decides it for the sidebar rows
 and the tile headers, the way `pendingAnswers` decides the dot; the side-chat tab reads the
@@ -525,15 +541,36 @@ determine whether a tile can split or a panel can dock.
 
 ## Interaction states
 - Loading: use compact progress or status text near the affected control.
-- Empty: state what is empty, not how the feature works.
+- Empty: state what is empty, not how the feature works. Every empty state is the `EmptyState`
+  primitive (`src/components/ui/empty-state.tsx`): one line renders muted `text-dense`; two lines render a
+  title (`text-body-sm`, medium) over a muted `text-dense` secondary line with a small gap; at
+  most one primary button, and every other action is a link.
 - Error: use destructive semantics and include the next actionable recovery when available.
 - Success: use success semantics sparingly; avoid celebratory motion.
 - Disabled: preserve legibility and explain disabled controls through tooltip or adjacent status only when the reason is not obvious.
 - Highlight: a highlight is carried by the element it marks — the element takes the mark and the ring is drawn on it — never by a separate box placed at coordinates copied from it. A copied rect goes stale on every layout change its copier did not subscribe to, and most in-app shifts fire neither resize nor scroll; a surface anchored to the element (the shared popover) keeps the relation for free.
 - Offline/slow network: keep local app navigation responsive and isolate remote failure to the affected operation.
-- Notification hierarchy (pick the narrowest surface that fits):
+- Notification hierarchy (pick the narrowest surface that fits; it serves the Attention principle — when no surface is necessary, send nothing):
   - **Inline status** next to the affected control — the default for operation results.
   - **Toast** for transient confirmations of a user-initiated action (e.g. saved); auto-dismissing, never load-bearing.
+  - Notice rules. Every transient notice is a notice queue (`useStatusNotices`) drawn by `NoticeToast`
+    (`src/ui/renderer/components/StatusBar.tsx`), so the rules are enforced once:
+    - severity sets the role: each strip renders one persistent `NoticeLiveRegion` whose text
+      follows the queue head — errors in its `role="alert"` region, everything else in its
+      `role="status"` region — and the visible notice itself is not live, so a remounted notice
+      can never swallow the next announcement;
+    - an error stays until dismissed and every notice has a close button; brief confirmations auto-dismiss;
+    - a queue shows one notice at a time and later ones wait behind it (`+N`). Each strip owns one
+      queue — the window strip, each tile's composer dock, the side chat, the settings save
+      confirmation — so a tile's notice never repeats in the tile beside it;
+    - while a modal dialog is open (`DialogContent` registers in `modal-presence.ts`) queues are
+      held: nothing shows, expires or is dropped, and the head shows with its full time once the
+      modal closes. A notice never takes focus;
+    - a notice that repeats by nature (a re-applied low-risk approval, a set-aside conversation)
+      is marked `suppressible` and offers "Don't show again", persisted per kind; errors cannot be,
+      and Settings → Permissions → "Show hidden notices again" undoes every choice;
+    - progress is drawn in context (the installing row, the running panel), never as a global toast;
+    - width is capped at `min(100%, 24rem)` and the notice fades in on `--motion-fast`.
   - **Banner** for persistent, page-scoped conditions that need action (e.g. update available); dismissible, stays until resolved.
   - **OS notification** only for events the user must see while the window is unfocused; always mirrored by in-app state.
 

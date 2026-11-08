@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader, type LoaderSize } from "../../../components/ui/loader.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { cn } from "../../../lib/utils.js";
 import { PendingAnswerDot, StatusDot } from "./PendingAnswerDot.js";
@@ -22,6 +22,9 @@ const SIZE_CLASS = {
   md: "h-4 w-4",
 } as const;
 
+/** The loader step that fills each slot size: the same 14/16px squares, on the shared icon steps. */
+const LOADER_SIZE: Record<keyof typeof SIZE_CLASS, LoaderSize> = { sm: 14, md: 16 };
+
 export type AgentStatusSize = keyof typeof SIZE_CLASS;
 
 /** The name of what the slot shows, for a surface that carries it in its own accessible name: working, then the badge. */
@@ -37,10 +40,10 @@ export function agentStatusLabels(
   return labels;
 }
 
-/** The loader drawn for "working". The one place the spinner is chosen, so moving to the shared loader is this line. It
- * stands still under reduced motion; the slot's label carries the state then. */
-export function WorkingLoader({ className }: { className?: string }) {
-  return <Loader2 aria-hidden="true" className={cn("animate-spin motion-reduce:animate-none", className)} />;
+/** The loader drawn for "working": the shared `Loader`, which stands still under reduced motion; the slot's label carries
+ * the state then. */
+export function WorkingLoader({ size, className }: { size: LoaderSize; className?: string }) {
+  return <Loader size={size} {...(className === undefined ? {} : { className })} />;
 }
 
 /**
@@ -97,7 +100,7 @@ export function AgentStatusGlyph({
           data-testid={workingTestId}
           className={cn("flex items-center justify-center", square, markClassName)}
         >
-          <WorkingLoader className={square} />
+          <WorkingLoader size={LOADER_SIZE[size]} />
         </span>
       ) : markClassName ? (
         <span className={cn("flex items-center justify-center", square, markClassName)}>{mark}</span>
