@@ -350,10 +350,10 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
 
   // #1176 — toggle a plugin active/inactive. Inactive plugins stay loaded but their tools are hidden from the model.
   // Optimistically reflects the new loadStatus, then refreshes from the runtime (which is the source of truth).
-  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [toggling, setToggling] = useState<{ pluginId: string; enabled: boolean } | null>(null);
   const handleToggleEnabled = useCallback(
     async (pluginId: string, nextEnabled: boolean) => {
-      setTogglingId(pluginId);
+      setToggling({ pluginId, enabled: nextEnabled });
       try {
         const res = await getApi().setPluginEnabled(pluginId, nextEnabled);
         if (!res.ok) {
@@ -364,7 +364,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       } catch (e) {
         showBanner("error", errorMessage(e) || t("pluginConfigTab.errorToggleEnabled"));
       } finally {
-        setTogglingId(null);
+        setToggling(null);
       }
     },
     [refreshPlugins, showBanner, t],
@@ -884,6 +884,15 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                     )}
                   </div>
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {toggling?.pluginId === selectedPlugin.id && !toggling.enabled && (
+                      <span
+                        role="status"
+                        data-testid={`plugin-config:stopping:${selectedPlugin.id}`}
+                        className="text-xs text-muted-foreground"
+                      >
+                        {t("pluginConfigTab.stopping")}
+                      </span>
+                    )}
                     {selectedPluginToggleable ? (
                       <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
                         <span>{selectedPluginActive ? t("pluginConfigTab.activeLabel") : t("pluginConfigTab.inactiveLabel")}</span>
@@ -891,7 +900,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           size="sm"
                           data-testid={`plugin-config:enabled-toggle:${selectedPlugin.id}`}
                           checked={selectedPluginActive}
-                          disabled={togglingId === selectedPlugin.id}
+                          disabled={toggling?.pluginId === selectedPlugin.id}
+                          aria-busy={toggling?.pluginId === selectedPlugin.id}
                           onCheckedChange={(next) => void handleToggleEnabled(selectedPlugin.id, next)}
                           aria-label={t("pluginConfigTab.toggleAriaLabel", { name: selectedPlugin.name })}
                         />

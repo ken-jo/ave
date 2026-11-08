@@ -4038,6 +4038,7 @@ export const en = {
   "pluginConfigTab.statusUnauthed": "Unauthenticated",
   "pluginConfigTab.activeLabel": "Active",
   "pluginConfigTab.inactiveLabel": "Inactive",
+  "pluginConfigTab.stopping": "Stopping… Waiting for in-flight calls to finish.",
   "pluginConfigTab.toggleAriaLabel": "Toggle {name} active/inactive",
   "pluginConfigTab.notRunnable": "Not runnable",
   "pluginConfigTab.uninstallButton": "Remove",

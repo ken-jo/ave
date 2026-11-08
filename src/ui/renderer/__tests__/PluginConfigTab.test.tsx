@@ -5,6 +5,7 @@ import { PluginConfigTab } from "../tabs/PluginConfigTab.js";
 import { PluginConfigSchemaForm } from "../tabs/PluginConfigSchemaForm.js";
 import { takeUpdateReview } from "../tabs/git-marketplace/update-review-request.js";
 import { makePluginCard } from "./support/plugin-card.js";
+import type { PluginCardSummary } from "../types.js";
 
 const mockCards = vi.fn(async () => [
   makePluginCard({}),
@@ -1056,6 +1057,51 @@ describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
 });
 
 describe("PluginConfigTab — auth UI", () => {
+  it("keeps the stopping message and busy switch through the call ceiling and card refreshes", async () => {
+    let finish!: (result: { ok: true }) => void;
+    const toggleResult = new Promise<{ ok: true }>((resolve) => { finish = resolve; });
+    const setPluginEnabled = vi.fn(() => toggleResult);
+    let refresh!: () => void;
+    const cards = vi.fn(async (): Promise<PluginCardSummary[]> => [makePluginCard({ active: true, runtimeLoaded: true })]);
+    setRendererApi({
+      listPluginCards: cards,
+      setPluginEnabled,
+      onPluginEnabledChanged: (listener: () => void) => {
+        refresh = listener;
+        return () => undefined;
+      },
+      listPluginUiExtensions: vi.fn(async () => []),
+    });
+    const view = render(<PluginConfigTab />);
+    const toggle = await screen.findByTestId("plugin-config:enabled-toggle:meeting");
+    fireEvent.click(toggle);
+    expect(setPluginEnabled).toHaveBeenCalledWith("meeting", false);
+    const expectStopping = () => {
+      expect(screen.getByTestId("plugin-config:enabled-toggle:meeting")).toBeDisabled();
+      expect(screen.getByTestId("plugin-config:enabled-toggle:meeting")).toHaveAttribute("aria-busy", "true");
+      expect(screen.getByTestId("plugin-config:stopping:meeting")).toHaveTextContent("중지 중… 진행 중인 호출이 끝날 때까지 기다리고 있습니다.");
+    };
+    expectStopping();
+    vi.useFakeTimers();
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      cards.mockResolvedValue([makePluginCard({ active: false, runtimeLoaded: false, loadStatus: "disabled" })]);
+      await act(async () => { refresh(); });
+      view.rerender(<PluginConfigTab />);
+      expect(cards.mock.calls.length).toBeGreaterThan(1);
+      expectStopping();
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expectStopping();
+      cards.mockResolvedValue([makePluginCard({ active: false, runtimeLoaded: false, loadStatus: "disabled" })]);
+      await act(async () => { finish({ ok: true }); });
+      expect(screen.queryByTestId("plugin-config:stopping:meeting")).toBeNull();
+      expect(screen.getByTestId("plugin-config:enabled-toggle:meeting")).not.toBeDisabled();
+      expect(screen.getByTestId("plugin-config:enabled-toggle:meeting")).toHaveAttribute("data-state", "unchecked");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps auth UI available for inactive loaded plugins while hiding model tools", async () => {
     const cards = vi.fn(async () => [
       makePluginCard({

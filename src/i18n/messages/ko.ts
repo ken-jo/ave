@@ -4040,6 +4040,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "pluginConfigTab.statusUnauthed": "미인증",
   "pluginConfigTab.activeLabel": "활성",
   "pluginConfigTab.inactiveLabel": "비활성",
+  "pluginConfigTab.stopping": "중지 중… 진행 중인 호출이 끝날 때까지 기다리고 있습니다.",
   "pluginConfigTab.toggleAriaLabel": "{name} 활성/비활성 전환",
   "pluginConfigTab.notRunnable": "실행 불가",
   "pluginConfigTab.uninstallButton": "제거",
