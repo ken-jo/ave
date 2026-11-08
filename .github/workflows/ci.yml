@@ -768,6 +768,7 @@ jobs:
           src/permissions/__tests__/sandbox-write-policy.test.ts
           src/permissions/__tests__/asrt-protected-write-roots.test.ts
           src/permissions/__tests__/asrt-exit-release.test.ts
+          test/scripts/asrt-patched-symbols.test.ts
           src/permissions/__tests__/asrt-windows-support.test.ts
           src/permissions/__tests__/asrt-windows-grant-paths.test.ts
           src/permissions/__tests__/srt-win-integrity.test.ts

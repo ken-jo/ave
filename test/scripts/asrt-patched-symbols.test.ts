@@ -145,8 +145,8 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
       const SandboxManager = await releaseWith(stub.srtWin);
       const report = await SandboxManager.reset();
       expect(report).toEqual({ windowsAclUnreleased: [
-        { step: "grant revoke", status: "missing", count: 2 },
-        { step: "deny restore", status: "mismatch", count: 1 },
+        { step: "grant revoke", status: "missing", count: 2, rowKeys: ["14d6fb468b98e4af12b11856", "14d6fb468b98e4af12b11856"] },
+        { step: "deny restore", status: "mismatch", count: 1, rowKeys: ["14d6fb468b98e4af12b11856"] },
       ] });
       expect(JSON.stringify(report)).not.toContain("private-target");
       await SandboxManager.reset();
