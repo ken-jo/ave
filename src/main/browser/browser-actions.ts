@@ -3,7 +3,7 @@
 import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
 import { browserLayoutReady } from "./browser-layout-probe.js";
 import { createBrowserTabActivity } from "./browser-tab-activity.js";
-import { gateBrowserSiteNavigation } from "./browser-site-navigation.js";
+import { gateBrowserSiteNavigation, type BrowserSiteNavigationGate } from "./browser-site-navigation.js";
 import { stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadResult, type BrowserUploadSelection } from "./browser-upload.js";
 import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
@@ -816,7 +816,7 @@ export interface ActionNavigation {
   readonly requested: boolean;
   // Resolve once a requested navigation commits or ends without a new document; refuse a failed one, a closed tab, or one still pending at `maxMs`.
   // Resolves at once when nothing was requested.
-  outcome(signal: AbortSignal, maxMs: number): Promise<void>;
+  outcome(signal: AbortSignal, maxMs: number, gate?: BrowserSiteNavigationGate): Promise<void>;
   stop(): void;
 }
 
@@ -830,11 +830,9 @@ export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSess
   const mainFrameId = (await frameTree(cdp)).frame.id;
   let requested = false;
   let ended: NavigationEnd | undefined;
-  let notify: (() => void) | undefined;
   const end = (outcome: NavigationEnd) => {
     if (!requested || ended) return;
     ended = outcome;
-    notify?.();
   };
   const stopCdp = cdp.onEvent((method, params) => {
     if (method === "Page.frameRequestedNavigation" && params.frameId === mainFrameId && params.disposition === "currentTab") requested = true;
@@ -865,22 +863,18 @@ export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSess
   return {
     get requested() { return requested; },
     stop,
-    outcome: async (signal, maxMs) => {
+    outcome: async (signal, maxMs, gate) => {
       throwIfAborted(signal);
-      if (!requested) return;
-      if (!ended) {
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(done, maxMs);
-          function done() {
-            clearTimeout(timer);
-            notify = undefined;
-            signal.removeEventListener("abort", done);
-            resolve();
-          }
-          notify = done;
-          signal.addEventListener("abort", done, { once: true });
-        });
+      let elapsed = 0;
+      while ((!ended && requested || gate?.waiting()) && elapsed < maxMs) {
+        gate?.assertAllowed();
+        const paused = gate?.waiting();
+        const before = Date.now();
+        await sleep(SETTLE_POLL_MS, signal);
+        if (!paused && !gate?.waiting()) elapsed += Date.now() - before;
       }
+      gate?.assertAllowed();
+      if (!requested) return;
       throwIfAborted(signal);
       if (!ended) {
         throw new BrowserActionError("navigation-incomplete",
@@ -1398,8 +1392,8 @@ export function createBrowserPageActions(
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
     return withActivity(guest, live.signal, () => browserLayoutReady(session), act);
   };
-  const siteGates = new WeakMap<WebContents, () => void>();
-  const installSiteGate = async (live: LiveTab, guest: WebContents, session: CdpSession) => {
+  const siteGates = new WeakMap<WebContents, BrowserSiteNavigationGate>();
+  const installSiteGate = async (live: LiveTab, guest: WebContents, session: CdpSession, signal: AbortSignal) => {
     if (!live.authorizeSite) return;
     setBrowserPopupNavigation(live);
     siteGates.get(guest)?.();
@@ -1408,9 +1402,10 @@ export function createBrowserPageActions(
       userControlled: () => live.tab.opener === "user" || live.tab.controlMode === "human-paused",
       active: () => !guest.isDestroyed() && live.tab.guest === guest && live.tab.controlMode !== "human-paused" && live.tab.lease?.id === live.leaseId && !live.callerSignal?.aborted,
       authorize: live.authorizeSite,
+      signal,
     });
     const dispose = () => { stop(); guest.removeListener("destroyed", dispose); };
-    siteGates.set(guest, dispose);
+    siteGates.set(guest, Object.assign(dispose, { waiting: stop.waiting, pausedMs: stop.pausedMs, assertAllowed: stop.assertAllowed }));
     guest.once("destroyed", dispose);
   };
   // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
@@ -1419,20 +1414,26 @@ export function createBrowserPageActions(
     const guest = live.tab.guest;
     if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
-    await installSiteGate(live, guest, session);
+    const lifecycle = navigationLifecycle(live, guest);
     actionNavigations.get(guest)?.stop();
     actionNavigations.delete(guest);
     const navigation = await watchActionNavigation(guest as unknown as NavigationGuest, session);
     try {
+      await installSiteGate(live, guest, session, lifecycle.signal);
       await act();
       try { await session.send("Page.enable"); } catch (err) {
         throw new BrowserActionError("tab-gone", `the action was sent, but the tab stopped answering: ${(err as Error).message.slice(0, 200)}`, true);
       }
     } catch (err) {
       navigation.stop();
+      lifecycle.stop();
       throw err;
     }
-    actionNavigations.set(guest, navigation);
+    actionNavigations.set(guest, {
+      get requested() { return navigation.requested; },
+      outcome: (_signal, maxMs) => navigation.outcome(lifecycle.signal, maxMs, siteGates.get(guest)),
+      stop: () => { navigation.stop(); lifecycle.stop(); },
+    });
   });
   return {
     prepare: async (live) => {
@@ -1466,9 +1467,11 @@ export function createBrowserPageActions(
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
       const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
-      await installSiteGate(live, guest, session);
       const lifecycle = navigationLifecycle(live, guest);
-      try { return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined); }
+      try {
+        await installSiteGate(live, guest, session, lifecycle.signal);
+        return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined);
+      }
       finally { lifecycle.stop(); }
     }),
     settle: async (live: LiveTab) => {
@@ -1477,8 +1480,10 @@ export function createBrowserPageActions(
       const navigation = actionNavigations.get(guest);
       actionNavigations.delete(guest);
       const started = Date.now();
+      const gate = siteGates.get(guest);
+      const pausedBefore = gate?.pausedMs() ?? 0;
       try { await navigation?.outcome(live.signal, SETTLE_MAX_MS); } finally { navigation?.stop(); }
-      return settle(guest, live.signal, Math.max(0, SETTLE_MAX_MS - (Date.now() - started)));
+      return settle(guest, live.signal, Math.max(0, SETTLE_MAX_MS - (Date.now() - started - ((gate?.pausedMs() ?? 0) - pausedBefore))));
     },
   };
 }

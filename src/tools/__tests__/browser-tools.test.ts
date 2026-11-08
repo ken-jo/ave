@@ -516,6 +516,28 @@ describe("browser tools", () => {
     expect(page.calls.map((call) => call.action)).toEqual(["snapshot", "snapshot", "snapshot"]);
   });
 
+  it("prepares a newly approved child tab before capturing its action signal", async () => {
+    let prepared = false;
+    const h = harness({ onPrepare: (target) => { h.tabs.documentChanged(target.tab.guest!.id); prepared = true; } });
+    const navigate = h.page.actions.navigate;
+    h.page.actions.navigate = async (target, url, origin) => {
+      if (!prepared) h.tabs.documentChanged(target.tab.guest!.id);
+      if (target.signal.aborted) throw new Error("browser document changed");
+      return navigate(target, url, origin);
+    };
+    const opening = h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" }, CHILD_SESSION);
+    await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("new"));
+    const guest = new FakeGuest(501, "about:blank");
+    h.tabs.guestAttached(guest, 1);
+    h.tabs.bindTab(1, { tabId: "child-page", webContentsId: guest.id, requestId: h.ops.at(-1)!.requestId! });
+    expect((await opening).isError).toBe(false);
+    const tab = h.tabs.liveTab("tab-1")!;
+    expect(tab.controlMode).toBe("agent-active");
+    expect(tab.owner?.sessionId).toBe(CHILD_SESSION);
+    expect(h.cards.filter(card => card.browserSite)).toHaveLength(1);
+    expect((await h.run(BROWSER_TOOL.snapshot, { tabId: tab.handle }, CHILD_SESSION)).isError).toBe(false);
+  });
+
   it("waits for cold observation before the one allow-mode action prompt", async () => {
     let prepared = false;
     const { run, cards, page, userTab } = harness({

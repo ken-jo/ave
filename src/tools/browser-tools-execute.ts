@@ -289,8 +289,9 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (!outcome.ok) return failure(`could not open the tab (${outcome.error})`);
       const tab = deps.tabs.liveTabInWindow(outcome.tabId, scope.windowId);
       if (!tab) return failure(`the tab ${outcome.tabId} closed as it opened`);
-      const documentId = tab.documentId;
       const guest = tab.guest;
+      await (await deps.loadActions()).prepare({ tab, signal: ctx.abortSignal ?? new AbortController().signal });
+      const documentId = tab.documentId;
       const signal = AbortSignal.any([tab.actions.signal, ...(ctx.abortSignal ? [ctx.abortSignal] : [])]);
       // Install the origin guard before navigating the blank bound view or following redirects.
       const lease = deps.tabs.acquireControl(tab, actorOf(ctx, deps));

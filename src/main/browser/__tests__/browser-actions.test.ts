@@ -1196,6 +1196,42 @@ function adapterFixture(options: {
   } };
 }
 
+it.each(["allow", "deny", "takeover", "destroy"])("holds the original action lease through delayed site approval: %s", async (answer) => {
+  vi.useFakeTimers();
+  try {
+    const { actions, approve, tab, guest, cdp, navigate, registry } = adapterFixture({ agent: true });
+    const live = await approve("browser_press_key");
+    let allow!: () => void;
+    let deny!: (error: Error) => void;
+    const authorization = new Promise<void>((resolve, reject) => { allow = resolve; deny = reject; });
+    const authorized = { ...live, authorizeSite: () => authorization };
+    await actions.pressKey(authorized, "Escape");
+    cdp.events.emit("message", "Page.frameRequestedNavigation", { frameId: "main", disposition: "currentTab" });
+    cdp.events.emit("message", "Fetch.requestPaused", { requestId: "original", frameId: "main", resourceType: "Document", request: { url: "https://a.example/next" } });
+    let finished = false;
+    const result = actions.settle({ tab, signal: new AbortController().signal } as typeof live).then(value => ({ value }), error => ({ error })).finally(() => { finished = true; });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(finished).toBe(false);
+    expect(tab.lease?.id).toBe(live.leaseId);
+    if (answer === "deny") deny(new Error("Site approval denied"));
+    else if (answer === "takeover") registry.userInput(guest.id, { type: "keyDown" });
+    else if (answer === "destroy") guest.emit("destroyed");
+    else allow();
+    await vi.advanceTimersByTimeAsync(200);
+    if (answer === "allow") {
+      expect(cdp.calls).toContainEqual({ method: "Fetch.continueRequest", params: { requestId: "original" } });
+      navigate("https://a.example/next");
+      guest.emit("did-navigate", {}, "https://a.example/next", 200, "OK");
+      await vi.advanceTimersByTimeAsync(200);
+      expect(await result).toEqual({ value: { url: "https://a.example/next" } });
+    } else {
+      expect(await result).toHaveProperty("error");
+      expect(cdp.calls.some(call => call.method === "Fetch.continueRequest")).toBe(false);
+      allow();
+    }
+  } finally { vi.useRealTimers(); }
+});
+
 it("wakes a background agent guest for input without selecting or opening its panel", async () => {
   vi.useFakeTimers();
   try {
