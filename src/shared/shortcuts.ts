@@ -7,11 +7,15 @@ export interface ShortcutSettings {
   /** A null accelerator registers nothing even when enabled. */
   toggleWindow: string | null;
   enabled: boolean;
+  /** The user's rebinds of registry rows: only rows that differ from their platform default are stored. */
+  bindings: ShortcutBindings;
 }
 
 export interface ShortcutSettingsPatch {
   toggleWindow?: string | null;
   enabled?: boolean;
+  /** Per row: an accelerator rebinds it, `null` resets it to its default. Rows left out keep their binding. */
+  bindings?: Readonly<Record<string, string | null>>;
 }
 
 const MAX_ACCELERATOR_LEN = 128;
@@ -47,12 +51,13 @@ export function normalizeAccelerator(input: unknown): string | null {
 export function normalizeShortcuts(
   input: unknown,
   fallback: ShortcutSettings,
+  platform: ShortcutPlatform,
 ): ShortcutSettings {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
-    return { ...fallback };
+    return { ...fallback, bindings: { ...fallback.bindings } };
   }
-  const obj = input as { toggleWindow?: unknown; enabled?: unknown };
-  const result: ShortcutSettings = { ...fallback };
+  const obj = input as { toggleWindow?: unknown; enabled?: unknown; bindings?: unknown };
+  const result: ShortcutSettings = { ...fallback, bindings: loadShortcutBindings(obj.bindings, platform) };
   if (obj.toggleWindow === null) {
     result.toggleWindow = null;
   } else if (obj.toggleWindow !== undefined) {
@@ -546,4 +551,54 @@ export function shortcutBindingRefusal(
     if (chordSignature(row.accelerator, platform) === signature) return { reason: "fixed-key", ownerId: row.id };
   }
   return null;
+}
+
+/** Load-boundary gate for persisted rebinds. A row this build no longer has, a row that became fixed, a key that became
+ * reserved, or a value equal to the default is dropped and the rest kept, so one stale entry cannot discard the others. */
+export function loadShortcutBindings(input: unknown, platform: ShortcutPlatform): ShortcutBindings {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  const result: ShortcutBindings = {};
+  for (const [id, value] of Object.entries(input as Record<string, unknown>)) {
+    if (typeof value !== "string" || !isShortcutId(id)) continue;
+    if (shortcutBindingRefusal(id, value, platform, NO_SHORTCUT_OVERRIDES) !== null) continue;
+    if (value === defaultAccelerator(id, platform)) continue;
+    result[id] = value;
+  }
+  return result;
+}
+
+export class ShortcutBindingsPatchError extends Error {
+  readonly code = "invalid-shortcut-binding";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "ShortcutBindingsPatchError";
+  }
+}
+
+/** The bindings after `patch`: an accelerator rebinds its row and `null` resets it; a rebind to the default is stored as
+ * no override. Throws ShortcutBindingsPatchError on anything the settings page would have refused, since a refusal
+ * here means a caller broke the contract. */
+export function applyShortcutBindingsPatch(
+  current: ShortcutSettings,
+  patch: unknown,
+  platform: ShortcutPlatform,
+): ShortcutBindings {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    throw new ShortcutBindingsPatchError("shortcuts.bindings must map shortcut ids to an accelerator or null.");
+  }
+  const next: ShortcutBindings = { ...current.bindings };
+  for (const [id, value] of Object.entries(patch as Record<string, unknown>)) {
+    if (!isShortcutId(id)) throw new ShortcutBindingsPatchError(`Unknown shortcut id: ${id}`);
+    if (value === null) {
+      delete next[id];
+      continue;
+    }
+    if (typeof value !== "string") throw new ShortcutBindingsPatchError(`shortcuts.bindings.${id} must be an accelerator or null.`);
+    const refusal = shortcutBindingRefusal(id, value, platform, { ...current, bindings: next });
+    if (refusal !== null) throw new ShortcutBindingsPatchError(`shortcuts.bindings.${id} refused (${refusal.reason}): ${value}`);
+    if (value === defaultAccelerator(id, platform)) delete next[id];
+    else next[id] = value;
+  }
+  return next;
 }

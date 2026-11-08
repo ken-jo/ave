@@ -3018,7 +3018,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
 
   it("defaults shortcuts OFF with no accelerator + launch flags false", () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });
     expect(s.get("system").launchAtStartup).toBe(false);
     expect(s.get("system").launchMinimized).toBe(false);
   });
@@ -3029,6 +3029,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
     expect(s.get("shortcuts")).toEqual({
       toggleWindow: "CommandOrControl+Shift+Space",
       enabled: true,
+      bindings: {},
     });
     // Reload from disk to confirm round-trip persistence.
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -3079,7 +3080,71 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     // Corrupt fields fall back to defaults (No-Fallback at boundary).
-    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });
+  });
+
+  // app.search has the same default (CommandOrControl+F) on every platform, so these hold on any CI host.
+  it("persists a rebind and resets it with null", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+    expect(s.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+
+    await reloaded.patch({ shortcuts: { bindings: { "app.search": null } } });
+    expect(reloaded.get("shortcuts").bindings).toEqual({});
+    const again = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(again.get("shortcuts").bindings).toEqual({});
+  });
+
+  it("stores a rebind back to the default as no override", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+F" } } });
+    expect(s.get("shortcuts").bindings).toEqual({});
+  });
+
+  it("keeps the other fields when only a binding is patched", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await s.patch({ shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: "Alt+F1", enabled: true, bindings: { "app.search": "CommandOrControl+Shift+Y" } });
+  });
+
+  it("refuses an unknown row, a fixed row, a bare key and a fixed row's key, applying nothing from that patch", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const refused: Record<string, string>[] = [
+      { "nope.nothing": "CommandOrControl+J" },
+      { "edit.copy": "CommandOrControl+J" },
+      { "app.search": "J" },
+      { "app.search": "CommandOrControl+C" },
+    ];
+    for (const bindings of refused) {
+      await expect(s.patch({ shortcuts: { enabled: true, bindings } })).rejects.toThrow(/shortcut/);
+    }
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });
+  });
+
+  it("drops stale rebinds on load and keeps the valid ones", () => {
+    writeFileSync(
+      join(userDataPath, "ave-settings.json"),
+      currentSettingsJson({
+        shortcuts: {
+          toggleWindow: null,
+          enabled: false,
+          bindings: {
+            "app.search": "CommandOrControl+Shift+Y",
+            "removed.row": "CommandOrControl+J",
+            "edit.copy": "CommandOrControl+J",
+            "menu.settings": "CommandOrControl+,",
+            "app.commandPalette": 7,
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(s.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
   });
 });
 

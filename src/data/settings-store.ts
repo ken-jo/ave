@@ -77,7 +77,9 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import {
   normalizeAccelerator,
+  applyShortcutBindingsPatch,
   normalizeShortcuts,
+  shortcutPlatformOf,
   type ShortcutSettings,
   type ShortcutSettingsPatch,
 } from "../shared/shortcuts.js";
@@ -951,6 +953,10 @@ export class SettingsService {
     if (partial.permissions !== undefined && (!partial.permissions || typeof partial.permissions !== "object" || Array.isArray(partial.permissions) || Object.keys(partial.permissions).some((key) => key !== "ownerAwayAutoSkipMinutes") || !isOwnerAwayAutoSkipMinutes(partial.permissions.ownerAwayAutoSkipMinutes))) {
       throw new OwnerAwayAutoSkipSettingsError();
     }
+    // Validated before anything is applied, so a refused rebind leaves the whole patch unapplied.
+    const nextShortcutBindings = partial.shortcuts?.bindings === undefined
+      ? undefined
+      : applyShortcutBindingsPatch(this.settings.shortcuts, partial.shortcuts.bindings, shortcutPlatformOf(process.platform));
     const previousSettings = this.getAll();
     const nextMarketplace = partial.marketplace
       ? normalizeMarketplace({
@@ -1230,6 +1236,7 @@ export class SettingsService {
       }
       const rawEnabled = partial.shortcuts.enabled;
       acceptField(nextShortcuts, "enabled", rawEnabled, isBooleanValue, "shortcuts", PATCHED_FIELD);
+      if (nextShortcutBindings !== undefined) nextShortcuts.bindings = nextShortcutBindings;
       this.settings.shortcuts = nextShortcuts;
     }
     if (partial.pluginConfigs) {
@@ -1719,7 +1726,7 @@ export class SettingsService {
         documents: normalizeDocuments(parsed.documents),
         workBoard: normalizeWorkBoard(parsed.workBoard),
         system: normalizeSystem(parsed.system),
-        shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
+        shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts, shortcutPlatformOf(process.platform)),
         plugins: {},
         pluginConfigs: { ...DEFAULT_SETTINGS.pluginConfigs, ...pluginConfigs },
         alerts: normalizeAlertSettings(parsed.alerts, appVersion),

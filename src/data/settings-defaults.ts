@@ -143,6 +143,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   shortcuts: {
     toggleWindow: null,
     enabled: false,
+    bindings: {},
   },
   plugins: {},
   pluginConfigs: {},

@@ -161,7 +161,7 @@ export const MOCK_DEFAULT_SETTINGS = {
   homeDocs: { keepLatest: false },
   privacy: { piiRedactEnabled: false },
   // Global shortcuts are off with no accelerator chosen; the persisted default in `settings-defaults.ts`.
-  shortcuts: { toggleWindow: null, enabled: false },
+  shortcuts: { toggleWindow: null, enabled: false, bindings: {} },
   // Z onboarding chain; mark the seed user as already past onboarding so the first-boot probe dispatches `probe-skip` and the chain advances straight to
   // `done`. Without this, the chain stays at the new default initial stage ("showcase") and masks the ChatView empty-state branch that several tests rely on.
   features: { idlePreferenceRefresh: false, onboardingCompleted: true },

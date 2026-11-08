@@ -4,10 +4,12 @@ import { ko } from "../../i18n/messages/ko.js";
 import {
   acceleratorFromEvent,
   acceleratorKeycaps,
+  applyShortcutBindingsPatch,
   canonicalAccelerator,
   conflictingShortcutIds,
   formatAccelerator,
   isShortcutId,
+  loadShortcutBindings,
   matchesAccelerator,
   NO_SHORTCUT_OVERRIDES,
   normalizeAccelerator,
@@ -16,6 +18,7 @@ import {
   resolveShortcuts,
   SHORTCUT_SCOPE_LABEL_KEYS,
   SHORTCUTS,
+  ShortcutBindingsPatchError,
   shortcutBindingRefusal,
   type ShortcutDefinition,
   type ShortcutKeyEvent,
@@ -52,19 +55,19 @@ describe("normalizeAccelerator", () => {
 });
 
 describe("normalizeShortcuts", () => {
-  const fallback = { toggleWindow: "Alt+F1", enabled: true } as const;
+  const fallback = { toggleWindow: "Alt+F1", enabled: true, bindings: {} } as const;
 
   it("returns fallback for non-object input", () => {
-    expect(normalizeShortcuts(null, { ...fallback })).toEqual(fallback);
-    expect(normalizeShortcuts([], { ...fallback })).toEqual(fallback);
+    expect(normalizeShortcuts(null, { ...fallback }, "darwin")).toEqual(fallback);
+    expect(normalizeShortcuts([], { ...fallback }, "darwin")).toEqual(fallback);
   });
 
   it("accepts null toggleWindow (explicit clear)", () => {
-    expect(normalizeShortcuts({ toggleWindow: null }, { ...fallback }).toggleWindow).toBeNull();
+    expect(normalizeShortcuts({ toggleWindow: null }, { ...fallback }, "darwin").toggleWindow).toBeNull();
   });
 
   it("keeps fallback when an invalid accelerator is supplied", () => {
-    const out = normalizeShortcuts({ toggleWindow: "Shift" }, { ...fallback });
+    const out = normalizeShortcuts({ toggleWindow: "Shift" }, { ...fallback }, "darwin");
     expect(out.toggleWindow).toBe("Alt+F1");
   });
 
@@ -72,8 +75,9 @@ describe("normalizeShortcuts", () => {
     const out = normalizeShortcuts(
       { toggleWindow: "CommandOrControl+K", enabled: false },
       { ...fallback },
+      "darwin",
     );
-    expect(out).toEqual({ toggleWindow: "CommandOrControl+K", enabled: false });
+    expect(out).toEqual({ toggleWindow: "CommandOrControl+K", enabled: false, bindings: {} });
   });
 });
 
@@ -277,5 +281,46 @@ describe("formatAccelerator", () => {
 
   it("throws on a malformed accelerator instead of printing a guess", () => {
     expect(() => formatAccelerator("Cmd+", "darwin")).toThrow(/Malformed/);
+  });
+});
+
+describe("persisted bindings", () => {
+  const settings = { toggleWindow: null, enabled: false, bindings: {} };
+
+  it("loads valid rebinds and drops what this build would refuse", () => {
+    expect(loadShortcutBindings({
+      "app.search": "CommandOrControl+Shift+Y",
+      "gone.row": "CommandOrControl+J",
+      "edit.copy": "CommandOrControl+J",
+      "app.commandPalette": "J",
+      "menu.settings": "CommandOrControl+,",
+      "app.viewBack": 3,
+    }, "darwin")).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+    expect(loadShortcutBindings("nonsense", "darwin")).toEqual({});
+  });
+
+  it("drops a rebind equal to the platform default, which differs by platform", () => {
+    expect(loadShortcutBindings({ "app.viewBack": "Alt+Left" }, "other")).toEqual({});
+    expect(loadShortcutBindings({ "app.viewBack": "Alt+Left" }, "darwin")).toEqual({ "app.viewBack": "Alt+Left" });
+  });
+
+  it("applies a rebind, stores a default as no override, and resets with null", () => {
+    const rebound = applyShortcutBindingsPatch(settings, { "app.search": "CommandOrControl+Shift+Y" }, "darwin");
+    expect(rebound).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+    expect(applyShortcutBindingsPatch({ ...settings, bindings: rebound }, { "app.search": null }, "darwin")).toEqual({});
+    expect(applyShortcutBindingsPatch({ ...settings, bindings: rebound }, { "app.search": "CommandOrControl+F" }, "darwin")).toEqual({});
+  });
+
+  it("throws on a refused entry instead of dropping it", () => {
+    expect(() => applyShortcutBindingsPatch(settings, { "gone.row": "CommandOrControl+J" }, "darwin")).toThrow(ShortcutBindingsPatchError);
+    expect(() => applyShortcutBindingsPatch(settings, { "edit.copy": "CommandOrControl+J" }, "darwin")).toThrow(/read-only/);
+    expect(() => applyShortcutBindingsPatch(settings, { "app.search": 5 }, "darwin")).toThrow(ShortcutBindingsPatchError);
+    expect(() => applyShortcutBindingsPatch(settings, [], "darwin")).toThrow(ShortcutBindingsPatchError);
+  });
+
+  it("lets two rebindable rows share a key in one patch", () => {
+    // Both rows may share a key (a conflict, shown with a badge), but neither may take a fixed row's key.
+    expect(applyShortcutBindingsPatch(settings, { "app.search": "CommandOrControl+J", "menu.settings": "CommandOrControl+J" }, "darwin"))
+      .toEqual({ "app.search": "CommandOrControl+J", "menu.settings": "CommandOrControl+J" });
   });
 });

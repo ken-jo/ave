@@ -86,7 +86,7 @@ export function withShortcutHint(label: string, id: ShortcutId, input: ShortcutR
 
 function shortcutInputFromSettings(settings: AppSettings): ShortcutResolutionInput {
   const shortcuts = settings.shortcuts;
-  return { bindings: {}, toggleWindow: shortcuts.toggleWindow, enabled: shortcuts.enabled };
+  return { bindings: shortcuts.bindings, toggleWindow: shortcuts.toggleWindow, enabled: shortcuts.enabled };
 }
 
 /** Keep the store on the host's settings: the first snapshot, then every broadcast. Mounted once per window. */
