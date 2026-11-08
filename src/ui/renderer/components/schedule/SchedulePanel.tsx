@@ -1,9 +1,10 @@
 // The schedule panel: one project's schedule items as a day, week or month grid. Chips are projected occurrences and past
 // runs from ROUTINES.listOccurrences; clicking an empty slot adds an item there, clicking a chip opens its popover.
+import { Loader } from "../../../../components/ui/loader.js";
 import { RunMetrics } from "./RunMetrics.js";
 import type { RoutineRunMetrics } from "../../../../shared/routines-types.js";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
-import { AlarmClock, AlertCircle, ChevronLeft, ChevronRight, Loader2, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
+import { AlarmClock, AlertCircle, ChevronLeft, ChevronRight, Pause, Plus, RefreshCw, Repeat2 } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Button } from "../../../../components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "../../../../components/ui/popover.js";
@@ -107,7 +108,7 @@ function statusClass(status: EntryStatus): string {
 }
 
 function StatusIcon({ status }: { status: EntryStatus }) {
-  if (status === "running") return <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" aria-hidden="true" />;
+  if (status === "running") return <Loader size={12} />;
   if (status === "paused") return <Pause className="h-3 w-3 shrink-0" aria-hidden="true" />;
   if (status === "failed" || status === "missed" || status === "orphaned") return <AlertCircle className="h-3 w-3 shrink-0" aria-hidden="true" />;
   return <Repeat2 className="h-3 w-3 shrink-0" aria-hidden="true" />;

@@ -1,9 +1,10 @@
 /** Use a per-server partition with no node integration and isolated context. A CSP-protected proxy embeds the app in a
  * sandboxed inner frame so window.parent is a distinct frame; bridge messages cross the relay preload and webview IPC. */
+import { Loader } from "../../../components/ui/loader.js";
 import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { AppBridge } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiPayload, McpUiResourceBundle } from "../../../mcp/types.js";
-import { Loader2, AlertCircle, PlugZap, ExternalLink } from "lucide-react";
+import { AlertCircle, PlugZap, ExternalLink } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { mcpAppPartitionName } from "../../../shared/mcp-app-partition.js";
 // The card-size bounds SoT. `ui/notifications/size-changed` and the payload's `height`
@@ -354,7 +355,7 @@ export function McpAppView({
         </div>
       ) : !bundle ? (
         <div className="flex items-center justify-center gap-2 px-3 py-4 text-dense text-muted-foreground" style={{ height: seedHeight }}>
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          <Loader size={14} />
           <span>{t("mcpAppView.loading")}</span>
         </div>
       ) : (

@@ -1,3 +1,4 @@
+import { Loader } from "../../../../components/ui/loader.js";
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import {
   AlertTriangle,
@@ -5,7 +6,6 @@ import {
   CheckCircle2,
   ChevronRight,
   CircleStop,
-  Loader2,
   Pin,
   Square,
   X,
@@ -130,7 +130,7 @@ const TONE_TEXT: Record<ReturnType<typeof rowStatus>["tone"], string> = {
 
 function RowIcon({ entry }: { entry: LiveRunEntry }) {
   const { run } = entry;
-  if (run.stopping) return <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />;
+  if (run.stopping) return <Loader size={14} className="text-muted-foreground" />;
   if (entry.approvals.length > 0 || run.phase === "awaiting_approval") {
     return <span aria-hidden="true" className="mx-[3px] h-2 w-2 shrink-0 rounded-full bg-warning" />;
   }
@@ -144,7 +144,7 @@ function RowIcon({ entry }: { entry: LiveRunEntry }) {
     case "denied":
       return <XCircle aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-destructive" />;
     default:
-      return <Loader2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />;
+      return <Loader size={14} className="text-muted-foreground" />;
   }
 }
 
@@ -224,7 +224,7 @@ function segments(entry: LiveRunEntry): [Segment, Segment, Segment] {
 
 const SEGMENT_BAR: Record<Segment["state"], string> = {
   done: "bg-foreground",
-  active: "bg-foreground animate-pulse",
+  active: "bg-foreground animate-pulse motion-reduce:animate-none",
   idle: "bg-border",
   attention: "bg-warning",
   stopping: "bg-muted-foreground",
@@ -279,7 +279,7 @@ function ToolStepRow({ step }: { step: RunToolStep }) {
   const started = step.startedAt;
   const elapsed = running && started !== undefined ? formatElapsed(now - started) : step.durationMs !== undefined ? formatToolDuration(step.durationMs) : "";
   const icon = running
-    ? <Loader2 aria-hidden="true" className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
+    ? <Loader size={12} className="text-muted-foreground" />
     : step.status === "done"
     ? <Check aria-hidden="true" className="h-3 w-3 shrink-0 text-success" />
     : step.status === "error"
@@ -662,7 +662,7 @@ function SteerComposer({ entry, onSteer, onStop, onAppendToDetail, captureIntent
           onClick={stop}
           data-testid="live-step-stop"
         >
-          {stopping ? <Loader2 aria-hidden="true" className="mr-1 h-3 w-3 animate-spin" /> : <Square aria-hidden="true" className="mr-1 h-3 w-3 fill-current" />}
+          {stopping ? <Loader size={12} className="mr-1" /> : <Square aria-hidden="true" className="mr-1 h-3 w-3 fill-current" />}
           {stopping ? t("workBoard.liveStopping") : t("workBoard.liveStop")}
         </Button>
       </div>

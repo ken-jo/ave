@@ -1,4 +1,5 @@
-import { Loader2, Pin, RefreshCw, GitBranch, AlertTriangle, History } from "lucide-react";
+import { Loader } from "../../../components/ui/loader.js";
+import { Pin, RefreshCw, GitBranch, AlertTriangle, History } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { memo, useMemo } from "react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -123,7 +124,7 @@ function AssistantCardImpl({
                 : t("assistantCard.interruptedBadge")}
             </span>
           ) : null}
-          {entry.streaming ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+          {entry.streaming ? <Loader size={12} /> : null}
           {isStarred ? <Pin key="starred" className="h-3 w-3 fill-emphasis text-emphasis ave-anim-star" /> : null}
           {actions && !entry.streaming ? (
             <div className={`ml-auto gap-1 ${isFinal !== false ? "flex" : "hidden group-hover:flex"}`}>

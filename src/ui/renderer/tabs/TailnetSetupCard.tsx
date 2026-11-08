@@ -1,6 +1,6 @@
 /** Guided setup applies one host-owned configuration after readiness; advanced listener controls remain separate. */
+import { Loader } from "../../../components/ui/loader.js";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
@@ -62,7 +62,7 @@ function ConnectButton({
       onClick={() => void onConnect()}
       data-testid={testId}
     >
-      {busy ? <Loader2 className="size-3 animate-spin" aria-hidden="true" /> : null}
+      {busy ? <Loader size={12} /> : null}
       {busy ? t("tailnetSetup.connecting") : label}
     </Button>
   );

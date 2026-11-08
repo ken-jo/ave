@@ -107,6 +107,15 @@
     (`duration-[var(--motion-fast)]`), never raw `duration-200` or `300ms ease`: the reduced-motion rule collapses the tokens, not literals.
   - Transition the properties that change (`transition-colors`, `transition-[width]`), not `transition-all`.
   - `prefers-reduced-motion` is authoritative.
+  - Motion budget: a UI transition (enter, exit, hover, state swap) takes at most about 200ms —
+    `--motion-fast` (120ms) or `--motion-base` (180ms) — and animates `transform` and `opacity`
+    only. `--motion-slow` and `--motion-layout` are the only steps above it and are kept for
+    in-flow size changes; the notice strip's height animation below is that exception, not a
+    licence for other properties.
+  - One loader: every in-progress spin is the `Loader` primitive (`src/components/ui/loader.tsx`),
+    at the 12/14/16 icon steps, never a raw `animate-spin`. Under `prefers-reduced-motion` it
+    stands still and the adjacent label or disabled control carries the busy state; pulses on
+    skeletons and activity dots stop the same way (`motion-reduce:animate-none`).
   - An in-flow surface that appears and disappears (the status bar, the window's notice
     strip) animates its height too — `ave-anim-notice-in/-out`, a grid row from 0fr to
     1fr with a fade — and stays mounted through its exit, so what sits below it moves

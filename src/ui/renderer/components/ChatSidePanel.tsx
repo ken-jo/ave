@@ -1,3 +1,4 @@
+import { Loader } from "../../../components/ui/loader.js";
 import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
@@ -10,7 +11,6 @@ import {
 import {
   Bot,
   LayoutGrid,
-  Loader2,
   PanelLeftOpen,
   Pin,
   Plus,
@@ -122,7 +122,7 @@ const SubAgentRow = memo(function SubAgentRow({
       onClick={() => onSelect(spawn.spawnId)}
     >
       {spawn.status === "running" ? (
-        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-warning" aria-hidden="true" />
+        <Loader size={14} className="text-warning" />
       ) : (
         <Bot className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       )}

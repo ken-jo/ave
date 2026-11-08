@@ -1,3 +1,4 @@
+import { Loader } from "../../../components/ui/loader.js";
 import { CUSTOM_PROVIDER_WIRES, customProviderWire, type CustomProviderWire } from "../../../shared/custom-provider.js";
 import { PROVIDER_PICKER_GROUPS, providerPickerEntries } from "../../../shared/provider-picker.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -17,7 +18,7 @@ import {
 import { Slider } from "../../../components/ui/slider.js";
 import { Switch } from "../../../components/ui/switch.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
-import { ChevronDown, ChevronUp, Loader2, Pin, Plus, RefreshCw, Store } from "lucide-react";
+import { ChevronDown, ChevronUp, Pin, Plus, RefreshCw, Store } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -2895,7 +2896,7 @@ export function LlmTab(props: LlmTabProps) {
         }}
       >
         {loading
-          ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden={true} />
+          ? <Loader size={14} />
           : <RefreshCw className="h-3.5 w-3.5" aria-hidden={true} />}
       </Button>
     );

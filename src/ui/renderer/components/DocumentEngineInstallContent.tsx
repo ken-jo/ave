@@ -1,5 +1,6 @@
+import { Loader } from "../../../components/ui/loader.js";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, LoaderCircle, Trash2, X } from "lucide-react";
+import { Download, Trash2, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { DocumentEngineApi, DocumentEngineApiError } from "../../../shared/document-engine-api.js";
@@ -132,7 +133,7 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
     {sourceOpenFailed ? <p role="alert" className="text-xs text-destructive">{t("documentEngine.sourceOpenFailed")}</p> : null}
     <p className="text-xs text-muted-foreground">{t("documentEngine.platformAvailability")}</p>
     {working && <div className="space-y-1" role="status" aria-live="polite">
-      <div className="flex items-center gap-1.5 text-xs"><LoaderCircle aria-hidden="true" className="h-3 w-3 motion-safe:animate-spin" />
+      <div className="flex items-center gap-1.5 text-xs"><Loader size={12} />
         {t(phaseKey)}{state?.phase === "downloading" ? ` · ${percent}%` : ""}</div>
       {state?.phase === "downloading" && <progress className="h-1.5 w-full accent-primary" max={state.downloadBytes || 1}
         value={state.downloadedBytes} aria-label={t("documentEngine.downloading")} />}

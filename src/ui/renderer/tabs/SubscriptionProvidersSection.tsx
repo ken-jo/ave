@@ -1,5 +1,6 @@
+import { Loader } from "../../../components/ui/loader.js";
 import { useId } from "react";
-import { Loader2, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog.js";
 import { Label } from "../../../components/ui/label.js";
@@ -265,7 +266,7 @@ export function SubscriptionAuthControls({
       data-testid={`subscription-provider:${descriptor.id}:check-again`}
     >
       {checking
-        ? <Loader2 className="size-3 animate-spin" aria-hidden={true} />
+        ? <Loader size={12} />
         : <RefreshCw className="size-3" aria-hidden={true} />}
       {checking
         ? t("subscriptionProvidersSection.checkingAgain")
@@ -487,7 +488,7 @@ export function SubscriptionAuthControls({
             disabled={disabled}
             data-testid={`subscription-provider:${descriptor.id}:configure-runtime`}
           >
-            {provider.busyAction === "configure-runtime" ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+            {provider.busyAction === "configure-runtime" ? <Loader size={12} className="mr-1" /> : null}
             {provider.busyAction === "configure-runtime"
               ? t("subscriptionProvidersSection.configuringRuntime")
               : t("subscriptionProvidersSection.configureRuntime")}
@@ -502,7 +503,7 @@ export function SubscriptionAuthControls({
             disabled={disabled || pending}
             data-testid={`subscription-provider:${descriptor.id}:change-runtime`}
           >
-            {provider.busyAction === "configure-runtime" ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+            {provider.busyAction === "configure-runtime" ? <Loader size={12} className="mr-1" /> : null}
             {provider.busyAction === "configure-runtime"
               ? t("subscriptionProvidersSection.configuringRuntime")
               : t("subscriptionProvidersSection.changeRuntime")}
@@ -518,7 +519,7 @@ export function SubscriptionAuthControls({
             disabled={disabled || pending}
             data-testid={`subscription-provider:${descriptor.id}:forget-runtime`}
           >
-            {provider.busyAction === "forget-runtime" ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+            {provider.busyAction === "forget-runtime" ? <Loader size={12} className="mr-1" /> : null}
             {provider.busyAction === "forget-runtime"
               ? t("subscriptionProvidersSection.forgettingRuntime")
               : t("subscriptionProvidersSection.forgetRuntime")}
@@ -533,7 +534,7 @@ export function SubscriptionAuthControls({
             disabled={disabled || pending}
             data-testid={`subscription-provider:${descriptor.id}:verify-runtime`}
           >
-            {provider.busyAction === "verify-runtime" ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+            {provider.busyAction === "verify-runtime" ? <Loader size={12} className="mr-1" /> : null}
             {provider.busyAction === "verify-runtime"
               ? t("subscriptionProvidersSection.verifyingRuntime")
               : t("subscriptionProvidersSection.verifyRuntime")}
@@ -549,7 +550,7 @@ export function SubscriptionAuthControls({
             disabled={disabled}
             data-testid={`subscription-provider:${descriptor.id}:open-login-browser`}
           >
-            {provider.busyAction === "open-login-browser" ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+            {provider.busyAction === "open-login-browser" ? <Loader size={12} className="mr-1" /> : null}
             {provider.busyAction === "open-login-browser"
               ? t("subscriptionProvidersSection.openingLoginBrowser")
               : t("subscriptionProvidersSection.openLoginBrowser")}
@@ -565,7 +566,7 @@ export function SubscriptionAuthControls({
             disabled={disabled}
             data-testid={`subscription-provider:${descriptor.id}:cancel-login`}
           >
-            {provider.busyAction === "cancel-login" ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+            {provider.busyAction === "cancel-login" ? <Loader size={12} className="mr-1" /> : null}
             {provider.busyAction === "cancel-login"
               ? t("subscriptionProvidersSection.cancellingLogin")
               : t("subscriptionProvidersSection.cancelLogin")}
@@ -582,7 +583,7 @@ export function SubscriptionAuthControls({
             disabled={disabled || !actions.beginLogin}
             data-testid={`subscription-provider:${descriptor.id}:login-${method}`}
           >
-            {provider.busyAction === `login-${method}` ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+            {provider.busyAction === `login-${method}` ? <Loader size={12} className="mr-1" /> : null}
             {provider.busyAction === `login-${method}`
               ? t("subscriptionProvidersSection.startingLogin")
               : method === "browser"
@@ -602,7 +603,7 @@ export function SubscriptionAuthControls({
             disabled={disabled}
             data-testid={`subscription-provider:${descriptor.id}:logout`}
           >
-            {provider.busyAction === "logout" ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+            {provider.busyAction === "logout" ? <Loader size={12} className="mr-1" /> : null}
             {provider.busyAction === "logout"
               ? t("subscriptionProvidersSection.signingOut")
               : t("subscriptionProvidersSection.signOut")}

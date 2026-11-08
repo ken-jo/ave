@@ -1,8 +1,9 @@
 // Schedule cards drawn inside the work board's columns. They are read-only summaries: editing happens in the schedule panel,
 // which a card opens.
+import { Loader } from "../../../../components/ui/loader.js";
 import { RunMetrics } from "./RunMetrics.js";
 import { useEffect, useState } from "react";
-import { AlarmClock, AlertCircle, CalendarClock, ChevronDown, ChevronRight, Loader2 } from "lucide-react";
+import { AlarmClock, AlertCircle, CalendarClock, ChevronDown, ChevronRight } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -83,7 +84,7 @@ export function RunningScheduleCardView({ card, onOpenSession }: { card: Running
         <span className="min-w-0 truncate text-sm font-semibold">{routineTitle(card.routine)}</span>
       </div>
       <p className="mt-1 flex items-center gap-1 text-xs text-foreground">
-        <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" aria-hidden="true" />
+        <Loader size={12} />
         <span className="truncate">{`${t("workBoard.scheduleRunning")} · ${t("workBoard.scheduleStartedAt", { time: formatLocalClock(card.firedAt) })} · ${
           t("workBoard.scheduleElapsed", { minutes: String(elapsedMinutes) })}`}</span>
       </p>

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Check, Copy, ExternalLink, File, FileCode, FileImage, FileText, Presentation, RefreshCw, Sheet } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { Loader } from "../../../components/ui/loader.js";
 import { cn } from "../../../lib/utils.js";
 import { useTranslation } from "../../../i18n/react.js";
 import type { DocumentObservationStatus } from "../../../shared/agent-observation.js";
@@ -86,7 +87,7 @@ export function PreviewDocumentHeader({ path, workspaceRoot, copyValue = path, c
         </Button>
         {onReload ? <Button type="button" size="icon-xs" variant="ghost" disabled={refreshing}
           aria-label={t("chatPreviewRail.tableReload")} title={t("chatPreviewRail.tableReload")} onClick={onReload}>
-          <RefreshCw aria-hidden="true" className={cn("h-3.5 w-3.5", refreshing && "motion-safe:animate-spin")} />
+          {refreshing ? <Loader size={14} icon={RefreshCw} /> : <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />}
         </Button> : null}
       </div>
     </div>

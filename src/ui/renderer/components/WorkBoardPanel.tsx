@@ -1,5 +1,6 @@
+import { Loader } from "../../../components/ui/loader.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, CircleStop, ListTree, Loader2, PanelRight, Play, Plus, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleStop, ListTree, PanelRight, Play, Plus, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { t } from "../../../i18n/runtime.js";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
@@ -311,7 +312,7 @@ function RunIndicator({ run, item }: { run: WorkItemRunState | undefined; item?:
       {awaiting ? (
         <CheckCircle2 className="h-3 w-3" />
       ) : (
-        <Loader2 className="h-3 w-3 animate-spin" />
+        <Loader size={12} />
       )}
       {label}
     </span>
@@ -383,7 +384,7 @@ function LiveRunChip({
       ) : awaiting ? (
         <CheckCircle2 className="h-3 w-3 shrink-0" />
       ) : (
-        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+        <Loader size={12} />
       )}
       <span className="min-w-0 truncate">{parts.join(" · ")}</span>
     </span>
@@ -1303,7 +1304,7 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
                   data-testid="work-board-detail-run"
                 >
                   {isRunInFlight(run) ? (
-                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                    <Loader size={12} className="mr-1" />
                   ) : (
                     <Play className="mr-1 h-3 w-3" />
                   )}
@@ -1399,7 +1400,7 @@ function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdenti
           onClick={() => void run("daily")}
           data-testid="work-board-report-daily"
         >
-          {generating === "daily" && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+          {generating === "daily" && <Loader size={12} className="mr-1" />}
           {t("workBoard.reportDaily")}
         </Button>
         <Button
@@ -1409,7 +1410,7 @@ function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdenti
           onClick={() => void run("weekly")}
           data-testid="work-board-report-weekly"
         >
-          {generating === "weekly" && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+          {generating === "weekly" && <Loader size={12} className="mr-1" />}
           {t("workBoard.reportWeekly")}
         </Button>
       </div>
@@ -1425,7 +1426,7 @@ function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdenti
             onClick={() => void survey("daily")}
             data-testid="work-board-briefing-daily"
           >
-            {briefing === "daily" && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+            {briefing === "daily" && <Loader size={12} className="mr-1" />}
             {t("workBoard.briefingDaily")}
           </Button>
           <Button
@@ -1435,7 +1436,7 @@ function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdenti
             onClick={() => void survey("weekly")}
             data-testid="work-board-briefing-weekly"
           >
-            {briefing === "weekly" && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+            {briefing === "weekly" && <Loader size={12} className="mr-1" />}
             {t("workBoard.briefingWeekly")}
           </Button>
         </div>

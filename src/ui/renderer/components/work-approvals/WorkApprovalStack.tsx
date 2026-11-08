@@ -3,8 +3,9 @@
 // the routine panel); this component decides nothing by itself and has no approve shortcut — a decision is always a button press, and a
 // queued plan is expanded into the card before it can be decided. Tool-execution approvals are never here; they stay in their
 // conversation's ApprovalDock.
+import { Loader } from "../../../../components/ui/loader.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { CheckSquare, Loader2 } from "lucide-react";
+import { CheckSquare } from "lucide-react";
 import { t } from "../../../../i18n/runtime.js";
 import { Badge } from "../../../../components/ui/badge.js";
 import { Button } from "../../../../components/ui/button.js";
@@ -191,7 +192,7 @@ function ItemActions({ item, actions, targetProjectRoot, projectChoices, compact
               onClick={() => void acknowledge()}
               data-testid="work-approval-routine-acknowledge"
             >
-              {pending === "acknowledge" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
+              {pending === "acknowledge" && <Loader size={12} className="mr-1" />}
               {t("workApprovals.routineAcknowledge")}
             </Button>
           )}
@@ -250,15 +251,15 @@ function ItemActions({ item, actions, targetProjectRoot, projectChoices, compact
           </label>
         )}
         <Button variant="outline" size={size} disabled={busy} onClick={() => void run("dismiss")} data-testid="work-approval-proposal-dismiss">
-          {pending === "dismiss" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
+          {pending === "dismiss" && <Loader size={12} className="mr-1" />}
           {t("workApprovals.proposalDismiss")}
         </Button>
         <Button variant="outline" size={size} disabled={busy} onClick={() => void run("add")} data-testid="work-approval-proposal-add">
-          {pending === "add" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
+          {pending === "add" && <Loader size={12} className="mr-1" />}
           {t("workApprovals.proposalAdd")}
         </Button>
         <Button size={size} disabled={busy} onClick={() => void run("add-plan")} data-testid="work-approval-proposal-add-plan">
-          {pending === "add-plan" && <Loader2 className="mr-1 h-3 w-3 animate-spin" aria-hidden />}
+          {pending === "add-plan" && <Loader size={12} className="mr-1" />}
           {t("workApprovals.proposalAddAndPlan")}
         </Button>
       </div>
@@ -698,9 +699,9 @@ export function WorkApprovalStack({
   if (state.status === "loading") {
     return (
       <section aria-busy="true" aria-label={t("workApprovals.loading")} data-testid="work-approvals-loading" className="space-y-2">
-        <div className="h-28 animate-pulse rounded-lg bg-muted" />
-        <div className="h-10 animate-pulse rounded-md bg-muted" />
-        <div className="h-10 animate-pulse rounded-md bg-muted" />
+        <div className="h-28 animate-pulse rounded-lg bg-muted motion-reduce:animate-none" />
+        <div className="h-10 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
+        <div className="h-10 animate-pulse rounded-md bg-muted motion-reduce:animate-none" />
       </section>
     );
   }
