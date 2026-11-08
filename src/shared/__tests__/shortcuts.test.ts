@@ -227,12 +227,25 @@ describe("matchesAccelerator", () => {
     expect(matchesAccelerator("Control+Shift+G", ev("G", { metaKey: true, shiftKey: true }), "darwin")).toBe(false);
   });
 
-  it("reads letters and punctuation from the physical key", () => {
-    // ⌥⌘S types "ß" on a Mac; ⌘⇧/ reports "?"; a Hangul input source reports a jamo.
+  it("matches the layout's printed key, not the physical position", () => {
+    // AZERTY: the key printed A sits where QWERTY has Q.
+    expect(matchesAccelerator("CommandOrControl+Shift+A", ev("A", { code: "KeyQ", metaKey: true, shiftKey: true }), "darwin")).toBe(true);
+    expect(matchesAccelerator("CommandOrControl+Shift+A", ev("Q", { code: "KeyA", metaKey: true, shiftKey: true }), "darwin")).toBe(false);
+    // Dvorak: printed K sits on QWERTY V, printed T on QWERTY K.
+    expect(matchesAccelerator("CommandOrControl+K", ev("k", { code: "KeyV", ctrlKey: true }), "other")).toBe(true);
+    expect(matchesAccelerator("CommandOrControl+K", ev("t", { code: "KeyK", ctrlKey: true }), "other")).toBe(false);
+    // QWERTZ: "?" is Shift+ß, still the tour key.
+    expect(matchesAccelerator("CommandOrControl+Shift+/", ev("?", { code: "Minus", metaKey: true, shiftKey: true }), "darwin")).toBe(true);
+    expect(acceleratorFromEvent(ev("a", { code: "KeyQ", metaKey: true }), "darwin")).toEqual({ kind: "accelerator", accelerator: "CommandOrControl+A" });
+  });
+
+  it("falls back to the physical key when the printed one is not a bindable token", () => {
+    // ⌥⌘S types "ß" on a Mac; ⌘⇧/ reports "?"; a Hangul input source reports a jamo; Shift+1 reports "!".
     expect(matchesAccelerator("CommandOrControl+Alt+S", ev("ß", { code: "KeyS", metaKey: true, altKey: true }), "darwin")).toBe(true);
     expect(matchesAccelerator("CommandOrControl+Shift+/", ev("?", { code: "Slash", metaKey: true, shiftKey: true }), "darwin")).toBe(true);
     expect(matchesAccelerator("CommandOrControl+K", ev("ㅏ", { code: "KeyK", metaKey: true }), "darwin")).toBe(true);
     expect(matchesAccelerator("CommandOrControl+[", ev("[", { code: "BracketLeft", metaKey: true }), "darwin")).toBe(true);
+    expect(matchesAccelerator("CommandOrControl+Shift+1", ev("!", { code: "Digit1", ctrlKey: true, shiftKey: true }), "other")).toBe(true);
   });
 
   it("maps named keys", () => {

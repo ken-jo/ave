@@ -192,15 +192,11 @@ const CODE_PUNCTUATION: Readonly<Record<string, string>> = {
 
 const MODIFIER_KEY_NAMES: ReadonlySet<string> = new Set(["Control", "Shift", "Alt", "Meta", "OS", "AltGraph", "CapsLock", "Fn", "Hyper", "Super"]);
 
-/** The key token an event pressed. Letters, digits and punctuation come from the physical `code`, so Option (which turns ⌥S
- * into "ß"), Shift (which turns / into "?") and a Hangul input source all still name the key the user pressed. */
+/** The key token an event pressed. The layout's printed key wins, as in native menu accelerators and VS Code: ⌘A on
+ * AZERTY is the key printed A, and ⌘K on Dvorak is the key printed K. The physical `code` is the fallback only when the
+ * printed key is not a bindable ASCII token: Option turning ⌥S into "ß", a Hangul input source reporting a jamo, a dead
+ * key, or Shift turning 1 into "!". */
 function eventKeyToken(event: ShortcutKeyEvent): string | null {
-  const code = event.code ?? "";
-  const letter = /^Key([A-Z])$/.exec(code);
-  if (letter) return letter[1];
-  const digit = /^Digit([0-9])$/.exec(code);
-  if (digit) return digit[1];
-  if (CODE_PUNCTUATION[code]) return CODE_PUNCTUATION[code];
   const key = event.key;
   if (key === " " || key === "Spacebar") return "Space";
   if (key === "ArrowUp") return "Up";
@@ -208,8 +204,16 @@ function eventKeyToken(event: ShortcutKeyEvent): string | null {
   if (key === "ArrowLeft") return "Left";
   if (key === "ArrowRight") return "Right";
   if (key === "+") return "Plus";
+  // ⌘⇧? is written Shift+/ in accelerators; "?" names it on every layout, wherever the layout puts it.
   if (key === "?") return "/";
-  return canonicalKeyToken(key);
+  const printed = canonicalKeyToken(key);
+  if (printed !== null) return printed;
+  const code = event.code ?? "";
+  const letter = /^Key([A-Z])$/.exec(code);
+  if (letter) return letter[1];
+  const digit = /^Digit([0-9])$/.exec(code);
+  if (digit) return digit[1];
+  return CODE_PUNCTUATION[code] ?? null;
 }
 
 /** Does `event` press exactly `accelerator` on `platform`? Every modifier must match, so ⌃⌘K is not ⌘K. */
