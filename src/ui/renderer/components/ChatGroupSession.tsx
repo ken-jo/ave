@@ -337,8 +337,7 @@ export function ChatGroupSession({
   // pushed here is about THIS conversation — an attachment the composer
   // refused, a provider swap mid-turn, a pre-turn compaction — so it is held
   // by the tile and can never appear in the tile beside it. The window's news
-  // (host notifications, installs, updates) has the window's own queue and
-  // strip; see `useStatusBar`.
+  // (host notifications and installs) stays in the bell; see `useWindowNotices`.
   const {
     persistent: tileNoticePersistent, visibleToast: tileNoticeVisible, pendingCount: tileNoticePending,
     pushToast: pushTileNotice, upsertToast: upsertTileNotice, removeToast: removeTileNotice,

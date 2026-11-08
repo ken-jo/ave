@@ -47,6 +47,8 @@ export interface PersistentItem {
 
 export interface ToastItem {
   id: string;
+  /** A new delivery can announce identical text again without remounting the live region. */
+  announcementId?: number;
   severity: StatusBarSeverity;
   message: string;
   /** Duration this toast should stay visible after it reaches the queue head. */

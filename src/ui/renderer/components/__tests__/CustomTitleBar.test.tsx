@@ -2,7 +2,6 @@
 import "../../../../../test/renderer/setup.ts";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, fireEvent } from "@testing-library/react";
-import { StatusBar } from "../StatusBar.js";
 import { CustomTitleBar } from "../CustomTitleBar.js";
 
 const mockMinimize = vi.fn().mockResolvedValue(undefined);
@@ -220,28 +219,6 @@ describe("CustomTitleBar", () => {
     it("plain band without a bridge", () => {
       expectNoRule(render(<CustomTitleBar><span>path</span></CustomTitleBar>).getByTestId("custom-titlebar-plain"));
     });
-  });
-
-  it.each(["native", "leading", "trailing"] as const)("keeps the %s controls reserved and notice clicks separate from dragging", (placement) => {
-    setupBridges(placement === "native", placement);
-    const { getByTestId, queryByTestId } = render(
-      <CustomTitleBar keepVisibleInFullscreen>
-        <div className="flex min-w-0 flex-1">
-          <StatusBar persistent={[]} toastPlacement="titlebar" visibleToast={{ id: "notice", message: "Ready", severity: "error", expiresAt: Number.POSITIVE_INFINITY, sticky: true }} onToastDismiss={vi.fn()} />
-        </div>
-      </CustomTitleBar>,
-    );
-    const band = getByTestId(placement === "native" ? "custom-titlebar-darwin" : "custom-titlebar");
-    expect(band.style.getPropertyValue("-webkit-app-region") || (band.style as unknown as Record<string, string>).WebkitAppRegion).toBe("drag");
-    if (placement === "native") expect(Number.parseFloat(band.style.paddingLeft)).toBeGreaterThanOrEqual(80);
-    else {
-      expect(getByTestId("titlebar-controls")).toHaveClass("shrink-0");
-      fireEvent.click(getByTestId("titlebar-minimize"));
-      expect(mockMinimize).toHaveBeenCalledOnce();
-    }
-    fireEvent.doubleClick(getByTestId("status-toast"));
-    expect(mockToggleMaximize).not.toHaveBeenCalled();
-    expect(queryByTestId("status-toast-dismiss")).not.toBeNull();
   });
 
   describe("missing bridge (non-Electron environment)", () => {

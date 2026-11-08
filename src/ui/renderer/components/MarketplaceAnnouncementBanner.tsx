@@ -1,3 +1,4 @@
+import { useBannerNotice } from "../context/NotificationHistoryContext.js";
 import { Button } from "../../../components/ui/button.js";
 import {
   announcementActionLabel,
@@ -20,6 +21,12 @@ export function MarketplaceAnnouncementBanner({
 }) {
   const { t, locale } = useTranslation();
 
+  const visible = announcements[0];
+  const announcedByHistory = useBannerNotice(`banner:marketplace:${visible?.id}`, visible ? {
+    severity: visible.level === "critical" ? "error" : visible.level,
+    message: `${visible.title} ${visible.body}`,
+    actions: visible.actions.map((action) => ({ key: JSON.stringify(action.target), label: announcementActionLabel(action, locale), run: () => onAction(action.target) })),
+  } : null);
   if (announcements.length === 0) return null;
 
   const [current, ...rest] = announcements;
@@ -32,7 +39,7 @@ export function MarketplaceAnnouncementBanner({
       data-testid="marketplace-announcement-banner"
       data-level={current.level}
       // Severity sets the role, as for every notice: a critical announcement is an alert, the rest are status.
-      role={current.level === "critical" ? "alert" : "status"}
+      role={announcedByHistory ? undefined : current.level === "critical" ? "alert" : "status"}
     >
       <span className="min-w-0 flex-1">
         <MarqueeText

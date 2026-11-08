@@ -1,9 +1,9 @@
 import { chatSurface } from "./chat-surface.js";
-import { useRef, useState, type AnimationEvent, type CSSProperties } from "react";
+import { useRef, useState, type AnimationEvent } from "react";
 import type { PersistentItem, StatusBarSeverity, ToastItem } from "../hooks/use-status-bar.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../../components/ui/tooltip.js";
-import { ArrowUpRight, EyeOff, X } from "lucide-react";
+import { X } from "lucide-react";
 import { t } from "../../../i18n/runtime.js";
 import { MarqueeText } from "./MarqueeText.js";
 import { useWebSurfaceOccluder } from "../preview/use-web-surface-occluder.js";
@@ -16,8 +16,6 @@ const EMOJI_STYLE = { fontFamily: EMOJI_FONT_STACK };
 /** Persistent indicators stay in flow; the transient queue head floats without moving its owning surface. */
 export interface StatusBarProps {
   persistent: PersistentItem[];
-  /** Conversation notices float above their dock; window notices stay in the title bar slot. */
-  toastPlacement?: "above" | "titlebar";
   /** The single toast currently at the front of the queue (or null). */
   visibleToast: ToastItem | null;
   /** Number of toasts queued behind the visible one. */
@@ -70,13 +68,12 @@ export function StatusBar(props: StatusBarProps) {
 
   const { visibleToast, pendingCount = 0, onToastClick, onToastDismiss, onToastSuppress } =
     hasContent ? props : lastContentRef.current;
-  const { persistent, toastPlacement = "above" } = props;
-  const titlebar = toastPlacement === "titlebar";
+  const { persistent } = props;
 
   return (
     <TooltipProvider>
     <footer
-      className={`relative flex w-full ${titlebar ? "min-w-min" : "min-w-0"} items-center gap-3 text-dense text-muted-foreground`}
+      className="relative flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground"
       data-testid="status-bar"
     >
       {persistent.length > 0 ? (
@@ -159,9 +156,7 @@ export function StatusBar(props: StatusBarProps) {
       ) : null}
       {visibleToast !== null && (hasContent || leaving) ? (
         <div
-          className={titlebar
-            ? `pointer-events-none relative flex w-full min-w-min justify-end ${leaving ? "ave-anim-fade-out" : "ave-anim-fade-in"}`
-            : `pointer-events-none absolute inset-x-0 bottom-full z-30 mb-2 flex items-start justify-end ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
+          className={`pointer-events-none absolute inset-x-0 bottom-full z-30 mb-2 flex items-start justify-end ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
           data-testid="status-bar-presence"
           data-leaving={leaving ? "true" : undefined}
           onAnimationEnd={onAnimationEnd}
@@ -170,7 +165,6 @@ export function StatusBar(props: StatusBarProps) {
             key={visibleToast.id}
             toast={visibleToast}
             className="pointer-events-auto"
-            variant={titlebar ? "titlebar" : "standard"}
             pendingCount={pendingCount}
             onDismiss={onToastDismiss}
             {...(onToastClick ? { onOpen: onToastClick } : {})}
@@ -184,7 +178,7 @@ export function StatusBar(props: StatusBarProps) {
 }
 
 /**
- * The one transient notice, drawn wherever a notice queue shows its head (the window strip, a tile's composer dock, the side
+ * The one transient notice, drawn wherever a pane queue shows its head (a tile's composer dock, the side
  * chat, the settings save confirmation). Its rules live here so no surface re-derives them:
  * - it is not itself a live region: the strip's `NoticeLiveRegion` announces it, error assertive and the rest polite, and
  *   nothing moves focus;
@@ -199,7 +193,6 @@ export function NoticeToast({
   onOpen,
   onSuppress,
   wrap = false,
-  variant = "standard",
   className,
 }: {
   toast: ToastItem;
@@ -211,9 +204,7 @@ export function NoticeToast({
   onOpen?: (toast: ToastItem) => void;
   onSuppress?: (toast: ToastItem) => void;
   className?: string;
-  variant?: "standard" | "titlebar";
 }) {
-  const titlebar = variant === "titlebar";
   const linkClass =
     "shrink-0 text-body-sm font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring";
   const openable = toast.notification !== undefined && typeof onOpen === "function";
@@ -224,19 +215,17 @@ export function NoticeToast({
       data-testid="status-toast"
       data-severity={toast.severity}
       data-notice-kind={toast.kind}
-      title={titlebar ? toast.message : undefined}
-      style={titlebar ? { WebkitAppRegion: "no-drag" } as CSSProperties : undefined}
-      className={`${chatSurface()} ave-anim-fade-in flex w-full max-w-[min(100%,24rem)] text-input-bar-foreground ${titlebar ? "min-w-min h-(--chrome-control-height) items-center gap-0.5 px-1 text-dense" : "min-w-0 items-start gap-2 px-3 py-2 text-body-sm"}${className ? ` ${className}` : ""}`}
+      className={`${chatSurface()} ave-anim-fade-in flex w-full max-w-[min(100%,24rem)] text-input-bar-foreground min-w-0 items-start gap-2 px-3 py-2 text-body-sm${className ? ` ${className}` : ""}`}
     >
-      <span className={`${titlebar ? "h-1.5 w-1.5" : "mt-1 h-2 w-2"} shrink-0 rounded-full ${SEVERITY_DOT[toast.severity]}`} aria-hidden="true" />
+      <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[toast.severity]}`} aria-hidden="true" />
       {wrap ? (
         <span className="min-w-0 flex-1 break-words text-left [overflow-wrap:anywhere]" data-testid="status-toast-message">{toast.message}</span>
       ) : (
-        <MarqueeText text={toast.message} className={`${titlebar ? "w-0 " : ""}flex-1 text-left`} data-testid="status-toast-message" />
+        <MarqueeText text={toast.message} className={`flex-1 text-left`} data-testid="status-toast-message" />
       )}
       {openable ? (
         <button type="button" onClick={() => onOpen?.(toast)} className={linkClass} aria-label={t("statusBar.toastDetailsAction")} title={t("statusBar.toastDetailsAction")}>
-          {titlebar ? <ArrowUpRight className="h-3 w-3" aria-hidden="true" /> : t("statusBar.toastDetailsAction")}
+          {t("statusBar.toastDetailsAction")}
         </button>
       ) : toast.action ? (
         <button
@@ -250,18 +239,18 @@ export function NoticeToast({
           aria-label={toast.action.label}
           title={toast.action.label}
         >
-          {titlebar ? <ArrowUpRight className="h-3 w-3" aria-hidden="true" /> : toast.action.label}
+          {toast.action.label}
         </button>
       ) : null}
       {toast.suppressible && onSuppress ? (
         <button type="button" onClick={() => onSuppress(toast)} className={linkClass} data-testid="status-toast-suppress" aria-label={t("statusBar.toastSuppressAction")} title={t("statusBar.toastSuppressAction")}>
-          {titlebar ? <EyeOff className="h-3 w-3" aria-hidden="true" /> : t("statusBar.toastSuppressAction")}
+          {t("statusBar.toastSuppressAction")}
         </button>
       ) : null}
       <button
         type="button"
         onClick={() => onDismiss(toast)}
-        className={`${titlebar ? "h-5 w-5" : "mt-[-0.125rem] h-6 w-6"} inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring`}
+        className={`mt-[-0.125rem] h-6 w-6 inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring`}
         aria-label={t("statusBar.toastDismissAriaLabel")}
         data-testid="status-toast-dismiss"
       >
@@ -280,20 +269,20 @@ export function NoticeToast({
 }
 
 /**
- * The strip's screen-reader voice. A live region announces changes to text it already holds; one mounted together with its
- * text, as a per-notice element is, may never be read, so the next queued notice could go unannounced. Each strip renders
- * this once, unconditionally, and only its text follows the queue head: errors through the assertive region, every other
- * severity through the polite one. The visible notice carries no live role of its own.
+ * Keep the screen-reader voice mounted before notices arrive. Pane queues announce their head; window history can supply
+ * independent polite and error arrivals so a batched success cannot hide an error. Delivery keys reannounce repeated text
+ * inside the stable live regions. Visible notices carry no live role of their own.
  */
-export function NoticeLiveRegion({ toast }: { toast: ToastItem | null }) {
+export function NoticeLiveRegion({ toast, errorToast }: { toast: ToastItem | null; errorToast?: ToastItem | null }) {
   const isError = toast?.severity === "error";
+  const assertive = errorToast === undefined ? (isError ? toast : null) : errorToast;
   return (
     <>
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-notice-live="" data-testid="notice-live-polite">
-        {toast !== null && !isError ? toast.message : ""}
+        {toast !== null && !isError ? <span key={toast.announcementId ?? toast.id}>{toast.message}</span> : ""}
       </div>
       <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true" data-notice-live="" data-testid="notice-live-assertive">
-        {toast !== null && isError ? toast.message : ""}
+        {assertive ? <span key={assertive.announcementId ?? assertive.id}>{assertive.message}</span> : ""}
       </div>
     </>
   );

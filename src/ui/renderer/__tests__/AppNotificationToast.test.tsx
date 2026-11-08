@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { renderApp } from "../../../../test/renderer/render-app.js";
-import { approvalRequest, clickSidebarNavRow, endAnimation, splitIntoTwoTiles } from "../../../../test/renderer/helpers.js";
+import { approvalRequest, clickSidebarNavRow, splitIntoTwoTiles } from "../../../../test/renderer/helpers.js";
 import { MOCK_DEFAULT_SESSION_ID } from "../../../../test/renderer/mock-ave-api.js";
 import { A2ATaskState } from "../../../shared/a2a.js";
 
-describe("App notification toasts", () => {
+describe("App notification history", () => {
   const originalGlobalResizeObserver = globalThis.ResizeObserver;
   const originalWindowResizeObserver = window.ResizeObserver;
 
@@ -38,7 +38,7 @@ describe("App notification toasts", () => {
     vi.restoreAllMocks();
   });
 
-  it("routes the Learn more action through notifyClick and dismisses the toast", async () => {
+  it("routes the details action through notifyClick and retains session history", async () => {
     const user = userEvent.setup();
     const { api, emitNotificationToast } = await renderApp();
 
@@ -49,18 +49,16 @@ describe("App notification toasts", () => {
       contextRef: { routineId: "r-1" },
     });
 
+    await user.click(screen.getByTestId("notification-bell"));
     await user.click(await screen.findByRole("button", { name: /자세히 알아보기|Learn more/ }));
 
     expect(api.notifyClick).toHaveBeenCalledWith({
       kind: "routine",
       contextRef: { routineId: "r-1" },
     });
-    // Dismissed: the bar draws the toast once more on its way out, then leaves.
-    await waitFor(() => {
-      expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
-    });
-    endAnimation(screen.getByTestId("status-bar-presence"));
-    expect(screen.queryByTestId("status-toast-message")).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId("notification-center")).toBeNull());
+    await user.click(screen.getByTestId("notification-bell"));
+    expect(screen.getByTestId("notification-history-row")).toHaveTextContent("작업이 완료되었습니다");
   });
 
   it("handles clicked session notifications by loading the referenced chat", async () => {

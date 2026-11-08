@@ -13,7 +13,9 @@ import { RemoteA2AActionButton } from "./components/RemoteA2AActionButton.js";
 import { ToolbarStatusPill } from "./components/ToolbarStatusPill.js";
 import { BootstrapStatusPill, type BootstrapStatusPillProps } from "./components/BootstrapStatusPill.js";
 import { PluginUpdatesPill, type PluginUpdatesPillProps } from "./components/PluginUpdatesPill.js";
-import { WorkApprovalsBadge, type WorkApprovalsBadgeProps } from "./components/work-approvals/WorkApprovalsBadge.js";
+import type { WorkApprovalsProps } from "./components/work-approvals/WorkApprovalsList.js";
+import { NotificationBell } from "./components/NotificationBell.js";
+import type { NoticeRecord, NotificationHistory } from "./notification-history.js";
 
 const STATUS_OVERFLOW_WIDTH = 768;
 
@@ -40,8 +42,8 @@ function isDevMode(): boolean {
 }
 
 export interface MainToolbarProps {
-  /** Window notice in the free space between navigation and status controls. */
-  notice?: React.ReactNode;
+  notificationHistory?: NotificationHistory;
+  onOpenNotification?: (notice: NoticeRecord) => void;
   /** Current location path. Rendered on the band's leading edge, immediately after the sidebar-clearance reserve. */
   viewNav: ViewPathNavProps;
   streaming: boolean;
@@ -62,12 +64,13 @@ export interface MainToolbarProps {
   pluginUpdates?: PluginUpdatesPillProps;
   /** Managed-plugin bootstrap pill wiring. Omitted where no bootstrap runs. */
   bootstrapStatus?: BootstrapStatusPillProps;
-  /** 확인 필요 badge wiring (work-level approvals only). Omitted where no work board runs. */
-  workApprovals?: WorkApprovalsBadgeProps;
+  /** Work-level approvals share the notification centre. */
+  workApprovals?: WorkApprovalsProps;
 }
 
 export function MainToolbar({
-  notice,
+  notificationHistory,
+  onOpenNotification,
   viewNav,
   streaming: _streaming,
   hasApiKey: _hasApiKey,
@@ -89,6 +92,24 @@ export function MainToolbar({
     + Number((pluginUpdates?.updates.filter(updateViewNeedsUser).length ?? 0) > 0)
     + Number(bootstrap !== null && bootstrap !== undefined && (bootstrap.phase !== "complete" || bootstrap.skipped !== undefined || bootstrap.failed.length > 0))
     + Number(isDevMode() && onOpenDevTools !== undefined);
+  const devControl = (<>
+      {isDevMode() && onOpenDevTools !== undefined && (
+        <NoDrag className="shrink-0">
+          <ToolbarStatusPill
+            tone="warning"
+            icon={Wrench}
+            label="Dev"
+            title={t("mainToolbar.devToolsTooltip")}
+            ariaLabel={t("mainToolbar.devToolsTitle")}
+            trailing={
+              <kbd className="rounded border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-1 text-tiny">⇧⌘D</kbd>
+            }
+            onClick={onOpenDevTools}
+            testId="dev-tools-toggle"
+          />
+        </NoDrag>
+      )}
+  </>);
   const statusControls = (<>
       {/* Each control owns the same visibility and action in the band and menu. */}
       <NoDrag className="shrink-0 empty:hidden">
@@ -120,31 +141,7 @@ export function MainToolbar({
         </NoDrag>
       )}
 
-      {/* 확인 필요: renders nothing at zero and until its first result, like the pills above. */}
-      {workApprovals && (
-        <NoDrag className="shrink-0 empty:hidden">
-          <WorkApprovalsBadge {...workApprovals} />
-        </NoDrag>
-      )}
-
-      {/* Development controls stay at the trailing edge of the title band. */}
-      {isDevMode() && onOpenDevTools !== undefined && (
-        <NoDrag className="shrink-0">
-          <ToolbarStatusPill
-            tone="warning"
-            icon={Wrench}
-            label="Dev"
-            title={t("mainToolbar.devToolsTooltip")}
-            ariaLabel={t("mainToolbar.devToolsTitle")}
-            trailing={
-              <kbd className="rounded border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-1 text-tiny">⇧⌘D</kbd>
-            }
-            onClick={onOpenDevTools}
-            testId="dev-tools-toggle"
-          />
-        </NoDrag>
-      )}
-
+      {overflow && devControl}
   </>);
   // The toolbar content lives IN the window-control band (CustomTitleBar): back / forward and the location path on the
   // leading edge, then a spacer (it stays a drag region) that pushes the status controls to the far-right edge. Each control
@@ -175,10 +172,7 @@ export function MainToolbar({
         <ViewPathBreadcrumb segments={viewNav.segments} onSelectSegment={viewNav.onSelectSegment} />
       </NoDrag>
 
-      {/* The intrinsic minimum comes from the notice controls, even when its message has no width. */}
-      <div className="flex min-w-min flex-1 items-center justify-end" data-testid="main-toolbar-drag-band">
-        {notice}
-      </div>
+      <div className="min-w-0 flex-1" data-testid="main-toolbar-drag-band" />
 
       <ToolbarStatusMenuContext.Provider value={overflow}>
         {overflow ? (
@@ -197,6 +191,10 @@ export function MainToolbar({
           </NoDrag>
         ) : <div data-testid="toolbar-status-controls" className="flex shrink-0 items-center gap-(--chrome-gap-tight)">{statusControls}</div>}
       </ToolbarStatusMenuContext.Provider>
+      <NoDrag className="shrink-0">
+        <NotificationBell history={notificationHistory} workApprovals={workApprovals} onOpenNotification={onOpenNotification} />
+      </NoDrag>
+      {!overflow && devControl}
 
       {/* The work-panel toggle used to sit here. It moved into the chat
           group's own header: the panel shows what THAT conversation is doing,

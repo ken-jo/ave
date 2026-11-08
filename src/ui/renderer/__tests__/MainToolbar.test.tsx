@@ -73,21 +73,6 @@ describe("MainToolbar", () => {
     expect(screen.queryByTestId("sidebar-collapse-toggle")).toBeNull();
   });
 
-  it("reserves the notice slot between breadcrumbs and status controls without marking the free space no-drag", () => {
-    renderWithProvider(defaultProps({
-      notice: <div data-testid="window-notice-slot">Notice</div>,
-      bootstrapStatus: { status: { phase: "complete", installed: [], failed: [], skipped: { reason: "e2e-isolated" } }, onDismiss: vi.fn(), onRetry: vi.fn() },
-    }));
-    const slot = screen.getByTestId("main-toolbar-drag-band");
-    expect(slot).toHaveClass("flex-1", "min-w-min");
-    expect(slot).toContainElement(screen.getByTestId("window-notice-slot"));
-    expect(slot.closest('[style*="no-drag"]')).toBeNull();
-    const crumb = screen.getByTestId("view-path-breadcrumb");
-    expect(crumb.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    const chip = screen.getByTestId("bootstrap-status-pill");
-    expect(slot.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
   it("uses a counted overflow menu on narrow screens and preserves each update action", async () => {
     await act(async () => { setContainerWidths({ canvasWidth: 360 }); });
     const onReview = vi.fn();

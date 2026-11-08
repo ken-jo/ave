@@ -1,6 +1,22 @@
 /** English message catalog, grouped by namespace. */
 export const en = {
 
+  "notificationCenter.title": "Notifications",
+  "notificationCenter.label": "Notifications: {approvals} need review, {unread} unread notices",
+  "notificationCenter.notices": "Notices",
+  "notificationCenter.clearAll": "Clear all",
+  "notificationCenter.clear": "Clear notice: {message}",
+  "notificationCenter.empty": "No notices this session.",
+  "notificationCenter.source.window": "Window",
+  "notificationCenter.source.banner": "Announcement",
+  "notificationCenter.source.system": "System",
+  "notificationCenter.source.routine": "Routine",
+  "notificationCenter.source.plugin": "Extension",
+  "notificationCenter.source.alert": "Alert",
+  "notificationCenter.source.turn-end": "Conversation",
+  "notificationCenter.source.approval": "Approval",
+  "notificationCenter.source.ask-user": "Question",
+
   // agentBrowser
   "agentBrowser.observationBrowsing": "Agent browsing",
   "agentBrowser.observationNavigate": "Navigate",

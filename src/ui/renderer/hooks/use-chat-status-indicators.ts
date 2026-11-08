@@ -1,10 +1,10 @@
 import { useEffect } from "react";
 import type { useChatState } from "./use-chat-state.js";
-import type { useStatusBar } from "./use-status-bar.js";
+import type { useStatusNotices } from "./use-status-bar.js";
 import type { TranslateFn } from "../../../i18n/translate.js";
 
 type ChatState = ReturnType<typeof useChatState>;
-type StatusBar = ReturnType<typeof useStatusBar>;
+type StatusBar = ReturnType<typeof useStatusNotices>;
 
 export interface UseChatStatusIndicatorsDeps {
   t: TranslateFn;

@@ -3,6 +3,22 @@ import type { MessageCatalogKey } from "./en.js";
 
 export const ko: Record<MessageCatalogKey, string> = {
 
+  "notificationCenter.title": "알림 센터",
+  "notificationCenter.label": "알림: 확인 필요 {approvals}개, 읽지 않은 알림 {unread}개",
+  "notificationCenter.notices": "알림",
+  "notificationCenter.clearAll": "모두 지우기",
+  "notificationCenter.clear": "알림 지우기: {message}",
+  "notificationCenter.empty": "이번 세션의 알림이 없습니다.",
+  "notificationCenter.source.window": "창",
+  "notificationCenter.source.banner": "안내",
+  "notificationCenter.source.system": "시스템",
+  "notificationCenter.source.routine": "루틴",
+  "notificationCenter.source.plugin": "확장",
+  "notificationCenter.source.alert": "경고",
+  "notificationCenter.source.turn-end": "대화",
+  "notificationCenter.source.approval": "승인",
+  "notificationCenter.source.ask-user": "질문",
+
   // agentBrowser
   "agentBrowser.observationBrowsing": "에이전트 브라우징",
   "agentBrowser.observationNavigate": "이동",

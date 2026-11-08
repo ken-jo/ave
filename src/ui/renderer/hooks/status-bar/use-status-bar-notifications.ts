@@ -18,6 +18,7 @@ export function useStatusBarNotifications({ api, pushToast }: Options): void {
   useEffect(() => {
     if (typeof api.onNotificationToast !== "function") return;
     const unsub = api.onNotificationToast((p) => {
+      if (p.kind === "approval" || p.kind === "ask-user") return;
       const severity: StatusBarSeverity = p.kind === "routine" ? "success" : "info";
       pushToast({
         severity,

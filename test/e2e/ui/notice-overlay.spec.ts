@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { setWindowSize } from "./seeded-electron.js";
-import type { ElectronApplication, Locator } from "playwright";
+import type { ElectronApplication, Locator, Page } from "playwright";
 import { test, expect } from "./fixtures.js";
 import { test as providerTest } from "../../screenshots/fixtures.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
@@ -10,6 +10,7 @@ async function captureWindow(app: ElectronApplication, path: string, width: numb
   const capture = await app.evaluate(async ({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows()[0];
     if (!win) throw new Error("Missing main window");
+    await win.webContents.executeJavaScript("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     const image = await win.webContents.capturePage();
     return { png: image.toPNG().toString("base64"), size: image.getSize() };
   });
@@ -17,36 +18,38 @@ async function captureWindow(app: ElectronApplication, path: string, width: numb
   await writeFile(path, Buffer.from(capture.png, "base64"));
 }
 
-async function showApproval(app: ElectronApplication, sessionId: string, id: string) {
-  await app.evaluate(({ BrowserWindow }, { channel, sessionId, id }) => {
-    BrowserWindow.getAllWindows()[0]?.webContents.send(channel, {
-      id, sessionId, nonce: id, category: "tool", kind: "tool", toolName: "write_file", toolCategory: "write",
-      source: "builtin", trustOrigin: "user-keyboard", args: { path: "/workspace/note.txt", content: "Review" },
-      reason: "Confirm the write", createdAt: Date.now(), requireExplicit: false,
-    });
-  }, { channel: CHANNELS.approval.request, sessionId, id });
+async function expectUnclippedHit(control: Locator) {
+  await expect(control).toBeVisible();
+  const hit = await control.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    let clipped = false;
+    for (let parent = element.parentElement; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      const bounds = parent.getBoundingClientRect();
+      if (style.overflowX !== "visible" && (box.left < bounds.left - 0.5 || box.right > bounds.right + 0.5)) clipped = true;
+    }
+    return {
+      width: box.width, height: box.height,
+      hit: element.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)),
+      left: box.left, right: box.right, viewport: window.innerWidth, clipped,
+    };
+  });
+  expect(hit.width).toBeGreaterThan(0);
+  expect(hit.height).toBeGreaterThan(0);
+  expect(hit.left).toBeGreaterThanOrEqual(0);
+  expect(hit.right).toBeLessThanOrEqual(hit.viewport);
+  expect(hit.clipped, JSON.stringify(hit)).toBe(false);
+  expect(hit.hit, JSON.stringify(hit)).toBe(true);
 }
 
-async function expectControlReceivesClick(button: Locator) {
-  await expect(button).toBeVisible();
-  expect(await button.evaluate((element) => {
-    const rect = element.getBoundingClientRect();
-    return element.contains(document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2));
-  })).toBe(true);
-  const target = await button.elementHandle();
+async function expectControlReceivesClick(control: Locator) {
+  await expectUnclippedHit(control);
+  const target = await control.elementHandle();
   if (!target) throw new Error("Missing control");
   await target.evaluate((element) => element.addEventListener("click", () => element.setAttribute("data-answer-clicked", "true"), { once: true }));
-  await button.click();
+  await control.click();
   expect(await target.evaluate((element) => element.getAttribute("data-answer-clicked"))).toBe("true");
   await target.dispose();
-}
-
-async function showWindowNotice(app: ElectronApplication) {
-  await app.evaluate(({ BrowserWindow }, channel) => {
-    BrowserWindow.getAllWindows()[0]?.webContents.send(channel, {
-      kind: "system", title: "Ready", body: "A sticky window notice with a long message that must leave every control available", sticky: true,
-    });
-  }, CHANNELS.notification.toast);
 }
 
 async function activateView(app: ElectronApplication, viewKey: string) {
@@ -55,151 +58,128 @@ async function activateView(app: ElectronApplication, viewKey: string) {
   }, { channel: CHANNELS.view.activate, viewKey });
 }
 
-for (const width of [360, 1243]) {
-test(`title bar notices leave every routed toolbar clickable at ${width}px`, async ({ app, mainWindow: page }, testInfo) => {
-  await setWindowSize(app, width, 640);
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  const canvas = page.getByTestId(TEST_IDS.routeCanvas);
-  const composer = page.getByTestId("composer-textarea").first();
-  await expect(composer).toBeVisible();
-  await page.evaluate(() => document.fonts.ready);
-  const canvasBounds = await canvas.boundingBox();
-  const composerBounds = await composer.boundingBox();
-  const slot = page.getByTestId("window-notice-slot");
-  const toast = slot.getByTestId("status-toast");
-  const titlebar = page.getByTestId("custom-titlebar-darwin");
-
-  async function checkSlot() {
-    await expect(toast).toBeVisible();
-    await expect(toast).toHaveCSS("opacity", "1");
-    const geometry = await toast.evaluate((element) => {
-      const notice = element.getBoundingClientRect();
-      const slot = element.closest('[data-testid="main-toolbar-drag-band"]');
-      const band = element.closest('[data-testid^="custom-titlebar"]');
-      if (!slot || !band) throw new Error("Notice is outside the title bar slot");
-      const free = slot.getBoundingClientRect();
-      const bar = band.getBoundingClientRect();
-      return {
-        left: notice.left, right: notice.right, top: notice.top, bottom: notice.bottom,
-        width: notice.width, height: notice.height, freeLeft: free.left, freeRight: free.right,
-        bandTop: bar.top, bandBottom: bar.bottom,
-        region: getComputedStyle(element).getPropertyValue("-webkit-app-region"),
-        slotRegion: getComputedStyle(slot).getPropertyValue("-webkit-app-region"),
-        transform: getComputedStyle(element).transform,
-      };
-    });
-    expect(geometry.left).toBeGreaterThanOrEqual(geometry.freeLeft);
-    expect(geometry.right).toBeLessThanOrEqual(geometry.freeRight);
-    expect(geometry.top).toBeGreaterThanOrEqual(geometry.bandTop);
-    expect(geometry.bottom).toBeLessThanOrEqual(geometry.bandBottom);
-    expect(geometry.height).toBeLessThanOrEqual(28);
-    expect(geometry.width).toBeLessThanOrEqual(384);
-    expect(geometry).toMatchObject({ region: "no-drag", slotRegion: "drag", transform: "none" });
-    await expect(toast.getByRole("button", { name: /Learn more|자세히 알아보기/ })).toBeVisible();
-    await expect(toast.getByTestId("status-toast-dismiss")).toBeVisible();
-    expect(await canvas.boundingBox()).toEqual(canvasBounds);
-  }
-
-  await showWindowNotice(app);
-  await checkSlot();
-  const header = page.locator('[data-testid="pane-header"]:visible');
-  await expectControlReceivesClick(header.getByTestId("pane-action-conversation.pin"));
-  await expect(header.getByTestId("pane-action-conversation.unpin")).toBeVisible();
-  expect(await composer.boundingBox()).toEqual(composerBounds);
-  if (width < 768) await expectControlReceivesClick(page.getByTestId("toolbar-status-overflow"));
-  else await expect(page.getByTestId("toolbar-status-overflow")).toHaveCount(0);
-  const titleControl = page.getByTestId("bootstrap-status-pill");
-  await expectControlReceivesClick(titleControl);
-  await expect(titleControl).toHaveCount(0);
-  // The notice uses only spare title-bar width, including after a status chip disappears.
-  await checkSlot();
-  if (width >= 640) {
-    await expectControlReceivesClick(page.getByTestId("dev-tools-toggle"));
-    await expect(page.getByTestId("dev-tools-panel")).toBeVisible();
-    await page.getByTestId("dev-tools-panel").getByRole("button", { name: /Close|닫기/ }).click();
-  }
-  await page.screenshot({ path: testInfo.outputPath("window-notice-conversation.png") });
-  const sessionId = await page.evaluate(async () => (await window.aveApi.chatSessions({ kind: "main" })).current);
-  if (!sessionId) throw new Error("Missing current session");
-  await showApproval(app, sessionId, "window-notice-approval");
-  const card = page.getByTestId("approval-dock");
-  await expect(card).toBeVisible();
-  const noticeBounds = await toast.boundingBox();
-  const cardBounds = await card.boundingBox();
-  if (!noticeBounds || !cardBounds) throw new Error("Missing notice or card bounds");
-  expect(noticeBounds.y + noticeBounds.height).toBeLessThanOrEqual(cardBounds.y);
-  await expectControlReceivesClick(page.getByTestId("approve-button"));
-  await app.evaluate(({ BrowserWindow }, channel) => BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { requestId: "window-notice-approval" }), CHANNELS.approval.settled);
-  await toast.getByTestId("status-toast-dismiss").click();
-  await expect(toast).toHaveCount(0);
-  expect(await canvas.boundingBox()).toEqual(canvasBounds);
-
-  for (const route of ["settings", "work-board", "web"]) {
-    await activateView(app, route);
-    const control = route === "settings" ? page.getByRole("searchbox")
-      : route === "work-board" ? page.getByTestId("work-board-show-schedule")
-      : page.getByTestId("web-panel-address");
-    await expect(control).toBeVisible();
-    const controlBounds = await control.boundingBox();
-    const headerBounds = await page.locator('[data-testid="pane-header"]:visible').boundingBox();
-    await showWindowNotice(app);
-    await checkSlot();
-    expect(await control.boundingBox()).toEqual(controlBounds);
-    expect(await page.locator('[data-testid="pane-header"]:visible').boundingBox()).toEqual(headerBounds);
-    await expectControlReceivesClick(control);
-    if (route !== "work-board") await expect(control).toBeFocused();
-    await page.screenshot({ path: testInfo.outputPath(`window-notice-${route}.png`) });
-    // Both history controls remain live while the sticky notice follows navigation.
-    await expectControlReceivesClick(page.getByTestId(TEST_IDS.viewPathBack));
-    await expectControlReceivesClick(page.getByTestId("view-path-forward"));
-    await expect(control).toBeVisible();
-    await expect(toast).toBeVisible();
-    await toast.getByTestId("status-toast-dismiss").click();
-    await expect(toast).toHaveCount(0);
-    expect(await canvas.boundingBox()).toEqual(canvasBounds);
-    expect(await control.boundingBox()).toEqual(controlBounds);
-  }
-
-  await activateView(app, "home");
-  await expect(composer).toBeVisible();
-  await app.evaluate(({ BrowserWindow }, { channel, chatGroupId }) => {
-    BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { chatGroupId, from: "primary/model", to: "secondary/model" });
-  }, { channel: CHANNELS.chat.fallback, chatGroupId: MAIN_CHAT_GROUP_ID });
-  const composerToast = page.getByTestId("composer-toast-dock").getByTestId("status-toast");
-  await expect(composerToast).toBeVisible();
-  await expect(composerToast).toHaveCSS("opacity", "1");
-  expect(await composer.boundingBox()).toEqual(composerBounds);
-  expect(await canvas.boundingBox()).toEqual(canvasBounds);
-  const localNoticeBounds = await composerToast.boundingBox();
-  const headerBounds = await header.boundingBox();
-  if (!localNoticeBounds || !headerBounds || !composerBounds) throw new Error("Missing conversation bounds");
-  expect(localNoticeBounds.y).toBeGreaterThanOrEqual(headerBounds.y + headerBounds.height);
-  expect(localNoticeBounds.y + localNoticeBounds.height).toBeLessThanOrEqual(composerBounds.y);
-  await expectControlReceivesClick(header.getByTestId("pane-action-conversation.unpin"));
-  await showApproval(app, sessionId, "composer-notice-approval");
-  await expectControlReceivesClick(page.getByTestId("approve-button"));
-  await app.evaluate(({ BrowserWindow }, channel) => BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { requestId: "composer-notice-approval" }), CHANNELS.approval.settled);
-  await page.screenshot({ path: testInfo.outputPath("composer-notice-overlay.png") });
-  await composerToast.getByTestId("status-toast-dismiss").click();
-  await expect(composerToast).toHaveCount(0);
-  expect(await composer.boundingBox()).toEqual(composerBounds);
-  await showWindowNotice(app);
-  const sidebarToggle = titlebar.locator('[data-testid="sidebar-show"], [data-testid="sidebar-collapse-toggle"]');
-  if (await sidebarToggle.count()) {
-    await expectControlReceivesClick(sidebarToggle);
-    await expect(page.getByTestId("app-shell")).toHaveAttribute("data-sidebar-state", "expanded");
-  }
-});
+async function clearHistory(page: Page) {
+  await page.getByTestId("notification-bell").click();
+  const clear = page.getByTestId("notification-history-clear-all");
+  if (await clear.isEnabled()) await clear.click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("notification-center")).toHaveCount(0);
 }
 
-for (const [width, zoomLevel, overflowExpected] of [[360, 1, true], [360, 2, true], [768, 0, true], [1243, 0, false]] as const) {
-  test(`status overflow preserves update actions and notice dismissal at ${width}px and zoom ${zoomLevel}`, async ({ app, mainWindow: page }, testInfo) => {
+async function showInstallNotice(app: ElectronApplication, slug: string, success: boolean) {
+  await app.evaluate(({ BrowserWindow }, { channel, slug, success }) => {
+    BrowserWindow.getAllWindows()[0]?.webContents.send(channel, {
+      slug, success,
+      ...(!success ? { error: "install-failed", message: "The install could not finish. Review the settings and try again." } : {}),
+    });
+  }, { channel: CHANNELS.plugins.installResult, slug, success });
+}
+
+for (const width of [360, 1243]) {
+  test(`window notices stay in the bell history at ${width}px`, async ({ app, mainWindow: page }, testInfo) => {
+    await setWindowSize(app, width, 640);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.getByTestId("composer-textarea").first().waitFor();
+    await clearHistory(page);
+    const canvas = page.getByTestId(TEST_IDS.routeCanvas);
+    const before = await canvas.boundingBox();
+    await showInstallNotice(app, "bell-install-result", true);
+    await expect(page.getByTestId("notification-bell-count")).toHaveText("1");
+    await expect(page.getByTestId("window-notice-slot")).toHaveCount(0);
+    await expect(page.getByTestId("status-toast")).toHaveCount(0);
+    expect(await canvas.boundingBox()).toEqual(before);
+    await expect(page.getByTestId("window-notice-strip").getByTestId("notice-live-polite")).toContainText("bell-install-result");
+
+    const bell = page.getByTestId("notification-bell");
+    await expectUnclippedHit(bell);
+    await bell.focus();
+    await page.keyboard.press("Enter");
+    const center = page.getByTestId("notification-center");
+    await expect(center).toHaveAttribute("role", "dialog");
+    await expect(center).not.toHaveAttribute("aria-live");
+    const row = center.getByTestId("notification-history-row").filter({ hasText: "bell-install-result" });
+    await expect(row).toBeVisible();
+    await expect(row.locator("time")).toBeVisible();
+    await expect(page.getByTestId("notification-bell-count")).toHaveCount(0);
+    await captureWindow(app, testInfo.outputPath(`notification-bell-open-${width}.png`), width);
+    await expectControlReceivesClick(row.getByTestId("notification-history-clear"));
+    await expect(row).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(center).toHaveCount(0);
+    await expect(bell).toBeFocused();
+
+    await showInstallNotice(app, "bell-error-result", false);
+    await expect(page.getByTestId("notification-bell-count")).toHaveText("1");
+    const errorDot = page.getByTestId("notification-bell-error");
+    await expect(errorDot).toHaveClass(/bg-destructive/);
+    await expect(page.getByTestId("window-notice-strip").getByTestId("notice-live-assertive")).toContainText("bell-error-result");
+    await expect(page.getByTestId("status-toast")).toHaveCount(0);
+    await bell.click();
+    await expect(center.getByTestId("notification-history-row").filter({ hasText: "bell-error-result" })).toBeVisible();
+    await expect(errorDot).toHaveCount(0);
+    await center.getByTestId("notification-history-clear-all").click();
+    await expect(center.getByTestId("notification-history-row")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    const composer = page.getByTestId("composer-textarea").first();
+    const composerBounds = await composer.boundingBox();
+    await app.evaluate(({ BrowserWindow }, { channel, chatGroupId }) => {
+      BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { chatGroupId, from: "primary/model", to: "secondary/model" });
+    }, { channel: CHANNELS.chat.fallback, chatGroupId: MAIN_CHAT_GROUP_ID });
+    const localNotice = page.getByTestId("composer-toast-dock").getByTestId("status-toast");
+    await expect(localNotice).toBeVisible();
+    await expect(localNotice).toContainText("secondary/model");
+    await expect(page.getByTestId("notification-bell-count")).toHaveCount(0);
+    expect(await composer.boundingBox()).toEqual(composerBounds);
+    await localNotice.getByTestId("status-toast-dismiss").click();
+    await expect(localNotice).toHaveCount(0);
+  });
+
+  test(`a work approval in the bell navigates to its card at ${width}px`, async ({ app, mainWindow: page }) => {
+    await setWindowSize(app, width, 640);
+    await clearHistory(page);
+    const routineId = await page.evaluate(async () => {
+      const approvals = await window.aveApi.listWorkApprovals?.({ allProjects: true });
+      if (!approvals?.ok) throw new Error("Missing work approvals projection");
+      const project = approvals.projects.find((entry) => entry.isDefault);
+      if (!project) throw new Error("Missing default project");
+      const added = await window.aveApi.addRoutine({
+        title: "Review missing routine dependency", trigger: "schedule", execution: "llm-session",
+        projectRoot: project.projectRoot, prePrompt: "Review the reports folder",
+        schedule: { at: new Date(Date.now() + 86_400_000).toISOString(), repeat: { kind: "none" } },
+        scope: { pluginIds: { mode: "allow", ids: ["missing-bell-dependency"] }, forcedPluginIds: [], directories: [] },
+      });
+      if (!added.ok) throw new Error(added.error);
+      const triggered = await window.aveApi.triggerRoutineNow(added.routine.id);
+      if (triggered.ok || triggered.error !== "plugins-missing") throw new Error("Routine did not require attention");
+      return added.routine.id;
+    });
+    await expect(page.getByTestId("notification-bell-count")).toHaveText("1");
+    await page.getByTestId("notification-bell").click();
+    const section = page.getByTestId("notification-approvals");
+    const row = section.getByTestId("work-approvals-popover-row").filter({ hasText: "Review missing routine dependency" });
+    await expect(row).toHaveAttribute("data-approval-key", `routine:${routineId}`);
+    await expect(row.getByRole("button")).toHaveCount(0);
+    await row.click();
+    await expect(page.getByTestId("notification-center")).toHaveCount(0);
+    const card = page.getByTestId("work-approval-head").filter({ hasText: "Review missing routine dependency" });
+    await expect(card).toBeVisible();
+    await expect(card).toBeFocused();
+    const current = await page.evaluate(() => window.aveApi.listWorkApprovals?.({ allProjects: true }));
+    expect(current?.ok && current.items.some((item) => item.key === `routine:${routineId}`)).toBe(true);
+    await expect(page.getByTestId("notification-bell-count")).toHaveText("1");
+  });
+}
+
+for (const [width, zoomLevel] of [[360, 0], [360, 2], [1243, 0]] as const) {
+  test(`the bell and update controls hit-test at ${width}px and zoom ${zoomLevel}`, async ({ app, mainWindow: page }, testInfo) => {
     await setWindowSize(app, width, 640);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.evaluate(async (zoomLevel) => {
       await window.aveApi.updateSettings({ appearance: { zoomLevel } });
     }, zoomLevel);
     await expect.poll(() => page.evaluate(async () => (await window.aveApi.getSettings()).appearance.zoomLevel)).toBe(zoomLevel);
+    await clearHistory(page);
     await activateView(app, "settings");
     await expect(page.getByRole("searchbox")).toBeVisible();
     await app.evaluate(({ BrowserWindow }, channels) => {
@@ -209,52 +189,30 @@ for (const [width, zoomLevel, overflowExpected] of [[360, 1, true], [360, 2, tru
         key: { sourceId: "ave", kind: "plugin", name: "notice-update" },
         displayName: "Notice update", from: "1.0.0", to: "2.0.0", state: "manual",
       }]);
-      contents?.send(channels.plugins.installResult, {
-        slug: "notice-install", success: false, error: "install-failed", message: "The install could not finish. Review the settings and try again.",
-      });
     }, CHANNELS);
-    const slot = page.getByTestId("window-notice-slot");
-    const toast = slot.getByTestId("status-toast");
-    await expect(toast).toHaveAttribute("data-severity", "error");
-    const assertUnclippedHit = async (control: Locator) => {
-      const hit = await control.evaluate((element) => {
-        const box = element.getBoundingClientRect();
-        let clipped = false;
-        for (let parent = element.parentElement; parent; parent = parent.parentElement) {
-          const style = getComputedStyle(parent);
-          const bounds = parent.getBoundingClientRect();
-          if (style.overflowX !== "visible" && (box.left < bounds.left - 0.5 || box.right > bounds.right + 0.5)) clipped = true;
-        }
-        return { width: box.width, height: box.height,
-          hit: element.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)),
-          left: box.left, right: box.right, viewport: window.innerWidth, clipped,
-        };
-      });
-      expect(hit.width).toBeGreaterThan(0);
-      expect(hit.height).toBeGreaterThan(0);
-      expect(hit.left).toBeGreaterThanOrEqual(0);
-      expect(hit.right).toBeLessThanOrEqual(hit.viewport);
-      expect(hit.clipped, JSON.stringify(hit)).toBe(false);
-      expect(hit.hit, JSON.stringify(hit)).toBe(true);
-    };
-    const dismiss = toast.getByTestId("status-toast-dismiss");
-    await assertUnclippedHit(dismiss);
-    if (!overflowExpected) {
-      await expect(page.getByTestId("toolbar-status-overflow")).toHaveCount(0);
-      await assertUnclippedHit(page.getByTestId("app-update-badge-available"));
-      await assertUnclippedHit(page.getByTestId("marketplace-update-action"));
-    } else await assertUnclippedHit(page.getByTestId("toolbar-status-overflow"));
-    await assertUnclippedHit(page.getByTestId(TEST_IDS.viewPathBack));
+    await showInstallNotice(app, "bell-controls-error", false);
+    await expect(page.getByTestId("notification-bell-error")).toBeVisible();
+    const bell = page.getByTestId("notification-bell");
+    await expectUnclippedHit(bell);
+    expect(await bell.evaluate((element) => element.closest('[data-testid="toolbar-status-menu"]') === null)).toBe(true);
+    await expectUnclippedHit(page.getByTestId(TEST_IDS.viewPathBack));
     await expectControlReceivesClick(page.getByTestId(TEST_IDS.viewPathBack));
     await expect(page.getByTestId("composer-textarea").first()).toBeVisible();
-    await expect(toast).toBeVisible();
-    expect(await toast.getAttribute("title")).toBe(await page.getByTestId("window-notice-strip").getByTestId("notice-live-assertive").textContent());
-    await captureWindow(app, testInfo.outputPath(`status-controls-${width}-zoom-${zoomLevel}.png`), width);
-    if (overflowExpected) {
+    await expectControlReceivesClick(page.getByTestId("view-path-forward"));
+    await expect(page.getByRole("searchbox")).toBeVisible();
+
+    if (width < 768) {
+      await expect(page.getByTestId("app-update-badge-available")).toHaveCount(0);
+      await expect(page.getByTestId("marketplace-update-action")).toHaveCount(0);
       await expectControlReceivesClick(page.getByTestId("toolbar-status-overflow"));
-      await expect(page.getByTestId("toolbar-status-menu")).toBeVisible();
+      const menu = page.getByTestId("toolbar-status-menu");
+      await expect(menu).toBeVisible();
+      await expect(menu.getByTestId("notification-bell")).toHaveCount(0);
+      await expectUnclippedHit(page.getByTestId("app-update-badge-available"));
       await expect(page.getByTestId("marketplace-update-action")).toHaveAttribute("role", "menuitem");
-      await captureWindow(app, testInfo.outputPath(`status-menu-${width}-zoom-${zoomLevel}.png`), width);
+    } else {
+      await expect(page.getByTestId("toolbar-status-overflow")).toHaveCount(0);
+      await expectUnclippedHit(page.getByTestId("app-update-badge-available"));
     }
     await expectControlReceivesClick(page.getByTestId("marketplace-update-action"));
     const review = page.getByTestId("git-marketplace:sheet");
@@ -262,19 +220,41 @@ for (const [width, zoomLevel, overflowExpected] of [[360, 1, true], [360, 2, tru
     await expect(review).toContainText("notice-update");
     await expect(page.getByTestId("toolbar-status-menu")).toHaveCount(0);
     await expectControlReceivesClick(page.getByTestId("git-marketplace:sheet:close"));
-    await expect(toast).toBeVisible();
-    await assertUnclippedHit(dismiss);
-    await expectControlReceivesClick(dismiss);
-    await expect(toast).toHaveCount(0);
-    // The optional open action has the same hard control floor as dismissal.
-    await showWindowNotice(app);
-    await expect(toast).toBeVisible();
-    await assertUnclippedHit(toast.getByRole("button", { name: /Learn more|자세히 알아보기/ }));
-    await assertUnclippedHit(dismiss);
-    await expectControlReceivesClick(dismiss);
-    await expect(toast).toHaveCount(0);
+    await expectControlReceivesClick(bell);
+    const row = page.getByTestId("notification-history-row").filter({ hasText: "bell-controls-error" });
+    await expectUnclippedHit(row.getByTestId("notification-history-clear"));
+    await captureWindow(app, testInfo.outputPath(`notification-controls-${width}-zoom-${zoomLevel}.png`), width);
+    await row.getByTestId("notification-history-clear").click();
+    await expect(row).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(bell).toBeFocused();
   });
 }
+
+test.describe("persistent banner history", () => {
+  test.use({ seedLlmProvider: "copilot", seedLocale: "en" });
+  for (const width of [360, 1243]) {
+    test(`a banner keeps its place and its action in the bell at ${width}px`, async ({ app, mainWindow: page }) => {
+      await setWindowSize(app, width, 640);
+      const banner = page.getByTestId("retired-provider-notice");
+      await expect(banner).toBeVisible();
+      const title = await banner.locator("span.font-medium, span.block.font-medium").first().textContent();
+      if (!title) throw new Error("Missing banner title");
+      const action = await banner.getByTestId("retired-provider-notice-action").textContent();
+      if (!action) throw new Error("Missing banner action");
+      await page.getByTestId("notification-bell").click();
+      const row = page.getByTestId("notification-history-row").filter({ hasText: title });
+      await expect(row).toBeVisible();
+      await expect(banner).toBeVisible();
+      await row.getByRole("button", { name: action, exact: true }).click();
+      await expect(page.getByTestId("notification-center")).toHaveCount(0);
+      await expect(page.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+      await expect(page.getByRole("searchbox")).toBeVisible();
+      await expect(page.getByRole("tab", { name: "Model", exact: true })).toHaveAttribute("aria-selected", "true");
+      await expect(banner).toBeVisible();
+    });
+  }
+});
 
 providerTest.describe("side-chat notice delivery", () => {
   providerTest.use({
