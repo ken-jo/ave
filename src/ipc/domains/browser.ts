@@ -100,6 +100,17 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
     });
   });
 
+  ipcMain.handle(CHANNELS.browser.completeFocus, (e, payload: unknown): { ok: boolean } => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.browser.completeFocus, e);
+      return { ok: false };
+    }
+    const win = mainWindowForContents(e.sender);
+    const record = payload as { requestId?: unknown; restored?: unknown } | null;
+    if (!win || typeof record?.requestId !== "string" || typeof record.restored !== "boolean") return { ok: false };
+    return { ok: browserTabRegistry.completeFocus(win.id, record.requestId, record.restored) };
+  });
+
   ipcMain.handle(CHANNELS.browser.refuseTabOp, (e, payload: unknown): { ok: boolean } => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.browser.refuseTabOp, e);

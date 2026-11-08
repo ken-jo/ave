@@ -333,7 +333,7 @@ async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Pr
     return await act();
   } finally {
     if (!hadFocus) {
-      target.releaseFocus();
+      await target.releaseFocus();
       // Not the action's signal: a cancelled action still hands focus back.
       await pollUntil(new AbortController().signal, RELEASE_MAX_MS, async () =>
         (await pageHasFocus(target.cdp)) ? undefined : true).catch(() => undefined);
@@ -892,7 +892,7 @@ const actionNavigations = new WeakMap<object, ActionNavigation>();
 interface InputAttribution {
   setAgentTabAwake(guestId: number, awake: boolean): boolean;
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
-  releaseFocus(guestId: number): void;
+  releaseFocus(guestId: number, leaseId?: string): void | Promise<void>;
   focusGuest(guestId: number): Promise<void>;
   documentChanged(guestId: number): void;
   // Record the touch input every guest of `guestId`'s window reports until `stop`.
@@ -1319,7 +1319,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         }
       });
     },
-    releaseFocus: () => attribution.releaseFocus(guest.id),
+    releaseFocus: () => attribution.releaseFocus(guest.id, live.leaseId),
     focusPage: async () => {
       assertCurrent(false);
       try { await attribution.focusGuest(guest.id); }

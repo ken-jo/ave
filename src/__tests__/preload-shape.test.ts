@@ -305,6 +305,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "browserTabs": [
             "bindTab",
+            "completeFocus",
             "getSessionBindings",
             "getState",
             "onControl",

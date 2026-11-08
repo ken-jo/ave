@@ -229,3 +229,28 @@ describe("agentDrivesBrowserTab", () => {
     expect(agentDrivesBrowserTab(paused!, "fixture-session")).toBe(false);
   });
 });
+
+
+it("acknowledges scoped focus capture and restores its exact composer", async () => {
+  const composer = document.createElement("textarea");
+  const guest = document.createElement("webview"); guest.tabIndex = 0;
+  document.body.append(composer, guest);
+  vi.spyOn(composer, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100 } as DOMRect);
+  setWebSurfaceElement("borrower", guest);
+  let receive: (request: import("../../../../shared/browser-surface.js").BrowserTabOpRequest) => void = () => {};
+  const completeFocus = vi.fn(async () => ({ ok: true }));
+  const api = { browserTabs: { onTabOp: (listener: typeof receive) => { receive = listener; return () => {}; },
+    onControl: () => () => {}, getState: async () => ({ revision: 0, tabs: [] }), completeFocus } } as unknown as AveApi;
+  const unregister = registerBrowserTabHost(api, host("conversation", ["borrower"]));
+  try {
+    composer.focus();
+    receive({ requestId: "capture", op: "capture-focus", tabId: "borrower" });
+    expect(completeFocus).toHaveBeenLastCalledWith("capture", true);
+    guest.focus();
+    receive({ requestId: "restore", op: "restore-focus", tabId: "borrower", receiptId: "capture" });
+    expect(completeFocus).toHaveBeenLastCalledWith("restore", true);
+    expect(document.activeElement).toBe(composer);
+    receive({ requestId: "replay", op: "restore-focus", tabId: "borrower", receiptId: "capture" });
+    expect(completeFocus).toHaveBeenLastCalledWith("replay", false);
+  } finally { unregister(); setWebSurfaceElement("borrower", null); composer.remove(); guest.remove(); }
+});

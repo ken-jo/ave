@@ -55,18 +55,58 @@ function isWebview(element: Element): boolean {
 /**
  * Where keyboard focus was in the app before a browser page took it, so the
  * agent holds page focus only while it acts. Remembers the last focused
- * element that is not a page (<webview>); `restore` gives focus back to it,
+ * element for pointer actions; native background focus uses a scoped receipt. `restore` gives focus back to it,
  * but only while a page still holds focus: if the user has moved on, their
  * focus stays where they put it.
  */
 export class HostFocusMemory {
   /** Most recent last. Several, because the latest (an approval card's button) is often gone by the time focus comes back. */
   private recent: HTMLElement[] = [];
+  private readonly receipts = new Map<string, { guest: HTMLElement; previous: HTMLElement; previousGuestId?: number; moved: boolean; borrowed: boolean }>();
+
+  private visible(element: HTMLElement): boolean {
+    const bounds = element.getBoundingClientRect();
+    const style = this.doc.defaultView?.getComputedStyle(element);
+    return element.isConnected && element.closest("[inert], [hidden]") === null && bounds.width > 0 && bounds.height > 0
+      && style?.display !== "none" && style?.visibility !== "hidden" && this.doc.visibilityState === "visible";
+  }
+
+  capture(receiptId: string, guest: HTMLElement): boolean {
+    const previous = this.doc.activeElement;
+    if (this.receipts.size > 0 || !guest.isConnected || !(previous instanceof HTMLElement) || previous === guest || !this.visible(previous)) return false;
+    let previousGuestId: number | undefined;
+    if (isWebview(previous)) {
+      try { previousGuestId = (previous as HTMLElement & { getWebContentsId(): number }).getWebContentsId(); } catch { return false; }
+      if (!Number.isSafeInteger(previousGuestId) || previousGuestId <= 0) return false;
+    }
+    this.receipts.set(receiptId, { guest, previous, previousGuestId, moved: false, borrowed: false });
+    return true;
+  }
+
+  restoreReceipt(receiptId: string, guest: HTMLElement | null, preserveFocus = false): boolean {
+    const receipt = this.receipts.get(receiptId);
+    if (!receipt || guest !== receipt.guest && (guest !== null || receipt.guest.isConnected)) return false;
+    this.receipts.delete(receiptId);
+    if (receipt.moved || preserveFocus) return true;
+    const active = this.doc.activeElement;
+    if (active === receipt.previous) return true;
+    if (active !== receipt.guest && active !== this.doc.body) return true;
+    if (!this.visible(receipt.previous)) return false;
+    if (receipt.previousGuestId !== undefined) {
+      try { if ((receipt.previous as HTMLElement & { getWebContentsId(): number }).getWebContentsId() !== receipt.previousGuestId) return false; } catch { return false; }
+    }
+    receipt.previous.focus();
+    return this.doc.activeElement === receipt.previous;
+  }
 
   constructor(private readonly doc: Document) {}
 
   readonly onFocusIn = (event: FocusEvent): void => {
     const target = event.target;
+    for (const receipt of this.receipts.values()) {
+      if (target === receipt.guest && !receipt.borrowed) receipt.borrowed = true;
+      else if (target !== receipt.guest && (target !== receipt.previous || receipt.borrowed)) receipt.moved = true;
+    }
     if (!(target instanceof HTMLElement) || isWebview(target)) return;
     this.recent = [...this.recent.filter((element) => element !== target), target].slice(-HOST_FOCUS_HISTORY);
   };
@@ -97,6 +137,10 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
     setWebSurfaceAwake(request.tabId, request.op === "wake");
     return;
   }
+  if (request.op === "capture-focus") {
+    const guest = getWebSurfaceElement(request.tabId);
+    return guest && hostFocus?.capture(request.requestId, guest) ? undefined : "refused";
+  }
   if (request.op === "focus") {
     const guest = getWebSurfaceElement(request.tabId);
     if (!guest?.isConnected || document.visibilityState !== "visible" || guest.closest("[inert]")) return;
@@ -106,6 +150,9 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
     return;
   }
   if (request.op === "restore-focus") {
+    if (request.receiptId !== undefined) {
+      return hostFocus?.restoreReceipt(request.receiptId, getWebSurfaceElement(request.tabId), request.preserveFocus) ? undefined : "refused";
+    }
     hostFocus?.restore();
     return;
   }
@@ -157,7 +204,10 @@ export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () =>
     let current = true;
     const tabs = api.browserTabs;
     const offOp = tabs.onTabOp((request) => {
-      if (routeBrowserTabOp(request) === "refused") void tabs.refuseTabOp(request.requestId);
+      const result = routeBrowserTabOp(request);
+      if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId !== undefined) {
+        void tabs.completeFocus(request.requestId, result !== "refused");
+      } else if (result === "refused") void tabs.refuseTabOp(request.requestId);
     });
     const offControl = api.browserTabs.onControl((state) => setControlState(state));
     void api.browserTabs.getState().then((state) => {

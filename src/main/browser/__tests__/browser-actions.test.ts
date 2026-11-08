@@ -1088,8 +1088,8 @@ function modelFocusRelease(registry: BrowserTabRegistry<never>, guestId: number,
     pages = known;
     focusReleases.set(registry, known);
     const release = registry.releaseFocus.bind(registry);
-    registry.releaseFocus = (id) => {
-      release(id);
+    registry.releaseFocus = async (id, leaseId) => {
+      await release(id, leaseId);
       known.get(id)?.loseFocus();
     };
   }
@@ -1156,6 +1156,7 @@ function adapterFixture(options: {
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
   registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (_windowId, request) => {
     layoutOps.push(request.op);
+    if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId) registry.completeFocus(_windowId, request.requestId, true);
     if (request.op === "wake") laidOut = true;
     if (request.op === "sleep") laidOut = false;
     return true;

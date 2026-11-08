@@ -228,6 +228,9 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number }>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
   private readonly selectedOwnedTabs = new Map<string, string>();
+  private readonly scopedFocusLeases = new Map<number, string>();
+  private readonly focusReceipts = new Map<number, { windowId: number; tabId: string; leaseId: string; receiptId: string }>();
+  private readonly pendingFocus = new Map<string, { windowId: number; settle: (restored: boolean) => void }>();
   private readonly awakeGuests = new Set<number>();
   private readonly handleByWindowTab = new Map<string, string>();
   // A takeover before bind must also prevent a pending new-tab request from granting control later.
@@ -660,6 +663,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   releaseControl(tabId: string, leaseId: string): void {
     const tab = this.tabs.get(tabId);
     if (!tab || tab.lease?.id !== leaseId) return;
+    if (tab.guest && this.scopedFocusLeases.get(tab.guest.id) === leaseId) this.scopedFocusLeases.delete(tab.guest.id);
     tab.lease = null;
     if (tab.controlMode !== "human-paused") tab.controlMode = tab.owner === null ? "human" : "agent-active";
     tab.actions.abort(new Error("browser control was released"));
@@ -862,12 +866,34 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
-  // The agent's action in `guestId`'s tab is done: ask the window's renderer to give keyboard focus back to what held it before. Fire-and-forget; the page
-  // actions watch the page lose focus.
-  releaseFocus(guestId: number): void {
+  completeFocus(windowId: number, requestId: string, restored: boolean): boolean {
+    const pending = this.pendingFocus.get(requestId);
+    if (!pending || pending.windowId !== windowId) return false;
+    pending.settle(restored);
+    return true;
+  }
+
+  private focusOperation(windowId: number, request: BrowserTabOpRequest): Promise<boolean> {
+    return new Promise(resolve => {
+      const settle = (restored: boolean) => { clearTimeout(timer); this.pendingFocus.delete(request.requestId); resolve(restored); };
+      const timer = setTimeout(() => settle(false), FOCUS_RECEIPT_MAX_MS);
+      this.pendingFocus.set(request.requestId, { windowId, settle });
+      if (!this.link?.sendTabOp(windowId, request)) settle(false);
+    });
+  }
+
+  releaseFocus(guestId: number, leaseId?: string): void | Promise<void> {
+    const receipt = this.focusReceipts.get(guestId);
+    if (receipt) {
+      if (leaseId !== receipt.leaseId) return;
+      this.focusReceipts.delete(guestId);
+      return this.focusOperation(receipt.windowId, { requestId: `browser-op-${this.nextRequest++}`, op: "restore-focus", tabId: receipt.tabId, receiptId: receipt.receiptId, preserveFocus: [...this.tabs.values()].some(tab => tab.guest?.id === guestId && tab.controlMode === "human-paused") })
+        .then(restored => { if (!restored) throw new Error("browser focus restoration was not observed"); });
+    }
+    if (this.scopedFocusLeases.get(guestId) === leaseId && leaseId !== undefined) return;
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
-      if (tab.rendererTabId === null) return;
+      if (tab.rendererTabId === null || leaseId !== undefined && tab.lease?.id !== leaseId) return;
       this.link?.sendTabOp(tab.windowId, {
         requestId: `browser-op-${this.nextRequest++}`,
         op: "restore-focus",
@@ -903,6 +929,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       }
     };
     assertCurrent();
+    if (isFocused()) return;
     if (tab.targetKind === "popup") {
       const native = this.nativeTabs.get(tab.handle);
       if (!native) throw new Error("native browser focus is unavailable");
@@ -918,7 +945,16 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       return;
     }
     if (backgroundFocus() && this.activeBrowserTab(tab.windowId) !== tab.handle) {
-      guest.focus?.();
+      if (tab.rendererTabId === null) throw new Error("no browser renderer can capture focus");
+      if (this.focusReceipts.has(guestId)) throw new Error("browser focus is already borrowed");
+      const receiptId = `browser-op-${this.nextRequest++}`;
+      this.scopedFocusLeases.set(guestId, leaseId);
+      this.focusReceipts.set(guestId, { windowId: tab.windowId, tabId: tab.rendererTabId, leaseId, receiptId });
+      try {
+        if (!await this.focusOperation(tab.windowId, { requestId: receiptId, op: "capture-focus", tabId: tab.rendererTabId })) throw new Error("browser focus capture was denied");
+        assertCurrent();
+        guest.focus?.();
+      } catch (error) { await this.releaseFocus(guestId, leaseId); throw error; }
     } else if (tab.rendererTabId === null || !this.link?.sendTabOp(tab.windowId, {
       requestId: `browser-op-${this.nextRequest++}`, op: "focus", tabId: tab.rendererTabId,
     })) throw new Error("no browser renderer can focus this guest");
@@ -1059,6 +1095,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   // A window is gone: none of its panes holds a conversation any more.
   releaseWindow(windowId: number): void {
+    for (const pending of this.pendingFocus.values()) if (pending.windowId === windowId) pending.settle(false);
+    for (const [guestId, receipt] of this.focusReceipts) if (receipt.windowId === windowId) this.focusReceipts.delete(guestId);
     for (const [key, bound] of this.workspaceBindings) {
       if (bound.windowId === windowId) this.workspaceBindings.delete(key);
     }
@@ -1080,6 +1118,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     for (const [guestId, attached] of this.attached) {
       if (attached.windowId === windowId) {
         this.attached.delete(guestId);
+        this.scopedFocusLeases.delete(guestId);
         this.injectedTouches.delete(guestId);
       }
     }
@@ -1357,6 +1396,9 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   __reset(): void {
+    for (const pending of this.pendingFocus.values()) pending.settle(false);
+    this.focusReceipts.clear();
+    this.scopedFocusLeases.clear();
     this.attached.clear();
     this.tabs.clear();
     this.selectedOwnedTabs.clear();

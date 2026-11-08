@@ -29,6 +29,7 @@ function setup() {
   registry.setRendererLink({
     sendTabOp: (windowId, request) => {
       ops.push({ windowId, request });
+      if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId) registry.completeFocus(windowId, request.requestId, true);
       return true;
     },
     sendControl: (windowId, state) => control.push({ windowId, state }),
@@ -878,12 +879,40 @@ describe("scoped browser control", () => {
     const count = ops.length;
     await expect(registry.focusGuest(71)).resolves.toBeUndefined();
     expect(guest.isFocused()).toBe(true);
-    expect(ops).toHaveLength(count);
+    expect(ops).toHaveLength(count + 1);
+    expect(ops.at(-1)?.request.op).toBe("capture-focus");
     expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
-    registry.releaseFocus(71);
+    await registry.releaseFocus(71, tab.lease?.id);
     expect(ops.at(-1)?.request.op).toBe("restore-focus");
     registry.userInput(71, { type: "keyDown" });
     await expect(registry.focusGuest(71)).rejects.toThrow("active control");
+  });
+
+  it("binds focus acknowledgements to their window and borrowing lease", async () => {
+    const { registry, tab, guest } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    registry.setAgentTabAwake(71, true);
+    let requestId = "";
+    let restoreId = "";
+    registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (_windowId, request) => {
+      if (request.op === "capture-focus") requestId = request.requestId;
+      if (request.op === "restore-focus") restoreId = request.requestId;
+      return true;
+    } });
+    const action = registry.focusGuest(71);
+    expect(guest.isFocused()).toBe(false);
+    expect(registry.completeFocus(2, requestId, true)).toBe(false);
+    expect(registry.completeFocus(1, "forged", true)).toBe(false);
+    expect(registry.completeFocus(1, requestId, true)).toBe(true);
+    expect(registry.completeFocus(1, requestId, true)).toBe(false);
+    await action;
+    registry.releaseFocus(71, "another-lease");
+    expect(restoreId).toBe("");
+    const restored = registry.releaseFocus(71, lease.id);
+    expect(restoreId).not.toBe("");
+    expect(registry.completeFocus(2, restoreId, true)).toBe(false);
+    expect(registry.completeFocus(1, restoreId, true)).toBe(true);
+    await restored;
   });
 
   it("focuses only the bound active renderer slot and waits for actual guest focus", async () => {

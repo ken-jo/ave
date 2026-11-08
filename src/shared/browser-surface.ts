@@ -42,8 +42,9 @@ export type BrowserTabOpRequest =
   | { readonly requestId: string; readonly op: "wake" | "sleep"; readonly tabId: string }
   /** Focus this existing renderer slot without selecting or moving another surface. */
   | { readonly requestId: string; readonly op: "focus"; readonly tabId: string }
-  /** Restore the window’s prior keyboard focus after tool actions without awaiting a renderer acknowledgement. */
-  | { readonly requestId: string; readonly op: "restore-focus"; readonly tabId: string };
+  | { readonly requestId: string; readonly op: "capture-focus"; readonly tabId: string }
+  /** Restore the prior keyboard focus; scoped receipts require a renderer acknowledgement. */
+  | { readonly requestId: string; readonly op: "restore-focus"; readonly tabId: string; readonly receiptId?: string; readonly preserveFocus?: boolean };
 
 export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | null {
   if (!isRecord(value)) return null;
@@ -68,7 +69,14 @@ export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | 
       ...(typeof inTabId === "string" ? { inTabId } : {}),
     };
   }
-  if ((record.op === "select" || record.op === "close" || record.op === "wake" || record.op === "sleep" || record.op === "focus" || record.op === "restore-focus") && typeof record.tabId === "string") {
+  if (record.op === "restore-focus") {
+    const receiptId = (value as { receiptId?: unknown }).receiptId;
+    const preserveFocus = (value as { preserveFocus?: unknown }).preserveFocus;
+    if (preserveFocus !== undefined && (typeof preserveFocus !== "boolean" || receiptId === undefined)) return null;
+    if (typeof record.tabId !== "string" || record.tabId.length === 0 || !hasOnlyKeys(value, ["requestId", "op", "tabId", "receiptId", "preserveFocus"]) || (receiptId !== undefined && (typeof receiptId !== "string" || receiptId.length === 0))) return null;
+    return { requestId: record.requestId, op: "restore-focus", tabId: record.tabId, ...(typeof receiptId === "string" ? { receiptId } : {}), ...(typeof preserveFocus === "boolean" ? { preserveFocus } : {}) };
+  }
+  if ((record.op === "select" || record.op === "close" || record.op === "wake" || record.op === "sleep" || record.op === "focus" || record.op === "capture-focus") && typeof record.tabId === "string") {
     if (record.tabId.length === 0 || !hasOnlyKeys(value, ["requestId", "op", "tabId"])) return null;
     return { requestId: record.requestId, op: record.op, tabId: record.tabId };
   }
@@ -152,6 +160,7 @@ export interface BrowserTabControlState {
 /** Trusted window chrome only; page content never receives this API. */
 export interface BrowserTabsApi {
   bindTab(request: BrowserTabBindRequest): Promise<BrowserTabBindResult>;
+  completeFocus(requestId: string, restored: boolean): Promise<{ ok: boolean }>;
   /** Report that a `new` op naming `inTabId` could not be loaded into that page, so main answers the agent at once. */
   refuseTabOp(requestId: string): Promise<{ ok: boolean }>;
   getState(): Promise<BrowserTabControlState>;

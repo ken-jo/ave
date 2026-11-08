@@ -26,7 +26,7 @@ export interface ActionTarget {
   press<T>(run: () => Promise<T>): Promise<T>;
   pointerInput<T>(run: () => Promise<T>): Promise<T>;
   wheelInput<T>(run: () => Promise<T>): Promise<T>;
-  releaseFocus(): void;
+  releaseFocus(): void | Promise<void>;
   focusPage(): Promise<void>;
   mouseDrag?<T>(run: (receipt: NativeDragReceipt) => Promise<T>): Promise<T>;
   navigationOutcome?(): boolean;
