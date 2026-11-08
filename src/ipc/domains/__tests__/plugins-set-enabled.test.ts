@@ -36,8 +36,13 @@ async function setup() {
   handlers.clear();
   vi.clearAllMocks();
   const appWindows = [makeWindow(), makeWindow()];
-  const setPluginEnabled = vi.fn(async (pluginId: string) => {
+  const stateChangeListeners = new Set<(pluginId: string, enabled: boolean) => void>();
+  const notifyStateChange = (pluginId: string, enabled: boolean) => {
+    for (const listener of stateChangeListeners) listener(pluginId, enabled);
+  };
+  const setPluginEnabled = vi.fn(async (pluginId: string, enabled: boolean) => {
     if (pluginId === "ghost") throw new Error("Plugin not found: ghost");
+    notifyStateChange(pluginId, enabled);
   });
   const callFromUi = vi.fn(async () => ({ ok: true }));
   const pluginBundleLifecycle = {
@@ -75,7 +80,6 @@ async function setup() {
       },
     },
   };
-  const stateChangeListeners = new Set<(pluginId: string, enabled: boolean) => void>();
   const deps = {
     pluginMarketplace: { list: vi.fn(async () => []) },
     pluginRuntime: {
@@ -110,9 +114,7 @@ async function setup() {
     deps,
     appWindows,
     setPluginEnabled,
-    notifyStateChange: (pluginId: string, enabled: boolean) => {
-      for (const listener of stateChangeListeners) listener(pluginId, enabled);
-    },
+    notifyStateChange,
     callFromUi,
     pluginBundleLifecycle,
     setPluginConfig,
@@ -251,7 +253,7 @@ describe("ave:plugins:set-enabled", () => {
   ])("broadcasts exactly once for a %s", async (_label, enabled, cleanup) => {
     const { setPluginEnabled, appWindows, notifyStateChange } = await setup();
     setPluginEnabled.mockImplementationOnce(async () => {
-      if (cleanup) notifyStateChange("com.example.meeting", false);
+      notifyStateChange("com.example.meeting", cleanup ? false : enabled);
     });
     await expect(invoke("ave:plugins:set-enabled", "com.example.meeting", enabled))
       .resolves.toMatchObject({ ok: true, enabled });
@@ -262,6 +264,31 @@ describe("ave:plugins:set-enabled", () => {
       expect(win.webContents.send).toHaveBeenCalledExactlyOnceWith("ave:plugins:enabled-changed", {
         pluginId: "com.example.meeting", enabled,
       });
+    }
+  });
+
+  it("forwards both transitions when recovery overlaps an enable request", async () => {
+    const { setPluginEnabled, appWindows, notifyStateChange, deps } = await setup();
+    let release!: () => void;
+    const ready = new Promise<void>(resolve => { release = resolve; });
+    setPluginEnabled.mockImplementationOnce(async () => {
+      await ready;
+      notifyStateChange("com.example.meeting", true);
+    });
+    const enable = invoke("ave:plugins:set-enabled", "meeting", true);
+    notifyStateChange("com.example.meeting", false);
+    release();
+    await expect(enable).resolves.toMatchObject({ ok: true });
+    expect(deps.pluginRuntime.subscribePluginStateChange).toHaveBeenCalledTimes(1);
+    expect(hostEventMock.emit.mock.calls).toEqual([
+      ["plugin.enabled-changed", { pluginId: "com.example.meeting", enabled: false }],
+      ["plugin.enabled-changed", { pluginId: "com.example.meeting", enabled: true }],
+    ]);
+    for (const win of appWindows) {
+      expect(win.webContents.send.mock.calls).toEqual([
+        ["ave:plugins:enabled-changed", { pluginId: "com.example.meeting", enabled: false }],
+        ["ave:plugins:enabled-changed", { pluginId: "com.example.meeting", enabled: true }],
+      ]);
     }
   });
 
@@ -412,12 +439,12 @@ describe("ave:plugins:set-enabled", () => {
     }
   });
 
-  it.each([false, true])("broadcasts a committed disable once while reporting unfinished retirement, notified=%s", async (notified) => {
+  it.each(["retirement", "projection"])("broadcasts a committed disable once while reporting unfinished %s", async (failure) => {
     const { deps, setPluginEnabled, appWindows, notifyStateChange } = await setup();
     deps.pluginRuntime.isPluginEnabled.mockReturnValue(false);
     setPluginEnabled.mockImplementationOnce(async () => {
-      if (notified) notifyStateChange("com.example.meeting", false);
-      throw new Error("generation stop is unconfirmed; retry the enabled-state change");
+      notifyStateChange("com.example.meeting", false);
+      throw new Error(`${failure} is unconfirmed; retry the enabled-state change`);
     });
     const result = await invoke("ave:plugins:set-enabled", "com.example.meeting", false);
     expect(result).toMatchObject({ ok: false, error: "toggle-failed" });

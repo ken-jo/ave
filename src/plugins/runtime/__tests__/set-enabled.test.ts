@@ -332,9 +332,13 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     const runtime = makeRuntime();
     await runtime.startAll();
     expect(runtime.resolvePluginInstallId("se-plugin")).toBe(installId);
+    const stateChanged = vi.fn();
+    runtime.subscribePluginStateChange(stateChanged);
 
     await runtime.setPluginEnabled(installId, false);
     await runtime.setPluginEnabled(installId, true);
+    await runtime.setPluginEnabled(installId, true);
+    expect(stateChanged.mock.calls).toEqual([["se-plugin", false], ["se-plugin", true]]);
 
     await expect(runtime.call("se_ping")).resolves.toBe("pong");
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
@@ -451,7 +455,10 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     const runtime = makeRuntime({ onActiveStateChange });
     await runtime.startAll();
 
+    const stateChanged = vi.fn();
+    runtime.subscribePluginStateChange(stateChanged);
     await expect(runtime.setPluginEnabled("se-plugin", false)).rejects.toThrow("MCP projection failed");
+    expect(stateChanged).toHaveBeenCalledExactlyOnceWith("se-plugin", false);
 
     expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
@@ -477,11 +484,14 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
             : step),
     );
 
+    const stateChanged = vi.fn();
+    runtime.subscribePluginStateChange(stateChanged);
     await expect(runtime.setPluginEnabled("se-plugin", false)).rejects.toThrow(
       /generation retirement failed/,
     );
 
     expect(onActiveStateChange).toHaveBeenCalledWith("se-plugin", false);
+    expect(stateChanged).toHaveBeenCalledExactlyOnceWith("se-plugin", false);
     expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(registry.plugins.find((p: { id: string }) => p.id === "se-plugin").enabled).toBe(false);
@@ -494,6 +504,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     [12000, false, "remove"],
     [12000, false, "reject"],
     [12000, false, "effects"],
+    [12000, false, "overlap"],
   ] as const)("settles a committed disable after a %s ms release, queued enable=%s, action=%s", async (releaseMs, queuedEnable, action) => {
     const runtime = makeRuntime();
     const stateChanged = vi.fn();
@@ -554,7 +565,24 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       }
     });
     let effectsBlocked = true;
+    let automaticRetired!: () => void;
+    let releaseAutomatic!: () => void;
+    const automaticReady = new Promise<void>(resolve => { automaticRetired = resolve; });
+    const automaticGate = new Promise<void>(resolve => { releaseAutomatic = resolve; });
     const retirementPasses = action === "effects" ? vi.spyOn(lifecycle, "deactivateWithCommit") : undefined;
+    if (action === "overlap") {
+      const deactivate = lifecycle.deactivateWithCommit.bind(lifecycle);
+      let passes = 0;
+      vi.spyOn(lifecycle, "deactivateWithCommit").mockImplementation(async (...args) => {
+        const pass = ++passes;
+        const result = await deactivate(...args);
+        if (pass === 2) {
+          automaticRetired();
+          await automaticGate;
+        }
+        return result;
+      });
+    }
     const dispose = vi.fn(() => {
       if (!stopped) throw new Error("effects await stop confirmation");
       if (effectsBlocked) throw new Error("effects retirement failed after stop");
@@ -572,6 +600,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     await inStop;
     await vi.waitFor(() => expect(outcome).toBeDefined(), { timeout: 20000 });
     await disable;
+    stateChanged.mockClear();
     if (releaseMs > 6000) {
       expect(runtime.listPluginCards().find(card => card.id === "se-plugin")).toMatchObject({
         loadStatus: "failed", installFailureMessage: expect.stringContaining("unconfirmed; retry"),
@@ -657,6 +686,17 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(releaseMs);
     await stopSettled;
     expect(stopped).toBe(true);
+    if (action === "overlap") {
+      await automaticReady;
+      const enable = runtime.setPluginEnabled("se-plugin", true);
+      releaseAutomatic();
+      await enable;
+      expect(stateChanged.mock.calls).toEqual([["se-plugin", false], ["se-plugin", true]]);
+      unsubscribeStateChange();
+      stop.mockRestore();
+      await runtime.setPluginEnabled("se-plugin", false);
+      return;
+    }
     unlock?.();
     await lockHeld;
     if (action === "effects") {

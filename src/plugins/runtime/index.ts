@@ -6939,6 +6939,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
           } catch (error) {
             callbackError = error;
           }
+          this.notifyPluginStateChange(canonicalPluginId);
           if (retirementError !== undefined && callbackError !== undefined) {
             throw new AggregateError(
               [

@@ -317,42 +317,24 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       if (typeof enabled !== "boolean") {
         return pluginConfigError("invalid-enabled", "enabled must be a boolean");
       }
-      let notified = false;
-      const unsubscribe = pluginRuntime.subscribePluginStateChange((changedPluginId) => {
-        if (changedPluginId === pluginRuntime.resolvePluginId(pluginId)) notified = true;
-      });
       try {
-        try {
-          await pluginRuntime.setPluginEnabled(pluginId, enabled);
-        } catch (err) {
-          const message = errMessage(err);
-          if (err instanceof PluginDeploymentDeniedError) {
-            // Log deployment-policy details internally; return a stable renderer refusal.
-            log.warn(`plugin enabled-state change denied (${pluginId}): %s`, message);
-            return pluginConfigError(
-              "disable-not-permitted",
-              t("mainDialog.pluginDisableNotPermitted"),
-            );
-          }
-          if (message.startsWith("Plugin not found")) {
-            return pluginConfigError("no-such-plugin", `unknown plugin: ${pluginId}`);
-          }
-          log.error(`plugin enabled-state change failed (${pluginId}): %s`, message);
-          const committedEnabled = pluginRuntime.isPluginEnabled(pluginId);
-          if (committedEnabled === enabled && !notified) {
-            emitHostEvent("plugin.enabled-changed", { pluginId, enabled: committedEnabled });
-            broadcastPluginLifecycleEvent(CHANNELS.plugins.enabledChanged, { pluginId, enabled: committedEnabled });
-          }
-          return pluginConfigError("toggle-failed", "plugin enabled state could not be changed");
+        await pluginRuntime.setPluginEnabled(pluginId, enabled);
+      } catch (err) {
+        const message = errMessage(err);
+        if (err instanceof PluginDeploymentDeniedError) {
+          log.warn(`plugin enabled-state change denied (${pluginId}): %s`, message);
+          return pluginConfigError(
+            "disable-not-permitted",
+            t("mainDialog.pluginDisableNotPermitted"),
+          );
         }
-        if (!notified) {
-          emitHostEvent("plugin.enabled-changed", { pluginId, enabled });
-          broadcastPluginLifecycleEvent(CHANNELS.plugins.enabledChanged, { pluginId, enabled });
+        if (message.startsWith("Plugin not found")) {
+          return pluginConfigError("no-such-plugin", `unknown plugin: ${pluginId}`);
         }
-        return { ok: true, pluginId, enabled } as const;
-      } finally {
-        unsubscribe();
+        log.error(`plugin enabled-state change failed (${pluginId}): %s`, message);
+        return pluginConfigError("toggle-failed", "plugin enabled state could not be changed");
       }
+      return { ok: true, pluginId, enabled } as const;
     },
   );
 
