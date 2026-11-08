@@ -10,11 +10,13 @@ import {
   requestOpenNewMainWindow,
   requestShowOrCreateMainWindow,
 } from "./native-window-coordinator.js";
-import { defaultAccelerator, shortcutPlatformOf } from "../shared/shortcuts.js";
+import { NO_SHORTCUT_OVERRIDES, resolveShortcut, shortcutPlatformOf } from "../shared/shortcuts.js";
 
-/** A menu item's accelerator comes from the shortcut registry. */
-function menuAccelerator(id: "menu.settings" | "menu.newWindow"): string | undefined {
-  return defaultAccelerator(id, shortcutPlatformOf(process.platform)) ?? undefined;
+/** A menu item's accelerator is the user's binding for its registry row. Before services exist (the first menu at boot)
+ * no settings are loaded yet, so the row's default applies; the menu is rebuilt once settings change. */
+export function menuAccelerator(id: "menu.settings" | "menu.newWindow"): string | undefined {
+  const shortcuts = getServices()?.settingsService.get("shortcuts") ?? NO_SHORTCUT_OVERRIDES;
+  return resolveShortcut(id, shortcuts, shortcutPlatformOf(process.platform)) ?? undefined;
 }
 
 function activateView(viewKey: string) {

@@ -4174,3 +4174,25 @@ describe("legacy onboarding completion evidence", () => {
     }
   });
 });
+
+describe("SettingsService shortcuts change notification", () => {
+  let userDataPath: string;
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-shortcut-listeners-"));
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
+  });
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("tells shortcuts listeners about a rebind, so the native menus can rebuild", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const listener = vi.fn(() => s.get("shortcuts").bindings);
+    s.onChanged("shortcuts", listener);
+    await s.patch({ shortcuts: { bindings: { "menu.settings": "CommandOrControl+Alt+P" } } });
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener.mock.results[0]?.value).toEqual({ "menu.settings": "CommandOrControl+Alt+P" });
+    await s.patch({ chat: { autoCompact: false } });
+    expect(listener).toHaveBeenCalledOnce();
+  });
+});
