@@ -12,6 +12,12 @@ import { windowsCommandLine } from "../../../shared/windows-command-line.js";
 import { PluginChildTerminationUnverifiedError } from "../plugin-child-transport.js";
 import { attachMxcPluginChild, spawnMxcPluginChild } from "../mxc-plugin-child.js";
 
+const terminationDebug = vi.hoisted(() => vi.fn());
+vi.mock("../../../lib/logger.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../../../lib/logger.js")>();
+  return { ...original, createLogger: (name: string) => ({ ...original.createLogger(name), debug: terminationDebug }) };
+});
+
 const spawn = vi.hoisted(() => vi.fn());
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../permissions/confined-child.js")>(),
@@ -247,6 +253,20 @@ describe("native plugin stream ownership", () => {
     launch.assertCurrent.mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw new Error("Grant changed"); });
     await expect(spawnMxcPluginChild(launch, intent)).rejects.toThrow("Grant changed");
     expect(spawn).toHaveBeenCalledOnce(); expect(owned.dispose).toHaveBeenCalledOnce();
+    expect(launch.release).toHaveBeenCalledOnce();
+  });
+
+  it("names the deadline error in the native post-spawn refusal reason", async () => {
+    const { owned, launch, intent } = fixture();
+    const deadline = new Error("plugin-factory-deadline-passed");
+    launch.assertCurrent.mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw deadline; });
+    terminationDebug.mockClear();
+    await expect(spawnMxcPluginChild(launch, intent)).rejects.toBe(deadline);
+    expect(terminationDebug).toHaveBeenCalledWith(
+      "terminating native child %s: %s", intent.pluginId,
+      "refused after spawn: plugin-factory-deadline-passed",
+    );
+    expect(owned.dispose).toHaveBeenCalledOnce();
     expect(launch.release).toHaveBeenCalledOnce();
   });
 

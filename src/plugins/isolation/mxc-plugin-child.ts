@@ -10,7 +10,10 @@ import type { DelegatedWorkerConfinement } from "./host-api-dispatcher.js";
 import { windowsCommandLine } from "../../shared/windows-command-line.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { capturePluginStderr } from "./plugin-stderr.js";
+import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
+
+const log = createLogger("mxc-plugin-child");
 
 /** The backend planner's part of one incarnation's admission, never supplied by a manifest or a child message. The command,
  * arguments, cwd, environment and grants are not here: the adapter derives them from the host's intent and envelope. */
@@ -57,6 +60,7 @@ export function attachMxcPluginChild(owned: OwnedMxcExtensionProcess, launch: Pi
   const stop = (reason: string): Promise<void> => {
     if (!terminating) {
       terminating = true;
+      log.debug("terminating native child %s: %s", pluginId, reason);
       for (const handler of terminatingHandlers) handler();
     }
     // Publish cleanup before invoking disposal: a synchronous fault callback
@@ -208,7 +212,7 @@ export async function spawnMxcPluginChild(
     if (launch.signal.aborted) throw new MxcProcessContractError("Plugin child admission was revoked");
     return child;
   } catch (error) {
-    child.link.terminate("admission changed during spawn");
+    child.link.terminate(`refused after spawn: ${errorMessage(error)}`);
     try {
       await child.waitForExit();
     } catch (cleanupError) {
