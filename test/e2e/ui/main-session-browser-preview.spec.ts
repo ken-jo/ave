@@ -1,25 +1,34 @@
 import { expect, test } from "@playwright/test";
 import { createServer, type ServerResponse } from "node:http";
+import { TOOL_TIMEOUT_POLICY } from "../../../src/shared/tool-timeout-policy.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
-import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { buildLlmSettings, launchSeededElectron, teardownSeededElectron, setWindowSize } from "./seeded-electron.js";
 
 // A static, never-revealed page must deliver its first picture through the real observation and screencast path.
 test.use({ trace: "on" });
-test("paints a parked main-session page while its panel stays closed", async () => {
+for (const { deviceScale, previewShown } of [{ deviceScale: 1, previewShown: true }, { deviceScale: 2, previewShown: false }]) {
+  test(`clicks a scrolled link across origins in a parked main session at scale ${deviceScale} with preview ${previewShown}`, () => exerciseParkedClick(deviceScale, previewShown));
+}
+
+async function exerciseParkedClick(deviceScale: number, previewShown: boolean): Promise<void> {
   test.setTimeout(90_000);
   const model = "static-browser-preview-fixture";
   let stage = 0;
   let firstUrl = "";
   let secondUrl = "";
   let tabId = "";
+  let clickRef = "";
   let releaseNavigation: (() => void) | undefined;
   let releaseFinish: (() => void) | undefined;
   const failures: string[] = [];
+  const toolResults: string[] = [];
+  const requestedTools: string[] = [];
   const send = (response: ServerResponse, delta: Record<string, unknown>, finish: string | null) => {
     response.write(`data: ${JSON.stringify({ id: "static-preview", object: "chat.completion.chunk", created: 0,
       model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
   };
   const tool = (response: ServerResponse, name: string, args: Record<string, unknown>) => {
+    requestedTools.push(name);
     send(response, { role: "assistant", tool_calls: [{ index: 0, id: `static-preview-${stage}`, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, null);
     send(response, {}, "tool_calls");
     response.end("data: [DONE]\n\n");
@@ -31,7 +40,7 @@ test("paints a parked main-session page while its panel stays closed", async () 
     }
     if (request.method === "GET" && request.url?.startsWith("/page")) {
       response.writeHead(200, { "content-type": "text/html" });
-      response.end(`<!doctype html><html><head><title>Static example</title></head><body style="font:20px system-ui;padding:40px;background:#fff8e0"><h1>${request.url.includes("second") ? "Example destination" : "Example source"}</h1><a href="${secondUrl}">Continue</a><p>A static page without animation.</p></body></html>`); return;
+      response.end(`<!doctype html><html><head><title>Static example</title></head><body style="font:20px system-ui;padding:40px;background:#fff8e0"><h1>${request.url.includes("second") ? "Example destination" : "Example source"}</h1>${request.url.includes("second") ? "" : Array.from({ length: 22 }, (_, index) => `<p>Documentation paragraph ${index + 1}. ${"A long static document keeps the destination link below the initial viewport. ".repeat(3)}</p>`).join("")}<a href="${secondUrl}">Learn more</a><p>A static page without animation.</p></body></html>`); return;
     }
     if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
     const chunks: Buffer[] = [];
@@ -39,6 +48,7 @@ test("paints a parked main-session page while its panel stays closed", async () 
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { messages?: Array<{ role: string; content: unknown }> };
     const result = body.messages?.findLast(message => message.role === "tool")?.content;
     const text = typeof result === "string" ? result : JSON.stringify(result ?? "");
+    if (stage > 0) toolResults.push(text);
     if (/"error"\s*:/.test(text)) failures.push(text);
     stage += 1;
     response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
@@ -48,7 +58,8 @@ test("paints a parked main-session page while its panel stays closed", async () 
       tool(response, "browser_snapshot", { tabId, interactive: true }); return;
     }
     if (stage === 3) {
-      releaseNavigation = () => tool(response, "browser_navigate", { tabId, url: secondUrl });
+      clickRef = /link "Learn more"[^\n]*\[ref=(e\d+)\]/.exec(text)?.[1] ?? "";
+      releaseNavigation = () => tool(response, "browser_click", { tabId, ref: clickRef });
       response.flushHeaders(); return;
     }
     if (stage === 4) { tool(response, "browser_snapshot", { tabId }); return; }
@@ -69,7 +80,49 @@ test("paints a parked main-session page while its panel stays closed", async () 
   let approving = true;
   let approvals: Promise<void> | undefined;
   try {
-    ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [], launchArgs: ["--use-mock-keychain"] });
+    ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [], launchArgs: ["--use-mock-keychain", `--force-device-scale-factor=${deviceScale}`] });
+    await ctx.app.evaluate(({ app }, delayHitMs) => {
+      const capture = globalThis as unknown as { clickMeasurements: unknown[] };
+      capture.clickMeasurements = [];
+      app.on("web-contents-created", (_event, contents) => {
+        if (contents.getType() !== "webview") return;
+        const protocol = contents.debugger;
+        const send = protocol.sendCommand.bind(protocol);
+        let nodeId: number | undefined;
+        let delayed = false;
+        let quads: number[][] | undefined;
+        let chosenPoint: { x: number; y: number } | undefined;
+        protocol.sendCommand = async (method, params = {}) => {
+          if (method === "DOM.getContentQuads" && typeof params.backendNodeId === "number") {
+            nodeId = params.backendNodeId;
+            const result = await send(method, params);
+            quads = result.quads;
+            const quad = quads?.find(candidate => candidate.length === 8);
+            if (quad) chosenPoint = { x: Math.round(quad.filter((_value, index) => index % 2 === 0).reduce((sum, value) => sum + value, 0) / 4), y: Math.round(quad.filter((_value, index) => index % 2 !== 0).reduce((sum, value) => sum + value, 0) / 4) };
+            return result;
+          }
+          if (method !== "DOM.getNodeForLocation") return send(method, params);
+          if (!delayed && delayHitMs > 0) {
+            delayed = true;
+            await new Promise(resolve => setTimeout(resolve, delayHitMs));
+          }
+          const geometry = async () => ({ ts: Date.now(), focused: contents.isFocused(), throttled: contents.getBackgroundThrottling(),
+            layout: await send("Page.getLayoutMetrics"),
+            box: nodeId === undefined ? null : await send("DOM.getBoxModel", { backendNodeId: nodeId }),
+            viewport: await send("Runtime.evaluate", { expression: "({ width: innerWidth, height: innerHeight, deviceScale: devicePixelRatio, scrollX, scrollY, visibility: document.visibilityState })", returnByValue: true }),
+          });
+          try {
+            const result = await send(method, params);
+            capture.clickMeasurements.push({ guestId: contents.id, chosenPoint, quads, point: params, result, ...await geometry() });
+            return result;
+          } catch (error) {
+            capture.clickMeasurements.push({ guestId: contents.id, point: params, error: String(error), ...await geometry() });
+            throw error;
+          }
+        };
+      });
+    }, previewShown ? 0 : TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs + 250);
+    await setWindowSize(ctx.app, 1200, 640);
     const { page } = ctx;
     const panelToggle = page.getByTestId(TEST_IDS.panePanelToggle);
     await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
@@ -79,6 +132,9 @@ test("paints a parked main-session page while its panel stays closed", async () 
       if (!mode.ok) throw new Error("Could not select strict tool approval");
       const state = window as unknown as { previewCapture: unknown[] };
       state.previewCapture = [];
+      const activity = window as unknown as { activityOps: unknown[] };
+      activity.activityOps = [];
+      window.aveApi.browserTabs?.onTabOp(op => { if (op.op === "wake" || op.op === "sleep") activity.activityOps.push({ op: op.op, ts: Date.now() }); });
       window.ave.preview.onObservationPreview(message => state.previewCapture.push(message.kind === "frame" ? { ...message, data: "" } : message));
     });
     const composer = page.getByTestId("pane-cell:main").getByTestId("composer-textarea");
@@ -95,31 +151,51 @@ test("paints a parked main-session page while its panel stays closed", async () 
     await expect.poll(() => releaseNavigation !== undefined, { timeout: 60_000 }).toBe(true);
     expect(failures).toEqual([]);
     const preview = page.getByTestId("conversation-browser-observation").getByTestId("browser-observation-preview");
-    await expect(preview).toBeVisible();
-    try {
-      await expect(preview.locator("img")).toBeVisible({ timeout: 15_000 });
-      await expect.poll(() => preview.locator("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
-    } finally {
-      const capture = await page.evaluate(() => (window as unknown as { previewCapture: unknown[] }).previewCapture);
-      expect(capture).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "frame", tabId })]));
-      console.log("Static parked preview messages", capture);
-      await test.info().attach("static-preview-messages.json", { body: JSON.stringify(capture), contentType: "application/json" });
-      const guests = await ctx.app.evaluate(async ({ webContents }) => Promise.all(webContents.getAllWebContents().filter(contents => contents.getType() === "webview").map(async contents => ({ url: contents.getURL(), focused: contents.isFocused(), layout: await contents.executeJavaScript("({ visibility: document.visibilityState, width: innerWidth, height: innerHeight })") }))));
-      console.log("Static parked guest layout", guests);
-      await test.info().attach("static-preview-guests.json", { body: JSON.stringify(guests), contentType: "application/json" });
+    if (!previewShown) {
+      await page.getByTestId("conversation-browser-observation").evaluate(element => { (element as HTMLElement).style.display = "none"; });
+      await page.waitForTimeout(350);
+    }
+    let firstPicture: string | null = null;
+    if (previewShown) {
+      await expect(preview).toBeVisible();
+      try {
+        await expect(preview.locator("img")).toBeVisible({ timeout: 15_000 });
+        await expect.poll(() => preview.locator("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+      } finally {
+        const capture = await page.evaluate(() => (window as unknown as { previewCapture: unknown[] }).previewCapture);
+        expect(capture).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "frame", tabId })]));
+        console.log("Static parked preview messages", capture);
+        await test.info().attach("static-preview-messages.json", { body: JSON.stringify(capture), contentType: "application/json" });
+        const guests = await ctx.app.evaluate(async ({ webContents }) => Promise.all(webContents.getAllWebContents().filter(contents => contents.getType() === "webview").map(async contents => ({ url: contents.getURL(), focused: contents.isFocused(), layout: await contents.executeJavaScript("({ visibility: document.visibilityState, width: innerWidth, height: innerHeight })") }))));
+        console.log("Static parked guest layout", guests);
+        await test.info().attach("static-preview-guests.json", { body: JSON.stringify(guests), contentType: "application/json" });
     }
     await test.info().attach("static-preview.png", { body: await page.screenshot(), contentType: "image/png" });
     await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
-    const firstPicture = await preview.locator("img").getAttribute("src");
+    firstPicture = await preview.locator("img").getAttribute("src");
+    }
+    const parkedLayout = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, frames: [...document.querySelectorAll<HTMLElement>('[data-testid="web-surface-frame"]')].map(frame => ({ rect: frame.getBoundingClientRect().toJSON(), visibility: getComputedStyle(frame).visibility, opacity: getComputedStyle(frame).opacity, pointerEvents: getComputedStyle(frame).pointerEvents })) }));
+    expect(parkedLayout.frames).toEqual([expect.objectContaining({ pointerEvents: "none", rect: expect.objectContaining({ width: 1024, height: 768 }) })]);
+    if (previewShown) expect(parkedLayout.frames[0]).toMatchObject({ opacity: "0", visibility: "visible" });
+    await test.info().attach("parked-placement.json", { body: JSON.stringify(parkedLayout), contentType: "application/json" });
+    expect(clickRef).toMatch(/^e\d+$/);
     releaseNavigation?.();
     await expect.poll(() => releaseFinish !== undefined, { timeout: 60_000 }).toBe(true);
     expect(failures).toEqual([]);
-    await expect(preview.locator("img")).not.toHaveAttribute("src", firstPicture ?? "");
-    await expect.poll(() => preview.locator("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
-    await test.info().attach("static-cross-site-preview.png", { body: await page.screenshot(), contentType: "image/png" });
-    await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
+    if (previewShown) {
+      await expect(preview.locator("img")).not.toHaveAttribute("src", firstPicture ?? "");
+      await expect.poll(() => preview.locator("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+      await test.info().attach("static-cross-site-preview.png", { body: await page.screenshot(), contentType: "image/png" });
+      await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
+    }
+    const hits = await ctx.app.evaluate(() => (globalThis as unknown as { clickMeasurements: unknown[] }).clickMeasurements);
+    expect(hits).toHaveLength(3);
+    for (const hit of hits) expect(hit).toMatchObject({ focused: false, throttled: false, result: { backendNodeId: expect.any(Number), frameId: expect.any(String) } });
+    expect(requestedTools).toEqual(["browser_navigate", "browser_snapshot", "browser_click", "browser_snapshot"]);
+    expect(toolResults[2]).toContain(secondUrl);
+    expect(toolResults[3]).toContain("Example destination");
     const beforeEnd = await page.evaluate(async handle => (await window.aveApi.browserTabs?.getState())?.tabs.find(tab => tab.tabId === handle), tabId);
-    expect(beforeEnd?.mode).toBe("agent-active");
+    expect(beforeEnd).toMatchObject({ mode: "agent-active", url: secondUrl });
     releaseFinish?.();
     await expect(page.getByTestId("chat-main-column").getByText("Static preview task complete.", { exact: true })).toBeVisible();
     await expect(page.getByTestId("conversation-browser-observation")).toHaveCount(0, { timeout: 3_000 });
@@ -140,10 +216,25 @@ test("paints a parked main-session page while its panel stays closed", async () 
     expect(retained[0]).toMatchObject({ url: secondUrl, destroyed: false });
     await test.info().attach("turn-ended-retained-tab.png", { body: await page.screenshot(), contentType: "image/png" });
   } finally {
-    approving = false;
-    if (approvals) await approvals;
-    if (ctx) await teardownSeededElectron(ctx, { terminate: true });
-    server.closeAllConnections();
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    try {
+      if (ctx) {
+        console.log("Activity operations", JSON.stringify(await ctx.page.evaluate(() => (window as unknown as { activityOps: unknown[] }).activityOps)));
+        const measurements = await ctx.app.evaluate(() => (globalThis as unknown as { clickMeasurements: unknown[] }).clickMeasurements);
+        console.log("Parked click hit-test count", measurements.length);
+        await test.info().attach("parked-click-geometry.json", { body: JSON.stringify(measurements, null, 2), contentType: "application/json" });
+      }
+    } finally {
+      approving = false;
+      try {
+        if (approvals) await approvals;
+      } finally {
+        try {
+          if (ctx) await teardownSeededElectron(ctx, { terminate: true });
+        } finally {
+          server.closeAllConnections();
+          await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+        }
+      }
+    }
   }
-});
+}

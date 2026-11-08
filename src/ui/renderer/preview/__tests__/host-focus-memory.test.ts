@@ -88,7 +88,7 @@ describe("HostFocusMemory", () => {
 });
 
 
-it.each(["composer", "user-page", "child-page"])("restores the exact prior target with a host action receipt: %s", async prior => {
+it.each(["composer", "user-page", "child-page"])("restores the exact prior target after visible native focus borrowing: %s", async prior => {
   const { memory, detach, composer, page, other } = setup();
   const previous = prior === "composer" ? composer : document.createElement("webview");
   previous.tabIndex = 0;
@@ -101,6 +101,7 @@ it.each(["composer", "user-page", "child-page"])("restores the exact prior targe
   let requestId = "";
   registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (windowId, request) => {
     requestId = request.requestId;
+    if (request.op === "focus") guest.focus();
     if (request.op === "capture-focus") registry.completeFocus(windowId, request.requestId, memory.capture(request.requestId, page));
     if (request.op === "restore-focus" && request.receiptId) registry.completeFocus(windowId, request.requestId, memory.restoreReceipt(request.receiptId, page, request.preserveFocus));
     return true;
@@ -113,6 +114,7 @@ it.each(["composer", "user-page", "child-page"])("restores the exact prior targe
   url = "https://a.example/";
   const tab = registry.liveTabInWindow(opened.tabId, 1);
   if (!tab) throw new Error("Missing tab");
+  registry.setActiveSurface(1, { kind: "browser", tabId: "background" });
   registry.setAgentTabAwake(71, true);
   for (const outcome of ["success", "cancel", "user-focus", "takeover"] as const) {
     const lease = registry.acquireControl(tab, { sessionId: "child" });
@@ -120,12 +122,12 @@ it.each(["composer", "user-page", "child-page"])("restores the exact prior targe
     previous.focus();
     try {
         await registry.focusGuest(71);
-        expect(document.activeElement).toBe(previous);
+        expect(document.activeElement).toBe(page);
         if (outcome === "user-focus") other.focus();
         if (outcome === "takeover") { guest.focus(); registry.userInput(71, { type: "keyDown" }); }
         if (outcome === "cancel") registry.releaseControl(tab.handle, lease.id);
         await registry.releaseFocus(71, lease.id);
-      expect(document.activeElement).toBe(outcome === "user-focus" ? other : previous);
+      expect(document.activeElement).toBe(outcome === "user-focus" ? other : outcome === "takeover" ? page : previous);
     } finally { registry.releaseControl(tab.handle, lease.id); if (outcome === "takeover") registry.resume(1, "background"); }
   }
   detach();
@@ -148,6 +150,41 @@ it.each(["hidden", "replaced", "wrong-borrower"])("refuses a focus receipt with 
   expect(memory.restoreReceipt("receipt", change === "wrong-borrower" ? other : page)).toBe(false);
   expect(document.activeElement).toBe(page);
   if (change === "wrong-borrower") expect(memory.restoreReceipt("receipt", page)).toBe(true);
+  detach();
+});
+
+it.each(["body", "removed-approval", "disabled-approval"])("returns borrowed focus to the composer when the prior host target is %s", previousKind => {
+  const { memory, detach, composer, page } = setup();
+  composer.focus();
+  let previous: HTMLElement;
+  if (previousKind === "body") {
+    composer.blur();
+    previous = document.body;
+  } else {
+    previous = document.createElement("button");
+    document.body.appendChild(previous);
+    previous.focus();
+  }
+  vi.spyOn(previous, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100 } as DOMRect);
+  expect(memory.capture("visible-action", page)).toBe(true);
+  page.focus();
+  if (previousKind === "removed-approval") previous.remove();
+  if (previousKind === "disabled-approval") previous.setAttribute("disabled", "");
+  expect(memory.restoreReceipt("visible-action", page)).toBe(true);
+  expect(document.activeElement).toBe(composer);
+  detach();
+});
+
+it("restores remembered host focus after both the borrowing page and approval are removed", () => {
+  const { memory, detach, composer, page, other } = setup();
+  composer.focus();
+  other.focus();
+  expect(memory.capture("closed-action", page)).toBe(true);
+  page.focus();
+  other.remove();
+  page.remove();
+  expect(memory.restoreReceipt("closed-action", null)).toBe(true);
+  expect(document.activeElement).toBe(composer);
   detach();
 });
 

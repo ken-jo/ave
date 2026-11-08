@@ -56,7 +56,7 @@ function isWebview(element: Element): boolean {
 /**
  * Where keyboard focus was in the app before a browser page took it, so the
  * agent holds page focus only while it acts. Remembers the last focused
- * element for pointer actions; native background focus uses a scoped receipt. `restore` gives focus back to it,
+ * element for pointer actions; visible native focus borrowing uses a scoped receipt. `restore` gives focus back to it,
  * but only while a page still holds focus: if the user has moved on, their
  * focus stays where they put it.
  */
@@ -96,12 +96,19 @@ export class HostFocusMemory {
     const active = this.doc.activeElement;
     if (active === receipt.previous) return true;
     if (active !== receipt.guest && active !== this.doc.body) return true;
-    if (!this.visible(receipt.previous)) return false;
+    if (!this.visible(receipt.previous)) {
+      if (receipt.previousGuestId !== undefined) return false;
+      this.restore();
+      return this.doc.activeElement !== receipt.guest;
+    }
     if (receipt.previousGuestId !== undefined) {
       try { if ((receipt.previous as HTMLElement & { getWebContentsId(): number }).getWebContentsId() !== receipt.previousGuestId) return false; } catch { return false; }
     }
     receipt.previous.focus();
-    return this.doc.activeElement === receipt.previous;
+    if (this.doc.activeElement === receipt.previous) return true;
+    if (receipt.previousGuestId !== undefined) return false;
+    this.restore();
+    return this.doc.activeElement !== receipt.guest;
   }
 
   constructor(private readonly doc: Document) {}
@@ -123,10 +130,13 @@ export class HostFocusMemory {
 
   restore(): void {
     const active = this.doc.activeElement;
-    if (!(active instanceof HTMLElement) || !isWebview(active)) return;
-    const back = [...this.recent].reverse().find((element) => this.visible(element));
-    if (back) back.focus();
-    else active.blur();
+    if (!(active instanceof HTMLElement) || !isWebview(active) && active !== this.doc.body) return;
+    for (const back of [...this.recent].reverse()) {
+      if (!this.visible(back)) continue;
+      back.focus();
+      if (this.doc.activeElement !== active) return;
+    }
+    active.blur();
   }
 }
 

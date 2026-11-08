@@ -1525,6 +1525,19 @@ is accepted only after the exact focused node was proved part of the main docume
 an actual different focused frame remains refused. A renderer acknowledgement alone is insufficient.
 Popups require their registered native focus callback and observed native focus.
 
+Parked input records its exact control lease without capturing a renderer focus
+receipt: it never borrowed native focus to restore. Visible embedded input captures
+that receipt before borrowing focus. If a previous host control disappears or can
+no longer accept focus, restoration tries usable remembered host controls; it
+still refuses a replaced or hidden previous guest and preserves deliberate user
+focus movement. Painting activity belongs to the physical guest across action
+adapter instances. Only its final participant may start the idle grace or restore
+the guest's original throttling state.
+
+Pointer input uses guest-local viewport coordinates. Native node hit testing adds
+the measured document scroll offset to that point; host placement is never added.
+The exact main-frame subtree and live document lease remain checked before input.
+
 ### Typed page actions and browser chrome
 
 Browser tools expose typed snapshot, screenshot, navigation, click, text, and

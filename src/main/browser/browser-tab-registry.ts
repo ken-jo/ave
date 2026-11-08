@@ -1010,26 +1010,29 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       return;
     }
     if (backgroundFocus() && this.isParkedAgentGuest(guestId)) {
-      if (tab.rendererTabId === null) throw new Error("no browser renderer can capture focus");
-      if (this.focusReceipts.has(guestId)) throw new Error("browser focus is already borrowed");
-      const receiptId = `browser-op-${this.nextRequest++}`;
+      // No native focus was borrowed, so no renderer receipt needs restoring after navigation.
       this.scopedFocusLeases.set(guestId, leaseId);
-      this.focusReceipts.set(guestId, { windowId: tab.windowId, tabId: tab.rendererTabId, leaseId, receiptId });
-      try {
-        if (!await this.focusOperation(tab.windowId, { requestId: receiptId, op: "capture-focus", tabId: tab.rendererTabId })) throw new Error("browser focus capture was denied");
-        assertCurrent();
-        return;
-      } catch (error) { await this.releaseFocus(guestId, leaseId); throw error; }
-    } else if (tab.rendererTabId === null || !this.link?.sendTabOp(tab.windowId, {
-      requestId: `browser-op-${this.nextRequest++}`, op: "focus", tabId: tab.rendererTabId,
-    })) throw new Error("no browser renderer can focus this guest");
-    const deadline = Date.now() + FOCUS_RECEIPT_MAX_MS;
-    for (;;) {
-      assertCurrent();
-      if (isFocused()) return;
-      if (Date.now() >= deadline) throw new Error("native browser focus timed out");
-      await new Promise<void>((resolve) => setTimeout(resolve, FOCUS_RECEIPT_POLL_MS));
+      return;
     }
+    this.scopedFocusLeases.delete(guestId);
+    if (tab.rendererTabId === null) throw new Error("no browser renderer can capture focus");
+    if (this.focusReceipts.has(guestId)) throw new Error("browser focus is already borrowed");
+    const receiptId = `browser-op-${this.nextRequest++}`;
+    this.focusReceipts.set(guestId, { windowId: tab.windowId, tabId: tab.rendererTabId, leaseId, receiptId });
+    try {
+      if (!await this.focusOperation(tab.windowId, { requestId: receiptId, op: "capture-focus", tabId: tab.rendererTabId })) throw new Error("browser focus capture was denied");
+      assertCurrent();
+      if (!this.link?.sendTabOp(tab.windowId, {
+        requestId: `browser-op-${this.nextRequest++}`, op: "focus", tabId: tab.rendererTabId,
+      })) throw new Error("no browser renderer can focus this guest");
+      const deadline = Date.now() + FOCUS_RECEIPT_MAX_MS;
+      for (;;) {
+        assertCurrent();
+        if (isFocused()) return;
+        if (Date.now() >= deadline) throw new Error("native browser focus timed out");
+        await new Promise<void>((resolve) => setTimeout(resolve, FOCUS_RECEIPT_POLL_MS));
+      }
+    } catch (error) { await this.releaseFocus(guestId, leaseId); throw error; }
   }
 
   // Group an operation; native event provenance owns its individual inputs.

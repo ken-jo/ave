@@ -1026,11 +1026,10 @@ describe("scoped browser control", () => {
     const count = ops.length;
     await expect(registry.focusGuest(71)).resolves.toBeUndefined();
     expect(guest.isFocused()).toBe(false);
-    expect(ops).toHaveLength(count + 1);
-    expect(ops.at(-1)?.request.op).toBe("capture-focus");
+    expect(ops).toHaveLength(count);
     expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
     await registry.releaseFocus(71, tab.lease?.id);
-    expect(ops.at(-1)?.request.op).toBe("restore-focus");
+    expect(ops).toHaveLength(count);
     registry.userInput(71, { type: "keyDown" });
     await expect(registry.focusGuest(71)).rejects.toThrow("active control");
   });
@@ -1049,7 +1048,7 @@ describe("scoped browser control", () => {
     registry.restoreParkedGuestFocus(guest.id);
     await registry.releaseFocus(guest.id, lease.id);
     expect(guest.isFocused()).toBe(false);
-    expect(ops.findLast(op => op.request.op === "restore-focus")?.request).toMatchObject({ preserveFocus: false });
+    expect(ops.findLast(op => op.request.op === "restore-focus")?.request).not.toHaveProperty("preserveFocus", true);
     expect(tab.controlMode).toBe("human-paused");
     registry.setActiveSurface(1, { kind: "browser", tabId: "page" });
     expect(registry.isParkedKeyboardInput(guest.id, { type: "keyDown" })).toBe(false);
@@ -1065,10 +1064,12 @@ describe("scoped browser control", () => {
     const { registry, tab, guest } = await owned();
     const lease = registry.acquireControl(tab, ACTOR);
     registry.setAgentTabAwake(71, true);
+    registry.setActiveSurface(1, { kind: "browser", tabId: "page" });
     let requestId = "";
     let restoreId = "";
     registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (_windowId, request) => {
       if (request.op === "capture-focus") requestId = request.requestId;
+      if (request.op === "focus") guest.focus();
       if (request.op === "restore-focus") restoreId = request.requestId;
       return true;
     } });
@@ -1095,6 +1096,7 @@ describe("scoped browser control", () => {
     registry.acquireControl(tab, ACTOR);
     const focused = registry.focusGuest(71);
     const settled = vi.fn(); void focused.then(settled);
+    await vi.advanceTimersByTimeAsync(0);
     expect(ops.at(-1)?.request).toMatchObject({ op: "focus", tabId: "page" });
     await vi.advanceTimersByTimeAsync(40);
     expect(settled).not.toHaveBeenCalled();

@@ -18,10 +18,11 @@ interface Activity {
 
 const MAX_AWAKE_TABS = 8;
 const LAYOUT_POLL_MS = 25;
+// Wake ownership follows the physical guest across short-lived action adapters.
+const activities = new Map<LayoutGuest, Activity>();
 
 /** Main owns temporary painting; visible slots always take precedence in the renderer. */
 export function createBrowserTabActivity(setAwake: (guestId: number, awake: boolean) => boolean) {
-  const activities = new Map<LayoutGuest, Activity>();
   return async <T>(guest: LayoutGuest, signal: AbortSignal, ready: () => Promise<boolean>, act: () => Promise<T>): Promise<T> => {
     throwIfAborted(signal);
     let activity = activities.get(guest);
@@ -35,7 +36,7 @@ export function createBrowserTabActivity(setAwake: (guestId: number, awake: bool
       const throttled = guest.getBackgroundThrottling();
       const sleep = () => {
         const current = activities.get(guest);
-        if (!current) return;
+        if (!current || current !== activity) return;
         clearTimeout(current.timer);
         activities.delete(guest);
         guest.removeListener("destroyed", sleep);
@@ -75,7 +76,7 @@ export function createBrowserTabActivity(setAwake: (guestId: number, awake: bool
       clearTimeout(timer);
       if (abort) signal.removeEventListener("abort", abort);
       activity.users--;
-      if (activity.users === 0) {
+      if (activity.users === 0 && activities.get(guest) === activity) {
         if (signal.aborted) activity.sleep();
         else {
           activity.timer = setTimeout(activity.sleep, TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs);

@@ -1109,6 +1109,7 @@ function modelFocusRelease(registry: BrowserTabRegistry<never>, guestId: number,
 
 function adapterFixture(options: {
   agent?: boolean;
+  focusRestored?: boolean;
   hostKnown?: boolean;
   registry?: BrowserTabRegistry<never>;
   router?: WindowTouchRouter;
@@ -1167,7 +1168,7 @@ function adapterFixture(options: {
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
   registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (_windowId, request) => {
     layoutOps.push(request.op);
-    if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId) registry.completeFocus(_windowId, request.requestId, true);
+    if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId) registry.completeFocus(_windowId, request.requestId, request.op === "capture-focus" || options.focusRestored !== false);
     if (request.op === "wake") laidOut = true;
     if (request.op === "sleep") laidOut = false;
     return true;
@@ -1391,6 +1392,24 @@ it.each(["https://a.example/next", "https://b.example/next"])("reports navigatio
   expect(JSON.parse(result.output.split("\n")[2]!)).toMatchObject({ url: destination, origin: browserOrigin(destination) });
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
   expect(tab.opener).toBe("agent");
+});
+
+it("finishes a parked link navigation without borrowing or restoring native focus", async () => {
+  const { cdp, actions, approve, navigate, layoutOps } = adapterFixture({ agent: true, focusRestored: false });
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  const live = await approve("browser_click");
+  const snapshot = await actions.snapshot(live, {});
+  const ref = /\[ref=(e\d+)\]/.exec(snapshot.text)?.[1];
+  if (!ref) throw new Error("Missing link ref");
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Input.dispatchTouchEvent" && params?.type === "touchEnd") navigate("https://b.example/next");
+    return result;
+  });
+  await expect(actions.click(live, ref)).resolves.toBeUndefined();
+  expect(layoutOps.filter(op => op === "capture-focus" || op === "restore-focus" || op === "focus")).toEqual([]);
+  expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
 });
 
 it("reports the page a clicked link commits after the click is acknowledged", async () => {
