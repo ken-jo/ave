@@ -648,6 +648,7 @@ jobs:
           src/tools/__tests__/browser-tools.test.ts
           src/permissions/__tests__/browser-site-permissions.test.ts
           src/permissions/__tests__/browser-site-card.test.ts
+          src/engine/__tests__/suggested-replies.test.ts
           src/main/browser/__tests__/browser-site-navigation.test.ts
           src/main/browser/__tests__/browser-popup-navigation.test.ts
           src/main/browser/__tests__/browser-tab-registry.test.ts
