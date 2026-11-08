@@ -21,6 +21,16 @@ const key = (over: Partial<KeyboardEvent>): Pick<
 });
 
 describe("viewHistoryIntent", () => {
+  it("follows a rebind on either platform and drops the default", () => {
+    const input = { bindings: { "app.viewBack": "CommandOrControl+Alt+Left" }, toggleWindow: null, enabled: false };
+    expect(viewHistoryIntent(key({ key: "ArrowLeft", metaKey: true, altKey: true }), true, input)).toBe("back");
+    expect(viewHistoryIntent(key({ key: "[", metaKey: true }), true, input)).toBeNull();
+    expect(viewHistoryIntent(key({ key: "ArrowLeft", ctrlKey: true, altKey: true }), false, input)).toBe("back");
+    expect(viewHistoryIntent(key({ key: "ArrowLeft", altKey: true }), false, input)).toBeNull();
+    // The other direction keeps its default.
+    expect(viewHistoryIntent(key({ key: "]", metaKey: true }), true, input)).toBe("forward");
+  });
+
   it("takes Alt+Arrow off macOS", () => {
     expect(viewHistoryIntent(key({ key: "ArrowLeft", altKey: true }), false)).toBe("back");
     expect(viewHistoryIntent(key({ key: "ArrowRight", altKey: true }), false)).toBe("forward");

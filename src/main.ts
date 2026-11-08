@@ -204,6 +204,11 @@ async function main() {
   // the app's appearance mode; `createWindow` set it
   // from the saved mode, this keeps it with every later change. The app-lifetime subscription is never undone.
   services.settingsService.onChanged("appearance", () => syncNativeThemeSource(services.settingsService.get("appearance").mode));
+  // Menu accelerators follow the user's shortcut bindings, so a rebind rebuilds the application and tray menus.
+  services.settingsService.onChanged("shortcuts", () => {
+    refreshApplicationMenu();
+    refreshTrayMenu();
+  });
 
   updateSplashStatus(t("be_main.splashOpeningWorkspace"));
 

@@ -26,6 +26,7 @@ const TAB_SOURCES: Record<SettingsTab, readonly string[]> = {
   chat: ["tabs/ChatTab.tsx", "tabs/PrivacyTab.tsx", "tabs/DocumentSettingsContent.tsx", "tabs/AccessibilitySignalsSettings.tsx"],
   web: ["tabs/WebTab.tsx"],
   startup: ["tabs/StartupTab.tsx"],
+  shortcuts: ["tabs/ShortcutsTab.tsx"],
   permissions: ["tabs/PermissionsTab.tsx", "components/permissions/PermissionJudgeContent.tsx", "tabs/WorkBoardApprovalSettingsContent.tsx"],
   "remote-surfaces": [
     "tabs/RemoteSurfacesTab.tsx",

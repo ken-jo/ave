@@ -77,6 +77,7 @@ import { formatTokensExact } from "../../lib/cost-format.js";
 import { MemorySaveNoticeRows, useComposerTextFlag, useMemorySaveNotices, type MemoryNotice } from "./components/MemorySaveNotices.js";
 import { MemoryFixCard } from "./components/MemoryFixCard.js";
 import { AppDraftBanner, type AppDraftBannerProps } from "./components/AppDraftBanner.js";
+import { matchesShortcut } from "./hooks/use-shortcuts.js";
 
 /** Chat state comes from context; user-action callbacks remain explicit props. */
 export interface ChatViewProps {
@@ -798,7 +799,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   useEffect(() => {
     if (!streaming) return;
     const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === "c") {
+      if (matchesShortcut("chat.stopWithCopyKey", e) || matchesShortcut("chat.stopWithControlC", e)) {
         const sel = window.getSelection();
         if (sel && sel.toString().length > 0) return; // Preserve native Ctrl+C in inputs, textareas and contenteditable elements.
         const target = e.target as HTMLElement;

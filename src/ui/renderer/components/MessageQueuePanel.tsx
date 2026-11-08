@@ -6,6 +6,7 @@ import { Badge } from "../../../components/ui/badge.js";
 import { isQueueItemPending, type MessageQueueStore, type MessageQueueItem } from "../state/message-queue-store.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { useShortcutHint } from "../hooks/use-shortcuts.js";
 
 interface MessageQueuePanelProps {
   store: MessageQueueStore;
@@ -18,6 +19,7 @@ interface MessageQueuePanelProps {
 
 export function MessageQueuePanel({ store, onSendNow, heldByApproval }: MessageQueuePanelProps) {
   const { t } = useTranslation();
+  const sendNowHint = useShortcutHint("composer.sendNow") ?? "";
   const items = useSyncExternalStore<readonly MessageQueueItem[]>(
     store.subscribe,
     () => store.getItems(),
@@ -71,7 +73,7 @@ export function MessageQueuePanel({ store, onSendNow, heldByApproval }: MessageQ
         {selectedCount > 0 && (
           <span className="min-w-0 truncate text-muted-foreground">
             · <span className="font-medium text-foreground">{t("messageQueuePanel.selectedCount", { count: selectedCount })}</span>
-            <span className="ml-1 text-tiny">{t("messageQueuePanel.cmdEnterHint")}</span>
+            <span className="ml-1 text-tiny">{t("messageQueuePanel.cmdEnterHint", { shortcut: sendNowHint })}</span>
           </span>
         )}
         {heldByApproval ? (

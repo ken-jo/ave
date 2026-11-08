@@ -58,8 +58,8 @@ function makeDeps(opts: {
         if (key === "marketplace") return {};
         if (key === "shortcuts") {
           return opts.flip === "shortcuts" && patched
-            ? { toggleWindow: "Alt+Space", enabled: true }
-            : { toggleWindow: null, enabled: false };
+            ? { toggleWindow: "Alt+Space", enabled: true, bindings: {} }
+            : { toggleWindow: null, enabled: false, bindings: {} };
         }
         if (key === "system") return { launchAtStartup: false, launchMinimized: false };
         return {};
@@ -84,6 +84,29 @@ beforeEach(async () => {
   vi.resetModules();
   const { configureHostResources } = await import("../../../main/host-resources.js");
   configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+});
+
+describe("settings.update shortcut bindings", () => {
+  it("refuses a binding the registry would refuse, before anything is persisted", async () => {
+    const deps = makeDeps({ flip: "none" });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    const result = await invoke("ave:settings:update", { shortcuts: { bindings: { "edit.copy": "CommandOrControl+J" } } });
+
+    expect(result).toMatchObject({ ok: false, error: "invalid-shortcut-binding" });
+    expect(deps.settingsService.patch).not.toHaveBeenCalled();
+  });
+
+  it("passes an accepted binding through to the store", async () => {
+    const deps = makeDeps({ flip: "none" });
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+
+    await invoke("ave:settings:update", { shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+
+    expect(deps.settingsService.patch).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+  });
 });
 
 describe("settings.update shortcut/startup reconcile", () => {

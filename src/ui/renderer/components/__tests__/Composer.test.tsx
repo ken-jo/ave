@@ -269,13 +269,13 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     render(<Harness />);
     const textarea = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
 
-    fireEvent.keyDown(textarea, { key: "v", code: "KeyV", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(textarea, { key: "v", code: "KeyV", ctrlKey: true, shiftKey: true });
     fireEvent.paste(textarea, { clipboardData: textClipboardData(LONG_PASTE) });
     await act(async () => { await Promise.resolve(); });
     expect(screen.queryByTestId("attachment-chip")).toBeNull();
 
     // A subsequent plain ⌘V must chip again.
-    fireEvent.keyDown(textarea, { key: "v", code: "KeyV", metaKey: true });
+    fireEvent.keyDown(textarea, { key: "v", code: "KeyV", ctrlKey: true });
     fireEvent.paste(textarea, { clipboardData: textClipboardData(LONG_PASTE) });
     await waitFor(() => expect(screen.queryByTestId("attachment-chip")).not.toBeNull());
   });
@@ -285,7 +285,7 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     const textarea = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
 
     // Chord + paste while the composer is disabled: the paste is refused, and the chord must be spent rather than left armed.
-    fireEvent.keyDown(textarea, { key: "v", code: "KeyV", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(textarea, { key: "v", code: "KeyV", ctrlKey: true, shiftKey: true });
     fireEvent.paste(textarea, { clipboardData: textClipboardData(LONG_PASTE) });
     await act(async () => { await Promise.resolve(); });
 
@@ -303,7 +303,7 @@ describe.each(SURFACES)("Composer [%s]", (surface) => {
     const textarea = screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
 
     // Chord pressed, but the paste never arrives — the OS swallowed the accelerator, say — and focus moves on.
-    fireEvent.keyDown(textarea, { key: "v", code: "KeyV", metaKey: true, shiftKey: true });
+    fireEvent.keyDown(textarea, { key: "v", code: "KeyV", ctrlKey: true, shiftKey: true });
     fireEvent.blur(textarea);
 
     // A context-menu paste carries no keydown that would disarm a stale chord.

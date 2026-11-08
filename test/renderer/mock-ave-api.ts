@@ -161,7 +161,7 @@ export const MOCK_DEFAULT_SETTINGS = {
   homeDocs: { keepLatest: false },
   privacy: { piiRedactEnabled: false },
   // Global shortcuts are off with no accelerator chosen; the persisted default in `settings-defaults.ts`.
-  shortcuts: { toggleWindow: null, enabled: false },
+  shortcuts: { toggleWindow: null, enabled: false, bindings: {} },
   // Z onboarding chain; mark the seed user as already past onboarding so the first-boot probe dispatches `probe-skip` and the chain advances straight to
   // `done`. Without this, the chain stays at the new default initial stage ("showcase") and masks the ChatView empty-state branch that several tests rely on.
   features: { idlePreferenceRefresh: false, onboardingCompleted: true },
@@ -169,10 +169,13 @@ export const MOCK_DEFAULT_SETTINGS = {
 
 function seedSettings(override: unknown): unknown {
   const settings = override ?? MOCK_DEFAULT_SETTINGS;
-  if (typeof settings === "object" && !Array.isArray(settings) && !Object.hasOwn(settings, "appearance")) {
-    return { ...settings, appearance: DEFAULT_APPEARANCE };
-  }
-  return settings;
+  if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return settings;
+  // A test that seeds a partial snapshot still gets the blocks every real snapshot carries.
+  return {
+    ...settings,
+    ...(Object.hasOwn(settings, "appearance") ? {} : { appearance: DEFAULT_APPEARANCE }),
+    ...(Object.hasOwn(settings, "shortcuts") ? {} : { shortcuts: MOCK_DEFAULT_SETTINGS.shortcuts }),
+  };
 }
 
 /** The session id the mock hands the main tile when a test names none. */

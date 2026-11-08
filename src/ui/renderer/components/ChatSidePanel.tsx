@@ -6,7 +6,6 @@ import { cn } from "../../../lib/utils.js";
 import { tabVisibleTo, type WorkspaceTab, type WorkspaceTabKind, type WorkspaceTabsStore } from "../preview/workspace-tabs.js";
 import {
   WORKSPACE_TAB_LAUNCHER,
-  matchesLauncherShortcut,
 } from "./command-actions.js";
 import {
   Bot,
@@ -70,6 +69,7 @@ import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../shared/test-ids.
 import { useOptionalChatContext } from "../context/ChatContext.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../shared/processing-display-level.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
+import { matchesShortcut, shortcutHint, useShortcutSettings } from "../hooks/use-shortcuts.js";
 
 /** The panel keeps the side chat's agents only; its cards stay with the side-chat view. */
 const drawsNoCard = (): boolean => false;
@@ -593,18 +593,20 @@ function LauncherItems({
   renderItem: (item: (typeof WORKSPACE_TAB_LAUNCHER)[number], children: ReactElement, onSelect: () => void) => ReactElement;
 }) {
   const { t } = useTranslation();
+  useShortcutSettings();
   return (
     <>
       {WORKSPACE_TAB_LAUNCHER.map((item) => {
         const Icon = item.icon;
         const label = t(item.labelKey);
+        const hint = item.shortcutId ? shortcutHint(item.shortcutId) : null;
         const row = (
           <>
             <Icon className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <span className="min-w-0 flex-1 truncate">{label}</span>
-            {item.shortcutHint ? (
+            {hint ? (
               <kbd className="shrink-0 rounded bg-muted/(--opacity-muted) px-1.5 py-0.5 font-mono text-tiny text-muted-foreground">
-                {item.shortcutHint}
+                {hint}
               </kbd>
             ) : null}
           </>
@@ -1055,7 +1057,7 @@ export function ChatSidePanel({
         if (tag === "INPUT" || tag === "TEXTAREA" || activeElement.isContentEditable) return;
       }
       for (const item of WORKSPACE_TAB_LAUNCHER) {
-        if (item.shortcut && matchesLauncherShortcut(item.shortcut, event)) {
+        if (item.shortcutId && matchesShortcut(item.shortcutId, event)) {
           event.preventDefault();
           addTab(item.kind);
           return;

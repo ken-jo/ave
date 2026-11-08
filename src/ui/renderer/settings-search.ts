@@ -1,4 +1,5 @@
 import { SETTINGS_TAB_LABEL_KEYS, type SettingsTab } from "../../shared/settings-tabs.js";
+import { SHORTCUTS } from "../../shared/shortcuts.js";
 
 interface SettingsSearchEntry {
   tab: SettingsTab;
@@ -67,6 +68,8 @@ const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {"tab":"audit","section":"audit-results","title":"auditTab.resultsTitle","labels":[]},
   {"tab":"mcp","section":"mcp-servers","title":"mcpTab.pageTitle","labels":[]},
   {"tab":"marketplace","section":"marketplace-inventory","title":"gitMarketplace.title","labels":[]},
+  // Every shortcut's label, so searching settings for a command finds the page that rebinds it.
+  { tab: "shortcuts", section: "shortcuts-list", title: "shortcutsTab.listTitle", labels: SHORTCUTS.map((entry) => entry.labelKey) },
 ];
 
 /** Match the visible section title and setting labels in the current locale. */

@@ -39,7 +39,14 @@ beforeEach(() => {
   initialWindowAve = window.ave;
   (window as unknown as { ave: unknown }).ave = makeMockAveNamespace().ns;
 });
-afterEach(() => { (window as unknown as { ave: unknown }).ave = initialWindowAve; });
+afterEach(() => {
+  (window as unknown as { ave: unknown }).ave = initialWindowAve;
+  delete (window as unknown as { avePlatform?: unknown }).avePlatform;
+});
+/** The launcher hints and keys are platform-specific; these cases are written for a Mac. */
+function onMac(): void {
+  (window as unknown as { avePlatform: unknown }).avePlatform = { isDarwin: true };
+}
 
 let nativeContextActionHandler: ((action: NativeContextMenuAction) => void) | null = null;
 let previousWindowAve: unknown;
@@ -296,6 +303,7 @@ describe("ChatSidePanel", () => {
   });
 
   it("opens empty: shows the launcher with five items and shortcut hints, no tabs, no counts", () => {
+    onMac();
     renderPanel(
       <HarnessPanel
         api={api()}
@@ -323,7 +331,7 @@ describe("ChatSidePanel", () => {
     expect(screen.getByTestId(chatSidePanelLauncherTestId("activity"))).toBeTruthy();
     expect(screen.getByTestId(chatSidePanelLauncherTestId("side-chat"))).toBeTruthy();
 
-    // Shortcut hints are displayed for the bound items.
+    // Shortcut hints are displayed for the bound items, in the platform's glyphs (this run is a Mac).
     expect(screen.getByText("⌃⇧G")).toBeTruthy();
     expect(screen.getByText("⌘T")).toBeTruthy();
     expect(screen.getByText("⌘P")).toBeTruthy();
@@ -387,6 +395,7 @@ describe("ChatSidePanel", () => {
   });
 
   it("launcher keyboard shortcut opens the mapped tab (⌘T -> browser)", () => {
+    onMac();
     renderPanel(
       <HarnessPanel
         api={api()}

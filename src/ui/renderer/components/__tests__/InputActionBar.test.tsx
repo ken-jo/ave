@@ -55,6 +55,7 @@ const shellStatus = (overrides: Partial<ShellStatusFixture> = {}): { shell: Shel
 });
 sandboxCapability.mockResolvedValue(shellStatus());
 vi.mock("../../api-client.js", () => ({
+  isDarwin: () => false,
   getApi: () => ({
     relaunchApp,
     getSettings,
