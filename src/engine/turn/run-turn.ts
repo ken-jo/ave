@@ -523,11 +523,12 @@ async function runTurnInSpan(
       initialGuidanceId = randomUUID();
       self.history.append({
         role: "user",
-        content: t("be_conversationLoop.guidanceInjectionHeader", {
+        content: options.subAgentReport ? options.initialGuidance : t("be_conversationLoop.guidanceInjectionHeader", {
           joined: options.initialGuidance,
         }),
         meta: {
           hostInjectionId: initialGuidanceId,
+          ...(options.initialGuidanceDisplayText !== undefined ? { displayText: options.initialGuidanceDisplayText } : {}),
           ...(options.subAgentReport ? { subAgentReport: options.subAgentReport } : {}),
         },
       });
@@ -658,6 +659,22 @@ async function runTurnInSpan(
     ) {
       self.history.removeByHostInjectionId(agentMessageInputId);
       agentMessageInputId = null;
+    }
+    if (options.subAgentReport && commitsHostInjectedMessages(result.stopReason)) {
+      const reportRow = options.initialGuidance
+        ? self.history.getMessages().find((message) => message.meta?.hostInjectionId === initialGuidanceId)
+        : inputOrigin === "agent-message" ? turnUserMessage : undefined;
+      const messageId = reportRow?.meta?.messageId;
+      if (messageId) {
+        try {
+          callbacks?.onGuidanceInjected?.(
+            options.initialGuidanceDisplayText ?? options.displayText ?? options.initialGuidance ?? input,
+            { messageId, source: { kind: "sub-agent", ...options.subAgentReport } },
+          );
+        } catch {
+          // Display delivery cannot invalidate a committed report.
+        }
+      }
     }
     // Carry newly activated plugin scope into the next turn; prompt-only scope ends here.
     self.lastTurnScope = carriedPluginIds(scope);

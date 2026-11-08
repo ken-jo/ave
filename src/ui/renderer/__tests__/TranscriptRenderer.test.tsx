@@ -9,6 +9,8 @@ import { TranscriptRenderer, type TurnSummary } from "../components/TranscriptRe
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import { formatFileMentionReference } from "../../../shared/file-mention-reference.js";
+import { serializeHistoryMessage } from "../../../shared/chat-history.js";
+import { historyToEntries } from "../utils/history.js";
 
 // Radix Tooltip (used by WorkGroup / TurnActionBar primitives) requires a provider in the tree — the real app mounts it in
 // App.tsx. Wrap the isolated core the same way so these unit renders mirror production context.
@@ -795,6 +797,20 @@ describe("TranscriptRenderer — action suppression keys off callback presence",
 });
 
 describe("TranscriptRenderer — sub-agent report box", () => {
+  it("replays the host's display body as a report without user actions or model instructions", () => {
+    const entries = historyToEntries([serializeHistoryMessage({
+      role: "user", content: "Host instruction: review this report before ending the turn",
+      meta: { hostInjectionId: "report-delivery", displayText: "Page inspected", subAgentReport: {} },
+    }, 0)]);
+    const { getByTestId, queryByTestId, queryByText } = renderCore(
+      <TranscriptRenderer entries={entries} streaming={false} currentSessionId="s1"
+        actions={{ onFork: vi.fn(), onReturnHere: vi.fn(), onToggleStar: vi.fn() }} />,
+    );
+    expect(getByTestId("subagent-report-bubble").textContent).toContain("Page inspected");
+    expect(queryByTestId("user-message-actions")).toBeNull();
+    expect(queryByText("Host instruction: review this report before ending the turn")).toBeNull();
+  });
+
   const report = (extra: Partial<Extract<ChatEntry, { kind: "user" }>> = {}): ChatEntry => ({
     kind: "user",
     text: "[Sub-Agent: Contract audit] (task child-1, message m-1)\nfound 3 issues",

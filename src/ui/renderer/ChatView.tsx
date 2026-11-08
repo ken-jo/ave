@@ -1059,7 +1059,8 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
           ? approvalTriggerMessage(entries, approvalHead.createdAt) : undefined) ?? resolveConversationTitle({
           sessionId: currentSessionId ?? "",
           title: currentSessionTitle,
-          messages: entries.flatMap((entry) => entry.kind === "user" || entry.kind === "assistant"
+          messages: entries.flatMap((entry) => entry.kind === "assistant"
+            || entry.kind === "user" && entry.injectHint !== "sub-agent" && !entry.resumesInterruptedTurn
             ? [{ role: entry.kind, content: entry.text }] : []),
         }, t)}
         proposedChoice={

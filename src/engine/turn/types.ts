@@ -174,6 +174,7 @@ export interface RunTurnOptions {
   unattendedAuthority?: UnattendedTurnAuthority;
   // Join DLP-masked child messages only after the prompt gate.
   initialGuidance?: string;
+  initialGuidanceDisplayText?: string;
   // Stamp the row actually holding child reports so reload cannot misattribute them to the user.
   subAgentReport?: { title?: string };
   a2aCausalContext?: A2AAgentCausalContext;
