@@ -1650,11 +1650,17 @@ describe("Sidebar — every conversation family", () => {
       expect(glyphFamily("sub-wb-1")).toBe("work-board");
       expect(glyphFamily("side-1")).toBe("side-chat");
 
-      // The chat glyph stays unnamed; every other family names itself.
-      expect(getByTestId("sidebar-conversation-glyph-sess-1").getAttribute("aria-hidden")).toBe("true");
-      expect(getByTestId("sidebar-conversation-glyph-routine-run-1").getAttribute("aria-label")).toBe("루틴 실행");
-      expect(getByTestId("sidebar-conversation-glyph-sub-wb-1").getAttribute("aria-label")).toBe("워크보드 작업");
-      expect(getByTestId("sidebar-conversation-glyph-side-1").getAttribute("aria-label")).toBe("사이드 챗");
+      // The glyph is decorative inside a slot hidden from assistive tech; the row's button names every non-main family in
+      // its own accessible text, and leaves the chat family unnamed.
+      for (const id of ["sess-1", "routine-run-1", "sub-wb-1", "side-1"]) {
+        expect(getByTestId(`sidebar-conversation-glyph-${id}`).closest("[aria-hidden='true']")).toBeTruthy();
+      }
+      const spoken = (id: string) => getByTestId(`sidebar-session-${id}`).querySelector(".sr-only")?.textContent ?? "";
+      expect(spoken("routine-run-1")).toContain("루틴 실행");
+      expect(spoken("sub-wb-1")).toContain("워크보드 작업");
+      expect(spoken("side-1")).toContain("사이드 챗");
+      expect(spoken("sess-1")).not.toMatch(/루틴 실행|워크보드 작업|사이드 챗/);
+      expect(getByTestId("sidebar-session-sub-wb-1").textContent).toContain("워크보드 작업");
     } finally {
       restore();
     }

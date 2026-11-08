@@ -191,10 +191,14 @@ function SessionRow({
   const familyLabel = t(SESSION_FAMILY_LABEL_KEYS[family]);
   const preview = useSidebarPreview({ kind: "conversation", title: session.title, message: session.preview, modifiedAt: session.modifiedAt, running: responding, waiting: pendingAnswer && pendingCount === 0 });
   const rowPreview = sidebarPreviewRowProps(renaming ? null : preview);
-  // The Suggestions row's count stands in for the waiting badge. The row's button names the slot's state, so the way to the
-  // conversation says what is happening there.
+  // The Suggestions row's count stands in for the waiting badge. The slot is hidden from assistive tech, so the row's button
+  // says what the slot shows: a non-main family's name first (the chat family stays unnamed — on a list that is mostly chats,
+  // naming each would read the same word down the column), then the state.
   const statusBadge = pendingAnswer && pendingCount === 0 ? "waiting" : null;
-  const statusLabels = agentStatusLabels(t, Boolean(responding), statusBadge);
+  const spokenSlot = [
+    ...(family === "main" ? [] : [familyLabel]),
+    ...agentStatusLabels(t, Boolean(responding), statusBadge),
+  ];
   return (
     <div
       role="treeitem"
@@ -267,15 +271,13 @@ function SessionRow({
           // Positioned after the pin, so it must let the pin take the click.
           className="pointer-events-none"
           mark={
-            /* Family labels remain available to assistive tech. The main chat glyph stays hidden from it: on a list that is
-               mostly chats, naming each one would read the same word down the whole column. */
+            /* Decorative here: the whole slot is hidden from assistive tech, and the row's button names the family (non-main
+               rows) and the state in its sr-only text instead. */
             <MessageSquareText
               className="h-3.5 w-3.5"
+              aria-hidden="true"
               data-testid={`sidebar-conversation-glyph-${session.id}`}
               data-session-family={family}
-              {...(family === "main"
-                ? { "aria-hidden": "true" as const }
-                : { role: "img", "aria-label": familyLabel })}
             />
           }
         />
@@ -331,7 +333,7 @@ function SessionRow({
           <span className={`min-w-0 flex-1 truncate ${unread ? "font-semibold text-foreground" : ""}`}>
             {session.title}
           </span>
-          {statusLabels.length > 0 ? <span className="sr-only">{statusLabels.join(", ")}</span> : null}
+          {spokenSlot.length > 0 ? <span className="sr-only">{spokenSlot.join(", ")}</span> : null}
           {pendingCount > 0 ? (
             <span
               className="shrink-0 rounded-full bg-primary px-1.5 text-tiny font-semibold leading-4 text-primary-foreground tabular-nums"
