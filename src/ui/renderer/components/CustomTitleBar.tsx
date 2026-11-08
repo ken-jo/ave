@@ -1,6 +1,6 @@
 /** Empty title-bar space remains draggable; interactive controls opt out. Native controls stay on their platform side. */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Minus, Maximize2, Minimize2, X } from "lucide-react";
+import { Copy, Minus, Square, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { BAND_EDGE_PAD, BAND_LEAD_PAD_DARWIN, BAND_LEAD_PAD_LINUX } from "../../../shared/shell-geometry.js";
@@ -130,7 +130,8 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
       title={isMaximized ? t("customTitleBar.restore") : t("customTitleBar.maximize")}
       aria-label={isMaximized ? t("customTitleBar.restore") : t("customTitleBar.maximize")}
       className={`${buttonClass} titlebar-btn-maximize hover:bg-accent hover:text-foreground`}>
-      {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+      {/* Windows caption convention (VS Code chrome-maximize / chrome-restore): one square, two overlapping when maximized. */}
+      {isMaximized ? <Copy size={12} /> : <Square size={12} />}
     </Button>
   );
   const close = (

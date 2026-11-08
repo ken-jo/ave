@@ -177,12 +177,16 @@ describe("CustomTitleBar", () => {
 
     it("maximize icon toggles when maximized event fires", async () => {
       const { getByTestId } = render(<CustomTitleBar />);
-      // Not maximized initially — Maximize2 icon (title = 최대화)
+      // Not maximized initially: one square (Windows caption maximize), title 최대화
       expect(getByTestId("titlebar-maximize").title).toBe("최대화");
+      expect(getByTestId("titlebar-maximize").querySelector("svg.lucide-square")).not.toBeNull();
       await act(async () => {
         maxListener?.(true);
       });
+      // Maximized: two overlapping squares (caption restore)
       expect(getByTestId("titlebar-maximize").title).toBe("이전 크기로");
+      expect(getByTestId("titlebar-maximize").querySelector("svg.lucide-copy")).not.toBeNull();
+      expect(getByTestId("titlebar-maximize").querySelector("svg.lucide-square")).toBeNull();
     });
 
     it("names each window button for assistive tech, maximize switching to restore", async () => {
