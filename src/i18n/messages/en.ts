@@ -463,7 +463,7 @@ export const en = {
   "be_browserTools.waitDescription": "Wait until text appears in a browser tab, or for a time (at most 30 seconds).",
   "be_browserTools.waitTextDescription": "Text to wait for.",
   "be_browserTools.waitTimeDescription": "Milliseconds to wait (with text: the most to wait).",
-  "be_browserTools.navigateDescription": "Load an http(s) URL in a browser tab. A redirect to another site is not followed.",
+  "be_browserTools.navigateDescription": "Load an http(s) URL in a browser tab. Without tabId and a shown tab, open a new agent tab and return its tabId. Opening a new site requires session site permission.",
   "be_browserTools.urlDescription": "An http:// or https:// URL.",
   "be_browserTools.clickDescription": "Click an element of a browser tab by its ref from browser_snapshot.",
   "be_browserTools.refDescription": "Element ref from the tab's latest browser_snapshot (for example \"e12\").",

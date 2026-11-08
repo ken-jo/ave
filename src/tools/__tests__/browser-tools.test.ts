@@ -815,6 +815,27 @@ describe("browser tools", () => {
     expect(page.calls.map((call) => call.action)).toEqual(["snapshot"]);
   });
 
+  it("opens an agent tab for navigate without a shown tab and asks only about the site", async () => {
+    const h = harness();
+    const opening = h.run(BROWSER_TOOL.navigate, { url: "https://a.example/start" });
+    await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("new"));
+    const guest = new FakeGuest(610, "about:blank", "Start");
+    h.tabs.guestAttached(guest, 1);
+    h.tabs.bindTab(1, { tabId: "renderer-610", webContentsId: 610, requestId: h.ops.at(-1)!.requestId! });
+    const result = await opening;
+    expect(result.isError).toBe(false);
+    expect(browserHeader(result.output)).toMatchObject({ tabId: "tab-1", url: "https://a.example/start", openedBy: "agent" });
+    expect(h.cards).toHaveLength(1);
+    expect(h.cards[0]?.browserSite).toBe("https://a.example:443");
+    expect(h.page.calls.map((call) => call.action)).toEqual(["navigate"]);
+  });
+
+  it("does not open a replacement for an explicit missing tab", async () => {
+    const h = harness();
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: "tab-99", url: "https://a.example/" })).isError).toBe(true);
+    expect(h.ops).toHaveLength(0);
+  });
+
   it("defaults to the window's shown browser tab", async () => {
     const { run, page, agentTab, tabs } = harness();
     const agent = await agentTab("https://a.example/");

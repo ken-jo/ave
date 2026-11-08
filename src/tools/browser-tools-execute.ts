@@ -463,6 +463,10 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     [BROWSER_TOOL.navigate]: async (input, ctx) => {
       const url = validUrl(input.url);
       if (!url.ok) return url.result;
+      const approved = authorizedApprovalMemoryScope(ctx);
+      if (input.tabId === undefined && approved?.kind === "browser-origin" && approved.tabOpener === "agent" && approved.tabId === undefined) {
+        return openAgentTab(url, ctx);
+      }
       const target = live(input, ctx, true);
       if (!target.ok) return target.result;
       const changed = navigationUnchangedSinceApproval(ctx, target.resolved, url.origin);

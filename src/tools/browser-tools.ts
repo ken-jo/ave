@@ -327,7 +327,12 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       categoryForInput: urlCategory,
       approvalMemoryScope: async (raw, ctx) => {
         const resolved = await observedTab(raw, ctx);
-        return urlScope(raw, resolved?.opener, resolved?.tab);
+        if (resolved) return urlScope(raw, resolved.opener, resolved.tab);
+        const input = asInput(raw);
+        const scope = policy.windowOf(ctx?.sessionId);
+        if (input.tabId === undefined && scope && deps.tabs.conversationSurface(scope.windowId, scope.hostSessionId) === undefined
+          && deps.tabs.activeBrowserTab(scope.windowId) === undefined) return urlScope(raw, "agent");
+        return undefined;
       },
       jsonSchema: object({ tabId: tabIdProperty, url: { type: "string", description: t("be_browserTools.urlDescription") } }, ["url"]),
       execute: execute(BROWSER_TOOL.navigate),

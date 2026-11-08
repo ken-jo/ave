@@ -465,7 +465,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_browserTools.waitDescription": "브라우저 탭에 텍스트가 나타날 때까지, 또는 정한 시간 동안(최대 30초) 기다립니다.",
   "be_browserTools.waitTextDescription": "기다릴 텍스트.",
   "be_browserTools.waitTimeDescription": "기다릴 밀리초(텍스트와 함께 쓰면 최대 대기 시간).",
-  "be_browserTools.navigateDescription": "브라우저 탭에 http(s) URL을 엽니다. 다른 사이트로의 리디렉션은 따라가지 않습니다.",
+  "be_browserTools.navigateDescription": "브라우저 탭에 http(s) URL을 엽니다. tabId가 없고 표시된 탭도 없으면 새 에이전트 탭을 열고 tabId를 반환합니다. 새 사이트를 열려면 세션 사이트 권한이 필요합니다.",
   "be_browserTools.urlDescription": "http:// 또는 https:// URL.",
   "be_browserTools.clickDescription": "browser_snapshot의 ref로 브라우저 탭의 요소를 클릭합니다.",
   "be_browserTools.refDescription": "탭의 최신 browser_snapshot에서 얻은 요소 ref (예: \"e12\").",
