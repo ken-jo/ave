@@ -277,7 +277,7 @@ export function matchesAccelerator(accelerator: string | null, event: ShortcutKe
   if (!parsed) return false;
   const chord = resolveChord(parsed, platform);
   const key = eventKeyToken(event);
-  return key === chord.key
+  return (chord.key === "Plus" ? event.key === "+" : key === chord.key)
     && event.metaKey === chord.meta
     && event.ctrlKey === chord.ctrl
     && event.altKey === chord.alt
@@ -714,6 +714,17 @@ export function applyShortcutBindingsPatch(
     if (refusal !== null) throw new ShortcutBindingsPatchError(`shortcuts.bindings.${id} refused (${refusal.reason}): ${value}`);
     if (value === defaultAccelerator(id, platform)) delete next[id];
     else next[id] = value;
+  }
+  const rows = resolveShortcuts({ ...current, bindings: next }, platform).filter((row) => row.rebindable);
+  for (const row of rows) {
+    const parsed = row.accelerator === null ? null : parseAccelerator(row.accelerator);
+    if (parsed?.key !== "Plus" || !parsed.shift) continue;
+    const equalsSignature = chordSignature(row.accelerator as string, platform)?.replace(/Plus$/, "=");
+    if (rows.some((other) => other.id !== row.id
+      && scopesOverlap(row.definition.scope, other.definition.scope)
+      && other.accelerator !== null && chordSignature(other.accelerator, platform) === equalsSignature)) {
+      throw new ShortcutBindingsPatchError("Printed plus and shifted equals bindings overlap.");
+    }
   }
   return next;
 }
