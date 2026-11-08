@@ -75,13 +75,13 @@ function readCurrentAppearance() {
 // names only the dark-colours, high-contrast and inverted-scheme values). A live change is honoured by the renderer alone:
 // `@media (prefers-reduced-transparency: reduce)` in styles.css paints the whole shell opaque over the material. Turning the
 // switch back off restores glass in that window; a window created with it on stays opaque until a new window is opened.
-const glassContents = new WeakSet<WebContents>();
-// The material this OS can draw, whatever the switch says; fixed for the process.
-const glassMaterial = mainWindowGlassMaterial(process.platform, release());
+const glassStates = new WeakMap<WebContents, InitialGlassState>();
 
 function initialGlassState(contents: WebContents): InitialGlassState {
-  if (glassContents.has(contents)) return "on";
-  return glassMaterial === null ? "unsupported" : "reduced";
+  const state = glassStates.get(contents);
+  // Only windows createWindow made reach here (the caller checks ownership), and each records its state when it is made.
+  if (state === undefined) throw new Error("Main window has no recorded glass state");
+  return state;
 }
 
 let initialAppearanceRegistered = false;
@@ -94,7 +94,9 @@ function registerInitialAppearance(): void {
     if (!owned || !frame || frame !== event.sender.mainFrame || (!isRendererIndexUrl(frame.url) && frame.url !== BOOTSTRAP_SPLASH_URL)) {
       result = { ok: false, error: "unauthorized-frame" };
     } else {
-      try { result = { ok: true, appearance: readCurrentAppearance(), glass: initialGlassState(event.sender) }; }
+      // Outside the try: a main window without a recorded glass state is an internal contract violation, not an unreadable appearance.
+      const glass = initialGlassState(event.sender);
+      try { result = { ok: true, appearance: readCurrentAppearance(), glass }; }
       catch (error) {
         log.warn({ err: error }, "Could not read current appearance");
         result = { ok: false, error: "appearance-unavailable" };
@@ -121,6 +123,8 @@ export function createWindow(
 
   // The native appearance follows the app's light/dark choice before the material is first drawn.
   syncNativeThemeSource(readCurrentAppearance().mode);
+  // The material this OS can draw, whatever the switch says.
+  const glassMaterial = mainWindowGlassMaterial(process.platform, release());
   const glass = mainWindowGlassEnabled(glassMaterial, nativeTheme.prefersReducedTransparency);
   const win = new BrowserWindow({
     ...initialMainWindowBounds(),
@@ -143,7 +147,7 @@ export function createWindow(
       webviewTag: true,
     },
   });
-  if (glass) glassContents.add(win.webContents);
+  glassStates.set(win.webContents, glass ? "on" : glassMaterial === null ? "unsupported" : "reduced");
   registerMainWindow(win, nextMainWindowRole());
   // Read now: a closed window's id is what its terminals are recorded under.
   const windowId = win.id;
