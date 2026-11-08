@@ -1257,6 +1257,11 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }) === true;
   }
 
+  metadataChanged(guestId: number): void {
+    const tab = [...this.tabs.values()].find((entry) => entry.guest?.id === guestId && this.isLive(entry));
+    if (tab) this.broadcastControl(tab.windowId);
+  }
+
   private isLive(tab: BrowserTabRecord<G>): boolean {
     return tab.guest !== null && !tab.guest.isDestroyed();
   }

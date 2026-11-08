@@ -136,6 +136,7 @@ function HarnessPanel({
   files,
   initialSelectedId,
   panelMounted = true,
+  initialAgentTab = false,
   subAgentSpawns = [],
   onClose = vi.fn(),
   activity = emptyToolActivity(),
@@ -150,6 +151,7 @@ function HarnessPanel({
   files: WorkspaceFileItem[];
   initialSelectedId: string | null;
   panelMounted?: boolean;
+  initialAgentTab?: boolean;
   subAgentSpawns?: SubAgentSpawn[];
   onClose?: () => void;
   activity?: ToolActivityState;
@@ -160,6 +162,10 @@ function HarnessPanel({
 }) {
   const [selectedId, setSelectedId] = useState(initialSelectedId);
   const workspaceTabs = useWorkspaceTabs();
+  const { openAgentBrowserTab } = workspaceTabs;
+  useLayoutEffect(() => {
+    if (initialAgentTab) openAgentBrowserTab("about:blank", "agent-bootstrap", true, sessionId ?? "parent");
+  }, [initialAgentTab, openAgentBrowserTab, sessionId]);
   if (!panelMounted) return null;
   return (
     <ChatSidePanel
@@ -183,6 +189,20 @@ function HarnessPanel({
     />
   );
 }
+
+it("updates a bootstrap agent tab label from committed navigation and page titles without reloading", async () => {
+  renderPanel(<HarnessPanel api={api()} sessionId="parent" targets={[]} files={[]} initialSelectedId={null} initialAgentTab />);
+  const guest = document.querySelector("webview")!;
+  expect(screen.getByRole("tab", { name: /about:blank/ })).toBeInTheDocument();
+  act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://example.com/", isMainFrame: true })); });
+  expect(screen.getByRole("tab", { name: /example.com/ })).toBeInTheDocument();
+  act(() => { guest.dispatchEvent(Object.assign(new Event("page-title-updated"), { title: "Example page" })); });
+  expect(screen.getByRole("tab", { name: /Example page/ })).toBeInTheDocument();
+  act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://other.example/", isMainFrame: true })); });
+  expect(screen.getByRole("tab", { name: /other.example/ })).toBeInTheDocument();
+  expect(document.querySelector("webview")).toBe(guest);
+  expect(guest.getAttribute("src")).toBe("about:blank");
+});
 
 function renderChildTranscript(apiMock: AveApi, overrides: Partial<SubAgentSpawn> = {}) {
   renderPanel(

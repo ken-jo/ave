@@ -19,4 +19,9 @@ export function trackBrowserGuest(contents: WebContents, windowId: number): void
   contents.on("did-start-navigation", (_event, url, inPlace, isMainFrame) => {
     if (isMainFrame && !inPlace) browserTabRegistry.navigationStarted(guestId, url);
   });
+  contents.on("did-navigate", () => browserTabRegistry.metadataChanged(guestId));
+  contents.on("did-navigate-in-page", (_event, _url, isMainFrame) => {
+    if (isMainFrame) browserTabRegistry.metadataChanged(guestId);
+  });
+  contents.on("page-title-updated", () => browserTabRegistry.metadataChanged(guestId));
 }

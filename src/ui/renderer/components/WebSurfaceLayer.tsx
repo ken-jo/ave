@@ -19,6 +19,7 @@ import {
   setWebSurfaceElement,
   forgetWebSurfaceLocation,
   noteWebSurfaceLocation,
+  noteWebSurfaceTitle,
   setWebSurfaceSlot,
   clearWebSurfaceSlot,
   setWebSurfaceUrl,
@@ -253,13 +254,19 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
       }
     };
     const onAttach = () => forgetWebSurfaceLocation(surface.tabId);
+    const onTitle = (event: Event) => {
+      const title = (event as Event & { title?: string }).title;
+      if (typeof title === "string") noteWebSurfaceTitle(surface.tabId, title);
+    };
     guest.addEventListener("did-attach", onAttach);
     guest.addEventListener("did-navigate", onNavigate);
     guest.addEventListener("did-navigate-in-page", onNavigate);
+    guest.addEventListener("page-title-updated", onTitle);
     return () => {
       guest.removeEventListener("did-attach", onAttach);
       guest.removeEventListener("did-navigate", onNavigate);
       guest.removeEventListener("did-navigate-in-page", onNavigate);
+      guest.removeEventListener("page-title-updated", onTitle);
     };
   }, [surface.tabId]);
 
