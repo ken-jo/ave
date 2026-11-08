@@ -11,7 +11,7 @@ import { MainToolbar } from "./MainToolbar.js";
 import { Sidebar, type SidebarLaunchKind } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
 import { DeprecatedModelNotice, RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
-import { StatusBar } from "./components/StatusBar.js";
+import { NoticeLiveRegion, StatusBar } from "./components/StatusBar.js";
 import { DevToolsPanel } from "./components/DevToolsPanel.js";
 import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
@@ -2559,6 +2559,7 @@ export function App() {
                       onDismiss={handleMarketplaceAnnouncementDismiss}
                       onAction={handleMarketplaceAnnouncementAction}
                     />
+                    <NoticeLiveRegion toast={statusVisibleToast} />
                     <StatusBar
                       persistent={statusPersistent}
                       visibleToast={statusVisibleToast}

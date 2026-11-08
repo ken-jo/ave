@@ -36,7 +36,7 @@ import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-to
 import { useContextBudget } from "../hooks/use-context-budget.js";
 import { ComposerContextNotice } from "./ComposerContextNotice.js";
 import { useStatusNotices, type ToastItem } from "../hooks/use-status-bar.js";
-import { StatusBar } from "./StatusBar.js";
+import { NoticeLiveRegion, StatusBar } from "./StatusBar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 
 /**
@@ -583,6 +583,7 @@ function SideChatSession({
         ) : null}
         {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : targetChip}
         <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={runtime?.autoCompactEnabled} />
+        <NoticeLiveRegion toast={visibleToast} />
         {visibleToast !== null || persistent.length > 0 ? (
           <div className="mb-1.5 min-w-0">
             <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} />

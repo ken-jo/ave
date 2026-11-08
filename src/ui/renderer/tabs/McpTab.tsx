@@ -9,7 +9,7 @@ import { ScrollArea } from "../../../components/ui/scroll-area.js";
 import { Separator } from "../../../components/ui/separator.js";
 import { Textarea } from "../../../components/ui/textarea.js";
 import type { McpAuthErrorCode, McpServerConfig, McpServerConfigDto, McpServerState } from "../types.js";
-import { NoticeToast } from "../components/StatusBar.js";
+import { NoticeLiveRegion, NoticeToast } from "../components/StatusBar.js";
 import { useInlineNotice } from "../hooks/use-status-bar.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader } from "../components/PageShell.js";
@@ -500,6 +500,7 @@ export function McpTab({ onNavigate }: { onNavigate?: (tab: string) => void } = 
           below the header, so they are one deep-link anchor rather than two. */}
       <div className="flex flex-col gap-4" data-settings-section="mcp-servers" tabIndex={-1}>
         {/* 배너 */}
+        <NoticeLiveRegion toast={banner} />
         {banner && (
           <div className="space-y-2">
             <NoticeToast key={banner.id} toast={banner} onDismiss={dismissBanner} wrap />

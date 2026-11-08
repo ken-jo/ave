@@ -2849,7 +2849,7 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
     }
   });
 
-  it("non-HIGH stays role='status' + aria-live='polite'", async () => {
+  it("a reuse is announced through the strip's polite region, never the assertive one", async () => {
     const { container, fire } = await setupWithCallback();
     await act(async () => {
       fire({ toolName: "fs_read", scope: "persistent", verdictAtApproval: "low" });
@@ -2859,8 +2859,11 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(toast.getAttribute("role")).toBe("status");
-    expect(toast.getAttribute("aria-live")).toBe("polite");
+    expect(toast.getAttribute("role")).toBeNull();
+    const polite = [...container.querySelectorAll('[data-testid="notice-live-polite"]')].map((el) => el.textContent ?? "");
+    const assertive = [...container.querySelectorAll('[data-testid="notice-live-assertive"]')].map((el) => el.textContent ?? "");
+    expect(polite.some((text) => text.includes("fs_read"))).toBe(true);
+    expect(assertive.some((text) => text.includes("fs_read"))).toBe(false);
   });
 
   it("malformed payload dropped via structural guard (security Med-2)", async () => {

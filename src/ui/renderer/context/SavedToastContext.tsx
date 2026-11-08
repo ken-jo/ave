@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext } from "react";
 import { useTranslation } from "../../../i18n/react.js";
-import { NoticeToast } from "../components/StatusBar.js";
+import { NoticeLiveRegion, NoticeToast } from "../components/StatusBar.js";
 import { useStatusNotices, type ToastItem } from "../hooks/use-status-bar.js";
 
 const SavedToastContext = createContext<(() => void) | null>(null);
@@ -44,10 +44,14 @@ export function useSavedNotice() {
 }
 
 export function SavedToastFloating({ toast, onDismiss }: { toast: ToastItem | null; onDismiss: (toast: ToastItem) => void }) {
-  if (toast === null) return null;
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center px-4" data-testid="settings-saved-toast">
-      <NoticeToast key={toast.id} toast={toast} onDismiss={onDismiss} wrap className="pointer-events-auto shadow-lg" />
-    </div>
+    <>
+      <NoticeLiveRegion toast={toast} />
+      {toast !== null ? (
+        <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex justify-center px-4" data-testid="settings-saved-toast">
+          <NoticeToast key={toast.id} toast={toast} onDismiss={onDismiss} wrap className="pointer-events-auto shadow-lg" />
+        </div>
+      ) : null}
+    </>
   );
 }

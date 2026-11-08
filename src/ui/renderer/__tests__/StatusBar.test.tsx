@@ -2,7 +2,7 @@ import "../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { endAnimation } from "../../../../test/renderer/helpers.js";
-import { StatusBar } from "../components/StatusBar.js";
+import { NoticeLiveRegion, StatusBar } from "../components/StatusBar.js";
 import type { PersistentItem, ToastItem } from "../hooks/use-status-bar.js";
 
 function persistent(overrides: Partial<PersistentItem> = {}): PersistentItem {
@@ -251,21 +251,64 @@ describe("StatusBar", () => {
     expect(screen.getByText("LLM: offline, Market: online")).toBeInTheDocument();
   });
 
-  it("gives a non-error notice role=status with aria-live=polite", () => {
-    render(<StatusBar persistent={[]} visibleToast={toast({ severity: "success" })} onToastDismiss={() => {}} />);
+  it("announces a non-error notice through the polite region and leaves the visual notice non-live", () => {
+    render(
+      <>
+        <NoticeLiveRegion toast={toast({ severity: "success", message: "saved" })} />
+        <StatusBar persistent={[]} visibleToast={toast({ severity: "success", message: "saved" })} onToastDismiss={() => {}} />
+      </>,
+    );
+    const polite = screen.getByTestId("notice-live-polite");
+    expect(polite).toHaveAttribute("role", "status");
+    expect(polite).toHaveAttribute("aria-live", "polite");
+    expect(polite).toHaveTextContent("saved");
+    expect(screen.getByTestId("notice-live-assertive")).toHaveTextContent("");
     const notice = screen.getByTestId("status-toast");
-    expect(notice).toHaveAttribute("role", "status");
-    expect(notice).toHaveAttribute("aria-live", "polite");
+    expect(notice).not.toHaveAttribute("role");
+    expect(notice).not.toHaveAttribute("aria-live");
   });
 
-  it("gives an error notice role=alert with aria-live=assertive and a close button", () => {
+  it("announces an error through the assertive region and still offers a close button", () => {
     const onDismiss = vi.fn();
-    render(<StatusBar persistent={[]} visibleToast={toast({ severity: "error" })} onToastDismiss={onDismiss} />);
-    const notice = screen.getByTestId("status-toast");
-    expect(notice).toHaveAttribute("role", "alert");
-    expect(notice).toHaveAttribute("aria-live", "assertive");
+    const error = toast({ severity: "error", message: "write failed" });
+    render(
+      <>
+        <NoticeLiveRegion toast={error} />
+        <StatusBar persistent={[]} visibleToast={error} onToastDismiss={onDismiss} />
+      </>,
+    );
+    const assertive = screen.getByTestId("notice-live-assertive");
+    expect(assertive).toHaveAttribute("role", "alert");
+    expect(assertive).toHaveAttribute("aria-live", "assertive");
+    expect(assertive).toHaveTextContent("write failed");
+    expect(screen.getByTestId("notice-live-polite")).toHaveTextContent("");
     fireEvent.click(screen.getByTestId("status-toast-dismiss"));
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the same live region nodes while the queue advances, so the next notice is announced", () => {
+    const first = toast({ id: "toast:1", severity: "info", message: "first" });
+    const second = toast({ id: "toast:2", severity: "info", message: "second" });
+    const third = toast({ id: "toast:3", severity: "error", message: "third" });
+    const strip = (head: ToastItem | null) => (
+      <>
+        <NoticeLiveRegion toast={head} />
+        <StatusBar persistent={[]} visibleToast={head} onToastDismiss={() => {}} />
+      </>
+    );
+    const { rerender } = render(strip(null));
+    const polite = screen.getByTestId("notice-live-polite");
+    const assertive = screen.getByTestId("notice-live-assertive");
+    rerender(strip(first));
+    expect(screen.getByTestId("notice-live-polite")).toBe(polite);
+    expect(polite).toHaveTextContent("first");
+    rerender(strip(second));
+    expect(screen.getByTestId("notice-live-polite")).toBe(polite);
+    expect(polite).toHaveTextContent("second");
+    rerender(strip(third));
+    expect(screen.getByTestId("notice-live-assertive")).toBe(assertive);
+    expect(assertive).toHaveTextContent("third");
+    expect(polite).toHaveTextContent("");
   });
 
   it("never takes focus when a notice appears, even an alert", () => {

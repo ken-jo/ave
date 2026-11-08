@@ -30,7 +30,7 @@ describe("settings saved notice", () => {
     fireEvent.click(screen.getByText("save"));
     const notices = screen.getAllByTestId("status-toast");
     expect(notices).toHaveLength(1);
-    expect(notices[0]).toHaveAttribute("role", "status");
+    expect(screen.getByTestId("notice-live-polite")).toHaveTextContent(notices[0]?.textContent ?? "missing");
     expect(notices[0]?.closest('[data-testid="settings-saved-toast"]')).not.toBeNull();
     await act(async () => {
       vi.advanceTimersByTime(SAVED_NOTICE_TTL_MS + 50);

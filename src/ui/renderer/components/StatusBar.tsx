@@ -181,7 +181,8 @@ export function StatusBar(props: StatusBarProps) {
 /**
  * The one transient notice, drawn wherever a notice queue shows its head (the window strip, a tile's composer dock, the side
  * chat, the settings save confirmation). Its rules live here so no surface re-derives them:
- * - severity sets the role: an error is `alert` (assertive), everything else `status` (polite); neither moves focus;
+ * - it is not itself a live region: the strip's `NoticeLiveRegion` announces it, error assertive and the rest polite, and
+ *   nothing moves focus;
  * - it always has a close button, and an error (sticky in the queue) stays until that button is used;
  * - a `suppressible` notice offers "Don't show again";
  * - width is capped at min(100%, 24rem) and it fades in on the fast motion step.
@@ -205,15 +206,11 @@ export function NoticeToast({
   onSuppress?: (toast: ToastItem) => void;
   className?: string;
 }) {
-  const isError = toast.severity === "error";
   const linkClass =
     "shrink-0 text-body-sm font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring";
   const openable = toast.notification !== undefined && typeof onOpen === "function";
   return (
     <div
-      role={isError ? "alert" : "status"}
-      aria-live={isError ? "assertive" : "polite"}
-      aria-atomic="true"
       data-testid="status-toast"
       data-severity={toast.severity}
       data-notice-kind={toast.kind}
@@ -265,5 +262,25 @@ export function NoticeToast({
         </Badge>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The strip's screen-reader voice. A live region announces changes to text it already holds; one mounted together with its
+ * text, as a per-notice element is, may never be read, so the next queued notice could go unannounced. Each strip renders
+ * this once, unconditionally, and only its text follows the queue head: errors through the assertive region, every other
+ * severity through the polite one. The visible notice carries no live role of its own.
+ */
+export function NoticeLiveRegion({ toast }: { toast: ToastItem | null }) {
+  const isError = toast?.severity === "error";
+  return (
+    <>
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-notice-live="" data-testid="notice-live-polite">
+        {toast !== null && !isError ? toast.message : ""}
+      </div>
+      <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true" data-notice-live="" data-testid="notice-live-assertive">
+        {toast !== null && isError ? toast.message : ""}
+      </div>
+    </>
   );
 }

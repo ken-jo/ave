@@ -504,7 +504,10 @@ determine whether a tile can split or a panel can dock.
   - **Toast** for transient confirmations of a user-initiated action (e.g. saved); auto-dismissing, never load-bearing.
   - Notice rules. Every transient notice is a notice queue (`useStatusNotices`) drawn by `NoticeToast`
     (`src/ui/renderer/components/StatusBar.tsx`), so the rules are enforced once:
-    - severity sets the role: an error is `role="alert"`, everything else `role="status"`;
+    - severity sets the role: each strip renders one persistent `NoticeLiveRegion` whose text
+      follows the queue head — errors in its `role="alert"` region, everything else in its
+      `role="status"` region — and the visible notice itself is not live, so a remounted notice
+      can never swallow the next announcement;
     - an error stays until dismissed and every notice has a close button; brief confirmations auto-dismiss;
     - a queue shows one notice at a time and later ones wait behind it (`+N`). Each strip owns one
       queue — the window strip, each tile's composer dock, the side chat, the settings save

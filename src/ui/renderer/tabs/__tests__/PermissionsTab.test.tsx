@@ -171,7 +171,7 @@ describe("PermissionsTab hook quarantine notice", () => {
       api.permission.setMode.mockResolvedValueOnce({ ok: false, mode: "default" });
       const view = await act(async () => render(<PermissionsTab />));
       await act(async () => { fireEvent.click(screen.getByTestId(execModeTestId("auto"))); });
-      expect(screen.getByText(t("permissionsTab.errorModeChangeFailed")).closest('[role="alert"]')).toBeTruthy();
+      expect(screen.getByTestId("notice-live-assertive")).toHaveTextContent(t("permissionsTab.errorModeChangeFailed"));
       await act(async () => { await vi.advanceTimersByTimeAsync(LONG_TOAST_TTL_MS * 4); });
       expect(screen.getByText(t("permissionsTab.errorModeChangeFailed"))).toBeTruthy();
 
@@ -230,7 +230,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(onExactDenySaved).toHaveBeenCalledWith("approval-exact-1");
     expect(onDiscardExactDeny).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId(TEST_IDS.settingsPageTitle)).toHaveFocus());
-    expect(screen.getByRole("status")).toHaveTextContent("plugin:meeting_list_preps");
+    expect(screen.getByTestId("notice-live-polite")).toHaveTextContent("plugin:meeting_list_preps");
   });
 
   it("keeps an exact-deny draft focused and cancellable when unrelated Settings loading fails", async () => {
@@ -1030,7 +1030,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     const api = await togglePending("shell");
     api.relaunchApp.mockResolvedValue({ ok: false, error: "relaunch-in-progress" });
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.sandboxRestartNow") })); });
-    expect(screen.getByRole("alert")).toHaveTextContent(t("permissionsTab.sandboxRestartBusy"));
+    expect(screen.getAllByRole("alert").find((el) => !el.hasAttribute("data-notice-live"))).toHaveTextContent(t("permissionsTab.sandboxRestartBusy"));
   });
 
   it("keeps a refused restart open with the localized reason", async () => {

@@ -21,7 +21,7 @@ import {
 } from "../../../components/ui/select.js";
 import type { UserApprovalScope, UserApprovalVerdict } from "../../../shared/permissions-events.js";
 import { EXEC_MODE_OPTIONS } from "../constants.js";
-import { NoticeToast } from "../components/StatusBar.js";
+import { NoticeLiveRegion, NoticeToast } from "../components/StatusBar.js";
 import { useInlineNotice } from "../hooks/use-status-bar.js";
 import {
   isExecutionMode,
@@ -1444,6 +1444,7 @@ export function PermissionsTab({
         <HomeContentReview />
 
         {/* ── 인라인 배너 (§F9 — alert 대체) ── */}
+        <NoticeLiveRegion toast={banner} />
         {banner && <NoticeToast key={banner.id} toast={banner} onDismiss={dismissBanner} wrap />}
 
         {exactDenyDraft ? (

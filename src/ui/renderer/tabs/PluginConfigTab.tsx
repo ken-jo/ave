@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { NoticeToast } from "../components/StatusBar.js";
+import { NoticeLiveRegion, NoticeToast } from "../components/StatusBar.js";
 import { useInlineNotice } from "../hooks/use-status-bar.js";
 import ReactMarkdown from "react-markdown";
 import { Button } from "../../../components/ui/button.js";
@@ -687,6 +687,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         }}
         onConfirm={(id) => handleUninstall(id, uninstallTarget?.name ?? id)}
       />
+      <NoticeLiveRegion toast={banner} />
       {banner && (
         <div data-testid="plugin-config:banner" data-severity={banner.severity}>
           <NoticeToast key={banner.id} toast={banner} onDismiss={dismissBanner} wrap />
