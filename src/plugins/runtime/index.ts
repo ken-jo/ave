@@ -6689,6 +6689,23 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
     return this.changePluginEnabled(pluginId, enabled);
   }
 
+  private readonly pluginStateChangeListeners = new Set<(pluginId: string, enabled: boolean) => void>();
+
+  subscribePluginStateChange(listener: (pluginId: string, enabled: boolean) => void): () => void {
+    this.pluginStateChangeListeners.add(listener);
+    return () => { this.pluginStateChangeListeners.delete(listener); };
+  }
+
+  private notifyPluginStateChange(pluginId: string): void {
+    for (const listener of this.pluginStateChangeListeners) {
+      try {
+        listener(pluginId, this.isPluginEnabled(pluginId));
+      } catch (error) {
+        log.error(`plugin state notification failed for ${pluginId}: %s`, errorMessage(error));
+      }
+    }
+  }
+
   private async changePluginEnabled(pluginId: string, enabled: boolean, retirementOnly = false): Promise<void> {
     // Cancel dependency-held restart work before admission to its canonical lifecycle lock.
     if (!retirementOnly) this.cancelPendingRestart(this.resolveKnownPluginId(pluginId));
@@ -6739,6 +6756,7 @@ export class PluginRuntime extends PluginRuntimeLifecycle {
             }
             this.pendingDisabledRetirements.delete(canonicalPluginId);
             this.disabledStopSettlements.delete(canonicalPluginId);
+            this.notifyPluginStateChange(canonicalPluginId);
           }
           if (refuseEnable) {
             throw new Error(`previous plugin shutdown is now confirmed for ${canonicalPluginId}; enable again`);

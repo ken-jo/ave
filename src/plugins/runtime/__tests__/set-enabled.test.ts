@@ -496,6 +496,8 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     [12000, false, "effects"],
   ] as const)("settles a committed disable after a %s ms release, queued enable=%s, action=%s", async (releaseMs, queuedEnable, action) => {
     const runtime = makeRuntime();
+    const stateChanged = vi.fn();
+    const unsubscribeStateChange = runtime.subscribePluginStateChange(stateChanged);
     const lifecycle = new PluginBundleLifecycle({
       pluginRuntime: runtime,
       receiptCacheRoot: testDir,
@@ -678,6 +680,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("disabled");
       expect(Reflect.get(runtime, "pendingDisabledRetirements").size).toBe(0);
       expect(Reflect.get(runtime, "disabledStopSettlements").size).toBe(0);
+      expect(stateChanged).toHaveBeenCalledExactlyOnceWith("se-plugin", false);
       await runtime.setPluginEnabled("se-plugin", true);
       await expect(runtime.call("se_ping")).resolves.toBe("pong");
       expect(Reflect.get(runtime, "pendingDisabledRetirements").size).toBe(0);
@@ -733,6 +736,10 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       const journal = JSON.parse(await readFile(join(testDir, "plugin-retirement-journal.json"), "utf8"));
       expect(journal.retirements).toEqual([]);
       expect(cancelPendingRestart).not.toHaveBeenCalled();
+      if (releaseMs === 12000 && action === "recover") {
+        expect(stateChanged).toHaveBeenCalledExactlyOnceWith("se-plugin", false);
+        unsubscribeStateChange();
+      }
       await runtime.setPluginEnabled("se-plugin", false);
       expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("disabled");
     }

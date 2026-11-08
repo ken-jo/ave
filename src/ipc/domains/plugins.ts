@@ -272,6 +272,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
   const broadcastPluginLifecycleEvent = (channel: string, payload: unknown) => {
     broadcastToAppWindows(deps, channel, payload, { logger: log });
   };
+  pluginRuntime.subscribePluginStateChange((pluginId, enabled) => {
+    emitHostEvent("plugin.enabled-changed", { pluginId, enabled });
+    broadcastPluginLifecycleEvent(CHANNELS.plugins.enabledChanged, { pluginId, enabled });
+  });
   const { ensureInstallStateReady, uninstall: uninstallPlugin } = pluginLifecycleServices(deps);
   // Retain bootstrap status for windows that miss events while the splash document is loaded.
   ipcMain.handle(CHANNELS.bootstrap.statusGet, (e) => {

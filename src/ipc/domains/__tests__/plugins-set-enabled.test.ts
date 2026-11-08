@@ -75,9 +75,14 @@ async function setup() {
       },
     },
   };
+  let stateChangeListener: ((pluginId: string, enabled: boolean) => void) | undefined;
   const deps = {
     pluginMarketplace: { list: vi.fn(async () => []) },
     pluginRuntime: {
+      subscribePluginStateChange: vi.fn((listener: (pluginId: string, enabled: boolean) => void) => {
+        stateChangeListener = listener;
+        return () => { stateChangeListener = undefined; };
+      }),
       listPluginIds: vi.fn((): string[] => ["com.example.meeting"]),
       setPluginEnabled,
       isPluginEnabled: vi.fn(() => true),
@@ -104,6 +109,7 @@ async function setup() {
     deps,
     appWindows,
     setPluginEnabled,
+    notifyStateChange: (pluginId: string, enabled: boolean) => { stateChangeListener?.(pluginId, enabled); },
     callFromUi,
     pluginBundleLifecycle,
     setPluginConfig,
@@ -335,6 +341,25 @@ describe("ave:plugins:set-enabled", () => {
     expect(hostEventMock.emit).not.toHaveBeenCalled();
     for (const win of appWindows) {
       expect(win.webContents.send).not.toHaveBeenCalledWith("ave:plugins:enabled-changed", expect.anything());
+    }
+  });
+
+  it("broadcasts confirmed cleanup while preserving the refused enable result", async () => {
+    const { deps, setPluginEnabled, appWindows, notifyStateChange } = await setup();
+    deps.pluginRuntime.isPluginEnabled.mockReturnValue(false);
+    setPluginEnabled.mockImplementationOnce(async () => {
+      notifyStateChange("com.example.meeting", false);
+      throw new Error("previous plugin shutdown is now confirmed for com.example.meeting; enable again");
+    });
+    const result = await invoke("ave:plugins:set-enabled", "com.example.meeting", true);
+    expect(result).toMatchObject({ ok: false, error: "toggle-failed" });
+    expect(hostEventMock.emit).toHaveBeenCalledExactlyOnceWith("plugin.enabled-changed", {
+      pluginId: "com.example.meeting", enabled: false,
+    });
+    for (const win of appWindows) {
+      expect(win.webContents.send).toHaveBeenCalledExactlyOnceWith("ave:plugins:enabled-changed", {
+        pluginId: "com.example.meeting", enabled: false,
+      });
     }
   });
 
