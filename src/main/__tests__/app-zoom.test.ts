@@ -81,3 +81,26 @@ it("reapplies the current setting after reset and reload or renderer recovery", 
  listeners.get("did-finish-load")?.();
  expect(setZoomLevel).toHaveBeenLastCalledWith(2);
 });
+
+it("coalesces a pending same-direction wheel gesture into bounded steps", async () => {
+ const listeners = new Map<string, (event: { preventDefault: () => void }, direction: "in" | "out") => void>();
+ bindAppWindowZoom({ webContents: { setVisualZoomLevelLimits: vi.fn(async () => {}), on: (name: string, handler: never) => listeners.set(name, handler) } } as never);
+ let release!: () => void;
+ const originalPatch = state.patch.getMockImplementation()!;
+ state.patch.mockImplementationOnce(async (patch) => {
+  await new Promise<void>((resolve) => { release = resolve; });
+  await originalPatch(patch);
+ });
+ const active = runAppZoomCommand("out");
+ await vi.waitFor(() => expect(release).toBeDefined());
+ const event = { preventDefault: vi.fn() };
+ for (let i = 0; i < 80; i++) listeners.get("zoom-changed")?.(event, "in");
+ release();
+ await active;
+ await vi.waitFor(() => expect(state.appearance.zoomLevel).toBe(8));
+ expect(state.patch.mock.calls.map(([patch]) => patch.appearance.zoomLevel)).toEqual([-1, 8]);
+ expect(event.preventDefault).toHaveBeenCalledTimes(80);
+ for (let i = 0; i < 80; i++) listeners.get("zoom-changed")?.(event, "out");
+ await vi.waitFor(() => expect(state.appearance.zoomLevel).toBe(-8));
+ expect(state.patch).toHaveBeenCalledTimes(3);
+});

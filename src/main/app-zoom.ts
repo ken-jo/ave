@@ -1,5 +1,5 @@
 import type { BrowserWindow } from "electron";
-import { nextZoomLevel, normalizeZoomLevel, type ZoomCommand } from "../shared/app-zoom.js";
+import { MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, nextZoomLevel, normalizeZoomLevel, type ZoomCommand } from "../shared/app-zoom.js";
 import { getMainWindow, getMainWindows, getServices } from "./app-state.js";
 import { broadcastSettingsSnapshot } from "../ipc/domains/settings.js";
 import { createLogger } from "../lib/logger.js";
@@ -10,10 +10,16 @@ const log = createLogger("app-zoom");
 let pending: Promise<void> = Promise.resolve();
 
 export function runAppZoomCommand(command: ZoomCommand): Promise<void> {
+  return enqueueZoomCommand(command);
+}
+
+function enqueueZoomCommand(command: ZoomCommand, steps: () => number = () => 1): Promise<void> {
   const run = pending.then(async () => {
     const settingsService = getServices()?.settingsService;
     if (!settingsService) return;
-    const level = nextZoomLevel(settingsService.get("appearance").zoomLevel, command);
+    let level = normalizeZoomLevel(settingsService.get("appearance").zoomLevel);
+    const count = steps();
+    for (let step = 0; step < count; step++) level = nextZoomLevel(level, command);
     await settingsService.patch({ appearance: { zoomLevel: level } });
     await broadcastSettingsSnapshot({ settingsService, getAppWindows: getMainWindows, getMainWindow });
   });
@@ -35,8 +41,19 @@ export function bindAppWindowZoom(win: BrowserWindow): void {
   win.webContents.on("did-navigate", restoreLevel);
   win.webContents.on("did-finish-load", restoreLevel);
   void win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => log.warn("Could not disable visual zoom"));
+  let wheelBatch: { command: ZoomCommand; steps: number } | undefined;
   win.webContents.on("zoom-changed", (event, direction) => {
     event.preventDefault();
-    void runAppZoomCommand(direction === "in" ? "in" : "out").catch(() => log.warn("Could not save app zoom"));
+    const command = direction === "in" ? "in" : "out";
+    if (wheelBatch?.command === command) {
+      wheelBatch.steps = Math.min(MAX_ZOOM_LEVEL - MIN_ZOOM_LEVEL, wheelBatch.steps + 1);
+      return;
+    }
+    const batch = { command, steps: 1 };
+    wheelBatch = batch;
+    void enqueueZoomCommand(command, () => {
+      if (wheelBatch === batch) wheelBatch = undefined;
+      return batch.steps;
+    }).catch(() => log.warn("Could not save app zoom"));
   });
 }
