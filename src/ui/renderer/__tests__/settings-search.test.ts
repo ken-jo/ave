@@ -22,6 +22,14 @@ describe("settings search", () => {
     }
   });
 
+  it("finds the shortcuts page by any shortcut's label", () => {
+    for (const key of ["shortcuts.label.search", "mainPanels.command.reopenClosed", "be_main.menuNewWindow"]) {
+      expect(searchSettings(String(en[key]), translate(en)).map((result) => result.section)).toContain("shortcuts-list");
+      expect(searchSettings(String(ko[key]), translate(ko)).map((result) => result.section)).toContain("shortcuts-list");
+    }
+    expect(searchSettings("keyboard", translate(en)).map((result) => result.section)).toContain("shortcuts-list");
+  });
+
   it("returns no results for an empty or unknown query", () => {
     expect(searchSettings("  ", translate(en))).toEqual([]);
     expect(searchSettings("unrecognized-setting-9999", translate(en))).toEqual([]);

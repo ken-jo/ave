@@ -71,7 +71,6 @@ function makeWindow(overrides?: Record<string, unknown>) {
     unmaximize: vi.fn(),
     close: vi.fn(),
     isMaximized: vi.fn(() => false),
-    setTitleBarOverlay: vi.fn(),
     ...overrides,
   };
 }
@@ -136,22 +135,6 @@ describe("window domain IPC", () => {
 
     expect(shellWindow.close).toHaveBeenCalledOnce();
     expect(mainWindow.close).not.toHaveBeenCalled();
-  });
-
-  it("ignores titlebar theme sync when overlay is disabled", async () => {
-    const win = makeWindow({
-      setTitleBarOverlay: vi.fn(() => {
-        throw new TypeError("Titlebar overlay is not enabled");
-      }),
-    });
-    fromWebContents.mockReturnValueOnce(win);
-
-    expect(() =>
-      handleMap.get("window:syncTitleBarTheme")!(
-        trustedEvent(),
-        { color: "#ffffff", symbolColor: "#111111" },
-      ),
-    ).not.toThrow();
   });
 
   it("opens render_html payloads in a sandboxed BrowserWindow", async () => {

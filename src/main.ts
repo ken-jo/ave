@@ -1,12 +1,10 @@
-
-
-
-
 import { app, net, powerMonitor } from "electron";
+import { applyAppZoomLevel, configureAppZoom } from "./main/app-zoom.js";
 import { desktopSecretEncryption } from "./main/desktop-secret-encryption.js";
 import { writeSync } from "node:fs";
 import { onLocaleChange, t } from "./i18n/index.js";
 import { registerIpcHandlers } from "./ipc-bridge.js";
+import { broadcastSettingsSnapshot } from "./ipc/domains/settings.js";
 import { installHtmlPreviewPartitionBlock } from "./main/html-preview-partition.js";
 import { isAuthOwned } from "./main/auth-window-registry.js";
 import { syncNativeThemeSource } from "./main/window-chrome.js";
@@ -200,10 +198,20 @@ async function main() {
   // decision from: a headless one-shot run opens none of its own.
   const services = await bootstrap(projectRoot, getMainWindow(), () => getMainWindow(), bootLaunch);
   setServices(services);
+  configureAppZoom(() => broadcastSettingsSnapshot({ settingsService: services.settingsService, getAppWindows, getMainWindow }));
   // Electron's native theme (window frames and material, native menus, `prefers-color-scheme` in every web contents) follows
   // the app's appearance mode; `createWindow` set it
   // from the saved mode, this keeps it with every later change. The app-lifetime subscription is never undone.
-  services.settingsService.onChanged("appearance", () => syncNativeThemeSource(services.settingsService.get("appearance").mode));
+  services.settingsService.onChanged("appearance", () => {
+    const appearance = services.settingsService.get("appearance");
+    syncNativeThemeSource(appearance.mode);
+    applyAppZoomLevel(appearance.zoomLevel);
+  });
+  // Menu accelerators follow the user's shortcut bindings, so a rebind rebuilds the application and tray menus.
+  services.settingsService.onChanged("shortcuts", () => {
+    refreshApplicationMenu();
+    refreshTrayMenu();
+  });
 
   updateSplashStatus(t("be_main.splashOpeningWorkspace"));
 

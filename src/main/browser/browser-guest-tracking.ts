@@ -2,7 +2,46 @@
 import type { WebContents } from "electron";
 import { browserTabRegistry, isUserActionInputType } from "./browser-tab-registry.js";
 
+const trackedGuests = new Map<WebContents, number>();
+const siteZoomFactors = new WeakMap<object, Map<string, number>>();
+
+function siteFactors(contents: WebContents): Map<string, number> {
+  let factors = siteZoomFactors.get(contents.session);
+  if (!factors) {
+    factors = new Map();
+    siteZoomFactors.set(contents.session, factors);
+  }
+  return factors;
+}
+
+function siteKey(contents: WebContents): string {
+  try { return new URL(contents.getURL()).hostname; } catch { return ""; }
+}
+
+export function setBrowserGuestZoomFactor(contents: WebContents, factor: number): void {
+  siteFactors(contents).set(siteKey(contents), factor);
+  contents.setZoomFactor(factor);
+}
+
+export function preserveBrowserGuestZoom(change: () => void): void {
+  const guests = [...trackedGuests].filter(([contents]) => !contents.isDestroyed())
+    .map(([contents]) => ({ contents, factor: contents.getZoomFactor() }));
+  try {
+    change();
+  } finally {
+    for (const { contents, factor } of guests) {
+      if (!contents.isDestroyed()) setBrowserGuestZoomFactor(contents, factor);
+    }
+  }
+}
+
 export function trackBrowserGuest(contents: WebContents, windowId: number): void {
+  if (trackedGuests.has(contents)) return;
+  trackedGuests.set(contents, windowId);
+  const restoreZoom = () => contents.setZoomFactor(siteFactors(contents).get(siteKey(contents)) ?? 1);
+  restoreZoom();
+  contents.on("did-navigate", restoreZoom);
+  contents.on("did-finish-load", restoreZoom);
   const guestId = contents.id;
   browserTabRegistry.guestAttached(contents, windowId);
   contents.on("before-input-event", (_event, input) => {
@@ -15,7 +54,10 @@ export function trackBrowserGuest(contents: WebContents, windowId: number): void
   contents.debugger.on("message", (_event, method) => {
     if (method === "DOM.documentUpdated") browserTabRegistry.documentChanged(guestId);
   });
-  contents.once("destroyed", () => browserTabRegistry.guestDestroyed(guestId));
+  contents.once("destroyed", () => {
+    trackedGuests.delete(contents);
+    browserTabRegistry.guestDestroyed(guestId);
+  });
   contents.on("did-start-navigation", (_event, url, inPlace, isMainFrame) => {
     if (isMainFrame && !inPlace) browserTabRegistry.navigationStarted(guestId, url);
   });

@@ -630,7 +630,6 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:workspace:search-files",
         "window:close",
         "window:minimize",
-        "window:syncTitleBarTheme",
         "window:toggleMaximize",
       ]
     `);

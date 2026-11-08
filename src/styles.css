@@ -741,6 +741,8 @@
     --chrome-gap: 8px;
     --chrome-gap-tight: 4px;
     --chrome-gap-hair: 2px;
+    /* One renderer-drawn window button (Windows/Linux): WINDOW_CONTROL_BUTTON_WIDTH. */
+    --chrome-window-button-width: 44px;
   }
   /* Floating-shell geometry — the air around the raised cards (the sidebar
    * rail, the chat group's tiles, the docked side panel). Every one of them
@@ -760,16 +762,15 @@
   :root {
     --shell-card-inset: var(--chrome-gap);
     --shell-card-inset-bottom: 12px;
-    /* The sidebar card's top edge on darwin. It is not a chosen number: the
-     * chat group's tiles start one title band down plus the tile's own
-     * half-gutter (`p-(--chrome-gap-tight)` on each pane cell), so the sidebar
-     * card takes the same sum and both cards share one top line. The first
-     * row inside each card is a `--chrome-band-height` band, so their header
-     * text shares a centre line as well. Elsewhere there are no lights to
-     * align against and the card takes a slightly deeper top so it reads as
-     * lifted off the window's top edge. */
-    --shell-card-top-darwin: calc(var(--chrome-band-height) + var(--chrome-gap-tight));
-    --shell-card-top: 6px;
+    /* The sidebar card's top edge, on every platform. It is not a chosen
+     * number: the chat group's tiles start one title band down plus the
+     * tile's own half-gutter (`p-(--chrome-gap-tight)` on each pane cell), so
+     * the sidebar card takes the same sum and both cards share one top line.
+     * The first row inside each card is a `--chrome-band-height` band, so
+     * their header text shares a centre line as well. The band above stays
+     * clear for the window controls — the macOS lights, or the renderer's
+     * own buttons on Linux. */
+    --shell-card-top: calc(var(--chrome-band-height) + var(--chrome-gap-tight));
     /* One corner for every shell card — the rail, the sidebar list, the chat
      * group's tiles and the docked side panel. px for the same reason as the
      * insets: the cards sit side by side and a corner that followed the type
@@ -875,7 +876,7 @@
     background-color: hsl(var(--kbd-bg));
     border: 1px solid hsl(var(--kbd-border));
     border-radius: 0.25rem;
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace);
     font-size: 0.85em;
     line-height: 1.2;
     color: hsl(var(--foreground));
@@ -1147,10 +1148,10 @@
   box-shadow: inset 0 0 0 2px hsl(var(--agent));
 }
 
-/* ── Window glass (macOS) ───────────────────────────────────────────────────
+/* ── Window glass (macOS, Windows 11 22H2+) ─────────────────────────────────
  * `html[data-glass]` is set by preload when main created the window with the
- * system material behind it (`window-chrome.ts`: darwin, reduce-transparency
- * off). The window ground — body, the main column, the title band — goes
+ * system material behind it (`window-chrome.ts`: macOS vibrancy or Windows
+ * Mica, reduce-transparency off). The window ground — body, the main column, the title band — goes
  * clear so the material shows; the sidebar rail and list paint the card
  * colour over it at `--glass-tint-alpha`; the chat tiles stay opaque (their
  * own `bg-card`), as do headers, the terminal and every popover.

@@ -3,8 +3,9 @@ import { SavedToastProvider } from "../../context/SavedToastContext.js";
  * holding the typed draft. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { userEvent } from "@testing-library/user-event";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { within } from "@testing-library/react";
+import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
 import { AppearanceTab } from "../AppearanceTab.js";
 
 const { api, theme } = vi.hoisted(() => ({
@@ -59,57 +60,95 @@ describe("appearance choices", () => {
     expect(theme.setScheme).toHaveBeenCalledWith("dark", "github-dark");
   });
 
-  it("updates the terminal preview and persists its size", async () => {
-    render(<AppearanceTab />);
-    await waitFor(() => expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontFamily: "monospace" }));
-    fireEvent.change(screen.getByLabelText("크기 (px)"), { target: { value: "18" } });
-    expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "18px" });
-    fireEvent.blur(screen.getByLabelText("크기 (px)"));
-    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { terminalFont: { family: "monospace", size: 18, lineHeight: 1.2 } } });
-  });
 });
 
-
-it("keeps intermediate keyboard drafts and commits valid terminal metrics", async () => {
-  const user = userEvent.setup();
-  render(<AppearanceTab />);
-  await waitFor(() => expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontFamily: "monospace" }));
-  api.updateSettings.mockClear();
-  const size = screen.getByLabelText("크기 (px)");
-  await user.clear(size);
-  await user.type(size, "1");
-  expect(size).toHaveValue("1");
-  expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "12px" });
-  await user.type(size, "8");
-  expect(size).toHaveValue("18");
-  expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "18px" });
-  expect(api.updateSettings).not.toHaveBeenCalled();
-  await user.tab();
-  expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: "monospace", size: 18, lineHeight: 1.2 } } });
-  const lineHeight = screen.getByLabelText("줄 높이");
-  api.updateSettings.mockClear();
-  await user.clear(lineHeight);
-  await user.type(lineHeight, "1.");
-  expect(lineHeight).toHaveValue("1.");
-  await user.type(lineHeight, "5");
-  expect(lineHeight).toHaveValue("1.5");
-  expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ lineHeight: "1.5" });
-  expect(api.updateSettings).not.toHaveBeenCalled();
-  await user.keyboard("{Enter}");
-  expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: "monospace", size: 18, lineHeight: 1.5 } } });
+it("renders code presets in their saved typeface", () => {
+ render(<AppearanceTab />);
+ const buttons = within(screen.getByTestId("code-font-presets")).getAllByRole("radio");
+ expect(buttons).toHaveLength(6);
+ expect(buttons[0]?.style.fontFamily).toBe(DEFAULT_APPEARANCE.terminalFont.family);
+ for (const button of buttons) {
+   fireEvent.click(button);
+   expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: button.style.fontFamily, size: 12, lineHeight: 1.2 } } });
+ }
 });
 
+it("rejects unsafe custom code stacks before saving", () => {
+ render(<AppearanceTab />);
+ api.updateSettings.mockClear();
+ const input = screen.getByLabelText("사용자 정의 코드 글꼴 목록");
+ fireEvent.change(input, { target: { value: "Broken; color: red" } });
+ fireEvent.blur(input);
+ expect(api.updateSettings).not.toHaveBeenCalled();
+ expect(input).toHaveAttribute("aria-invalid", "true");
+ fireEvent.change(input, { target: { value: "Example Mono, monospace" } });
+ fireEvent.keyDown(input, { key: "Enter" });
+ expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: "Example Mono, monospace", size: 12, lineHeight: 1.2 } } });
+});
 
-it("reports a rejected terminal family without announcing Saved", async () => {
-  const notifySaved = vi.fn();
-  api.updateSettings.mockClear();
-  api.updateSettings.mockRejectedValueOnce(new Error("invalid-terminal-font-family"));
-  render(<SavedToastProvider value={notifySaved}><AppearanceTab /></SavedToastProvider>);
-  const section = document.querySelector('[data-settings-section="appearance-terminal"]')!;
-  const family = section.querySelector("input")!;
-  fireEvent.change(family, { target: { value: "Broken; color: red" } });
-  fireEvent.blur(family);
-  await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("글꼴 설정을 불러오거나 저장하지 못했습니다."));
-  expect(notifySaved).not.toHaveBeenCalled();
-  expect(family).toHaveValue("monospace");
+it("steps code metrics, disables at bounds and rolls back failed saves", async () => {
+ const notifySaved = vi.fn();
+ render(<SavedToastProvider value={notifySaved}><AppearanceTab /></SavedToastProvider>);
+ const size = within(screen.getByRole("group", { name: "크기 (px)" }));
+ const height = within(screen.getByRole("group", { name: "줄 높이" }));
+ fireEvent.click(size.getByRole("button", { name: /−/ }));
+ expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "11px" });
+ for (let i = 0; i < 8; i++) fireEvent.click(size.getByRole("button", { name: /−/ }));
+ expect(size.getByRole("button", { name: /−/ })).toBeDisabled();
+ for (let i = 0; i < 30; i++) fireEvent.click(size.getByRole("button", { name: /\+/ }));
+ expect(size.getByRole("button", { name: /\+/ })).toBeDisabled();
+ for (let i = 0; i < 12; i++) fireEvent.click(height.getByRole("button", { name: /\+/ }));
+ expect(height.getByRole("button", { name: /\+/ })).toBeDisabled();
+ expect(height.getByText("2.0")).toBeInTheDocument();
+ for (let i = 0; i < 12; i++) fireEvent.click(height.getByRole("button", { name: /−/ }));
+ expect(height.getByRole("button", { name: /−/ })).toBeDisabled();
+ await waitFor(() => expect(notifySaved).toHaveBeenCalled());
+ notifySaved.mockClear();
+ api.updateSettings.mockRejectedValueOnce(new Error("save-failed"));
+ fireEvent.click(size.getByRole("button", { name: /−/ }));
+ await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("글꼴 설정을 불러오거나 저장하지 못했습니다."));
+ expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontFamily: "monospace", fontSize: "12px", lineHeight: "1.2" });
+ expect(notifySaved).not.toHaveBeenCalled();
+});
+
+it("keeps one live chat preview above both font sections before saving completes", async () => {
+ api.updateSettings.mockImplementationOnce(() => new Promise(() => {}));
+ const view = render(<AppearanceTab />);
+ const preview = screen.getByTestId("font-chat-preview");
+ expect(preview).toHaveTextContent("이 코드를 설명해 주세요.");
+ expect(preview).toHaveTextContent("인사말을 출력하는 예제입니다.");
+ expect(screen.getByTestId("terminal-font-preview").textContent?.split("\n")).toHaveLength(2);
+ const firstFontSection = view.container.querySelector('[data-settings-section="appearance-font"]') as HTMLElement;
+ expect(preview.compareDocumentPosition(firstFontSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+ fireEvent.click(within(screen.getByTestId("font-family-presets")).getAllByRole("radio")[1] as HTMLButtonElement);
+ expect(preview.style.fontFamily).toContain("Pretendard");
+ const previousSize = preview.style.fontSize;
+ fireEvent.click(within(screen.getByTestId("font-size-scale")).getAllByRole("radio")[0] as HTMLButtonElement);
+ expect(preview.style.fontSize).not.toBe(previousSize);
+ fireEvent.click(within(screen.getByTestId("code-font-presets")).getAllByRole("radio")[1] as HTMLButtonElement);
+ expect(screen.getByTestId("terminal-font-preview").style.fontFamily).toContain("JetBrains Mono");
+});
+
+it("uses equally compact plain font chips without primary fill on unselected code presets", () => {
+ render(<AppearanceTab />);
+ const ui = within(screen.getByTestId("font-family-presets")).getAllByRole("radio");
+ const code = within(screen.getByTestId("code-font-presets")).getAllByRole("radio");
+ for (const button of [...ui, ...code]) {
+  expect(button).toHaveClass("rounded-full", "px-3", "py-1", "text-xs", "transition-colors");
+  expect(button).not.toHaveClass("h-10");
+  if (button.getAttribute("aria-checked") === "false") expect(button).not.toHaveClass("bg-primary");
+ }
+});
+
+it("does not roll back a newer successful code size when an earlier save fails", async () => {
+ let rejectFirst!: (error: Error) => void;
+ api.updateSettings.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectFirst = reject; }));
+ render(<AppearanceTab />);
+ const size = within(screen.getByRole("group", { name: "크기 (px)" }));
+ fireEvent.click(size.getByRole("button", { name: /\+/ }));
+ fireEvent.click(size.getByRole("button", { name: /\+/ }));
+ await waitFor(() => expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "14px" }));
+ await act(async () => { rejectFirst(new Error("earlier-save-failed")); });
+ expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontSize: "14px" });
+ expect(screen.queryByRole("alert")).toBeNull();
 });

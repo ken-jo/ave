@@ -71,6 +71,7 @@ import { mainWindowForContents, getPrimaryMainWindow } from "../../main/app-stat
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { isValidFontFamilyOverride } from "../../shared/appearance-font.js";
 import { parseMainLayout } from "../../shared/main-layout.js";
+import { applyShortcutBindingsPatch, ShortcutBindingsPatchError, shortcutPlatformOf } from "../../shared/shortcuts.js";
 
 let subscriptionRuntimeStatusRevision = 0;
 
@@ -104,7 +105,7 @@ export async function rendererSettingsSnapshot(
 
 /** Shared by every handler that mutates settings and must re-broadcast the projected snapshot to all windows. */
 export async function broadcastSettingsSnapshot(
-  deps: IpcDeps,
+  deps: Pick<IpcDeps, "settingsService" | "getAppWindows" | "getMainWindow">,
   shouldBroadcast: () => boolean = () => true,
 ): Promise<void> {
   const snapshot = deps.settingsService.getAll();
@@ -628,6 +629,15 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     const permissionsPatch = (partial as Record<string, unknown> | null | undefined)?.permissions;
     if (permissionsPatch !== undefined && (!permissionsPatch || typeof permissionsPatch !== "object" || Array.isArray(permissionsPatch) || Object.keys(permissionsPatch).some((key) => key !== "ownerAwayAutoSkipMinutes") || !isOwnerAwayAutoSkipMinutes((permissionsPatch as Record<string, unknown>).ownerAwayAutoSkipMinutes))) {
       return { ok: false, error: "invalid-owner-away-auto-skip", message: "Owner-away auto-skip must be a nonnegative integer." };
+    }
+    const shortcutsPatch = (partial as Record<string, unknown> | null | undefined)?.shortcuts as Record<string, unknown> | undefined;
+    if (shortcutsPatch && typeof shortcutsPatch === "object" && shortcutsPatch.bindings !== undefined) {
+      try {
+        applyShortcutBindingsPatch(settingsService.get("shortcuts"), shortcutsPatch.bindings, shortcutPlatformOf(process.platform));
+      } catch (err) {
+        if (!(err instanceof ShortcutBindingsPatchError)) throw err;
+        return { ok: false, error: "invalid-shortcut-binding", message: err.message };
+      }
     }
     const llmPatch = (partial as Record<string, unknown> | null | undefined)
       ?.llm as Record<string, unknown> | undefined;

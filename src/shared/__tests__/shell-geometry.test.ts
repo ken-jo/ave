@@ -1,8 +1,14 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FONT_SIZE_SCALE_VALUES } from "../appearance-font.js";
 import {
   BAND_EDGE_PAD,
   BAND_LEAD_PAD_DARWIN,
+  BAND_LEAD_PAD_LINUX,
+  CHROME_GAP_TIGHT,
+  WINDOW_CONTROL_BUTTON_WIDTH,
+  windowControlsPlacement,
   COLLAPSED_RAIL_RESERVE,
   CONTENT_TITLE_INSET,
   RAIL_CONTROL_REM,
@@ -45,5 +51,42 @@ describe("shell geometry: collapsed rail reserve", () => {
     // The widest rail control must fit at the largest font scale; a merely positive width is insufficient.
     const widestRailControlPx = RAIL_CONTROL_REM * 16 * Math.max(...FONT_SIZE_SCALE_VALUES);
     expect(COLLAPSED_RAIL_RESERVE - SHELL_GUTTER * 2).toBeGreaterThanOrEqual(widestRailControlPx);
+  });
+});
+
+describe("window controls placement", () => {
+  it("leaves macOS its lights, trails on Windows and leads on Linux", () => {
+    expect(windowControlsPlacement("darwin")).toBe("native");
+    expect(windowControlsPlacement("win32")).toBe("trailing");
+    expect(windowControlsPlacement("linux")).toBe("leading");
+  });
+
+  it("starts Linux band content past the three leading buttons by the same gap macOS leaves after its lights", () => {
+    expect(BAND_LEAD_PAD_LINUX).toBe(WINDOW_CONTROL_BUTTON_WIDTH * 3 + CHROME_GAP_TIGHT);
+    expect(BAND_LEAD_PAD_LINUX).toBe(136);
+  });
+});
+
+describe("shell card top (styles.css)", () => {
+  // The band above the sidebar card holds the macOS lights and the Linux leading buttons; a card that starts inside the band
+  // covers them. Read the stylesheet itself so a return to a shallow literal (the old 6px) goes red.
+  const css = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+  function declared(name: string): string {
+    const values = [...css.matchAll(new RegExp(`(?:^|[;{\\s])${name}\\s*:\\s*([^;}]+)`, "gm"))].map((match) => match[1].trim());
+    expect(values, `${name} must be declared exactly once`).toHaveLength(1);
+    return values[0];
+  }
+  function px(name: string): number {
+    const value = declared(name);
+    const literal = /^(\d+(?:\.\d+)?)px$/.exec(value);
+    if (literal) return Number(literal[1]);
+    const sum = /^calc\(\s*var\((--[\w-]+)\)\s*\+\s*var\((--[\w-]+)\)\s*\)$/.exec(value);
+    if (sum) return px(sum[1]) + px(sum[2]);
+    throw new Error(`${name}: unsupported value ${value}`);
+  }
+
+  it("starts the sidebar card at or below the window band on every platform", () => {
+    expect(px("--shell-card-top")).toBeGreaterThanOrEqual(px("--chrome-band-height"));
+    expect(css).not.toMatch(/--shell-card-top-darwin/);
   });
 });

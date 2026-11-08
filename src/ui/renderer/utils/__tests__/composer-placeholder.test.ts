@@ -9,7 +9,7 @@ function setPlatform(isDarwin: boolean | undefined): void {
     delete window.avePlatform;
     return;
   }
-  window.avePlatform = { isDarwin };
+  window.avePlatform = { isDarwin, windowControls: isDarwin ? "native" : "trailing" };
 }
 
 afterEach(() => {
@@ -49,7 +49,7 @@ describe("computeComposerPlaceholder", () => {
         streaming: true,
         suggestedReplies: EMPTY,
       }),
-    ).toBe("메시지 큐에 추가됩니다 (즉시 인터럽트는 ⌘⏎)");
+    ).toBe("메시지 큐에 추가됩니다 (즉시 인터럽트는 Ctrl+Enter)");
   });
 
   it("suggested-replies 가 활성 (text != null, !dismissed) 이면 placeholder 가 빈 문자열", () => {

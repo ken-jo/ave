@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { AveApi } from "../types.js";
 import { parseInlineViewKey, type InlineViewKey } from "../../../shared/view-key.js";
+import { matchesShortcut } from "./use-shortcuts.js";
 
 export interface AppBootstrapDeps {
   api: AveApi;
@@ -81,7 +82,7 @@ export function useAppBootstrap({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      if (matchesShortcut("app.commandPalette", e)) {
         e.preventDefault();
         toggleRef.current();
       }

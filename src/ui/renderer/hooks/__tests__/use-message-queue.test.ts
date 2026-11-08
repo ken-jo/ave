@@ -36,7 +36,7 @@ describe("useMessageQueue location references", () => {
     const capture = vi.fn(() => intent);
     (window as unknown as { aveApi?: unknown }).aveApi = { captureUserKeyboardIntent: capture };
     try {
-      act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, cancelable: true })); });
+      act(() => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, cancelable: true })); });
     } finally {
       delete (window as unknown as { aveApi?: unknown }).aveApi;
     }

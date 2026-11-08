@@ -1,0 +1,218 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { DEFAULT_APPEARANCE } from "../../shared/appearance-settings.js";
+
+const state = vi.hoisted(() => ({
+ windows: [] as Array<{ isDestroyed: () => boolean; webContents: { isDestroyed: () => boolean; setZoomLevel: ReturnType<typeof vi.fn> } }>,
+ appearance: { zoomLevel: 0 } as { zoomLevel?: number },
+ patch: vi.fn(), broadcast: vi.fn(),
+}));
+vi.mock("../app-state.js", () => ({
+ getMainWindows: () => state.windows,
+ getMainWindow: () => state.windows[0],
+ getServices: () => ({ settingsService: { get: () => state.appearance, patch: state.patch } }),
+}));
+vi.mock("../browser/browser-tab-registry.js", () => ({ browserTabRegistry: { guestAttached: vi.fn(), guestDestroyed: vi.fn() } }));
+import { applyAppZoomLevel, bindAppWindowZoom, configureAppZoom, runAppZoomCommand } from "../app-zoom.js";
+import { setBrowserGuestZoomFactor, trackBrowserGuest } from "../browser/browser-guest-tracking.js";
+
+beforeEach(() => {
+ state.appearance = { ...DEFAULT_APPEARANCE, zoomLevel: 0 };
+ state.windows = Array.from({ length: 2 }, () => ({ isDestroyed: () => false, webContents: { isDestroyed: () => false, setZoomLevel: vi.fn() } }));
+ state.patch.mockReset().mockImplementation(async ({ appearance }) => {
+  state.appearance = { ...state.appearance, ...appearance };
+  applyAppZoomLevel(state.appearance.zoomLevel);
+ });
+ state.broadcast.mockReset().mockResolvedValue(undefined);
+ configureAppZoom(state.broadcast);
+});
+
+describe("persisted app zoom commands", () => {
+ it("saves serialized commands and applies each to all registered shells", async () => {
+  const guest = { setZoomLevel: vi.fn() };
+  await Promise.all([runAppZoomCommand("in"), runAppZoomCommand("in")]);
+  expect(state.patch.mock.calls.map(([patch]) => patch.appearance.zoomLevel)).toEqual([1, 2]);
+  for (const win of state.windows) expect(win.webContents.setZoomLevel.mock.calls).toEqual([[1], [2]]);
+  expect(guest.setZoomLevel).not.toHaveBeenCalled();
+  expect(state.broadcast).toHaveBeenCalledTimes(2);
+  await runAppZoomCommand("reset");
+  expect(state.appearance.zoomLevel).toBe(0);
+ });
+ it.each([[8, "in"], [-8, "out"]] as const)("keeps %s at its bound", async (level, command) => {
+  state.appearance.zoomLevel = level;
+  await runAppZoomCommand(command);
+  expect(state.patch).toHaveBeenCalledWith({ appearance: { zoomLevel: level } });
+ });
+ it("skips destroyed windows and contents without interrupting peers", () => {
+  state.windows.unshift({ isDestroyed: () => true, webContents: { isDestroyed: () => false, setZoomLevel: vi.fn() } });
+  const middle = state.windows[1];
+  if (!middle) throw new Error("Missing shell");
+  middle.webContents.isDestroyed = () => true;
+  applyAppZoomLevel(-2);
+  expect(state.windows[0]?.webContents.setZoomLevel).not.toHaveBeenCalled();
+  expect(state.windows[1]?.webContents.setZoomLevel).not.toHaveBeenCalled();
+  expect(state.windows[2]?.webContents.setZoomLevel).toHaveBeenCalledWith(-2);
+ });
+ it("locks visual zoom and routes wheel zoom through the persisted commands", async () => {
+  const listeners = new Map<string, (event: { preventDefault: () => void }, direction: "in" | "out") => void>();
+  const setVisualZoomLevelLimits = vi.fn(async () => {});
+  bindAppWindowZoom({ webContents: { setVisualZoomLevelLimits, on: (name: string, handler: (event: { preventDefault: () => void }, direction: "in" | "out") => void) => listeners.set(name, handler) } } as never);
+  expect(setVisualZoomLevelLimits).toHaveBeenCalledWith(1, 1);
+  const event = { preventDefault: vi.fn() };
+  listeners.get("zoom-changed")?.(event, "in");
+  await vi.waitFor(() => expect(state.appearance.zoomLevel).toBe(1));
+  listeners.get("zoom-changed")?.(event, "out");
+  await vi.waitFor(() => expect(state.appearance.zoomLevel).toBe(0));
+  expect(event.preventDefault).toHaveBeenCalledTimes(2);
+ });
+});
+
+it("reapplies the current setting after reset and reload or renderer recovery", async () => {
+ const listeners = new Map<string, () => void>();
+ const setZoomLevel = vi.fn();
+ bindAppWindowZoom({ webContents: { setZoomLevel, setVisualZoomLevelLimits: vi.fn(async () => {}), on: (name: string, handler: () => void) => listeners.set(name, handler) } } as never);
+ state.appearance.zoomLevel = -3;
+ listeners.get("did-navigate")?.();
+ expect(setZoomLevel).toHaveBeenLastCalledWith(-3);
+ await runAppZoomCommand("reset");
+ for (const event of ["did-navigate", "did-finish-load"]) {
+  setZoomLevel.mockClear();
+  listeners.get(event)?.();
+  expect(setZoomLevel).toHaveBeenCalledWith(0);
+ }
+ state.appearance.zoomLevel = 2;
+ listeners.get("did-finish-load")?.();
+ expect(setZoomLevel).toHaveBeenLastCalledWith(2);
+});
+
+it("coalesces a pending same-direction wheel gesture into bounded steps", async () => {
+ const listeners = new Map<string, (event: { preventDefault: () => void }, direction: "in" | "out") => void>();
+ bindAppWindowZoom({ webContents: { setVisualZoomLevelLimits: vi.fn(async () => {}), on: (name: string, handler: never) => listeners.set(name, handler) } } as never);
+ let release!: () => void;
+ const originalPatch = state.patch.getMockImplementation();
+ if (!originalPatch) throw new Error("Missing patch implementation");
+ state.patch.mockImplementationOnce(async (patch) => {
+  await new Promise<void>((resolve) => { release = resolve; });
+  await originalPatch(patch);
+ });
+ const active = runAppZoomCommand("out");
+ await vi.waitFor(() => expect(release).toBeDefined());
+ const event = { preventDefault: vi.fn() };
+ for (let i = 0; i < 80; i++) listeners.get("zoom-changed")?.(event, "in");
+ release();
+ await active;
+ await vi.waitFor(() => expect(state.appearance.zoomLevel).toBe(8));
+ expect(state.patch.mock.calls.map(([patch]) => patch.appearance.zoomLevel)).toEqual([-1, 8]);
+ expect(event.preventDefault).toHaveBeenCalledTimes(80);
+ for (let i = 0; i < 80; i++) listeners.get("zoom-changed")?.(event, "out");
+ await vi.waitFor(() => expect(state.appearance.zoomLevel).toBe(-8));
+ expect(state.patch).toHaveBeenCalledTimes(3);
+});
+
+it.each(["reset", "other-window"])("seals pending wheel input across an intervening %s command", async (barrier) => {
+ const shells = [new EventEmitter(), new EventEmitter()];
+ for (const contents of shells) {
+  bindAppWindowZoom({ webContents: Object.assign(contents, { setVisualZoomLevelLimits: vi.fn(async () => {}) }) } as never);
+ }
+ let release: (() => void) | undefined;
+ const originalPatch = state.patch.getMockImplementation();
+ if (!originalPatch) throw new Error("Missing patch implementation");
+ state.patch.mockImplementationOnce(async (patch) => {
+  await new Promise<void>((resolve) => { release = resolve; });
+  await originalPatch(patch);
+ });
+ const active = runAppZoomCommand("out");
+ await vi.waitFor(() => expect(release).toBeDefined());
+ const event = { preventDefault: vi.fn() };
+ shells[0]?.emit("zoom-changed", event, "in");
+ const intervening = barrier === "reset" ? runAppZoomCommand("reset") : undefined;
+ if (barrier === "other-window") shells[1]?.emit("zoom-changed", event, "out");
+ shells[0]?.emit("zoom-changed", event, "in");
+ if (!release) throw new Error("Missing blocked write");
+ release();
+ await active;
+ await intervening;
+ await vi.waitFor(() => expect(state.broadcast).toHaveBeenCalledTimes(4));
+ expect(state.patch.mock.calls.map(([patch]) => patch.appearance.zoomLevel))
+  .toEqual(barrier === "reset" ? [-1, 0, 0, 1] : [-1, 0, -1, 0]);
+ expect(state.appearance.zoomLevel).toBe(barrier === "reset" ? 1 : 0);
+});
+
+it.each([
+ { level: 0, directions: Array.from({ length: 80 }, (_, index) => index % 2 === 0 ? "in" : "out") },
+ { level: 8, directions: ["in", "out"] },
+ { level: -8, directions: ["out", "in"] },
+ { level: 7, directions: [...Array<string>(30).fill("in"), ...Array<string>(4).fill("out")] },
+ { level: -7, directions: [...Array<string>(30).fill("out"), ...Array<string>(4).fill("in")] },
+])("coalesces ordered wheel reversals from $level into one pending write", async ({ level, directions }) => {
+ const contents = Object.assign(new EventEmitter(), { setVisualZoomLevelLimits: vi.fn(async () => {}) });
+ bindAppWindowZoom({ webContents: contents } as never);
+ state.appearance.zoomLevel = level;
+ let release: (() => void) | undefined;
+ const originalPatch = state.patch.getMockImplementation();
+ if (!originalPatch) throw new Error("Missing patch implementation");
+ state.patch.mockImplementationOnce(async (patch) => {
+  await new Promise<void>((resolve) => { release = resolve; });
+  await originalPatch(patch);
+ });
+ const blockedLevel = Math.max(-8, Math.min(8, level + (level >= 0 ? 1 : -1)));
+ const active = runAppZoomCommand(level >= 0 ? "in" : "out");
+ await vi.waitFor(() => expect(release).toBeDefined());
+ let expected = blockedLevel;
+ for (const direction of directions) {
+  contents.emit("zoom-changed", { preventDefault: vi.fn() }, direction);
+  expected = Math.max(-8, Math.min(8, expected + (direction === "in" ? 1 : -1)));
+ }
+ if (!release) throw new Error("Missing blocked write");
+ release();
+ await active;
+ await vi.waitFor(() => expect(state.broadcast).toHaveBeenCalledTimes(2));
+ expect(state.patch.mock.calls.map(([patch]) => patch.appearance.zoomLevel)).toEqual([blockedLevel, expected]);
+ expect(state.appearance.zoomLevel).toBe(expected);
+});
+
+it.each(["setting", "did-navigate", "did-finish-load"])("preserves both shells' browser factors before shared-origin propagation on %s", (trigger) => {
+ const factors = [1.25, 1.5];
+ const guests = factors.map((_, index) => Object.assign(new EventEmitter(), {
+  id: 100 + index, session: {}, debugger: new EventEmitter(),
+  getURL: () => `https://site${index}.example/`, isDestroyed: () => false,
+  getZoomFactor: () => factors[index], setZoomFactor: (factor: number) => { factors[index] = factor; },
+ }));
+ const shells = guests.map((guest, index) => {
+  trackBrowserGuest(guest as never, index + 1);
+  setBrowserGuestZoomFactor(guest as never, index === 0 ? 1.25 : 1.5);
+  const contents = Object.assign(new EventEmitter(), {
+   isDestroyed: () => false, setVisualZoomLevelLimits: vi.fn(async () => {}),
+   setZoomLevel: vi.fn((level: number) => { factors.fill(1.2 ** level); }),
+  });
+  const shell = { id: index + 1, isDestroyed: () => false, webContents: contents };
+  bindAppWindowZoom(shell as never);
+  return shell;
+ });
+ state.windows = shells;
+ state.appearance.zoomLevel = 2;
+ try {
+  if (trigger === "setting") applyAppZoomLevel(2);
+  else shells[0]?.webContents.emit(trigger);
+  expect(factors).toEqual([1.25, 1.5]);
+  for (const guest of guests) guest.emit("did-finish-load");
+  expect(factors).toEqual([1.25, 1.5]);
+ } finally {
+  for (const guest of guests) guest.emit("destroyed");
+ }
+});
+
+it("awaits the injected broadcast before advancing the command queue", async () => {
+ let release: (() => void) | undefined;
+ state.broadcast.mockImplementationOnce(() => new Promise<void>((resolve) => { release = resolve; }));
+ const first = runAppZoomCommand("in");
+ const second = runAppZoomCommand("out");
+ await vi.waitFor(() => expect(release).toBeDefined());
+ expect(state.patch).toHaveBeenCalledTimes(1);
+ expect(state.appearance.zoomLevel).toBe(1);
+ if (!release) throw new Error("Missing blocked broadcast");
+ release();
+ await Promise.all([first, second]);
+ expect(state.patch.mock.calls.map(([patch]) => patch.appearance.zoomLevel)).toEqual([1, 0]);
+ expect(state.broadcast).toHaveBeenCalledTimes(2);
+});

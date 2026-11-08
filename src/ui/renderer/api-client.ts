@@ -12,9 +12,23 @@ export function toViewKey(item: PluginUiExtension): PluginViewKey {
   return pluginViewKey(item.pluginId, item.extension.id);
 }
 
-/** The preload platform bridge, or null outside Electron (jsdom, Storybook, SSR). */
+const WINDOW_CONTROLS_PLACEMENTS: readonly unknown[] = ["native", "trailing", "leading"];
+
+/**
+ * The preload platform bridge, or null outside Electron (jsdom, Storybook, SSR). A present bridge is preload's contract: an
+ * unknown window-controls placement, or one that disagrees with `isDarwin` (macOS, and only macOS, draws native controls),
+ * fails clearly instead of falling back to a placement.
+ */
 export function getPlatformBridge(): AvePlatformApi | null {
-  return window.avePlatform ?? null;
+  const bridge = window.avePlatform;
+  if (!bridge) return null;
+  if (typeof bridge.isDarwin !== "boolean" || !WINDOW_CONTROLS_PLACEMENTS.includes(bridge.windowControls)) {
+    throw new Error(`[ave] invalid avePlatform bridge: ${JSON.stringify(bridge)}`);
+  }
+  if (bridge.isDarwin !== (bridge.windowControls === "native")) {
+    throw new Error(`[ave] avePlatform disagrees with itself: isDarwin=${bridge.isDarwin}, windowControls=${bridge.windowControls}`);
+  }
+  return bridge;
 }
 
 export function isDarwin(): boolean {

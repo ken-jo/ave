@@ -92,3 +92,16 @@ describe("work board tool-approval surface setting", () => {
     expect(load().getAll()).toHaveProperty("workBoard.toolApprovalSurface", "dialog");
   });
 });
+
+describe("app zoom persistence", () => {
+ it("persists a zoom patch, notifies appearance observers, and keeps sibling fields", async () => {
+  const settings = load();
+  const observed: number[] = [];
+  settings.onChanged("appearance", () => observed.push(settings.get("appearance").zoomLevel ?? 0));
+  await settings.patch({ appearance: { zoomLevel: -4, font: { family: "Example Sans" } } });
+  expect(observed).toEqual([-4]);
+  expect(load().get("appearance")).toMatchObject({ zoomLevel: -4, font: { family: "Example Sans" } });
+  await settings.patch({ appearance: { zoomLevel: 8.5 } });
+  expect(load().get("appearance")).toMatchObject({ zoomLevel: -4, font: { family: "Example Sans" } });
+ });
+});

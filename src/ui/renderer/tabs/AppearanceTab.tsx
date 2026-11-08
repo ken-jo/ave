@@ -1,9 +1,11 @@
 /** Configure the shared interface and terminal appearance. */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { ZoomControls } from "../components/ZoomControls.js";
+import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
 import { useTheme } from "../theme/index.js";
 import { SCHEMES } from "../theme/index.js";
-import { DEFAULT_GLASS_TINT, GLASS_TINT_MAX, GLASS_TINT_MIN, isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
-import { getApi, isDarwin } from "../api-client.js";
+import { DEFAULT_APPEARANCE, DEFAULT_GLASS_TINT, GLASS_TINT_MAX, GLASS_TINT_MIN, isTerminalFontSize, isTerminalLineHeight } from "../../../shared/appearance-settings.js";
+import { getApi } from "../api-client.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import {
@@ -12,7 +14,7 @@ import {
 } from "../../../i18n/index.js";
 import { useInstalledContent } from "../installed-content.js";
 import { useTranslation } from "../../../i18n/react.js";
-import { FONT_SIZE_SCALE_DEFAULT, type FontSizeScale } from "../../../shared/appearance-font.js";
+import { FONT_SIZE_SCALE_DEFAULT, isValidFontFamilyOverride, type FontSizeScale } from "../../../shared/appearance-font.js";
 
 function handleRadioGroupKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
   const directions = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 } as const;
@@ -154,9 +156,11 @@ function useFontPreferences() {
 function FontFamilyCustomInput({
   initial,
   onCommit,
+  label,
 }: {
   initial: string;
   onCommit: (value: string) => void;
+  label?: string;
 }) {
   const { t } = useTranslation();
   const [raw, setRaw] = useState(initial);
@@ -181,6 +185,7 @@ function FontFamilyCustomInput({
   const commit = () => {
     const value = raw.trim();
     if (value === initial.trim()) return;
+    if (value && !isValidFontFamilyOverride(value)) return;
     onCommit(value);
   };
 
@@ -193,6 +198,7 @@ function FontFamilyCustomInput({
         value={raw}
         placeholder={t("appearanceTab.fontFamilyCustomPlaceholder")}
         maxLength={256}
+        aria-invalid={raw.trim() !== "" && !isValidFontFamilyOverride(raw.trim())}
         onChange={(e) => setRaw(e.target.value)}
         onBlur={() => {
           // Escape sets this flag and then calls blur(); skip the cascaded commit so the typed-but-cancelled value never reaches
@@ -212,7 +218,7 @@ function FontFamilyCustomInput({
           }
         }}
         className="mt-2 w-full rounded border border-input bg-background px-2 py-1 font-mono text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-        aria-label={t("appearanceTab.fontFamilyCustomAriaLabel")}
+        aria-label={label ?? t("appearanceTab.fontFamilyCustomAriaLabel")}
       />
       <p className="mt-1 text-tiny">
         {t("appearanceTab.fontFamilyCustomHint")}
@@ -274,6 +280,8 @@ export function AppearanceTab() {
   const { t } = useTranslation();
   const { mode, setMode, darkScheme, lightScheme, setScheme } = useTheme();
   const { family, sizeScale, setFamily, setSizeScale } = useFontPreferences();
+  const terminal = useTerminalFontPreferences();
+  const { appearance } = useTheme();
   const notifySaved = useNotifySaved();
   const installedContent = useInstalledContent();
   const fontOptions: ReadonlyArray<{ value: string; text: string; stack: string }> = [
@@ -333,17 +341,18 @@ export function AppearanceTab() {
         <GlassTintControl />
       </SettingsSection>
 
-      {/* ── 폰트 ────────────────────────────────────── */}
+      <div data-testid="font-chat-preview" className="space-y-3 rounded-md border border-border p-3 text-sm"
+        style={{ fontFamily: family === "system" ? HOST_FONT_STACK : family,
+          fontSize: `calc(var(--type-size-14) * ${sizeScale / (appearance.font?.sizeScale ?? FONT_SIZE_SCALE_DEFAULT)})` }}>
+        <p className="ml-auto w-fit max-w-full rounded-md bg-message-user px-3 py-2 text-message-user-foreground">{t("appearanceTab.previewUser")}</p>
+        <p>{t("appearanceTab.previewAssistant")}</p>
+        <pre data-testid="terminal-font-preview" className="overflow-x-auto rounded bg-muted p-3 font-mono"
+          style={{ fontFamily: terminal.font.family, fontSize: terminal.font.size, lineHeight: terminal.font.lineHeight }}>{"const greeting = 'Hello, Ave';\nconsole.log(greeting);"}</pre>
+      </div>
       <SettingsSection
         data-settings-section="appearance-font"
         title={t("appearanceTab.fontSectionTitle")}
         description={t("appearanceTab.fontSectionDescription")}
-        actions={
-          <span className="text-dense text-muted-foreground">
-            {t("appearanceTab.fontSizePreview")}{" "}
-            <span className="font-mono text-foreground">{Math.round(sizeScale * 16)}px</span>
-          </span>
-        }
       >
         {/* 폰트 패밀리 */}
         <div className="space-y-2">
@@ -365,6 +374,7 @@ export function AppearanceTab() {
                   aria-checked={checked}
                   tabIndex={checked || (activePreset === "custom" && index === 0) ? 0 : -1}
                   data-value={opt.value}
+                  style={{ fontFamily: opt.stack || HOST_FONT_STACK }}
                   onClick={() => setFamily(opt.stack)}
                   className={`rounded-full border px-3 py-1 text-xs transition-colors ${
                     checked
@@ -393,7 +403,7 @@ export function AppearanceTab() {
             onKeyDown={handleRadioGroupKeyDown}
             aria-label={t("appearanceTab.fontSizeRadioGroupLabel")}
             data-testid="font-size-scale"
-            className="flex flex-wrap gap-2"
+            className="grid grid-cols-4 overflow-hidden rounded-md border border-border"
           >
             {FONT_SIZE_OPTIONS.map((opt) => {
               const checked = sizeScale === opt.value;
@@ -406,14 +416,15 @@ export function AppearanceTab() {
                   tabIndex={checked ? 0 : -1}
                   data-value={String(opt.value)}
                   onClick={() => setSizeScale(opt.value)}
-                  className={`rounded-full border px-3 py-1 transition-colors ${
+                  className={`min-w-0 border-r border-border px-1 py-2 text-sm last:border-r-0 transition-colors ${
                     checked
                       ? "border-primary bg-primary text-primary-foreground"
                       : "border-border text-muted-foreground hover:bg-muted/(--opacity-half) hover:text-foreground"
                   }`}
-                  style={{ fontSize: `${opt.value * 0.75}rem` }}
                 >
-                  {t(opt.label)}
+                  <span className="block whitespace-nowrap">{t(opt.label)}</span>
+                  <span className="block whitespace-nowrap text-dense">{Math.round(opt.value * 16)}px</span>
+                  {opt.value === FONT_SIZE_SCALE_DEFAULT && <span className="block text-dense">{t("appearanceTab.fontSizeDefault")}</span>}
                 </button>
               );
             })}
@@ -421,7 +432,11 @@ export function AppearanceTab() {
         </div>
       </SettingsSection>
 
-      <TerminalFontSection />
+      <TerminalFontSection {...terminal} />
+      <div className="space-y-2">
+        <div className="text-dense text-muted-foreground">{t("appearanceTab.zoom")}</div>
+        <ZoomControls />
+      </div>
 
     </div>
   );
@@ -443,8 +458,8 @@ function useReducedTransparency(): boolean {
 }
 
 /**
- * How much of the card colour covers the macOS window material. macOS only: elsewhere the window is opaque and there is nothing
- * to tune. The slider repaints on every step and saves when the drag (or key press) ends. With reduce transparency on — now, or
+ * How much of the card colour covers the window material (macOS vibrancy, Windows 11 22H2+ Mica). Offered only where main says the OS has
+ * a material (`data-glass-capable`): elsewhere the window is opaque and there is nothing to tune. The slider repaints on every step and saves when the drag (or key press) ends. With reduce transparency on — now, or
  * when this window was created, which is when main decides the material (`data-glass`) — it is shown disabled with the reason.
  */
 function GlassTintControl() {
@@ -455,7 +470,7 @@ function GlassTintControl() {
   // A previewed value not yet saved. Every way a gesture can end (release, cancel, lost capture, key up, blur) commits it once;
   // the later ones of the same gesture find nothing pending, and a key that moved nothing (Tab) saves nothing.
   const pendingRef = useRef(false);
-  if (!isDarwin()) return null;
+  if (!document.documentElement.hasAttribute("data-glass-capable")) return null;
   const available = !reducedNow && document.documentElement.hasAttribute("data-glass");
   const tint = appearance.glassTint ?? DEFAULT_GLASS_TINT;
   const commit = (event: { currentTarget: HTMLInputElement }) => {
@@ -499,79 +514,86 @@ function GlassTintControl() {
   );
 }
 
-function TerminalFontSection() {
-  const { t } = useTranslation();
+const CODE_FONT_PRESETS: ReadonlyArray<FontFamilyPreset> = [
+  { value: "system", label: "appearanceTab.codeFontSystem", stack: DEFAULT_APPEARANCE.terminalFont.family },
+  ...["JetBrains Mono", "Fira Code", "D2Coding", "Cascadia Code"].map((family) => ({
+    value: family, label: family, stack: `"${family}", ${DEFAULT_APPEARANCE.terminalFont.family}`,
+  })),
+  { value: "sf-mono", label: "SF Mono / Menlo", stack: '"SF Mono", Menlo, ui-monospace, monospace' },
+];
+
+function useTerminalFontPreferences() {
   const notifySaved = useNotifySaved();
   const { appearance } = useTheme();
   const [font, setFont] = useState(appearance.terminalFont);
   const [failed, setFailed] = useState(false);
-  useEffect(() => { setFont(appearance.terminalFont); }, [appearance.terminalFont]);
+  const fontRef = useRef(font);
+  const revisionRef = useRef(0);
+  useEffect(() => {
+    revisionRef.current++;
+    fontRef.current = appearance.terminalFont;
+    setFont(appearance.terminalFont);
+  }, [appearance.terminalFont]);
   const updateFont = (patch: Partial<typeof font>) => {
-    const next = { ...font, ...patch };
+    const next = { ...fontRef.current, ...patch };
+    fontRef.current = next;
+    const revision = ++revisionRef.current;
     setFont(next);
     setFailed(false);
-    void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => { setFailed(true); setFont(appearance.terminalFont); });
+    void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => {
+      if (revision !== revisionRef.current) return;
+      fontRef.current = appearance.terminalFont;
+      setFailed(true);
+      setFont(fontRef.current);
+    });
   };
+  return { font, failed, updateFont };
+}
+
+function TerminalFontSection({ font, failed, updateFont }: ReturnType<typeof useTerminalFontPreferences>) {
+  const { t } = useTranslation();
+  const activePreset = presetForStack(font.family, CODE_FONT_PRESETS);
   return <SettingsSection data-settings-section="appearance-terminal" title={t("appearanceTab.terminalTitle")}>
     {failed && <p role="alert" className="text-sm text-destructive">{t("appearanceTab.fontSaveFailed")}</p>}
-    <div className="grid gap-3 sm:grid-cols-3">
-      <label className="space-y-1 text-xs">{t("appearanceTab.terminalFamily")}
-        <input className="w-full rounded border border-input bg-background p-2" value={font.family} maxLength={256}
-          onChange={(event) => setFont({ ...font, family: event.target.value })}
-          onBlur={() => updateFont({ family: font.family.trim() })} />
-      </label>
-      <label className="space-y-1 text-xs">{t("appearanceTab.terminalSize")}
-        <TerminalNumberInput value={font.size} validate={isTerminalFontSize} inputMode="numeric"
-          onPreview={(size) => setFont({ ...font, size })} onCommit={(size) => updateFont({ size })}
-          onInvalid={() => setFont({ ...font, size: appearance.terminalFont.size })} />
-      </label>
-      <label className="space-y-1 text-xs">{t("appearanceTab.terminalLineHeight")}
-        <TerminalNumberInput value={font.lineHeight} validate={isTerminalLineHeight} inputMode="decimal"
-          onPreview={(lineHeight) => setFont({ ...font, lineHeight })} onCommit={(lineHeight) => updateFont({ lineHeight })}
-          onInvalid={() => setFont({ ...font, lineHeight: appearance.terminalFont.lineHeight })} />
-      </label>
+    <div className="space-y-2">
+      <label className="text-dense text-muted-foreground">{t("appearanceTab.terminalFamily")}</label>
+      <div role="radiogroup" aria-label={t("appearanceTab.terminalFamily")} data-testid="code-font-presets"
+        onKeyDown={handleRadioGroupKeyDown} className="flex flex-wrap gap-2">
+        {CODE_FONT_PRESETS.map((preset, index) => (
+          // biome-ignore lint/a11y/useSemanticElements: Button radios support roving focus and arrow-key selection.
+          <button key={preset.value} type="button" role="radio"
+          aria-checked={activePreset === preset.value} tabIndex={activePreset === preset.value || (activePreset === "custom" && index === 0) ? 0 : -1}
+          style={{ fontFamily: preset.stack }} onClick={() => updateFont({ family: preset.stack })}
+          className={activePreset === preset.value ? "rounded-full border border-primary bg-primary px-3 py-1 text-xs transition-colors text-primary-foreground" : "rounded-full border border-border px-3 py-1 text-xs transition-colors text-muted-foreground hover:bg-muted/(--opacity-half) hover:text-foreground"}>
+          {t(preset.label)}
+        </button>))}
+      </div>
+      <FontFamilyCustomInput initial={activePreset === "custom" ? font.family : ""}
+        label={t("appearanceTab.codeFontCustomAriaLabel")} onCommit={(family) => updateFont({ family: family || DEFAULT_APPEARANCE.terminalFont.family })} />
     </div>
-    <pre data-testid="terminal-font-preview" className="overflow-x-auto rounded border border-border p-4"
-      style={{ fontFamily: font.family, fontSize: font.size, lineHeight: font.lineHeight }}>
-      {"$ printf 'Hello, Ave\\n'\nHello, Ave\n0123456789  Aa Bb 가나"}
-    </pre>
+    <div className="flex flex-wrap gap-6">
+      <FontMetricStepper label={t("appearanceTab.terminalSize")} value={font.size} step={1} validate={isTerminalFontSize}
+        format={(value) => `${String(value)}px`} onChange={(size) => updateFont({ size })} />
+      <FontMetricStepper label={t("appearanceTab.terminalLineHeight")} value={font.lineHeight} step={0.1} validate={isTerminalLineHeight}
+        format={(value) => value.toFixed(1)} onChange={(lineHeight) => updateFont({ lineHeight })} />
+    </div>
   </SettingsSection>;
 }
 
-
-/** Preserve incomplete numeric drafts while previewing only valid values. */
-function TerminalNumberInput({ value, validate, inputMode, onPreview, onCommit, onInvalid }: {
-  value: number;
-  validate: (value: unknown) => boolean;
-  inputMode: "numeric" | "decimal";
-  onPreview: (value: number) => void;
-  onCommit: (value: number) => void;
-  onInvalid: () => void;
+function FontMetricStepper({ label, value, step, validate, format, onChange }: {
+  label: string; value: number; step: number; validate: (value: unknown) => boolean;
+  format: (value: number) => string; onChange: (value: number) => void;
 }) {
-  const [raw, setRaw] = useState(String(value));
-  const focusedRef = useRef(false);
-  useEffect(() => {
-    if (!focusedRef.current) setRaw(String(value));
-  }, [value]);
-  const validNumber = (draft: string): number | null => {
-    if (!/^\d+(?:\.\d+)?$/.test(draft.trim())) return null;
-    const parsed = Number(draft);
-    return validate(parsed) ? parsed : null;
-  };
-  return <input className="w-full rounded border border-input bg-background p-2" type="text" inputMode={inputMode} value={raw}
-    onFocus={() => { focusedRef.current = true; }}
-    onChange={(event) => {
-      const draft = event.target.value;
-      setRaw(draft);
-      const parsed = validNumber(draft);
-      if (parsed !== null) onPreview(parsed);
-    }}
-    onBlur={() => {
-      focusedRef.current = false;
-      const parsed = validNumber(raw);
-      setRaw(String(parsed ?? value));
-      if (parsed !== null) onCommit(parsed);
-      else onInvalid();
-    }}
-    onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />;
+  const previous = Math.round((value - step) * 10) / 10;
+  const next = Math.round((value + step) * 10) / 10;
+  return <fieldset aria-label={label} className="space-y-1">
+    <legend className="text-dense text-muted-foreground">{label}</legend>
+    <div className="flex items-center gap-2 text-sm">
+      <button type="button" aria-label={`${label} −`} disabled={!validate(previous)} onClick={() => onChange(previous)}
+        className="rounded border border-input px-2 py-1 disabled:opacity-(--opacity-half)">−</button>
+      <span className="min-w-12 text-center tabular-nums">{format(value)}</span>
+      <button type="button" aria-label={`${label} +`} disabled={!validate(next)} onClick={() => onChange(next)}
+        className="rounded border border-input px-2 py-1 disabled:opacity-(--opacity-half)">+</button>
+    </div>
+  </fieldset>;
 }

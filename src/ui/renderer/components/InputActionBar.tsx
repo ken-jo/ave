@@ -36,7 +36,9 @@ import type {
 import { EnvForcedNotice } from "./EnvForcedNotice.js";
 import { PlanUsageComposerControls } from "./PlanUsageComposerControls.js";
 import { errorMessage } from "../../../shared/error-message.js";
-import { apiModelBillingRoute, modelBillingApiAddress, modelBillingDisclosure } from "../utils/model-billing.js";
+import { modelBillingDisclosure } from "../utils/model-billing.js";
+import { useShortcutHint } from "../hooks/use-shortcuts.js";
+import type { ShortcutId } from "../../../shared/shortcuts.js";
 
 export interface InputActionBarProps {
   // Leading; slash/command picker (folds plugins/mcp/skills inside its own categories, so
@@ -399,7 +401,7 @@ export function ComposerStatusRow({
             <PlanUsageComposerControls />
             <ModelQuickPicker
               vendorModel={vendorModel}
-              billingDisclosure={modelBillingDisclosure(statusRow.billingRoute, t)}
+              billingDisclosure={statusRow.billingRoute?.kind === "subscription" ? modelBillingDisclosure(statusRow.billingRoute, t) : undefined}
               displayModel={displayModel}
               enableThinking={enableThinkingChat}
               reasoningAvailable={reasoningAvailable}
@@ -760,7 +762,6 @@ function ModelQuickPicker({
   const chipRef = useRef<HTMLButtonElement>(null);
   const openedByChipRef = useRef(false);
   const [choices, setChoices] = useState<ModelCardChoice[]>([]);
-  const [choiceBilling, setChoiceBilling] = useState<ReadonlyMap<string, string>>(new Map());
   const billingId = useId();
   const [anyPinned, setAnyPinned] = useState(true);
   const runtimeRef = useRef<string>("api");
@@ -770,24 +771,10 @@ function ModelQuickPicker({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    let billingEpoch = 0;
     const take = (settings: AppSettings) => {
       if (cancelled) return;
-      const epoch = ++billingEpoch;
       const nextChoices = modelCardChoices(settings.llm);
       setChoices(nextChoices);
-      setChoiceBilling(new Map());
-      void Promise.allSettled(nextChoices.map(async (choice) => {
-        if (choice.kind === "subscription") return [choice.provider, modelBillingDisclosure({ kind: "subscription", provider: choice.provider }, t) ?? ""] as const;
-        const presetId = choice.current && choice.vendor === "openai-compatible" ? settings.llm.marketplaceProviderPresetId : undefined;
-        const address = modelBillingApiAddress(settings, choice.vendor, presetId);
-        const keyConfigured = await api.hasApiKey(address.credentialId);
-        return [`${choice.vendor}::${choice.modelId}`, modelBillingDisclosure(apiModelBillingRoute(choice.vendor, address.requiresApiKey, keyConfigured), t) ?? ""] as const;
-      })).then((rows) => {
-        if (!cancelled && epoch === billingEpoch) {
-          setChoiceBilling(new Map(rows.flatMap((row) => row.status === "fulfilled" ? [row.value] : [])));
-        }
-      });
       setAnyPinned((settings.llm.pinnedModels ?? []).length > 0);
       runtimeRef.current = settings.llm.activeChatRuntime?.kind ?? "api";
     };
@@ -898,7 +885,7 @@ function ModelQuickPicker({
             const cliDefault = modelLessSubscription && isSubscriptionRuntimeId(subscriptionChoice.provider)
               && subscriptionRuntimeDescriptor(subscriptionChoice.provider).offersCliDefaultModel;
             const vendorText = modelLessSubscription && !cliDefault ? "" : choice.vendorLabel;
-            const billingText = choiceBilling.get(apiChoice ? `${apiChoice.vendor}::${apiChoice.modelId}` : subscriptionChoice?.provider ?? "");
+            const billingText = subscriptionChoice ? modelBillingDisclosure({ kind: "subscription", provider: subscriptionChoice.provider }, t) : undefined;
             const primaryText = cliDefault
               ? t("llmTab.cliDefaultModel")
               : modelLessSubscription ? choice.vendorLabel : (choice.modelId ?? "");
@@ -1002,18 +989,21 @@ export function ShortcutsButton() {
       <PopoverContent align="end" className="w-56 p-2" data-testid="composer-shortcuts-popover">
         <div className="px-1 pb-1.5 text-caption font-medium text-muted-foreground">{label}</div>
         <div className="flex flex-col gap-0.5">
-          <ShortcutRow keys={["⏎"]} label={t("bottomActionRow.shortcutSend")} />
-          <ShortcutRow keys={["⇧⏎"]} label={t("bottomActionRow.shortcutNewline")} />
-          <ShortcutRow keys={["⌘⏎"]} label={t("bottomActionRow.shortcutImmediate")} />
-          <ShortcutRow keys={["Esc"]} label={t("bottomActionRow.shortcutCancel")} />
-          <ShortcutRow keys={["⌘K"]} label={t("bottomActionRow.shortcutPalette")} />
+          <ShortcutRow id="composer.send" label={t("bottomActionRow.shortcutSend")} />
+          <ShortcutRow id="composer.newline" label={t("bottomActionRow.shortcutNewline")} />
+          <ShortcutRow id="composer.sendNow" label={t("bottomActionRow.shortcutImmediate")} />
+          <ShortcutRow id="composer.stop" label={t("bottomActionRow.shortcutCancel")} />
+          <ShortcutRow id="app.commandPalette" label={t("bottomActionRow.shortcutPalette")} />
         </div>
       </PopoverContent>
     </Popover>
   );
 }
 
-function ShortcutRow({ keys, label }: { keys: string[]; label: string }) {
+/** One composer key, read from the shortcut registry so a rebind shows here too. */
+function ShortcutRow({ id, label }: { id: ShortcutId; label: string }) {
+  const hint = useShortcutHint(id);
+  const keys = hint === null ? [] : [hint];
   return (
     <div className="flex items-center justify-between gap-3 rounded px-1 py-0.5 text-caption">
       <span className="text-foreground">{label}</span>

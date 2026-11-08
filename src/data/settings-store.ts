@@ -1,3 +1,4 @@
+import { isZoomLevel } from "../shared/app-zoom.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
@@ -77,7 +78,11 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import {
   normalizeAccelerator,
+  fixedShortcutOwner,
+  nativeAcceleratorIdentity,
+  applyShortcutBindingsPatch,
   normalizeShortcuts,
+  shortcutPlatformOf,
   type ShortcutSettings,
   type ShortcutSettingsPatch,
 } from "../shared/shortcuts.js";
@@ -956,6 +961,10 @@ export class SettingsService {
     if (partial.permissions !== undefined && (!partial.permissions || typeof partial.permissions !== "object" || Array.isArray(partial.permissions) || Object.keys(partial.permissions).some((key) => key !== "ownerAwayAutoSkipMinutes") || !isOwnerAwayAutoSkipMinutes(partial.permissions.ownerAwayAutoSkipMinutes))) {
       throw new OwnerAwayAutoSkipSettingsError();
     }
+    // Validated before anything is applied, so a refused rebind leaves the whole patch unapplied.
+    const nextShortcutBindings = partial.shortcuts?.bindings === undefined
+      ? undefined
+      : applyShortcutBindingsPatch(this.settings.shortcuts, partial.shortcuts.bindings, shortcutPlatformOf(process.platform));
     const previousSettings = this.getAll();
     const nextMarketplace = partial.marketplace
       ? normalizeMarketplace({
@@ -1079,6 +1088,7 @@ export class SettingsService {
       acceptField(nextAppearance, "darkScheme", patch.darkScheme, isDarkSchemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "lightScheme", patch.lightScheme, isLightSchemeId, "appearance", PATCHED_FIELD);
       acceptField(nextAppearance, "glassTint", patch.glassTint, isGlassTint, "appearance", PATCHED_FIELD);
+      acceptField(nextAppearance, "zoomLevel", patch.zoomLevel, isZoomLevel, "appearance", PATCHED_FIELD);
       if ("language" in patch) nextAppearance.language = normalizeLocale(patch.language);
       const fontPatch = patch.font;
       if (fontPatch && typeof fontPatch === "object" && !Array.isArray(fontPatch)) {
@@ -1226,7 +1236,7 @@ export class SettingsService {
         nextShortcuts.toggleWindow = null;
       } else if (rawToggle !== undefined) {
         const accel = normalizeAccelerator(rawToggle);
-        if (accel !== null) {
+        if (accel !== null && nativeAcceleratorIdentity(accel, shortcutPlatformOf(process.platform)) !== null && fixedShortcutOwner(accel, shortcutPlatformOf(process.platform)) === null) {
           nextShortcuts.toggleWindow = accel;
         } else {
           log.warn(
@@ -1237,6 +1247,7 @@ export class SettingsService {
       }
       const rawEnabled = partial.shortcuts.enabled;
       acceptField(nextShortcuts, "enabled", rawEnabled, isBooleanValue, "shortcuts", PATCHED_FIELD);
+      if (nextShortcutBindings !== undefined) nextShortcuts.bindings = nextShortcutBindings;
       this.settings.shortcuts = nextShortcuts;
     }
     if (partial.pluginConfigs) {
@@ -1254,7 +1265,7 @@ export class SettingsService {
       };
     }
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
-    for (const key of ["permissions", "appearance"] as const) {
+    for (const key of ["permissions", "appearance", "shortcuts"] as const) {
       if (!partial[key]) continue;
       for (const listener of this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
@@ -1726,7 +1737,9 @@ export class SettingsService {
         documents: normalizeDocuments(parsed.documents),
         workBoard: normalizeWorkBoard(parsed.workBoard),
         system: normalizeSystem(parsed.system),
-        shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
+        shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts, shortcutPlatformOf(process.platform), (dropped) => {
+          log.warn(`shortcuts.bindings: dropped ${dropped.length} stored rebind(s) this build refuses: ${JSON.stringify(dropped)}`);
+        }),
         plugins: {},
         pluginConfigs: { ...DEFAULT_SETTINGS.pluginConfigs, ...pluginConfigs },
         alerts: normalizeAlertSettings(parsed.alerts, appVersion),

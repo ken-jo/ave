@@ -4,6 +4,7 @@ export const SETTINGS_TABS = [
   "chat",
   "web",
   "startup",
+  "shortcuts",
   "permissions",
   "remote-surfaces",
   "roles",
@@ -25,6 +26,7 @@ export const SETTINGS_TAB_LABEL_KEYS: Record<SettingsTab, string> = {
   chat: "settingsContent.tabChat",
   web: "settingsContent.tabWeb",
   startup: "settingsContent.tabStartup",
+  shortcuts: "settingsContent.tabShortcuts",
   permissions: "settingsContent.tabPermissions",
   "remote-surfaces": "settingsContent.tabRemoteSurfaces",
   roles: "settingsContent.tabRoles",
@@ -57,6 +59,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
     "startup-corp-ca",
     "startup-system-behavior",
   ],
+  shortcuts: ["shortcuts-list"],
   permissions: [
     "permissions-policy-summary",
     "permissions-judge",

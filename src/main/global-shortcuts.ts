@@ -2,7 +2,7 @@
 import { globalShortcut } from "electron";
 import type { BrowserWindow } from "electron";
 import { createLogger } from "../lib/logger.js";
-import { normalizeAccelerator, type ShortcutSettings } from "../shared/shortcuts.js";
+import { fixedShortcutOwner, nativeAcceleratorIdentity, normalizeAccelerator, shortcutPlatformOf, type ShortcutSettings } from "../shared/shortcuts.js";
 import { getMainWindow, getServices } from "./app-state.js";
 import { showOrCreateMainWindow } from "./app-tray.js";
 import { toggleMainWindowVisibility } from "./main-window.js";
@@ -66,10 +66,10 @@ export type ReconcileOutcome =
   | { status: "invalid"; accelerator: string }
   | { status: "conflict"; accelerator: string };
 
-// Register/unregister the toggle accelerator to match the given settings. Idempotent: unbinds the previous accelerator first, then binds the new one
+// Register/unregister the toggle accelerator to match the given settings (only the toggle fields; in-app rebinds are not OS-global). Idempotent: unbinds the previous accelerator first, then binds the new one
 // when `enabled` and a valid accelerator are present.
 export function reconcileGlobalShortcuts(
-  shortcuts: ShortcutSettings,
+  shortcuts: Pick<ShortcutSettings, "toggleWindow" | "enabled">,
   deps: GlobalShortcutsDeps = defaultDeps(),
 ): ReconcileOutcome {
   // Always release the previously-bound accelerator first so a change of accelerator (or disabling) never leaves a stale binding.
@@ -90,7 +90,7 @@ export function reconcileGlobalShortcuts(
   }
 
   const accelerator = normalizeAccelerator(shortcuts.toggleWindow);
-  if (accelerator === null) {
+  if (accelerator === null || nativeAcceleratorIdentity(accelerator, shortcutPlatformOf(process.platform)) === null || fixedShortcutOwner(accelerator, shortcutPlatformOf(process.platform)) !== null) {
     // Malformed accelerator that slipped past the store (defensive) — surface it.
     log.warn("global-shortcuts: invalid accelerator %s", JSON.stringify(shortcuts.toggleWindow));
     deps.notifyFailure(String(shortcuts.toggleWindow));

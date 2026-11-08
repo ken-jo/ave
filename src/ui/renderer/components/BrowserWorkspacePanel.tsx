@@ -20,6 +20,7 @@ export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, 
   const [text, setText] = useState("");
   const [operationFailed, setOperationFailed] = useState(false);
   const searchIdentity = useRef<Pick<BrowserFindRequest, "tabId" | "documentGeneration" | "text"> | null>(null);
+  const zoomFactors = [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
   const active = state?.tabs.find((tab) => tab.tabId === activeTabId);
   const url = browserWorkspaceUrl(active?.url);
   const origin = url ? new URL(url).origin : null;
@@ -49,7 +50,8 @@ export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, 
         <button type="button" className="rounded border px-1 py-1" disabled={!target} onClick={() => { searchIdentity.current = null; if (target) void run(api.stopFind(target)); setText(""); }}>{t("browserWorkspace.stopFind")}</button>
       </form>
       <label className="flex items-center gap-1">{t("browserWorkspace.zoom")}<select aria-label={t("browserWorkspace.zoom")} className="rounded border bg-background px-1 py-1" disabled={!target} value={active?.zoomFactor ?? 1} onChange={(event) => { if (target) void run(api.zoom({ ...target, factor: Number(event.target.value) })); }}>
-        {[0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3].map((factor) => <option key={factor} value={factor}>{Math.round(factor * 100)}%</option>)}
+        {active && !zoomFactors.includes(active.zoomFactor) && <option value={active.zoomFactor}>{Math.round(active.zoomFactor * 100)}%</option>}
+        {zoomFactors.map((factor) => <option key={factor} value={factor}>{Math.round(factor * 100)}%</option>)}
       </select></label>
     </div>
     {(failed || operationFailed) && <p role="alert" className="px-2 pb-1 text-destructive">{t("browserWorkspace.failed")}</p>}

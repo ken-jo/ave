@@ -7,6 +7,15 @@ const key = (k: string, mods: Partial<Record<"metaKey" | "ctrlKey" | "shiftKey" 
 });
 
 describe("panel commands", () => {
+  it.each([true, false])("keeps keypad zero out of project home dispatch (mac=%s)", (isMac) => {
+    const primary = isMac ? { metaKey: true } : { ctrlKey: true };
+    expect(panelCommandFor({ ...key("0", primary), code: "Digit0" }, isMac)).toBe("project.openHome");
+    expect(panelCommandFor({ ...key("0", primary), code: "Numpad0" }, isMac)).toBeNull();
+    expect(panelCommandFor({ ...key("0", { altKey: true }), code: "Numpad0" }, isMac, {
+      toggleWindow: null, enabled: false, bindings: { "project.openHome": "Alt+num0" },
+    })).toBe("project.openHome");
+  });
+
   it("binds each chord on the platform's primary modifier, exactly", () => {
     expect(panelCommandFor(key("ArrowLeft", { metaKey: true, shiftKey: true, altKey: true }), true)).toBe("pane.moveLeft");
     expect(panelCommandFor(key("ArrowLeft", { ctrlKey: true, shiftKey: true, altKey: true }), false)).toBe("pane.moveLeft");
@@ -18,6 +27,12 @@ describe("panel commands", () => {
     expect(panelCommandFor(key("B", { ctrlKey: true, shiftKey: true }), false)).toBe("sidebar.toggleVisibility");
     expect(panelCommandFor(key("Enter", { metaKey: true, shiftKey: true }), true)).toBe("pane.toggleMaximize");
     expect(panelCommandFor(key("t", { metaKey: true }), true)).toBeNull();
+  });
+
+  it("follows a rebind and stops answering the old key", () => {
+    const input = { bindings: { "surface.reopenClosed": "CommandOrControl+Alt+R" }, toggleWindow: null, enabled: false };
+    expect(panelCommandFor(key("r", { metaKey: true, altKey: true }), true, input)).toBe("surface.reopenClosed");
+    expect(panelCommandFor(key("T", { metaKey: true, shiftKey: true }), true, input)).toBeNull();
   });
 
   it("has one row per command", () => {

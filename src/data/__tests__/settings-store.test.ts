@@ -3029,9 +3029,35 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
     await cleanupTmpDir(userDataPath);
   });
 
+  it.each(["darwin", "win32"] as const)("keeps prior toggle values on reserved patches and unsets stored reservations on %s", async (platform) => {
+    const original = process.platform;
+    try {
+      setProcessPlatform(platform);
+      const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      await s.patch({ shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
+      for (const token of ["num0", "numadd", "numsub", "=", "-", "Shift+-", "Shift+Shift+-", "Shift+Shift+=", "Shift+Plus", "Shift+=", "Plus", "NotAKey", "__proto__"]) {
+        for (const modifier of ["CommandOrControl", "CmdOrCtrl", "CommandOrControl+CommandOrControl", platform === "darwin" ? "Cmd+Cmd" : "Ctrl+Ctrl", platform === "darwin" ? "Command+Cmd+Meta+Super" : "Control+Ctrl", platform === "darwin" ? "Command" : "Control", platform === "darwin" ? "Cmd" : "Ctrl"]) {
+          const accelerator = `${modifier}+${token}`;
+          await s.patch({ shortcuts: { toggleWindow: accelerator } });
+          expect(s.get("shortcuts").toggleWindow).toBe("Alt+F1");
+          expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("shortcuts").toggleWindow).toBe("Alt+F1");
+          writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ shortcuts: { toggleWindow: accelerator, enabled: true } }), "utf8");
+          const loaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+          expect(loaded.get("shortcuts")).toEqual({ toggleWindow: null, enabled: true, bindings: {} });
+        }
+      }
+      for (const accelerator of ["Alt+num0", "Alt+numadd", "Alt+numsub", "Alt+End", "Alt+Plus", "Alt+F1", "AltGr+F2"]) {
+        await s.patch({ shortcuts: { toggleWindow: accelerator } });
+        expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("shortcuts").toggleWindow).toBe(accelerator);
+      }
+    } finally {
+      setProcessPlatform(original);
+    }
+  });
+
   it("defaults shortcuts OFF with no accelerator + launch flags false", () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });
     expect(s.get("system").launchAtStartup).toBe(false);
     expect(s.get("system").launchMinimized).toBe(false);
   });
@@ -3042,6 +3068,7 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
     expect(s.get("shortcuts")).toEqual({
       toggleWindow: "CommandOrControl+Shift+Space",
       enabled: true,
+      bindings: {},
     });
     // Reload from disk to confirm round-trip persistence.
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -3092,7 +3119,80 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     // Corrupt fields fall back to defaults (No-Fallback at boundary).
-    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false });
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });
+  });
+
+  // app.search has the same default (CommandOrControl+F) on every platform, so these hold on any CI host.
+  it("persists a rebind and resets it with null", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+    expect(s.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+
+    await reloaded.patch({ shortcuts: { bindings: { "app.search": null } } });
+    expect(reloaded.get("shortcuts").bindings).toEqual({});
+    const again = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(again.get("shortcuts").bindings).toEqual({});
+  });
+
+  it("stores a rebind back to the default as no override", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+F" } } });
+    expect(s.get("shortcuts").bindings).toEqual({});
+  });
+
+  it("keeps the other fields when only a binding is patched", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await s.patch({ shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
+    await s.patch({ shortcuts: { bindings: { "app.search": "CommandOrControl+Shift+Y" } } });
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: "Alt+F1", enabled: true, bindings: { "app.search": "CommandOrControl+Shift+Y" } });
+  });
+
+  it("refuses an unknown row, a fixed row, a bare key and a fixed row's key, applying nothing from that patch", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const refused: Record<string, string>[] = [
+      { "nope.nothing": "CommandOrControl+J" },
+      { "edit.copy": "CommandOrControl+J" },
+      { "app.search": "J" },
+      { "app.search": "CommandOrControl+C" },
+    ];
+    for (const bindings of refused) {
+      await expect(s.patch({ shortcuts: { enabled: true, bindings } })).rejects.toThrow(/shortcut/);
+    }
+    expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });
+  });
+
+  it("drops stale rebinds on load and keeps the valid ones", () => {
+    writeFileSync(
+      join(userDataPath, "ave-settings.json"),
+      currentSettingsJson({
+        shortcuts: {
+          toggleWindow: null,
+          enabled: false,
+          bindings: {
+            "app.search": "CommandOrControl+Shift+Y",
+            "removed.row": "CommandOrControl+J",
+            "edit.copy": "CommandOrControl+J",
+            "menu.settings": "CommandOrControl+,",
+            "app.commandPalette": 7,
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(s.get("shortcuts").bindings).toEqual({ "app.search": "CommandOrControl+Shift+Y" });
+      const logged = JSON.stringify(warn.mock.calls.filter((call) => JSON.stringify(call).includes("shortcuts.bindings: dropped")));
+      expect(logged).toContain("dropped 4 stored rebind");
+      for (const reason of ["unknown-id", "read-only", "equals-default", "malformed"]) expect(logged).toContain(reason);
+      expect(logged).toContain("removed.row");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -4120,5 +4220,27 @@ describe("legacy onboarding completion evidence", () => {
     } finally {
       await cleanupTmpDir(userDataPath);
     }
+  });
+});
+
+describe("SettingsService shortcuts change notification", () => {
+  let userDataPath: string;
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-store-shortcut-listeners-"));
+    mockedElectron.safeStorage.isAsyncEncryptionAvailable.mockResolvedValue(false);
+  });
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("tells shortcuts listeners about a rebind, so the native menus can rebuild", async () => {
+    const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const listener = vi.fn(() => s.get("shortcuts").bindings);
+    s.onChanged("shortcuts", listener);
+    await s.patch({ shortcuts: { bindings: { "menu.settings": "CommandOrControl+Alt+P" } } });
+    expect(listener).toHaveBeenCalledOnce();
+    expect(listener.mock.results[0]?.value).toEqual({ "menu.settings": "CommandOrControl+Alt+P" });
+    await s.patch({ chat: { autoCompact: false } });
+    expect(listener).toHaveBeenCalledOnce();
   });
 });

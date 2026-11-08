@@ -1,3 +1,4 @@
+import { isZoomLevel, normalizeZoomLevel } from "./app-zoom.js";
 import { normalizeLocale, type Locale } from "../i18n/locale.js";
 import { FONT_SIZE_SCALE_VALUES, isValidFontFamilyOverride, type FontSizeScale, type AppearanceFontSettings } from "./appearance-font.js";
 
@@ -13,6 +14,7 @@ export interface AppearanceSettings {
   darkScheme: DarkSchemeId;
   lightScheme: LightSchemeId;
   font?: AppearanceFontSettings;
+  zoomLevel?: number;
   terminalFont: TerminalFontSettings;
   language?: Locale;
   /** How much of the card colour covers the macOS window material, 0–100 (100 = opaque). Absent = {@link DEFAULT_GLASS_TINT}. */
@@ -23,7 +25,7 @@ const DEFAULT_TERMINAL_FONT: Readonly<TerminalFontSettings> = Object.freeze({
 });
 export const DEFAULT_APPEARANCE: Readonly<AppearanceSettings> = Object.freeze({
   schemaVersion: 3, mode: "system", darkScheme: "github-dark", lightScheme: "github-light",
-  terminalFont: DEFAULT_TERMINAL_FONT, language: "en",
+  terminalFont: DEFAULT_TERMINAL_FONT, language: "en", zoomLevel: 0,
 });
 /**
  * The glass tint is ONE user value that drives both shells: 0 is the most see-through tint that still keeps the sidebar's muted
@@ -76,6 +78,8 @@ function isAppearanceRecord(value: unknown): value is Record<string, unknown> {
 export function normalizeAppearance(input: unknown, warn: (field: string) => void = (field) => console.warn(`Invalid appearance setting: ${field}`)): AppearanceSettings {
   const obj = isAppearanceRecord(input) ? input : {};
   const result: AppearanceSettings = { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont }, language: normalizeLocale(obj.language) };
+  result.zoomLevel = normalizeZoomLevel(obj.zoomLevel);
+  if ("zoomLevel" in obj && !isZoomLevel(obj.zoomLevel)) warn("zoomLevel");
   const font = normalizeAppearanceFont(obj.font);
   if (font) result.font = font;
   if (obj.schemaVersion === 2) {

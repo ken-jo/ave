@@ -399,6 +399,21 @@ describe("Sidebar legacy default-root session handling", () => {
 
 });
 
+describe("Sidebar card placement", () => {
+  it.each([false, true])("starts one band down on every platform (isDarwin=%s)", (isDarwin) => {
+    (window as unknown as { avePlatform?: unknown }).avePlatform = { isDarwin, windowControls: isDarwin ? "native" : "trailing" };
+    const { getByTestId, restore } = renderSidebar();
+    try {
+      const aside = getByTestId("primary-sidebar");
+      expect(aside).toHaveClass("top-(--shell-card-top)");
+      expect(aside.className).not.toMatch(/shell-card-top-darwin/);
+    } finally {
+      restore();
+      delete (window as unknown as { avePlatform?: unknown }).avePlatform;
+    }
+  });
+});
+
 describe("Sidebar stacked sections", () => {
   it("draws one tree, with the 기본 프로젝트 group first and no tab controls", () => {
     const { getByTestId, getByRole, queryByTestId, restore } = renderSidebar();

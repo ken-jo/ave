@@ -48,6 +48,7 @@ import { FolderView } from "./components/folder-view/FolderView.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
 import { getWebSurfaces } from "./preview/web-surfaces.js";
 import { PANEL_COMMANDS, panelCommandFor, type PanelCommandId } from "./components/panel-commands.js";
+import { matchesShortcut, useShortcutSettings, useShortcutSettingsSync, withShortcutHint } from "./hooks/use-shortcuts.js";
 import { AgentStatusGlyph } from "./components/AgentStatusGlyph.js";
 import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroups, type PaneSplitAxis } from "./components/PaneFrame.js";
 import type { DropTarget } from "./components/pane-drop.js";
@@ -153,6 +154,8 @@ function hiddenBrowserPaneOf(groups: ReturnType<typeof useChatGroups>, surfaces:
 export function App() {
   const { locale, t } = useTranslation();
   const api = useMemo(() => getApi(), []);
+  useShortcutSettingsSync(api);
+  const shortcutSettings = useShortcutSettings();
 
   // Prevent dropped files from navigating the window to file://.
   useWindowFileDropGuard();
@@ -884,7 +887,7 @@ export function App() {
       return;
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.shiftKey && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "d") {
+      if (matchesShortcut("app.devTools", e)) {
         e.preventDefault();
         setDevToolsOpen((v) => !v);
       }
@@ -1876,10 +1879,10 @@ export function App() {
         locale,
       }).concat(PANEL_COMMANDS.map((command) => ({
         id: command.id,
-        label: isDarwin() ? `${t(command.labelKey)}  ${command.hint}` : t(command.labelKey),
+        label: withShortcutHint(t(command.labelKey), command.id, shortcutSettings),
         run: () => runPanelCommand(command.id),
       }))),
-    [pluginViews, locale, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView, runPanelCommand, t],
+    [pluginViews, locale, handleNewChat, handleViewSelect, onOpenSettings, showInstanceView, runPanelCommand, t, shortcutSettings],
   );
 
   const onNewChatForProject = useCallback((project: { projectRoot?: string; projectName?: string }) => {
@@ -2366,9 +2369,8 @@ export function App() {
             onQueueChange={setOverlayQueue}
           >
             {/* `relative` makes THIS full-height shell column the positioning
-                context for the floating-card Sidebar, so the card's `top-0` reaches
-                the window top — extending UP into the traffic-light band and
-                reclaiming that vertical space on the left. */}
+                context for the floating-card Sidebar, which starts one band down
+                (`--shell-card-top`) on the tiles' top line. */}
             <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative flex h-screen min-w-0 flex-col overflow-hidden">
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it

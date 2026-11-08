@@ -21,7 +21,7 @@ async function setup() {
   let live = true;
   const events = new EventEmitter();
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
-  const guest = Object.assign(events, { id: 7, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage }) as unknown as WebContents;
+  const guest = Object.assign(events, { id: 7, session: {}, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage }) as unknown as WebContents;
   const onError = vi.fn(); const promptPermission = vi.fn(async () => true);
   const service = new BrowserWorkspaceService({ store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);

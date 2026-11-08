@@ -16,6 +16,7 @@ import {
   Store,
   Info,
   Rocket,
+  Keyboard,
   Network,
   ChevronLeft,
   ChevronRight,
@@ -40,6 +41,7 @@ import { PluginConfigTab } from "./tabs/PluginConfigTab.js";
 import { GitMarketplaceTab } from "./tabs/git-marketplace/GitMarketplaceTab.js";
 import { AboutTab, useAppInfo } from "./tabs/AboutTab.js";
 import { StartupTab } from "./tabs/StartupTab.js";
+import { ShortcutsTab } from "./tabs/ShortcutsTab.js";
 import { useSettingsOrchestration } from "./hooks/use-settings-orchestration.js";
 import { useSettingsSectionArrival } from "./hooks/use-settings-tab.js";
 import { useDebouncedSave } from "./hooks/use-debounced-save.js";
@@ -73,6 +75,7 @@ const SETTINGS_NAV: { group: string; items: SettingsNavItem[] }[] = [
       { value: "chat", icon: MessageSquare, labelKey: SETTINGS_TAB_LABEL_KEYS["chat"] },
       { value: "web", icon: Globe, labelKey: SETTINGS_TAB_LABEL_KEYS["web"] },
       { value: "startup", icon: Rocket, labelKey: SETTINGS_TAB_LABEL_KEYS["startup"] },
+      { value: "shortcuts", icon: Keyboard, labelKey: SETTINGS_TAB_LABEL_KEYS.shortcuts },
     ],
   },
   {
@@ -631,6 +634,7 @@ export function SettingsContent({
           </TabsContent>
 
           <TabsContent value="startup" className={tabContentCls}><StartupTab /></TabsContent>
+          <TabsContent value="shortcuts" className={tabContentCls}><ShortcutsTab /></TabsContent>
           <TabsContent value="permissions" className={tabContentCls}>
             <PermissionsTab
               exactDenyDraft={exactDenyDraft}

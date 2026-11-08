@@ -641,7 +641,6 @@ export const CHANNELS = {
     minimize: "window:minimize",
     toggleMaximize: "window:toggleMaximize",
     close: "window:close",
-    syncTitleBarTheme: "window:syncTitleBarTheme",
     maximizedChanged: "window:maximizedChanged",
     fullscreenChanged: "window:fullscreenChanged",
     openHtmlPreview: "ave:window:open-html-preview",

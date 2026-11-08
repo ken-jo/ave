@@ -6,6 +6,7 @@ import {
 } from "../../../shared/processing-display-level.js";
 import { classifyTurnEntries } from "../utils/classify-turn-entries.js";
 import { shouldShowAssistantEntry } from "../utils/processing-display-policy.js";
+import { matchesShortcut } from "./use-shortcuts.js";
 
 interface SearchVisibility {
   processingDisplayLevel?: ProcessingDisplayLevel;
@@ -26,10 +27,10 @@ export function useSearch(
   const [caseSensitive, setCaseSensitive] = useState(false);
   const [matchIdx, setMatchIdx] = useState(0);
 
-  // Ctrl/Cmd+F opens the unified search surface.
+  // The search key (⌘F / Ctrl+F by default) opens the unified search surface.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+      if (matchesShortcut("app.search", e)) {
         e.preventDefault();
         setOpen(true);
       }

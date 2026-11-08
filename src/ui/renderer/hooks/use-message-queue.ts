@@ -16,6 +16,7 @@ import type { ChatStreamEvent } from "../../../lib/chat-stream-state.js";
 import { captureComposerKeyboardIntent, type ComposerHandle, type ComposerSurface } from "../components/Composer.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { augmentFileReferenceMarkers } from "../utils/compose.js";
+import { matchesShortcut } from "./use-shortcuts.js";
 
 /**
  * Mid-turn guidance: the brake-point hand-off (`tool_end` → engine round
@@ -455,8 +456,7 @@ export function useMessageQueue({
   // 가드 (streaming) 제거 — 사용자 보고 2026-05-15 (idle ⌘⏎ 가 무동작이던 회귀).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key !== "Enter") return;
-      if (!(e.metaKey || e.ctrlKey)) return;
+      if (!matchesShortcut("composer.sendNow", e)) return;
       // 한국어 IME composing 가드 제거 — composing 시 첫 ⌘⏎ 가 IME commit 으로 소비되고 두 번째 ⌘⏎ 가 동작하는 회귀 (사용자 보고 2026-05-15). 미확정 음절 손실은 마이너 —
       // 사용자 의도 (인터럽트) 가 명확.
       if (blockingSurfaceCovers(e.target)) return;
@@ -472,8 +472,7 @@ export function useMessageQueue({
   useEffect(() => {
     if (!guide) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key !== "k" && e.key !== "K") return;
-      if (!(e.metaKey || e.ctrlKey)) return;
+      if (!matchesShortcut("composer.guide", e)) return;
       if (e.isComposing) return;
       if (blockingSurfaceCovers(e.target)) return;
       const text = question.trim();
