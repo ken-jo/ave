@@ -55,6 +55,13 @@
    - New colors, shadows, focus rings, and motion values must enter through shared tokens when they represent reusable UI language.
 6. Localization is a product requirement.
    - New user-facing strings must be added to both src/i18n/messages/en.ts and ko.ts.
+7. Attention is spent on decisions, not on activity.
+   - The next decision a person must make is visible without visiting each pane: a waiting
+     card is marked wherever it is hidden (see `PendingAnswerDot`).
+   - Normal execution stays quiet. A notice is sent only when it is absolutely necessary,
+     following VS Code's notification guideline ("only sending notifications when absolutely
+     necessary", https://code.visualstudio.com/api/ux-guidelines/notifications); the
+     notification hierarchy under Interaction states picks the narrowest surface that fits.
 
 ## Visual language
 - Color:
@@ -480,7 +487,7 @@ determine whether a tile can split or a panel can dock.
 - Disabled: preserve legibility and explain disabled controls through tooltip or adjacent status only when the reason is not obvious.
 - Highlight: a highlight is carried by the element it marks — the element takes the mark and the ring is drawn on it — never by a separate box placed at coordinates copied from it. A copied rect goes stale on every layout change its copier did not subscribe to, and most in-app shifts fire neither resize nor scroll; a surface anchored to the element (the shared popover) keeps the relation for free.
 - Offline/slow network: keep local app navigation responsive and isolate remote failure to the affected operation.
-- Notification hierarchy (pick the narrowest surface that fits):
+- Notification hierarchy (pick the narrowest surface that fits; it serves the Attention principle — when no surface is necessary, send nothing):
   - **Inline status** next to the affected control — the default for operation results.
   - **Toast** for transient confirmations of a user-initiated action (e.g. saved); auto-dismissing, never load-bearing.
   - **Banner** for persistent, page-scoped conditions that need action (e.g. update available); dismissible, stays until resolved.
