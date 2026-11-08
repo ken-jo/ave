@@ -175,7 +175,7 @@ describe("browser tools", () => {
     page.actions.prepare = async (target) => options.onPrepare?.(target);
     const browserTools = createBrowserTools<FakeGuest>({
       windowIdForHostedSession: (sessionId) => sessionId === HOST_SESSION ? 1 : sessionId === OTHER_WINDOW_SESSION ? 2 : null,
-      liveOriginSessionId: (sessionId) => sessionId === CHILD_SESSION ? HOST_SESSION : undefined,
+      liveOriginSessionId: (sessionId) => sessionId === CHILD_SESSION || sessionId === "child-b" ? HOST_SESSION : undefined,
       tabs,
       pickUploadFiles: async () => null,
       opensAgentTabs: () => options.noTabOpener !== true,
@@ -363,6 +363,32 @@ describe("browser tools", () => {
     });
     return { completed, begun };
   }
+
+  it("publishes each concurrent child's opened page for composer previews", async () => {
+    const observed = browserObservations();
+    const prepared = new Set<number>();
+    const h = harness({ onPrepare: target => { prepared.add(target.tab.guest!.id); h.tabs.documentChanged(target.tab.guest!.id); } });
+    const navigate = h.page.actions.navigate;
+    h.page.actions.navigate = async (target, url, origin) => {
+      if (!prepared.has(target.tab.guest!.id)) h.tabs.documentChanged(target.tab.guest!.id);
+      if (target.signal.aborted) throw new Error("browser document changed");
+      return navigate(target, url, origin);
+    };
+    const children = [CHILD_SESSION, "child-b"];
+    const actions = children.map(sessionId => runWithAgentObservationTurn({ sessionId, turnId: "open-pages" }, () =>
+      h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/" + sessionId }, sessionId)));
+    await vi.waitFor(() => expect(h.ops.filter(op => op.op === "new")).toHaveLength(2));
+    for (const [index, op] of h.ops.filter(op => op.op === "new").entries()) {
+      const guest = new FakeGuest(601 + index, "about:blank");
+      h.tabs.guestAttached(guest, 1);
+      h.tabs.bindTab(1, { tabId: "child-page-" + index, webContentsId: guest.id, requestId: op.requestId! });
+    }
+    expect((await Promise.all(actions)).every(result => !result.isError)).toBe(true);
+    expect(observed.completed.map(entry => entry.identity.sessionId).sort()).toEqual([...children].sort());
+    expect(new Set(observed.completed.map(entry => entry.detail.rendererTabId)).size).toBe(2);
+    expect(h.tabs.listTabs(1).every(tab => tab.mode === "agent-active")).toBe(true);
+    expect(h.tabs.activeBrowserTab(1)).toBeUndefined();
+  });
 
   it("observes admitted model commands without retaining input strings", async () => {
     const observed = browserObservations();
