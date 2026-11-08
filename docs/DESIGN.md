@@ -338,11 +338,14 @@ state never moves the row.
 Working and a badge are separate inputs: a conversation can be running while one of its
 side chats waits on a card, and the square then shows the loader with the warning badge.
 `--warning` means "needs your answer" and nothing else; a running agent is never warning.
-Every badge carries an aria-label. A badge never takes the pointer — it overhangs the square,
-and a row's hover control (the sidebar's pin) sits under that corner — so the square is the
-tooltip for what it shows, and a sidebar row's hover preview names it too; where the surface's own
-accessible name already says the state (a sidebar row's button, a sub-agent's or a run's
-status text), the slot is hidden from assistive tech so it is not read twice. The loader
+Every badge carries an aria-label. A badge never takes the pointer: it overhangs the square,
+and a row's hover control (the sidebar's pin) sits under that corner. Where the square takes
+the pointer (a tab, a sub-agent or run row, a group row, a tile header) it is the tooltip for
+what it shows. In a sidebar row the whole slot is pointer-transparent too, so the pin under it
+gets the click, and the row's hover preview carries the state instead ("running", "awaiting
+your answer"). Where the surface's own accessible name already says the state (a sidebar row's
+button, which also names a non-main family; a sub-agent's or a run's status text), the slot is
+hidden from assistive tech so it is not read twice. The loader
 stops spinning under reduced motion and the label carries the state. A conversation stays
 working while any of its chats is — the main turn or its side chat — and one selector
 (`workingSessionIds` in `chat-group-session-registry.ts`) decides it for the sidebar rows
