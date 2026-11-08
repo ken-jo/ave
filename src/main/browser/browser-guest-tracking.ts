@@ -23,12 +23,15 @@ export function setBrowserGuestZoomFactor(contents: WebContents, factor: number)
   contents.setZoomFactor(factor);
 }
 
-export function preserveBrowserGuestZoom(windowId: number, change: () => void): void {
-  const guests = [...trackedGuests].filter(([contents, owner]) => owner === windowId && !contents.isDestroyed())
+export function preserveBrowserGuestZoom(change: () => void): void {
+  const guests = [...trackedGuests].filter(([contents]) => !contents.isDestroyed())
     .map(([contents]) => ({ contents, factor: contents.getZoomFactor() }));
-  change();
-  for (const { contents, factor } of guests) {
-    if (!contents.isDestroyed()) setBrowserGuestZoomFactor(contents, factor);
+  try {
+    change();
+  } finally {
+    for (const { contents, factor } of guests) {
+      if (!contents.isDestroyed()) setBrowserGuestZoomFactor(contents, factor);
+    }
   }
 }
 

@@ -13,7 +13,9 @@ vi.mock("../app-state.js", () => ({
  getServices: () => ({ settingsService: { get: () => state.appearance, patch: state.patch } }),
 }));
 vi.mock("../../ipc/domains/settings.js", () => ({ broadcastSettingsSnapshot: state.broadcast }));
+vi.mock("../browser/browser-tab-registry.js", () => ({ browserTabRegistry: { guestAttached: vi.fn(), guestDestroyed: vi.fn() } }));
 import { applyAppZoomLevel, bindAppWindowZoom, runAppZoomCommand } from "../app-zoom.js";
+import { setBrowserGuestZoomFactor, trackBrowserGuest } from "../browser/browser-guest-tracking.js";
 
 beforeEach(() => {
  state.appearance = { ...DEFAULT_APPEARANCE, zoomLevel: 0 };
@@ -167,4 +169,35 @@ it.each([
  await vi.waitFor(() => expect(state.broadcast).toHaveBeenCalledTimes(2));
  expect(state.patch.mock.calls.map(([patch]) => patch.appearance.zoomLevel)).toEqual([blockedLevel, expected]);
  expect(state.appearance.zoomLevel).toBe(expected);
+});
+
+it.each(["setting", "did-navigate", "did-finish-load"])("preserves both shells' browser factors before shared-origin propagation on %s", (trigger) => {
+ const factors = [1.25, 1.5];
+ const guests = factors.map((_, index) => Object.assign(new EventEmitter(), {
+  id: 100 + index, session: {}, debugger: new EventEmitter(),
+  getURL: () => `https://site${index}.example/`, isDestroyed: () => false,
+  getZoomFactor: () => factors[index], setZoomFactor: (factor: number) => { factors[index] = factor; },
+ }));
+ const shells = guests.map((guest, index) => {
+  trackBrowserGuest(guest as never, index + 1);
+  setBrowserGuestZoomFactor(guest as never, index === 0 ? 1.25 : 1.5);
+  const contents = Object.assign(new EventEmitter(), {
+   isDestroyed: () => false, setVisualZoomLevelLimits: vi.fn(async () => {}),
+   setZoomLevel: vi.fn((level: number) => { factors.fill(1.2 ** level); }),
+  });
+  const shell = { id: index + 1, isDestroyed: () => false, webContents: contents };
+  bindAppWindowZoom(shell as never);
+  return shell;
+ });
+ state.windows = shells;
+ state.appearance.zoomLevel = 2;
+ try {
+  if (trigger === "setting") applyAppZoomLevel(2);
+  else shells[0]?.webContents.emit(trigger);
+  expect(factors).toEqual([1.25, 1.5]);
+  for (const guest of guests) guest.emit("did-finish-load");
+  expect(factors).toEqual([1.25, 1.5]);
+ } finally {
+  for (const guest of guests) guest.emit("destroyed");
+ }
 });

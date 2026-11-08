@@ -28,16 +28,19 @@ function enqueueZoomCommand(command: ZoomCommand, resolveLevel = (level: number)
 }
 
 export function applyAppZoomLevel(level: number | undefined): void {
-  for (const win of getMainWindows()) {
-    if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
-      // MCP app and plugin frames follow shell zoom; browser guests retain their own per-site factor.
-      preserveBrowserGuestZoom(win.id, () => win.webContents.setZoomLevel(normalizeZoomLevel(level)));
+  // Shell origins share zoom, so capture all browser guests before changing any shell.
+  preserveBrowserGuestZoom(() => {
+    for (const win of getMainWindows()) {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) {
+        // MCP app and plugin frames follow shell zoom; browser guests retain their own per-site factor.
+        win.webContents.setZoomLevel(normalizeZoomLevel(level));
+      }
     }
-  }
+  });
 }
 
 export function bindAppWindowZoom(win: BrowserWindow): void {
-  const restoreLevel = () => preserveBrowserGuestZoom(win.id, () => win.webContents.setZoomLevel(normalizeZoomLevel(getServices()?.settingsService.get("appearance").zoomLevel)));
+  const restoreLevel = () => preserveBrowserGuestZoom(() => win.webContents.setZoomLevel(normalizeZoomLevel(getServices()?.settingsService.get("appearance").zoomLevel)));
   win.webContents.on("did-navigate", restoreLevel);
   win.webContents.on("did-finish-load", restoreLevel);
   void win.webContents.setVisualZoomLevelLimits(1, 1).catch(() => log.warn("Could not disable visual zoom"));

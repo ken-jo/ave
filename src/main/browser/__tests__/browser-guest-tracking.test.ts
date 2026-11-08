@@ -65,7 +65,7 @@ it("restores browser site zoom on attach, app zoom changes, and site navigation"
  trackBrowserGuest(native, 3);
  expect(factor).toBe(1);
  setBrowserGuestZoomFactor(native, 1.25);
- preserveBrowserGuestZoom(3, () => { factor = 1.728; });
+ preserveBrowserGuestZoom(() => { factor = 1.728; });
  expect(factor).toBe(1.25);
  url = "https://b.example/";
  contents.emit("did-navigate");
@@ -76,10 +76,10 @@ it("restores browser site zoom on attach, app zoom changes, and site navigation"
  contents.emit("did-finish-load");
  expect(factor).toBe(1.25);
  const appFrame = { setZoomFactor: vi.fn() };
- preserveBrowserGuestZoom(4, () => {});
+ preserveBrowserGuestZoom(() => {});
  expect(appFrame.setZoomFactor).not.toHaveBeenCalled();
  contents.emit("destroyed");
  contents.setZoomFactor.mockClear();
- preserveBrowserGuestZoom(3, () => {});
+ preserveBrowserGuestZoom(() => {});
  expect(contents.setZoomFactor).not.toHaveBeenCalled();
 });
