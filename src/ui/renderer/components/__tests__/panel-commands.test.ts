@@ -7,6 +7,15 @@ const key = (k: string, mods: Partial<Record<"metaKey" | "ctrlKey" | "shiftKey" 
 });
 
 describe("panel commands", () => {
+  it.each([true, false])("keeps keypad zero out of project home dispatch (mac=%s)", (isMac) => {
+    const primary = isMac ? { metaKey: true } : { ctrlKey: true };
+    expect(panelCommandFor({ ...key("0", primary), code: "Digit0" }, isMac)).toBe("project.openHome");
+    expect(panelCommandFor({ ...key("0", primary), code: "Numpad0" }, isMac)).toBeNull();
+    expect(panelCommandFor({ ...key("0", { altKey: true }), code: "Numpad0" }, isMac, {
+      toggleWindow: null, enabled: false, bindings: { "project.openHome": "Alt+num0" },
+    })).toBe("project.openHome");
+  });
+
   it("binds each chord on the platform's primary modifier, exactly", () => {
     expect(panelCommandFor(key("ArrowLeft", { metaKey: true, shiftKey: true, altKey: true }), true)).toBe("pane.moveLeft");
     expect(panelCommandFor(key("ArrowLeft", { ctrlKey: true, shiftKey: true, altKey: true }), false)).toBe("pane.moveLeft");

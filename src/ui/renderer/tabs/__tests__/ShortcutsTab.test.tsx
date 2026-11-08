@@ -44,6 +44,23 @@ afterEach(() => {
 });
 
 describe("ShortcutsTab", () => {
+  it.each([
+    ["0", "Numpad0", "num0", "be_main.menuResetZoom"],
+    ["+", "NumpadAdd", "numadd", "be_main.menuZoomIn"],
+    ["-", "NumpadSubtract", "numsub", "be_main.menuZoomOut"],
+  ] as const)("refuses fixed keypad %s then records an Alt binding", async (key, code, token, labelKey) => {
+    const api = installApi();
+    render(<Harness api={api} />);
+    fireEvent.click(await screen.findByTestId("shortcuts:record-app.search"));
+    press({ key, code, ctrlKey: true });
+    expect(screen.getByTestId("shortcuts:notice-app.search").textContent).toContain(ko[labelKey]);
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    expect(screen.getByTestId("shortcuts:record-app.search").getAttribute("aria-pressed")).toBe("true");
+    press({ key, code, altKey: true });
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { bindings: { "app.search": `Alt+${token}` } } }));
+    await waitFor(() => expect(matchesShortcut("app.search", new KeyboardEvent("keydown", { key, code, altKey: true }))).toBe(true));
+  });
+
   it("groups rows by scope, shows platform keycaps, and marks fixed rows with their reason", async () => {
     installApi();
     render(<Harness api={(window as unknown as { aveApi: unknown }).aveApi} />);
@@ -64,11 +81,11 @@ describe("ShortcutsTab", () => {
     const rows = [
       ["menu.zoomIn", "be_main.menuZoomIn", "Ctrl="],
       ["menu.zoomInShifted", "be_main.menuZoomIn", "CtrlShift="],
-      ["menu.zoomInKeypad", "be_main.menuZoomIn", "Ctrlnumadd"],
+      ["menu.zoomInKeypad", "be_main.menuZoomIn", "CtrlNum +"],
       ["menu.zoomOut", "be_main.menuZoomOut", "Ctrl-"],
       ["menu.zoomOutShifted", "be_main.menuZoomOut", "CtrlShift-"],
-      ["menu.zoomOutKeypad", "be_main.menuZoomOut", "Ctrlnumsub"],
-      ["menu.resetZoom", "be_main.menuResetZoom", "Ctrlnum0"],
+      ["menu.zoomOutKeypad", "be_main.menuZoomOut", "CtrlNum −"],
+      ["menu.resetZoom", "be_main.menuResetZoom", "CtrlNum 0"],
     ] as const;
     for (const [id, labelKey, keycaps] of rows) {
       const row = screen.getByTestId(`shortcuts:row-${id}`);

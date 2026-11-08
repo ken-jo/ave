@@ -196,12 +196,15 @@ const CODE_PUNCTUATION: Readonly<Record<string, string>> = {
 
 const MODIFIER_KEY_NAMES: ReadonlySet<string> = new Set(["Control", "Shift", "Alt", "Meta", "OS", "AltGraph", "CapsLock", "Fn", "Hyper", "Super"]);
 
-/** The key token an event pressed. The layout's printed key wins, as in native menu accelerators and VS Code: ⌘A on
+/** The key token an event pressed. Printable keypad keys retain their keypad identity. Otherwise the printed key wins: ⌘A on
  * AZERTY is the key printed A, and ⌘K on Dvorak is the key printed K. The physical `code` is the fallback only when the
  * printed key is not a bindable ASCII token: Option turning ⌥S into "ß", a Hangul input source reporting a jamo, a dead
  * key, or Shift turning 1 into "!". */
 function eventKeyToken(event: ShortcutKeyEvent): string | null {
   const key = event.key;
+  if (event.code === "Numpad0" && key === "0") return "num0";
+  if (event.code === "NumpadAdd" && key === "+") return "numadd";
+  if (event.code === "NumpadSubtract" && key === "-") return "numsub";
   if (key === " " || key === "Spacebar") return "Space";
   if (key === "ArrowUp") return "Up";
   if (key === "ArrowDown") return "Down";
@@ -259,11 +262,15 @@ export function acceleratorFromEvent(event: ShortcutKeyEvent, platform: Shortcut
   return { kind: "accelerator", accelerator: parts.join("+") };
 }
 
+const KEYPAD_KEY_LABELS = { num0: "Num 0", numadd: "Num +", numsub: "Num −" };
+
 const DARWIN_KEY_GLYPHS: Readonly<Record<string, string>> = {
+  ...KEYPAD_KEY_LABELS,
   Enter: "↩", Tab: "⇥", Esc: "⎋", Backspace: "⌫", Delete: "⌦", Up: "↑", Down: "↓", Left: "←", Right: "→",
   PageUp: "⇞", PageDown: "⇟", Home: "↖", End: "↘", Plus: "+",
 };
 const OTHER_KEY_LABELS: Readonly<Record<string, string>> = {
+  ...KEYPAD_KEY_LABELS,
   Up: "↑", Down: "↓", Left: "←", Right: "→", Plus: "+",
 };
 

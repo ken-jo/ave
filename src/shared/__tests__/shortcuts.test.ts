@@ -29,6 +29,42 @@ function ev(key: string, mods: Partial<ShortcutKeyEvent> = {}): ShortcutKeyEvent
   return { key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods };
 }
 
+describe("keypad identity", () => {
+  const keys = [
+    ["0", "Numpad0", "num0", "0", "menu.resetZoom", "Num 0"],
+    ["+", "NumpadAdd", "numadd", "Plus", "menu.zoomInKeypad", "Num +"],
+    ["-", "NumpadSubtract", "numsub", "-", "menu.zoomOutKeypad", "Num −"],
+  ] as const;
+
+  it.each(["darwin", "other"] as const)("records, reserves and matches distinct keypad chords on %s", (platform) => {
+    const primary = platform === "darwin" ? { metaKey: true } : { ctrlKey: true };
+    for (const [printed, code, token, ordinary, ownerId, label] of keys) {
+      const event = ev(printed, { code, altKey: true });
+      const binding = `Alt+${token}`;
+      const settings = { toggleWindow: null, enabled: false, bindings: {} };
+      expect(shortcutBindingRefusal("app.search", binding, platform, settings)).toBeNull();
+      const bindings = applyShortcutBindingsPatch(settings, { "app.search": binding }, platform);
+      expect(loadShortcutBindings(bindings, platform).bindings).toEqual(bindings);
+      expect(matchesAccelerator(resolveShortcut("app.search", { ...settings, bindings }, platform), event, platform)).toBe(true);
+      expect(acceleratorFromEvent(event, platform)).toEqual({ kind: "accelerator", accelerator: binding });
+      expect(matchesAccelerator(`Alt+${ordinary}`, event, platform)).toBe(false);
+      expect(matchesAccelerator(binding, ev(printed, { altKey: true }), platform)).toBe(false);
+      const recorded = acceleratorFromEvent(ev(printed, { code, ...primary }), platform);
+      expect(recorded).toEqual({ kind: "accelerator", accelerator: `CommandOrControl+${token}` });
+      if (recorded.kind !== "accelerator") throw new Error("Expected accelerator");
+      expect(shortcutBindingRefusal("app.search", recorded.accelerator, platform, settings)).toEqual({ reason: "fixed-key", ownerId });
+      expect(() => applyShortcutBindingsPatch(settings, { "app.search": recorded.accelerator }, platform)).toThrow();
+      expect(acceleratorKeycaps(binding, platform).at(-1)).toBe(label);
+    }
+    const home = resolveShortcut("project.openHome", NO_SHORTCUT_OVERRIDES, platform);
+    expect(matchesAccelerator(home, ev("0", { code: "Digit0", ...primary }), platform)).toBe(true);
+    expect(matchesAccelerator(home, ev("0", { code: "Numpad0", ...primary }), platform)).toBe(false);
+    expect(acceleratorFromEvent(ev("Insert", { code: "Numpad0", ...primary }), platform)).toEqual({ kind: "unsupported" });
+    expect(matchesAccelerator("CommandOrControl+num0", ev("Insert", { code: "Numpad0", ...primary }), platform)).toBe(false);
+    expect(matchesAccelerator("CommandOrControl+End", ev("End", { code: "Numpad1", ...primary }), platform)).toBe(true);
+  });
+});
+
 describe("normalizeAccelerator", () => {
   it("accepts a valid accelerator, trimmed", () => {
     expect(normalizeAccelerator("  CommandOrControl+Shift+Space  ")).toBe(
