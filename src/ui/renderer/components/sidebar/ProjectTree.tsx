@@ -330,7 +330,10 @@ function SessionRow({
               data-testid={`sidebar-session-unread-${session.id}`}
             />
           ) : null}
-          <span className={`min-w-0 flex-1 truncate ${unread ? "font-semibold text-foreground" : ""}`}>
+          <span
+            className={`min-w-0 flex-1 truncate ${unread ? "font-semibold text-foreground" : ""}`}
+            data-testid={`sidebar-conversation-title-${session.id}`}
+          >
             {session.title}
           </span>
           {spokenSlot.length > 0 ? <span className="sr-only">{spokenSlot.join(", ")}</span> : null}

@@ -34,7 +34,7 @@ it("names a covered conversation's approval exactly as its untitled sidebar row"
     sessions: [sessionRow({ id: "untitled-conversation", title, modifiedAt: "2026-01-01T00:00:00Z" })],
   });
   try {
-    const sidebarTitle = getByTestId("sidebar-session-untitled-conversation").textContent;
+    const sidebarTitle = getByTestId("sidebar-conversation-title-untitled-conversation").textContent;
     const approval = render(
       <CoveredConversationApprovalDock
         conversation={{ sessionId: "untitled-conversation", messages: [{ role: "user", content: title }] }}
