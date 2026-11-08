@@ -2611,9 +2611,41 @@ export function grantWindowsWorkerFilesystemAccess(
   return windowsGrantTurns(() => grantWindowsWorkerFilesystemAccessInTurn(opts));
 }
 
+type WindowsGrantTimingStep = "preflightMs" | "srtWinPrepMs" | "userStatusMs" | "pinsMs" | "denyReadMs" | "stampMs" | "assertMs" | "grantMs" | "grantRevokeMs";
+
+interface WindowsGrantTiming {
+  readonly steps: Record<WindowsGrantTimingStep, number>;
+  rows: number;
+  timeStep<T>(key: WindowsGrantTimingStep, operation: () => T): T;
+}
+
 async function grantWindowsWorkerFilesystemAccessInTurn(
   request: WindowsWorkerFilesystemGrantRequest,
 ): Promise<WindowsWorkerFilesystemGrant> {
+  const started = performance.now();
+  const timing: WindowsGrantTiming = {
+    steps: { preflightMs: 0, srtWinPrepMs: 0, userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: 0, grantRevokeMs: 0 },
+    rows: 0,
+    timeStep: (key, operation) => {
+      const stepStarted = performance.now();
+      try { return operation(); }
+      finally { timing.steps[key] += performance.now() - stepStarted; }
+    },
+  };
+  try { return await grantWindowsWorkerFilesystemAccessTurnBody(request, timing); }
+  finally {
+    // totalMs is turn wall time, including the dynamic import yield.
+    const fields = { ...timing.steps, totalMs: performance.now() - started, rows: timing.rows };
+    log.info(fields, "windows grant turn timing");
+    if (fields.totalMs > 5000) log.warn(fields, "windows grant turn timing");
+  }
+}
+
+async function grantWindowsWorkerFilesystemAccessTurnBody(
+  request: WindowsWorkerFilesystemGrantRequest,
+  timing: WindowsGrantTiming,
+): Promise<WindowsWorkerFilesystemGrant> {
+  const { timeStep } = timing;
   const { assertStillValid, holderPid: requestedHolderPid, ...opts } = request;
   assertStillValid?.();
   if (process.platform === "win32") {
@@ -2622,7 +2654,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
       assertWindowsGrantGrammar(prefix);
     }
   }
-  assertAveHomePrivacyForConfinement();
+  timeStep("preflightMs", () => assertAveHomePrivacyForConfinement());
   const session = sandboxSession;
   const SandboxManager = loadedSandboxManagerForRelease;
   if (!active || _baseTrustedSettings === undefined || session === undefined || SandboxManager === undefined) {
@@ -2633,14 +2665,14 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
   if (process.platform !== "win32") {
     throw new Error("grantWindowsWorkerFilesystemAccess is only valid on win32");
   }
-  const admitted = admitFilesystemPolicy({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] });
-  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets([...admitted.allowRead, ...admitted.allowWrite]);
+  const admitted = timeStep("preflightMs", () => admitFilesystemPolicy({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] }));
+  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) timeStep("preflightMs", () => checkSandboxStampTargets([...admitted.allowRead, ...admitted.allowWrite]));
   const pinned = admittedWindowsPolicies.get(admitted)!;
   if ([pinned.allowRead, pinned.allowWrite].some(entries =>
-    entries !== undefined && existingWindowsGrants(entries).length !== entries.length)) {
+    entries !== undefined && timeStep("preflightMs", () => existingWindowsGrants(entries)).length !== entries.length)) {
     throw new Error("Windows filesystem grant identity is unproven: requested target is missing");
   }
-  checkWindowsSandboxStampTargets(pinned);
+  timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
   const {
     getWindowsSandboxUserStatus,
     grantWindowsAcl,
@@ -2654,8 +2686,8 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
   }
   assertWindowsDenyProtection();
 
-  const srtWin = resolveSrtWin({ path: getVerifiedSrtWinExePath() });
-  const user = getWindowsSandboxUserStatus({ srtWin });
+  const srtWin = timeStep("srtWinPrepMs", () => resolveSrtWin({ path: getVerifiedSrtWinExePath() }));
+  const user = timeStep("userStatusMs", () => getWindowsSandboxUserStatus({ srtWin }));
   const sandboxUserSid = user.sid;
   if (!user.provisioned || !user.credPresent || sandboxUserSid === undefined) {
     throw new Error(
@@ -2663,20 +2695,20 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
     );
   }
 
-  const requestedWrite = windowsPinnedPaths(existingWindowsGrants(pinned.allowWrite ?? []));
+  const requestedWrite = windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowWrite ?? [])));
   const requestedRead = [
-    ...windowsPinnedPaths(existingWindowsGrants(pinned.allowRead ?? [])),
+    ...windowsPinnedPaths(timeStep("preflightMs", () => existingWindowsGrants(pinned.allowRead ?? []))),
     ...requestedWrite,
   ];
 
   for (const path of requestedRead) assertWindowsGrantGrammar(path);
-  const pins = pinWindowsGrantTargets(requestedRead, { validatePath: assertWindowsGrantGrammar });
+  const pins = timeStep("pinsMs", () => pinWindowsGrantTargets(requestedRead, { validatePath: assertWindowsGrantGrammar }));
   const identities = new Map(pins.map(pin => [windowsObjectKey(pin), pin]));
   const requests = pins.map(pin => ({ path: stripExtendedPathPrefix(pin.canonical!), identity: windowsObjectKey(pin) }));
   const allowRead = requests.map(request => request.path);
   const allowWrite = requests.slice(requestedRead.length - requestedWrite.length).map(request => request.path);
   assertWindowsGrantBoundaries(allowRead, allowWrite);
-  checkWindowsSandboxStampTargets(pinned);
+  timeStep("preflightMs", () => checkWindowsSandboxStampTargets(pinned));
 
   const settings = withWorkerUnixSockets(_baseTrustedSettings);
   const revision = session.windowsDenyRevision;
@@ -2700,21 +2732,22 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
     }
   }
   const targets = rows.map(row => row.path);
-  const previous = readWindowsDenyAcls(targets, sandboxUserSid);
+  timing.rows = rows.length;
+  const previous = timeStep("denyReadMs", () => readWindowsDenyAcls(targets, sandboxUserSid));
   assertWindowsSession(session, revision);
   const denyRead = rows.filter((row, index) => row.read || (previous[index]!.denyMask & ~WINDOWS_WRITE_DENY_MASK) !== 0).map(row => row.path);
   const denyWrite = targets;
   if (targets.length > 0) {
     let stampFailure: unknown;
     try {
-      stampWindowsAcl({ sandboxUserSid, holderPid: process.pid, denyRead, denyWrite, srtWin });
+      timeStep("stampMs", () => stampWindowsAcl({ sandboxUserSid, holderPid: process.pid, denyRead, denyWrite, srtWin }));
     } catch (error) {
       stampFailure = error;
       log.warn(`[sandbox-deny-target] Refusing Windows filesystem grant: ${errorMessage(error)}`);
     }
     // Verify even after a partial stamp. Never release the session holder on failure.
     try {
-      const native = readWindowsDenyAcls(targets, sandboxUserSid);
+      const native = timeStep("denyReadMs", () => readWindowsDenyAcls(targets, sandboxUserSid));
       const readTargets = new Set(denyRead);
       for (const [index, row] of rows.entries()) {
         const state = native[index]!;
@@ -2737,7 +2770,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
   const holderPid = typeof requestedHolderPid === "number" ? requestedHolderPid : requestedHolderPid();
   if (allowRead.length > 0 || allowWrite.length > 0) {
     try {
-      assertWindowsGrantPins(requests, identities);
+      timeStep("assertMs", () => assertWindowsGrantPins(requests, identities));
       // srt-win writes the DACL by name: a swap between the pre-pin and native write
       // cannot be excluded. Only the post-pin and revoke detect that remaining window.
       // A swap restored before the post-pin is undetected; a crash before it skips
@@ -2748,19 +2781,19 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
       // even if an ACL holder survives, and later root changes do not revalidate
       // existing grants. Provider-backed non-surrogate (cloud) ancestor descent
       // remains unexercised on this host.
-      grantWindowsAcl({
+      timeStep("grantMs", () => grantWindowsAcl({
         sandboxUserSid,
         holderPid,
         read: allowRead,
         write: allowWrite,
         srtWin,
-      });
-      assertWindowsGrantPins(requests, identities);
+      }));
+      timeStep("assertMs", () => assertWindowsGrantPins(requests, identities));
     } catch (err) {
       let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
       let cleanupError: unknown;
       let exitedOk = true;
-      try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin, onExit: ok => { exitedOk = ok; } }); }
+      try { outcome = timeStep("grantRevokeMs", () => revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin, onExit: ok => { exitedOk = ok; } })); }
       catch (error) { cleanupError = error; }
       if (!hasWindowsGrantCleanup(requests, outcome, exitedOk)) {
         // Keep confinement active: disabling it would permit host execution fallback.
@@ -2781,12 +2814,15 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
   }
 
   let released = false;
+  let revokeMs = 0;
   const revokeGrant = (): boolean => {
     let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
     let cleanupError: unknown;
     let exitedOk = true;
+    const revokeStarted = performance.now();
     try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid, srtWin, onExit: ok => { exitedOk = ok; } }); }
     catch (error) { cleanupError = error; }
+    finally { revokeMs = performance.now() - revokeStarted; }
     if (!hasWindowsGrantCleanup(requests, outcome, exitedOk)) {
       session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? outcome });
       log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
@@ -2794,12 +2830,21 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
     }
     return true;
   };
+  const releaseWithTiming = (releaseBody: () => void): void => {
+    if (released) return;
+    released = true;
+    const releaseStarted = performance.now();
+    try { releaseBody(); }
+    finally {
+      const fields = { revokeMs, totalMs: performance.now() - releaseStarted };
+      log.info(fields, "windows grant release timing");
+      if (fields.totalMs > 5000) log.warn(fields, "windows grant release timing");
+    }
+  };
   const grant: WindowsWorkerFilesystemGrant = {
     allowRead,
     allowWrite,
-    release: () => {
-      if (released) return;
-      released = true;
+    release: () => releaseWithTiming(() => {
       for (const path of allowRead) {
         const counts = session.windowsLiveGrants.get(path);
         if (counts === undefined) continue;
@@ -2818,7 +2863,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(
           log.error(session.windowsDenyFailure);
         }
       }
-    },
+    }),
   };
   try {
     SandboxManager.updateConfig(

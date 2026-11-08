@@ -9,8 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn(), spawnSync: vi.fn() }));
-const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
-vi.mock("../../lib/logger.js", () => ({ createLogger: () => ({ warn, info: vi.fn() }) }));
+const { warn, info } = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn() }));
+vi.mock("../../lib/logger.js", () => ({ createLogger: () => ({ warn, info }) }));
 import {
   __resetManagedChildProcessesForTest,
   forceKillAndDrainManagedChildProcesses,
@@ -34,6 +34,7 @@ beforeEach(() => {
   vi.stubEnv("SystemRoot", "C:\\Windows");
   Object.defineProperty(process, "platform", { value: "win32" });
   vi.useFakeTimers();
+  vi.spyOn(process, "kill").mockReturnValue(true);
   runners = [];
   vi.mocked(spawn).mockImplementation(() => {
     const runner = Object.assign(new EventEmitter(), { kill: vi.fn(() => true) });
@@ -49,6 +50,7 @@ afterEach(() => {
   Object.defineProperty(process, "platform", originalPlatform);
   vi.useRealTimers();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("Windows managed process tree termination", () => {
@@ -87,7 +89,7 @@ describe("Windows managed process tree termination", () => {
     }
     await vi.advanceTimersByTimeAsync(0);
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({
-      pid: 4321,
+      targetPid: 4321,
       exitCode: failure === "non-zero" ? 5 : null,
       signal: failure === "non-zero" ? null : "SIGKILL",
       elapsedMs: failure === "non-zero" ? 1_500 : TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs,
@@ -98,6 +100,42 @@ describe("Windows managed process tree termination", () => {
     runners[1]!.emit("exit", 5, null);
     await completion;
     expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+  });
+
+  it.each([undefined, "EPERM", "EIO"])("retains a live or undetermined target at the watchdog deadline (%s)", async (code) => {
+    const child = makeChild();
+    trackManagedChildProcess(child);
+    if (code) vi.mocked(process.kill).mockImplementation(() => { throw Object.assign(new Error("probe failed"), { code }); });
+    const completion = forceKillManagedChildProcess(child, "cancelled");
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+    expect(process.kill).toHaveBeenCalledWith(4321, 0);
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ targetPid: 4321, attempt: 1, budgetExceeded: true }), "managed-child: taskkill /T /F failed");
+    expect(getManagedChildProcessCount()).toBe(1);
+    expect(runners).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+    await completion;
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith("SIGKILL");
+    expect(getManagedChildProcessCount()).toBe(1);
+  });
+
+  it.each(["probe", "exit", "close"])("accepts target disappearance proven by %s at the watchdog deadline", async (evidence) => {
+    const child = makeChild();
+    trackManagedChildProcess(child);
+    const completion = forceKillManagedChildProcess(child, "cancelled");
+    if (evidence === "probe") {
+      vi.mocked(process.kill).mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+    } else {
+      child.emit(evidence, 0, null);
+    }
+    await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs);
+    await completion;
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith({ targetPid: 4321, attempt: 1, elapsedMs: TOOL_TIMEOUT_POLICY.windowsProcessTreeKillMs }, "managed-child: taskkill watchdog expired after the target exited");
+    expect(runners).toHaveLength(1);
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(child.listenerCount("exit")).toBe(evidence === "exit" ? 0 : 1);
+    expect(child.listenerCount("close")).toBe(evidence === "close" ? 0 : 1);
   });
 
   it("does not retry or warn when taskkill finds the root already gone", async () => {

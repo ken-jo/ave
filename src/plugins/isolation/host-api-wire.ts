@@ -529,6 +529,7 @@ export const HOST_API_WIRE_ERROR_CODES = [
   "credential-conflict",
   "worker-transport-unsupported",
   "worker-control-failed",
+  "worker-already-running",
   // ── Anything the host threw that is none of the above. Deliberately last and
   //    deliberately opaque: a host internal is not a contract.
   "host-internal",
@@ -1036,7 +1037,7 @@ export const HOSTAPI_PATH_CONTRACTS = {
     arguments: "plain-json",
     result: "handle",
     lifetime: "child-disposable",
-    errors: ["effect-boundary-denied", "worker-transport-unsupported", "worker-control-failed"],
+    errors: ["effect-boundary-denied", "worker-transport-unsupported", "worker-control-failed", "worker-already-running"],
   },
   openExternalUrl: {
     params: ["url"],

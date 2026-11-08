@@ -58,6 +58,8 @@ function mentions(command: string, marker: string): boolean {
 const HYGIENE_GATES: ReadonlyArray<{ script: string; file: string }> = [
   { script: "check:knip", file: "check-knip-baseline" },
   { script: "test:knip-gate", file: "knip-baseline.test" },
+  { script: "check:biome", file: "check-biome-baseline" },
+  { script: "test:biome-gate", file: "biome-baseline.test" },
   { script: "check:test-duplicates", file: "check-test-duplicates" },
   { script: "check:sunset-inventory", file: "check-sunset-inventory" },
   { script: "check:sot-shapes", file: "check-sot-shapes" },
@@ -69,7 +71,7 @@ const HYGIENE_GATES: ReadonlyArray<{ script: string; file: string }> = [
  *  counts as naming every member. */
 const HYGIENE_COMPOSITE = {
   script: "check:gate-core",
-  members: ["check:knip", "check:test-duplicates", "check:sunset-inventory", "check:sot-shapes"],
+  members: ["check:knip", "check:biome", "check:test-duplicates", "check:sunset-inventory", "check:sot-shapes"],
 } as const;
 
 const REPOSITORY_HYGIENE = [
@@ -456,7 +458,7 @@ describe("installer smoke and packaging discipline", () => {
       const { on } = parseYaml(readRepoFile(`.github/workflows/${name}`)) as { on: unknown };
       return workflowEvents(on).some((event) => !TRUSTED_EVENTS.has(event));
     });
-    expect(reachable).toEqual(["ci.yml", "codeql.yml", "naming-gate.yml", "report-lint.yml", "web-ci.yml"]);
+    expect(reachable).toEqual(["ci.yml", "codeql.yml", "naming-gate.yml", "web-ci.yml"]);
   });
 
   /** A repository file's content, or undefined when the path is no file. */

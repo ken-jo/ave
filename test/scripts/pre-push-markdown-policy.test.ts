@@ -424,7 +424,7 @@ describe("documentation impact policy", () => {
     }
   });
 
-  it("runs the retired-name gate in every pre-push tier and in gate-core", () => {
+  it("runs the retired-name and Biome gates in every pre-push tier and in gate-core", () => {
     const hook = readFileSync(resolve(root, "scripts/hooks/run-local-checks.mjs"), "utf8");
     const dispatch = hook.slice(hook.indexOf("if (classification.alreadyOnRemote)"));
     for (const tier of ["classification.docsOnly", "classification.commentOnly", "classification.testOnly", "classification.fastSource"]) {
@@ -432,9 +432,11 @@ describe("documentation impact policy", () => {
       expect(start, tier).toBeGreaterThan(0);
       const branch = dispatch.slice(start + 1, dispatch.indexOf("} else", start + 1));
       expect(branch, tier).toContain("runRetiredNameGate(repoRoot);");
+      expect(branch, tier).toContain("runBiomeGate(repoRoot);");
     }
     const manifest = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as { scripts: Record<string, string> };
     expect(manifest.scripts["check:gate-core"]).toContain("check:retired-name");
+    expect(manifest.scripts["check:gate-core"]).toContain("check:biome");
   });
 
   it("keeps push safety checks ahead of the shared documentation policy", () => {

@@ -273,8 +273,7 @@ export interface ConversationLoopDeps {
     listPluginIds(): string[];
     getGenerationAccess?():
       | import("../../plugins/plugin-host-generation.js").PluginRuntimeGenerationAccess | undefined;
-    // Undefined enabled state is migration-safe active; false removes plugin model scope.
-    isPluginEnabled?(pluginId: string): boolean;
+    isPluginEnabled(pluginId: string): boolean;
     // Session-only activation must not persist enabled state or affect other sessions.
     setSessionActivated?(sessionId: string, pluginId: string): void;
     // Clear only the named session on reset or discarded routine completion.

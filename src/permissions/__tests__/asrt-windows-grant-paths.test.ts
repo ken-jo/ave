@@ -10,6 +10,7 @@ import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { aveHome, readWindowsDirectoryDacls } from "../../shared/ave-home.js";
 import { readWindowsAdminPolicy } from "../../shared/windows-admin-policy.js";
+import * as homePrivacy from "../../shared/ave-home.js";
 import * as facts from "../../shared/windows-path-facts.js";
 import { readWindowsReadDenyEvidence, windowsReadDenyKey } from "../../shared/windows-read-deny-evidence.js";
 import * as integrity from "../srt-win-integrity.js";
@@ -68,6 +69,98 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     vi.unstubAllEnvs();
     removeLinksUnder(fixture);
     rmSync(fixture, { recursive: true, force: true });
+  });
+
+  it.each([0, 5000, 5001])("logs numeric grant and release timings without identities at %s ms", async duration => {
+    await initializeAsrtSandbox({ denyRead: [join(target, "denied")] });
+    vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+      denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
+    })));
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => { now += duration; });
+    const revoke = vi.mocked(runtime.revokeWindowsAcl).getMockImplementation();
+    if (!revoke) throw new Error("revokeWindowsAcl has no mock implementation");
+    vi.mocked(runtime.revokeWindowsAcl).mockImplementation(options => { now += duration; return revoke(options); });
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
+    grant.release();
+    grant.release();
+    const turnLines = info.mock.calls.filter(([message]) => message === "[asrt-sandbox] windows grant turn timing");
+    const releaseLines = info.mock.calls.filter(([message]) => message === "[asrt-sandbox] windows grant release timing");
+    expect(turnLines).toHaveLength(1);
+    expect(releaseLines).toHaveLength(1);
+    expect(turnLines[0]?.[1]).toEqual({
+      preflightMs: 0, srtWinPrepMs: 0, userStatusMs: 0, pinsMs: 0, denyReadMs: 0, stampMs: 0, assertMs: 0, grantMs: duration, grantRevokeMs: 0, totalMs: duration, rows: expect.any(Number),
+    });
+    expect(turnLines[0]?.[1].rows).toBeGreaterThan(0);
+    expect(releaseLines[0]?.[1]).toEqual({ revokeMs: duration, totalMs: duration });
+    for (const [, fields] of [...turnLines, ...releaseLines]) {
+      for (const value of Object.values(fields)) {
+        expect(typeof value).toBe("number");
+        expect(Number.isFinite(value)).toBe(true);
+        expect(value).toBeGreaterThanOrEqual(0);
+      }
+      expect(JSON.stringify(fields)).not.toContain(target);
+      expect(JSON.stringify(fields)).not.toMatch(/[\\/]/);
+    }
+    const warnings = warn.mock.calls.filter(([message]) => /windows grant (turn|release) timing/.test(String(message)));
+    expect(warnings).toHaveLength(duration > 5000 ? 2 : 0);
+    if (duration > 5000) expect(warnings).toEqual([...turnLines, ...releaseLines]);
+  });
+
+  it("accumulates repeated reads and assertions and accounts for preparation", async () => {
+    await initializeAsrtSandbox({ denyRead: [join(target, "denied")] });
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    const privacy = homePrivacy.assertAveHomePrivacyForConfinement;
+    vi.spyOn(homePrivacy, "assertAveHomePrivacyForConfinement").mockImplementation(() => { now += 3; privacy(); });
+    vi.mocked(integrity.prepareSrtWinExecutable).mockImplementationOnce(source => { now += 5; return source; });
+    const resolveSrtWin = runtime.resolveSrtWin;
+    vi.spyOn(runtime, "resolveSrtWin").mockImplementation(options => { now += 7; return resolveSrtWin(options); });
+    const user = vi.mocked(runtime.getWindowsSandboxUserStatus).getMockImplementation();
+    if (!user) throw new Error("getWindowsSandboxUserStatus has no mock implementation");
+    vi.mocked(runtime.getWindowsSandboxUserStatus).mockImplementation(options => { now += 11; return user(options); });
+    vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => {
+      now += 17;
+      return paths.map(() => ({ denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false }));
+    });
+    let assertionPending = false;
+    let assertions = 0;
+    const pinPaths = facts.pinWindowsPaths;
+    vi.spyOn(facts, "pinWindowsPaths").mockImplementation(paths => {
+      if (assertionPending) { now += 19; assertions++; assertionPending = false; }
+      return pinPaths(paths);
+    });
+    vi.mocked(runtime.stampWindowsAcl).mockImplementation(() => { now += 23; assertionPending = true; });
+    vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => { now += 29; assertionPending = true; });
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
+    expect(assertions).toBe(2);
+    expect(denyAcl.readWindowsDenyAcls).toHaveBeenCalledTimes(2);
+    expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", {
+      preflightMs: expect.any(Number), srtWinPrepMs: 12, userStatusMs: 11, pinsMs: 0,
+      denyReadMs: 34, stampMs: 23, assertMs: 38, grantMs: 29, grantRevokeMs: 0,
+      totalMs: now, rows: expect.any(Number),
+    });
+    const fields = info.mock.calls.find(([message]) => message === "[asrt-sandbox] windows grant turn timing")?.[1];
+    expect(fields.preflightMs).toBeGreaterThanOrEqual(3);
+    expect(Object.entries(fields).filter(([key]) => key !== "totalMs" && key !== "rows").reduce((sum, [, value]) => sum + Number(value), 0)).toBe(fields.totalMs);
+    grant.release();
+  });
+
+  it("logs elapsed grant time when the native grant throws", async () => {
+    await initializeAsrtSandbox({});
+    let now = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => now);
+    vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => { now += 6000; throw new Error("grant interrupted"); });
+    vi.mocked(runtime.revokeWindowsAcl).mockImplementation(() => { now += 31; return [{ path: target, status: "revoked" }]; });
+    const info = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [target] })).rejects.toThrow("grant interrupted");
+    expect(info).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", expect.objectContaining({ grantMs: 6000, grantRevokeMs: 31, totalMs: 6031 }));
+    expect(warn).toHaveBeenCalledWith("[asrt-sandbox] windows grant turn timing", expect.objectContaining({ grantMs: 6000, grantRevokeMs: 31, totalMs: 6031 }));
   });
 
   it.for(["junction", "dir"] as const)("grants the resolved %s target and retains its native identity", async (type, context) => {

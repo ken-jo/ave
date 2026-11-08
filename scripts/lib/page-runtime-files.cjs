@@ -42,6 +42,47 @@ function assertCanvasRuntimeFiles(nodeModules, platform, arch) {
   if (nativePackage.version !== wrapperPackage.version) throw new Error(`page renderer native version ${nativePackage.version} does not match ${wrapperPackage.version}`);
   if (!/\.node$/.test(nativePackage.main ?? "")) throw new Error(`page renderer package has no native binding: ${name}`);
   packageFile(native, nativePackage.main);
+  assertSingleCanvasInstall(nodeModules);
+}
+
+/** A nested `@napi-rs/canvas*` under another package (an archive entry or a path). */
+const NESTED_CANVAS = /[\\/]node_modules[\\/].+[\\/]node_modules[\\/]@napi-rs[\\/]canvas(?:-[^\\/]+)?(?:[\\/]|$)/;
+
+/** Nested `@napi-rs/canvas*` copies below `nodeModules`, as paths relative to it. */
+function nestedCanvasCopies(nodeModules) {
+  const found = [];
+  const visit = (modules) => {
+    for (const entry of readdirSync(modules, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+      const packages = entry.name.startsWith("@")
+        ? readdirSync(join(modules, entry.name), { withFileTypes: true })
+          .filter((scoped) => scoped.isDirectory()).map((scoped) => join(entry.name, scoped.name))
+        : [entry.name];
+      for (const name of packages) {
+        const nested = join(modules, name, "node_modules");
+        if (!statSync(nested, { throwIfNoEntry: false })?.isDirectory()) continue;
+        const scope = join(nested, "@napi-rs");
+        if (statSync(scope, { throwIfNoEntry: false })?.isDirectory()) {
+          for (const copy of readdirSync(scope)) {
+            if (/^canvas(?:-|$)/.test(copy)) found.push(relative(nodeModules, join(scope, copy)));
+          }
+        }
+        visit(nested);
+      }
+    }
+  };
+  visit(nodeModules);
+  return found;
+}
+
+/**
+ * Only the hoisted canvas may exist. A dependency that needs another canvas
+ * range gets its own nested copy; pdf.js then loads that native build while
+ * the reader loads ours, and the two mix in one render.
+ */
+function assertSingleCanvasInstall(nodeModules) {
+  const nested = nestedCanvasCopies(nodeModules);
+  if (nested.length > 0) throw new Error(`page renderer canvas is installed more than once: ${nested.join(", ")}`);
 }
 
 const PDF_RUNTIME_ENTRIES = Object.freeze([
@@ -77,6 +118,8 @@ function assertPdfRuntimeEntries(entries) {
   if (missing.length > 0) throw new Error(`packaged PDF renderer entries missing: ${missing.join(", ")}`);
   const unexpected = normalized.filter((entry) => PDF_EXCLUDED_ENTRY.test(entry));
   if (unexpected.length > 0) throw new Error(`packaged PDF renderer includes script-evaluation files: ${unexpected.join(", ")}`);
+  const nestedCanvas = normalized.filter((entry) => NESTED_CANVAS.test(entry));
+  if (nestedCanvas.length > 0) throw new Error(`page renderer canvas is installed more than once: ${nestedCanvas.join(", ")}`);
 }
 
 /** Validate the pdf.js data the reader loads by path, unpacked beside the archive. */

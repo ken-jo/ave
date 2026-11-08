@@ -1,0 +1,33 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/spawnWorker",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "spec": {
+        "args": [
+          "--version"
+        ],
+        "command": "/usr/bin/true",
+        "control": "stdio-control-v1",
+        "workerId": "golden"
+      }
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "worker-already-running",
+        "name": "WorkerAlreadyRunningError"
+      },
+      "message": "[worker-spawn] worker golden-invoker/golden is already running or stopping"
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "a worker id that is already running or stopping"
+}

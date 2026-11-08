@@ -49,6 +49,7 @@ describe("createRoutineConversationLoop — tool-level deferral", () => {
       systemPromptBuilder: makeSystemPromptBuilder(),
       pluginRuntime: {
         listPluginIds: () => ["routine-plugin"],
+        isPluginEnabled: () => true,
         listPluginCards: () => [],
       },
     } as unknown as Parameters<typeof createRoutineConversationLoop>[0], {

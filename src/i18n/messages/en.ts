@@ -3190,6 +3190,8 @@ export const en = {
   "mcpTab.stdioExecutableRequired": "Please enter a stdio executable.",
   "mcpTab.serverAddedConnected": "{id} server added and connected.",
   "mcpTab.serverAddedNotConnected": "{id} server config saved but connection failed: {warning}",
+  "mcpTab.policyApprovalGuidance": "Adding this server requires approval in the MCP policy and in {homeTrustTitle}. 1. Add an approved entry for this server to governance/mcp-policy.json in the Ave folder. 2. In Settings > {tabPermissions} > {homeTrustTitle}, approve the policy file's row. 3. Restart Ave.",
+  "mcpTab.openPermissionsButton": "Open Permissions",
   "mcpTab.pageTitle": "MCP Servers",
   "mcpTab.pageDescription": "Manage MCP server configuration and tool exposure",
   "mcpTab.refreshButton": "Refresh",

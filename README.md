@@ -280,6 +280,7 @@ Useful targeted checks:
 bun run check:i18n-catalog
 bun run check:test-quality
 bun run check:knip
+bun run check:biome
 bun run test:electron-smoke
 bun run test:packaged-smoke
 ```
