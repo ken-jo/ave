@@ -64,7 +64,6 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
       isAnyWindowFocused: () => false,
       notificationActivationRegistration: null,
     }),
-    isTurnCompletionSoundEnabled: () => ctx.settingsService.get("system").turnCompletionSoundEnabled ?? true,
     isOsNotificationsEnabled: () => ctx.settingsService.get("alerts").osNotificationsEnabled,
   });
   initializeOsNotificationPresenter(ctx.host.desktop);

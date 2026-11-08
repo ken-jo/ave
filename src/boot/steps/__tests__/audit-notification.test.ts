@@ -150,21 +150,18 @@ describe("setupAuditAndNotification OS notification presenter", () => {
 
 it("keeps live notification preferences authoritative over desktop options", async () => {
   const desktop = createDesktopHostFixture({
-    notificationOptions: { isTurnCompletionSoundEnabled: () => true, isOsNotificationsEnabled: () => true },
+    notificationOptions: { isOsNotificationsEnabled: () => true },
   });
   const ctx = makeContext(createBootHostFixture({ desktop }));
   await setupAuditAndNotification(ctx);
   const options = h.notificationOptions.mock.calls[0][0] as {
-    isTurnCompletionSoundEnabled: () => boolean;
     isOsNotificationsEnabled: () => boolean;
   };
   let enabled = false;
   vi.mocked(ctx.settingsService.get).mockImplementation(((key: string) => key === "alerts"
     ? { osNotificationsEnabled: enabled }
-    : { turnCompletionSoundEnabled: enabled }) as never);
-  expect(options.isTurnCompletionSoundEnabled()).toBe(false);
+    : {}) as never);
   expect(options.isOsNotificationsEnabled()).toBe(false);
   enabled = true;
-  expect(options.isTurnCompletionSoundEnabled()).toBe(true);
   expect(options.isOsNotificationsEnabled()).toBe(true);
 });

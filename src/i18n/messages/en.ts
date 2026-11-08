@@ -50,8 +50,6 @@ export const en = {
   "agentPluginPrompt.extensionFailed": "Could not run the Extension prompt.",
 
   /** Alert interface strings and the host's declared due-soon templates. */
-  "alerts.turnCompletionSound": "Turn completion sound",
-  "alerts.turnCompletionSoundHelp": "Play the system notification sound when a response completes in the background. System sound and notification preferences apply.",
   "alerts.title": "Alerts",
   "alerts.builtIn": "Built-in",
   "alerts.new": "New",

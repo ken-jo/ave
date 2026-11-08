@@ -52,8 +52,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "agentPluginPrompt.extensionFailed": "익스텐션 프롬프트를 실행하지 못했습니다.",
 
   /** Alert interface strings and the host's declared due-soon templates. */
-  "alerts.turnCompletionSound": "응답 완료 소리",
-  "alerts.turnCompletionSoundHelp": "백그라운드에서 응답이 완료되면 시스템 알림음을 재생합니다. 시스템 소리 및 알림 설정이 적용됩니다.",
   "alerts.title": "알림",
   "alerts.builtIn": "기본 기능",
   "alerts.new": "새 알림",

@@ -45,7 +45,7 @@ export interface FireOptions {
   // Approval defaults true; rest default false.
   urgent?: boolean;
   // Opt out of the focus-suppression gate. When true, the OS notification fires regardless of focus state. Other kinds follow `urgent` for sound; turn-end
-  // always follows the completion sound preference.
+  // is always silent, because the renderer's turn-finished accessibility signal owns that sound.
   bypassFocusGate?: boolean;
   // Keep the in-app toast until the user dismisses it, instead of letting it time out. The OS path ignores it. Used for `high` priority alerts.
   sticky?: boolean;
@@ -102,8 +102,6 @@ type NotificationActivationRegistration = (
 export interface NotificationServiceOptions {
   // Read the OS notification master at delivery time for turn-end cues.
   isOsNotificationsEnabled?: () => boolean;
-  // Read at delivery time so changing the setting applies to the next completion.
-  isTurnCompletionSoundEnabled?: () => boolean;
   // Live BrowserWindow getter. Service tolerates null (e.g. window closed).
   getMainWindow: () => BrowserWindow | null;
   auditLogger?: AuditLogger;
@@ -153,7 +151,6 @@ export class NotificationService {
   private readonly getMainWindow: () => BrowserWindow | null;
   private readonly auditLogger?: AuditLogger;
   private readonly notificationFactory: NonNullable<NotificationServiceOptions["notificationFactory"]>;
-  private readonly isTurnCompletionSoundEnabled: () => boolean;
   private readonly isOsNotificationsEnabled: () => boolean;
   private readonly isReady: () => boolean;
   private readonly isTestEnv: () => boolean;
@@ -165,7 +162,6 @@ export class NotificationService {
     this.getMainWindow = opts.getMainWindow;
     this.auditLogger = opts.auditLogger;
     this.notificationFactory = opts.notificationFactory ?? unavailableNotificationFactory;
-    this.isTurnCompletionSoundEnabled = opts.isTurnCompletionSoundEnabled ?? (() => true);
     this.isOsNotificationsEnabled = opts.isOsNotificationsEnabled ?? (() => true);
     this.isReady = opts.isReady ?? (() => false);
     this.isTestEnv = opts.isTestEnv ?? defaultIsTestEnv;
@@ -301,8 +297,8 @@ export class NotificationService {
       const n = this.notificationFactory({
         title,
         body,
-        silent: opts.kind === "turn-end" ? !this.isTurnCompletionSoundEnabled() : !urgent,
-        // Enabling completion sound does not raise the notification's priority.
+        // The turn-finished accessibility signal plays in the renderer; an audible OS banner too would sound twice.
+        silent: opts.kind === "turn-end" || !urgent,
         urgency: urgent ? "critical" : "normal",
       });
       n.on("click", () => {

@@ -1,4 +1,5 @@
 import { LlmProviderSettingsError } from "../shared/custom-provider.js";
+import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode } from "../shared/accessibility-signals.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
@@ -825,7 +826,12 @@ export function normalizeSystem(input: unknown): SystemSettings {
   }
   const obj = input;
   const result: SystemSettings = { ...DEFAULT_SETTINGS.system };
-  acceptField(result, "turnCompletionSoundEnabled", obj.turnCompletionSoundEnabled, isBooleanValue, "system", STORED_FIELD);
+  for (const key of Object.values(ACCESSIBILITY_SIGNAL_SETTING_KEYS)) {
+    acceptField(result, key, obj[key], isAccessibilitySignalMode, "system", STORED_FIELD);
+  }
+  // The retired `turnCompletionSoundEnabled` switch made the background completion notification audible; the turn-finished
+  // signal replaced it. A user who had switched it off keeps silence until they choose a signal mode.
+  if (obj.signalTurnFinished === undefined && obj.turnCompletionSoundEnabled === false) result.signalTurnFinished = "off";
   acceptField(result, "closeBehavior", obj.closeBehavior, isCloseBehavior, "system", STORED_FIELD);
   const rawLocalApi = obj.localApiServer;
   acceptField(result, "localApiServer", rawLocalApi, isBooleanValue, "system", STORED_FIELD);
