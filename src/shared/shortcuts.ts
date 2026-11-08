@@ -66,7 +66,7 @@ export function normalizeShortcuts(
     result.toggleWindow = null;
   } else if (obj.toggleWindow !== undefined) {
     const accel = normalizeAccelerator(obj.toggleWindow);
-    if (accel !== null) result.toggleWindow = accel;
+    if (accel !== null) result.toggleWindow = fixedShortcutOwner(accel, platform) === null ? accel : null;
   }
   if (typeof obj.enabled === "boolean") {
     result.enabled = obj.enabled;
@@ -453,6 +453,19 @@ export function defaultAccelerator(id: ShortcutId, platform: ShortcutPlatform): 
   return entry.defaults[platform];
 }
 
+/** The fixed registry row that owns this chord, excluding the separately configured global toggle. */
+export function fixedShortcutOwner(accelerator: string, platform: ShortcutPlatform): ShortcutDefinition | null {
+  const signature = chordSignature(accelerator, platform);
+  if (signature === null) return null;
+  for (const entry of SHORTCUTS) {
+    const row = entry as ShortcutDefinition;
+    if (!row.readOnly || row.layeredOn !== undefined || row.id === "system.toggleWindow") continue;
+    const fixed = row.defaults[platform];
+    if (fixed !== null && chordSignature(fixed, platform) === signature) return row;
+  }
+  return null;
+}
+
 /** What the user's settings contribute to resolution: their rebinds and the OS-wide toggle they set under Startup. */
 export interface ShortcutResolutionInput {
   bindings: ShortcutBindings;
@@ -569,9 +582,11 @@ export function shortcutBindingRefusal(
   if (platform === "other" && chord.meta) return { reason: "os-reserved" };
   const signature = chordSignature(accelerator, platform);
   if (OS_RESERVED[platform].some((reserved) => chordSignature(reserved, platform) === signature)) return { reason: "os-reserved" };
-  for (const row of resolveShortcuts(input, platform)) {
-    if (row.rebindable || row.accelerator === null || row.definition.layeredOn !== undefined) continue;
-    if (chordSignature(row.accelerator, platform) === signature) return { reason: "fixed-key", ownerId: row.id };
+  const owner = fixedShortcutOwner(accelerator, platform);
+  if (owner !== null) return { reason: "fixed-key", ownerId: owner.id as ShortcutId };
+  const toggle = resolveShortcut("system.toggleWindow", input, platform);
+  if (toggle !== null && chordSignature(toggle, platform) === signature) {
+    return { reason: "fixed-key", ownerId: "system.toggleWindow" };
   }
   return null;
 }

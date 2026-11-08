@@ -8,6 +8,7 @@ import {
   canonicalAccelerator,
   conflictingShortcutIds,
   formatAccelerator,
+  fixedShortcutOwner,
   isShortcutId,
   loadShortcutBindings,
   matchesAccelerator,
@@ -93,6 +94,21 @@ describe("normalizeAccelerator", () => {
 describe("normalizeShortcuts", () => {
   const fallback = { toggleWindow: "Alt+F1", enabled: true, bindings: {} } as const;
   const noDrops = () => { throw new Error("no binding should be dropped"); };
+
+  it.each(["darwin", "other"] as const)("drops reserved toggle chords and preserves allowed keypad values on %s", (platform) => {
+    for (const [token, ownerId] of [["num0", "menu.resetZoom"], ["numadd", "menu.zoomInKeypad"], ["numsub", "menu.zoomOutKeypad"]]) {
+      for (const modifier of ["CommandOrControl", platform === "darwin" ? "Cmd" : "Ctrl"]) {
+        const accelerator = `${modifier}+${token}`;
+        expect(fixedShortcutOwner(accelerator, platform)?.id).toBe(ownerId);
+        expect(normalizeShortcuts({ toggleWindow: accelerator, enabled: true }, fallback, platform, noDrops).toggleWindow).toBeNull();
+      }
+      const allowed = `Alt+${token}`;
+      expect(fixedShortcutOwner(allowed, platform)).toBeNull();
+      expect(normalizeShortcuts({ toggleWindow: allowed }, fallback, platform, noDrops).toggleWindow).toBe(allowed);
+    }
+    expect(fixedShortcutOwner("Alt+F1", platform)).toBeNull();
+    expect(fixedShortcutOwner("Shift", platform)).toBeNull();
+  });
 
   it("returns fallback for non-object input", () => {
     expect(normalizeShortcuts(null, { ...fallback }, "darwin", noDrops)).toEqual(fallback);

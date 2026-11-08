@@ -78,6 +78,7 @@ import {
 } from "../shared/marketplace-package-assets.js";
 import {
   normalizeAccelerator,
+  fixedShortcutOwner,
   applyShortcutBindingsPatch,
   normalizeShortcuts,
   shortcutPlatformOf,
@@ -1234,7 +1235,7 @@ export class SettingsService {
         nextShortcuts.toggleWindow = null;
       } else if (rawToggle !== undefined) {
         const accel = normalizeAccelerator(rawToggle);
-        if (accel !== null) {
+        if (accel !== null && fixedShortcutOwner(accel, shortcutPlatformOf(process.platform)) === null) {
           nextShortcuts.toggleWindow = accel;
         } else {
           log.warn(

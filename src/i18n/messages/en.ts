@@ -4993,6 +4993,7 @@ export const en = {
   "startupTab.shortcutRecord": "Record",
   "startupTab.shortcutClear": "Clear",
   "startupTab.shortcutCapturing": "Press a key combination…",
+  "startupTab.shortcutReserved": "This key combination is reserved for {label}. Choose another combination.",
   "startupTab.shortcutUnset": "Not set",
   "startupTab.shortcutEnabledNoAccelerator": "The shortcut is enabled but no key combination is set. Record one to activate it.",
   "startupTab.shortcutRegisterFailedTitle": "Shortcut registration failed",

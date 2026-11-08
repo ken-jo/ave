@@ -658,6 +658,9 @@ jobs:
           src/__tests__/preload-shape.test.ts
           src/main/browser/__tests__/browser-workspace-desktop.test.ts
           src/shared/__tests__/shortcuts.test.ts
+          src/ui/renderer/tabs/__tests__/StartupTab.test.tsx
+          src/data/__tests__/settings-store.test.ts
+          src/main/__tests__/global-shortcuts.test.ts
           src/main/__tests__/app-menu-accelerators.test.ts
           src/ui/renderer/tabs/__tests__/ShortcutsTab.test.tsx
           src/ui/renderer/components/__tests__/panel-commands.test.ts

@@ -3029,6 +3029,32 @@ describe("SettingsService E4 — shortcuts + launch-at-startup", () => {
     await cleanupTmpDir(userDataPath);
   });
 
+  it.each(["darwin", "win32"] as const)("keeps prior toggle values on reserved patches and unsets stored reservations on %s", async (platform) => {
+    const original = process.platform;
+    try {
+      setProcessPlatform(platform);
+      const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      await s.patch({ shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
+      for (const token of ["num0", "numadd", "numsub"]) {
+        for (const modifier of ["CommandOrControl", platform === "darwin" ? "Cmd" : "Ctrl"]) {
+          const accelerator = `${modifier}+${token}`;
+          await s.patch({ shortcuts: { toggleWindow: accelerator } });
+          expect(s.get("shortcuts").toggleWindow).toBe("Alt+F1");
+          expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("shortcuts").toggleWindow).toBe("Alt+F1");
+          writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ shortcuts: { toggleWindow: accelerator, enabled: true } }), "utf8");
+          const loaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+          expect(loaded.get("shortcuts")).toEqual({ toggleWindow: null, enabled: true, bindings: {} });
+        }
+      }
+      for (const accelerator of ["Alt+num0", "Alt+numadd", "Alt+numsub", "Alt+End"]) {
+        await s.patch({ shortcuts: { toggleWindow: accelerator } });
+        expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("shortcuts").toggleWindow).toBe(accelerator);
+      }
+    } finally {
+      setProcessPlatform(original);
+    }
+  });
+
   it("defaults shortcuts OFF with no accelerator + launch flags false", () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(s.get("shortcuts")).toEqual({ toggleWindow: null, enabled: false, bindings: {} });

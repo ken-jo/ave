@@ -4995,6 +4995,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "startupTab.shortcutRecord": "녹화",
   "startupTab.shortcutClear": "지우기",
   "startupTab.shortcutCapturing": "키 조합을 누르세요…",
+  "startupTab.shortcutReserved": "이 키 조합은 {label}에 예약되어 있습니다. 다른 조합을 선택하세요.",
   "startupTab.shortcutUnset": "설정 안 됨",
   "startupTab.shortcutEnabledNoAccelerator": "단축키가 켜져 있지만 키 조합이 설정되지 않았습니다. 조합을 녹화해 활성화하세요.",
   "startupTab.shortcutRegisterFailedTitle": "단축키 등록 실패",
