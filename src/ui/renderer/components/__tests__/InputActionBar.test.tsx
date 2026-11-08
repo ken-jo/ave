@@ -389,13 +389,13 @@ describe("InputActionBar (unified bar)", () => {
     expect(permission.compareDocumentPosition(ringHost) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
   });
 
-  it("names the model and billing route in the status row, and keeps the vendor in the accessible name", () => {
+  it("keeps the model route accessible without an API-key billing disclosure", () => {
     const { getByTestId } = renderBar();
     const model = getByTestId("iab-status-model");
     expect(model.textContent).toContain("gpt-5.4");
     expect(model.textContent).not.toContain("OpenAI");
-    // Hover and screen reader still get the whole route.
-    expect(model.getAttribute("title")).toBe("OpenAI · gpt-5.4 · 설정한 본인의 API 키로 청구됩니다.");
+    // Hover and screen reader still get the model route.
+    expect(model.getAttribute("title")).toBe("OpenAI · gpt-5.4");
     expect(model.getAttribute("aria-label")).toBe("OpenAI · gpt-5.4");
   });
 
@@ -875,7 +875,7 @@ describe("model card (status-row model cell)", () => {
     expect(subscriptionUseApiForChat).not.toHaveBeenCalled();
   });
 
-  it("retains independent billing disclosures when one credential query fails", async () => {
+  it("shows only subscription billing on the card without querying API credentials", async () => {
     getSettings.mockResolvedValue({
       ...settingsWithPins(),
       llm: { ...settingsWithPins().llm, activeChatRuntime: { kind: "subscription", provider: "claude-code" } },
@@ -887,7 +887,8 @@ describe("model card (status-row model cell)", () => {
     const failed = await view.findByTestId("model-quick-picker-option:openai-compatible:qwen3.8-27b-nvfp4");
     const verified = await view.findByTestId("model-quick-picker-option:openai-compatible:qwen3.8-27b-gguf");
     await waitFor(() => expect(subscription).toHaveTextContent("API 키가 아닌 본인의 Claude 구독으로 청구됩니다."));
-    expect(verified).toHaveTextContent("설정한 본인의 API 키로 청구됩니다.");
+    expect(verified).not.toHaveTextContent("설정한 본인의 API 키로 청구됩니다.");
+    expect(hasApiKey).not.toHaveBeenCalled();
     expect(failed).not.toHaveTextContent("설정한 본인의 API 키로 청구됩니다.");
   });
 
@@ -1210,7 +1211,6 @@ describe("permission card sandbox checkbox", () => {
 describe("current session billing disclosure", () => {
   it.each([
     [{ kind: "subscription", provider: "claude-code", model: null }, "API 키가 아닌 본인의 Claude 구독으로 청구됩니다."],
-    [{ kind: "api", vendor: "claude", model: "claude-sonnet-5-5" }, "설정한 본인의 API 키로 청구됩니다."],
   ] as const)("shows the active authentication route for %j", (activeChatModel, expected) => {
     const { getByTestId } = renderBar({ statusRow: { ...defaultStatusRow, activeChatModel, billingRoute: activeChatModel.kind === "subscription" ? { kind: "subscription", provider: activeChatModel.provider } : { kind: "api-key" } } });
     expect(getByTestId("iab-model-billing")).toHaveTextContent(expected);
@@ -1246,12 +1246,16 @@ describe("localized configured route billing accessibility", () => {
           activeChatModel: { kind: "api", vendor: "openai-compatible", model: "fixture-model", ...(presetId ? { marketplaceProviderPresetId: presetId } : {}) },
         } });
         const button = view.getByTestId("iab-status-model");
-        if (kind === "api-key") {
-          expect(button).toHaveAccessibleDescription(locale === "en" ? "Billed to your configured API key." : "설정한 본인의 API 키로 청구됩니다.");
-        } else {
-          expect(button).not.toHaveAttribute("aria-describedby");
-          expect(view.queryByTestId("iab-model-billing")).toBeNull();
-        }
+        const apiKeyText = locale === "en" ? "Billed to your configured API key." : "설정한 본인의 API 키로 청구됩니다.";
+        expect(button).not.toHaveAccessibleDescription(apiKeyText);
+        expect(button).not.toHaveAttribute("aria-describedby");
+        expect(button).not.toHaveTextContent(apiKeyText);
+        expect(button.getAttribute("title")).not.toContain(apiKeyText);
+        expect(view.queryByTestId("iab-model-billing")).toBeNull();
+        fireEvent.click(button);
+        const card = await view.findByTestId("model-quick-picker");
+        await view.findByTestId("model-quick-picker-option:openai-compatible:qwen3.8-27b-nvfp4");
+        expect(card).not.toHaveTextContent(apiKeyText);
       } finally {
         setLocale(previousLocale);
       }
