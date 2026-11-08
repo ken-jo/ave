@@ -1,4 +1,4 @@
-// Host lifecycle events trigger notifications; foreground turn completion is suppressed and other events choose toast or OS delivery. Audit metadata
+// Host lifecycle events trigger notifications; foreground requests use their cards and other events choose toast or OS delivery. Audit metadata
 // only, never body text; test mode and pre-ready calls have no side effects.
 import type { ActivationArguments, BrowserWindow, WebContents } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
@@ -250,6 +250,11 @@ export class NotificationService {
     const gate: "os" | "in-app" = focusGateActive ? "in-app" : "os";
 
     if (focusGateActive && win) {
+      if (opts.kind === "approval" || opts.kind === "ask-user") {
+        // The request card owns attention; hidden cards already have a pending-answer indicator.
+        this.audit("in-app", opts.kind, cleanTitle, "card");
+        return true;
+      }
       const payload: ToastPayload = {
         kind: opts.kind,
         title: cleanTitle,
@@ -351,7 +356,7 @@ export class NotificationService {
     }
   }
 
-  private audit(gate: "os" | "in-app", kind: NotificationKind, title: string): void {
+  private audit(gate: "os" | "in-app", kind: NotificationKind, title: string, surface?: "card"): void {
     if (!this.auditLogger) return;
     try {
       this.auditLogger.log({
@@ -360,9 +365,10 @@ export class NotificationService {
         type: "info",
         // Never log notification bodies, which may contain user or assistant text; cap titles again at the audit boundary.
         input: JSON.stringify({
-          event: "notification.fired",
+          event: surface === "card" ? "notification.handled" : "notification.fired",
           kind,
           gate,
+          ...(surface ? { surface } : {}),
           // reuses body cap as title cap — same 80-char limit applies to audit fields.
           title: title.slice(0, BODY_MAX_CHARS),
         }),

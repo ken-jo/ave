@@ -2265,18 +2265,41 @@ describe("notices with two tiles", () => {
   const toasts = (root: ParentNode) => root.querySelectorAll('[data-testid="status-toast-message"]');
   const strip = (c: HTMLElement) => c.querySelector<HTMLElement>('[data-testid="window-notice-strip"]')!;
 
-  it("draws a window notice once, in the window strip, and in no composer dock", async () => {
+  it("draws a window notice once in the title bar and in no pane or composer dock", async () => {
     const { container, emitNotificationToast } = await renderApp({ hasApiKey: true });
     await splitIntoTwoTiles(container);
 
     await act(async () => {
-      emitNotificationToast({ kind: "ask-user", title: "질문", body: "창 전체에 한 번", contextRef: { questionId: "q-1" } });
+      emitNotificationToast({ kind: "system", title: "완료", body: "창 전체에 한 번" });
     });
 
     // Window notifications render once regardless of tile count.
     await waitFor(() => expect(toasts(container)).toHaveLength(1));
-    expect(toasts(strip(container))).toHaveLength(1);
-    expect(container.querySelectorAll('[data-testid="composer-toast-dock"]')).toHaveLength(0);
+    expect(toasts(strip(container))).toHaveLength(0);
+    const notice = container.querySelector('[data-testid="window-notice-slot"]');
+    expect(notice?.closest('[data-testid="main-toolbar"]')).not.toBeNull();
+    expect(notice?.closest('[data-testid="chat-main-column"]')).toBeNull();
+    expect(container.querySelectorAll('[data-testid="composer-toast-dock"] [data-testid="status-toast"]')).toHaveLength(0);
+  });
+
+  it("keeps the same title bar notice and live region across routed views", async () => {
+    const { container, emitNotificationToast } = await renderApp({ hasApiKey: true });
+    const liveRegion = strip(container).querySelector('[data-testid="notice-live-polite"]');
+    await act(async () => { emitNotificationToast({ kind: "system", title: "Ready", body: "Window notice", sticky: true }); });
+    await waitFor(() => expect(toasts(container)).toHaveLength(1));
+    const notice = container.querySelector('[data-testid="window-notice-slot"]');
+    const surface = notice?.querySelector('[data-testid="status-toast"]');
+    await clickSidebarNavRow("features", "toolbar-work-board");
+    await waitFor(() => expect(container.querySelector('[data-testid="main-pane-shell"][data-view="work-board"]')).not.toBeNull());
+    expect(container.querySelector('[data-testid="window-notice-slot"]')).toBe(notice);
+    expect(notice?.closest('[data-testid="main-toolbar"]')).not.toBeNull();
+    expect(notice?.querySelector('[data-testid="status-toast"]')).toBe(surface);
+    expect(toasts(container)).toHaveLength(1);
+    expect(strip(container).querySelector('[data-testid="notice-live-polite"]')).toBe(liveRegion);
+    await act(async () => { fireEvent.click(container.querySelector('[data-testid="pane-close"]') as HTMLButtonElement); });
+    await waitFor(() => expect(container.querySelector('[data-testid="main-pane-shell"][data-view="work-board"]')).toBeNull());
+    expect(notice?.querySelector('[data-testid="status-toast"]')).toBe(surface);
+    expect(toasts(container)).toHaveLength(1);
   });
 
   it("draws a provider fallback in the tile whose turn swapped, focused or not", async () => {
@@ -2292,17 +2315,15 @@ describe("notices with two tiles", () => {
     expect(toasts(strip(container))).toHaveLength(0);
     expect(toasts(container)).toHaveLength(1);
 
-    // Notices occupy their own flow row so they cannot cover the selector strip.
-    const toastRow = first!.element.querySelector<HTMLElement>('[data-testid="composer-toast-dock"]')!;
-    const selectorSlot = first!.element.querySelector<HTMLElement>('[data-testid="composer-project-selector-slot"]')!;
-    expect(selectorSlot).not.toBeNull();
-    expect(toastRow.className).not.toMatch(/\b(absolute|fixed)\b/);
-    expect(toastRow.contains(selectorSlot)).toBe(false);
-    expect(toastRow.nextElementSibling?.contains(selectorSlot)).toBe(true);
-    expect(toastRow.parentElement!.className).toMatch(/\bflex-col\b/);
+    const toastDock = first!.element.querySelector<HTMLElement>('[data-testid="composer-toast-dock"]')!;
+    const overlay = toastDock.querySelector<HTMLElement>('[data-testid="status-bar-presence"]')!;
+    expect(overlay.className).toMatch(/\babsolute\b/);
+    expect(overlay.className).toContain("bottom-full");
+    expect(overlay.className).toContain("z-30");
+    expect(toastDock.parentElement!.closest(".overflow-x-hidden")).toBeNull();
   });
 
-  it("keeps the window strip in flow above the panes, never floating over a pane's lane", async () => {
+  it("keeps persistent window banners in flow above the panes", async () => {
     const { container, api } = await renderApp({ hasApiKey: true });
     await splitIntoTwoTiles(container);
     const listener = api.onMarketplaceAnnouncements.mock.calls[0]?.[0] as

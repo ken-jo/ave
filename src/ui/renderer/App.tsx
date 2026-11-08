@@ -12,6 +12,7 @@ import { Sidebar, type SidebarLaunchKind } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
 import { DeprecatedModelNotice, RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
 import { NoticeLiveRegion, StatusBar } from "./components/StatusBar.js";
+import { PendingAnswerDot } from "./components/PendingAnswerDot.js";
 import { DevToolsPanel } from "./components/DevToolsPanel.js";
 import { DevComponentLabels } from "./components/DevComponentLabels.js";
 import { UnifiedSearchPanel } from "./components/UnifiedSearchPanel.js";
@@ -170,13 +171,11 @@ export function App() {
 
   // Window-scoped toasts subscribe before plugin auth can emit them.
   const {
-    persistent: statusPersistent,
     visibleToast: statusVisibleToast,
     pendingCount: statusPendingCount,
     pushToast: statusPushToast,
     upsertToast: statusUpsertToast,
     removeToast: statusRemoveToast,
-    removeApprovalToasts: statusRemoveApprovalToasts,
     suppressToastKind: statusSuppressToastKind,
   } = useStatusBar({ api });
 
@@ -900,20 +899,6 @@ export function App() {
   const { status: bootstrapStatus, dismiss: dismissBootstrapStatus, retry: retryBootstrap } = useBootstrapStatus(api);
   const approvals = useApproval();
   const { queue: approvalQueue, decide: handleApprovalDecide, claims: approvalClaims } = approvals;
-  // An approval toast leaves with its request: when the host announces it settled (the toast may name a request this window never
-  // queued, such as one the full queue refused), or when it leaves this window's queue. The notification fires before the request is
-  // queued, so a toast is dropped only once its request has been queued and then left the queue. Leaving the queue is not always the
-  // host settling (a failed respond, a handoff): the card is gone from this window then too, and the toast would only point at nothing.
-  useEffect(() => window.ave.approval.onSettled((payload: { requestId?: unknown } | undefined) => {
-    if (typeof payload?.requestId === "string" && payload.requestId.length > 0) statusRemoveApprovalToasts(new Set([payload.requestId]));
-  }), [statusRemoveApprovalToasts]);
-  const queuedApprovalIdsRef = useRef<ReadonlySet<string>>(new Set());
-  useEffect(() => {
-    const queued = new Set(approvalQueue.map((request) => request.id));
-    const settled = new Set([...queuedApprovalIdsRef.current].filter((id) => !queued.has(id)));
-    queuedApprovalIdsRef.current = queued;
-    if (settled.size > 0) statusRemoveApprovalToasts(settled);
-  }, [approvalQueue, statusRemoveApprovalToasts]);
   // Conversation cards stay with their owning surface; unowned host/plugin cards use the focused pane. One selector drives
   // both cards and attention dots.
   const [overlayQueue, setOverlayQueue] = useState<readonly OverlayItem[]>([]);
@@ -926,6 +911,10 @@ export function App() {
     sessions,
     isClaimed: (sessionId) => approvalClaims.ownerOf(sessionId) !== null,
   }), [approvalQueue, tileSessions, overlayQueue, sessions, approvalClaims, approvalClaimsVersion]);
+  const sidebarAnswerPending = [...pendingAnswers.sessionIds].some((sessionId) => {
+    const tile = tileSessions.find((candidate) => candidate.sessionId === sessionId || candidate.sideChat?.sessionId === sessionId);
+    return tile === undefined || tile.paneHidden || (tile.sideChat?.sessionId === sessionId && !tile.sideChat.shown);
+  });
   const workingSessions = useMemo(() => selectWorkingSessionIds(tileSessions, sessions), [tileSessions, sessions]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   const suggestionsPendingCount = useMemo(
@@ -2036,6 +2025,23 @@ export function App() {
     </>
   );
 
+  const windowNotice = (
+    <div className="min-w-min w-full" data-testid="window-notice-slot">
+      <StatusBar
+        persistent={[]}
+        toastPlacement="titlebar"
+        visibleToast={statusVisibleToast}
+        pendingCount={statusPendingCount}
+        onToastClick={handleStatusToastClick}
+        onToastDismiss={(toast) => statusRemoveToast(toast.id)}
+        onToastSuppress={(toast) => {
+          if (toast.kind === undefined) throw new Error("[notices] a suppressible notice reached the strip without a kind");
+          statusSuppressToastKind(toast.kind);
+        }}
+      />
+    </div>
+  );
+
   /** Each routed pane renders its own view and returns to its own conversation. */
   const renderPaneRoute = (view: InlineViewKey, paneId: string, settle: ReactNode): ReactNode => {
     // Closing a routed view reveals its conversation; toolbar history remains the sole owner of replay.
@@ -2386,7 +2392,7 @@ export function App() {
                   either: it keeps the collapsed lead and the card floats
                   over the path the way it floats over the tile. */}
               <CustomTitleBar
-                keepVisibleInFullscreen={sidebarHidden}
+                keepVisibleInFullscreen
                 leadClearance={sidebarHidden ? 0 : sidebarCollapsed || sidebarOverlay ? RAIL_BAND_LEAD : COLLAPSED_RAIL_RESERVE + sidebarWidth + CONTENT_TITLE_INSET}
               >
                 {/* With the list folded, the button that unfolds it is the band's first control (case 21). */}
@@ -2395,14 +2401,15 @@ export function App() {
                     data-testid="sidebar-collapse-toggle"
                     variant="ghost"
                     size="icon"
-                    className="h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
+                    className="relative h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
                     title={t("mainToolbar.expandSidebar")}
-                    aria-label={t("mainToolbar.expandSidebar")}
+                    aria-label={sidebarAnswerPending ? `${t("mainToolbar.expandSidebar")} · ${t("pendingAnswerDot.label")}` : t("mainToolbar.expandSidebar")}
                     aria-pressed={false}
                     onClick={() => setSidebarState("expanded")}
                     style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                   >
                     <PanelLeftOpen className="h-4 w-4" />
+                    {sidebarAnswerPending ? <PendingAnswerDot testId="sidebar-collapse-toggle-pending-answer" /> : null}
                   </Button>
                 )}
                 {sidebarHidden && (
@@ -2410,16 +2417,18 @@ export function App() {
                     data-testid="sidebar-show"
                     variant="ghost"
                     size="icon"
-                    className="h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
+                    className="relative h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
                     title={t("mainToolbar.showSidebar")}
-                    aria-label={t("mainToolbar.showSidebar")}
+                    aria-label={sidebarAnswerPending ? `${t("mainToolbar.showSidebar")} · ${t("pendingAnswerDot.label")}` : t("mainToolbar.showSidebar")}
                     onClick={showSidebar}
                     style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
                   >
                     <PanelLeftOpen className="h-4 w-4" />
+                    {sidebarAnswerPending ? <PendingAnswerDot testId="sidebar-show-pending-answer" /> : null}
                   </Button>
                 )}
                 <MainToolbar
+                  notice={windowNotice}
                   viewNav={viewNav}
                   streaming={streaming}
                   hasApiKey={effectiveLlmReady}
@@ -2530,53 +2539,28 @@ export function App() {
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
                   style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
                 >
-                  {/* The window's notice strip — the announcement banner, the
-                      permission-memory toast and the window status toasts
-                      (host notifications, installs, the app update). Each is
-                      about the WINDOW, so it is subscribed once and drawn once,
-                      here, IN FLOW: a flex sibling above the route canvas that
-                      takes its height from the canvas. It used to float over
-                      the canvas's top-right corner — the corner every pane
-                      keeps for its own floating lane — so a tall stack covered
-                      the rightmost tile's cards, and a tile's own dock drew the
-                      window toasts once per tile. Nothing here is positioned,
-                      so nothing here needs a sidebar inset: <main>'s leading
-                      padding keeps in-flow content clear of the rail, and an
-                      overlaying sidebar card covers this strip exactly as it
-                      covers the tile below it. `empty:hidden` gives the strip
-                      no height while every child renders null. Plugin updates
-                      and managed-plugin bootstrap are toolbar pills, beside the
-                      app-update pill (see MainToolbar). */}
+                  {/* Persistent banners reserve space; transient window notices use the title bar slot. */}
                   <div
-                    className="flex shrink-0 flex-col gap-2 px-(--chrome-gap) pt-2 empty:hidden [&>*]:m-0"
+                    className="shrink-0 px-(--chrome-gap)"
                     data-testid="window-notice-strip"
                   >
-                    {documentEngineOnboardingOpen ? <DocumentEngineInstallContent onDismiss={dismissDocumentEngineOnboarding} /> : null}
-                    <RetiredProviderNotice
-                      retiredProvider={subscriptionRuntimeSelected ? null : retiredLlmProvider}
-                      onChooseProvider={() => onOpenSettings("llm")}
-                    />
-                    <DeprecatedModelNotice
-                      model={subscriptionRuntimeSelected ? null : deprecatedLlmModel}
-                      onChooseModel={() => onOpenSettings("llm")}
-                    />
-                    <MarketplaceAnnouncementBanner
-                      announcements={marketplaceAnnouncements}
-                      onDismiss={handleMarketplaceAnnouncementDismiss}
-                      onAction={handleMarketplaceAnnouncementAction}
-                    />
+                    <div className="flex flex-col gap-2 pt-2 empty:hidden [&>*]:m-0" data-testid="window-notice-banners">
+                      {documentEngineOnboardingOpen ? <DocumentEngineInstallContent onDismiss={dismissDocumentEngineOnboarding} /> : null}
+                      <RetiredProviderNotice
+                        retiredProvider={subscriptionRuntimeSelected ? null : retiredLlmProvider}
+                        onChooseProvider={() => onOpenSettings("llm")}
+                      />
+                      <DeprecatedModelNotice
+                        model={subscriptionRuntimeSelected ? null : deprecatedLlmModel}
+                        onChooseModel={() => onOpenSettings("llm")}
+                      />
+                      <MarketplaceAnnouncementBanner
+                        announcements={marketplaceAnnouncements}
+                        onDismiss={handleMarketplaceAnnouncementDismiss}
+                        onAction={handleMarketplaceAnnouncementAction}
+                      />
+                    </div>
                     <NoticeLiveRegion toast={statusVisibleToast} />
-                    <StatusBar
-                      persistent={statusPersistent}
-                      visibleToast={statusVisibleToast}
-                      pendingCount={statusPendingCount}
-                      onToastClick={handleStatusToastClick}
-                      onToastDismiss={(toast) => statusRemoveToast(toast.id)}
-                      onToastSuppress={(toast) => {
-                        if (toast.kind === undefined) throw new Error("[notices] a suppressible notice reached the strip without a kind");
-                        statusSuppressToastKind(toast.kind);
-                      }}
-                    />
                   </div>
                   <DevToolsPanel
                     api={api}
@@ -2837,8 +2821,8 @@ export function App() {
                       </SurfaceMovesContext.Provider>
                     </ErrorBoundary>
                   </div>
-                  {/* StatusBar notifications render inside ChatView, directly above
-                      the composer. The composer's own status sub-row keeps showing
+                  {/* Conversation notices float above the composer; window notices use the title bar.
+                      The composer's own status sub-row keeps showing
                       the ring / permission / model cells. The conversation's tool
                       activity is derived inside ChatView and shown by the right-docked
                       ChatSidePanel, so its open-actions reach the workspace store. */}

@@ -1,3 +1,6 @@
+import { useContext } from "react";
+import { DropdownMenuItem, DropdownMenuSeparator } from "../../../components/ui/dropdown-menu.js";
+import { ToolbarStatusMenuContext } from "./toolbar-status-menu.js";
 import type { LucideIcon } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Loader } from "../../../components/ui/loader.js";
@@ -72,6 +75,20 @@ export function ToolbarStatusPill({
   testId,
   secondaryAction,
 }: ToolbarStatusPillProps) {
+  const inMenu = useContext(ToolbarStatusMenuContext);
+  if (inMenu) {
+    const ActionIcon = secondaryAction?.icon;
+    return <>
+      <DropdownMenuItem onSelect={onClick} disabled={disabled} aria-label={ariaLabel} title={title} data-testid={testId}>
+        <Icon className="mr-2 h-3.5 w-3.5 shrink-0" />
+        {ariaLabel}
+      </DropdownMenuItem>
+      {secondaryAction && ActionIcon ? <DropdownMenuItem onSelect={secondaryAction.onClick} disabled={secondaryAction.disabled} aria-label={secondaryAction.ariaLabel} data-testid={secondaryAction.testId}>
+        <ActionIcon className="mr-2 h-3.5 w-3.5 shrink-0" />{secondaryAction.ariaLabel}
+      </DropdownMenuItem> : null}
+      <DropdownMenuSeparator />
+    </>;
+  }
   const pill = (
     <Tooltip>
       <TooltipTrigger asChild>

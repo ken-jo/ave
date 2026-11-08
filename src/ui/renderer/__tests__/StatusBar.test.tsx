@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { endAnimation } from "../../../../test/renderer/helpers.js";
 import { NoticeLiveRegion, StatusBar } from "../components/StatusBar.js";
 import type { PersistentItem, ToastItem } from "../hooks/use-status-bar.js";
+import { getWebSurfaceOccluders } from "../preview/web-surfaces.js";
 
 function persistent(overrides: Partial<PersistentItem> = {}): PersistentItem {
   return {
@@ -26,6 +27,13 @@ function toast(overrides: Partial<ToastItem> = {}): ToastItem {
 }
 
 describe("StatusBar", () => {
+  it("keeps the notice visible above native page content until it unmounts", () => {
+    const { unmount } = render(<StatusBar persistent={[]} visibleToast={toast()} onToastDismiss={() => {}} />);
+    const notice = screen.getByTestId("status-toast");
+    expect(getWebSurfaceOccluders().has(notice)).toBe(true);
+    unmount();
+    expect(getWebSurfaceOccluders().has(notice)).toBe(false);
+  });
   // wb-final removed the Ave brand mark from app chrome. The empty status bar renders no brand logo/text — only a
   // zero-footprint spacer that keeps the flex layout stable until the first persistent item arrives.
   it("renders no Ave brand placeholder when there are no persistent items", () => {
@@ -42,12 +50,12 @@ describe("StatusBar", () => {
   it("stays mounted, leaving, after its content is gone and unmounts when the exit animation ends", () => {
     const { rerender } = render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ message: "로그인이 취소되었습니다" })} />);
     const presence = screen.getByTestId("status-bar-presence");
-    expect(presence.className).toBe("ave-anim-notice-in");
+    expect(presence.className).toContain("ave-anim-notice-in");
     expect(presence.dataset.leaving).toBeUndefined();
 
     rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     // The last content is still drawn, now on its way out.
-    expect(screen.getByTestId("status-bar-presence").className).toBe("ave-anim-notice-out");
+    expect(screen.getByTestId("status-bar-presence").className).toContain("ave-anim-notice-out");
     expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
     expect(screen.getByTestId("status-toast-message")).toHaveTextContent("로그인이 취소되었습니다");
 
@@ -60,8 +68,67 @@ describe("StatusBar", () => {
     rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
     rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ id: "toast:2", message: "두 번째" })} />);
-    expect(screen.getByTestId("status-bar-presence").className).toBe("ave-anim-notice-in");
+    expect(screen.getByTestId("status-bar-presence").className).toContain("ave-anim-notice-in");
     expect(screen.getByTestId("status-toast-message")).toHaveTextContent("두 번째");
+  });
+
+  it("floats only the toast while persistent indicators stay in flow", () => {
+    const { rerender } = render(<StatusBar persistent={[persistent()]} visibleToast={toast()} onToastDismiss={() => {}} />);
+    const overlay = screen.getByTestId("status-bar-presence");
+    expect(overlay.className).toContain("absolute");
+    expect(overlay.className).toContain("z-30");
+    expect(overlay.className).toContain("bottom-full");
+    expect(overlay.className).toContain("pointer-events-none");
+    expect(screen.getByTestId("status-toast").className).toContain("pointer-events-auto");
+    expect(screen.getByTestId("status-toast").className).not.toContain("max-h-(--chrome-band-height)");
+    expect(overlay.contains(screen.getByText("04:42 KST"))).toBe(false);
+
+    rerender(<StatusBar persistent={[persistent()]} visibleToast={null} onToastDismiss={() => {}} />);
+    expect(screen.getByTestId("status-bar-presence")).toHaveAttribute("data-leaving", "true");
+    endAnimation(screen.getByTestId("status-bar-presence"));
+    expect(screen.queryByTestId("status-toast")).toBeNull();
+    expect(screen.getByText("04:42 KST")).toBeVisible();
+  });
+
+  it("floats composer notices above their anchor", () => {
+    render(<StatusBar persistent={[]} visibleToast={toast()} onToastDismiss={() => {}} toastPlacement="above" />);
+    expect(screen.getByTestId("status-bar-presence").className).toContain("bottom-full");
+  });
+
+  it("keeps title bar notices in their single-line slot with only opacity motion and interactive notice controls", () => {
+    const onOpen = vi.fn();
+    const onDismiss = vi.fn();
+    const notice = toast({ severity: "error", notification: { kind: "system", contextRef: {} } });
+    const { rerender } = render(<StatusBar persistent={[]} visibleToast={notice} toastPlacement="titlebar" pendingCount={2} onToastClick={onOpen} onToastDismiss={onDismiss} />);
+    const presence = screen.getByTestId("status-bar-presence");
+    expect(presence).toHaveClass("relative", "ave-anim-fade-in", "pointer-events-none");
+    expect(presence).not.toHaveClass("absolute", "ave-anim-notice-in");
+    const surface = screen.getByTestId("status-toast");
+    expect(surface).toHaveClass("h-(--chrome-control-height)", "items-center", "max-w-[min(100%,24rem)]");
+    expect((surface.style as unknown as Record<string, string>).WebkitAppRegion).toBe("no-drag");
+    expect((presence.style as unknown as Record<string, string>).WebkitAppRegion).toBeUndefined();
+    expect(screen.getByText("+2")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /자세히 알아보기|Learn more/ }));
+    expect(onOpen).toHaveBeenCalledWith(notice);
+    fireEvent.click(screen.getByTestId("status-toast-dismiss"));
+    expect(onDismiss).toHaveBeenCalledWith(notice);
+    const run = vi.fn();
+    const actionLabel = "Open the detailed explanation of this notice and the available recovery steps";
+    rerender(<StatusBar persistent={[]} toastPlacement="titlebar" visibleToast={toast({ action: { label: actionLabel, run } })} onToastDismiss={onDismiss} />);
+    const action = screen.getByRole("button", { name: actionLabel });
+    expect(action).toHaveClass("shrink-0");
+    expect(action.querySelector("svg")).not.toBeNull();
+    expect(surface).toHaveClass("min-w-min");
+    expect(screen.getByTestId("status-toast")).toHaveAttribute("title");
+    expect(screen.getByTestId("status-toast-dismiss")).toBeVisible();
+    fireEvent.click(action);
+    expect(run).toHaveBeenCalledOnce();
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+    rerender(<StatusBar persistent={[]} visibleToast={null} toastPlacement="titlebar" onToastDismiss={onDismiss} />);
+    expect(presence).toHaveClass("ave-anim-fade-out");
+    expect(presence).not.toHaveClass("ave-anim-notice-out");
+    endAnimation(presence);
+    expect(screen.queryByTestId("status-toast")).toBeNull();
   });
 
   it("renders persistent items with label and value", () => {

@@ -206,7 +206,7 @@ describe("App plugin auth routing", () => {
       });
     });
     await waitFor(() => {
-      const statusBar = within(screen.getByTestId("window-notice-strip")).getByTestId("status-bar");
+      const statusBar = within(screen.getByTestId("window-notice-slot")).getByTestId("status-bar");
       expect(statusBar).toHaveTextContent(/code: non-corp-network/);
       expect(statusBar).toHaveTextContent(/사내망 또는 VPN 연결이 필요합니다/);
     });

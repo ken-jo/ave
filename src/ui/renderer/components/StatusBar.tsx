@@ -1,20 +1,23 @@
 import { chatSurface } from "./chat-surface.js";
-import { useRef, useState, type AnimationEvent } from "react";
+import { useRef, useState, type AnimationEvent, type CSSProperties } from "react";
 import type { PersistentItem, StatusBarSeverity, ToastItem } from "../hooks/use-status-bar.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../../components/ui/tooltip.js";
-import { X } from "lucide-react";
+import { ArrowUpRight, EyeOff, X } from "lucide-react";
 import { t } from "../../../i18n/runtime.js";
 import { MarqueeText } from "./MarqueeText.js";
+import { useWebSurfaceOccluder } from "../preview/use-web-surface-occluder.js";
+import { requestWebSurfaceLayout } from "../preview/web-surfaces.js";
 
 const EMOJI_FONT_STACK =
   "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', 'Twemoji Mozilla', sans-serif";
 const EMOJI_STYLE = { fontFamily: EMOJI_FONT_STACK };
 
-/** Render the toast queue head in flow so notices do not cover neighboring panes; notification metadata alone enables
- * click-through IPC. */
+/** Persistent indicators stay in flow; the transient queue head floats without moving its owning surface. */
 export interface StatusBarProps {
   persistent: PersistentItem[];
+  /** Conversation notices float above their dock; window notices stay in the title bar slot. */
+  toastPlacement?: "above" | "titlebar";
   /** The single toast currently at the front of the queue (or null). */
   visibleToast: ToastItem | null;
   /** Number of toasts queued behind the visible one. */
@@ -43,7 +46,7 @@ const SEVERITY_TEXT: Record<StatusBarSeverity, string> = {
 };
 
 export function StatusBar(props: StatusBarProps) {
-  const hasContent = (props.persistent?.length ?? 0) > 0 || props.visibleToast !== null;
+  const hasContent = props.visibleToast !== null;
 
   // Presence: what the bar last showed is drawn once more, leaving, when the
   // content goes away. Derived during render (not in an effect) so the frame
@@ -58,27 +61,22 @@ export function StatusBar(props: StatusBarProps) {
     setLeaving(!hasContent);
   }
   const onAnimationEnd = (event: AnimationEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget && leaving) setLeaving(false);
+    if (event.target !== event.currentTarget) return;
+    requestWebSurfaceLayout();
+    if (leaving) setLeaving(false);
   };
 
-  // Render nothing once there is no persistent indicator, no toast and the exit has played, so the composer dock does not
-  // reserve empty space.
-  if (!hasContent && !leaving) return null;
+  if (props.persistent.length === 0 && !hasContent && !leaving) return null;
 
-  const { persistent, visibleToast, pendingCount = 0, onToastClick, onToastDismiss, onToastSuppress } =
+  const { visibleToast, pendingCount = 0, onToastClick, onToastDismiss, onToastSuppress } =
     hasContent ? props : lastContentRef.current;
+  const { persistent, toastPlacement = "above" } = props;
+  const titlebar = toastPlacement === "titlebar";
 
   return (
     <TooltipProvider>
-    <div
-      className={leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}
-      data-testid="status-bar-presence"
-      data-leaving={leaving ? "true" : undefined}
-      onAnimationEnd={onAnimationEnd}
-    >
-    <div className="min-h-0 overflow-hidden">
     <footer
-      className="flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground"
+      className={`relative flex w-full ${titlebar ? "min-w-min" : "min-w-0"} items-center gap-3 text-dense text-muted-foreground`}
       data-testid="status-bar"
     >
       {persistent.length > 0 ? (
@@ -159,21 +157,28 @@ export function StatusBar(props: StatusBarProps) {
           })}
         </div>
       ) : null}
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        {visibleToast !== null ? (
+      {visibleToast !== null && (hasContent || leaving) ? (
+        <div
+          className={titlebar
+            ? `pointer-events-none relative flex w-full min-w-min justify-end ${leaving ? "ave-anim-fade-out" : "ave-anim-fade-in"}`
+            : `pointer-events-none absolute inset-x-0 bottom-full z-30 mb-2 flex items-start justify-end ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
+          data-testid="status-bar-presence"
+          data-leaving={leaving ? "true" : undefined}
+          onAnimationEnd={onAnimationEnd}
+        >
           <NoticeToast
             key={visibleToast.id}
             toast={visibleToast}
+            className="pointer-events-auto"
+            variant={titlebar ? "titlebar" : "standard"}
             pendingCount={pendingCount}
             onDismiss={onToastDismiss}
             {...(onToastClick ? { onOpen: onToastClick } : {})}
             {...(onToastSuppress ? { onSuppress: onToastSuppress } : {})}
           />
-        ) : null}
-      </div>
+        </div>
+      ) : null}
     </footer>
-    </div>
-    </div>
     </TooltipProvider>
   );
 }
@@ -194,6 +199,7 @@ export function NoticeToast({
   onOpen,
   onSuppress,
   wrap = false,
+  variant = "standard",
   className,
 }: {
   toast: ToastItem;
@@ -205,26 +211,32 @@ export function NoticeToast({
   onOpen?: (toast: ToastItem) => void;
   onSuppress?: (toast: ToastItem) => void;
   className?: string;
+  variant?: "standard" | "titlebar";
 }) {
+  const titlebar = variant === "titlebar";
   const linkClass =
     "shrink-0 text-body-sm font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring";
   const openable = toast.notification !== undefined && typeof onOpen === "function";
+  const toastElementRef = useWebSurfaceOccluder(toast.id);
   return (
     <div
+      ref={toastElementRef}
       data-testid="status-toast"
       data-severity={toast.severity}
       data-notice-kind={toast.kind}
-      className={`${chatSurface()} ave-anim-fade-in flex min-w-0 w-full max-w-[min(100%,24rem)] items-start gap-2 px-3 py-2 text-body-sm text-input-bar-foreground${className ? ` ${className}` : ""}`}
+      title={titlebar ? toast.message : undefined}
+      style={titlebar ? { WebkitAppRegion: "no-drag" } as CSSProperties : undefined}
+      className={`${chatSurface()} ave-anim-fade-in flex w-full max-w-[min(100%,24rem)] text-input-bar-foreground ${titlebar ? "min-w-min h-(--chrome-control-height) items-center gap-0.5 px-1 text-dense" : "min-w-0 items-start gap-2 px-3 py-2 text-body-sm"}${className ? ` ${className}` : ""}`}
     >
-      <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[toast.severity]}`} aria-hidden="true" />
+      <span className={`${titlebar ? "h-1.5 w-1.5" : "mt-1 h-2 w-2"} shrink-0 rounded-full ${SEVERITY_DOT[toast.severity]}`} aria-hidden="true" />
       {wrap ? (
         <span className="min-w-0 flex-1 break-words text-left [overflow-wrap:anywhere]" data-testid="status-toast-message">{toast.message}</span>
       ) : (
-        <MarqueeText text={toast.message} className="flex-1 text-left" data-testid="status-toast-message" />
+        <MarqueeText text={toast.message} className={`${titlebar ? "w-0 " : ""}flex-1 text-left`} data-testid="status-toast-message" />
       )}
       {openable ? (
-        <button type="button" onClick={() => onOpen?.(toast)} className={linkClass}>
-          {t("statusBar.toastDetailsAction")}
+        <button type="button" onClick={() => onOpen?.(toast)} className={linkClass} aria-label={t("statusBar.toastDetailsAction")} title={t("statusBar.toastDetailsAction")}>
+          {titlebar ? <ArrowUpRight className="h-3 w-3" aria-hidden="true" /> : t("statusBar.toastDetailsAction")}
         </button>
       ) : toast.action ? (
         <button
@@ -235,19 +247,21 @@ export function NoticeToast({
           }}
           className={linkClass}
           data-testid="status-toast-action"
+          aria-label={toast.action.label}
+          title={toast.action.label}
         >
-          {toast.action.label}
+          {titlebar ? <ArrowUpRight className="h-3 w-3" aria-hidden="true" /> : toast.action.label}
         </button>
       ) : null}
       {toast.suppressible && onSuppress ? (
-        <button type="button" onClick={() => onSuppress(toast)} className={linkClass} data-testid="status-toast-suppress">
-          {t("statusBar.toastSuppressAction")}
+        <button type="button" onClick={() => onSuppress(toast)} className={linkClass} data-testid="status-toast-suppress" aria-label={t("statusBar.toastSuppressAction")} title={t("statusBar.toastSuppressAction")}>
+          {titlebar ? <EyeOff className="h-3 w-3" aria-hidden="true" /> : t("statusBar.toastSuppressAction")}
         </button>
       ) : null}
       <button
         type="button"
         onClick={() => onDismiss(toast)}
-        className="mt-[-0.125rem] inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        className={`${titlebar ? "h-5 w-5" : "mt-[-0.125rem] h-6 w-6"} inline-flex shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring`}
         aria-label={t("statusBar.toastDismissAriaLabel")}
         data-testid="status-toast-dismiss"
       >
