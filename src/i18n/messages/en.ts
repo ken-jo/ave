@@ -197,7 +197,7 @@ export const en = {
   "appearanceTab.fontFamilyCustomHint": "Font names separated by commas. Enter saves, Escape cancels.",
   "appearanceTab.fontSectionTitle": "Font",
   "appearanceTab.fontSectionDescription": "Applied across the host shell, chat, and settings windows. System default uses the OS sans-serif and Korean font fallback chain. Extension windows use their own fonts independently of this setting.",
-  "appearanceTab.fontSizePreview": "Size preview:",
+  "appearanceTab.fontSizeDefault": "Default",
   "appearanceTab.fontFamilyLabel": "Family",
   "appearanceTab.fontFamilyRadioGroupLabel": "Font family selection",
   "appearanceTab.fontSizeLabel": "Size",

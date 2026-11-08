@@ -199,3 +199,14 @@ describe("Window glass tint", () => {
     expect((view.getByRole("slider") as HTMLInputElement).disabled).toBe(true);
   });
 });
+
+it("renders size segments at one body size with nominal pixels and a default", () => {
+  const view = renderAppearance();
+  const chips = within(view.getByTestId("font-size-scale")).getAllByRole("radio");
+  chips.forEach((chip, index) => {
+    expect(chip.style.fontSize).toBe("");
+    expect(chip).toHaveClass("text-sm");
+    expect(chip).toHaveTextContent(["12px", "14px", "16px", "18px"][index]!);
+  });
+  expect(chips[1]).toHaveTextContent("기본값");
+});

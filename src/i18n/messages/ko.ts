@@ -199,7 +199,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "appearanceTab.fontFamilyCustomHint": "폰트 이름을 쉼표로 구분해 입력합니다. Enter로 저장, Escape로 취소.",
   "appearanceTab.fontSectionTitle": "폰트",
   "appearanceTab.fontSectionDescription": "호스트 본체 / 채팅 / 설정 창 전체에 적용됩니다. 시스템 기본은 OS 의 sans-serif 와 한글 폰트 fallback 체인을 사용합니다. 익스텐션 자체 창은 호스트 설정과 별도로 자체 폰트를 사용합니다.",
-  "appearanceTab.fontSizePreview": "크기 미리보기:",
+  "appearanceTab.fontSizeDefault": "기본값",
   "appearanceTab.fontFamilyLabel": "패밀리",
   "appearanceTab.fontFamilyRadioGroupLabel": "폰트 패밀리 선택",
   "appearanceTab.fontSizeLabel": "크기",

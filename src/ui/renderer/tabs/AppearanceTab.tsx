@@ -338,12 +338,6 @@ export function AppearanceTab() {
         data-settings-section="appearance-font"
         title={t("appearanceTab.fontSectionTitle")}
         description={t("appearanceTab.fontSectionDescription")}
-        actions={
-          <span className="text-dense text-muted-foreground">
-            {t("appearanceTab.fontSizePreview")}{" "}
-            <span className="font-mono text-foreground">{Math.round(sizeScale * 16)}px</span>
-          </span>
-        }
       >
         {/* 폰트 패밀리 */}
         <div className="space-y-2">
@@ -393,7 +387,7 @@ export function AppearanceTab() {
             onKeyDown={handleRadioGroupKeyDown}
             aria-label={t("appearanceTab.fontSizeRadioGroupLabel")}
             data-testid="font-size-scale"
-            className="flex flex-wrap gap-2"
+            className="grid grid-cols-4 overflow-hidden rounded-md border border-border"
           >
             {FONT_SIZE_OPTIONS.map((opt) => {
               const checked = sizeScale === opt.value;
@@ -406,14 +400,14 @@ export function AppearanceTab() {
                   tabIndex={checked ? 0 : -1}
                   data-value={String(opt.value)}
                   onClick={() => setSizeScale(opt.value)}
-                  className={`rounded-full border px-3 py-1 transition-colors ${
+                  className={`min-w-0 border-r border-border px-1 py-2 text-sm last:border-r-0 transition-colors ${
                     checked
                       ? "border-primary bg-primary text-primary-foreground"
                       : "border-border text-muted-foreground hover:bg-muted/(--opacity-half) hover:text-foreground"
                   }`}
-                  style={{ fontSize: `${opt.value * 0.75}rem` }}
                 >
-                  {t(opt.label)}
+                  <span className="block whitespace-nowrap">{t(opt.label)}</span>
+                  <span className="block whitespace-nowrap text-dense">{Math.round(opt.value * 16)}px{opt.value === FONT_SIZE_SCALE_DEFAULT ? ` · ${t("appearanceTab.fontSizeDefault")}` : ""}</span>
                 </button>
               );
             })}
