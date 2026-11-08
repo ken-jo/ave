@@ -56,6 +56,7 @@ import {
   matchesQuery,
   toRelativePath,
 } from "./ChatSidePanelPreview.js";
+import { matchesShortcut } from "../hooks/use-shortcuts.js";
 
 
 /**
@@ -436,11 +437,11 @@ function ProjectRootsBrowser({
     applyAddOutcome(await pickProjectFolder());
   }, [applyAddOutcome, pickProjectFolder]);
 
-  // ⌘O / Ctrl+O opens the folder picker when focus is within the panel (scoped —
-  // no global shortcut pollution).
+  // The add-folder key (⌘O / Ctrl+O by default) opens the folder picker when focus is within the panel (scoped — no
+  // global shortcut pollution).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === "o" || e.key === "O")) {
+      if (matchesShortcut("workspace.addFolder", e)) {
         const root = rootRef.current;
         if (root && root.contains(document.activeElement)) {
           e.preventDefault();

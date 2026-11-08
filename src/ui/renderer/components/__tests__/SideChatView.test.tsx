@@ -378,7 +378,7 @@ describe("SideChatView — the main composer's input system", () => {
     emit({ type: "text_delta", text: "working…", streamId: 1 });
 
     fireEvent.change(textarea, { target: { value: "now instead" } });
-    fireEvent.keyDown(textarea, { key: "Enter", metaKey: true });
+    fireEvent.keyDown(textarea, { key: "Enter", ctrlKey: true });
 
     await waitFor(() => expect(spies.send).toHaveBeenCalledTimes(2));
     expect(spies.abort).toHaveBeenCalledTimes(1);

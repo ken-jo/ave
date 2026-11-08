@@ -49,6 +49,7 @@ import {
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
 } from "../../../shared/side-panel.js";
+import { useShortcutHint } from "../hooks/use-shortcuts.js";
 
 // A nav row draws the same glyph the pane header draws for the view it opens — one map, so a row and the header it
 // produces cannot disagree.
@@ -788,6 +789,7 @@ export function Sidebar({
   suggestionsPendingCount = 0,
 }: SidebarProps) {
   const { t } = useTranslation();
+  const searchHint = useShortcutHint("app.search") ?? "";
   const sessionIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
   const { surfaces, bindingsLoaded } = useSidebarItems(mainSurfaces, chatGroupIds, browserTabs, sessionIds);
   const allProjects = projectSelection?.kind === "all";
@@ -1149,7 +1151,7 @@ export function Sidebar({
       footer={(
         <>
           <RailButton
-            label={t("mainToolbar.unifiedSearch")}
+            label={t("mainToolbar.unifiedSearch", { shortcut: searchHint })}
             icon={<Search className="h-4 w-4" />}
             onClick={onOpenUnifiedSearch}
             data-testid="sidebar-search"

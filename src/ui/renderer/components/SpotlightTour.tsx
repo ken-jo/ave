@@ -14,6 +14,7 @@ import {
   PopoverAnchor,
   PopoverContent,
 } from "../../../components/ui/popover.js";
+import { matchesShortcut, shortcutHint } from "../hooks/use-shortcuts.js";
 
 /** Narrow API surface this component needs. Declared structurally so the tests can hand-roll a minimal mock without faking
  * the entire `window.aveApi`. Mirrors `AveApi.tour` in `renderer/types.ts`. */
@@ -328,22 +329,10 @@ export function SpotlightTour({
     let cleanup: (() => void) | null = null;
 
     if (triggerForStep.kind === "keypress") {
-      const combo = triggerForStep.combo;
+      const shortcutId = triggerForStep.shortcutId;
       const onKey = (e: KeyboardEvent) => {
         if (e.isComposing) return;
-        const meta = e.metaKey || e.ctrlKey;
-        if (!meta) return;
-        if (combo === "⌘+K" && e.key.toLowerCase() === "k") {
-          handleNext();
-        } else if (
-          combo === "⌘+?" &&
-          e.shiftKey &&
-          (e.key === "?" || e.key === "/")
-        ) {
-          handleNext();
-        } else if (combo === "⌘+Enter" && e.key === "Enter") {
-          handleNext();
-        }
+        if (matchesShortcut(shortcutId, e)) handleNext();
       };
       window.addEventListener("keydown", onKey);
       cleanup = () => window.removeEventListener("keydown", onKey);
@@ -466,7 +455,7 @@ export function SpotlightTour({
           className="mt-2"
           style={{ display: "flex", gap: 6, flexWrap: "wrap" }}
         >
-          {currentStep.keyHint.map((label) => (
+          {currentStep.keyHint.map((id) => shortcutHint(id)).filter((label): label is string => label !== null).map((label) => (
             <kbd
               key={label}
               aria-label={t("spotlightTour.shortcutAriaLabel", { label })}

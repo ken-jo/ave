@@ -49,6 +49,7 @@ import {
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import { FILE_MENTION_REFERENCE_POLICY, formatFileMentionReference, type FileMentionReference } from "../../../shared/file-mention-reference.js";
+import { matchesShortcut } from "../hooks/use-shortcuts.js";
 
 export interface ComposerHandle {
   focus(): void;
@@ -619,7 +620,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // preventDefault-ed: the browser still fires its own paste, and a
       // textarea inserts text/plain, which is exactly the wanted result.
       plainPasteRequestedRef.current =
-        (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "v";
+        matchesShortcut("composer.plainPaste", e);
 
       // Inline "/" autocomplete owns navigation while open. This MUST run before the suggested-reply Tab branch and the
       // Enter→onSend branch, so Enter accepts the highlighted item instead of sending.

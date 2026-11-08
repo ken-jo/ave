@@ -83,7 +83,7 @@ describe("ChatView ⌘K guide", () => {
     });
 
     await act(async () => {
-      fireEvent.keyDown(textarea, { key: "k", code: "KeyK", metaKey: true });
+      fireEvent.keyDown(textarea, { key: "k", code: "KeyK", ctrlKey: true });
     });
 
     await waitFor(() => {

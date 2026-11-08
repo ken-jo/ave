@@ -20,6 +20,12 @@ describe("panel commands", () => {
     expect(panelCommandFor(key("t", { metaKey: true }), true)).toBeNull();
   });
 
+  it("follows a rebind and stops answering the old key", () => {
+    const input = { bindings: { "surface.reopenClosed": "CommandOrControl+Alt+R" }, toggleWindow: null, enabled: false };
+    expect(panelCommandFor(key("r", { metaKey: true, altKey: true }), true, input)).toBe("surface.reopenClosed");
+    expect(panelCommandFor(key("T", { metaKey: true, shiftKey: true }), true, input)).toBeNull();
+  });
+
   it("has one row per command", () => {
     const ids = PANEL_COMMANDS.map((command) => command.id);
     expect(new Set(ids).size).toBe(ids.length);

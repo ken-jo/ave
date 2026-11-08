@@ -1,8 +1,9 @@
 import { t } from "../../../i18n/runtime.js";
 import { FIRST_BOOT_SCENARIO_ID } from "../../../shared/first-boot-tour.js";
+import type { ShortcutId } from "../../../shared/shortcuts.js";
 
 export type CompletionTrigger =
-  | { kind: "keypress"; combo: "⌘+K" | "⌘+?" | "⌘+Enter" }
+  | { kind: "keypress"; shortcutId: ShortcutId }
   | { kind: "input"; selector: string }
   | { kind: "click"; selector: string }
   | { kind: "manual" };
@@ -22,11 +23,11 @@ export interface TourStep {
   body: string;
   /**
    * Optional keyboard-shortcut hint rendered as `<kbd>` chips beside the
-   * body. Each entry is a human-readable label (e.g. `"⌘+K"`, `"⌘+Enter"`).
-   * The component renders these as <kbd> elements with an `aria-label` of
-   * `"shortcut: <label>"` so screen-readers announce them properly.
+   * body. Each entry is a registry shortcut, shown with the user's current
+   * binding. The component renders these as <kbd> elements with an
+   * `aria-label` of `"shortcut: <label>"` so screen-readers announce them.
    */
-  keyHint?: string[];
+  keyHint?: ShortcutId[];
 
   completionTrigger?: CompletionTrigger;
 }
@@ -50,7 +51,7 @@ function buildFirstBootEssentials(): TourScenario {
         anchorSelector: '[data-tour-anchor="composer-input"]',
         title: t("defaultTourScenarios.firstBootStep1Title"),
         body: t("defaultTourScenarios.firstBootStep1Body"),
-        keyHint: ["⌘+Enter"],
+        keyHint: ["composer.sendNow"],
         completionTrigger: {
           kind: "input",
           selector: '[data-tour-anchor="composer-input"]',
@@ -66,14 +67,14 @@ function buildFirstBootEssentials(): TourScenario {
         anchorSelector: '[data-tour-anchor="command-palette-toggle"]',
         title: t("defaultTourScenarios.firstBootStep3Title"),
         body: t("defaultTourScenarios.firstBootStep3Body"),
-        keyHint: ["⌘+K"],
-        completionTrigger: { kind: "keypress", combo: "⌘+K" },
+        keyHint: ["app.commandPalette"],
+        completionTrigger: { kind: "keypress", shortcutId: "app.commandPalette" },
       },
       {
         anchorSelector: '[data-tour-anchor="chat-history"]',
         title: t("defaultTourScenarios.firstBootStep4Title"),
         body: t("defaultTourScenarios.firstBootStep4Body"),
-        keyHint: ["⌘+F"],
+        keyHint: ["app.search"],
         completionTrigger: { kind: "manual" },
       },
       {

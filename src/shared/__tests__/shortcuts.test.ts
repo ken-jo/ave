@@ -1,5 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { normalizeAccelerator, normalizeShortcuts } from "../shortcuts.js";
+import { en } from "../../i18n/messages/en.js";
+import { ko } from "../../i18n/messages/ko.js";
+import {
+  acceleratorFromEvent,
+  acceleratorKeycaps,
+  canonicalAccelerator,
+  conflictingShortcutIds,
+  formatAccelerator,
+  isShortcutId,
+  matchesAccelerator,
+  NO_SHORTCUT_OVERRIDES,
+  normalizeAccelerator,
+  normalizeShortcuts,
+  resolveShortcut,
+  resolveShortcuts,
+  SHORTCUT_SCOPE_LABEL_KEYS,
+  SHORTCUTS,
+  shortcutBindingRefusal,
+  type ShortcutDefinition,
+  type ShortcutKeyEvent,
+} from "../shortcuts.js";
+
+/** A key event from its key and the modifiers held. */
+function ev(key: string, mods: Partial<ShortcutKeyEvent> = {}): ShortcutKeyEvent {
+  return { key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...mods };
+}
 
 describe("normalizeAccelerator", () => {
   it("accepts a valid accelerator, trimmed", () => {
@@ -49,5 +74,208 @@ describe("normalizeShortcuts", () => {
       { ...fallback },
     );
     expect(out).toEqual({ toggleWindow: "CommandOrControl+K", enabled: false });
+  });
+});
+
+describe("shortcut registry", () => {
+  const platforms = ["darwin", "other"] as const;
+
+  it("has one row per id", () => {
+    const ids = SHORTCUTS.map((entry) => entry.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("names every label, scope and reason with a key both catalogs have", () => {
+    const keys: string[] = Object.values(SHORTCUT_SCOPE_LABEL_KEYS);
+    for (const entry of SHORTCUTS as readonly ShortcutDefinition[]) {
+      keys.push(entry.labelKey);
+      if (entry.readOnly) keys.push(entry.readOnly.reasonKey);
+    }
+    for (const key of keys) {
+      expect(en, key).toHaveProperty([key]);
+      expect(ko, key).toHaveProperty([key]);
+    }
+  });
+
+  it("spells every default canonically", () => {
+    for (const entry of SHORTCUTS as readonly ShortcutDefinition[]) {
+      if (entry.layeredOn !== undefined) {
+        expect(isShortcutId(entry.layeredOn), entry.id).toBe(true);
+        continue;
+      }
+      for (const platform of platforms) {
+        const accelerator = entry.defaults[platform];
+        if (accelerator !== null) expect(canonicalAccelerator(accelerator), `${entry.id} on ${platform}`).toBe(accelerator);
+      }
+    }
+  });
+
+  it.each(platforms)("ships conflict-free defaults on %s", (platform) => {
+    const rows = resolveShortcuts(NO_SHORTCUT_OVERRIDES, platform);
+    expect([...conflictingShortcutIds(rows, platform)]).toEqual([]);
+  });
+
+  it.each(platforms)("lets every rebindable default pass its own binding rules on %s", (platform) => {
+    for (const row of resolveShortcuts(NO_SHORTCUT_OVERRIDES, platform)) {
+      if (!row.rebindable || row.accelerator === null) continue;
+      expect(shortcutBindingRefusal(row.id, row.accelerator, platform, NO_SHORTCUT_OVERRIDES), row.id).toBeNull();
+    }
+  });
+
+  it("gives a layered row the key of the row it follows, rebinds included", () => {
+    const input = { ...NO_SHORTCUT_OVERRIDES, bindings: { "app.commandPalette": "CommandOrControl+J" } };
+    expect(resolveShortcut("composer.guide", NO_SHORTCUT_OVERRIDES, "darwin")).toBe("CommandOrControl+K");
+    expect(resolveShortcut("composer.guide", input, "darwin")).toBe("CommandOrControl+J");
+  });
+
+  it("ignores a stored binding for a fixed row", () => {
+    const input = { ...NO_SHORTCUT_OVERRIDES, bindings: { "edit.copy": "CommandOrControl+J" } as Record<string, string> };
+    expect(resolveShortcut("edit.copy", input, "darwin")).toBe("CommandOrControl+C");
+  });
+
+  it("lists the system-wide toggle with the key set under Startup, only while it is on", () => {
+    const off = resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, toggleWindow: "Alt+F1", enabled: false }, "darwin");
+    const on = resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, toggleWindow: "Alt+F1", enabled: true }, "darwin");
+    expect(off.find((row) => row.id === "system.toggleWindow")?.accelerator).toBeNull();
+    expect(on.find((row) => row.id === "system.toggleWindow")?.accelerator).toBe("Alt+F1");
+  });
+
+  it("leaves out a row that has no key on a platform", () => {
+    expect(resolveShortcuts(NO_SHORTCUT_OVERRIDES, "darwin").some((row) => row.id === "app.quit")).toBe(true);
+    expect(resolveShortcuts(NO_SHORTCUT_OVERRIDES, "other").some((row) => row.id === "app.quit")).toBe(false);
+  });
+});
+
+describe("conflict detection", () => {
+  it("flags two rebindable rows on one key in overlapping scopes", () => {
+    const input = { ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": "CommandOrControl+K" } };
+    const conflicts = conflictingShortcutIds(resolveShortcuts(input, "darwin"), "darwin");
+    expect([...conflicts].sort()).toEqual(["app.commandPalette", "app.search"]);
+  });
+
+  it("compares the keys pressed, not the spelling", () => {
+    // CommandOrControl is Ctrl off macOS, so a Control binding is the same chord there and a different one on a Mac.
+    const input = { ...NO_SHORTCUT_OVERRIDES, bindings: { "app.search": "Control+K" } };
+    expect(conflictingShortcutIds(resolveShortcuts(input, "other"), "other").has("app.search")).toBe(true);
+    expect(conflictingShortcutIds(resolveShortcuts(input, "darwin"), "darwin").has("app.search")).toBe(false);
+  });
+
+  it("does not flag rows whose surfaces never have focus together", () => {
+    // The workspace launcher ignores key presses in text fields; the composer keys only fire there.
+    const input = { ...NO_SHORTCUT_OVERRIDES, bindings: { "composer.backgroundCommand": "CommandOrControl+T" } };
+    expect(conflictingShortcutIds(resolveShortcuts(input, "darwin"), "darwin").size).toBe(0);
+  });
+
+  it("flags a menu accelerator against a renderer key", () => {
+    const input = { ...NO_SHORTCUT_OVERRIDES, bindings: { "menu.settings": "CommandOrControl+F" } };
+    expect([...conflictingShortcutIds(resolveShortcuts(input, "darwin"), "darwin")].sort()).toEqual(["app.search", "menu.settings"]);
+  });
+});
+
+describe("shortcutBindingRefusal", () => {
+  const none = NO_SHORTCUT_OVERRIDES;
+
+  it("refuses unknown and fixed rows", () => {
+    expect(shortcutBindingRefusal("nope.nothing", "CommandOrControl+J", "darwin", none)).toEqual({ reason: "unknown-shortcut" });
+    expect(shortcutBindingRefusal("edit.copy", "CommandOrControl+J", "darwin", none)).toEqual({ reason: "read-only" });
+  });
+
+  it("refuses a key with no modifier, except a function key", () => {
+    expect(shortcutBindingRefusal("app.search", "J", "darwin", none)).toEqual({ reason: "needs-modifier" });
+    expect(shortcutBindingRefusal("app.search", "Shift+J", "darwin", none)).toEqual({ reason: "needs-modifier" });
+    expect(shortcutBindingRefusal("app.search", "F6", "darwin", none)).toBeNull();
+  });
+
+  it("refuses keys the operating system owns", () => {
+    expect(shortcutBindingRefusal("app.search", "CommandOrControl+H", "darwin", none)).toEqual({ reason: "os-reserved" });
+    expect(shortcutBindingRefusal("app.search", "Alt+F4", "other", none)).toEqual({ reason: "os-reserved" });
+    expect(shortcutBindingRefusal("app.search", "Command+J", "other", none)).toEqual({ reason: "os-reserved" });
+  });
+
+  it("refuses a fixed row's key and names the row", () => {
+    expect(shortcutBindingRefusal("app.search", "CommandOrControl+C", "darwin", none)).toMatchObject({ reason: "fixed-key" });
+    expect(shortcutBindingRefusal("app.search", "Alt+Enter", "darwin", none)).toEqual({ reason: "fixed-key", ownerId: "tree.openBeside" });
+    const withToggle = { ...none, toggleWindow: "Alt+F1", enabled: true };
+    expect(shortcutBindingRefusal("app.search", "Alt+F1", "darwin", withToggle)).toEqual({ reason: "fixed-key", ownerId: "system.toggleWindow" });
+  });
+
+  it("refuses a non-canonical spelling", () => {
+    expect(shortcutBindingRefusal("app.search", "Cmd+J", "darwin", none)).toEqual({ reason: "malformed" });
+  });
+
+  it("allows another rebindable row's key: that is a conflict, not a refusal", () => {
+    expect(shortcutBindingRefusal("app.search", "CommandOrControl+K", "darwin", none)).toBeNull();
+  });
+});
+
+describe("matchesAccelerator", () => {
+
+  it("resolves CommandOrControl to ⌘ on macOS and Ctrl elsewhere, exactly", () => {
+    expect(matchesAccelerator("CommandOrControl+K", ev("k", { metaKey: true }), "darwin")).toBe(true);
+    expect(matchesAccelerator("CommandOrControl+K", ev("k", { ctrlKey: true }), "darwin")).toBe(false);
+    expect(matchesAccelerator("CommandOrControl+K", ev("k", { ctrlKey: true }), "other")).toBe(true);
+    expect(matchesAccelerator("CommandOrControl+K", ev("k", { metaKey: true, ctrlKey: true }), "darwin")).toBe(false);
+    expect(matchesAccelerator("CommandOrControl+K", ev("K", { metaKey: true, shiftKey: true }), "darwin")).toBe(false);
+  });
+
+  it("keeps Control distinct from ⌘ on macOS", () => {
+    expect(matchesAccelerator("Control+Shift+G", ev("G", { ctrlKey: true, shiftKey: true }), "darwin")).toBe(true);
+    expect(matchesAccelerator("Control+Shift+G", ev("G", { metaKey: true, shiftKey: true }), "darwin")).toBe(false);
+  });
+
+  it("reads letters and punctuation from the physical key", () => {
+    // ⌥⌘S types "ß" on a Mac; ⌘⇧/ reports "?"; a Hangul input source reports a jamo.
+    expect(matchesAccelerator("CommandOrControl+Alt+S", ev("ß", { code: "KeyS", metaKey: true, altKey: true }), "darwin")).toBe(true);
+    expect(matchesAccelerator("CommandOrControl+Shift+/", ev("?", { code: "Slash", metaKey: true, shiftKey: true }), "darwin")).toBe(true);
+    expect(matchesAccelerator("CommandOrControl+K", ev("ㅏ", { code: "KeyK", metaKey: true }), "darwin")).toBe(true);
+    expect(matchesAccelerator("CommandOrControl+[", ev("[", { code: "BracketLeft", metaKey: true }), "darwin")).toBe(true);
+  });
+
+  it("maps named keys", () => {
+    expect(matchesAccelerator("Alt+Left", ev("ArrowLeft", { altKey: true }), "other")).toBe(true);
+    expect(matchesAccelerator("CommandOrControl+Shift+Enter", ev("Enter", { metaKey: true, shiftKey: true }), "darwin")).toBe(true);
+    expect(matchesAccelerator(null, ev("k", { metaKey: true }), "darwin")).toBe(false);
+  });
+});
+
+describe("acceleratorFromEvent", () => {
+  const recorded = (accelerator: string) => ({ kind: "accelerator", accelerator });
+
+  it("stores ⌘ and off-macOS Ctrl as the portable CommandOrControl", () => {
+    expect(acceleratorFromEvent(ev("k", { metaKey: true, shiftKey: true }), "darwin")).toEqual(recorded("CommandOrControl+Shift+K"));
+    expect(acceleratorFromEvent(ev("k", { ctrlKey: true, shiftKey: true }), "other")).toEqual(recorded("CommandOrControl+Shift+K"));
+  });
+
+  it("keeps ⌃ as Control on macOS and records the Windows key as Command", () => {
+    expect(acceleratorFromEvent(ev("g", { ctrlKey: true }), "darwin")).toEqual(recorded("Control+G"));
+    expect(acceleratorFromEvent(ev("g", { metaKey: true }), "other")).toEqual(recorded("Command+G"));
+  });
+
+  it("maps space, arrows, escape and function keys to Electron tokens", () => {
+    expect(acceleratorFromEvent(ev(" ", { altKey: true }), "darwin")).toEqual(recorded("Alt+Space"));
+    expect(acceleratorFromEvent(ev("ArrowUp", { ctrlKey: true }), "other")).toEqual(recorded("CommandOrControl+Up"));
+    expect(acceleratorFromEvent(ev("Escape", { ctrlKey: true }), "other")).toEqual(recorded("CommandOrControl+Esc"));
+    expect(acceleratorFromEvent(ev("F5", { altKey: true }), "other")).toEqual(recorded("Alt+F5"));
+    expect(acceleratorFromEvent(ev("ß", { code: "KeyS", metaKey: true, altKey: true }), "darwin")).toEqual(recorded("CommandOrControl+Alt+S"));
+  });
+
+  it("waits on a modifier-only press and refuses keys it cannot name", () => {
+    expect(acceleratorFromEvent(ev("Shift", { shiftKey: true }), "darwin")).toEqual({ kind: "pending" });
+    expect(acceleratorFromEvent(ev("Meta", { metaKey: true }), "darwin")).toEqual({ kind: "pending" });
+    expect(acceleratorFromEvent(ev("Process", { metaKey: true }), "darwin")).toEqual({ kind: "unsupported" });
+  });
+});
+
+describe("formatAccelerator", () => {
+  it("writes glyphs on macOS and words elsewhere", () => {
+    expect(formatAccelerator("CommandOrControl+Alt+S", "darwin")).toBe("⌥⌘S");
+    expect(formatAccelerator("CommandOrControl+Alt+S", "other")).toBe("Ctrl+Alt+S");
+    expect(formatAccelerator("Control+Shift+G", "darwin")).toBe("⌃⇧G");
+    expect(formatAccelerator("CommandOrControl+Shift+Enter", "darwin")).toBe("⇧⌘↩");
+    expect(acceleratorKeycaps("CommandOrControl+Shift+Left", "other")).toEqual(["Ctrl", "Shift", "←"]);
+  });
+
+  it("throws on a malformed accelerator instead of printing a guess", () => {
+    expect(() => formatAccelerator("Cmd+", "darwin")).toThrow(/Malformed/);
   });
 });
