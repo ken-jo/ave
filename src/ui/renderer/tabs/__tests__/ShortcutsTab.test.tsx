@@ -71,7 +71,11 @@ describe("ShortcutsTab", () => {
   it("records a new key, persists it, and the consumer follows it", async () => {
     const api = installApi();
     render(<Harness api={(window as unknown as { aveApi: unknown }).aveApi} />);
+    const statusNode = await screen.findByTestId("shortcuts:status");
     fireEvent.click(await screen.findByTestId("shortcuts:record-app.search"));
+    // The page's one live region announces the recording; it is the same node, not a freshly mounted one.
+    expect(screen.getByTestId("shortcuts:status")).toBe(statusNode);
+    expect(statusNode.textContent).toBe(ko["shortcutsTab.recordingHint"]);
     // While recording, the old key is not a command.
     expect(matchesShortcut("app.search", new KeyboardEvent("keydown", { key: "f", code: "KeyF", ctrlKey: true }))).toBe(false);
     press({ key: "Shift", shiftKey: true });

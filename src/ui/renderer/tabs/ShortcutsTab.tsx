@@ -193,8 +193,10 @@ export function ShortcutsTab() {
               </button>
             ))}
           </fieldset>
-          <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-            {t("shortcutsTab.resultCount", { count: shown.length })}
+          {/* One live region, mounted for the page's lifetime, so a screen reader announces both the result count and the
+              start of recording; a status node mounted with its text is often not announced. */}
+          <span role="status" aria-live="polite" aria-atomic="true" className="sr-only" data-testid="shortcuts:status">
+            {recordingId === null ? t("shortcutsTab.resultCount", { count: shown.length }) : t("shortcutsTab.recordingHint")}
           </span>
         </div>
 
@@ -232,7 +234,7 @@ export function ShortcutsTab() {
                           <p className="text-dense text-muted-foreground" data-testid={`shortcuts:reason-${row.id}`}>{t(row.definition.readOnly.reasonKey)}</p>
                         ) : null}
                         {recording ? (
-                          <p className="text-dense text-muted-foreground" role="status">{t("shortcutsTab.recordingHint")}</p>
+                          <p className="text-dense text-muted-foreground" aria-hidden="true">{t("shortcutsTab.recordingHint")}</p>
                         ) : null}
                         {rowNotice ? (
                           <p className="text-dense text-destructive" role="alert" data-testid={`shortcuts:notice-${row.id}`}>{noticeText(rowNotice)}</p>
