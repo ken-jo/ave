@@ -10,7 +10,7 @@ function engineWith(focused: boolean) {
 }
 
 describe("AccessibilitySignalEngine", () => {
-  it("plays background-only signals when no Ave window has focus, and never the default-off failure", () => {
+  it("plays background-only signals when the window does not have focus, and never the default-off failure", () => {
     const { engine, play, state } = engineWith(true);
     expect(engine.signal("turnFinished", "turn:a:1")).toBe(false);
     expect(engine.signal("approvalNeeded", "approval:1")).toBe(false);

@@ -4,7 +4,8 @@
  *
  * Each signal has one mode, mirroring VS Code's signal modes:
  * - `"off"`: never plays;
- * - `"unfocused"`: plays only while no Ave window has focus (the user is looking elsewhere);
+ * - `"unfocused"`: plays only while the main Ave window does not have focus (the user is looking elsewhere). The renderer reads
+ *   its own `document.hasFocus()`, so another Ave window in front (a detached viewer, the floating dock) counts as unfocused;
  * - `"on"`: always plays.
  */
 export const ACCESSIBILITY_SIGNAL_MODES = ["off", "unfocused", "on"] as const;
@@ -48,7 +49,7 @@ export function resolveAccessibilitySignalModes(
   return out;
 }
 
-/** Whether a signal in `mode` plays now, given whether an Ave window has focus. */
+/** Whether a signal in `mode` plays now, given whether the main Ave window has focus. */
 export function shouldPlayAccessibilitySignal(mode: AccessibilitySignalMode, windowFocused: boolean): boolean {
   if (mode === "on") return true;
   if (mode === "unfocused") return !windowFocused;

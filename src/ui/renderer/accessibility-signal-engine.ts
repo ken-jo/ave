@@ -15,7 +15,7 @@ import { useSettingsSnapshot, type SettingsSnapshotApi } from "./hooks/use-setti
 const REMEMBERED_EVENT_KEYS = 512;
 
 export interface AccessibilitySignalEngineDeps {
-  /** Whether an Ave window has focus right now. */
+  /** Whether the main window has focus right now (`document.hasFocus()`). */
   isWindowFocused: () => boolean;
   play: (id: AccessibilitySignalId) => Promise<void>;
 }
