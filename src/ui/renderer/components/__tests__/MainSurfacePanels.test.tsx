@@ -137,6 +137,17 @@ describe("useMainSurfaces", () => {
 describe("SurfacePane", () => {
   const surface = (kind: MainSurface["kind"], url: string | null = null): MainSurface => ({ tabId: `${kind}:90${kind.length}`, kind, ordinal: 2, url, projectRoot: "/ws" });
 
+  it("anchors a window notice below browser navigation chrome", () => {
+    render(<TooltipProvider><SurfacePane chatOpen={false} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME}
+      api={makeMockAveApi({ browserTabs: true }).api as never} surface={surface("browser")} paneId="main"
+      frame={{ contentNotice: <div data-testid="content-notice">Notice</div> }} onNavigate={() => {}} /></TooltipProvider>);
+    const content = screen.getByTestId("web-panel-content");
+    expect(content.contains(screen.getByTestId("content-notice"))).toBe(true);
+    expect(content.contains(screen.getByTestId("web-panel-address"))).toBe(false);
+    expect(content.className).toContain("overflow-hidden");
+    expect(screen.getAllByTestId("content-notice")).toHaveLength(1);
+  });
+
   it.each(["address", "back", "forward", "reload"])("revokes restored agent ownership before user %s navigation without a control report", async (action) => {
     __resetBrowserTabBridgeForTest();
     const tabs = new BrowserTabRegistry<BrowserGuest>();

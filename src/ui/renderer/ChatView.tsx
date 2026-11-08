@@ -2,7 +2,7 @@ import { chatSurface } from "./components/chat-surface.js";
 import { resolveConversationTitle } from "../../shared/conversation-title.js";
 import type { RewindMode } from "../../shared/code-rewind.js";
 import { RewindDialog } from "./dialogs/RewindDialog.js";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "../../i18n/react.js";
 import { ChevronDown } from "lucide-react";
 import { Button } from "../../components/ui/button.js";
@@ -137,6 +137,8 @@ export interface ChatViewProps {
 
   /** Toast surface rendered directly above the composer input. */
   statusBar?: StatusBarProps;
+  /** Transient window notice confined to the reading area, below pane chrome and above the composer. */
+  contentNotice?: ReactNode;
   /** App-owned toast producer for attachment capability warnings. */
   onAttachmentWarning?: (message: string) => void;
   /** Requested session-preview column state, preserved when the tile is narrow. */
@@ -167,7 +169,7 @@ export interface ChatViewProps {
 }
 
 
-export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, sideChatWorking = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
+export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, contentNotice, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, sideChatWorking = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -857,6 +859,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
       >
 
       <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
+      {contentNotice}
       <div className="grid h-full min-h-0 min-w-0 grid-cols-1">
       <div className="relative min-h-0 min-w-0 overflow-hidden">
       {/* Checkpoint view-mode banner — sticky at the top of the chat scroll area */}

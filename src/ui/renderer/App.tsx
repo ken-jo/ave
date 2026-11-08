@@ -171,7 +171,6 @@ export function App() {
 
   // Window-scoped toasts subscribe before plugin auth can emit them.
   const {
-    persistent: statusPersistent,
     visibleToast: statusVisibleToast,
     pendingCount: statusPendingCount,
     pushToast: statusPushToast,
@@ -2026,6 +2025,22 @@ export function App() {
     </>
   );
 
+  const windowNotice = (
+    <div className="pointer-events-none absolute inset-x-3 inset-y-2 z-30 overflow-hidden" data-testid="window-notice-overlay">
+      <StatusBar
+        persistent={[]}
+        visibleToast={statusVisibleToast}
+        pendingCount={statusPendingCount}
+        onToastClick={handleStatusToastClick}
+        onToastDismiss={(toast) => statusRemoveToast(toast.id)}
+        onToastSuppress={(toast) => {
+          if (toast.kind === undefined) throw new Error("[notices] a suppressible notice reached the strip without a kind");
+          statusSuppressToastKind(toast.kind);
+        }}
+      />
+    </div>
+  );
+
   /** Each routed pane renders its own view and returns to its own conversation. */
   const renderPaneRoute = (view: InlineViewKey, paneId: string, settle: ReactNode): ReactNode => {
     // Closing a routed view reveals its conversation; toolbar history remains the sole owner of replay.
@@ -2036,6 +2051,7 @@ export function App() {
     /** Routed views retain the conversation tile's focus, split and maximize controls; close returns to the conversation. */
     const asTile = {
       focused: chatGroups.focusedId === paneId,
+      contentNotice: chatGroups.focusedId === paneId ? windowNotice : null,
       onFocus: () => chatGroups.focus(paneId),
       lane: paneLane(paneId),
       // Routed frames retain the conversation's pending-answer cards in their settle slot.
@@ -2522,22 +2538,11 @@ export function App() {
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
                   style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
                 >
-                  {/* Persistent banners reserve space; transient notices float at the content column's top-right. */}
+                  {/* Persistent banners reserve space; the focused pane owns the window notice's content anchor. */}
                   <div
                     className="shrink-0 px-(--chrome-gap)"
                     data-testid="window-notice-strip"
                   >
-                    <StatusBar
-                      persistent={statusPersistent}
-                      visibleToast={statusVisibleToast}
-                      pendingCount={statusPendingCount}
-                      onToastClick={handleStatusToastClick}
-                      onToastDismiss={(toast) => statusRemoveToast(toast.id)}
-                      onToastSuppress={(toast) => {
-                        if (toast.kind === undefined) throw new Error("[notices] a suppressible notice reached the strip without a kind");
-                        statusSuppressToastKind(toast.kind);
-                      }}
-                    />
                     <div className="flex flex-col gap-2 pt-2 empty:hidden [&>*]:m-0" data-testid="window-notice-banners">
                       {documentEngineOnboardingOpen ? <DocumentEngineInstallContent onDismiss={dismissDocumentEngineOnboarding} /> : null}
                       <RetiredProviderNotice
@@ -2726,6 +2731,7 @@ export function App() {
                                     revealMessage={memoryMessageReveal}
                                     onMessageRevealHandled={handleMemoryMessageRevealHandled}
                                     env={chatGroupEnvironment}
+                                    contentNotice={!group.hidden && chatGroups.focusedId === group.id && paneView === "home" ? windowNotice : null}
                                     panelOpen={group.panelOpen}
                                     thumbnailOpen={group.thumbnailOpen}
                                     onThumbnailOpenChange={(open) => chatGroups.setThumbnailOpen(group.id, open)}
@@ -2815,8 +2821,8 @@ export function App() {
                       </SurfaceMovesContext.Provider>
                     </ErrorBoundary>
                   </div>
-                  {/* StatusBar notifications render inside ChatView, directly above
-                      the composer. The composer's own status sub-row keeps showing
+                  {/* Conversation notices float above the composer; window notices stay in the reading area.
+                      The composer's own status sub-row keeps showing
                       the ring / permission / model cells. The conversation's tool
                       activity is derived inside ChatView and shown by the right-docked
                       ChatSidePanel, so its open-actions reach the workspace store. */}

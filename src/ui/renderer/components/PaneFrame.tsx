@@ -168,6 +168,8 @@ interface PaneFrameProps {
   asideSlot?: boolean;
   /** The frame owns the overlay lane so cards remain visible when a routed view hides the conversation. */
   lane?: ReactNode;
+  /** Transient notice inside the routed body, below the header and decision cards. */
+  contentNotice?: ReactNode;
   /**
    * What must be settled before this pane's conversation takes its next
    * input, drawn while the pane shows something else: the conversation's
@@ -270,6 +272,7 @@ export function PaneFrame({
   bodyInset = "none",
   asideSlot: publishAsideSlot = false,
   lane,
+  contentNotice,
   settle,
   children,
 }: PaneFrameProps) {
@@ -587,6 +590,7 @@ export function PaneFrame({
             data-body-inset={bodyInset}
           >
             {children}
+            {contentNotice}
             {lane !== undefined ? <FloatingRightLane>{lane}</FloatingRightLane> : null}
             {/* The settle slot is the body's own bottom edge: its occupants
                 position themselves against this `relative` body exactly as

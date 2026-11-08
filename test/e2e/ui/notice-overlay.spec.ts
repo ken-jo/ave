@@ -45,7 +45,7 @@ test(`transient window and composer notices preserve bounds and card access at $
       kind: "system", title: "Ready", body: "Window notice", sticky: true,
     });
   }, CHANNELS.notification.toast);
-  const strip = mainWindow.getByTestId("window-notice-strip");
+  const strip = mainWindow.getByTestId("window-notice-overlay");
   const windowToast = strip.getByTestId("status-toast");
   await expect(windowToast).toBeVisible();
   await expect(windowToast).toHaveCSS("opacity", "1");
@@ -57,7 +57,7 @@ test(`transient window and composer notices preserve bounds and card access at $
     if (!overlay) throw new Error("Missing notice overlay");
     const box = overlay.getBoundingClientRect();
     const card = toast.getBoundingClientRect();
-    const x = box.left + 1;
+    const x = box.left - 1;
     const y = card.top + card.height / 2;
     const hit = document.elementFromPoint(x, y);
     return {
@@ -76,6 +76,21 @@ test(`transient window and composer notices preserve bounds and card access at $
   expect(geometry).toMatchObject({ position: "absolute", zIndex: "30", pointerEvents: "none", toastPointerEvents: "auto", passedThrough: true });
   expect(geometry.hitInside, JSON.stringify(geometry)).toBe(true);
   expect(geometry.width).toBeLessThanOrEqual(Math.min(geometry.available, 384));
+  const header = mainWindow.getByTestId("pane-header");
+  const headerBounds = await header.boundingBox();
+  const toastBounds = await windowToast.boundingBox();
+  if (!headerBounds || !toastBounds || !composerBounds) throw new Error("Missing chrome or notice bounds");
+  expect(toastBounds.y).toBeGreaterThanOrEqual(headerBounds.y + headerBounds.height);
+  expect(toastBounds.y + toastBounds.height).toBeLessThanOrEqual(composerBounds.y);
+  await expectAnswerReceivesClick(header.getByTestId("pane-action-conversation.pin"));
+  await expect(header.getByTestId("pane-action-conversation.unpin")).toBeVisible();
+  await expect(windowToast).toBeVisible();
+  const titleControl = mainWindow.getByTestId("bootstrap-status-pill");
+  await expectAnswerReceivesClick(titleControl);
+  await expect(titleControl).toHaveCount(0);
+  await expect(windowToast).toBeVisible();
+  expect(await canvas.boundingBox()).toEqual(canvasBounds);
+  expect(await composer.boundingBox()).toEqual(composerBounds);
   const sessionId = await mainWindow.evaluate(async () => (await window.aveApi.chatSessions({ kind: "main" })).current);
   if (!sessionId) throw new Error("Missing current session");
   await showApproval(app, sessionId, "window-notice-approval");
@@ -84,7 +99,19 @@ test(`transient window and composer notices preserve bounds and card access at $
   const cardBounds = await mainWindow.getByTestId("approval-dock").boundingBox();
   if (!noticeBounds || !cardBounds) throw new Error("Missing notice or card bounds");
   expect(noticeBounds.y + noticeBounds.height).toBeLessThanOrEqual(cardBounds.y);
+  // Verify stacking at an actual overlap inside the reading area, then restore the normal top anchor.
+  await strip.evaluate((element, cardTop) => {
+    if (!element.parentElement) throw new Error("Missing reading area");
+    element.style.top = `${cardTop - element.parentElement.getBoundingClientRect().top + 8}px`;
+  }, cardBounds.y);
+  const cardOwnsOverlap = await windowToast.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const card = document.querySelector('[data-testid="approval-dock"]');
+    return card?.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2));
+  });
+  expect(cardOwnsOverlap).toBe(true);
   await expectAnswerReceivesClick(mainWindow.getByTestId("approve-button"));
+  await strip.evaluate((element) => element.style.removeProperty("top"));
   await app.evaluate(({ BrowserWindow }, channel) => BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { requestId: "window-notice-approval" }), CHANNELS.approval.settled);
   await mainWindow.screenshot({ path: testInfo.outputPath("window-notice-overlay.png") });
   await windowToast.getByTestId("status-toast-dismiss").click();

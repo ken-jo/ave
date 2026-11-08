@@ -564,7 +564,7 @@ determine whether a tile can split or a panel can dock.
       `role="status"` region — and the visible notice itself is not live, so a remounted notice
       can never swallow the next announcement;
     - transient notices float at `z-30`, below request cards, and never move the layout; persistent banners stay in flow;
-    - window notices stay within the content header band (`--chrome-band-height`), above pane bodies and independent of banner height, so they cannot cover request cards across stacking contexts;
+    - window notices float at the focused pane’s content top-right, below headers and tab strips, clipped to the reading area above the composer and beneath decision cards;
     - a request with its own card (approval or ask-user question) sends no in-app toast;
     - an error stays until dismissed and every notice has a close button; brief confirmations auto-dismiss;
     - a queue shows one notice at a time and later ones wait behind it (`+N`). Each strip owns one

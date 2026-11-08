@@ -6,6 +6,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../
 import { X } from "lucide-react";
 import { t } from "../../../i18n/runtime.js";
 import { MarqueeText } from "./MarqueeText.js";
+import { useWebSurfaceOccluder } from "../preview/use-web-surface-occluder.js";
+import { requestWebSurfaceLayout } from "../preview/web-surfaces.js";
 
 const EMOJI_FONT_STACK =
   "'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', 'Twemoji Mozilla', sans-serif";
@@ -14,7 +16,7 @@ const EMOJI_STYLE = { fontFamily: EMOJI_FONT_STACK };
 /** Persistent indicators stay in flow; the transient queue head floats without moving its owning surface. */
 export interface StatusBarProps {
   persistent: PersistentItem[];
-  /** Composer docks float notices above their anchor; the window uses the content header band. */
+  /** Composer notices float above their anchor; content notices float below it. */
   toastPlacement?: "above" | "below";
   /** The single toast currently at the front of the queue (or null). */
   visibleToast: ToastItem | null;
@@ -59,7 +61,9 @@ export function StatusBar(props: StatusBarProps) {
     setLeaving(!hasContent);
   }
   const onAnimationEnd = (event: AnimationEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget && leaving) setLeaving(false);
+    if (event.target !== event.currentTarget) return;
+    requestWebSurfaceLayout();
+    if (leaving) setLeaving(false);
   };
 
   if (props.persistent.length === 0 && !hasContent && !leaving) return null;
@@ -71,7 +75,7 @@ export function StatusBar(props: StatusBarProps) {
   return (
     <TooltipProvider>
     <footer
-      className="relative flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground"
+      className={`relative flex w-full min-w-0 items-center gap-3 text-dense text-muted-foreground${toastPlacement === "below" ? " h-full" : ""}`}
       data-testid="status-bar"
     >
       {persistent.length > 0 ? (
@@ -154,7 +158,7 @@ export function StatusBar(props: StatusBarProps) {
       ) : null}
       {visibleToast !== null && (hasContent || leaving) ? (
         <div
-          className={`pointer-events-none absolute inset-x-0 z-30 flex justify-end ${toastPlacement === "above" ? "bottom-full mb-2" : "top-0"} ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
+          className={`pointer-events-none absolute inset-x-0 z-30 flex items-start justify-end ${toastPlacement === "above" ? "bottom-full mb-2" : "inset-y-0"} ${leaving ? "ave-anim-notice-out" : "ave-anim-notice-in"}`}
           data-testid="status-bar-presence"
           data-leaving={leaving ? "true" : undefined}
           onAnimationEnd={onAnimationEnd}
@@ -162,7 +166,7 @@ export function StatusBar(props: StatusBarProps) {
           <NoticeToast
             key={visibleToast.id}
             toast={visibleToast}
-            className={toastPlacement === "above" ? "pointer-events-auto" : "pointer-events-auto max-h-(--chrome-band-height) overflow-y-auto"}
+            className={toastPlacement === "below" ? "pointer-events-auto max-h-full overflow-y-auto" : "pointer-events-auto"}
             pendingCount={pendingCount}
             onDismiss={onToastDismiss}
             {...(onToastClick ? { onOpen: onToastClick } : {})}
@@ -206,8 +210,10 @@ export function NoticeToast({
   const linkClass =
     "shrink-0 text-body-sm font-medium text-foreground underline underline-offset-4 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring";
   const openable = toast.notification !== undefined && typeof onOpen === "function";
+  const toastElementRef = useWebSurfaceOccluder(toast.id);
   return (
     <div
+      ref={toastElementRef}
       data-testid="status-toast"
       data-severity={toast.severity}
       data-notice-kind={toast.kind}

@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { endAnimation } from "../../../../test/renderer/helpers.js";
 import { NoticeLiveRegion, StatusBar } from "../components/StatusBar.js";
 import type { PersistentItem, ToastItem } from "../hooks/use-status-bar.js";
+import { getWebSurfaceOccluders } from "../preview/web-surfaces.js";
 
 function persistent(overrides: Partial<PersistentItem> = {}): PersistentItem {
   return {
@@ -26,6 +27,13 @@ function toast(overrides: Partial<ToastItem> = {}): ToastItem {
 }
 
 describe("StatusBar", () => {
+  it("keeps the notice visible above native page content until it unmounts", () => {
+    const { unmount } = render(<StatusBar persistent={[]} visibleToast={toast()} onToastDismiss={() => {}} />);
+    const notice = screen.getByTestId("status-toast");
+    expect(getWebSurfaceOccluders().has(notice)).toBe(true);
+    unmount();
+    expect(getWebSurfaceOccluders().has(notice)).toBe(false);
+  });
   // wb-final removed the Ave brand mark from app chrome. The empty status bar renders no brand logo/text — only a
   // zero-footprint spacer that keeps the flex layout stable until the first persistent item arrives.
   it("renders no Ave brand placeholder when there are no persistent items", () => {
@@ -69,10 +77,11 @@ describe("StatusBar", () => {
     const overlay = screen.getByTestId("status-bar-presence");
     expect(overlay.className).toContain("absolute");
     expect(overlay.className).toContain("z-30");
-    expect(overlay.className).toContain("top-0");
+    expect(overlay.className).toContain("inset-y-0");
     expect(overlay.className).toContain("pointer-events-none");
     expect(screen.getByTestId("status-toast").className).toContain("pointer-events-auto");
-    expect(screen.getByTestId("status-toast").className).toContain("max-h-(--chrome-band-height)");
+    expect(screen.getByTestId("status-toast").className).not.toContain("max-h-(--chrome-band-height)");
+    expect(screen.getByTestId("status-toast").className).toContain("max-h-full");
     expect(overlay.contains(screen.getByText("04:42 KST"))).toBe(false);
 
     rerender(<StatusBar persistent={[persistent()]} visibleToast={null} onToastDismiss={() => {}} />);

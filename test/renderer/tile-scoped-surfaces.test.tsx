@@ -1503,7 +1503,7 @@ describe("three tiles, every kind of surface at once", () => {
     for (const tile of [first!, third!]) {
       expect(tile.element.querySelectorAll(BLOCKING_SURFACE_SELECTOR)).toHaveLength(0);
       expect(count(tile.element, "skill-badge")).toBe(0);
-      expect(tile.element.querySelectorAll('[data-notice-kind="approval-memory-hit-low"]').length).toBe(0);
+      expect(tile.element.querySelectorAll('[data-notice-kind="approval-memory-hit-low"]').length).toBe(tile === third ? 1 : 0);
       expect(count(tile.element, "overlay-card-region")).toBe(tile === suggestions ? 1 : 0);
     }
     expect(count(suggestions.element, "overlay-card-region")).toBe(1);
@@ -2265,7 +2265,7 @@ describe("notices with two tiles", () => {
   const toasts = (root: ParentNode) => root.querySelectorAll('[data-testid="status-toast-message"]');
   const strip = (c: HTMLElement) => c.querySelector<HTMLElement>('[data-testid="window-notice-strip"]')!;
 
-  it("draws a window notice once, in the window strip, and in no composer dock", async () => {
+  it("draws a window notice once, inside the focused reading area, and in no composer dock", async () => {
     const { container, emitNotificationToast } = await renderApp({ hasApiKey: true });
     await splitIntoTwoTiles(container);
 
@@ -2275,8 +2275,29 @@ describe("notices with two tiles", () => {
 
     // Window notifications render once regardless of tile count.
     await waitFor(() => expect(toasts(container)).toHaveLength(1));
-    expect(toasts(strip(container))).toHaveLength(1);
+    expect(toasts(strip(container))).toHaveLength(0);
+    const notice = container.querySelector('[data-testid="window-notice-overlay"]');
+    expect(notice?.closest('[data-testid="chat-main-column"]')).not.toBeNull();
+    expect(notice?.parentElement?.className).toContain("overflow-hidden");
     expect(container.querySelectorAll('[data-testid="composer-toast-dock"] [data-testid="status-toast"]')).toHaveLength(0);
+  });
+
+  it("keeps one window notice in the routed body and returns it to the reading area", async () => {
+    const { container, emitNotificationToast } = await renderApp({ hasApiKey: true });
+    const liveRegion = strip(container).querySelector('[data-testid="notice-live-polite"]');
+    await act(async () => { emitNotificationToast({ kind: "system", title: "Ready", body: "Window notice", sticky: true }); });
+    await waitFor(() => expect(toasts(container)).toHaveLength(1));
+    await clickSidebarNavRow("features", "toolbar-work-board");
+    await waitFor(() => {
+      const notice = container.querySelector('[data-testid="window-notice-overlay"]');
+      expect(notice?.closest('[data-testid="main-pane-shell"][data-view="work-board"]')).not.toBeNull();
+      expect(notice?.closest('[data-body-inset]')).not.toBeNull();
+    });
+    expect(toasts(container)).toHaveLength(1);
+    expect(strip(container).querySelector('[data-testid="notice-live-polite"]')).toBe(liveRegion);
+    await act(async () => { fireEvent.click(container.querySelector('[data-testid="pane-close"]') as HTMLButtonElement); });
+    await waitFor(() => expect(container.querySelector('[data-testid="window-notice-overlay"]')?.closest('[data-testid="chat-main-column"]')).not.toBeNull());
+    expect(toasts(container)).toHaveLength(1);
   });
 
   it("draws a provider fallback in the tile whose turn swapped, focused or not", async () => {
