@@ -831,6 +831,9 @@ export function normalizeSystem(input: unknown): SystemSettings {
   }
   // The retired `turnCompletionSoundEnabled` switch made the background completion notification audible; the turn-finished
   // signal replaced it. A user who had switched it off keeps silence until they choose a signal mode.
+  // Deprecation owner: the accessibility signals contract (`src/shared/accessibility-signals.ts`). Remove this mapping one
+  // release after protocol 5 ships: any system-settings patch writes the normalized block, which stores the signal keys and
+  // drops the legacy one, so by then every profile that was opened carries `signalTurnFinished`.
   if (obj.signalTurnFinished === undefined && obj.turnCompletionSoundEnabled === false) result.signalTurnFinished = "off";
   acceptField(result, "closeBehavior", obj.closeBehavior, isCloseBehavior, "system", STORED_FIELD);
   const rawLocalApi = obj.localApiServer;
