@@ -48,6 +48,7 @@ import type { AgentProfileStore } from "../main/agent-profile-store.js";
 import type { PersonaPromptStore } from "../main/persona-prompt-store.js";
 import type { ApprovalGate } from "../permissions/approval-gate.js";
 import { IdleSchedulerService, type PowerMonitorLike } from "../main/idle-scheduler.js";
+import { registerShutdownHook } from "../main/app-shutdown.js";
 import { createLogger } from "../lib/logger.js";
 const log = createLogger("ave");
 
@@ -66,6 +67,7 @@ export async function wireIdleScheduler(powerMonitor?: PowerMonitorLike): Promis
       powerMonitor,
     });
     idleScheduler.start();
+    registerShutdownHook("idle-scheduler", () => idleScheduler.stop());
     return idleScheduler;
   } catch (err) {
     log.warn(
