@@ -1,7 +1,7 @@
 export interface BrowserPipPoint { x: number; y: number }
 export interface BrowserPipArea { left: number; top: number; width: number; height: number }
 
-/** Keep the whole card inside the available window area, including after a resize. */
+/** Keep fitting cards inside the available area; an oversized card anchors at its origin. */
 export function clampBrowserPipPosition(point: BrowserPipPoint, card: { width: number; height: number },
   area: BrowserPipArea): BrowserPipPoint {
   return { x: Math.max(area.left, Math.min(point.x, area.left + area.width - card.width)),

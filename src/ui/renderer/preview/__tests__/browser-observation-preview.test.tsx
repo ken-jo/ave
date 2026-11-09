@@ -232,7 +232,7 @@ it("lets a dragged fixed card escape its old stack's scroll clipping", () => {
   stack.remove();
 });
 
-it("stops and drops the screencast and hidden painting when scrolling the picture wholly outside the stack", () => {
+it("stops and drops the screencast and hidden painting when resizing clips the picture wholly outside its container", () => {
   const scrollport = document.createElement("div"); scrollport.style.overflowY = "auto";
   scrollport.getBoundingClientRect = () => new DOMRect(20, 250, 240, 300); document.body.append(scrollport);
   const view = render(<BrowserObservationPreview tabId="browser:1" sessionId={SESSION} observeHidden />, { container: scrollport });
@@ -240,28 +240,28 @@ it("stops and drops the screencast and hidden painting when scrolling the pictur
   const picture = screen.getByTestId("browser-observation-preview");
   let y = 300;
   picture.getBoundingClientRect = () => new DOMRect(20, y, 240, 140);
-  fireEvent.scroll(scrollport);
+  fireEvent.resize(window);
   expect(actions()).toEqual(["start"]);
   act(() => emitPreview(frame(1)));
   expect(isHiddenWebSurfaceObserved("browser:1")).toBe(true);
   y = 100;
-  fireEvent.scroll(scrollport);
+  fireEvent.resize(window);
   expect(actions()).toEqual(["start", "stop"]);
   expect(screen.queryByRole("img")).toBeNull();
   expect(isHiddenWebSurfaceObserved("browser:1")).toBe(false);
   y = 300;
-  fireEvent.scroll(scrollport);
+  fireEvent.resize(window);
   expect(actions()).toEqual(["start", "stop", "start"]);
   view.unmount(); scrollport.remove();
 });
 
-it.each(["new-action", "scroll-restart"])("ignores an older failed capture start after a successful %s", async (scope) => {
+it.each(["new-action", "capture-restart"])("ignores an older failed capture start after a successful %s", async (scope) => {
   const pending: Array<(result: { ok: boolean }) => void> = [];
   const api = { requestObservationPreview: vi.fn((request: { action: string }) => request.action === "start"
     ? new Promise<{ ok: boolean }>((resolve) => pending.push(resolve)) : Promise.resolve({ ok: true })), onObservationPreview: () => () => {} };
   const store = new BrowserObservationPreviewStore(api as unknown as AvePreviewApi);
   store.start(BINDING);
-  if (scope === "scroll-restart") store.stop(BINDING);
+  if (scope === "capture-restart") store.stop(BINDING);
   store.start(BINDING);
   pending[1]?.({ ok: true }); await Promise.resolve();
   pending[0]?.({ ok: false }); await Promise.resolve();

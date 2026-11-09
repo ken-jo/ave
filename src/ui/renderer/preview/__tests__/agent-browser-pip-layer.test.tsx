@@ -46,7 +46,11 @@ beforeEach(async () => {
   Object.defineProperty(window, "innerWidth", { configurable: true, value: 1243 });
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    return new DOMRect(0, 0, this.dataset.testid === "agent-browser-pip-card" ? 240 : 600, 150);
+    if (this.dataset.testid === "agent-browser-pip-layer") return new DOMRect(Number.parseFloat(this.style.left), Number.parseFloat(this.style.top), Number.parseFloat(this.style.width), Number.parseFloat(this.style.height));
+    if (this.hasAttribute("data-pip-measure")) return new DOMRect(0, 0, Number.parseFloat(this.style.width) || 240, 68);
+    if (this.hasAttribute("data-pip-measure-header")) return new DOMRect(0, 0, 240, 40);
+    if (this.dataset.testid === "agent-browser-pip-card") return new DOMRect(20, 100, 240, this.dataset.compact === "true" ? 40 : 203);
+    return new DOMRect(0, 0, 600, 150);
   });
   region = document.createElement("div"); region.dataset.pipRegion = "";
   region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 650); document.body.append(region);
@@ -169,6 +173,43 @@ describe("window agent browser previews", () => {
     expect(cards()[0]).toHaveAttribute("data-compact", "true");
     expect(openButton().querySelector("img")).not.toBeNull();
     expect(screen.queryByTestId("browser-observation-preview")).toBeNull();
+  });
+  it("keeps the newest picture and collapses older tabs without retaining their captures", async () => {
+    show(); activate(); await act(async () => {});
+    act(() => {
+      region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 300);
+      setWebSurfaceUrl(SECOND_TAB, "https://example.test/");
+      control(browserControlFixture([TAB, SECOND_TAB], "agent-active", 2)); emit([action(2, SECOND_TAB)]); requestWebSurfaceLayout();
+    });
+    expect(cards()).toHaveLength(2);
+    expect(cards()[0]).toHaveAttribute("data-tab-id", SECOND_TAB);
+    expect(cards()[0]).toHaveAttribute("data-compact", "false");
+    expect(cards()[1]).toHaveAttribute("data-compact", "true");
+    expect(cards()[1]?.querySelector('[data-testid="browser-observation-preview"]')).toBeNull();
+    await act(async () => {});
+    expect(previewRequests.mock.calls.some(([request]) => request.action === "stop" && request.tabId === `handle-${TAB}`)).toBe(true);
+    const layer = screen.getByTestId("agent-browser-pip-layer");
+    expect(layer.className).toContain("overflow-hidden"); expect(layer.className).not.toContain("overflow-y-auto");
+  });
+  it("uses a summary chip when individual chips cannot fit, and opens the first hidden tab", () => {
+    show();
+    const third = "browser:pip-3";
+    act(() => {
+      publishLiveWebTabs(source, new Set([TAB, SECOND_TAB, third]));
+      for (const id of [TAB, SECOND_TAB, third]) setWebSurfaceUrl(id, "https://example.test/");
+      region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 80);
+      control(browserControlFixture([TAB, SECOND_TAB, third]));
+      emit([action(1), action(2, SECOND_TAB), action(3, third)]); requestWebSurfaceLayout();
+    });
+    expect(cards()).toHaveLength(1); expect(cards()[0]).toHaveAttribute("data-tab-id", third);
+    expect(cards()[0]).toHaveAttribute("data-compact", "true");
+    expect(screen.queryByTestId("browser-observation-preview")).toBeNull();
+    const summary = screen.getByTestId("agent-browser-pip-overflow");
+    expect(summary).toHaveTextContent("+2");
+    expect(summary).toHaveAccessibleName(t("agentBrowser.openHiddenPreviews", { count: 2 }));
+    fireEvent.click(summary); expect(open).toHaveBeenCalledWith(SECOND_TAB);
+    act(() => { region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 20); requestWebSurfaceLayout(); });
+    expect(cards()).toHaveLength(0); expect(screen.queryByTestId("agent-browser-pip-overflow")).toBeNull();
   });
   it("releases the shared drag state when a dragged card disappears", () => {
     show(); activate();

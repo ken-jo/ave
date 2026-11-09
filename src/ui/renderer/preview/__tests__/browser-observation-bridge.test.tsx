@@ -25,6 +25,18 @@ let disconnect: (() => void) | undefined;
 afterEach(() => { cleanup(); disconnect?.(); disconnect = undefined; });
 
 describe("browser observation retention", () => {
+  it("provides a stable per-tab snapshot and invalidates it on activity, release and disposal", () => {
+    const store = new BrowserObservationStore(async () => ({ ok: true }));
+    const empty = store.all(); expect(store.all()).toBe(empty);
+    const first = action(1); const second = action(2, { rendererTabId: "browser:2" });
+    store.accept([first, second]); const snapshot = store.all();
+    expect(snapshot).toEqual([first, second]); expect(store.all()).toBe(snapshot);
+    store.accept([action(1)]); expect(store.all()).toBe(snapshot);
+    const newest = action(3); store.accept([newest]);
+    expect(store.all()).toEqual([newest, second]); expect(store.all()).not.toBe(snapshot);
+    store.accept([status(4, "session-cleared")]); expect(store.all()).toEqual([]);
+    store.dispose(); expect(store.all()).toEqual([]);
+  });
   it("retains each child's latest event until its session is released", () => {
     const store = new BrowserObservationStore(async () => ({ ok: true }));
     const first = action(1, { rendererTabId: "browser:a" }, "child-a", "a", "parent");

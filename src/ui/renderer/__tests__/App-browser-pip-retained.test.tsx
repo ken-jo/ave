@@ -14,6 +14,9 @@ describe("retained main browser preview activation", () => {
   it.each(["click", "Enter"])("opens an agent-used retained surface without an assigned pane using %s", async (activation) => {
     const originalBounds = HTMLElement.prototype.getBoundingClientRect;
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.dataset.testid === "agent-browser-pip-layer") return new DOMRect(Number.parseFloat(this.style.left), Number.parseFloat(this.style.top), Number.parseFloat(this.style.width), Number.parseFloat(this.style.height));
+      if (this.hasAttribute("data-pip-measure")) return new DOMRect(0, 0, Number.parseFloat(this.style.width) || 240, 68);
+      if (this.hasAttribute("data-pip-measure-header")) return new DOMRect(0, 0, 240, 40);
       return this.hasAttribute("data-pip-region") || this.querySelector("[data-pip-region]")
         ? new DOMRect(10, 100, 1000, 650) : originalBounds.call(this);
     });

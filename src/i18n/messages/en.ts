@@ -28,6 +28,7 @@ export const en = {
   "agentBrowser.observationResync": "Browser activity exceeded the live view limit. New activity will resume the strip.",
   "agentBrowser.openPreview": "Open browser tab: {title}",
   "agentBrowser.hidePreview": "Hide browser preview: {title}",
+  "agentBrowser.openHiddenPreviews": "Open the first of {count} more browser tabs",
   "agentBrowser.live": "Live",
   "agentBrowser.observationPreview": "Live view of the agent's tab",
   "agentBrowser.observationPreviewUpdating": "Updating…",

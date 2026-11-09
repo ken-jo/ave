@@ -30,6 +30,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "agentBrowser.observationResync": "브라우저 동작이 실시간 보기 한도를 초과했습니다. 다음 동작부터 표시됩니다.",
   "agentBrowser.openPreview": "브라우저 탭 열기: {title}",
   "agentBrowser.hidePreview": "브라우저 미리보기 숨기기: {title}",
+  "agentBrowser.openHiddenPreviews": "숨겨진 브라우저 탭 {count}개 중 첫 번째 열기",
   "agentBrowser.live": "실시간",
   "agentBrowser.observationPreview": "에이전트 탭 실시간 보기",
   "agentBrowser.observationPreviewUpdating": "업데이트 중…",

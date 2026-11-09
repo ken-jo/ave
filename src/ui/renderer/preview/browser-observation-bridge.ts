@@ -22,6 +22,7 @@ export class BrowserObservationStore {
   private readonly retiredTargets = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private disposed = false;
+  private allCache: readonly BrowserObservationEvent[] | undefined;
 
   constructor(private readonly acknowledge: (ack: ObservationAck) => Promise<{ ok: boolean }>) {}
 
@@ -85,6 +86,17 @@ export class BrowserObservationStore {
     return latest;
   }
 
+  /** Stable snapshot with at most one latest event per renderer tab. */
+  all(): readonly BrowserObservationEvent[] {
+    if (this.allCache) return this.allCache;
+    const tabs = new Set<string>();
+    for (const history of this.histories.values()) for (const event of history.events) {
+      if (event.kind === "action" && event.after.rendererTabId) tabs.add(event.after.rendererTabId);
+    }
+    this.allCache = [...tabs].flatMap((tabId) => { const event = this.latest(tabId); return event ? [event] : []; });
+    return this.allCache;
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -117,7 +129,7 @@ export class BrowserObservationStore {
     while (this.retiredTargets.size > OBSERVATION_LIMITS.maxViews) this.retiredTargets.delete(this.retiredTargets.values().next().value!);
   }
 
-  private notify(): void { for (const listener of this.listeners) listener(); }
+  private notify(): void { this.allCache = undefined; for (const listener of this.listeners) listener(); }
 }
 
 let store: BrowserObservationStore | undefined;
@@ -162,4 +174,9 @@ export function useBrowserObservationPreviewStore(): BrowserObservationPreviewSt
 
 export function useBrowserObservation(tabId: string, sessionId?: string): BrowserObservationEvent | undefined {
   return useSyncExternalStore(subscribe, () => store?.latest(tabId, sessionId), () => undefined);
+}
+
+const EMPTY_OBSERVATIONS: readonly BrowserObservationEvent[] = [];
+export function useBrowserObservations(): readonly BrowserObservationEvent[] {
+  return useSyncExternalStore(subscribe, () => store?.all() ?? EMPTY_OBSERVATIONS, () => EMPTY_OBSERVATIONS);
 }

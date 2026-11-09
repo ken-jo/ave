@@ -176,7 +176,10 @@ inset bottom-right stack occupies no layout space, reserves visible composer,
 approval and question surfaces, and sits below decisions in the canvas stacking
 context. Its bounds come from the visible pane body below the actual pane
 header and end above measured composer, approval and question rectangles; no
-header-height estimate is used. Dragging stays in those measured bounds.
+header-height estimate is used. Dragging stays in those measured bounds. The
+stack never scrolls: newest tabs retain full pictures, older tabs collapse into
+chips, and a +N chip opens the first hidden tab if individual chips cannot fit.
+Only full pictures subscribe to live frames.
 Click or Enter opens the
 original tab through workspace routing, including a retained surface without
 an assigned pane; a closed tab does nothing. Delete or × dismisses the card
@@ -211,9 +214,8 @@ cross-site commit is not a close. Frames use a separate private push channel
 beside the observation stream and never enter the daemon, its queues, event
 history, transcripts or files. The renderer keeps only the newest frame for a
 preview element while that element is shown, intersecting both the window and
-its clipping ancestors. Scrolling a picture fully outside its scrollport stops
-the screencast, drops its frame and releases hidden-guest painting; scrolling it
-back into view can resume it. A mounted panel that is hidden, has
+its clipping ancestors. Losing that visibility stops the screencast, drops its
+frame and releases hidden-guest painting. A mounted panel that is hidden, has
 no size, is outside the viewport or sits in a hidden document stops the preview
 and drops its frame. Only while an agent-driven picture is shown,
 its hidden guest keeps painting with zero opacity, clipping, no pointer events,
