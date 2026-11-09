@@ -31,13 +31,46 @@ function Remove-Tree([string]$Path) {
   if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Recurse -Force }
 }
 
+function Save-AuthenticatedRelease([Uri]$Uri, [string]$Path, [string]$Token) {
+  for ($redirects = 0; $redirects -le 10; $redirects++) {
+    if ($Uri.Scheme -ne 'https') { throw 'Release download requires HTTPS' }
+    $request = [Net.WebRequest]::Create($Uri)
+    $request.AllowAutoRedirect = $false
+    $request.Timeout = 600000
+    $request.ReadWriteTimeout = 600000
+    if ($Uri.DnsSafeHost -in @('github.com', 'api.github.com')) {
+      $request.Headers['Authorization'] = "Bearer $Token"
+    }
+    $response = $request.GetResponse()
+    try {
+      $status = [int]$response.StatusCode
+      if ($status -in @(301, 302, 303, 307, 308)) {
+        if ($redirects -eq 10) { throw 'Too many release download redirects' }
+        $location = $response.Headers['Location']
+        if (-not $location) { throw 'Release redirect has no location' }
+        $Uri = [Uri]::new($Uri, $location)
+        continue
+      }
+      if ($status -ne 200) { throw "Release download returned HTTP $status" }
+      $output = [IO.File]::Create($Path)
+      try { $response.GetResponseStream().CopyTo($output) } finally { $output.Dispose() }
+      return
+    } finally { $response.Dispose() }
+  }
+}
+
 try {
   Remove-Tree $target
   Remove-Tree $staging
 
   try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 600
+    $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { $env:GH_TOKEN }
+    if ($token) {
+      Save-AuthenticatedRelease -Uri $url -Path $zip -Token $token
+    } else {
+      Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 600
+    }
   } catch {
     Write-Output "Ave git: download of $url failed: $($_.Exception.Message)"
     exit 2

@@ -85,6 +85,8 @@ jobs:
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
       - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
@@ -121,6 +123,8 @@ jobs:
           path: .cache/electron
           key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       - name: Restore webpack cache
@@ -137,6 +141,8 @@ jobs:
       # which bun skips when node_modules is already satisfied from cache. Ensure
       # it explicitly — fetch-uv is idempotent (no-op when already present).
       - name: Ensure uv toolchain
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
@@ -262,6 +268,8 @@ jobs:
       - name: Prove the sandbox backend
         run: bwrap --version && socat -V | head -1 && rg --version | head -1 && bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
       - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           bun-version-file: ave/.bun-version
       # Cache the built node_modules (Electron dist + electron-rebuilt native
@@ -295,11 +303,15 @@ jobs:
           path: .cache/electron
           key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         working-directory: ave
       # uv is fetched to resources/ (outside node_modules) by the postinstall,
       # which bun skips when node_modules is already satisfied from cache. Ensure
       # it explicitly — fetch-uv is idempotent (no-op when already present).
       - name: Ensure uv toolchain
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         working-directory: ave
         run: node scripts/fetch-uv.mjs
       # The Python smoke's interpreter (§9.7 P5): the harness verifies it,
@@ -372,6 +384,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           bun-version-file: ave/.bun-version
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -395,6 +409,8 @@ jobs:
           path: .cache/electron
           key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         working-directory: ave
       - name: Remove root-level binary shims before the hygiene gates
         working-directory: ave
@@ -417,6 +433,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           bun-version-file: ave/.bun-version
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -439,6 +457,8 @@ jobs:
           path: .cache/electron-win
           key: ci-win-electron-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         working-directory: ave
       - name: Verify native SDK pins and Windows packaging
         timeout-minutes: 10
@@ -588,6 +608,8 @@ jobs:
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
       - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
@@ -624,9 +646,13 @@ jobs:
           path: .cache/electron
           key: windows-mxc-electron-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       - name: Ensure uv toolchain
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
@@ -741,6 +767,12 @@ jobs:
           src/memory/__tests__/session-repository.test.ts
           src/memory/__tests__/session-turn-journal.test.ts
           src/engine/__tests__/conversation-loop-resume.test.ts
+      - name: Prepare authenticated interpreter mirror
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/python-download-mirror.mjs
       - name: Run Windows permission regressions
         env:
           UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
@@ -1000,6 +1032,8 @@ jobs:
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
       - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
@@ -1036,11 +1070,15 @@ jobs:
           path: .cache/electron
           key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       # The Python smoke's harness runs `uv pip install` with the app's uv, and
       # a restored node_modules cache skips the postinstall that fetches it.
       - name: Ensure uv toolchain
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
@@ -1074,6 +1112,12 @@ jobs:
       # Terminal egress cases route a public destination through a local HTTPS
       # fixture using the trusted upstream setting. The real sandbox and CONNECT
       # approval path remain active without requiring external DNS or traffic.
+      - name: Prepare authenticated interpreter mirror
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/python-download-mirror.mjs
       - name: Run macOS permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1184,6 +1228,8 @@ jobs:
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
       - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         with:
           bun-version-file: ave/.bun-version
@@ -1212,11 +1258,15 @@ jobs:
           path: .cache/electron
           key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
       # The Python smoke's harness runs `uv pip install` with the app's uv, and
       # a restored node_modules cache skips the postinstall that fetches it.
       - name: Ensure uv toolchain
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: node scripts/fetch-uv.mjs
@@ -1252,6 +1302,12 @@ jobs:
       # With the flag set, a case that cannot initialise the sandbox FAILS
       # instead of returning green, so a green job is a measurement.
       # Terminal egress cases use the same local HTTPS route fixture as the macOS job.
+      - name: Prepare authenticated interpreter mirror
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/python-download-mirror.mjs
       - name: Run Linux confinement regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
