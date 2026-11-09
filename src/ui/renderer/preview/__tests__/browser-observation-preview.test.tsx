@@ -197,14 +197,14 @@ it("keeps hidden painting only while a shown preview is admitted and drops it on
   expect(isHiddenWebSurfaceObserved("browser:1")).toBe(false);
 });
 
-it("matches the floating picture and its badge bounds to the actual captured aspect ratio", () => {
-  const changed = vi.fn();
-  render(<BrowserObservationPreview tabId="browser:1" sessionId={SESSION} probe={probe} observeHidden fitToFrame onAspectRatioChange={changed} />);
+it("crops a thumbnail at the top-left and keeps the live badge inside its fixed picture box", () => {
+  render(<div style={{ width: 240, height: 135 }}><BrowserObservationPreview tabId="browser:1" sessionId={SESSION} probe={probe} observeHidden thumbnail /></div>);
   act(() => emitEvents([action(1)]));
   act(() => emitPreview({ ...frame(1), width: 200, height: 400 }));
   const picture = screen.getByTestId("browser-observation-preview");
-  expect(Number.parseFloat(picture.style.aspectRatio)).toBe(0.5);
-  expect(changed).toHaveBeenLastCalledWith(0.5);
+  expect(picture.style.aspectRatio).toBe("");
+  expect(screen.getByRole("img").className).toContain("object-cover");
+  expect(screen.getByRole("img").className).toContain("object-left-top");
   expect(screen.getByRole("img").parentElement).toBe(picture);
   expect(screen.getByText("실시간").parentElement).toBe(picture);
 });

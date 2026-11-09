@@ -73,17 +73,19 @@ afterEach(async () => {
 });
 
 describe("window agent browser previews", () => {
-  it("sizes a portrait picture to its captured aspect and leaves stack padding for its shadow", () => {
+  it("crops portrait frames into a fixed widescreen picture without resizing after capture stops", () => {
     show(); activate();
     act(() => emitFrame({ kind: "frame", targetId: `target-${TAB}`, sessionId: "fixture-session", tabId: `handle-${TAB}`,
       frame: 1, mimeType: "image/jpeg", data: "portrait", width: 200, height: 400, ts: 1 }));
-    const picture = screen.getByTestId("browser-observation-preview");
-    expect(Number.parseFloat(picture.style.aspectRatio)).toBe(0.5);
+    const picture = screen.getByTestId("agent-browser-pip-picture");
+    expect(picture.style.aspectRatio.replaceAll(" ", "")).toBe("16/9");
+    expect(screen.getByRole("img").className).toContain("object-cover");
+    expect(screen.getByRole("img").className).toContain("object-left-top");
     expect(cards()[0]?.style.width).toBe("240px");
     expect(cards()[0]?.style.height).toBe("");
     expect(picture.contains(screen.getByText(t("agentBrowser.live")))).toBe(true);
     act(() => emitFrame({ kind: "state", targetId: `target-${TAB}`, sessionId: "fixture-session", tabId: `handle-${TAB}`, state: "stopped" }));
-    expect(Number.parseFloat(picture.style.aspectRatio)).toBe(0.5);
+    expect(picture.style.aspectRatio.replaceAll(" ", "")).toBe("16/9");
     expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("p-8");
     expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("pb-12");
     expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("right-4");

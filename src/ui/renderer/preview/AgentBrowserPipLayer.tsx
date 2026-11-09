@@ -17,8 +17,6 @@ import { useWebSurfaceOccluder } from "./use-web-surface-occluder.js";
 
 const EDGE = 16;
 const STACK_PADDING = 32;
-const STACK_BOTTOM_PADDING = 48;
-const CARD_CHROME_HEIGHT = 68;
 const LAYOUT_POLL_MS = 250;
 interface PipArea { width: number; height: number }
 
@@ -47,7 +45,6 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
   const turnBinding = event ? JSON.stringify([event.sessionId, event.target.id]) : undefined;
   const [dismissed, setDismissed] = useState<string>();
   const [position, setPosition] = useState<BrowserPipPoint | null>(null);
-  const [aspectRatio, setAspectRatio] = useState(4 / 3);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ pointerId: number; start: BrowserPipPoint; origin: BrowserPipPoint; moved: boolean } | null>(null);
   const suppressClick = useRef(false);
@@ -84,8 +81,7 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
   if (!rendered) return null;
   const title = event.after.title || tab.title || event.after.url;
   const favicon = webSurfaceFavicon(tabId);
-  const width = Math.min(240, Math.max(0, area.width - (EDGE + STACK_PADDING) * 2),
-    compact ? 240 : Math.max(0, area.height - EDGE - STACK_PADDING - STACK_BOTTOM_PADDING - CARD_CHROME_HEIGHT) * aspectRatio);
+  const width = Math.min(240, Math.max(0, area.width - (EDGE + STACK_PADDING) * 2));
   const hide = () => setDismissed(turnBinding);
   return <div ref={setCard}
     data-testid="agent-browser-pip-card" data-tab-id={tabId} data-compact={compact}
@@ -123,12 +119,11 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
           {favicon ? <img src={favicon} alt="" draggable={false} className="size-4 shrink-0" /> : <Globe className="size-4 shrink-0" />}
           <span className="min-w-0 truncate">{child?.title ? `${child.title} · ${title}` : title}</span>
         </span>
-        {!compact ? <><div className="min-h-0 w-full">
-          <BrowserObservationPreview tabId={tabId} sessionId={event.sessionId} observeHidden fitToFrame
-            frameAspectRatio={aspectRatio} onAspectRatioChange={setAspectRatio}>
+        {!compact ? <><div className="relative w-full shrink-0 overflow-hidden" style={{ aspectRatio: "16 / 9" }} data-testid="agent-browser-pip-picture"><div className="absolute inset-0">
+          <BrowserObservationPreview tabId={tabId} sessionId={event.sessionId} observeHidden thumbnail>
             <span className="flex h-full items-center justify-center text-xs text-muted-foreground">{t("agentBrowser.observationPreviewUpdating")}</span>
           </BrowserObservationPreview>
-        </div><div className="w-full overflow-hidden"><BrowserObservationLiveStrip tabId={tabId} sessionId={event.sessionId} /></div></> : null}
+        </div></div><div className="w-full overflow-hidden"><BrowserObservationLiveStrip tabId={tabId} sessionId={event.sessionId} /></div></> : null}
       </button>
       <button type="button" aria-label={t("agentBrowser.hidePreview", { title })} onClick={hide}
         className="absolute right-0 top-0 flex size-7 items-center justify-center rounded hover:bg-accent focus-visible:outline focus-visible:outline-ring">

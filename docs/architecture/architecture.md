@@ -169,8 +169,8 @@ automatic open behavior.
 
 A single window-level layer shows one floating card for each agent-used hidden
 browser tab, with its title, child title when available, and activity strip.
-The picture follows the captured viewport's aspect ratio within a 240px width
-cap and the available window height; its live badge sits inside the picture.
+The picture uses a fixed 16:9 thumbnail box, about 240×135px, and crops the frame
+to its top-left with object-fit cover. Its live badge sits inside the picture.
 Below 480px window width the card becomes a favicon/title chip. The padded,
 inset bottom-right stack occupies no layout space, reserves visible composer,
 approval and question surfaces, and sits below decisions in the canvas stacking
