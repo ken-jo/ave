@@ -107,9 +107,10 @@ function fenced(header: unknown, body?: string): ToolExecutionResult {
   return { output: fenceBrowserContent(header, body), isError: false };
 }
 
-// Include the fence, metadata and JSON escaping in the host's inline budget.
+// Bound both the host's raw result and its escaped transport form with shared estimation and headroom.
 export function fenceBrowserReadContent(header: Record<string, unknown>, body: string): string {
   const budget = Math.floor(MAX_TOOL_RESULT_TOKENS * 0.8);
+  const fits = (output: string) => estimateTokens(output) <= budget && estimateTokens(JSON.stringify(output)) <= budget;
   const render = (length: number) => {
     const truncated = length < body.length;
     let end = length;
@@ -118,11 +119,11 @@ export function fenceBrowserReadContent(header: Record<string, unknown>, body: s
       body.slice(0, end) + (truncated ? "\n[truncated]" : ""));
   };
   const full = render(body.length);
-  if (estimateTokens(JSON.stringify(full)) <= budget) return full;
+  if (fits(full)) return full;
   let low = 0, high = Math.min(body.length, BROWSER_OUTPUT_MAX_CHARS);
   while (low < high) {
     const middle = Math.ceil((low + high) / 2);
-    if (estimateTokens(JSON.stringify(render(middle))) <= budget) low = middle;
+    if (fits(render(middle))) low = middle;
     else high = middle - 1;
   }
   return render(low);
