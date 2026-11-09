@@ -176,27 +176,32 @@ Breadcrumbs in VS Code sit at the **top of the editor content, on the leading ed
 chrome, above the text — because the path describes what is open, not where the window is. Their
 tokens (`breadcrumb.foreground`, `breadcrumb.activeSelectionForeground`) are content tokens, not
 title-bar tokens. What we take is the association and the edge; what we do not take is the
-storey. Ours runs on the **leading edge of the window band**, starting exactly where the
-sidebar card ends, because the band is the one strip that spans every pane and the path has to
+storey. Ours runs on the **leading edge of the window band**, using the pane's navigation-derived
+baseline subject to window-control clearance, because the band spans every pane and the path has to
 name one location while several panes are open. A path floated to the *trailing* edge would
 read as window furniture and lose the association — that is the placement the rule forbids, and
 it is not this one.
 
-The title line is where the pane header's content starts (its glyph, then the title): the navigation
-card's trailing edge plus `CONTENT_TITLE_INSET` (12px), the pane cell's 4px half-gutter and the pane
-header's 8px inline padding. The pane card's 1px border puts the glyph 1px further in. With the list showing, that is 312px
-at the default width; with the sidebar collapsed or overlaid, it is the rail's line (72px).
+The band start and the rendered pane-header content start are separate measurements. The band uses
+the navigation card's trailing edge plus `CONTENT_TITLE_INSET` (12px): the pane cell's 4px half-gutter
+and the header's 8px inline padding. The pane card's 1px border puts its rendered content (the glyph,
+then the title) 1px further in. With the list expanded at its default width in a 1243px window, the
+band starts at 312px and the rendered header content starts at 313px on every platform.
 
-The one exception is Linux, where the window buttons lead the band (close, minimize, maximize, as
-GNOME and macOS order them): the path can never start before `BAND_LEAD_PAD_LINUX` (136px).
-With the sidebar collapsed or overlaid, the path starts at 136px instead of on the rail's line (72px).
-With the sidebar hidden, it starts at 136px instead of at the band edge (12px).
-In both cases it no longer lines up with the content title below; that is the cost of keeping the
-buttons where Linux users expect them.
+With the sidebar collapsed or overlaid, the navigation-derived baseline before applying the
+platform floor is 72px. The rendered header content starts at 73px. Window controls set the band start separately:
 
-macOS has the same limit on a smaller scale. The traffic lights end at 76px, so the path never starts
-before `BAND_LEAD_PAD_DARWIN` (80px). With the sidebar collapsed or overlaid, it starts there, 8px past
-the rail's line, so the lights keep their gap. With the list showing, the path lines up with the title.
+| Platform | Band start | Rendered header content start |
+| --- | --- | --- |
+| macOS | 80px | 73px |
+| Linux | 136px | 73px |
+| Windows | 72px | 73px |
+
+The macOS traffic lights end at 76px; the 80px band floor leaves their 4px gap. Its accepted offset
+from the rendered header content is therefore **80 − 73 = 7px**. Linux reserves 136px for its leading
+window buttons. Windows places its controls at the trailing edge and uses the 72px reference line.
+Hidden navigation retains the platform's band floor: 80px, 136px and 12px respectively.
+The visible sidebar-to-pane gap remains 4px in both expanded and collapsed layouts.
 
 What it names is the **focused pane's location**, since that is where the window is (see
 `docs/design/tiled-chat-groups.md`). Moving focus between panes therefore moves the path, with
