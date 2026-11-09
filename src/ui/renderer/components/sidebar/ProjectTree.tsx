@@ -589,22 +589,23 @@ export function ProjectTree({
     setShownByScope((current) => ({ ...current, [scope]: (current[scope] ?? page) + page }));
 
   const selectedId = activeSubAgentSessionId ?? (conversationSurfaceVisible ? currentSessionId : undefined);
+  const rootLimits = Object.fromEntries(Object.entries(shownByScope).map(([scope, count]) => [
+    scope === "project" ? selectedProject?.projectRoot ?? "" : scope.slice("group:".length), count,
+  ]));
+  const sessionListOptions = JSON.stringify({
+    rootLimit: selectedProject ? TREE_PAGE_SIZE : GROUP_PAGE_SIZE,
+    rootLimits,
+    expandedParentIds: [...new Set([...Object.keys(expandedSessions).filter((id) => expandedSessions[id]), ...(selectedId ? [selectedId] : [])])],
+    selectedSessionId: selectedId,
+    pinnedSessionIds,
+    showArchived,
+    defaultProjectRoot: projects.find((project) => project.isDefault)?.projectRoot,
+    projectRoots: projects.map((project) => project.projectRoot),
+    surfaces: surfaces.map((surface) => ({ id: surface.tabId, projectRoot: surfaceRoot(surface), modifiedAt: new Date(surfaceUsedAt(surface.tabId, now)).toISOString(), boundSessionIds: [...surface.boundSessionIds] })),
+  } satisfies NonNullable<SessionListQuery["sidebar"]>);
   useEffect(() => {
-    const rootLimits = Object.fromEntries(Object.entries(shownByScope).map(([scope, count]) => [
-      scope === "project" ? selectedProject?.projectRoot ?? "" : scope.slice("group:".length), count,
-    ]));
-    onSessionListOptionsChange?.({
-      rootLimit: selectedProject ? TREE_PAGE_SIZE : GROUP_PAGE_SIZE,
-      rootLimits,
-      expandedParentIds: [...new Set([...Object.keys(expandedSessions).filter((id) => expandedSessions[id]), ...(selectedId ? [selectedId] : [])])],
-      selectedSessionId: selectedId,
-      pinnedSessionIds,
-      showArchived,
-      defaultProjectRoot: projects.find((project) => project.isDefault)?.projectRoot,
-      projectRoots: projects.map((project) => project.projectRoot),
-      surfaces: surfaces.map((surface) => ({ id: surface.tabId, projectRoot: surfaceRoot(surface), modifiedAt: new Date(surfaceUsedAt(surface.tabId, now)).toISOString(), boundSessionIds: [...surface.boundSessionIds] })),
-    });
-  }, [onSessionListOptionsChange, selectedProject, projects, selectedId, shownByScope, expandedSessions, pinnedSessionIds, showArchived, surfaces, sessions]);
+    onSessionListOptionsChange?.(JSON.parse(sessionListOptions));
+  }, [onSessionListOptionsChange, sessionListOptions]);
   const branchExpanded = (entry: Extract<TreeEntry, { kind: "session" }>) => sessionBranchExpanded(entry, selectedId, (id) => Boolean(conversationActions?.isResponding(id) || pendingAnswerSessionIds?.has(id)), expandedSessions[entry.session.id]);
 
   // ── Lines, top to bottom.

@@ -28,13 +28,13 @@ it.each([false, true])("refreshes a replacement API after the previous query set
   expect(result.current.sessions).toEqual([]);
   const latest = page([{ ...child, title: "Replacement", running: false }]);
   await act(async () => { next.resolve(latest); await next.promise; });
-  expect(result.current.sessions).toBe(latest.sidebar!.rows);
+  expect(result.current.sessions).toBe(latest.sidebar.rows);
 });
 const parent = sessionRow({ id: "aaaaaaaa-1111-4111-8111-111111111111", title: "Parent", modifiedAt: "2026-11-01T00:00:00Z" });
 const child = sessionRow({ id: "sub-aaaaaaaa-bbbbbbbb-1111-4111-8111-111111111111", title: "Research", modifiedAt: "2026-11-09T00:00:00Z", family: "subagent", sessionKind: "subagent", originSessionId: parent.id, running: true });
 const EVENT: AgentSpawnEvent = { type: "activity", spawnId: "spawn", parentSessionId: parent.id, childSessionId: child.id, taskState: A2ATaskState.WORKING };
-function page(rows: SessionListRow[], hiddenRoots = {}): SessionListResult {
-  return { current: parent.id, sessions: [], related: [], sidebar: { rows, hiddenRoots } };
+function page(rows: SessionListRow[], hiddenRoots: Record<string, number> = {}) {
+  return { current: parent.id, sessions: [], related: [], sidebar: { rows, hiddenRoots } } satisfies SessionListResult;
 }
 const PAGE = page([child, parent]);
 function harness(chatSessions = vi.fn().mockResolvedValue(PAGE)) {
@@ -62,7 +62,7 @@ it("coalesces every event type into one in-flight query and one pending query", 
   expect(chatSessions).toHaveBeenCalledTimes(2);
   expect(result.current.sessions).toEqual([]);
   await act(async () => { second.resolve(PAGE); await refresh; });
-  expect(result.current.sessions).toBe(PAGE.sidebar!.rows);
+  expect(result.current.sessions).toBe(PAGE.sidebar.rows);
   expect(agentSpawnSnapshot).not.toHaveBeenCalled();
   expect(chatSessions.mock.calls.every(([query]) => !Object.hasOwn(query, "id"))).toBe(true);
   unmount();
@@ -75,8 +75,8 @@ it("replaces a deleted parent and keeps its surviving children reachable as root
   const { result } = harness(vi.fn().mockResolvedValueOnce(PAGE).mockResolvedValue(latest));
   await act(() => result.current.refreshSessions());
   await act(() => result.current.refreshSessions());
-  expect(result.current.sessions).toBe(latest.sidebar!.rows);
-  expect(result.current.hiddenRoots).toBe(latest.sidebar!.hiddenRoots);
+  expect(result.current.sessions).toBe(latest.sidebar.rows);
+  expect(result.current.hiddenRoots).toBe(latest.sidebar.hiddenRoots);
   expect(result.current.sessions.some((row) => row.id === parent.id)).toBe(false);
   expect(nestSessionEntries(treeEntries({ sessions: result.current.sessions, surfaces: [], isPinned: () => false, surfaceAt: () => 0 })))
     .toMatchObject([{ session: other, children: [] }, { session: child, children: [] }]);
@@ -92,12 +92,12 @@ it("discards an older expansion response when newer parent options are pending",
   act(() => result.current.configureSessions({ rootLimit: 20, expandedParentIds: [parent.id] }));
   act(() => result.current.configureSessions({ rootLimit: 20, expandedParentIds: [parent.id], rootLimits: { "": 40 } }));
   await act(async () => { stale.resolve(page([])); await stale.promise; });
-  expect(result.current.sessions).toBe(PAGE.sidebar!.rows);
+  expect(result.current.sessions).toBe(PAGE.sidebar.rows);
   expect(chatSessions).toHaveBeenCalledTimes(3);
   const refresh = result.current.refreshSessions;
   await act(async () => { newest.resolve(latest); await newest.promise; });
-  expect(result.current.sessions).toBe(latest.sidebar!.rows);
-  expect(chatSessions.mock.calls[2]![0].sidebar).toEqual({ rootLimit: 20, expandedParentIds: [parent.id], rootLimits: { "": 40 } });
+  expect(result.current.sessions).toBe(latest.sidebar.rows);
+  expect(chatSessions.mock.calls[2]?.[0]?.sidebar).toEqual({ rootLimit: 20, expandedParentIds: [parent.id], rootLimits: { "": 40 } });
   act(() => result.current.configureSessions({ rootLimit: 20, expandedParentIds: [parent.id], rootLimits: { "": 40 } }));
   expect(chatSessions).toHaveBeenCalledTimes(3);
   expect(result.current.refreshSessions).toBe(refresh);
@@ -109,8 +109,8 @@ it("preserves the latest projection on a failed query and retries on reconnect",
   const { result, agentSpawnSnapshot } = harness(chatSessions);
   await act(() => result.current.refreshSessions());
   await act(() => result.current.refreshSessions());
-  expect(result.current.sessions).toBe(PAGE.sidebar!.rows);
+  expect(result.current.sessions).toBe(PAGE.sidebar.rows);
   await act(async () => { window.dispatchEvent(new Event("online")); });
-  expect(result.current.sessions).toBe(latest.sidebar!.rows);
+  expect(result.current.sessions).toBe(latest.sidebar.rows);
   expect(agentSpawnSnapshot).not.toHaveBeenCalled();
 });

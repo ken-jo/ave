@@ -160,16 +160,21 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
     await expect(approval.getByTestId(TEST_IDS.approveButton)).toBeVisible();
     await approval.getByTestId(TEST_IDS.approveButton).click();
     await expect.poll(() => heldChild !== undefined).toBe(true);
+    const childResponse = heldChild;
+    if (!childResponse) throw new Error("Missing running child model response");
     const createdFiles = readdirSync(childStore).filter((file) => file.endsWith(".jsonl") && !beforeSpawnFiles.has(file));
     expect(createdFiles).toHaveLength(1);
-    const runningId = createdFiles[0]!.slice(0, -".jsonl".length);
+    const [createdFile] = createdFiles;
+    if (!createdFile) throw new Error("Missing newly created child transcript");
+    const runningId = createdFile.slice(0, -".jsonl".length);
     expect(JSON.parse(readFileSync(join(childStore, `${runningId}.meta.json`), "utf8"))).toMatchObject({
       sessionKind: "subagent", originSessionId: parentId, subAgentTitle: "Running research",
     });
     const active = await page.evaluate(async (id) => {
       const result = await window.aveApi.chatSessions({ families: ["main", "subagent"], limit: 100,
         sidebar: { rootLimit: 100, expandedParentIds: [id] } });
-      return result.sidebar!.rows.filter((row) => row.running && row.family === "subagent");
+      if (!result.sidebar) throw new Error("Missing authoritative sidebar projection");
+      return result.sidebar.rows.filter((row) => row.running && row.family === "subagent");
     }, parentId);
     expect(active.map((row) => row.id)).toEqual([runningId]);
     const start = await page.evaluate(() => (window as unknown as { sidebarSpawnEvents: AgentSpawnEvent[] }).sidebarSpawnEvents.find((event) => event.type === "start"));
@@ -180,7 +185,7 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
     await expect(running).toHaveAttribute("data-responding", "true");
     await expect(running).toHaveAttribute("aria-level", String(Number(await parent.getAttribute("aria-level")) + 1));
     await page.screenshot({ path: testInfo.outputPath("nesting-running.png") });
-    finish(heldChild!);
+    finish(childResponse);
     heldChild = undefined;
     await expect(running).not.toHaveAttribute("data-responding");
 

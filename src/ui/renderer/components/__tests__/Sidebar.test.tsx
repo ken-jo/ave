@@ -1458,7 +1458,7 @@ describe("Sidebar project tree paging", () => {
       expect(more.getAttribute("role")).toBe("treeitem");
       expect(more.textContent).toBe("이전 항목 5개 더 보기");
       fireEvent.click(more);
-      expect(onSessionListOptionsChange.mock.calls.at(-1)![0].rootLimits[DEFAULT_ROOT]).toBe(40);
+      expect(onSessionListOptionsChange.mock.calls.at(-1)?.[0]?.rootLimits?.[DEFAULT_ROOT]).toBe(40);
       await waitFor(() => expect(rows()).toBe(25));
       expect(countRenderedRows(conversations, queryByTestId)).toBe(22);
       expect(queryByTestId("sidebar-tree-more-project")).toBeNull();

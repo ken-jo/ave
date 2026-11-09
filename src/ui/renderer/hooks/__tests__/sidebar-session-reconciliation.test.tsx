@@ -21,7 +21,7 @@ afterEach(() => { cleanup(); setLocale(initialLocale); });
 const PROJECT: ProjectIdentity = { projectRoot: "/projects/reconciliation", projectName: "Reconciliation" };
 const parent = sessionRow({ id: "aaaaaaaa-1111-4111-8111-111111111111", title: "Old parent", modifiedAt: "2026-11-01T00:00:00Z", ...PROJECT });
 const child = sessionRow({ id: "sub-aaaaaaaa-bbbbbbbb-1111-4111-8111-111111111111", title: "Running child", modifiedAt: "2026-11-09T00:00:00Z", family: "subagent", sessionKind: "subagent", originSessionId: parent.id, running: true, ...PROJECT });
-const PAGE: SessionListResult = { current: "elsewhere", sessions: [], sidebar: { rows: [child, parent], hiddenRoots: {} } };
+const PAGE = { current: "elsewhere", sessions: [], sidebar: { rows: [child, parent], hiddenRoots: {} } } satisfies SessionListResult;
 const EMPTY_PAGE: SessionListResult = { current: "elsewhere", sessions: [], sidebar: { rows: [], hiddenRoots: {} } };
 const ACTIVITY: AgentSpawnEvent = { type: "activity", spawnId: "spawn", parentSessionId: parent.id, childSessionId: child.id, taskState: A2ATaskState.WORKING };
 function mountSessionList(chatSessions = vi.fn().mockResolvedValue(EMPTY_PAGE), agentSpawnSnapshot = vi.fn()) {
@@ -41,7 +41,7 @@ it("keeps a resumed child reachable when an older in-flight list omits its stopp
   act(() => emit(ACTIVITY));
   expect(chatSessions).toHaveBeenCalledTimes(2);
   await act(async () => { stoppedPage.resolve(EMPTY_PAGE); await stoppedPage.promise; });
-  expect(result.current.sessions).toBe(PAGE.sidebar!.rows);
+  expect(result.current.sessions).toBe(PAGE.sidebar.rows);
   expect(chatSessions).toHaveBeenCalledTimes(3);
   await act(async () => { resumedPage.resolve(PAGE); await refresh; });
   expect(result.current.sessions.find((row) => row.id === child.id)?.running).toBe(true);

@@ -586,6 +586,8 @@ describe("authoritative sidebar projection", () => {
   const root = { id: "aaaaaaaa-1111-4111-8111-111111111111", title: "Old parent", sessionKind: "main" as const, modifiedAt: new Date("2026-11-01") };
   const child = { ...root, id: "sub-aaaaaaaa-bbbbbbbb-1111-4111-8111-111111111111", title: "Running child", sessionKind: "subagent" as const, originSessionId: root.id };
   const recent = Array.from({ length: 21 }, (_, index) => ({ ...root, id: `${(index + 1).toString(16).padStart(8, "0")}-2222-4222-8222-222222222222`, modifiedAt: new Date(Date.parse("2026-11-09") - index * 60_000) }));
+  const newest = recent[0];
+  if (!newest) throw new Error("missing-recent-session-fixture");
   function fixture() {
     let roots = [root, ...recent];
     let active = true;
@@ -598,7 +600,7 @@ describe("authoritative sidebar projection", () => {
       getSessionActivitySnapshot: () => ({ sequence: 1, sessions: [{ sessionId: child.id, sequence: 1, running: active, attention }] }),
     };
     const deps = {
-      conversationLoop: { getSessionId: () => recent[0]!.id },
+      conversationLoop: { getSessionId: () => newest.id },
       memoryManager: { sessions: { listSessionsPage: () => roots, getSessionListEntry: (id: string) => roots.find((row) => row.id === id) ?? null } },
       getSubAgentRunner: () => runner,
     } as unknown as IpcDeps;
@@ -643,10 +645,10 @@ describe("authoritative sidebar projection", () => {
     stop();
     const sidebar = { rootLimit: 2, expandedParentIds: [], defaultProjectRoot: "/default", surfaces: [
       { id: "new-surface", projectRoot: "/default", modifiedAt: "2026-11-10T00:00:00.000Z" },
-      { id: "zz-tied-surface", projectRoot: "/default", modifiedAt: recent[0]!.modifiedAt.toISOString() },
+      { id: "zz-tied-surface", projectRoot: "/default", modifiedAt: newest.modifiedAt.toISOString() },
     ] };
     const result = await handleChatSessions(deps, { families: ["main", "subagent"], limit: 100, sidebar });
-    expect(result.sidebar?.rows.map((row) => row.id)).toEqual([recent[0]!.id]);
+    expect(result.sidebar?.rows.map((row) => row.id)).toEqual([newest.id]);
     expect(result.sidebar?.visibleSurfaceIds).toEqual(["new-surface"]);
     expect(result.sidebar?.hiddenRoots).toEqual({ "/default": 22 });
     const more = await handleChatSessions(deps, { families: ["main", "subagent"], limit: 100, sidebar: { ...sidebar, rootLimits: { "/default": 3 } } });
@@ -707,7 +709,7 @@ describe("authoritative sidebar projection", () => {
     const side = { ...root, paneTabId: "pane" };
     const deps = {
       conversationLoop: { getSessionId: () => "elsewhere" },
-      memoryManager: { sessions: { listSessionsPage: () => [recent[0]], getSessionListEntry: () => null } },
+      memoryManager: { sessions: { listSessionsPage: () => [newest], getSessionListEntry: () => null } },
       sideChatMemoryManager: { sessions: { listSessionsPage: () => [side], getSessionListEntry: (id: string) => id === side.id ? side : null } },
       getSubAgentRunner: () => ({
         listSubAgentSessions: () => [], listSubAgentSessionParents: () => [{ originSessionId: side.id }],
@@ -715,20 +717,21 @@ describe("authoritative sidebar projection", () => {
         getSessionActivitySnapshot: () => ({ sequence: 1, sessions: [{ sessionId: child.id, sequence: 1, running, attention: false }] }),
       }),
     } as unknown as IpcDeps;
-    const sidebar = { rootLimit: 1, expandedParentIds: [], surfaces: [{ id: "pane", modifiedAt: root.modifiedAt.toISOString(), boundSessionIds: [side.id] }] };
+    const surface = { id: "pane", modifiedAt: root.modifiedAt.toISOString(), boundSessionIds: [side.id] };
+    const sidebar = { rootLimit: 1, expandedParentIds: [], surfaces: [surface] };
     const options = { families: ["main", "subagent", "side-chat"], limit: 100, sidebar };
     const active = await handleChatSessions(deps, options);
-    expect(active.sidebar?.rows.map((row) => row.id)).toEqual(expect.arrayContaining([recent[0]!.id, side.id, child.id]));
+    expect(active.sidebar?.rows.map((row) => row.id)).toEqual(expect.arrayContaining([newest.id, side.id, child.id]));
     expect(active.sidebar?.visibleSurfaceIds).toEqual(["pane"]);
     expect(active.sidebar?.hiddenRoots).toEqual({});
     running = false;
     const stopped = await handleChatSessions(deps, options);
-    expect(stopped.sidebar?.rows.map((row) => row.id)).toEqual([recent[0]!.id]);
+    expect(stopped.sidebar?.rows.map((row) => row.id)).toEqual([newest.id]);
     expect(stopped.sidebar?.visibleSurfaceIds).toEqual([]);
     expect(stopped.sidebar?.hiddenRoots).toEqual({ "": 1 });
     const unbound = await handleChatSessions(deps, { ...options, sidebar: { ...sidebar, rootLimit: 100, surfaces: [] } });
     expect(unbound.sidebar?.rows.some((row) => row.id === side.id)).toBe(false);
-    const oversizedMembership = await handleChatSessions(deps, { ...options, sidebar: { ...sidebar, rootLimit: 100, surfaces: [{ ...sidebar.surfaces[0]!, boundSessionIds: [...Array.from({ length: 100 }, () => "invalid"), side.id] }] } });
+    const oversizedMembership = await handleChatSessions(deps, { ...options, sidebar: { ...sidebar, rootLimit: 100, surfaces: [{ ...surface, boundSessionIds: [...Array.from({ length: 100 }, () => "invalid"), side.id] }] } });
     expect(oversizedMembership.sidebar?.rows.some((row) => row.id === side.id)).toBe(false);
   });
 

@@ -703,7 +703,9 @@ function sidebarSessionRows(
   }
   const rootOf = (id: string): string => {
     let root = id;
-    while (parentOf.has(root)) root = parentOf.get(root)!;
+    for (let parent = parentOf.get(root); parent !== undefined; parent = parentOf.get(root)) {
+      root = parent;
+    }
     return root;
   };
   const active = new Map(activity.map((state) => [state.sessionId, state]));
