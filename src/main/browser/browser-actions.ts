@@ -1,5 +1,9 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
+import { assertCaptureViewport, captureBrowserPage, captureBrowserViewport, type CaptureViewport } from "./browser-capture.js";
+import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-capture-operation.js";
+import { parseBrowserScreenshotOptions, type BrowserScreenshotOptions } from "../../shared/browser-capture.js";
+import { captureContextGone, captureScrollParameters } from "./browser-capture-scroll.js";
 import { detectBrowserChallenge } from "./browser-challenge.js";
 import type { BrowserChallenge } from "../../shared/browser-challenge.js";
 import { browserControlLifecycle } from "./browser-control-lifecycle.js";
@@ -104,6 +108,13 @@ async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStar
   // The guest's native property becomes unreadable at destruction; its session still owns listener cleanup.
   const session: PageSession = {
     assertCurrent,
+    captureKey: guest,
+    clearDeviceMetrics: async () => {
+      if (guest.isDestroyed()) return;
+      assertCurrent();
+      await pageDebugger.sendCommand("Emulation.clearDeviceMetricsOverride");
+      assertCurrent();
+    },
     send: async (method, params) => {
       assertCurrent();
       const result = await pageDebugger.sendCommand(method, params ?? {}) as unknown;
@@ -172,43 +183,55 @@ export async function snapshot(
   }) };
 }
 
-// A tab that is not shown paints no frames, and Page.captureScreenshot then never answers (seen in the real app: a hidden side-panel tab hung until the
-// host's 120s ceiling). Bound it and say what to do instead.
-const SCREENSHOT_MAX_MS = 10_000;
-
 export async function screenshot(
-  target: ActionTarget,
-  maxMs = SCREENSHOT_MAX_MS,
-  options: { fullPage?: boolean } = {},
-): Promise<{ data: string; mimeType: "image/png"; bytes: number }> {
-  throwIfAborted(target.signal);
-  if (options.fullPage) throw new BrowserActionError("screenshot-unavailable", "full page capture is unavailable for this browser surface; use a viewport screenshot");
-  const params: Record<string, unknown> = { format: "png" };
-  const timedOut = Symbol("timed-out");
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const result = await Promise.race([
-    target.cdp.send("Page.captureScreenshot", params) as Promise<{ data?: string }>,
-    new Promise<typeof timedOut>((resolve) => {
-      timer = setTimeout(() => resolve(timedOut), maxMs);
-    }),
-  ]).finally(() => clearTimeout(timer));
-  throwIfAborted(target.signal);
-  if (result === timedOut) {
-    throw new BrowserActionError(
-      "screenshot-timeout",
-      `the tab drew no image within ${maxMs / 1000}s; a tab that is not shown cannot be captured. Show it with browser_tabs {"select": "${target.tabId}"} or use browser_snapshot, which works on hidden tabs`,
-    );
+  initialTarget: ActionTarget,
+  maxMs: number = TOOL_TIMEOUT_POLICY.browserCaptureMs,
+  options: BrowserScreenshotOptions = {},
+  refs: BrowserRefTable = browserRefs,
+  pixelRatio = 1,
+) {
+  return runBrowserCapture(initialTarget.signal, maxMs, (operation) => captureScreenshot(initialTarget, operation, options, refs, pixelRatio));
+}
+
+async function captureScreenshot(
+  initialTarget: ActionTarget, operation: BrowserCaptureOperation, options: BrowserScreenshotOptions,
+  refs: BrowserRefTable, pixelRatio: number,
+) {
+  const target: ActionTarget = { ...initialTarget, signal: operation.signal, cdp: {
+    ...initialTarget.cdp,
+    send: async (method, params) => {
+      operation.signal.throwIfAborted();
+      return operation.wait(initialTarget.cdp.send(method, params));
+    },
+  } };
+  const parsed = parseBrowserScreenshotOptions(options);
+  if (!parsed) throw new BrowserActionError("invalid-capture", "use one capture mode; clip requires finite non-negative x/y and positive width/height");
+  let clip = parsed.clip;
+  let expectedViewport: CaptureViewport | undefined;
+  if (parsed.ref !== undefined) {
+    const backendNodeId = await resolveRef(target, parsed.ref, refs);
+    const before = await target.cdp.send("Page.getLayoutMetrics") as { cssVisualViewport?: CaptureViewport };
+    assertCaptureViewport(before.cssVisualViewport);
+    expectedViewport = { ...before.cssVisualViewport };
+    let border: number[] | undefined;
+    try {
+      const result = await target.cdp.send("DOM.getBoxModel", { backendNodeId }) as { model?: { border?: number[] } };
+      border = result.model?.border;
+    } catch (error) {
+      throwIfAborted(target.signal);
+      if (error instanceof BrowserActionError) throw error;
+      throw new BrowserActionError("stale-ref", "the element has no capture bounds; take a new browser_snapshot");
+    }
+    throwIfAborted(target.signal);
+    if (border?.length !== 8 || !border.every(Number.isFinite)) throw new BrowserActionError("screenshot-unavailable", "the element has no visible capture bounds");
+    const after = await target.cdp.send("Page.getLayoutMetrics") as typeof before;
+    assertCaptureViewport(after.cssVisualViewport, expectedViewport);
+    const xs = border.filter((_value, index) => index % 2 === 0), ys = border.filter((_value, index) => index % 2 === 1);
+    clip = { x: Math.min(...xs) + expectedViewport.pageX, y: Math.min(...ys) + expectedViewport.pageY,
+      width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+    if (await resolveRef(target, parsed.ref, refs) !== backendNodeId) throw new BrowserActionError("stale-ref", "the element changed during capture; take a new browser_snapshot");
   }
-  if (typeof result.data !== "string" || result.data.length === 0) {
-    throw new BrowserActionError("screenshot-failed", "the tab returned no image; it may be hidden or still loading");
-  }
-  const bytes = Buffer.byteLength(result.data, "base64");
-  if (bytes > 10 * 1024 * 1024) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture byte limit; use a smaller viewport");
-  const header = Buffer.from(result.data.slice(0, 32), "base64");
-  if (header.length < 24 || header.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new BrowserActionError("screenshot-failed", "the tab returned an invalid image");
-  const width = header.readUInt32BE(16), height = header.readUInt32BE(20);
-  if (width < 1 || height < 1 || width * height > 32_000_000) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
-  return { data: result.data, mimeType: "image/png", bytes };
+  return captureBrowserPage(initialTarget.cdp, operation.signal, { ...(parsed.fullPage !== undefined ? { fullPage: parsed.fullPage } : {}), ...(clip ? { clip } : {}) }, pixelRatio, undefined, initialTarget.captureViewport, operation, expectedViewport);
 }
 
 const WAIT_POLL_MS = 250;
@@ -1261,7 +1284,16 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     await session.send("Emulation.setFocusEmulationEnabled", { enabled: true });
     assertCurrent(false);
   };
+  const captureDocumentId = live.tab.documentId, captureControlGeneration = live.tab.controlGeneration;
   const cdp: CdpSession = {
+    captureKey: guest,
+    fullPageTiling: live.tab.targetKind === "embedded",
+    restoreCaptureScroll: async (position) => {
+      if (guest.isDestroyed() || live.tab.guest !== guest || live.tab.documentId !== captureDocumentId || live.tab.controlGeneration !== captureControlGeneration) return;
+      try { await session.send("Runtime.callFunctionOn", captureScrollParameters(position, false)); }
+      catch (error) { if (!captureContextGone(error)) throw error; }
+    },
+    clearDeviceMetrics: session.clearDeviceMetrics,
     onEvent: (listener) => session.onEvent(listener),
     send: async (method, params) => {
       assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
@@ -1514,7 +1546,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     iframeOrigins: () => guest.mainFrame.framesInSubtree
       .filter((frame) => frame !== guest.mainFrame)
       .map((frame) => browserOrigin(frame.url) ?? "opaque origin"),
-    assertCurrent,
+    assertCurrent: (keyboard) => { session.assertCurrent(); assertCurrent(keyboard); },
   };
 }
 
@@ -1527,6 +1559,7 @@ export function createBrowserPageActions(
   originOf: (url: string) => string | null,
   hostContentOrigin: HostContentOrigin,
   previewHost: AgentPreviewHost,
+  capturePixelRatioForGuest: (guest: WebContents) => number,
 ): BrowserPageActions<WebContents> {
   const withActivity = createBrowserTabActivity((guestId, awake) => attribution.setAgentTabAwake(guestId, awake));
   const awake = async <T>(live: LiveTab, act: () => Promise<T>): Promise<T> => {
@@ -1610,7 +1643,22 @@ export function createBrowserPageActions(
       target.assertCurrent?.(false);
       return { ...shot, ...(challenge ? { challenge } : {}) };
     }),
-    screenshot: async (live: LiveTab, options) => awake(live, async () => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options)),
+    screenshot: async (live: LiveTab, options) => {
+      return runBrowserCapture(live.signal, TOOL_TIMEOUT_POLICY.browserCaptureMs, async (operation) => {
+        const scoped = { ...live, signal: operation.signal };
+        return awake(scoped, async () => {
+          const target = await operation.wait(targetFor(scoped, attribution, hostContentOrigin));
+          const guest = live.tab.guest;
+          if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+          const pixelRatio = capturePixelRatioForGuest(guest);
+          const assertCaptureCurrent = () => {
+            target.assertCurrent?.(false);
+            if (capturePixelRatioForGuest(guest) !== pixelRatio) throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
+          };
+          return captureScreenshot({ ...target, captureViewport: () => captureBrowserViewport(guest, assertCaptureCurrent, pixelRatio) }, operation, options ?? {}, browserRefs, pixelRatio);
+        });
+      });
+    },
     capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),
     hover: async (live, ref) => tracked(live, async (session) => hover(await targetFor(live, attribution, hostContentOrigin, true, session), ref)),
     drag: async (live, sourceRef, targetRef) => tracked(live, async (session) => drag(await targetFor(live, attribution, hostContentOrigin, true, session), sourceRef, targetRef)),

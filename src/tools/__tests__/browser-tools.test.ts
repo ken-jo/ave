@@ -77,9 +77,9 @@ function fakeActions() {
         delta: false,
       };
     },
-    screenshot: async (target) => {
-      calls.push({ action: "screenshot", tab: target.tab.handle, args: [] });
-      return { data: "iVBORw0KGgo=", mimeType: "image/png", bytes: 8 };
+    screenshot: async (target, options) => {
+      calls.push({ action: "screenshot", tab: target.tab.handle, args: [options] });
+      return { data: "iVBORw0KGgo=", mimeType: "image/png", bytes: 8, width: 800, height: 2400, originalWidth: 800, originalHeight: 2400, scale: 1, truncated: false };
     },
     // Waits until released or cancelled, like a real wait for text.
     waitFor: (target) => new Promise((resolve, reject) => {
@@ -1139,6 +1139,40 @@ describe("browser tools", () => {
     expect(page.calls.map((call) => call.tab)).toEqual([approved.handle]);
   });
 
+  const captureModes = [
+    { fullPage: true },
+    { ref: "e1" },
+    { clip: { x: 0, y: 0, width: 100, height: 50 } },
+  ];
+
+  it.each(captureModes)("keeps capture mode %j bound to the user tab named by its permission card", async (options) => {
+    let switchTab: (() => void) | undefined;
+    const { run, cards, page, tabs, userTab } = harness({ onCard: () => switchTab?.() });
+    const approved = userTab("https://a.example/approved");
+    const other = userTab("https://a.example/other");
+    tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${approved.guest.id}` });
+    switchTab = () => tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${other.guest.id}` });
+    expect((await run(BROWSER_TOOL.screenshot, options)).isError).toBe(false);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.approvalMemory).toMatchObject({ scope: { tabId: approved.handle, documentId: expect.any(Number) } });
+    expect(page.calls).toEqual([{ action: "screenshot", tab: approved.handle, args: [options] }]);
+  });
+
+  it.each(captureModes)("refuses capture mode %j when its approved document or control generation changes", async (options) => {
+    for (const field of ["documentId", "controlGeneration"] as const) {
+      let replaceIdentity: (() => void) | undefined;
+      const { run, page, tabs, userTab } = harness({ beforeActions: () => replaceIdentity?.() });
+      const user = userTab("https://a.example/");
+      replaceIdentity = () => {
+        const tab = tabs.liveTab(user.handle);
+        if (!tab) throw new Error("Capture tab is unavailable");
+        tab[field]++;
+      };
+      expect((await run(BROWSER_TOOL.screenshot, { tabId: user.handle, ...options })).isError).toBe(true);
+      expect(page.calls).toEqual([]);
+    }
+  });
+
   it("refuses a same-origin document replacement during approval", async () => {
     let replaceDocument: (() => void) | undefined;
     const { run, page, tabs, userTab, manager } = harness({ surfaceChoice: "allow", onCard: () => replaceDocument?.() });
@@ -1332,21 +1366,40 @@ describe("browser tools", () => {
       [BROWSER_TOOL.select, { ref: "e1", value: 1 }],
       [BROWSER_TOOL.scroll, { ref: "e1", direction: "down", pixels: 2001 }],
       [BROWSER_TOOL.screenshot, { fullPage: "true" }],
+      [BROWSER_TOOL.screenshot, { ref: "wrong" }],
+      [BROWSER_TOOL.screenshot, { ref: "e1", clip: { x: 0, y: 0, width: 100, height: 50 } }],
+      [BROWSER_TOOL.screenshot, { fullPage: true, ref: "e1" }],
+      [BROWSER_TOOL.screenshot, { clip: { x: 0, y: 0, width: 0, height: 50 } }],
+      [BROWSER_TOOL.screenshot, { clip: { x: 0, y: 0, width: 100, height: Infinity } }],
+      [BROWSER_TOOL.screenshot, { clip: { x: 0, y: 0, width: 100, height: 50, scale: 1 } }],
     ] as const) expect((await run(name, { tabId: user.handle, ...input })).isError).toBe(true);
     expect(page.calls).toEqual([]);
   });
 
-  it("does not offer full-page capture and refuses it without invoking capture", async () => {
+  it("offers full-page capture with bounded image metadata in the page envelope", async () => {
     const { run, page, userTab, browserTools } = harness();
     const user = userTab("https://a.example/");
     const schema = browserTools.find((tool) => tool.name === BROWSER_TOOL.screenshot)!.toJsonSchema();
-    expect(schema).toMatchObject({ properties: { fullPage: { enum: [false] } } });
+    expect(schema).toMatchObject({ properties: { fullPage: { type: "boolean" } } });
+    expect((schema as { properties: Record<string, unknown> }).properties.fullPage).not.toHaveProperty("enum");
     const result = await run(BROWSER_TOOL.screenshot, { tabId: user.handle, fullPage: true });
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain("screenshot-unavailable");
-    expect(page.calls).toEqual([]);
-    expect((await run(BROWSER_TOOL.screenshot, { tabId: user.handle })).isError).toBe(false);
-    expect(page.calls.map((call) => call.action)).toEqual(["screenshot"]);
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain('"fullPage":true');
+    expect(result.output).toContain('"originalHeight":2400');
+    expect(result.output).toContain('<browser-content');
+    expect(browserHeader(result.output)).not.toHaveProperty("captureMethod");
+    expect(browserHeader(result.output)).not.toHaveProperty("stickyHeadersDeduplicated");
+    expect(page.calls).toEqual([{ action: "screenshot", tab: user.handle, args: [{ fullPage: true }] }]);
+  });
+
+  it("reports scroll-and-stitch limits and preserved sticky headers in the page envelope", async () => {
+    const { run, page, userTab } = harness();
+    const user = userTab("https://a.example/");
+    page.actions.screenshot = async () => ({ data: "iVBORw0KGgo=", mimeType: "image/png", bytes: 8, width: 800, height: 2400, originalWidth: 800, originalHeight: 50_000, scale: 1, truncated: true, captureMethod: "scroll-and-stitch", stickyHeadersDeduplicated: false });
+    const result = await run(BROWSER_TOOL.screenshot, { tabId: user.handle, fullPage: true });
+    expect(result.isError).toBe(false);
+    expectBrowserFence(result.output);
+    expect(browserHeader(result.output)).toMatchObject({ fullPage: true, height: 2400, originalHeight: 50_000, scale: 1, truncated: true, captureMethod: "scroll-and-stitch", stickyHeadersDeduplicated: false });
   });
 
   it("attaches a validated display thumbnail to snapshot and screenshot completions, never failing the tool", async () => {

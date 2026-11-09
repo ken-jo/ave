@@ -8,7 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { clipPastedText, useAttachmentPicker } from "../use-attachment-picker.js";
 import { ATTACH_MAX_COUNT, PASTE_TEXT_MAX_CHARS, type Attachment } from "../../types/attachments.js";
 
-function setup(initial: Attachment[] = [], strict = false) {
+function setup(initial: Attachment[] = [], strict = false, imagesEnabled = true) {
   const insertAtCursor = vi.fn();
   const onPastedTextClipped = vi.fn();
   const focus = vi.fn();
@@ -23,11 +23,57 @@ function setup(initial: Attachment[] = [], strict = false) {
       setQuestion,
       composerRef,
       onPastedTextClipped,
+      imagesEnabled,
     });
     return { attachments, question, picker };
   }, { reactStrictMode: strict });
   return { hook, insertAtCursor, focus, onPastedTextClipped, counter };
 }
+
+describe("useAttachmentPicker.attachImage", () => {
+  function imageApi() {
+    const image = { ok: true, path: "/tmp/captured-image.png", width: 200, height: 100, bytes: 1024, mimeType: "image/png", dataUrl: "data:image/png;base64,aW1hZ2U=" };
+    const saveClipboardImage = vi.fn(async () => image);
+    const readImage = vi.fn(async () => image);
+    const discardClipboardImage = vi.fn(async () => ({ ok: true }));
+    (window as unknown as { ave: unknown }).ave = { attach: { saveClipboardImage, readImage, discardClipboardImage } };
+    return { saveClipboardImage, readImage, discardClipboardImage };
+  }
+
+  it("saves a capture through the ordinary image path and commits its slot and marker", async () => {
+    const { saveClipboardImage, readImage } = imageApi();
+    const { hook, insertAtCursor } = setup();
+    let accepted = false;
+    await act(async () => { accepted = await hook.result.current.picker.attachImage("aW1hZ2U="); });
+    expect(accepted).toBe(true);
+    expect(saveClipboardImage).toHaveBeenCalledWith("aW1hZ2U=");
+    expect(readImage).toHaveBeenCalledWith("/tmp/captured-image.png");
+    expect(hook.result.current.attachments).toEqual([expect.objectContaining({ kind: "image", n: 1, width: 200, height: 100 })]);
+    expect(insertAtCursor).toHaveBeenCalledWith("[Image #1] ");
+  });
+
+  it("refuses captures when the active runtime cannot accept images", async () => {
+    const { saveClipboardImage } = imageApi();
+    const { hook } = setup([], false, false);
+    let accepted = true;
+    await act(async () => { accepted = await hook.result.current.picker.attachImage("aW1hZ2U="); });
+    expect(accepted).toBe(false);
+    expect(saveClipboardImage).not.toHaveBeenCalled();
+    expect(hook.result.current.attachments).toEqual([]);
+  });
+
+  it("releases the saved capture when the composer slots are already full", async () => {
+    const { discardClipboardImage } = imageApi();
+    const full: Attachment[] = Array.from({ length: ATTACH_MAX_COUNT }, (_, index) => ({ id: `paste-${index}`, n: index + 1, kind: "paste", text: "x", lines: 1, chars: 1 }));
+    const { hook, insertAtCursor } = setup(full);
+    let accepted = true;
+    await act(async () => { accepted = await hook.result.current.picker.attachImage("aW1hZ2U="); });
+    expect(accepted).toBe(false);
+    expect(discardClipboardImage).toHaveBeenCalledWith("/tmp/captured-image.png");
+    expect(insertAtCursor).not.toHaveBeenCalled();
+    expect(hook.result.current.attachments).toHaveLength(ATTACH_MAX_COUNT);
+  });
+});
 
 describe("useAttachmentPicker.attachPastedText", () => {
   it("adds a paste chip and inserts its marker at the caret", () => {

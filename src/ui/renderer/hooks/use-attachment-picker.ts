@@ -71,6 +71,8 @@ export interface UseAttachmentPickerResult {
   /** Attach `text` as a pasted-text chip, as if the user had pasted it — the path for content another surface hands to the
    * composer (a terminal block). Returns false when the attachment cap is already reached. */
   attachPastedText: (text: string) => boolean;
+  /** Save an image supplied by another host surface through the ordinary attachment path. */
+  attachImage: (base64: string) => Promise<boolean>;
 }
 
 /** Read committed attachments in a separate synchronous flush before deciding the cap; React may defer updater execution
@@ -196,7 +198,7 @@ export function useAttachmentPicker({
         else onAttachmentUnavailable?.();
       }
       if (unavailableAttachmentSkipped) onAttachmentUnavailable?.();
-      return;
+      return false;
     }
     // The cap and the image budget are checked against the latest committed list, read just before the commit (see
     // readCommittedAttachments).
@@ -256,7 +258,20 @@ export function useAttachmentPicker({
     if (unavailableAttachmentSkipped || capabilityChangedBeforeCommit) onAttachmentUnavailable?.();
     // Return focus to the composer textarea so the user can keep typing immediately after the file dialog closes.
     composerRef.current?.focus();
+    return accepted.length > 0;
   }, [attachmentNCounter, composerRef, onAttachmentUnavailable, onImageAttachmentLimitExceeded, setAttachments, setQuestion]);
+
+  const attachImage = useCallback(async (base64: string): Promise<boolean> => {
+    if (!capabilityRef.current.imagesEnabled) {
+      onAttachmentUnavailable?.();
+      return false;
+    }
+    const saved = await window.ave.attach.saveClipboardImage(base64);
+    if (!saved.ok || !saved.path) return false;
+    const attached = await commitFiles([{ path: saved.path, name: "capture.png", ext: ".png", bytes: saved.bytes ?? 0, isImage: true }]);
+    if (!attached) await window.ave.attach.discardClipboardImage(saved.path);
+    return attached;
+  }, [commitFiles, onAttachmentUnavailable]);
 
   const handleAttach = useCallback(async () => {
     const result = await window.ave.attach.openFile();
@@ -320,5 +335,5 @@ export function useAttachmentPicker({
     return true;
   }, [attachmentNCounter, composerRef, onPastedTextClipped, setAttachments, setQuestion]);
 
-  return { handleAttach, handleDropFiles, attachPastedText };
+  return { handleAttach, handleDropFiles, attachPastedText, attachImage };
 }

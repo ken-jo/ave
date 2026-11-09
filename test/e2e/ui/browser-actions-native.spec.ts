@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIsolatedElectronEnv, launchElectron } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, quitElectron, setWindowSize, withNativeFocusDiagnostics } from "./seeded-electron.js";
 import type { NativeAction, NativeActionResult, NativeBrowserFixture } from "./browser-actions-native/contract.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -24,7 +24,7 @@ test.beforeAll(async ({}, testInfo) => {
   await build({ entryPoints: [join(FIXTURE_DIR, "preload.ts")], outfile: preloadOut, bundle: true, format: "cjs", platform: "node", external: ["electron"], logLevel: "silent" });
   await build({
     entryPoints: [join(FIXTURE_DIR, "main.ts")], outfile: mainOut,
-    bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron"],
+    bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron", "@napi-rs/canvas"],
     banner: { js: "import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);" }, logLevel: "silent",
   });
 });
@@ -47,11 +47,12 @@ async function launch(testInfo: TestInfo, mode: FixtureMode): Promise<ElectronAp
   await fs.mkdir(runtime, { recursive: true });
   const app = await launchElectron({
     args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
-    env: buildIsolatedElectronEnv({ AVE_HOME: join(runtime, "ave-home"), AVE_NATIVE_FIXTURE_DIR: FIXTURE_DIR, AVE_NATIVE_FIXTURE_PRELOAD: preloadOut, AVE_NATIVE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
+    env: buildIsolatedElectronEnv({ HOME: process.env.HOME, USERPROFILE: process.env.HOME, AVE_HOME: join(runtime, "ave-home"), AVE_NATIVE_FIXTURE_DIR: FIXTURE_DIR, AVE_NATIVE_FIXTURE_PRELOAD: preloadOut, AVE_NATIVE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
   });
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[native-browser:stderr] ${data}`));
   try {
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { nativeBrowserFixture?: NativeBrowserFixture }).nativeBrowserFixture?.ready === true), { timeout: 30_000 }).toBe(true);
+    await setWindowSize(app, 1180, 820);
     if (mode === "cdp") {
       await expect.poll(() => app.evaluate(async ({ webContents }) => {
         const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
@@ -74,14 +75,14 @@ async function launch(testInfo: TestInfo, mode: FixtureMode): Promise<ElectronAp
       testInfo.setTimeout(300_000);
       process.stdout.write(`[native-focus] title=Native action host pid=${app.process().pid} executable=${app.process().spawnfile}\n`);
     }
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isFocused()), { timeout: diagnostic ? 240_000 : 5_000 }).toBe(true);
+    await withNativeFocusDiagnostics(app, testInfo, () => expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isFocused()), { timeout: diagnostic ? 240_000 : 5_000 }).toBe(true));
     return app;
   } catch (error) { await close(app); throw error; }
 }
 
 async function close(app: ElectronApplication): Promise<void> {
   await app.evaluate(async () => (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture.close()).catch(() => {});
-  await app.close().catch(() => {});
+  await quitElectron(app);
 }
 
 test("@cdp hover reaches the guest element", async ({}, testInfo) => {
@@ -133,13 +134,13 @@ test("@cdp targeted wheel scrolls the nested container", async ({}, testInfo) =>
   } finally { await close(app); }
 });
 
-test("@cdp full-page capture reports unavailable before unsafe clipping", async ({}, testInfo) => {
+test("@cdp full-page capture includes the bottom marker beyond the viewport", async ({}, testInfo) => {
   const app = await launch(testInfo, "cdp");
   try {
+    await setWindowSize(app, 1180, 820);
     const result = await run(app, "screenshot");
-    expect(result.ok, resultMessage(result)).toBe(false);
-    expect(result.error?.code).toBe("screenshot-unavailable");
-    expect(result.value).toBeUndefined();
+    expect(result.ok, resultMessage(result)).toBe(true);
+    expect(result.value).toMatchObject({ dimensions: result.oracle.content, bottomPixelRGB: [0, 166, 90] });
     expect(result.oracle.content.height).toBeGreaterThan(result.oracle.viewport.height * 2);
   } finally { await close(app); }
 });

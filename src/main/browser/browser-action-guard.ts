@@ -2,10 +2,15 @@ import { BrowserDocumentChangedError } from "./browser-tab-registry.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
 import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "./browser-select-script.js";
+import type { BrowserCaptureScroll, BrowserViewportImage } from "../../shared/browser-capture.js";
 
 interface NativeDragReceipt { intercepted(): BrowserDragData | undefined }
 
 export interface CdpSession {
+  readonly captureKey?: object;
+  readonly fullPageTiling?: boolean;
+  clearDeviceMetrics?(): Promise<void>;
+  restoreCaptureScroll?(position: BrowserCaptureScroll): Promise<void>;
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
   onEvent(listener: (method: string, params: Record<string, unknown>) => void): () => void;
 }
@@ -45,6 +50,7 @@ export interface ActionTarget {
   // Host frame metadata also includes children outside the protocol target.
   iframeOrigins?(): readonly string[];
   documentId?(): number;
+  captureViewport?(): Promise<BrowserViewportImage>;
   // Revalidate host identity in the same turn that dispatches the command.
   assertCurrent?(keyboard: boolean): void;
 }

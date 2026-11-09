@@ -104,9 +104,13 @@ Additional typed tools provide hover, drag between references, native single
 selection, and scroll on a referenced target. A snapshot supplies element
 references for the agent to use. References belong to the current document;
 a stale or unsupported target fails explicitly. Native selection
-verifies the final requested value. Screenshots capture the viewport with
-pixel/byte limits. Full-page capture is unavailable because complete page pixels
-have not been proved reliable; requesting it fails before capture.
+verifies the final requested value. Screenshots retain pixel/byte limits.
+Embedded full-page capture scrolls and stitches viewport images at the current
+viewport width. Fixed and sticky content remains repeated where it appears in
+each image. The pixel limit truncates the bottom instead of scaling the page
+down: `truncated` reports the cut and `originalHeight` retains the real page
+height. Metadata reports `captureMethod: "scroll-and-stitch"` and
+`stickyHeadersDeduplicated: false` together.
 
 | Tool | Operands |
 | --- | --- |
@@ -115,7 +119,7 @@ have not been proved reliable; requesting it fails before capture.
 | `browser_select` | `ref`, `value`; native single-select only |
 | `browser_scroll` | `ref`, `direction` (`up`, `down`, `left`, `right`), `pixels` |
 | `browser_upload` | `ref`; opens the approved native picker |
-| `browser_screenshot` | Viewport only; omit `fullPage` or use `false` |
+| `browser_screenshot` | Viewport by default; `ref` or document-CSS `clip` captures a visible region. `fullPage` captures at the current viewport width with the limits described above. |
 
 Each accepts an optional `tabId` from `browser_tabs`. Unknown fields are rejected.
 

@@ -61,6 +61,14 @@ export const en = {
   "agentBrowser.workspace": "Browser tools",
   "agentBrowser.controlMenu": "Agent control",
 
+  // browserCapture
+  "browserCapture.capture": "Capture",
+  "browserCapture.viewport": "Visible area",
+  "browserCapture.fullPage": "Full page",
+  "browserCapture.area": "Select area",
+  "browserCapture.areaHint": "Drag to capture an area · Esc to cancel",
+  "browserCapture.failed": "Could not attach the capture. Check that a conversation can accept images.",
+
   // agentStatus
   "agentStatus.working": "Working",
   "agentStatus.blocked": "Blocked",
@@ -476,7 +484,7 @@ export const en = {
   "be_boot.routineWakeNote": "Scheduled prompt · {title} · not a message from you\n\n{prompt}",
 
   // be_browserTools
-  "be_browserTools.fullPageDescription": "Only viewport capture is available. Full-page capture is unavailable; omit this field or use false.",
+  "be_browserTools.fullPageDescription": "Capture the full page at the current viewport width. Embedded tabs scroll and stitch viewport images, preserving repeated fixed or sticky content. The 32-million-pixel limit truncates the bottom; originalHeight reports the full page height, and metadata reports the capture method and preserved sticky headers.",
   "be_browserTools.hoverDescription": "Hover over an element ref from browser_snapshot.",
   "be_browserTools.dragDescription": "Drag from sourceRef to targetRef with the native pointer. Both endpoints must be visible in the same document.",
   "be_browserTools.selectDescription": "Select an enabled option by value in a native single SELECT. Custom, multiple and ambiguous controls are refused.",
@@ -489,7 +497,7 @@ export const en = {
   "be_browserTools.snapshotDescription": "Read a browser tab as an accessibility outline. Elements you can act on carry a ref (for example [ref=e12]) for browser_click and browser_type. Up to 50,000 characters.",
   "be_browserTools.snapshotInteractiveDescription": "Only the elements a person can act on (links, buttons, fields...), as a flat list.",
   "be_browserTools.snapshotDeltaDescription": "Only what changed since your previous snapshot of this tab in the same mode.",
-  "be_browserTools.screenshotDescription": "Take a screenshot of what a browser tab shows.",
+  "be_browserTools.screenshotDescription": "Capture a browser tab's visible area, full page, snapshot element, or document-coordinate region.",
   "be_browserTools.waitDescription": "Wait until text appears in a browser tab, or for a time (at most 30 seconds).",
   "be_browserTools.waitTextDescription": "Text to wait for.",
   "be_browserTools.waitTimeDescription": "Milliseconds to wait (with text: the most to wait).",

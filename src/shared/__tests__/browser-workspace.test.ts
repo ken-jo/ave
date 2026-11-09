@@ -1,10 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_WORKSPACE_LIMITS, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState } from "../browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState } from "../browser-workspace.js";
 
 const TARGET = { tabId: "browser:one", documentGeneration: 4 };
 const STATE = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [], storageStatus: "ready", capabilities: { fullscreen: false } };
 
 describe("browser workspace wire validation", () => {
+  it("validates capture mode, viewport clips and strict host target fields", () => {
+    expect(parseBrowserWorkspaceRequest("capture", TARGET)).toEqual(TARGET);
+    expect(parseBrowserWorkspaceRequest("capture", { ...TARGET, fullPage: true })).not.toBeNull();
+    const clip = { x: 5.5, y: 10, width: 200, height: 100 };
+    expect(parseBrowserWorkspaceRequest("capture", { ...TARGET, clip })).not.toBeNull();
+    for (const fields of [{ fullPage: "true" }, { fullPage: undefined }, { clip: undefined }, { fullPage: true, clip }, { windowId: 2 }, { ref: "e1" }]) {
+      expect(parseBrowserWorkspaceRequest("capture", { ...TARGET, ...fields })).toBeNull();
+    }
+    for (const fields of [{ x: -1 }, { y: NaN }, { width: 0 }, { height: Infinity }, { scale: 1 }]) {
+      expect(parseBrowserWorkspaceRequest("capture", { ...TARGET, clip: { ...clip, ...fields } })).toBeNull();
+    }
+  });
+  it("accepts only bounded PNG capture results and explicit scaling metadata", () => {
+    const capture = { ...TARGET, dataUrl: "data:image/png;base64,YQ==", width: 200, height: 100, bytes: 1, originalWidth: 400, originalHeight: 200, scale: 0.5, truncated: false };
+    expect(parseBrowserWorkspaceCapture(capture)).toEqual(capture);
+    expect(parseBrowserWorkspaceCapture({ ...capture, scale: 1, originalHeight: 1000, truncated: true })).not.toBeNull();
+    for (const fields of [{ dataUrl: "data:image/svg+xml;base64,YQ==" }, { width: 32_000_001 }, { scale: 0 }, { bytes: 10 * 1024 * 1024 + 1 }, { truncated: "true" }, { path: "/tmp/capture.png" }]) {
+      expect(parseBrowserWorkspaceCapture({ ...capture, ...fields })).toBeNull();
+    }
+  });
+  it("requires complete scroll-and-stitch metadata with preserved sticky headers", () => {
+    const capture = { ...TARGET, dataUrl: "data:image/png;base64,YQ==", width: 200, height: 100, bytes: 1, originalWidth: 200, originalHeight: 1000, scale: 1, truncated: true };
+    const metadata = { captureMethod: "scroll-and-stitch", stickyHeadersDeduplicated: false };
+    expect(parseBrowserWorkspaceCapture({ ...capture, ...metadata })).toEqual({ ...capture, ...metadata });
+    for (const fields of [
+      { captureMethod: "scroll-and-stitch" }, { stickyHeadersDeduplicated: false },
+      { ...metadata, captureMethod: "viewport" }, { ...metadata, captureMethod: undefined },
+      { ...metadata, stickyHeadersDeduplicated: true }, { ...metadata, stickyHeadersDeduplicated: undefined },
+    ]) expect(parseBrowserWorkspaceCapture({ ...capture, ...fields })).toBeNull();
+  });
   it("rejects extra operands, agent handles without document proof, invalid generations and path-like URLs", () => {
     expect(parseBrowserWorkspaceRequest("preview", TARGET)).toEqual(TARGET);
     expect(parseBrowserWorkspaceRequest("preview", { ...TARGET, windowId: 2 })).toBeNull();

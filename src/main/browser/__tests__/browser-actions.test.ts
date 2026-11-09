@@ -835,13 +835,147 @@ describe("pressing keys", () => {
 });
 
 describe("screenshot", () => {
+  async function elementCaptureFixture() {
+    const { cdp, refs } = snapshotFixture();
+    cdp.viewport = { clientWidth: 100, clientHeight: 100 };
+    cdp.nodes = page([ax("element", "button", "Blue element", { backendDOMNodeId: 3 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    const { default: sharp } = await import("sharp");
+    const element = await sharp({ create: { width: 10, height: 10, channels: 3, background: "blue" } }).png().toBuffer();
+    const data = (await sharp({ create: { width: 100, height: 100, channels: 3, background: "red" } })
+      .composite([{ input: element, left: 10, top: 20 }]).png().toBuffer()).toString("base64");
+    const captureViewport = vi.fn(async () => ({ data, cssScale: 1 }));
+    return { cdp, refs, ref, captureViewport, tab: { ...target(cdp), captureViewport } };
+  }
+
+  it.each(["box", "verification"])("rejects ref preparation scroll drift during %s instead of capturing document row 60", async (stage) => {
+    const { cdp, refs, ref, tab, captureViewport } = await elementCaptureFixture();
+    const send = cdp.send.bind(cdp);
+    let layoutReads = 0;
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "DOM.getBoxModel") {
+        // The element was measured at document Y=40 with viewport scroll 0.
+        if (stage === "box") cdp.scroll.y = 20;
+        return { model: { border: [10, 40, 20, 40, 20, 50, 10, 50] } };
+      }
+      const response = await send(method, params);
+      // Scroll after the bracketing query, before the final ref verification/readback.
+      if (method === "Page.getLayoutMetrics" && ++layoutReads === 2 && stage === "verification") cdp.scroll.y = 20;
+      return response;
+    });
+    await expect(screenshot(tab, 1000, { ref }, refs)).rejects.toMatchObject({ code: "screenshot-unavailable", message: "the viewport changed during capture" });
+    expect(captureViewport).not.toHaveBeenCalled();
+    expect(cdp.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+  });
+
+  it("captures a ref's blue pixels when the same scroll baseline spans preparation and readback", async () => {
+    const { cdp, refs, ref, tab, captureViewport } = await elementCaptureFixture();
+    cdp.scroll.y = 20;
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation((method, params) => method === "DOM.getBoxModel"
+      ? Promise.resolve({ model: { border: [10, 20, 20, 20, 20, 30, 10, 30] } }) : send(method, params));
+    const result = await screenshot(tab, 1000, { ref }, refs);
+    const { default: sharp } = await import("sharp");
+    const pixels = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
+    expect(result).toMatchObject({ width: 10, height: 10 });
+    expect([...pixels.subarray(0, 3)]).toEqual([0, 0, 255]);
+    expect(captureViewport).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { error: new BrowserActionError("cancelled", "Capture cancelled"), code: "cancelled" },
+    { error: new Error("Node disappeared"), code: "stale-ref" },
+  ])("preserves a capture failure as $code", async ({ error, code }) => {
+    const { cdp, refs } = snapshotFixture();
+    cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "DOM.getBoxModel") throw error;
+      return send(method, params);
+    });
+    await expect(screenshot(target(cdp), 50, { ref }, refs)).rejects.toMatchObject({ code });
+    expect(cdp.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+  });
+
+  it("rejects unknown and stale snapshot refs before capture", async () => {
+    const { cdp, refs } = snapshotFixture();
+    await expect(screenshot(target(cdp), 50, { ref: "e1" }, refs)).rejects.toMatchObject({ code: "unknown-ref" });
+    cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
+    const shot = await snapshot(target(cdp), {}, refs);
+    const ref = /\[ref=(e\d+)\]/.exec(shot.text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    cdp.frameTree.frame.loaderId = "replacement-document";
+    await expect(screenshot(target(cdp), 50, { ref }, refs)).rejects.toMatchObject({ code: "stale-ref" });
+    expect(cdp.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+  });
+
   it("fails clearly instead of hanging when the tab draws no frame", async () => {
     const cdp = new FakeCdp();
     vi.spyOn(cdp, "send").mockImplementation(() => new Promise(() => {}));
     await expect(screenshot(target(cdp, { tabId: "tab-7" }), 50)).rejects.toMatchObject({
       code: "screenshot-timeout",
-      message: expect.stringContaining('browser_tabs {"select": "tab-7"}'),
+      message: expect.stringContaining("capture deadline"),
     });
+  });
+
+  it.each(["Page.getFrameTree", "DOM.getBoxModel"])("bounds stalled capture preparation at %s by its original deadline and caller cancellation", async (method) => {
+    const { cdp, refs } = snapshotFixture();
+    cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    const send = cdp.send.bind(cdp);
+    vi.useFakeTimers();
+    try {
+      for (const cancelled of [false, true]) {
+        const entered = deferred<void>(), response = deferred<unknown>();
+        const spy = vi.spyOn(cdp, "send").mockImplementation((name, params) => {
+          if (name === method) { entered.resolve(); return response.promise; }
+          return send(name, params);
+        });
+        const caller = new AbortController();
+        const pending = screenshot({ ...target(cdp), signal: caller.signal }, 20, { ref }, refs);
+        const rejected = expect(pending).rejects.toMatchObject({ code: cancelled ? "cancelled" : "screenshot-timeout" });
+        await entered.promise;
+        expect(vi.getTimerCount()).toBe(1);
+        if (cancelled) caller.abort(); else await vi.advanceTimersByTimeAsync(21);
+        await rejected;
+        expect(vi.getTimerCount()).toBe(0);
+        response.resolve(cdp.frameTree);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(cdp.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+        spy.mockRestore();
+      }
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not reset the capture deadline after resolving a ref", async () => {
+    const { cdp, refs } = snapshotFixture();
+    cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    const send = cdp.send.bind(cdp), box = deferred<unknown>(), entered = deferred<void>();
+    const readback = deferred<void>();
+    vi.spyOn(cdp, "send").mockImplementation((method, params) => {
+      if (method === "DOM.getBoxModel") { entered.resolve(); return box.promise; }
+      if (method === "Page.captureScreenshot") { readback.resolve(); return new Promise(() => {}); }
+      return send(method, params);
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = screenshot(target(cdp), 20, { ref }, refs);
+      const rejected = expect(pending).rejects.toMatchObject({ code: "screenshot-timeout" });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(15);
+      box.resolve({ model: { border: [0, 0, 10, 0, 10, 10, 0, 10] } });
+      await readback.promise;
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(6);
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
   });
 });
 
@@ -1275,7 +1409,7 @@ function adapterFixture(options: {
     // These cases assert page actions, not thumbnails; a capture attempt fails and leaves the tool result as it is.
     decodePng: () => { throw new Error("no image decoder in this fixture"); },
     record: () => {},
-  });
+  }, () => 1);
   const tools = createBrowserTools({
     tabs: registry,
     pickUploadFiles: async () => null,
@@ -1470,7 +1604,7 @@ it("replaces site gate disposal across independently loaded action adapters", as
   const live = { ...await approve("browser_press_key"), authorizeSite: vi.fn(async () => {}) };
   const nextActions = createBrowserPageActions(registry, browserOrigin, () => HOST_CONTENT, {
     decodePng: () => { throw new Error("no image decoder in this fixture"); }, record: () => {},
-  });
+  }, () => 1);
   expect(guest.listenerCount("destroyed")).toBe(1);
   for (const adapter of [actions, nextActions]) {
     await adapter.pressKey(live, "Escape");
@@ -1576,6 +1710,75 @@ it("leaves user-owned guests on their existing painting and throttle path", asyn
   await actions.pressKey(await approve("browser_press_key"), "Escape");
   expect(layoutOps).not.toContain("wake");
   expect(guest.setBackgroundThrottling).not.toHaveBeenCalled();
+});
+
+it.each(["full-page", "ref", "region"] as const)("captures a parked %s page without native focus and rejects changed readback ownership", async (mode) => {
+  const sharp = (await import("sharp")).default;
+  const png = await sharp({ create: { width: 1024, height: 768, channels: 3, background: "blue" } }).png().toBuffer();
+  for (const change of ["none", "document", "takeover", "debugger"] as const) {
+    vi.useFakeTimers();
+    try {
+      const { actions, approve, registry, tab, layoutOps, cdp, guest, navigate } = adapterFixture({ agent: true });
+      cdp.nodes = page([ax("button", "button", "Capture target", { backendDOMNodeId: 5 })]);
+      const send = cdp.send.bind(cdp);
+      vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+        const result = await send(method, params);
+        if (method === "Page.getLayoutMetrics") return { ...result as object, cssContentSize: { x: 0, y: 0, width: 1024, height: 768 } };
+        if (method === "DOM.getBoxModel") return { model: { border: [10, 10, 30, 10, 30, 20, 10, 20] } };
+        return result;
+      });
+      const capturePage = vi.fn(async () => {
+        if (change === "document") navigate("https://a.example/replaced");
+        if (change === "takeover") registry.userInput(guest.id, { type: "keyDown" });
+        if (change === "debugger") guest.debugger.emit("detach", {}, "target closed");
+        return { isEmpty: () => false, getSize: () => ({ width: 1024, height: 768 }), toPNG: () => png };
+      });
+      Object.assign(guest, { capturePage });
+      const live = await approve("browser_screenshot");
+      const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+      if (!ref) throw new Error("Capture target ref is unavailable");
+      const options = mode === "full-page" ? { fullPage: true } : mode === "ref" ? { ref } : { clip: { x: 10, y: 10, width: 20, height: 10 } };
+      const pending = actions.screenshot(live, options);
+      if (change === "none") await expect(pending).resolves.toMatchObject({ width: mode === "full-page" ? 1024 : 20, height: mode === "full-page" ? 768 : 10 });
+      else await expect(pending).rejects.toMatchObject({ code: change === "document" ? "document-changed" : change === "debugger" ? "debugger-unavailable" : "cancelled" });
+      if (change === "debugger") {
+        expect(guest.debugger.isAttached()).toBe(true);
+        expect(cdp.calls.filter(call => call.method === "Runtime.callFunctionOn"
+          && (call.params?.arguments as Array<{ value: unknown }> | undefined)?.[2]?.value === false)).toEqual([]);
+      }
+      expect(capturePage).toHaveBeenCalledTimes(1);
+      expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
+      expect(layoutOps).toContain("wake");
+      expect(layoutOps.filter(op => ["select", "focus", "capture-focus"].includes(op))).toEqual([]);
+      expect(cdp.calls.filter(call => call.method === "Emulation.setFocusEmulationEnabled")).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(layoutOps).toContain("sleep");
+      expect(guest.setBackgroundThrottling).toHaveBeenLastCalledWith(true);
+    } finally { vi.useRealTimers(); }
+  }
+});
+
+it("refuses capture cleanup from an ended debugger generation without blocking a fresh capture", async () => {
+  const sharp = (await import("sharp")).default;
+  const png = await sharp({ create: { width: 1024, height: 768, channels: 3, background: "blue" } }).png().toBuffer();
+  const { actions, approve, tab, cdp, guest } = adapterFixture();
+  Object.assign(tab, { targetKind: "popup" });
+  const send = cdp.send.bind(cdp);
+  let disconnect = true;
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Page.getLayoutMetrics") return { ...result as object, cssContentSize: { x: 0, y: 0, width: 1024, height: 768 } };
+    if (method === "Page.captureScreenshot") {
+      if (disconnect) { disconnect = false; guest.debugger.emit("detach", {}, "connection replaced"); }
+      return { data: png.toString("base64") };
+    }
+    return result;
+  });
+  await expect(actions.screenshot(await approve("browser_screenshot"), { fullPage: true })).rejects.toMatchObject({ code: "debugger-unavailable" });
+  expect(cdp.calls.filter(call => call.method === "Emulation.clearDeviceMetricsOverride")).toEqual([]);
+  await actions.prepare({ tab, signal: new AbortController().signal });
+  await expect(actions.screenshot(await approve("browser_screenshot"), { fullPage: true })).resolves.toMatchObject({ width: 1024, height: 768 });
+  expect(cdp.calls.filter(call => call.method === "Emulation.clearDeviceMetricsOverride")).toHaveLength(1);
 });
 
 it("executes the first cold action with an unchanged page after one approval binding", async () => {
@@ -1800,7 +2003,7 @@ describe("page action thumbnails", () => {
     const actions = createBrowserPageActions(new BrowserTabRegistry(), browserOrigin, () => null, {
       decodePng: () => { throw new Error("no image decoder in this fixture"); },
       record: () => {},
-    });
+    }, () => 1);
     const capturePage = vi.fn(() => new Promise<never>(() => {}));
     const stopped = new AbortController();
     stopped.abort();
@@ -2070,12 +2273,6 @@ describe("typed page actions", () => {
     expect(cdp.calls.filter((call) => call.method === "Input.dispatchMouseEvent").map((call) => call.params?.type)).toEqual(["mouseMoved", "mousePressed", "mouseMoved", "mouseReleased"]);
   });
 
-  it("refuses unavailable full-page capture before sending any protocol request", async () => {
-    const cdp = new FakeCdp();
-    vi.spyOn(cdp, "send");
-    await expect(screenshot(target(cdp), 100, { fullPage: true })).rejects.toMatchObject({ code: "screenshot-unavailable" });
-    expect(cdp.send).not.toHaveBeenCalled();
-  });
 
   it.each(["darwin", "linux", "win32"] as const)("verifies exact native selection on %s", async (platform) => {
     const originalPlatform = process.platform;

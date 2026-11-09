@@ -63,6 +63,14 @@ export const ko: Record<MessageCatalogKey, string> = {
   "agentBrowser.workspace": "브라우저 도구",
   "agentBrowser.controlMenu": "에이전트 제어",
 
+  // browserCapture
+  "browserCapture.capture": "캡처",
+  "browserCapture.viewport": "보이는 화면",
+  "browserCapture.fullPage": "전체 페이지",
+  "browserCapture.area": "영역 선택",
+  "browserCapture.areaHint": "드래그하여 캡처할 영역을 선택하세요 · Esc로 취소",
+  "browserCapture.failed": "캡처를 첨부하지 못했습니다. 대화에서 이미지를 첨부할 수 있는지 확인하세요.",
+
   // agentStatus
   "agentStatus.working": "작업 중",
   "agentStatus.blocked": "막힘",
@@ -478,7 +486,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_boot.routineWakeNote": "예약된 프롬프트 · {title} · 사용자 메시지가 아닙니다\n\n{prompt}",
 
   // be_browserTools
-  "be_browserTools.fullPageDescription": "현재 보이는 영역만 캡처할 수 있습니다. 전체 페이지 캡처는 지원하지 않습니다. 이 필드는 생략하거나 false로 지정하세요.",
+  "be_browserTools.fullPageDescription": "현재 뷰포트 너비로 전체 페이지를 캡처합니다. 임베디드 탭은 스크롤하며 뷰포트 이미지를 이어 붙이고 고정·스티키 콘텐츠의 반복을 유지합니다. 3,200만 픽셀 제한을 넘으면 하단을 자릅니다. originalHeight는 전체 페이지 높이를, 메타데이터는 캡처 방식과 스티키 헤더 반복 유지 여부를 알립니다.",
   "be_browserTools.hoverDescription": "browser_snapshot의 요소 ref 위로 포인터를 옮깁니다.",
   "be_browserTools.dragDescription": "네이티브 포인터로 sourceRef에서 targetRef로 드래그합니다. 두 끝점이 같은 문서의 화면에 보여야 합니다.",
   "be_browserTools.selectDescription": "네이티브 단일 SELECT에서 value로 활성 옵션을 선택합니다. 사용자 정의·다중·모호한 컨트롤은 거부합니다.",
@@ -491,7 +499,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_browserTools.snapshotDescription": "브라우저 탭을 접근성 개요로 읽습니다. 동작할 수 있는 요소에는 browser_click과 browser_type에 쓸 ref(예: [ref=e12])가 붙습니다. 최대 50,000자입니다.",
   "be_browserTools.snapshotInteractiveDescription": "사람이 조작할 수 있는 요소(링크, 버튼, 입력란 등)만 평평한 목록으로 보여 줍니다.",
   "be_browserTools.snapshotDeltaDescription": "같은 모드로 이 탭을 이전에 읽은 뒤 바뀐 부분만 보여 줍니다.",
-  "be_browserTools.screenshotDescription": "브라우저 탭에 보이는 화면을 캡처합니다.",
+  "be_browserTools.screenshotDescription": "브라우저 탭의 보이는 화면, 전체 페이지, 스냅샷 요소 또는 문서 좌표의 영역을 캡처합니다.",
   "be_browserTools.waitDescription": "브라우저 탭에 텍스트가 나타날 때까지, 또는 정한 시간 동안(최대 30초) 기다립니다.",
   "be_browserTools.waitTextDescription": "기다릴 텍스트.",
   "be_browserTools.waitTimeDescription": "기다릴 밀리초(텍스트와 함께 쓰면 최대 대기 시간).",

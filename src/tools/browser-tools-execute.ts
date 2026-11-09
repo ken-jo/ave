@@ -25,6 +25,7 @@ import {
 import type { BrowserSessionActor } from "../shared/browser-surface.js";
 import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import { t } from "../i18n/index.js";
+import { parseBrowserScreenshotOptions } from "../shared/browser-capture.js";
 
 const MAX_TYPED_CHARS = 10_000;
 const MAX_WAIT_MS = 30_000;
@@ -434,8 +435,12 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     },
 
     [BROWSER_TOOL.screenshot]: async (input, ctx) => {
-      if (input.fullPage !== undefined && typeof input.fullPage !== "boolean") return failure("fullPage must be a boolean");
-      if (input.fullPage === true) return failure("screenshot-unavailable: full page capture is unavailable; use a viewport screenshot");
+      const options = parseBrowserScreenshotOptions({
+        ...(input.fullPage !== undefined ? { fullPage: input.fullPage } : {}),
+        ...(input.ref !== undefined ? { ref: input.ref } : {}),
+        ...(input.clip !== undefined ? { clip: input.clip } : {}),
+      });
+      if (!options) return failure("use one capture mode: fullPage, a snapshot ref, or a clip with finite non-negative x/y and positive width/height");
       const target = live(input, ctx);
       if (!target.ok) return target.result;
       const changed = unchangedSinceApproval(ctx, target.resolved);
@@ -445,10 +450,12 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (!fresh.ok) return fresh.result;
         const changed = unchangedSinceApproval(ctx, fresh.resolved);
         if (changed) return changed;
-        const image = await actions.screenshot(pageTarget(ctx, fresh), { fullPage: input.fullPage === true });
+        const image = await actions.screenshot(pageTarget(ctx, fresh), options);
         const browserPreview = await previewOf(actions, pageTarget(ctx, fresh), image.data);
         return withPreview({
-          output: fenceBrowserContent({ tabId: target.resolved.tab.handle, url: target.resolved.tab.guest?.getURL() ?? "", fullPage: input.fullPage === true }),
+          output: fenceBrowserContent({ tabId: target.resolved.tab.handle, url: target.resolved.tab.guest?.getURL() ?? "", fullPage: input.fullPage === true, width: image.width, height: image.height, originalWidth: image.originalWidth, originalHeight: image.originalHeight, scale: image.scale, truncated: image.truncated,
+            ...(image.captureMethod ? { captureMethod: image.captureMethod, stickyHeadersDeduplicated: image.stickyHeadersDeduplicated } : {}),
+          }),
           isError: false,
           image: { data: image.data, mimeType: image.mimeType, bytes: image.bytes },
         }, browserPreview);
@@ -596,7 +603,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   const allowed: Record<BrowserToolName, readonly string[]> = {
     [BROWSER_TOOL.tabs]: ["select", "scope", "includeDirectChildren"],
     [BROWSER_TOOL.snapshot]: ["tabId", "interactive", "delta"],
-    [BROWSER_TOOL.screenshot]: ["tabId", "fullPage"],
+    [BROWSER_TOOL.screenshot]: ["tabId", "fullPage", "ref", "clip"],
     [BROWSER_TOOL.wait]: ["tabId", "text", "timeMs"],
     [BROWSER_TOOL.navigate]: ["tabId", "url"],
     [BROWSER_TOOL.click]: ["tabId", "ref"],

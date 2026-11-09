@@ -135,6 +135,17 @@ describe("agent capture thumbnail", () => {
     expect(result).toMatchObject({ width: 320, height: 180, dataUrl: expect.stringMatching(/^data:image\/jpeg;base64,/) });
     expect(record).toHaveBeenCalledWith(1, { tabId: "browser:one", documentGeneration: 3, ...result });
   });
+  it.each(["document", "guest"])("discards a supplied capture PNG when its %s changes during decoding", async (changed) => {
+    const captured = tab();
+    const record = vi.fn();
+    const decodePng = () => {
+      if (changed === "document") captured.documentId++;
+      else Object.assign(captured, { guest: tab().guest });
+      return image();
+    };
+    await expect(captureAgentPreview(captured, "iVBORw0KGgo=", { decodePng, record })).resolves.toBeUndefined();
+    expect(record).not.toHaveBeenCalled();
+  });
   it("captures the page for a snapshot, and gives up silently on timeout, failure, or a document change", async () => {
     const record = vi.fn();
     const captured = tab();

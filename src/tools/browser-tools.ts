@@ -4,6 +4,7 @@
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
+import type { BrowserScreenshotOptions, BrowserScreenshot } from "../shared/browser-capture.js";
 import { BROWSER_TOOL, browserOrigin, type BrowserToolName, type BrowserPageReadiness, type BrowserPageSnapshot } from "../shared/browser-tools.js";
 export { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
@@ -62,7 +63,7 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   /** Establish document observation before approval captures its identity. */
   prepare(target: BrowserActionTab<G>): Promise<void>;
   snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<BrowserPageSnapshot>;
-  screenshot(target: BrowserActionTab<G>, options?: { fullPage?: boolean }): Promise<{ data: string; mimeType: string; bytes: number }>;
+  screenshot(target: BrowserActionTab<G>, options?: BrowserScreenshotOptions): Promise<BrowserScreenshot>;
   /** Best-effort display thumbnail of the tab (from `png` when given); never throws. */
   capturePreview?(target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined>;
   waitFor(target: BrowserActionTab<G>, options: { text?: string; timeMs?: number }): Promise<{ found: boolean; waitedMs: number }>;
@@ -301,7 +302,15 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       categoryForInput: readOnAgentTab,
       isReadOnly: (raw) => readOnAgentTab(raw) === "read",
       approvalMemoryScope: pageScope,
-      jsonSchema: object({ tabId: tabIdProperty, fullPage: { type: "boolean", enum: [false], description: t("be_browserTools.fullPageDescription") } }),
+      jsonSchema: object({
+        tabId: tabIdProperty,
+        fullPage: { type: "boolean", description: t("be_browserTools.fullPageDescription") },
+        ref: { ...refProperty.ref, pattern: "^e\\d+$", maxLength: 100 },
+        clip: { type: "object", additionalProperties: false, required: ["x", "y", "width", "height"], properties: {
+          x: { type: "number", minimum: 0 }, y: { type: "number", minimum: 0 },
+          width: { type: "number", exclusiveMinimum: 0 }, height: { type: "number", exclusiveMinimum: 0 },
+        } },
+      }),
       execute: execute(BROWSER_TOOL.screenshot),
     }),
     createDynamicTool({

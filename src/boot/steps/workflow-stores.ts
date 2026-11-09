@@ -253,7 +253,7 @@ export async function setupWorkflowStores(
             // Load page actions lazily outside the initial bundle.
             loadActions: async () => {
               const { createBrowserPageActions } = await import("../../main/browser/browser-actions.js");
-              return createBrowserPageActions(browserTabRegistry, browserOrigin, desktop.browserGuestContentOrigin, desktop.browserAgentPreview);
+              return createBrowserPageActions(browserTabRegistry, browserOrigin, desktop.browserGuestContentOrigin, desktop.browserAgentPreview, desktop.browserCapturePixelRatio);
             },
           },
         };

@@ -5,12 +5,14 @@ import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { BrowserWorkspacePanel } from "./BrowserWorkspacePanel.js";
 import { BrowserControlHeader } from "./BrowserControlHeader.js";
+import { BrowserCaptureControls } from "./browser-capture-controls.js";
 
 /** Persistent tab controls share one toolbar; the library body mounts only while open. */
-export function BrowserSurfaceTools({ api, tabId, onOpenUrl }: {
+export function BrowserSurfaceTools({ api, tabId, onOpenUrl, composerGroupId }: {
   api: AveApi;
   tabId: string;
   onOpenUrl: (url: string) => void;
+  composerGroupId?: string | undefined;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -22,6 +24,7 @@ export function BrowserSurfaceTools({ api, tabId, onOpenUrl }: {
       data-testid="browser-workspace-toggle">
       <PanelsTopLeft className="h-3.5 w-3.5" aria-hidden="true" />{t("agentBrowser.workspace")}
     </Button> : null}
+    {api.browserWorkspace?.capture ? <BrowserCaptureControls key={tabId} api={api.browserWorkspace} tabId={tabId} composerGroupId={composerGroupId} /> : null}
     <BrowserControlHeader api={api} tabId={tabId} />
     </div>
     {open && api.browserWorkspace && api.browserTabs ? <div id={panelId} className="max-h-80 overflow-auto">

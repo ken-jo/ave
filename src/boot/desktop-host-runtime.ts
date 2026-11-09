@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
 import { desktopSecretEncryption } from "../main/desktop-secret-encryption.js";
+import { browserCapturePixelRatio } from "../main/browser/browser-capture-desktop.js";
 import { join } from "node:path";
 import { createDesktopNetworkFetch } from "./steps/desktop-network-fetch.js";
 import { prepareDesktopRelease } from "./steps/desktop-release.js";
@@ -88,6 +89,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
         const bounds = window.getContentBounds();
         return { x: bounds.x, y: bounds.y, windowId: window.id };
       },
+      browserCapturePixelRatio,
       browserAgentPreview: {
         decodePng: (png) => nativeImage.createFromBuffer(Buffer.from(png, "base64")),
         record: (windowId, preview) => getBrowserWorkspaceService().recordAgentCapture(windowId, preview),

@@ -1,8 +1,9 @@
 import { setBrowserGuestZoomFactor } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 import type { DownloadItem, WebContents } from "electron";
-import { BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserBookmarkRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
+import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
 import { BrowserSitePermissionPolicy, type BrowserPermissionDetails, type BrowserPermissionPrompt } from "./browser-site-permissions.js";
 
@@ -21,6 +22,7 @@ export interface BrowserWorkspaceServiceDeps {
 export class BrowserWorkspaceService {
   readonly store: BrowserWorkspaceStore;
   private readonly previews: BrowserWorkspacePreview;
+  private readonly captures: BrowserWorkspaceCapture;
   private readonly permissions: BrowserSitePermissionPolicy;
   private readonly guests = new Map<number, { guest: WebContents; windowId: number; generation: number; dispose: () => void }>();
   private readonly downloads = new Map<number, BrowserDownload[]>();
@@ -32,6 +34,7 @@ export class BrowserWorkspaceService {
   constructor(private readonly deps: BrowserWorkspaceServiceDeps) {
     this.store = deps.store ?? new BrowserWorkspaceStore();
     this.previews = new BrowserWorkspacePreview(deps);
+    this.captures = new BrowserWorkspaceCapture(deps);
     this.permissions = new BrowserSitePermissionPolicy({ store: this.store, prompt: deps.promptPermission, fullscreenAvailable: deps.fullscreenAvailable, currentContext: (guestId) => {
       const entry = this.guests.get(guestId);
       return entry && !entry.guest.isDestroyed() ? { guestId, windowId: entry.windowId, documentGeneration: entry.generation, url: entry.guest.getURL() } : null;
@@ -89,6 +92,7 @@ export class BrowserWorkspaceService {
     return { factor: guest.getZoomFactor() };
   }
   preview(windowId: number, request: BrowserWorkspaceTarget) { this.target(windowId, request); return this.previews.capture(windowId, request); }
+  capture(windowId: number, request: BrowserCaptureRequest) { this.target(windowId, request); return this.captures.capture(windowId, request); }
   recordAgentCapture(windowId: number, preview: BrowserPreview): void { this.previews.remember(windowId, preview); }
   requestPermission(guestId: number, permission: string, details: BrowserPermissionDetails): Promise<boolean> { return this.permissions.request(guestId, permission, details); }
   checkPermission(guestId: number, permission: string, details: BrowserPermissionDetails): boolean { return this.permissions.check(guestId, permission, details); }
@@ -97,12 +101,12 @@ export class BrowserWorkspaceService {
     const existing = this.guests.get(guestId);
     if (existing && existing.windowId !== windowId) throw new Error("guest-owner-mismatch");
     if (existing) return existing.dispose;
-    const invalidate = () => { const entry = this.guests.get(guestId); if (entry) entry.generation++; this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.notify(); };
+    const invalidate = () => { const entry = this.guests.get(guestId); if (entry) entry.generation++; this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const visit = () => { if (!guest.isDestroyed()) void this.store.recordVisit(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
     const started = (_event: unknown, _url: string, _inPlace: boolean, mainFrame: boolean) => { if (mainFrame) invalidate(); };
     const navigatedInPage = (_event: unknown, _url: string, mainFrame: boolean) => { if (mainFrame) { invalidate(); visit(); } };
     let unsubscribe = () => {};
-    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.notify(); };
+    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const titleChanged = () => { if (!guest.isDestroyed()) void this.store.updateHistoryTitle(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
     this.guests.set(guestId, { guest, windowId, generation: 1, dispose });
     guest.on("did-start-navigation", started); guest.on("did-navigate", visit); guest.on("did-navigate-in-page", navigatedInPage); guest.on("page-title-updated", titleChanged);
@@ -127,9 +131,10 @@ export class BrowserWorkspaceService {
     item.once("done", done);
     update("progressing");
   }
-  invalidateWindow(windowId: number): void { this.previews.invalidateWindow(windowId); }
+  invalidateWindow(windowId: number): void { this.previews.invalidateWindow(windowId); this.captures.invalidateWindow(windowId); }
   disposeWindow(windowId: number): void {
     this.windows.delete(windowId); this.downloads.delete(windowId); this.previews.disposeWindow(windowId);
+    this.captures.invalidateWindow(windowId);
     for (const dispose of this.downloadDisposers.get(windowId) ?? []) dispose();
     this.downloadDisposers.delete(windowId);
     for (const entry of this.guests.values()) if (entry.windowId === windowId) entry.dispose();

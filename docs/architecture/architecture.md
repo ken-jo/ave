@@ -1603,10 +1603,21 @@ destination drop; an uncertain session is detached and quarantined. Cancellation
 after entering the destination cancels its remaining drag state on the original
 session. A dispatched drop with a lost acknowledgement is outcome-unknown and
 must not be repeated automatically. Cleanup never retargets a replacement guest.
-Viewport screenshots retain pixel/byte bounds. Full-page capture is unavailable:
-the embedded renderer can return a correctly sized image with repeated viewport
-content, and popup full-page output has not been independently proved. Requests
-fail explicitly before capture rather than reporting such an image as complete.
+Screenshots retain their pixel/byte bounds and capture deadline. Viewport,
+element-reference and region captures crop native viewport readback in document
+CSS coordinates; the requested region must be visible. Embedded full-page capture
+scrolls and stitches native viewport images at the current viewport width. Fixed
+and sticky content remains repeated where it appears in each tile; capture does
+not alter or deduplicate that page content. Full-page output preserves its scale
+and truncates the bottom at the pixel limit. Output includes dimensions, scale,
+`truncated`, and the real page height in `originalHeight`. Tiled captures also
+report `captureMethod: "scroll-and-stitch"` and
+`stickyHeadersDeduplicated: false` together. Parked agent tabs retain the shared
+activity wake ownership before reading layout or capturing.
+Preparation, readback and cleanup share one cancellation signal and capture
+deadline. Cleanup attempts to restore the original scroll position and clear any
+temporary viewport override even on cancellation; a still-pending cleanup retains
+guest capture ownership until it settles.
 Selection verifies the final native value and rejects unsupported controls.
 Native single-select uses a fixed function in an isolated action world on one
 host-resolved main-document object, with only the requested option value as data.

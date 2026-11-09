@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { attachToComposer, registerComposerTarget, resetComposerTargetsForTest, type ComposerKind } from "../composer-targets.js";
+import { attachImageToComposer, attachToComposer, registerComposerTarget, resetComposerTargetsForTest, type ComposerKind } from "../composer-targets.js";
 
 afterEach(() => {
   resetComposerTargetsForTest();
@@ -19,6 +19,14 @@ function composer(groupId: string, kind: ComposerKind, options: { available?: bo
 }
 
 describe("attachToComposer", () => {
+  it("routes captures only to an available composer in their own group", async () => {
+    const attachImage = vi.fn(async () => true);
+    registerComposerTarget({ groupId: "capture", kind: "conversation", attach: () => true, attachImage, available: () => true, element: () => null });
+    expect(await attachImageToComposer("image", "other")).toBe("no-composer");
+    expect(attachImage).not.toHaveBeenCalled();
+    expect(await attachImageToComposer("image", "capture")).toBe(true);
+    expect(attachImage).toHaveBeenCalledWith("image");
+  });
   it("sends a side-panel terminal's block to its group's last-used composer, else that group's conversation", () => {
     const conversation = composer("a", "conversation");
     const sideChat = composer("a", "side-chat");
