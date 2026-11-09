@@ -246,14 +246,6 @@ function SessionRow({
           fourth control. A pinned row keeps the pin showing: the state has to
           be readable without hovering every row to find it. */}
       <span className="relative ml-2 flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-        {onToggleExpanded ? (
-          <button type="button" tabIndex={-1} className="absolute inset-0 flex items-center justify-center rounded-sm hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-            aria-label={t(expanded ? "sidebar.collapseConversation" : "sidebar.expandConversation", { title: session.title })}
-            data-testid={`sidebar-session-toggle-${session.id}`}
-            onClick={(event) => { event.stopPropagation(); onToggleExpanded(); }}>
-            {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
-          </button>
-        ) : null}
         {onTogglePin && !onToggleExpanded ? (
           <button
             type="button"
@@ -283,9 +275,9 @@ function SessionRow({
           hiddenFromAccessibility
           workingTestId={`sidebar-session-responding-${session.id}`}
           badgeTestId={`sidebar-pending-answer-${session.id}`}
-          markClassName={onToggleExpanded || isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible"}
+          markClassName={onToggleExpanded ? undefined : isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible"}
           // Positioned after the pin, so it must let the pin take the click.
-          className={onToggleExpanded ? "pointer-events-none invisible" : "pointer-events-none"}
+          className="pointer-events-none"
           mark={
             /* Decorative here: the whole slot is hidden from assistive tech, and the row's button names the family (non-main
                rows) and the state in its sr-only text instead. */
@@ -365,6 +357,14 @@ function SessionRow({
         </button>
         </SidebarPreviewTarget>
       )}
+        {onToggleExpanded ? (
+          <button type="button" tabIndex={-1} className="mr-1 flex shrink-0 items-center justify-center rounded-sm p-0.5 hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={t(expanded ? "sidebar.collapseConversation" : "sidebar.expandConversation", { title: session.title })}
+            data-testid={`sidebar-session-toggle-${session.id}`}
+            onClick={(event) => { event.stopPropagation(); onToggleExpanded(); }}>
+            {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          </button>
+        ) : null}
       {time ? (
         <span className="shrink-0 pr-1 text-tiny text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
           {time}

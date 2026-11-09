@@ -2507,3 +2507,24 @@ it.each(["ko", "en"] as const)("nests child rows with localized controls and the
     expect(row).toHaveAttribute("aria-expanded", "false");
   } finally { cleanup(); view.restore(); }
 });
+
+it.each([false, true])("keeps a branching parent's status and pending badge outside the expander (working=%s)", (working) => {
+  const parent = sessionRow({ id: "status-parent", title: "Parent", modifiedAt: new Date().toISOString() });
+  const child = sessionRow({ id: "status-child", title: "Child", modifiedAt: new Date().toISOString(), family: "subagent", sessionKind: "subagent", originSessionId: parent.id });
+  const view = renderSidebar({ sessions: [parent, child], currentSessionId: parent.id,
+    pendingAnswerSessionIds: new Set([parent.id]),
+    conversationActions: {
+      isArchived: () => false, isUnread: () => false, isResponding: (id) => working && id === parent.id,
+      onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn(),
+    },
+  });
+  try {
+    const expander = view.getByTestId(`sidebar-session-toggle-${parent.id}`);
+    const status = view.getByTestId(working ? `sidebar-session-responding-${parent.id}` : `sidebar-conversation-glyph-${parent.id}`);
+    const badge = view.getByTestId(`sidebar-pending-answer-${parent.id}`);
+    expect(status.closest(".invisible")).toBeNull();
+    expect(badge.closest(".invisible")).toBeNull();
+    expect(expander).not.toContainElement(status);
+    expect(expander.parentElement).not.toBe(status.parentElement);
+  } finally { cleanup(); view.restore(); }
+});

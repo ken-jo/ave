@@ -37,6 +37,7 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
     const crossProject = page.getByTestId(`sidebar-row-session-${crossProjectId}`);
     await expect(parent).toHaveAttribute("aria-expanded", "true");
     await expect(child).toBeVisible();
+    await expect(page.getByTestId(`sidebar-conversation-glyph-${parentId}`)).toBeVisible();
     await expect(orphan).toBeVisible();
     await expect(crossProject).toBeVisible();
     const measurements = [];
@@ -52,9 +53,19 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
           const titleRect = title.getBoundingClientRect();
           return { id, index: rows.indexOf(element), level: Number(element.getAttribute("aria-level")), x: rect.x, y: rect.y, right: rect.right, bottom: rect.bottom, titleX: titleRect.x, titleWidth: titleRect.width };
         };
-        return { viewport: { width: innerWidth, height: innerHeight }, parent: read(parentId), child: read(childId), orphan: read(orphanId), crossProject: read(crossProjectId) };
+        const glyph = document.querySelector<HTMLElement>(`[data-testid="sidebar-conversation-glyph-${parentId}"]`);
+        const toggle = document.querySelector<HTMLElement>(`[data-testid="sidebar-session-toggle-${parentId}"]`);
+        if (!glyph || !toggle) throw new Error("missing-parent-controls");
+        const glyphRect = glyph.getBoundingClientRect();
+        const toggleRect = toggle.getBoundingClientRect();
+        const controls = { glyphVisibility: getComputedStyle(glyph).visibility, glyphWidth: glyphRect.width, glyphRight: glyphRect.right, toggleX: toggleRect.x, toggleWidth: toggleRect.width };
+        return { controls, viewport: { width: innerWidth, height: innerHeight }, parent: read(parentId), child: read(childId), orphan: read(orphanId), crossProject: read(crossProjectId) };
       }, { parentId, childId, orphanId, crossProjectId });
       expect(layout.viewport.width).toBe(width);
+      expect(layout.controls.glyphVisibility).toBe("visible");
+      expect(layout.controls.glyphWidth).toBeGreaterThan(0);
+      expect(layout.controls.toggleWidth).toBeGreaterThan(0);
+      expect(layout.controls.toggleX).toBeGreaterThanOrEqual(layout.controls.glyphRight);
       expect(layout.child.index).toBe(layout.parent.index + 1);
       expect(layout.child.level).toBe(layout.parent.level + 1);
       expect(layout.child.titleX).toBeGreaterThan(layout.parent.titleX);
