@@ -50,7 +50,7 @@ export class BrowserWorkspaceCapture {
           fullPageTiling: true,
           restoreCaptureScroll: async (position) => {
             const live = this.deps.liveTab(windowId, request.tabId);
-            if (guest.isDestroyed() || live?.guest !== guest || live.documentGeneration !== request.documentGeneration || guest.getZoomFactor() !== zoom) return;
+            if (guest.isDestroyed() || live?.guest !== guest || live.documentGeneration !== request.documentGeneration) return;
             try { await pageDebugger.sendCommand("Runtime.callFunctionOn", captureScrollParameters(position, false)); }
             catch (error) { if (!captureContextGone(error)) throw error; }
           },

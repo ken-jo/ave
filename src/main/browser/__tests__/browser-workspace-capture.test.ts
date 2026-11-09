@@ -82,6 +82,33 @@ describe("user browser capture boundary", () => {
     expect(writeImage).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("restores capture-owned scroll after zoom changes only on the same document (replacement=%s)", async (replacement) => {
+    const { capture, guest, sendCommand, setZoom, setGeneration } = fixture();
+    let pageY = 2;
+    sendCommand.mockImplementation(async (method, params) => {
+      if (method === "Page.getLayoutMetrics") return {
+        cssContentSize: { x: 0, y: 0, width: 4, height: 10 },
+        cssVisualViewport: { pageX: 0, pageY, clientWidth: 4, clientHeight: 4 },
+      };
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+      if (method === "Page.createIsolatedWorld") return { executionContextId: 73 };
+      if (method === "Runtime.callFunctionOn") {
+        const values = (params as { arguments: Array<{ value: unknown }> }).arguments;
+        pageY = Number(values[1]?.value);
+        if (values[2]?.value === true && pageY === 4) {
+          setZoom(1.25);
+          if (replacement) setGeneration(2);
+        }
+        return {};
+      }
+      throw new Error(`Unexpected capture command: ${method}`);
+    });
+    await expect(capture.capture(1, { ...TARGET, fullPage: true })).rejects.toThrow("stale-document");
+    expect(pageY).toBe(replacement ? 4 : 2);
+    expect(guest.getZoomFactor()).toBe(1.25);
+    expect(writeImage).not.toHaveBeenCalled();
+  });
+
   it("keeps one capture per window and aborts it when the window is invalidated", async () => {
     const { capture, sendCommand } = fixture();
     let finish!: (value: unknown) => void;
