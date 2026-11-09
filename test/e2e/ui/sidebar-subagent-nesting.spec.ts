@@ -1,3 +1,5 @@
+import type { AgentSpawnEvent } from "../../../src/shared/subagent-events.js";
+import { CHANNELS } from "../../../src/contract/app-contract.js";
 import { test, expect } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -93,6 +95,25 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
     await page.keyboard.press("Escape");
     await page.getByTestId(`sidebar-session-${orphanId}`).click();
     await expect(page.getByTestId("subagent-conversation-dialog")).toContainText("Orphan research result");
+    await page.keyboard.press("Escape");
+    const runningId = "sub-aaaaaaaa-44444444-4444-4444-8444-444444444444";
+    writeFileSync(join(childStore, `${runningId}.jsonl`), `${JSON.stringify({ role: "user", content: "Research in progress" })}\n`);
+    writeFileSync(join(childStore, `${runningId}.meta.json`), JSON.stringify({ sessionKind: "subagent", originSessionId: parentId, subAgentTitle: "Running research", spawnId: "running-spawn" }));
+    const events: AgentSpawnEvent[] = [
+      { type: "start", spawnId: "running-spawn", parentSessionId: parentId, title: "Running research", taskState: "TASK_STATE_SUBMITTED" },
+      { type: "activity", spawnId: "running-spawn", parentSessionId: parentId, childSessionId: runningId, taskState: "TASK_STATE_WORKING" },
+    ];
+    expect(events[0]).not.toHaveProperty("childSessionId");
+    await ctx.app.evaluate(({ BrowserWindow }, payload) => {
+      const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
+      if (!window) throw new Error("missing-main-window");
+      for (const event of payload.events) window.webContents.send(payload.channel, event);
+    }, { channel: CHANNELS.agentSpawn.event, events });
+    const running = page.getByTestId(`sidebar-row-session-${runningId}`);
+    await expect(running).toBeVisible();
+    await expect(running).toHaveAttribute("data-responding", "true");
+    await expect(running).toHaveAttribute("aria-level", String(Number(await parent.getAttribute("aria-level")) + 1));
+
   } finally {
     await teardownSeededElectron(ctx, { terminate: true });
   }

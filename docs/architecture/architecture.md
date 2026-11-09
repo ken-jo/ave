@@ -1360,9 +1360,13 @@ Each store receives the same bounded row limit and time cursor. The federated
 rows are sorted by modification time and id, then limited again. The last row
 in `sessions` remains the continuation cursor. For each page child whose parent
 is absent, a bounded direct id lookup returns a same-project parent in the
-separate `parents` collection. Parent rows do not affect the page cursor. The
-renderer merges primary and parent rows by id across pages. A single-row `id`
+separate `parents` collection. The renderer merges primary and parent rows by id across pages. A single-row `id`
 query uses the same row serializer and reads only the addressed transcript.
+When activity first names an unknown child id, the renderer fetches that one row
+and its parent context. Concurrent reads for that id are deduplicated. Later
+activity updates the listed running state, and completed state takes precedence
+over an older in-flight response. Running child rows and their parent context
+survive a first-page refresh while their turn continues.
 
 | Family | Store | Row | Opens |
 | --- | --- | --- | --- |

@@ -56,29 +56,77 @@ function mergeSessionRows(current: readonly SessionSummary[], incoming: readonly
 
 export function useSessionList(api: AveApi) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const rowsRef = useRef<SessionSummary[]>([]);
+  const runningById = useRef(new Map<string, boolean>());
+  const inFlightIds = useRef(new Set<string>());
+  const lifetime = useRef(0);
+  const pageRequest = useRef(0);
+
+  const publishRows = useCallback((rows: SessionSummary[]) => {
+    const next = rows.map((row) => {
+      const running = runningById.current.get(row.id);
+      return running === undefined || row.running === running ? row : { ...row, running };
+    });
+    rowsRef.current = next;
+    setSessions(next);
+  }, []);
 
   const loadSessionsPage = useCallback(async (cursor?: { before: string; beforeId: string }) => {
+    const request = ++pageRequest.current;
+    const epoch = lifetime.current;
     try {
-      // Request all session families with the widest allowed page so routine and side-chat rows do not crowd out conversations.
-      const r = await api.chatSessions({
+      const result = await api.chatSessions({
         families: [...SESSION_FAMILIES],
         limit: SESSION_LIST_MAX_LIMIT,
         ...cursor,
       });
-      setSessions((current) => mergeSessionRows(cursor ? current : [], [...(r.parents ?? []), ...r.sessions]));
+      if (epoch !== lifetime.current || request !== pageRequest.current) return;
+      const activeRows = rowsRef.current.filter((row) => runningById.current.get(row.id) === true);
+      const activeParents = new Set(activeRows.flatMap((row) => row.originSessionId ? [row.originSessionId] : []));
+      const retained = rowsRef.current.filter((row) => runningById.current.get(row.id) === true || activeParents.has(row.id));
+      publishRows(mergeSessionRows(cursor ? rowsRef.current : retained, [...(result.parents ?? []), ...result.sessions]));
     } catch { /* ignore */ }
-  }, [api]);
+  }, [api, publishRows]);
 
   const refreshSessions = useCallback(() => loadSessionsPage(), [loadSessionsPage]);
 
-  useEffect(() => api.onAgentSpawnEvent?.((event) => {
-    if (!event.childSessionId) return;
-    if (event.type !== "activity") void refreshSessions();
-    const running = (event.type === "start" || event.type === "activity") && (event.status === undefined || event.status === "running");
-    setSessions((current) => current.some((session) => session.id === event.childSessionId && session.running !== running)
-      ? current.map((session) => session.id === event.childSessionId ? { ...session, running } : session)
-      : current);
-  }), [api, refreshSessions]);
+  const readMissingChild = useCallback(async (id: string) => {
+    if (inFlightIds.current.has(id)) return;
+    inFlightIds.current.add(id);
+    const epoch = lifetime.current;
+    try {
+      const result = await api.chatSessions({ id, families: [...SESSION_FAMILIES] });
+      if (epoch !== lifetime.current) return;
+      const row = result.sessions.find((candidate) => candidate.id === id);
+      if (row) publishRows(mergeSessionRows(rowsRef.current, [...(result.parents ?? []), row]));
+    } catch { /* A later activity can retry a failed point read. */ }
+    finally {
+      if (epoch === lifetime.current) inFlightIds.current.delete(id);
+    }
+  }, [api, publishRows]);
+
+  useEffect(() => {
+    const epoch = lifetime.current;
+    const unsubscribe = api.onAgentSpawnEvent?.((event) => {
+      if (epoch !== lifetime.current || !event.childSessionId) return;
+      const id = event.childSessionId;
+      const running = (event.type === "start" || event.type === "activity") && (event.status === undefined || event.status === "running");
+      runningById.current.set(id, running);
+      const row = rowsRef.current.find((candidate) => candidate.id === id);
+      if (row) {
+        if (row.running !== running) publishRows(rowsRef.current);
+      } else if (event.type === "activity") {
+        void readMissingChild(id);
+      }
+      if (event.type !== "activity") void refreshSessions();
+    });
+    return () => {
+      lifetime.current += 1;
+      inFlightIds.current.clear();
+      runningById.current.clear();
+      unsubscribe?.();
+    };
+  }, [api, publishRows, readMissingChild, refreshSessions]);
 
   return { sessions, refreshSessions, loadSessionsPage };
 }
