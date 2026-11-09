@@ -13,7 +13,7 @@ import { AgentBrowserPipLayer } from "../AgentBrowserPipLayer.js";
 import { connectBrowserObservations } from "../browser-observation-bridge.js";
 import { registerBrowserTabHost } from "../agent-browser-bridge.js";
 import { clampBrowserPipPosition } from "../browser-pip-position.js";
-import { clearWebSurfaceSlot, isSurfaceDragActive, noteWebSurfaceFavicon, publishLiveWebTabs,
+import { clearWebSurfaceSlot, getWebSurfaceOccluders, isSurfaceDragActive, noteWebSurfaceFavicon, publishLiveWebTabs,
   requestWebSurfaceLayout, setWebSurfaceSlot, setWebSurfaceUrl, withdrawLiveWebTabs } from "../web-surfaces.js";
 
 const TAB = "browser:pip-1";
@@ -206,10 +206,12 @@ describe("window agent browser previews", () => {
     expect(screen.queryByTestId("browser-observation-preview")).toBeNull();
     const summary = screen.getByTestId("agent-browser-pip-overflow");
     expect(summary).toHaveTextContent("+2");
+    expect(getWebSurfaceOccluders().has(summary)).toBe(true);
     expect(summary).toHaveAccessibleName(t("agentBrowser.openHiddenPreviews", { count: 2 }));
     fireEvent.click(summary); expect(open).toHaveBeenCalledWith(SECOND_TAB);
     act(() => { region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 20); requestWebSurfaceLayout(); });
     expect(cards()).toHaveLength(0); expect(screen.queryByTestId("agent-browser-pip-overflow")).toBeNull();
+    expect(getWebSurfaceOccluders().has(summary)).toBe(false);
   });
   it("releases the shared drag state when a dragged card disappears", () => {
     show(); activate();

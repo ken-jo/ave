@@ -228,6 +228,8 @@ export function AgentBrowserPipLayer({ api, onOpen }: { api: AveApi; onOpen: (ta
     { ...measurements, height: measurements.bounds.height }) : { previewCount: 0, chipCount: 0, summaryCount: 0 };
   const shownCount = plan.previewCount + plan.chipCount;
   const overflow = plan.summaryCount > 0 ? candidates[shownCount] : undefined;
+  // Packing can move the summary without resizing it.
+  const setOverflowOccluder = useWebSurfaceOccluder(JSON.stringify([measurements, plan]));
   return <div ref={layerRef} data-testid="agent-browser-pip-layer"
     className="pointer-events-none fixed z-30 flex flex-col-reverse items-end gap-2 overflow-hidden p-8 pb-12"
     style={{ left: area.left, top: area.top, width: area.width, height: area.height }}>
@@ -240,7 +242,7 @@ export function AgentBrowserPipLayer({ api, onOpen }: { api: AveApi; onOpen: (ta
     {measurements ? candidates.map((candidate, index) => <AgentBrowserPipCard key={candidate.tabId} {...candidate}
       onOpen={onOpen} onHide={handleHide} measurements={measurements}
       mode={index < plan.previewCount ? "preview" : index < shownCount ? "chip" : "hidden"} />) : null}
-    {overflow && measurements ? <button type="button" data-testid="agent-browser-pip-overflow"
+    {overflow && measurements ? <button ref={setOverflowOccluder} type="button" data-testid="agent-browser-pip-overflow"
       className={CARD_CLASS} style={{ width: measurements.width }}
       aria-label={t("agentBrowser.openHiddenPreviews", { count: plan.summaryCount })} onClick={() => onOpen(overflow.tabId)}>
       <span className={HEADER_CLASS}>+{plan.summaryCount}</span>

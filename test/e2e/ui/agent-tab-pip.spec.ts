@@ -145,7 +145,7 @@ for (const [width, height] of [[1243, 800], [1243, 600], [360, 800], [360, 600]]
           expect(box.left).toBeGreaterThanOrEqual(body.x); expect(box.right).toBeLessThanOrEqual(body.x + body.width);
         }
         expect(await page.getByTestId("agent-browser-pip-layer").evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
-        await page.mouse.move(width / 2, height / 2);
+        await page.mouse.move(0, 0);
         await expect(page.getByRole("tooltip")).toHaveCount(0);
       };
       const firstId = await cards.first().getAttribute("data-tab-id");
@@ -239,3 +239,122 @@ for (const [width, height] of [[1243, 800], [1243, 600], [360, 800], [360, 600]]
     }
   });
 }
+
+test("keeps the overflow chip above a native browser guest and opens its first hidden tab", async () => {
+  test.setTimeout(120_000);
+  const model = "pip-overflow-fixture";
+  let stage = 0;
+  let baseUrl = "";
+  let finish: (() => void) | undefined;
+  const failures: string[] = [];
+  const send = (response: ServerResponse, delta: Record<string, unknown>, reason: string | null) => {
+    response.write(`data: ${JSON.stringify({ id: "overflow", object: "chat.completion.chunk", created: 0, model,
+      choices: [{ index: 0, delta, finish_reason: reason }] })}\n\n`);
+  };
+  const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/v1/models") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ object: "list", data: [{ id: model, object: "model" }] })); return;
+    }
+    if (request.method === "GET" && request.url?.startsWith("/page-")) {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(`<!doctype html><title>Overflow ${request.url}</title><body style="background:#edf3ff;font:24px system-ui"><h1>${request.url}</h1></body>`); return;
+    }
+    if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { messages?: { role: string; content: unknown }[] };
+    const result = body.messages?.findLast((message) => message.role === "tool")?.content;
+    if (/"error"\s*:/.test(typeof result === "string" ? result : JSON.stringify(result ?? ""))) failures.push(String(result));
+    response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+    if (++stage <= 12) {
+      send(response, { role: "assistant", tool_calls: [{ index: 0, id: `overflow-${stage}`, type: "function",
+        function: { name: "browser_tab_new", arguments: JSON.stringify({ url: `${baseUrl}/page-${stage}` }) } }] }, null);
+      send(response, {}, "tool_calls"); response.end("data: [DONE]\n\n"); return;
+    }
+    finish = () => { send(response, { role: "assistant", content: "Browser work complete." }, null); send(response, {}, "stop"); response.end("data: [DONE]\n\n"); };
+    response.flushHeaders();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Fixture address missing");
+  baseUrl = `http://127.0.0.1:${address.port}`;
+  const settings = buildLlmSettings("openai-compatible", model);
+  (settings.llm as { vendors: Record<string, { baseUrl: string }> }).vendors["openai-compatible"].baseUrl = `${baseUrl}/v1`;
+  let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
+  let approving = true;
+  let approvals: Promise<void> | undefined;
+  try {
+    ctx = await launchSeededElectron({ sessionTitle: "Browser overflow", settings, historyRows: [] });
+    await setWindowSize(ctx.app, 1243, 640);
+    const page = ctx.page;
+    await page.evaluate(async () => {
+      await window.aveApi.setApiKey("openai-compatible", "sk-e2e-loopback-overflow");
+      const result = await window.ave.permission.setMode("strict");
+      if (!result.ok) throw new Error("Strict mode unavailable");
+    });
+    const pane = page.getByTestId("pane-cell:main");
+    const composer = pane.getByTestId("composer-textarea");
+    await composer.fill("Open twelve local pages."); await composer.press("Enter");
+    approvals = (async () => {
+      while (approving) {
+        const site = page.getByTestId("browser-site-approval-card").getByRole("button", { name: /^(Allow this site|이 사이트만 허용)$/ }).first();
+        if (await site.isVisible()) await site.click();
+        const approval = page.getByTestId(TEST_IDS.approvalDock).getByTestId(TEST_IDS.approveButton).first();
+        if (await approval.isVisible()) await approval.click();
+        await page.waitForTimeout(100);
+      }
+    })();
+    await expect.poll(() => finish !== undefined, { timeout: 60_000 }).toBe(true);
+    expect(failures).toEqual([]);
+    const created = await page.evaluate(async (url) => (await window.aveApi.browserTabs?.getState())?.tabs
+      .filter((tab) => tab.url.startsWith(url)).map((tab) => ({ id: tab.rendererTabId, page: Number(tab.url.split("page-")[1]) })) ?? [], baseUrl);
+    expect(created).toHaveLength(12);
+    const movedId = created.find((tab) => tab.page === 12)?.id;
+    if (!movedId) throw new Error("Main browser target missing");
+    await pane.getByTestId(TEST_IDS.panePanelToggle).click();
+    await pane.getByTestId("pane").evaluate((element, id) => {
+      const rect = element.getBoundingClientRect(); const dataTransfer = new DataTransfer();
+      dataTransfer.setData("application/x-ave-surface", JSON.stringify({ tabId: id, kind: "browser", from: { side: "main" } }));
+      element.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer, clientX: rect.right - 2, clientY: rect.top + rect.height / 2 }));
+    }, movedId);
+    const mainGuest = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${movedId}"]`);
+    await expect(mainGuest).toHaveCSS("opacity", "1");
+    const overflow = page.getByTestId("agent-browser-pip-overflow");
+    const assertHitArea = async () => {
+      await expect(overflow).toBeVisible();
+      await expect.poll(() => overflow.evaluate((button) => {
+        const r = button.getBoundingClientRect();
+        const points = [3, r.height / 2, r.height - 3].flatMap((y) => [8, r.width / 2, r.width - 8].map((x) => [r.left + x, r.top + y] as const));
+        return points.every(([x, y]) => button.contains(document.elementFromPoint(x, y)));
+      })).toBe(true);
+    };
+    await assertHitArea();
+    const guestBounds = await mainGuest.boundingBox(); const chipBounds = await overflow.boundingBox();
+    if (!guestBounds || !chipBounds) throw new Error("Overflow geometry missing");
+    expect(chipBounds.y + chipBounds.height).toBeGreaterThan(guestBounds.y);
+    await page.screenshot({ path: test.info().outputPath("agent-tab-pip-overflow-1243x640.png") });
+    await setWindowSize(ctx.app, 1243, 720); await assertHitArea();
+    await setWindowSize(ctx.app, 1243, 640); await assertHitArea();
+    const shown = new Set(await page.getByTestId("agent-browser-pip-card").evaluateAll((cards) => cards.map((card) => card.getAttribute("data-tab-id"))));
+    const visible = new Set(await page.getByTestId("web-surface-frame").evaluateAll((frames) => frames.filter((frame) => {
+      const style = getComputedStyle(frame); return style.visibility === "visible" && style.opacity === "1";
+    }).map((frame) => frame.getAttribute("data-tab-id"))));
+    const hidden = created.sort((a, b) => b.page - a.page).filter((tab) => !shown.has(tab.id) && !visible.has(tab.id));
+    expect(await overflow.textContent()).toBe(`+${hidden.length}`);
+    const expectedId = hidden[0]?.id;
+    if (!expectedId) throw new Error("First hidden tab missing");
+    const box = await overflow.boundingBox(); if (!box) throw new Error("Overflow bounds missing");
+    const point = { x: box.x + box.width / 2, y: box.y + box.height - 3 };
+    const underlying = await mainGuest.boundingBox(); if (!underlying) throw new Error("Native guest bounds missing");
+    expect(point.x).toBeGreaterThan(underlying.x); expect(point.x).toBeLessThan(underlying.x + underlying.width);
+    expect(point.y).toBeGreaterThan(underlying.y); expect(point.y).toBeLessThan(underlying.y + underlying.height);
+    await page.mouse.click(point.x, point.y);
+    await expect(page.locator(`[data-testid="web-surface-frame"][data-tab-id="${expectedId}"]`)).toHaveCSS("opacity", "1");
+  } finally {
+    approving = false; finish?.();
+    if (approvals) await approvals.catch(() => {});
+    if (ctx) await teardownSeededElectron(ctx);
+    server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
