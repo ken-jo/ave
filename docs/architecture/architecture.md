@@ -875,6 +875,11 @@ Workspace roots follow one host-owned lifecycle:
    and abort share the project selector. A legitimately unbound side chat or
    standalone routine belongs to no project and continues. An unresolvable
    non-null project root or inconsistent binding is an internal contract error.
+   Turn admission exposes its cancellation controller before provider readiness.
+   Removing the owning project revokes that session's work even when idle;
+   admitted turns and later submissions are cancelled until an explicit session
+   transition establishes a new work scope. Rebinding execution directories to
+   the default project does not authorize the removed project's pending work.
 4. Preserve conversation transcripts during the mandatory pre-removal metadata
    detachment. Under a metadata lock, clear only `projectRoot` and `projectName`
    from matching sessions, retain every other metadata field and the JSONL

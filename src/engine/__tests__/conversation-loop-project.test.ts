@@ -392,6 +392,49 @@ describe("ConversationLoop project identity", () => {
     expect(loop.revokeWorkspaceRoot("/workspace/alpha").turnDirectoriesRemoved).toBe(1);
   });
 
+  it.each(["initialization", "refresh"] as const)("cancels project work admitted while provider %s is pending", async (phase) => {
+    const root = "/workspace/alpha";
+    const authorizedRoots = new Set([root]);
+    const { loop } = makeRevocableProjectLoop("/workspace/default", authorizedRoots);
+    loop.initializeConversation("main", { projectRoot: root });
+    const ready = deferred<void>();
+    const streamTurn = vi.fn(async function* () {
+      yield { type: "text_delta" as const, text: "must not execute" };
+      yield { type: "message_complete" as const, stopReason: "end_turn" as const };
+    });
+    const provider: LLMProvider = { vendor: "openai", streamTurn };
+    loop.provider = phase === "initialization" ? provider : null;
+    const waiting = phase === "initialization"
+      ? vi.spyOn(loop, "whenProviderReady").mockImplementation(() => ready.promise)
+      : vi.spyOn(loop, "refreshProvider").mockImplementation(async () => { await ready.promise; loop.provider = provider; });
+    const pending = vi.spyOn(loop, "providerPending", "get").mockReturnValue(phase === "initialization");
+    const turn = loop.runTurn("admitted in alpha", undefined, undefined, userKeyboardTurn());
+    try {
+      expect(waiting).toHaveBeenCalledOnce();
+      const count = loop.countTurnsAbortedByWorkspaceRootRemoval(root);
+      authorizedRoots.delete(root);
+      loop.revokeWorkspaceRoot(root);
+      ready.resolve();
+      expect((await turn).stopReason).toBe("interrupted");
+      expect(streamTurn).not.toHaveBeenCalled();
+      expect(count).toBe(1);
+      expect(loop.hasActiveTurn()).toBe(false);
+      expect((await loop.runTurn("old queued work", undefined, undefined, { inputOrigin: "queue-auto" })).stopReason)
+        .toBe("interrupted");
+      expect(streamTurn).not.toHaveBeenCalled();
+      await loop.newConversation("main");
+      loop.provider = provider;
+      expect((await loop.runTurn("fresh work", undefined, undefined, userKeyboardTurn())).stopReason)
+        .toBe("end_turn");
+      expect(streamTurn).toHaveBeenCalledOnce();
+    } finally {
+      ready.resolve();
+      await turn;
+      pending.mockRestore();
+      waiting.mockRestore();
+    }
+  });
+
   it.each(["main", "routine"] as const)("leaves a legitimately unbound %s turn running during project removal", async (kind) => {
     const { loop } = makeProjectLoop("/workspace/default");
     loop.initializeConversation(kind);

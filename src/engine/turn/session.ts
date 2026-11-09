@@ -129,7 +129,10 @@ export function workspaceRootRemovalAffectsTurn(
   self: ConversationLoop,
   removedRoot: string,
 ): boolean {
-  if (!self.hasActiveTurn()) return false;
+  return self.hasActiveTurn() && workspaceRootRemovalOwnsSession(self, removedRoot);
+}
+
+function workspaceRootRemovalOwnsSession(self: ConversationLoop, removedRoot: string): boolean {
   if (self.sessionProjectRoot === null) {
     if (self.sessionProjectName !== null || self.sessionProjectIsDefault) {
       throw new Error("Active turn project binding is inconsistent");
@@ -168,8 +171,8 @@ export function revokeWorkspaceRoot(
     normalizedRoot,
     options.preserveRoots ?? [],
   );
-  if (workspaceRootRemovalAffectsTurn(self, removedRoot)) {
-    self.abortCurrentTurn(new Error("workspace-removal"));
+  if (workspaceRootRemovalOwnsSession(self, removedRoot)) {
+    self.revokeProjectWork();
   }
 
   const retainedSessionDirectories = previousSessionDirectories.filter(
