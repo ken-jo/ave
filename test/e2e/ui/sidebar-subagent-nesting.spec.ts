@@ -1,7 +1,9 @@
 import type { AgentSpawnEvent } from "../../../src/shared/subagent-events.js";
-import { CHANNELS } from "../../../src/contract/app-contract.js";
+import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { createServer, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { test, expect } from "@playwright/test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildLlmSettings, builtMainExists, launchSeededElectron, setWindowSize, teardownSeededElectron } from "./seeded-electron.js";
@@ -13,14 +15,60 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
   const childId = "sub-aaaaaaaa-11111111-1111-4111-8111-111111111111";
   const orphanId = "sub-bbbbbbbb-22222222-2222-4222-8222-222222222222";
   const crossProjectId = "sub-cccccccc-33333333-3333-4333-8333-333333333333";
-  const ctx = await launchSeededElectron({
-    homePrefix: join(homedir(), "sidebar-subagent-e2e-"),
-    sessionId: parentId,
-    sessionTitle: "Parent conversation",
-    historyRows: [{ role: "user", content: "Delegate research" }],
-    settings: { ...buildLlmSettings(), system: { sidebarState: "expanded" } },
+  const model = "sidebar-nesting-model";
+  const childInstruction = "hold-sidebar-child-until-layout-checked";
+  let spawnIssued = false;
+  let heldChild: ServerResponse | undefined;
+  const send = (response: ServerResponse, delta: Record<string, unknown>, finish: string | null) => {
+    response.write(`data: ${JSON.stringify({ id: "sidebar-nesting", object: "chat.completion.chunk", created: 0, model,
+      choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`);
+  };
+  const finish = (response: ServerResponse) => {
+    send(response, { role: "assistant", content: "Running research completed." }, null);
+    send(response, {}, "stop");
+    response.end("data: [DONE]\n\n");
+  };
+  const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/v1/models") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ object: "list", data: [{ id: model, object: "model" }] }));
+      return;
+    }
+    if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString()) as { messages: { role: string; content?: unknown }[] };
+    response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+    if (body.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes(childInstruction))) {
+      heldChild = response;
+      response.flushHeaders();
+      return;
+    }
+    if (!spawnIssued && body.messages.some((message) => message.role === "user" && JSON.stringify(message.content).includes("Start one running research child."))) {
+      spawnIssued = true;
+      send(response, { role: "assistant", tool_calls: [{ index: 0, id: "sidebar-running-research", type: "function", function: {
+        name: "agent_spawn", arguments: JSON.stringify({ title: "Running research", instructions: childInstruction }),
+      } }] }, null);
+      send(response, {}, "tool_calls");
+      response.end("data: [DONE]\n\n");
+      return;
+    }
+    finish(response);
   });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const settings = buildLlmSettings("openai-compatible", model);
+  (settings.llm as { vendors: Record<string, { baseUrl?: string }> }).vendors["openai-compatible"].baseUrl =
+    `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+  settings.system = { sidebarState: "expanded" };
+  let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
   try {
+    ctx = await launchSeededElectron({
+      homePrefix: join(homedir(), "sidebar-subagent-e2e-"),
+      sessionId: parentId,
+      sessionTitle: "Parent conversation",
+      historyRows: [{ role: "user", content: "Delegate research" }],
+      settings,
+    });
     const childStore = join(ctx.aveHome, "subagent", "sessions");
     mkdirSync(childStore, { recursive: true });
     for (const [id, originSessionId, title, projectRoot] of [
@@ -96,25 +144,77 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
     await page.getByTestId(`sidebar-session-${orphanId}`).click();
     await expect(page.getByTestId("subagent-conversation-dialog")).toContainText("Orphan research result");
     await page.keyboard.press("Escape");
-    const runningId = "sub-aaaaaaaa-44444444-4444-4444-8444-444444444444";
-    writeFileSync(join(childStore, `${runningId}.jsonl`), `${JSON.stringify({ role: "user", content: "Research in progress" })}\n`);
-    writeFileSync(join(childStore, `${runningId}.meta.json`), JSON.stringify({ sessionKind: "subagent", originSessionId: parentId, subAgentTitle: "Running research", spawnId: "running-spawn" }));
-    const events: AgentSpawnEvent[] = [
-      { type: "start", spawnId: "running-spawn", parentSessionId: parentId, title: "Running research", taskState: "TASK_STATE_SUBMITTED" },
-      { type: "activity", spawnId: "running-spawn", parentSessionId: parentId, childSessionId: runningId, taskState: "TASK_STATE_WORKING", activity: { sessionId: runningId, sequence: 1, running: true, attention: false } },
-    ];
-    expect(events[0]).not.toHaveProperty("childSessionId");
-    await ctx.app.evaluate(({ BrowserWindow }, payload) => {
-      const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-      if (!window) throw new Error("missing-main-window");
-      for (const event of payload.events) window.webContents.send(payload.channel, event);
-    }, { channel: CHANNELS.agentSpawn.event, events });
+    await page.evaluate(async () => {
+      await window.aveApi.setApiKey("openai-compatible", "sk-e2e-loopback-sidebar");
+      const mode = await window.ave.permission.setMode("strict");
+      if (!mode.ok) throw new Error("Could not select strict tool approval");
+      const state = window as unknown as { sidebarSpawnEvents: AgentSpawnEvent[] };
+      state.sidebarSpawnEvents = [];
+      window.aveApi.onAgentSpawnEvent((event) => state.sidebarSpawnEvents.push(event));
+    });
+    const composer = page.locator('[data-composer-surface="main"] [data-testid="composer-textarea"]');
+    const beforeSpawnFiles = new Set(readdirSync(childStore).filter((file) => file.endsWith(".jsonl")));
+    await composer.fill("Start one running research child.");
+    await composer.press("Enter");
+    const approval = page.getByTestId(TEST_IDS.approvalDock).first();
+    await expect(approval.getByTestId(TEST_IDS.approveButton)).toBeVisible();
+    await approval.getByTestId(TEST_IDS.approveButton).click();
+    await expect.poll(() => heldChild !== undefined).toBe(true);
+    const createdFiles = readdirSync(childStore).filter((file) => file.endsWith(".jsonl") && !beforeSpawnFiles.has(file));
+    expect(createdFiles).toHaveLength(1);
+    const runningId = createdFiles[0]!.slice(0, -".jsonl".length);
+    expect(JSON.parse(readFileSync(join(childStore, `${runningId}.meta.json`), "utf8"))).toMatchObject({
+      sessionKind: "subagent", originSessionId: parentId, subAgentTitle: "Running research",
+    });
+    const active = await page.evaluate(async (id) => {
+      const result = await window.aveApi.chatSessions({ families: ["main", "subagent"], limit: 100,
+        sidebar: { rootLimit: 100, expandedParentIds: [id] } });
+      return result.sidebar!.rows.filter((row) => row.running && row.family === "subagent");
+    }, parentId);
+    expect(active.map((row) => row.id)).toEqual([runningId]);
+    const start = await page.evaluate(() => (window as unknown as { sidebarSpawnEvents: AgentSpawnEvent[] }).sidebarSpawnEvents.find((event) => event.type === "start"));
+    expect(start).toMatchObject({ parentSessionId: parentId, title: "Running research" });
+    expect(start).not.toHaveProperty("childSessionId");
     const running = page.getByTestId(`sidebar-row-session-${runningId}`);
     await expect(running).toBeVisible();
     await expect(running).toHaveAttribute("data-responding", "true");
     await expect(running).toHaveAttribute("aria-level", String(Number(await parent.getAttribute("aria-level")) + 1));
+    await page.screenshot({ path: testInfo.outputPath("nesting-running.png") });
+    finish(heldChild!);
+    heldChild = undefined;
+    await expect(running).not.toHaveAttribute("data-responding");
 
+    const collapsedParentId = "e3000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
+    const offPageChildId = "sub-aaaaaaaa-55555555-5555-4555-8555-555555555555";
+    const mainStore = join(ctx.aveHome, "sessions");
+    for (let index = 0; index < 100; index += 1) {
+      const id = `${index.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`;
+      const path = join(mainStore, `${id}.jsonl`);
+      writeFileSync(path, `${JSON.stringify({ role: "user", content: `Recent history ${index}` })}\n`);
+      utimesSync(path, new Date("2020-01-01"), new Date("2020-01-01"));
+    }
+    writeFileSync(join(mainStore, `${collapsedParentId}.jsonl`), `${JSON.stringify({ role: "user", content: "Older delegated work" })}\n`);
+    writeFileSync(join(mainStore, `${collapsedParentId}.meta.json`), JSON.stringify({ title: "Collapsed parent" }));
+    const offPagePath = join(childStore, `${offPageChildId}.jsonl`);
+    writeFileSync(offPagePath, `${JSON.stringify({ role: "assistant", content: "Off-page child result" })}\n`);
+    writeFileSync(join(childStore, `${offPageChildId}.meta.json`), JSON.stringify({ sessionKind: "subagent", originSessionId: collapsedParentId, subAgentTitle: "Off-page child", spawnId: offPageChildId }));
+    utimesSync(offPagePath, new Date("2000-01-01"), new Date("2000-01-01"));
+    const initialPage = await page.evaluate(() => window.aveApi.chatSessions({ families: ["main", "subagent"], limit: 100 }));
+    expect(initialPage.sessions).toHaveLength(100);
+    expect(initialPage.sessions.map((row) => row.id)).not.toContain(offPageChildId);
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    const collapsedParent = page.getByTestId(`sidebar-row-session-${collapsedParentId}`);
+    const offPageChild = page.getByTestId(`sidebar-row-session-${offPageChildId}`);
+    await expect(collapsedParent).toHaveAttribute("aria-expanded", "false");
+    await expect(offPageChild).toHaveCount(0);
+    await page.getByTestId(`sidebar-session-toggle-${collapsedParentId}`).click();
+    await expect(offPageChild).toBeVisible();
+    await expect(offPageChild).toHaveAttribute("aria-level", String(Number(await collapsedParent.getAttribute("aria-level")) + 1));
+    await page.screenshot({ path: testInfo.outputPath("nesting-expanded-off-page.png") });
   } finally {
-    await teardownSeededElectron(ctx, { terminate: true });
+    heldChild?.destroy();
+    if (ctx) await teardownSeededElectron(ctx, { terminate: true });
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
