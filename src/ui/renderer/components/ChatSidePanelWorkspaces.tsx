@@ -18,7 +18,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/
 import { useTranslation } from "../../../i18n/react.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
-import { useGuestNavigation, useWebSurfaceGuest } from "../hooks/use-browser-navigation.js";
+import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../hooks/use-browser-navigation.js";
 import type { AveApi } from "../types.js";
 import { type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
@@ -1000,7 +1000,7 @@ export function BrowserWorkspace({
   composerGroupId?: string | undefined;
 }) {
   const { t } = useTranslation();
-  const guest = useWebSurfaceGuest(tabId);
+  const guest = useBrowserSurface(tabId);
   const navigation = useGuestNavigation(guest);
   const [addressDraft, setAddressDraft] = useState("");
   const [addressError, setAddressError] = useState<string | null>(null);
@@ -1097,17 +1097,17 @@ export function BrowserWorkspace({
       >
         <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
           aria-label={t("mainPanels.back")} disabled={!navigation.canGoBack}
-          onClick={() => navigate(() => guest?.goBack())} data-testid="browser-back">
+          onClick={() => navigate(() => navigateBrowserSurface(guest, "back"))} data-testid="browser-back">
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
         </Button>
         <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
           aria-label={t("mainPanels.forward")} disabled={!navigation.canGoForward}
-          onClick={() => navigate(() => guest?.goForward())} data-testid="browser-forward">
+          onClick={() => navigate(() => navigateBrowserSurface(guest, "forward"))} data-testid="browser-forward">
           <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
         </Button>
         <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"
           aria-label={t("mainPanels.reload")} disabled={!guest || !navigation.url}
-          onClick={() => navigate(() => guest?.reload())} data-testid="browser-reload">
+          onClick={() => navigate(() => navigateBrowserSurface(guest, "reload"))} data-testid="browser-reload">
           <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />
         </Button>
         <Globe className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />

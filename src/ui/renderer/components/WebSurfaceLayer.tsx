@@ -6,6 +6,11 @@ import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { bindGuestToTab, reportGuestParking } from "../preview/agent-browser-bridge.js";
+import type { BrowserNativeSurfaceState } from "../../../shared/browser-native-surface.js";
+import type { BrowserTabsApi } from "../../../shared/browser-surface.js";
+import { useSessionTabBindings } from "../preview/session-browser-tabs.js";
+import { commandNativeBrowserSurface, connectNativeBrowserSurfaces, createNativeBrowserSurface,
+  requestNativeBrowserSurface } from "../preview/native-browser-surfaces.js";
 import type { AveApi } from "../types.js";
 import {
   getWebSurfaceOccluders,
@@ -26,6 +31,8 @@ import {
   subscribeWebSurfaceLayout,
   subscribeWebSurfaces,
   requestWebSurfaceLayout,
+  setNativeBrowserTabIds,
+  setNativeWebSurfaceElement,
   type WebSurface,
 } from "../preview/web-surfaces.js";
 
@@ -141,6 +148,17 @@ interface Placed {
 
 const placed = new Map<string, Placed>();
 
+interface NativePlacement {
+  frame: HTMLElement;
+  viewport: HTMLElement;
+  api: BrowserTabsApi;
+  surface: BrowserNativeSurfaceState;
+  sequence: number;
+  requestedKey: string;
+  parked: boolean;
+}
+const nativePlaced = new Map<string, NativePlacement>();
+
 let dragApplied = false;
 
 function reportPlacementParking(tabId: string, entry: Placed, parked: boolean): void {
@@ -229,6 +247,46 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
     }
     if (!parked) reportPlacementParking(tabId, entry, false);
     entry.key = key;
+  }
+  for (const [tabId, entry] of nativePlaced) {
+    const slot = getWebSurfaceSlot(tabId);
+    const boxes = slot ? visibleBox(slot) : null;
+    const key = boxes && !drag ? JSON.stringify(boxes) : "parked";
+    if (boxes && !drag) visibleCount++;
+    if (key === entry.requestedKey) continue;
+    entry.requestedKey = key;
+    const sequence = ++entry.sequence;
+    moved++;
+    if (boxes && !drag) {
+      const { slot: viewport, visible } = boxes;
+      Object.assign(entry.frame.style, {
+        left: `${visible.left}px`, top: `${visible.top}px`, width: `${visible.right - visible.left}px`,
+        height: `${visible.bottom - visible.top}px`, visibility: "visible", pointerEvents: "auto",
+      });
+      Object.assign(entry.viewport.style, {
+        left: `${viewport.left - visible.left}px`, top: `${viewport.top - visible.top}px`,
+        width: `${viewport.right - viewport.left}px`, height: `${viewport.bottom - viewport.top}px`,
+      });
+    }
+    void requestNativeBrowserSurface(entry.api, {
+      action: "present", tabId, webContentsId: entry.surface.webContentsId, epoch: entry.surface.epoch, sequence,
+      bounds: boxes && !drag ? {
+        x: boxes.slot.left, y: boxes.slot.top, width: boxes.slot.right - boxes.slot.left, height: boxes.slot.bottom - boxes.slot.top,
+      } : null,
+      ...(boxes && !drag ? {
+        clipBounds: { x: boxes.visible.left, y: boxes.visible.top,
+          width: boxes.visible.right - boxes.visible.left, height: boxes.visible.bottom - boxes.visible.top },
+        borderRadius: Number.parseFloat(boxes.radius) || 0,
+      } : {}),
+    }).then((accepted) => {
+      if (nativePlaced.get(tabId) !== entry || entry.sequence !== sequence) return;
+      if (!accepted) { entry.requestedKey = ""; return; }
+      entry.parked = !boxes || drag;
+      if (entry.parked) {
+        entry.frame.style.visibility = "hidden";
+        entry.frame.style.pointerEvents = "none";
+      }
+    });
   }
   return { visible: visibleCount, moved };
 }
@@ -340,8 +398,73 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
   );
 }
 
+function NativeGuestFrame({ api, surface }: { api: BrowserTabsApi; surface: WebSurface }) {
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [binding, setBinding] = useState<BrowserNativeSurfaceState | null>(null);
+  useEffect(() => {
+    let mounted = true;
+    let placement: NativePlacement | undefined;
+    void createNativeBrowserSurface(api, surface.tabId, surface.bindRequestId).then((acquisition) => {
+      if (!acquisition) return;
+      const { surface: created } = acquisition;
+      if (!mounted) {
+        void requestNativeBrowserSurface(api, { action: "present", tabId: surface.tabId,
+          webContentsId: created.webContentsId, epoch: created.epoch, sequence: 1, bounds: null });
+        return;
+      }
+      const frame = frameRef.current;
+      const viewport = viewportRef.current;
+      if (!frame || !viewport) return;
+      placement = { frame, viewport, api, surface: created, sequence: 0, requestedKey: "", parked: !created.visible };
+      nativePlaced.set(surface.tabId, placement);
+      setBinding(created);
+      if (acquisition.initialNavigation && surface.bindRequestId === undefined && surface.url !== created.url) {
+        void requestNativeBrowserSurface(api, { action: "navigate", tabId: surface.tabId,
+          webContentsId: created.webContentsId, url: surface.url });
+      }
+      requestWebSurfaceLayout();
+    }).catch((error: unknown) => console.warn("Native browser creation failed.", error));
+    return () => {
+      mounted = false;
+      if (placement && nativePlaced.get(surface.tabId) === placement) {
+        nativePlaced.delete(surface.tabId);
+        void requestNativeBrowserSurface(api, { action: "present", tabId: surface.tabId,
+          webContentsId: placement.surface.webContentsId, epoch: placement.surface.epoch,
+          sequence: ++placement.sequence, bounds: null });
+      }
+    };
+  }, [api, surface.tabId, surface.bindRequestId]);
+  const requestedUrl = useRef(surface.url);
+  useEffect(() => {
+    if (!binding || requestedUrl.current === surface.url) return;
+    requestedUrl.current = surface.url;
+    void requestNativeBrowserSurface(api, { action: "navigate", tabId: surface.tabId,
+      webContentsId: binding.webContentsId, url: surface.url });
+  }, [api, binding, surface.tabId, surface.url]);
+  const attach = useCallback((element: HTMLDivElement | null) => {
+    viewportRef.current = element;
+    setNativeWebSurfaceElement(surface.tabId, element);
+  }, [surface.tabId]);
+  return <div ref={frameRef} data-testid="web-surface-frame" data-tab-id={surface.tabId} data-surface-host="native"
+    style={{ position: "fixed", overflow: "hidden", visibility: "hidden", pointerEvents: "none", left: 0, top: 0, width: 0, height: 0 }}>
+    <div ref={attach} tabIndex={0} data-testid="chat-side-panel-browser-native" data-tab-id={surface.tabId}
+      onFocus={() => { void commandNativeBrowserSurface(surface.tabId, "focus"); }}
+      style={{ position: "absolute", width: 1024, height: 768 }} />
+  </div>;
+}
+
 export function WebSurfaceLayer({ api }: { api: AveApi }) {
   const surfaces = useSyncExternalStore(subscribeWebSurfaces, getWebSurfaces);
+  const bindings = useSessionTabBindings(api.browserTabs);
+  useEffect(() => {
+    setNativeBrowserTabIds(bindings?.nativeBrowserTabIds ?? null);
+  }, [bindings]);
+  useEffect(() => {
+    if (!api.browserTabs) return undefined;
+    return connectNativeBrowserSurfaces(api.browserTabs);
+  }, [api.browserTabs]);
+  useEffect(() => () => setNativeBrowserTabIds(null), []);
 
   useEffect(() => {
     const unsubscribe = subscribeWebSurfaceLayout(kick);
@@ -376,7 +499,7 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
     window.addEventListener("drop", onDragEnd, true);
     window.addEventListener("pointermove", onPointerMove, true);
     const idle = window.setInterval(() => {
-      if (placed.size > 0) placeWebSurfaces();
+      if (placed.size > 0 || nativePlaced.size > 0) placeWebSurfaces();
     }, IDLE_CHECK_MS);
     return () => {
       unsubscribe();
@@ -400,7 +523,9 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
       data-testid="web-surface-layer"
       style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: WEB_SURFACE_LAYER_Z }}
     >
-      {surfaces.map((surface) => <GuestFrame key={surface.tabId} api={api} surface={surface} />)}
+      {surfaces.map((surface) => surface.host === "native"
+        ? api.browserTabs ? <NativeGuestFrame key={surface.tabId} api={api.browserTabs} surface={surface} /> : null
+        : surface.host === "webview" ? <GuestFrame key={surface.tabId} api={api} surface={surface} /> : null)}
     </div>,
     document.body,
   );

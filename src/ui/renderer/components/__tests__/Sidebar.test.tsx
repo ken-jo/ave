@@ -454,7 +454,7 @@ describe("Sidebar stacked sections", () => {
     }] };
     let receiveControl!: (state: BrowserTabControlState) => void;
     let receiveBindings!: (state: SessionTabBindingsState) => void;
-    const bindings = { revision: 1, bindings: [
+    const bindings = { revision: 1, nativeBrowserTabIds: [], bindings: [
       { sessionId: "project-chat", browserTabIds: ["browser:project"], terminalTabIds: ["terminal:project"] },
       { sessionId: "missing", browserTabIds: [], terminalTabIds: ["terminal:unknown"] },
     ] };
@@ -495,7 +495,7 @@ describe("Sidebar stacked sections", () => {
       act(() => receiveControl({ revision: 2, tabs: state.tabs.map((tab) => ({ ...tab, owner: { sessionId: "general-chat" } })) }));
       expect(project.contains(getByTestId("sidebar-surface-browser:project"))).toBe(true);
       expect(getByTestId("sidebar-surface-browser:project").querySelector("img")?.getAttribute("src")).toBe(BROWSER_FAVICON_DATA_URL);
-      act(() => receiveBindings({ revision: 2, bindings: [{ sessionId: "general-chat", browserTabIds: [], terminalTabIds: ["terminal:project"] }] }));
+      act(() => receiveBindings({ revision: 2, nativeBrowserTabIds: [], bindings: [{ sessionId: "general-chat", browserTabIds: [], terminalTabIds: ["terminal:project"] }] }));
       expect(project.contains(getByTestId("sidebar-surface-terminal:project"))).toBe(true);
     } finally { act(() => { unregister(); noteWebSurfaceFavicon("browser:project", null); }); restore(); }
   });
@@ -1767,7 +1767,7 @@ describe("Sidebar — every conversation family", () => {
     const tabId = kind + ":pane-chat";
     const root = "/projects/pane-chat";
     const browserTabs = {
-      getSessionBindings: async () => ({ revision: 1, bindings: [{ sessionId: sideChatRow.id, browserTabIds: kind === "browser" ? [tabId] : [], terminalTabIds: kind === "terminal" ? [tabId] : [] }] }),
+      getSessionBindings: async () => ({ revision: 1, nativeBrowserTabIds: [], bindings: [{ sessionId: sideChatRow.id, browserTabIds: kind === "browser" ? [tabId] : [], terminalTabIds: kind === "terminal" ? [tabId] : [] }] }),
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
     const { getByTestId, getAllByTestId, onLoadSession, restore } = renderSidebar({
@@ -1800,7 +1800,7 @@ describe("Sidebar — every conversation family", () => {
     // Older than the terminal (a surface never shown counts as used now), so it is the group's last row.
     const olderChat = sessionRow({ id: "older-chat", title: "예전 대화", modifiedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(), projectRoot: root });
     const browserTabs = {
-      getSessionBindings: async () => ({ revision: 1, bindings: paneChats.map((chat) => ({ sessionId: chat.id, browserTabIds: [], terminalTabIds: [tabId] })) }),
+      getSessionBindings: async () => ({ revision: 1, nativeBrowserTabIds: [], bindings: paneChats.map((chat) => ({ sessionId: chat.id, browserTabIds: [], terminalTabIds: [tabId] })) }),
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
     const { getByTestId, restore } = renderSidebar({
@@ -1880,7 +1880,7 @@ describe("Sidebar — every conversation family", () => {
   it("carries a group's line through a former pane chat's caption, and keeps the lines undimmed on an archived row", async () => {
     const root = "/projects/former";
     const browserTabs = {
-      getSessionBindings: async () => ({ revision: 1, bindings: [] }),
+      getSessionBindings: async () => ({ revision: 1, nativeBrowserTabIds: [], bindings: [] }),
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
     // The archived pane chat is newer than the other chat, so it has a later sibling in the group.
@@ -1926,7 +1926,7 @@ describe("Sidebar — every conversation family", () => {
     try {
       expect(view.queryByText("이전 터미널 채팅")).toBeNull();
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
-      await act(async () => resolveBindings({ revision: 1, bindings: [{ sessionId: sideChatRow.id, browserTabIds: [], terminalTabIds: [tabId] }] }));
+      await act(async () => resolveBindings({ revision: 1, nativeBrowserTabIds: [], bindings: [{ sessionId: sideChatRow.id, browserTabIds: [], terminalTabIds: [tabId] }] }));
       expect(view.getByTestId("sidebar-surface-chats-" + tabId).contains(view.getByTestId("sidebar-session-side-1"))).toBe(true);
       expect(view.queryByText("이전 터미널 채팅")).toBeNull();
     } finally { view.restore(); }
@@ -1934,7 +1934,7 @@ describe("Sidebar — every conversation family", () => {
 
   it("omits a globally listed unarchived pane chat outside this window instead of calling it former", async () => {
     const browserTabs = {
-      getSessionBindings: vi.fn(async () => ({ revision: 1, bindings: [] })),
+      getSessionBindings: vi.fn(async () => ({ revision: 1, nativeBrowserTabIds: [], bindings: [] })),
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
     const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: "terminal:other-window" }] }, { browserTabs });
@@ -1949,7 +1949,7 @@ describe("Sidebar — every conversation family", () => {
     const root = "/projects/closed-pane";
     const onOpenSideChat = vi.fn();
     const browserTabs = {
-      getSessionBindings: async () => ({ revision: 1, bindings: [] }),
+      getSessionBindings: async () => ({ revision: 1, nativeBrowserTabIds: [], bindings: [] }),
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
     const view = renderSidebar({ sessions: [{ ...sideChatRow, projectRoot: root, paneTabId: "terminal:closed", archivedAt: "2026-10-29T00:00:00Z" }], projects: [{ projectRoot: root, projectName: "Closed pane project" }], onOpenSideChat }, { browserTabs });
@@ -1969,7 +1969,7 @@ describe("Sidebar — every conversation family", () => {
     let update!: (state: SessionTabBindingsState) => void;
     const tabId = "terminal:closed";
     const browserTabs = {
-      getSessionBindings: async () => ({ revision: 1, bindings: [{ sessionId: sideChatRow.id, browserTabIds: [], terminalTabIds: [tabId] }] }),
+      getSessionBindings: async () => ({ revision: 1, nativeBrowserTabIds: [], bindings: [{ sessionId: sideChatRow.id, browserTabIds: [], terminalTabIds: [tabId] }] }),
       onSessionBindingsChanged: (handler: typeof update) => { update = handler; return () => {}; },
     } as unknown as AveApi["browserTabs"];
     const onOpenSideChat = vi.fn();
@@ -1983,7 +1983,7 @@ describe("Sidebar — every conversation family", () => {
       await waitFor(() => view.getByTestId("sidebar-surface-chats-" + tabId));
       act(() => {
         session.archivedAt = "2026-10-29T00:00:00Z";
-        update({ revision: 2, bindings: [] });
+        update({ revision: 2, nativeBrowserTabIds: [], bindings: [] });
       });
       expect(view.queryByTestId("sidebar-surface-chats-" + tabId)).toBeNull();
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();

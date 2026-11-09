@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useTranslation } from "../../../i18n/react.js";
 import type { BrowserCaptureRequest, BrowserWorkspaceApi, BrowserWorkspaceTab } from "../../../shared/browser-workspace.js";
 import { attachImageToComposer } from "../preview/composer-targets.js";
-import { getWebSurfaceElement } from "../preview/web-surfaces.js";
+import { getWebSurfaceViewportElement } from "../preview/web-surfaces.js";
 
 interface AreaSelection {
   tab: BrowserWorkspaceTab;
@@ -74,7 +74,7 @@ function CaptureAreaOverlay({ selection, onCancel, onSelect }: {
     onPointerUp={(event) => {
       if (!start || pointerIdRef.current !== event.pointerId) return;
       pointerIdRef.current = null;
-      const bounds = getWebSurfaceElement(selection.tab.tabId)?.getBoundingClientRect();
+      const bounds = getWebSurfaceViewportElement(selection.tab.tabId)?.getBoundingClientRect();
       if (!bounds || bounds.x !== selection.bounds.x || bounds.y !== selection.bounds.y
         || bounds.width !== selection.bounds.width || bounds.height !== selection.bounds.height) { onCancel(); return; }
       const current = point(event);
@@ -127,7 +127,7 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
       const tab = state.ok ? state.value.tabs.find((entry) => entry.tabId === tabId) : undefined;
       if (!tab) { setFailed(true); return; }
       if (mode !== "area") { await capture(tab, mode === "full-page" ? { fullPage: true } : {}); return; }
-      const guest = getWebSurfaceElement(tabId);
+      const guest = getWebSurfaceViewportElement(tabId);
       const rect = guest?.getBoundingClientRect();
       if (!rect || rect.width < 1 || rect.height < 1) { setFailed(true); return; }
       setSelection({ tab, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });

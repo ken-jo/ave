@@ -226,12 +226,14 @@ function makeBrowserTabsDouble() {
   const bindingListeners = new Set<(state: SessionTabBindingsState) => void>();
   const nativeListeners = new Set<(state: BrowserNativeSurfaceChanged) => void>();
   const nativeSurfaces = new Map<string, BrowserNativeSurfaceState>();
+  const initialNavigations = new Set<string>();
   let state: BrowserTabControlState = { revision: 0, tabs: [] };
   let bindingState: SessionTabBindingsState = { revision: 0, bindings: [], nativeBrowserTabIds: [] };
   return {
     nativeSurface: vi.fn(async (request: BrowserNativeSurfaceRequest) => {
       let surface = nativeSurfaces.get(request.tabId);
       if (request.action === "create") {
+        if (!surface) initialNavigations.add(request.tabId);
         surface = { tabId: request.tabId, webContentsId: surface?.webContentsId ?? nativeSurfaces.size + 100,
           epoch: (surface?.epoch ?? 0) + 1, revision: (surface?.revision ?? 0) + 1, url: surface?.url ?? "about:blank",
           title: surface?.title ?? "", favicon: null, loading: false, canGoBack: false, canGoForward: false, visible: false };
@@ -239,16 +241,18 @@ function makeBrowserTabsDouble() {
         return { ok: false as const, error: "stale-surface" as const };
       } else if (request.action === "close") {
         nativeSurfaces.delete(request.tabId);
+        initialNavigations.delete(request.tabId);
         for (const listener of nativeListeners) listener({ tabId: request.tabId, surface: null });
         return { ok: true as const, surface: null };
       } else {
+        if (request.action === "navigate") initialNavigations.delete(request.tabId);
         surface = { ...surface, revision: surface.revision + 1,
           ...(request.action === "navigate" ? { url: request.url } : {}),
           ...(request.action === "present" ? { visible: request.bounds !== null } : {}) };
       }
       nativeSurfaces.set(request.tabId, surface);
       for (const listener of nativeListeners) listener({ tabId: request.tabId, surface });
-      return { ok: true as const, surface };
+      return { ok: true as const, surface, ...(request.action === "create" ? { initialNavigation: initialNavigations.has(request.tabId) } : {}) };
     }),
     onNativeSurfaceChanged: vi.fn((listener: (state: BrowserNativeSurfaceChanged) => void) => {
       nativeListeners.add(listener);

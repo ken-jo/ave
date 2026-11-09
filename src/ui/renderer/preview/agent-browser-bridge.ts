@@ -121,7 +121,7 @@ export class HostFocusMemory {
       if (target === receipt.guest && !receipt.borrowed) receipt.borrowed = true;
       else if (target !== receipt.guest && (target !== receipt.previous || receipt.borrowed)) receipt.moved = true;
     }
-    if (!(target instanceof HTMLElement) || isWebview(target)) return;
+    if (!(target instanceof HTMLElement) || isWebview(target) || target.closest('[data-surface-host="native"]')) return;
     this.recent = [...this.recent.filter((element) => element !== target), target].slice(-HOST_FOCUS_HISTORY);
   };
 

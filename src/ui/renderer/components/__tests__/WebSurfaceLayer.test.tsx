@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 /** Move slots without recreating guests; placement must clip, hide and avoid occluders while retaining page state. */
 import "../../../../../test/renderer/setup.js";
-import { act, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, render as renderRaw, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AveApi, AvePreviewApi } from "../../types.js";
 import type { AgentObservationEvent } from "../../../../shared/agent-observation.js";
 import { connectBrowserObservations } from "../../preview/browser-observation-bridge.js";
@@ -12,6 +12,7 @@ import { FAVICON_SCHEMES, faviconSource } from "../../preview/favicon-source.js"
 import { WebSurfaceLayer, WebSurfaceSlot, placeWebSurfaces } from "../WebSurfaceLayer.js";
 import { EdgeResizeBar } from "../EdgeResizeBar.js";
 import {
+  setNativeBrowserTabIds,
   setHiddenWebSurfaceObserved,
   setWebSurfaceAwake,
   beginSurfaceDrag,
@@ -24,7 +25,14 @@ import {
   webSurfaceFavicon,
 } from "../../preview/web-surfaces.js";
 
+async function render(element: Parameters<typeof renderRaw>[0]) {
+  const view = renderRaw(element);
+  await act(async () => {});
+  return view;
+}
+
 const source = Symbol("test-store");
+beforeEach(() => setNativeBrowserTabIds([]));
 
 afterEach(async () => {
   withdrawLiveWebTabs(source);
@@ -56,12 +64,12 @@ function Harness({ where }: { where: "side" | "pane" | "none" }) {
 }
 
 const bindTab = vi.fn(async (_request: { tabId: string; webContentsId: number; requestId?: string }) => ({ ok: true as const }));
-const layerApi = { browserTabs: { bindTab } } as unknown as AveApi;
+const layerApi = { browserTabs: { bindTab, getSessionBindings: async () => ({ revision: 0, bindings: [], nativeBrowserTabIds: [] }), onSessionBindingsChanged: () => () => {}, onNativeSurfaceChanged: () => () => {} } } as unknown as AveApi;
 
 describe("WebSurfaceLayer", () => {
-  it("lays out a never-shown background guest invisibly and reveals that same guest mid-action", () => {
+  it("lays out a never-shown background guest invisibly and reveals that same guest mid-action", async () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
-    render(<Harness where="side" />);
+    await render(<Harness where="side" />);
     const slot = screen.getByTestId("web-surface-slot");
     slot.style.visibility = "hidden";
     const guest = guests()[0] as HTMLElement;
@@ -94,7 +102,7 @@ describe("WebSurfaceLayer", () => {
     Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
     Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
     publishLiveWebTabs(source, new Set(["browser:1"]));
-    render(<Harness where="side" />);
+    await render(<Harness where="side" />);
     const slot = screen.getByTestId("web-surface-slot");
     stubBox(slot, { left: 10, top: 20, width: 640, height: 480 });
     const guest = guests()[0] as HTMLElement;
@@ -116,7 +124,7 @@ describe("WebSurfaceLayer", () => {
     Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
     Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
     publishLiveWebTabs(source, new Set(["browser:1"]));
-    render(<Harness where="side" />);
+    await render(<Harness where="side" />);
     const slot = screen.getByTestId("web-surface-slot");
     const guest = guests()[0] as HTMLElement;
     Object.assign(guest, { getWebContentsId: () => 932 });
@@ -141,7 +149,7 @@ describe("WebSurfaceLayer", () => {
     act(() => { placeWebSurfaces(); });
     expect(frame("browser:1").style.visibility).toBe("hidden");
   });
-  it("keeps host favicon helper schemes aligned with the renderer img-src CSP", () => {
+  it("keeps host favicon helper schemes aligned with the renderer img-src CSP", async () => {
     const html = readFileSync("src/index.html", "utf8");
     const policy = html.match(/content="([^"]*default-src[^"]*)"/)![1]!;
     const sources = policy.match(/(?:^|;)\s*img-src\s+([^;]+)/)![1]!.trim().split(/\s+/);
@@ -180,18 +188,18 @@ describe("WebSurfaceLayer", () => {
     ["https", "https://site.example/icon.png", null],
     ["image data", "data:image/png;base64,YQ==", "data:image/png;base64,YQ=="],
     ["vector image data", "data:image/svg+xml,%3Csvg/%3E", "data:image/svg+xml,%3Csvg/%3E"],
-  ])("filters a guest's %s favicon at the event boundary", (_label, candidate, expected) => {
+  ])("filters a guest's %s favicon at the event boundary", async (_label, candidate, expected) => {
     publishLiveWebTabs(source, new Set(["browser:icon"]));
-    render(<><WebSurfaceSlot tabId="browser:icon" url="https://example.com/" location="side-panel" /><WebSurfaceLayer api={layerApi} /></>);
+    await render(<><WebSurfaceSlot tabId="browser:icon" url="https://example.com/" location="side-panel" /><WebSurfaceLayer api={layerApi} /></>);
     const guest = guests()[0]!;
     act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["data:image/png;base64,YQ=="] })); });
     act(() => { guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: [candidate] })); });
     expect(webSurfaceFavicon("browser:icon")).toBe(expected);
   });
 
-  it("skips rejected guest favicon candidates before choosing image data", () => {
+  it("skips rejected guest favicon candidates before choosing image data", async () => {
     publishLiveWebTabs(source, new Set(["browser:icon"]));
-    render(<><WebSurfaceSlot tabId="browser:icon" url="https://example.com/" location="side-panel" /><WebSurfaceLayer api={layerApi} /></>);
+    await render(<><WebSurfaceSlot tabId="browser:icon" url="https://example.com/" location="side-panel" /><WebSurfaceLayer api={layerApi} /></>);
     act(() => { guests()[0]!.dispatchEvent(Object.assign(new Event("page-favicon-updated"), {
       favicons: ["https://site.example/icon.png", "ave-content://installed/icon.png", "./icon.png", "data:image/png;base64,YQ=="],
     })); });
@@ -200,7 +208,7 @@ describe("WebSurfaceLayer", () => {
   it("binds a guest that cannot name itself at attach on its first dom-ready, and only then", async () => {
     bindTab.mockClear();
     publishLiveWebTabs(source, new Set(["browser:8"]));
-    render(
+    await render(
       <>
         <WebSurfaceSlot tabId="browser:8" url="https://example.com/" location="side-panel" />
         <WebSurfaceLayer api={layerApi} />
@@ -219,23 +227,23 @@ describe("WebSurfaceLayer", () => {
     expect(bindTab.mock.calls).toEqual([[{ tabId: "browser:8", webContentsId: 31, parked: true }]]);
   });
 
-  it("binds a tab's guest for the agent tools once, with the request it was opened for, and keeps that binding across a move", async () => {
+  it("keeps a user page binding and its favicon across a move", async () => {
     bindTab.mockClear();
     publishLiveWebTabs(source, new Set(["browser:9"]));
     const Moving = ({ where }: { where: "side" | "pane" }) => (
       <>
         {where === "side"
-          ? <WebSurfaceSlot tabId="browser:9" url="about:blank" location="side-panel" bindRequestId="browser-op-9" />
+          ? <WebSurfaceSlot tabId="browser:9" url="about:blank" location="side-panel" />
           : <WebSurfaceSlot tabId="browser:9" url="about:blank" location="pane:main" />}
         <WebSurfaceLayer api={layerApi} />
       </>
     );
-    const { rerender } = render(<Moving where="side" />);
+    const { rerender } = await render(<Moving where="side" />);
     const guest = guests()[0]! as HTMLElement & { getWebContentsId?: () => number };
     guest.getWebContentsId = () => 77;
     act(() => { guest.dispatchEvent(new Event("did-attach")); });
     await act(async () => { await Promise.resolve(); });
-    expect(bindTab.mock.calls).toEqual([[{ tabId: "browser:9", webContentsId: 77, requestId: "browser-op-9", parked: true }]]);
+    expect(bindTab.mock.calls).toEqual([[{ tabId: "browser:9", webContentsId: 77, parked: true }]]);
 
     // The main frame's committed address is recorded; a subframe's is not.
     act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/" })); });
@@ -254,19 +262,19 @@ describe("WebSurfaceLayer", () => {
     expect(guests()).toEqual([guest]);
     expect(webSurfaceFavicon("browser:9")).toBe("data:image/png;base64,YQ==");
     expect(bindTab).toHaveBeenCalledTimes(1);
-    expect(getWebSurfaces().find((surface) => surface.tabId === "browser:9")?.bindRequestId).toBe("browser-op-9");
+    expect(getWebSurfaces().find((surface) => surface.tabId === "browser:9")?.bindRequestId).toBeUndefined();
 
     // A new guest process: the old address is forgotten and the guest bound again.
     act(() => { guest.dispatchEvent(new Event("did-attach")); });
     expect(webSurfaceFavicon("browser:9")).toBeNull();
     await act(async () => { await Promise.resolve(); });
     expect(committedWebSurfaceLocation("browser:9")).toBeNull();
-    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:9", webContentsId: 77, requestId: "browser-op-9", parked: true });
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:9", webContentsId: 77, parked: true });
   });
 
   it("keeps one guest for a tab while its slot moves, hides it with no slot, and lets it go when the tab closes", async () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
-    const { rerender } = render(<Harness where="side" />);
+    const { rerender } = await render(<Harness where="side" />);
     expect(guests()).toHaveLength(1);
     const original = guests()[0]!;
     expect(original.getAttribute("src")).toBe("https://example.com/");
@@ -293,7 +301,7 @@ describe("WebSurfaceLayer", () => {
     expect(getWebSurfaces()).toHaveLength(0);
   });
 
-  it("shows a second slot of the same tab as a notice until the first one goes", () => {
+  it("shows a second slot of the same tab as a notice until the first one goes", async () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
     function Two({ both }: { both: boolean }) {
       return (
@@ -304,7 +312,7 @@ describe("WebSurfaceLayer", () => {
         </>
       );
     }
-    const { rerender } = render(<Two both />);
+    const { rerender } = await render(<Two both />);
     const notice = screen.getByTestId("web-surface-mounted-elsewhere");
     expect(notice.getAttribute("data-owner-location")).toBe("side-panel");
     rerender(<Two both={false} />);
@@ -312,14 +320,14 @@ describe("WebSurfaceLayer", () => {
     expect(guests()).toHaveLength(1);
   });
 
-  it("keeps a duplicate-slot notice without starting a screencast even during agent activity", () => {
+  it("keeps a duplicate-slot notice without starting a screencast even during agent activity", async () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
     let emit!: (events: AgentObservationEvent[]) => void;
     const requestObservationPreview = vi.fn(async () => ({ ok: true }));
     const disconnect = connectBrowserObservations({ onAgentObservation: (handler: typeof emit) => { emit = handler; return () => {}; },
       acknowledgeObservation: async () => ({ ok: true }), onObservationPreview: () => () => {}, requestObservationPreview } as unknown as AvePreviewApi);
     try {
-      render(<>
+      await render(<>
         <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="side-panel" />
         <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="pane:main" />
         <WebSurfaceLayer api={layerApi} />
@@ -337,9 +345,9 @@ describe("WebSurfaceLayer", () => {
     }
   });
 
-  it("paints an observed hidden guest without input or accessibility exposure and restores every attribute", () => {
+  it("paints an observed hidden guest without input or accessibility exposure and restores every attribute", async () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
-    render(<Harness where="pane" />);
+    await render(<Harness where="pane" />);
     Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
     Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
     stubBox(screen.getByTestId("pane"), { left: 0, top: 0, width: 1200, height: 800 });
@@ -371,9 +379,9 @@ describe("WebSurfaceLayer", () => {
     } finally { setHiddenWebSurfaceObserved("browser:1", false); }
   });
 
-  it.each(["capture", "preview"])("retains hidden painting until both capture and preview release it (%s ends first)", (first) => {
+  it.each(["capture", "preview"])("retains hidden painting until both capture and preview release it (%s ends first)", async (first) => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
-    render(<Harness where="pane" />);
+    await render(<Harness where="pane" />);
     Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
     Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
     stubBox(screen.getByTestId("pane"), { left: 0, top: 0, width: 1200, height: 800 });
@@ -408,7 +416,7 @@ describe("WebSurfaceLayer", () => {
     }
   });
 
-  it("places the guest over the visible part of its slot and cuts occluding cards out of it", () => {
+  it("places the guest over the visible part of its slot and cuts occluding cards out of it", async () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
     function Clipped() {
       const [ready] = useState(true);
@@ -422,7 +430,7 @@ describe("WebSurfaceLayer", () => {
         </>
       );
     }
-    render(<Clipped />);
+    await render(<Clipped />);
     Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
     Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
     stubBox(screen.getByTestId("web-surface-slot"), { left: 100, top: 50, width: 600, height: 400 });
@@ -453,9 +461,9 @@ describe("WebSurfaceLayer", () => {
     expect(placed.style.pointerEvents).toBe("auto");
   });
 
-  it("cuts a resize bar out of the page it overlaps, so the bar can still be grabbed", () => {
+  it("cuts a resize bar out of the page it overlaps, so the bar can still be grabbed", async () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
-    render(
+    await render(
       <>
         <WebSurfaceSlot tabId="browser:1" url="https://example.com/" location="side-panel" />
         <EdgeResizeBar width={448} edge="start" variant="inset" onWidthChange={() => {}} onWidthCommit={() => {}} min={300} max={900} resetWidth={448} ariaLabel="resize" data-testid="bar" />

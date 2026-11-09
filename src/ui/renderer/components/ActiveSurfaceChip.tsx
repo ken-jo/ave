@@ -1,4 +1,4 @@
-import { useGuestNavigation, useWebSurfaceGuest } from "../hooks/use-browser-navigation.js";
+import { useGuestNavigation, useBrowserSurface } from "../hooks/use-browser-navigation.js";
 import { clearActiveSurface, useActiveSurface, type ActiveSurface } from "../preview/active-surface.js";
 import { BoundSurfaceChip } from "./BoundSurfaceChip.js";
 import { hostOf, webPanelTitle } from "./MainSurfacePanels.js";
@@ -13,7 +13,7 @@ export function ActiveSurfaceChip() {
 }
 
 function BrowserChip({ surface }: { surface: ActiveSurface }) {
-  const navigation = useGuestNavigation(useWebSurfaceGuest(surface.tabId));
+  const navigation = useGuestNavigation(useBrowserSurface(surface.tabId));
   const title = webPanelTitle(navigation, null, surface.label);
   const host = hostOf(navigation.url);
   return (
