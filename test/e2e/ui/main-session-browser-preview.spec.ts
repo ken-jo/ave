@@ -186,10 +186,10 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     })();
     await expect.poll(() => releaseNavigation !== undefined, { timeout: 60_000 }).toBe(true);
     expect(failures).toEqual([]);
-    const preview = page.getByTestId("conversation-browser-observation").getByTestId("browser-observation-preview");
+    const preview = page.getByTestId("agent-browser-pip-card").getByTestId("browser-observation-preview");
     if (!previewShown) {
-      await page.getByTestId("conversation-browser-observation").evaluate(element => { (element as HTMLElement).style.display = "none"; });
-      await page.waitForTimeout(350);
+      await page.getByTestId("agent-browser-pip-card").getByRole("button", { name: /^(Hide browser preview:|브라우저 미리보기 숨기기:)/ }).click();
+      await expect(page.getByTestId("agent-browser-pip-card")).toHaveCount(0);
     }
     let firstPicture: string | null = null;
     if (previewShown) {
@@ -263,7 +263,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     expect(beforeEnd).toMatchObject({ mode: "agent-active", url: secondUrl });
     releaseFinish?.();
     await expect(page.getByTestId("chat-main-column").getByText("Static preview task complete.", { exact: true })).toBeVisible();
-    await expect(page.getByTestId("conversation-browser-observation")).toHaveCount(0, { timeout: 3_000 });
+    await expect(page.getByTestId("agent-browser-pip-card")).toHaveCount(0, { timeout: 3_000 });
     await expect(page.getByTestId("browser-observation-preview")).toHaveCount(0);
     await expect.poll(() => page.evaluate(async handle => (await window.aveApi.browserTabs?.getState())?.tabs.find(tab => tab.tabId === handle)?.mode, tabId)).toBe("human");
     const afterEnd = await page.evaluate(async handle => (await window.aveApi.browserTabs?.getState())?.tabs.find(tab => tab.tabId === handle), tabId);

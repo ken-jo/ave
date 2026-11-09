@@ -195,8 +195,8 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
     const activeLiveness = await measureLiveness();
     const hiddenAt = Date.now();
     await page.getByTestId("pane-cell:main").getByTestId("pane-maximize").click();
-    const thumbnailRow = page.getByTestId("conversation-browser-observation");
-    const thumbnail = thumbnailRow.getByRole("button");
+    const thumbnailRow = page.getByTestId("agent-browser-pip-card");
+    const thumbnail = thumbnailRow.getByRole("button", { name: /^(Open browser tab:|브라우저 탭 열기:)/ });
     await expect(thumbnail).toBeVisible();
     await expect(thumbnailRow.getByTestId("browser-observation-slot")).toBeVisible();
     await expect(guestFrame).toHaveCSS("opacity", "0");
