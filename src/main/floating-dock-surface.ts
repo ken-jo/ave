@@ -1,3 +1,4 @@
+import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // The host fixes dock window geometry and privileges; app panels run in per-server sandboxes.
 import type { SettingsService } from "../data/settings-store.js";
 import { BrowserWindow, ipcMain, screen } from "electron";
@@ -137,7 +138,7 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
     }
     // Visible on whichever space the user switches to, which is what "the app is doing something" has to mean for a status surface.
     try {
-      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, ...(isBackgroundE2eRuntime() ? { skipTransformProcessType: true } : {}) });
     } catch {
       // not supported everywhere
     }
@@ -146,7 +147,7 @@ export class ElectronFloatingDockSurface implements FloatingDockSurface {
       this.#ready = true;
       for (const queued of this.#pending) this.#post(queued.channel, queued.payload);
       this.#pending = [];
-      win.show();
+      showWindowForRuntime(win);
     });
 
     win.on("closed", () => {

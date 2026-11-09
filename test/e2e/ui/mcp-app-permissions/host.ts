@@ -25,9 +25,6 @@ window.__startProbe = ({ card, partition, serverId }) => {
   webview.style.width = "400px";
   webview.style.height = "200px";
   document.body.appendChild(webview);
-  // Establish the guest focus chain before the inner frame requests clipboard access.
-  webview.addEventListener("dom-ready", () => webview.focus());
-
   const { connected } = createMcpAppBridge(
     { serverId },
     card.html,

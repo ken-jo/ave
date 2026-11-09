@@ -12,6 +12,12 @@ export default defineConfig({
   // Retries absorb residual render-timing variance in performance and scroll specs.
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? [['list'], ['github']] : 'list',
+  // `@os-focus` tests activate native windows. Their project exists only with an explicit opt-in, so a direct
+  // `playwright test --config` without `--project` runs the background project alone.
+  projects: [
+    { name: 'background', grepInvert: /@os-focus/ },
+    ...(process.env.AVE_E2E_OS_FOCUS === '1' ? [{ name: 'os-focus', grep: /@os-focus/ }] : []),
+  ],
   use: {
     trace: 'retain-on-failure',
     video: 'retain-on-failure',

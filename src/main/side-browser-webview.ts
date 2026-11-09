@@ -1,3 +1,4 @@
+import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { handleAgentBrowserPopup } from "./browser/browser-popup-navigation.js";
 import {
   session,
@@ -156,6 +157,7 @@ function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructor
   const webPreferences: Record<string, unknown> = {};
   hardenRemoteWebPreferences(webPreferences);
   return {
+    show: !isBackgroundE2eRuntime(),
     width: 520,
     height: 720,
     autoHideMenuBar: true,
@@ -187,6 +189,7 @@ export function attachSideBrowserWebview(contents: WebContents, owner: BrowserWi
       return;
     }
     attachSideBrowserWebview(child.webContents, owner);
+    if (isBackgroundE2eRuntime()) child.showInactive();
   });
   contents.on("will-navigate", (details) => {
     if (!isHttpUrl(details.url)) details.preventDefault();

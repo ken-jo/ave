@@ -1,3 +1,4 @@
+import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 import { app, BrowserWindow, nativeImage, type WebContents, type WebPreferences } from "electron";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
@@ -147,6 +148,9 @@ async function hiddenPreviewRace() {
   return { secondError, firstError, hiddenError, hidden: !owner.isVisible() };
 }
 
+const foreground = process.env.AVE_NATIVE_FIXTURE_MODE === "foreground";
+configureE2eWindowPolicy();
+
 void app.whenReady().then(async () => {
   await fs.mkdir(runtime, { recursive: true });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -154,8 +158,10 @@ void app.whenReady().then(async () => {
   if (!address || typeof address === "string") throw new Error("Workspace fixture server did not start");
   const origin = `http://127.0.0.1:${address.port}`;
   installSideBrowserPartitionPolicy();
-  owner = new BrowserWindow({ width: 940, height: 740, x: 40, y: 40, show: true,
+  owner = new BrowserWindow({ width: 940, height: 740, x: 40, y: 40, show: false,
     webPreferences: { webviewTag: true, contextIsolation: true, sandbox: true, nodeIntegration: false } });
+  if (foreground) owner.show();
+  else owner.showInactive();
   registerMainWindow(owner, "primary");
   const windowId = owner.id;
   owner.once("closed", () => { browserTabRegistry.releaseWindow(windowId); unregisterMainWindow(owner); });
@@ -197,7 +203,7 @@ void app.whenReady().then(async () => {
   mainHandle = outcome.tabId;
   await guest.loadURL(`${origin}/page`);
   browserTabRegistry.setActiveSurface(owner.id, { kind: "browser", tabId: rendererTabId });
-  owner.show(); app.focus({ steal: true }); owner.focus();
+  if (foreground) { app.focus({ steal: true }); owner.focus(); }
   const fixture: WorkspaceNativeFixture = {
     ready: true, read, find, preview, hiddenPreviewRace,
     openPopup: () => guest.executeJavaScript('document.getElementById("popup").click()', true),

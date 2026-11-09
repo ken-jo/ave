@@ -436,12 +436,14 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
 
   mainWindow: async ({ app, captureViewport }, use) => {
     const win = await app.firstWindow();
-    const size = captureViewport ?? CAPTURE_VIEWPORT;
-    await setWindowSize(app, size.width, size.height);
     await win.locator('[data-testid="main-toolbar"]').first().waitFor({
       state: 'visible',
       timeout: 60_000,
     });
+    // Measure the loaded shell, not the initial splash or its pending navigation.
+    await win.waitForLoadState('load');
+    const size = captureViewport ?? CAPTURE_VIEWPORT;
+    await setWindowSize(app, size.width, size.height);
     // Suppress state-dependent onboarding overlays that are outside capture subjects.
     await win.addStyleTag({
       content: '[data-overlay-source="proposal"]{display:none !important;}',

@@ -1,4 +1,5 @@
 import type { WebContents } from "electron";
+import { ownsPageSession } from "./browser/browser-action-guard.js";
 import { BrowserScreencast, type ScreencastCallbacks, type ScreencastTransport } from "../observation/browser-screencast.js";
 import { subscribeBrowserGuestDestroyed } from "./browser/browser-guest-lifecycle.js";
 
@@ -11,11 +12,12 @@ export interface BrowserPreviewHandle {
 }
 
 /**
- * Reuses the agent's in-process debugger session for this guest. A guest without that session has never been driven
- * by the agent, so no preview attaches a debugger or opens any other remote debugging surface.
+ * Reuses the agent's in-process debugger session for this guest. A guest whose session the page actions do not own has
+ * never been driven by the agent, even when another client attached a debugger, so no preview attaches a debugger or
+ * opens any other remote debugging surface.
  */
 export function startBrowserPreview(guest: PreviewGuest, callbacks: ScreencastCallbacks): BrowserPreviewHandle {
-  if (guest.isDestroyed() || !guest.debugger.isAttached()) throw new Error("Browser preview requires the agent's page session.");
+  if (guest.isDestroyed() || !ownsPageSession(guest) || !guest.debugger.isAttached()) throw new Error("Browser preview requires the agent's page session.");
   const pageDebugger = guest.debugger;
   const transport: ScreencastTransport = {
     send: async (method, params) => pageDebugger.sendCommand(method, params ?? {}) as Promise<unknown>,
