@@ -36,12 +36,19 @@ function isTransientNetworkError(error) {
  * Fetch `url` and return its body as a Buffer. HTTP 5xx, 429 and network errors are retried
  * up to DOWNLOAD_ATTEMPTS in total; any other non-OK status fails at once with `httpError(response)`.
  */
-export async function fetchBytesWithRetry(url, { httpError, log = () => {}, fetchImpl = fetch, sleep = defaultSleep }) {
+export async function fetchBytesWithRetry(url, { httpError, log = () => {}, fetchImpl = fetch, sleep = defaultSleep, env = process.env }) {
+  const token = env.GITHUB_TOKEN || env.GH_TOKEN;
+  const endpoint = new URL(url);
+  const authenticated = token && endpoint.protocol === "https:"
+    && (endpoint.hostname === "github.com" || endpoint.hostname === "api.github.com");
   for (let attempt = 1; ; attempt += 1) {
     let response;
     let failure;
     try {
-      response = await fetchImpl(url);
+      // Fetch strips Authorization when a redirect changes origin.
+      response = authenticated
+        ? await fetchImpl(url, { headers: { Authorization: `Bearer ${token}` } })
+        : await fetchImpl(url);
       if (response.ok) return Buffer.from(await response.arrayBuffer());
     } catch (error) {
       if (!isTransientNetworkError(error)) throw error;
