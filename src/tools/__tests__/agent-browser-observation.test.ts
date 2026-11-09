@@ -19,7 +19,7 @@ beforeEach(() => {
     targetKind: "embedded", openerTabId: null, owner: { sessionId: identity.sessionId },
     lease: { id: "lease", actor: { sessionId: identity.sessionId }, lifetime: "owned" }, actions: new AbortController() };
   complete.mockClear(); dispose.mockClear(); target.mockClear();
-  sink = { begin: vi.fn(() => ({ complete, dispose, target })), endSessions: vi.fn() };
+  sink = { begin: vi.fn(async () => ({ complete, dispose, target })), endSessions: vi.fn() };
   setAgentBrowserObservationSink(sink);
 });
 afterEach(() => setAgentBrowserObservationSink(undefined));
@@ -67,10 +67,26 @@ describe("agent browser command admission", () => {
     if (failure === "throw") await expect(work).rejects.toThrow("Action failed"); else await work;
     expect(complete).not.toHaveBeenCalled(); expect(dispose).toHaveBeenCalledOnce();
   });
+  it.each(["pause", "lease", "abort"] as const)("refuses an effect when %s changes while observation begins", async (change) => {
+    const controller = new AbortController();
+    sink.begin = vi.fn(async () => {
+      await Promise.resolve();
+      if (change === "pause") tab.controlMode = "human-paused";
+      if (change === "lease") tab.lease = { ...tab.lease!, id: "replacement" };
+      if (change === "abort") controller.abort();
+      return { complete, dispose, target };
+    });
+    const run = vi.fn(async () => 1);
+    await expect(runAdmittedAgentWork(identity,
+      () => observeAgentBrowserCommand(tab, "click", run, controller.signal))).rejects.toThrow("Browser observation command expired.");
+    expect(run).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
   it("captures invocation validity independently of native callback async context", async () => {
     const foreign = new AsyncResource("native-download");
     let valid: (() => boolean) | undefined;
-    sink.begin = vi.fn((_identity, _tab, _action, isCurrent) => {
+    sink.begin = vi.fn(async (_identity, _tab, _action, isCurrent) => {
       valid = isCurrent;
       return { complete, dispose, target };
     });
