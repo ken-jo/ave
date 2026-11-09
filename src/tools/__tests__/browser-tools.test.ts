@@ -37,10 +37,6 @@ import type { BrowserObservationDetail, ObservationIdentity } from "../../shared
 class FakeGuest implements BrowserGuest {
   constructor(readonly id: number, public url: string, public title = "Page") {}
   destroyed = false;
-  close(options: { waitForBeforeUnload: boolean }): void {
-    expect(options.waitForBeforeUnload).toBe(false);
-    this.destroyed = true;
-  }
   isDestroyed(): boolean {
     return this.destroyed;
   }
