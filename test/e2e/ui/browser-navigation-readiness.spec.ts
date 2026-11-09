@@ -97,7 +97,7 @@ for (const fixture of DOCUMENT_FIXTURES) test(`returns main-document readiness a
     expect(measurements.map(row => row.tool)).toEqual(["browser_tab_new", "browser_navigate", "browser_snapshot"]);
     for (const row of measurements.slice(0, 2)) {
       expect(row.header).not.toHaveProperty("error");
-      expect(row.header.loading).toBe(true);
+      expect(row.header).not.toHaveProperty("loading");
       expect(row.elapsedMs).toBeLessThan(5_500);
     }
     expect(measurements[2]?.output).toContain("Ready control");
