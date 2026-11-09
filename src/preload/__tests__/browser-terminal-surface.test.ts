@@ -16,6 +16,15 @@ vi.mock("electron", () => ({ ipcRenderer: {
 beforeEach(() => { invoke.mockReset(); listeners.clear(); });
 
 describe("private browser and terminal preload boundaries", () => {
+  it("exposes user captures only as validated bounded image results", async () => {
+    const api = buildBrowserWorkspaceApiSurface();
+    const request = { tabId: "browser:one", documentGeneration: 2, fullPage: true };
+    const image = { tabId: request.tabId, documentGeneration: 2, dataUrl: "data:image/png;base64,YQ==", width: 100, height: 200, bytes: 1, originalWidth: 100, originalHeight: 200, scale: 1, truncated: false };
+    invoke.mockResolvedValueOnce({ ok: true, value: image }).mockResolvedValueOnce({ ok: true, value: { ...image, dataUrl: "file:///tmp/capture.png" } });
+    await expect(api.capture(request)).resolves.toEqual({ ok: true, value: image });
+    expect(invoke).toHaveBeenCalledWith(CHANNELS.browserWorkspace.capture, request);
+    await expect(api.capture(request)).rejects.toThrow("invalid-browser-workspace-result");
+  });
   it("queries and subscribes to the same validated session binding shape", async () => {
     const api = buildBrowserTabsApiSurface();
     const state = { revision: 3, bindings: [{ sessionId: "main-session", browserTabIds: ["browser:one"], terminalTabIds: [] }] };

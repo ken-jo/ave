@@ -202,6 +202,7 @@ export async function launchSeededElectron(opts: {
   sessionId?: string;
   sessionTitle?: string;
   settings?: JsonObject;
+  seedApiKey?: boolean;
   userDataPrefix?: string;
   homePrefix?: string;
   launchEnv?: LaunchEnv;
@@ -223,6 +224,9 @@ export async function launchSeededElectron(opts: {
       `${JSON.stringify(opts.settings ?? buildLlmSettings(), null, 2)}\n`,
       "utf-8",
     );
+    if (opts.seedApiKey) {
+      writeFileSync(resolve(userDataDir, "ave-secrets.json"), `${JSON.stringify(buildE2eSecrets())}\n`, { encoding: "utf-8", mode: 0o600 });
+    }
 
     const sessionsDir = resolve(aveHome, "sessions");
     mkdirSync(sessionsDir, { recursive: true });

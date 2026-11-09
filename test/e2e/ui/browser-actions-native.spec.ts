@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIsolatedElectronEnv, launchElectron } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, setWindowSize } from "./seeded-electron.js";
 import type { NativeAction, NativeActionResult, NativeBrowserFixture } from "./browser-actions-native/contract.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -127,13 +127,13 @@ test("@cdp targeted wheel scrolls the nested container", async ({}, testInfo) =>
   } finally { await close(app); }
 });
 
-test("@cdp full-page capture reports unavailable before unsafe clipping", async ({}, testInfo) => {
+test("@cdp full-page capture includes the bottom marker beyond the viewport", async ({}, testInfo) => {
   const app = await launch(testInfo, "cdp");
   try {
+    await setWindowSize(app, 1180, 820);
     const result = await run(app, "screenshot");
-    expect(result.ok, resultMessage(result)).toBe(false);
-    expect(result.error?.code).toBe("screenshot-unavailable");
-    expect(result.value).toBeUndefined();
+    expect(result.ok, resultMessage(result)).toBe(true);
+    expect(result.value).toMatchObject({ dimensions: result.oracle.content, bottomPixelRGB: [0, 166, 90] });
     expect(result.oracle.content.height).toBeGreaterThan(result.oracle.viewport.height * 2);
   } finally { await close(app); }
 });

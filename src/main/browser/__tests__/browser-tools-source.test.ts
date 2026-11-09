@@ -26,6 +26,7 @@ const ALLOWED_CDP_METHODS = new Set([
   "DOM.setFileInputFiles",
   "DOM.scrollIntoViewIfNeeded",
   "DOM.getContentQuads",
+  "DOM.getBoxModel",
   "DOM.getNodeForLocation",
   "Input.dispatchMouseEvent",
   "Input.dispatchTouchEvent",

@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { createBrowserPageActions } from "../../../../src/main/browser/browser-actions.js";
+import { browserCapturePixelRatio } from "../../../../src/main/browser/browser-capture-desktop.js";
 import { browserTabRegistry } from "../../../../src/main/browser/browser-tab-registry.js";
 import { trackBrowserGuest } from "../../../../src/main/browser/browser-guest-tracking.js";
 import { disposeBrowserUploads } from "../../../../src/main/browser/browser-upload.js";
@@ -99,7 +100,7 @@ const actions = createBrowserPageActions(browserTabRegistry, browserOrigin, () =
   decodePng: (png) => nativeImage.createFromBuffer(Buffer.from(png, "base64")),
   // The fixture has no session preview panel to keep a capture for.
   record: () => {},
-});
+}, browserCapturePixelRatio);
 
 async function read(value?: unknown, error?: { code: string; message: string }): Promise<NativeActionResult> {
   const tab = record();

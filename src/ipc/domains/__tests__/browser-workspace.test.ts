@@ -6,14 +6,14 @@ const { handlers, authorize, mainWindow, send, changed } = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>(), authorize: vi.fn(() => true), mainWindow: vi.fn(() => ({ id: 1, isDestroyed: () => false })), send: vi.fn(), changed: { handler: null as null | ((windowId: number, state: unknown) => void) },
 }));
 vi.mock("electron", () => ({ ipcMain: { handle: (channel: string, callback: (event: unknown, payload?: unknown) => Promise<unknown>) => handlers.set(channel, callback) } }));
-vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "changed"].map((key) => [key, `workspace:${key}`])) } }));
+vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "capture", "changed"].map((key) => [key, `workspace:${key}`])) } }));
 vi.mock("../../gated.js", () => ({ validateHostRendererSender: authorize, auditUnauthorized: vi.fn() }));
 vi.mock("../../../main/app-state.js", () => ({ mainWindowForContents: mainWindow, getMainWindows: () => [{ id: 1 }, { id: 2 }] }));
 vi.mock("../../safe-send.js", () => ({ sendToWindow: send }));
 import { registerBrowserWorkspaceHandlers } from "../browser-workspace.js";
 
 function setup() {
-  const service = { onChanged: vi.fn((handler: (windowId: number, state: unknown) => void) => { changed.handler = handler; }), getState: vi.fn(async () => ({ revision: 1 })), setBookmark: vi.fn(), clearHistory: vi.fn(), setSitePermission: vi.fn(), find: vi.fn(), stopFind: vi.fn(), zoom: vi.fn(), preview: vi.fn() };
+  const service = { onChanged: vi.fn((handler: (windowId: number, state: unknown) => void) => { changed.handler = handler; }), getState: vi.fn(async () => ({ revision: 1 })), setBookmark: vi.fn(), clearHistory: vi.fn(), setSitePermission: vi.fn(), find: vi.fn(), stopFind: vi.fn(), zoom: vi.fn(), preview: vi.fn(), capture: vi.fn() };
   registerBrowserWorkspaceHandlers({ auditLogger: {} } as IpcDeps, service as unknown as BrowserWorkspaceService);
   return service;
 }
@@ -23,9 +23,10 @@ const EVENT = { sender: {} };
 describe("private browser workspace IPC", () => {
   it("rejects every invoke from an unauthorized frame before service access", async () => {
     const service = setup(); authorize.mockReturnValue(false);
-    expect(handlers.size).toBe(8);
+    expect(handlers.size).toBe(9);
     for (const handler of handlers.values()) expect(await handler(EVENT)).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(service.getState).not.toHaveBeenCalled(); expect(service.preview).not.toHaveBeenCalled();
+    expect(service.capture).not.toHaveBeenCalled();
   });
   it("derives the owner window from the sender and rejects injected authority and stale errors", async () => {
     const service = setup();
@@ -43,6 +44,18 @@ describe("private browser workspace IPC", () => {
     const state = { revision: 3 };
     changed.handler!(2, state);
     expect(send).toHaveBeenCalledWith({ id: 2 }, "workspace:changed", state, expect.anything());
+  });
+  it("binds captures to the sender window and refuses injected scope and malformed rectangles", async () => {
+    const service = setup();
+    const target = { tabId: "browser:one", documentGeneration: 1, clip: { x: 1, y: 2, width: 100, height: 80 } };
+    service.capture.mockResolvedValueOnce({ dataUrl: "data:image/png;base64,YQ==" });
+    const capture = handlers.get("workspace:capture");
+    if (!capture) throw new Error("Missing capture handler");
+    expect(await capture(EVENT, target)).toEqual({ ok: true, value: { dataUrl: "data:image/png;base64,YQ==" } });
+    expect(service.capture).toHaveBeenCalledExactlyOnceWith(1, target);
+    expect(await capture(EVENT, { ...target, windowId: 2 })).toEqual({ ok: false, error: "bad-request" });
+    expect(await capture(EVENT, { ...target, clip: { ...target.clip, width: 0 } })).toEqual({ ok: false, error: "bad-request" });
+    expect(service.capture).toHaveBeenCalledTimes(1);
   });
   it("rejects an unknown internal failure instead of relabeling it as storage failure", async () => {
     const service = setup();

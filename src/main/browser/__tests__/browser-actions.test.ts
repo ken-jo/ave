@@ -751,12 +751,41 @@ describe("pressing keys", () => {
 });
 
 describe("screenshot", () => {
+  it.each([
+    { error: new BrowserActionError("cancelled", "Capture cancelled"), code: "cancelled" },
+    { error: new Error("Node disappeared"), code: "stale-ref" },
+  ])("preserves a capture failure as $code", async ({ error, code }) => {
+    const { cdp, refs } = snapshotFixture();
+    cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "DOM.getBoxModel") throw error;
+      return send(method, params);
+    });
+    await expect(screenshot(target(cdp), 50, { ref }, refs)).rejects.toMatchObject({ code });
+    expect(cdp.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+  });
+
+  it("rejects unknown and stale snapshot refs before capture", async () => {
+    const { cdp, refs } = snapshotFixture();
+    await expect(screenshot(target(cdp), 50, { ref: "e1" }, refs)).rejects.toMatchObject({ code: "unknown-ref" });
+    cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
+    const shot = await snapshot(target(cdp), {}, refs);
+    const ref = /\[ref=(e\d+)\]/.exec(shot.text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    cdp.frameTree.frame.loaderId = "replacement-document";
+    await expect(screenshot(target(cdp), 50, { ref }, refs)).rejects.toMatchObject({ code: "stale-ref" });
+    expect(cdp.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+  });
+
   it("fails clearly instead of hanging when the tab draws no frame", async () => {
     const cdp = new FakeCdp();
     vi.spyOn(cdp, "send").mockImplementation(() => new Promise(() => {}));
     await expect(screenshot(target(cdp, { tabId: "tab-7" }), 50)).rejects.toMatchObject({
       code: "screenshot-timeout",
-      message: expect.stringContaining('browser_tabs {"select": "tab-7"}'),
+      message: expect.stringContaining("capture deadline"),
     });
   });
 });
@@ -1188,7 +1217,7 @@ function adapterFixture(options: {
     // These cases assert page actions, not thumbnails; a capture attempt fails and leaves the tool result as it is.
     decodePng: () => { throw new Error("no image decoder in this fixture"); },
     record: () => {},
-  });
+  }, () => 1);
   const tools = createBrowserTools({
     tabs: registry,
     pickUploadFiles: async () => null,
@@ -1219,7 +1248,7 @@ it("replaces site gate disposal across independently loaded action adapters", as
   const live = { ...await approve("browser_press_key"), authorizeSite: vi.fn(async () => {}) };
   const nextActions = createBrowserPageActions(registry, browserOrigin, () => HOST_CONTENT, {
     decodePng: () => { throw new Error("no image decoder in this fixture"); }, record: () => {},
-  });
+  }, () => 1);
   const destroyedBefore = guest.listenerCount("destroyed");
   for (const adapter of [actions, nextActions]) {
     await adapter.pressKey(live, "Escape");
@@ -1544,11 +1573,19 @@ it("reports the page a clicked link commits after the click is acknowledged", as
 });
 
 describe("page action thumbnails", () => {
+  it("refuses embedded full-page output before reading inaccurate pixels", async () => {
+    const { actions, approve, cdp } = adapterFixture({ agent: true });
+    const live = await approve("browser_screenshot");
+    const before = cdp.calls.length;
+    await expect(actions.screenshot(live, { fullPage: true })).rejects.toMatchObject({ code: "screenshot-unavailable" });
+    expect(cdp.calls).toHaveLength(before);
+  });
+
   it("hands the call's signals to the capture, so a stopped call never starts one", async () => {
     const actions = createBrowserPageActions(new BrowserTabRegistry(), browserOrigin, () => null, {
       decodePng: () => { throw new Error("no image decoder in this fixture"); },
       record: () => {},
-    });
+    }, () => 1);
     const capturePage = vi.fn(() => new Promise<never>(() => {}));
     const stopped = new AbortController();
     stopped.abort();
@@ -1818,12 +1855,6 @@ describe("typed page actions", () => {
     expect(cdp.calls.filter((call) => call.method === "Input.dispatchMouseEvent").map((call) => call.params?.type)).toEqual(["mouseMoved", "mousePressed", "mouseMoved", "mouseReleased"]);
   });
 
-  it("refuses unavailable full-page capture before sending any protocol request", async () => {
-    const cdp = new FakeCdp();
-    vi.spyOn(cdp, "send");
-    await expect(screenshot(target(cdp), 100, { fullPage: true })).rejects.toMatchObject({ code: "screenshot-unavailable" });
-    expect(cdp.send).not.toHaveBeenCalled();
-  });
 
   it("rejects custom select and intermediate navigation instead of declaring selection complete", async () => {
     const cdp = new FakeCdp();

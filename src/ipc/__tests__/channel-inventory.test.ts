@@ -293,6 +293,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:audit:stats",
         "ave:bootstrap:retry",
         "ave:bootstrap:status:get",
+        "ave:browser-workspace:capture",
         "ave:browser-workspace:clear-history",
         "ave:browser-workspace:find",
         "ave:browser-workspace:get-state",

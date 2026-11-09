@@ -77,9 +77,9 @@ function fakeActions() {
         delta: false,
       };
     },
-    screenshot: async (target) => {
-      calls.push({ action: "screenshot", tab: target.tab.handle, args: [] });
-      return { data: "iVBORw0KGgo=", mimeType: "image/png", bytes: 8 };
+    screenshot: async (target, options) => {
+      calls.push({ action: "screenshot", tab: target.tab.handle, args: [options] });
+      return { data: "iVBORw0KGgo=", mimeType: "image/png", bytes: 8, width: 800, height: 2400, originalWidth: 800, originalHeight: 2400, scale: 1, truncated: false };
     },
     // Waits until released or cancelled, like a real wait for text.
     waitFor: (target) => new Promise((resolve, reject) => {
@@ -1321,21 +1321,28 @@ describe("browser tools", () => {
       [BROWSER_TOOL.select, { ref: "e1", value: 1 }],
       [BROWSER_TOOL.scroll, { ref: "e1", direction: "down", pixels: 2001 }],
       [BROWSER_TOOL.screenshot, { fullPage: "true" }],
+      [BROWSER_TOOL.screenshot, { ref: "wrong" }],
+      [BROWSER_TOOL.screenshot, { ref: "e1", clip: { x: 0, y: 0, width: 100, height: 50 } }],
+      [BROWSER_TOOL.screenshot, { fullPage: true, ref: "e1" }],
+      [BROWSER_TOOL.screenshot, { clip: { x: 0, y: 0, width: 0, height: 50 } }],
+      [BROWSER_TOOL.screenshot, { clip: { x: 0, y: 0, width: 100, height: Infinity } }],
+      [BROWSER_TOOL.screenshot, { clip: { x: 0, y: 0, width: 100, height: 50, scale: 1 } }],
     ] as const) expect((await run(name, { tabId: user.handle, ...input })).isError).toBe(true);
     expect(page.calls).toEqual([]);
   });
 
-  it("does not offer full-page capture and refuses it without invoking capture", async () => {
+  it("offers full-page capture with bounded image metadata in the page envelope", async () => {
     const { run, page, userTab, browserTools } = harness();
     const user = userTab("https://a.example/");
     const schema = browserTools.find((tool) => tool.name === BROWSER_TOOL.screenshot)!.toJsonSchema();
-    expect(schema).toMatchObject({ properties: { fullPage: { enum: [false] } } });
+    expect(schema).toMatchObject({ properties: { fullPage: { type: "boolean" } } });
+    expect((schema as { properties: Record<string, unknown> }).properties.fullPage).not.toHaveProperty("enum");
     const result = await run(BROWSER_TOOL.screenshot, { tabId: user.handle, fullPage: true });
-    expect(result.isError).toBe(true);
-    expect(result.output).toContain("screenshot-unavailable");
-    expect(page.calls).toEqual([]);
-    expect((await run(BROWSER_TOOL.screenshot, { tabId: user.handle })).isError).toBe(false);
-    expect(page.calls.map((call) => call.action)).toEqual(["screenshot"]);
+    expect(result.isError).toBe(false);
+    expect(result.output).toContain('"fullPage":true');
+    expect(result.output).toContain('"originalHeight":2400');
+    expect(result.output).toContain('<browser-content');
+    expect(page.calls).toEqual([{ action: "screenshot", tab: user.handle, args: [{ fullPage: true }] }]);
   });
 
   it("attaches a validated display thumbnail to snapshot and screenshot completions, never failing the tool", async () => {
