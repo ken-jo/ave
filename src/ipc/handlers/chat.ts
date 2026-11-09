@@ -552,7 +552,7 @@ function requestedSessionFamilies(raw: unknown): ReadonlySet<SessionFamily> | un
 // Federate requested conversation families across their owning stores with one shared pagination contract.
 export async function handleChatSessions(
   deps: IpcDeps,
-  opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown; families?: unknown; id?: unknown },
+  opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown; families?: unknown },
 ): Promise<SessionListResult> {
   const { conversationLoop, memoryManager } = deps;
   const limit = typeof opts?.limit === "number" && Number.isFinite(opts.limit)
@@ -576,15 +576,6 @@ export async function handleChatSessions(
       : "__ave_unauthorized_project_root__"
     : undefined;
   const includeUnscoped = resolvedProject?.authorized === true && resolvedProject.project?.isDefault === true;
-  if (opts?.id !== undefined) {
-    const row = isValidSessionId(opts.id) ? await sessionRowById(deps, opts.id) : null;
-    const familyAllowed = row && (families ? families.has(row.family) : row.family === "main" || row.family === "routine");
-    const kindAllowed = families !== undefined || kind === "all" || row?.sessionKind === kind;
-    const inProject = row && (projectRoot === undefined || projectRootEquals(row.projectRoot, projectRoot) || includeUnscoped && row.projectRoot === undefined);
-    const matchesRoutine = routineId === undefined || row?.routineId === routineId;
-    const page = row && familyAllowed && kindAllowed && inProject && matchesRoutine ? [row] : [];
-    return { current: conversationLoop.getSessionId(), sessions: page, parents: await sessionPageParents(deps, page) };
-  }
   const sessions = memoryManager.sessions
     .listSessionsPage({ kind: families ? "all" : kind, ...(routineId ? { routineId } : {}), ...(projectRoot ? { projectRoot } : {}), ...(includeUnscoped ? { includeUnscoped: true } : {}), limit, ...(before ? { before } : {}), ...(beforeId ? { beforeId } : {}), ...(after ? { after } : {}) })
     .flatMap((s): SessionListRow[] => {
@@ -613,7 +604,16 @@ export async function handleChatSessions(
       return delta !== 0 ? delta : b.id.localeCompare(a.id);
     })
     .slice(0, limit);
-  return { current: conversationLoop.getSessionId(), sessions: federated, parents: await sessionPageParents(deps, federated) };
+  const running: SessionListRow[] = [];
+  if (families.has("subagent")) {
+    for (const state of deps.getSubAgentRunner?.()?.getSessionActivitySnapshot().sessions ?? []) {
+      if (!state.running && !state.attention || federated.some((row) => row.id === state.sessionId)) continue;
+      const row = await sessionRowById(deps, state.sessionId);
+      if (row?.family === "subagent" && (projectRoot === undefined || projectRootEquals(row.projectRoot, projectRoot) || includeUnscoped && row.projectRoot === undefined)) running.push(row);
+    }
+  }
+  const related = [...running, ...await sessionPageParents(deps, [...federated, ...running])];
+  return { current: conversationLoop.getSessionId(), sessions: federated, related };
 }
 
 const SESSION_ANCESTOR_MAX_DEPTH = 64;
@@ -666,7 +666,7 @@ async function sessionRowById(deps: IpcDeps, id: string): Promise<SessionListRow
     return rows.at(0) ?? null;
   }
   const row = toSessionListRow("subagent", child);
-  return row ? { ...row, running: child.running } : null;
+  return row;
 }
 
 function subAgentRows(
@@ -677,7 +677,7 @@ function subAgentRows(
   if (!runner) return [];
   return runner.listSubAgentSessions(window).flatMap((session) => {
     const row = toSessionListRow("subagent", session);
-    return row?.family === "subagent" ? [{ ...row, running: session.running }] : [];
+    return row?.family === "subagent" ? [row] : [];
   });
 }
 

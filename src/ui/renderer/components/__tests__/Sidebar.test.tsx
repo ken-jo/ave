@@ -1772,10 +1772,11 @@ describe("Sidebar — every conversation family", () => {
     } as unknown as AveApi["browserTabs"];
     const { getByTestId, getAllByTestId, onLoadSession, restore } = renderSidebar({
       sessions: [{ ...sideChatRow, paneTabId: tabId, projectRoot: root },
-        sessionRow({ id: "pane-child", title: "Delegated research", modifiedAt: new Date().toISOString(), family: "subagent", sessionKind: "subagent", originSessionId: sideChatRow.id, projectRoot: root, running: true })],
+        sessionRow({ id: "pane-child", title: "Delegated research", modifiedAt: new Date().toISOString(), family: "subagent", sessionKind: "subagent", originSessionId: sideChatRow.id, projectRoot: root })],
       projects: [{ projectRoot: root, projectName: "Pane project" }],
       mainSurfaces: [{ tabId, kind, ordinal: 1, url: null, projectRoot: root }],
       onOpenSideChat, onOpenPaneChat,
+      conversationActions: { isArchived: () => false, isUnread: () => false, isResponding: (id) => id === "pane-child", onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() },
     }, { browserTabs });
     try {
       await waitFor(() => expect(getByTestId("sidebar-surface-chats-" + tabId).contains(getByTestId("sidebar-session-side-1"))).toBe(true));
@@ -2501,9 +2502,9 @@ it.each(["ko", "en"] as const)("nests child rows with localized controls and the
     view.rerenderSidebar({ activeSubAgentSessionId: "child" });
     expect(row).toHaveAttribute("aria-expanded", "true");
     expect(view.getByTestId("sidebar-row-session-child")).toHaveAttribute("aria-selected", "true");
-    view.rerenderSidebar({ activeSubAgentSessionId: undefined, sessions: [{ ...child, running: true }, parent] });
+    view.rerenderSidebar({ activeSubAgentSessionId: undefined, conversationActions: { isArchived: () => false, isUnread: () => false, isResponding: (id) => id === child.id, onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() } });
     expect(row).toHaveAttribute("aria-expanded", "true");
-    view.rerenderSidebar({ sessions: [child, parent] });
+    view.rerenderSidebar({ sessions: [child, parent], conversationActions: { isArchived: () => false, isUnread: () => false, isResponding: () => false, onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() } });
     expect(row).toHaveAttribute("aria-expanded", "false");
   } finally { cleanup(); view.restore(); }
 });

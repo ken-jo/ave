@@ -165,7 +165,8 @@ export async function setupWorkflowStores(
     },
     emitAgentSpawn: (event: AgentSpawnEvent) => {
       try {
-        fanOutToAllWindows(appWindows(), CHANNELS.agentSpawn.event, event);
+        const activity = event.childSessionId ? subAgentRunnerRef.fn?.getSessionActivity(event.childSessionId) : undefined;
+        fanOutToAllWindows(appWindows(), CHANNELS.agentSpawn.event, { ...event, ...(activity ? { activity } : {}) });
       } catch (err) {
         log.warn("agent_spawn emit failed: %s", (err as Error).message);
       }

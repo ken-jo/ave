@@ -101,7 +101,7 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
     writeFileSync(join(childStore, `${runningId}.meta.json`), JSON.stringify({ sessionKind: "subagent", originSessionId: parentId, subAgentTitle: "Running research", spawnId: "running-spawn" }));
     const events: AgentSpawnEvent[] = [
       { type: "start", spawnId: "running-spawn", parentSessionId: parentId, title: "Running research", taskState: "TASK_STATE_SUBMITTED" },
-      { type: "activity", spawnId: "running-spawn", parentSessionId: parentId, childSessionId: runningId, taskState: "TASK_STATE_WORKING" },
+      { type: "activity", spawnId: "running-spawn", parentSessionId: parentId, childSessionId: runningId, taskState: "TASK_STATE_WORKING", activity: { sessionId: runningId, sequence: 1, running: true, attention: false } },
     ];
     expect(events[0]).not.toHaveProperty("childSessionId");
     await ctx.app.evaluate(({ BrowserWindow }, payload) => {

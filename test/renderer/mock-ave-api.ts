@@ -646,6 +646,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       chatStreamHandlers.add(h);
       return () => chatStreamHandlers.delete(h);
     }),
+    agentSpawnSnapshot: vi.fn(async () => ({ sequence: 0, sessions: [] })),
     onAgentSpawnEvent: vi.fn((handler: (event: AgentSpawnEvent) => void) => {
       agentSpawnEventHandlers.add(handler);
       return () => agentSpawnEventHandlers.delete(handler);

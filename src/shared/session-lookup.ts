@@ -59,8 +59,6 @@ export interface SessionListRow {
    * sidebar can draw it under that conversation instead of beside it.
    */
   originSessionId?: string;
-  /** Live host state for a child whose turn is still executing. */
-  running?: boolean;
   /** Host-recorded pane identity; current host bindings determine whether it is still live. */
   paneTabId?: string;
   routineId?: string;
@@ -105,7 +103,8 @@ export function shortSessionId(sessionId: string): string {
 export interface SessionListResult {
   current: string;
   sessions: SessionListRow[];
-  parents?: SessionListRow[];
+  /** Running rows and complete ancestor context, outside the primary cursor. */
+  related?: SessionListRow[];
 }
 
 export interface SessionListQuery {
@@ -117,6 +116,4 @@ export interface SessionListQuery {
   before?: string;
   beforeId?: string;
   after?: string;
-  /** Read a single row directly, without enumerating a page. */
-  id?: string;
 }

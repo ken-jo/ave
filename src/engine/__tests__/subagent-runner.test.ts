@@ -1071,6 +1071,9 @@ describe("SubAgentRunner — projected terminal status", () => {
       );
       const handle = JSON.parse(handleResult.output);
       expect(handle.childSessionId).toBeTruthy();
+      const activity = runner.getSessionActivity(handle.childSessionId);
+      expect(activity).toMatchObject({ sessionId: handle.childSessionId, running: true, attention: false });
+      expect(activity?.sequence).toBeGreaterThan(0);
       expect(
         runner.getRunStatus(handle.spawnId, "a1bdc27a-c758-4a74-8955-5e9188412366"),
       ).toMatchObject({
@@ -1084,6 +1087,12 @@ describe("SubAgentRunner — projected terminal status", () => {
         ok: true,
         run: { taskState: "TASK_STATE_CANCELED", status: "interrupted" },
       });
+      const stopped = runner.getSessionActivity(handle.childSessionId);
+      expect(stopped?.running).toBe(false);
+      expect(stopped?.sequence).toBeGreaterThan(activity?.sequence ?? 0);
+      const refreshed = runner.getSessionActivitySnapshot();
+      expect(refreshed.sessions).toContainEqual(expect.objectContaining({ sessionId: handle.childSessionId, running: false, attention: false }));
+      expect(refreshed.sequence).toBeGreaterThan(stopped?.sequence ?? 0);
       rejectMetadata(new Error("initial metadata write failed"));
 
       const deadline = Date.now() + 4000;

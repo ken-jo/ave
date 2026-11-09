@@ -357,17 +357,18 @@ describe("handleChatSessions federated families", () => {
       conversationLoop: { getSessionId: () => "aaaaaaaa-1111-4111-8111-111111111111" },
       memoryManager: { sessions: { listSessionsPage, getSessionListEntry: (id: string) => [main, routine].find((row) => row.id === id) ?? null } },
       sideChatMemoryManager: { sessions: { listSessionsPage: listSideChatSessionsPage } },
-      getSubAgentRunner: () => ({ listWorkBoardRunSessions, listSubAgentSessions: () => [{ ...runs[3], originSessionId: "aaaaaaaa-1111-4111-8111-111111111111", running: true }] }),
+      getSubAgentRunner: () => ({ getSessionActivitySnapshot: () => ({ sequence: 0, sessions: [] }), listWorkBoardRunSessions, listSubAgentSessions: () => [{ ...runs[3], originSessionId: "aaaaaaaa-1111-4111-8111-111111111111", running: true }] }),
       workBoardStore: { get },
     } as unknown as IpcDeps;
     return { deps, listWorkBoardRunSessions, listSessionsPage, listSideChatSessionsPage, get };
   };
 
-  it("carries the persisted child origin and live state through the list contract", async () => {
+  it("carries only the persisted child origin through the list contract", async () => {
     const { deps } = makeDeps();
     const { sessions } = await handleChatSessions(deps, { families: ["subagent"] });
-    expect(sessions).toEqual([expect.objectContaining({ id: "sub-plain", family: "subagent", originSessionId: "aaaaaaaa-1111-4111-8111-111111111111", running: true })]);
+    expect(sessions).toEqual([expect.objectContaining({ id: "sub-plain", family: "subagent", originSessionId: "aaaaaaaa-1111-4111-8111-111111111111" })]);
     expect(sessions[0]).not.toHaveProperty("parentSessionId");
+    expect(sessions[0]).not.toHaveProperty("running");
   });
 
   it("stamps a family on every row and merges the four stores by time", async () => {
@@ -458,7 +459,7 @@ describe("sidebar row pages", () => {
     const deps = {
       conversationLoop: { getSessionId: () => parent.id },
       memoryManager: { sessions: { listSessionsPage: (options: Parameters<typeof readPage>[1]) => readPage([parent, middle, older], options), getSessionListEntry: (id: string) => [parent, middle, older].find((row) => row.id === id) ?? null } },
-      getSubAgentRunner: () => ({ listSubAgentSessions: (options: Parameters<typeof readPage>[1]) => readPage([child], options) }),
+      getSubAgentRunner: () => ({ getSessionActivitySnapshot: () => ({ sequence: 0, sessions: [] }), listSubAgentSessions: (options: Parameters<typeof readPage>[1]) => readPage([child], options) }),
     } as unknown as IpcDeps;
     const seen: string[] = [];
     let cursor: { before?: string; beforeId?: string } = {};
@@ -488,11 +489,6 @@ describe("sidebar row pages", () => {
       summaries.mockClear();
       await handleChatSessions(deps, { families: ["main", "subagent"], limit: 100 });
       expect(summaries).toHaveBeenCalledTimes(mainCalls);
-      summaries.mockClear();
-      const query = { id: "00000000-1111-4111-8111-111111111111", families: ["main", "subagent"] };
-      const point = await handleChatSessions(deps, query);
-      expect(point.sessions.map((row) => row.id)).toEqual([query.id]);
-      expect(summaries).toHaveBeenCalledTimes(1);
       summaries.mockRestore();
     } finally { await cleanupTmpDir(dir); }
   });
@@ -507,17 +503,17 @@ describe("sidebar parent recovery", () => {
     const deps = {
       conversationLoop: { getSessionId: () => parent.id },
       memoryManager: { sessions: { listSessionsPage: listMain, getSessionListEntry: readParent } },
-      getSubAgentRunner: () => ({ listSubAgentSessions: () => children }),
+      getSubAgentRunner: () => ({ getSessionActivitySnapshot: () => ({ sequence: 0, sessions: [] }), listSubAgentSessions: () => children }),
     } as unknown as IpcDeps;
     const result = await handleChatSessions(deps, { families: ["main", "subagent"], limit: 2 });
     expect(result.sessions.map((row) => row.id)).toEqual([...children].sort((a, b) => b.id.localeCompare(a.id)).map((row) => row.id));
-    expect(result).toMatchObject({ parents: [{ id: parent.id, family: "main", modifiedAt: parent.modifiedAt.toISOString() }] });
+    expect(result).toMatchObject({ related: [{ id: parent.id, family: "main", modifiedAt: parent.modifiedAt.toISOString() }] });
     expect(readParent).toHaveBeenCalledExactlyOnceWith(parent.id);
     expect(listMain).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ limit: 2 }));
   });
 });
 
-it.each([false, true])("recovers the full same-project ancestor chain for a grandchild (point read: %s)", async (pointRead) => {
+it("recovers the full same-project ancestor chain for a grandchild", async () => {
   const grandparent = { id: "aaaaaaaa-1111-4111-8111-111111111111", title: "Grandparent", sessionKind: "main" as const, projectRoot: "/project", modifiedAt: new Date("2026-11-01") };
   const parent = { ...grandparent, id: "sub-aaaaaaaa-bbbbbbbb-1111-4111-8111-111111111111", title: "Parent", sessionKind: "subagent" as const, originSessionId: grandparent.id, running: false };
   const grandchild = { ...parent, id: "sub-aaaaaaaa-cccccccc-1111-4111-8111-111111111111", title: "Grandchild", originSessionId: parent.id, modifiedAt: new Date("2026-11-09") };
@@ -526,11 +522,11 @@ it.each([false, true])("recovers the full same-project ancestor chain for a gran
   const deps = {
     conversationLoop: { getSessionId: () => grandparent.id },
     memoryManager: { sessions: { listSessionsPage: () => [], getSessionListEntry: readMain } },
-    getSubAgentRunner: () => ({ listSubAgentSessions: () => [grandchild], getSessionListEntry: readChild }),
+    getSubAgentRunner: () => ({ getSessionActivitySnapshot: () => ({ sequence: 0, sessions: [] }), listSubAgentSessions: () => [grandchild], getSessionListEntry: readChild }),
   } as unknown as IpcDeps;
-  const result = await handleChatSessions(deps, { families: ["main", "subagent"], limit: 1, ...(pointRead ? { id: grandchild.id } : {}) });
+  const result = await handleChatSessions(deps, { families: ["main", "subagent"], limit: 1 });
   expect(result.sessions.map((row) => row.id)).toEqual([grandchild.id]);
-  expect(result.parents?.map((row) => row.id)).toEqual([parent.id, grandparent.id]);
+  expect(result.related?.map((row) => row.id)).toEqual([parent.id, grandparent.id]);
   expect(readMain.mock.calls.filter(([id]) => id === grandparent.id)).toHaveLength(1);
 });
 
@@ -547,10 +543,10 @@ it.each(["missing", "project-boundary", "cycle", "depth-cap"])("stops ancestor r
     const deps = {
       conversationLoop: { getSessionId: () => first.id },
       memoryManager: { sessions: { listSessionsPage: () => [], getSessionListEntry: () => null } },
-      getSubAgentRunner: () => ({ listSubAgentSessions: () => [first], getSessionListEntry: read }),
+      getSubAgentRunner: () => ({ getSessionActivitySnapshot: () => ({ sequence: 0, sessions: [] }), listSubAgentSessions: () => [first], getSessionListEntry: read }),
     } as unknown as IpcDeps;
     const result = await handleChatSessions(deps, { families: ["subagent"], limit: 1 });
-    expect(result.parents).toHaveLength(stop === "depth-cap" ? 64 : stop === "cycle" ? 1 : 0);
+    expect(result.related).toHaveLength(stop === "depth-cap" ? 64 : stop === "cycle" ? 1 : 0);
     expect(read).toHaveBeenCalledTimes(stop === "depth-cap" ? 64 : 1);
     if (stop === "depth-cap") expect(error).toHaveBeenCalledExactlyOnceWith(
       "[chat] session-ancestor-depth-exceeded: session ancestry exceeds the depth contract",
@@ -558,4 +554,26 @@ it.each(["missing", "project-boundary", "cycle", "depth-cap"])("stops ancestor r
     );
     else expect(error).not.toHaveBeenCalled();
   } finally { error.mockRestore(); }
+});
+
+it("includes off-page running children and their ancestors without changing the primary cursor or project scope", async () => {
+  const root = { id: "aaaaaaaa-1111-4111-8111-111111111111", title: "Parent", sessionKind: "main" as const, modifiedAt: new Date("2026-11-01") };
+  const newest = { ...root, id: "bbbbbbbb-1111-4111-8111-111111111111", modifiedAt: new Date("2026-11-09") };
+  const child = { ...root, id: "sub-aaaaaaaa-cccccccc-1111-4111-8111-111111111111", sessionKind: "subagent" as const, originSessionId: root.id };
+  const list = vi.fn(() => [newest]);
+  const read = vi.fn((id: string) => id === child.id ? child : null);
+  const deps = {
+    conversationLoop: { getSessionId: () => newest.id },
+    memoryManager: { sessions: { listSessionsPage: list, getSessionListEntry: (id: string) => id === root.id ? root : null } },
+    getSubAgentRunner: () => ({ listSubAgentSessions: () => [], getSessionListEntry: read,
+      getSessionActivitySnapshot: () => ({ sequence: 1, sessions: [{ sessionId: child.id, sequence: 1, running: true, attention: false }] }) }),
+  } as unknown as IpcDeps;
+  const result = await handleChatSessions(deps, { families: ["main", "subagent"], limit: 1 });
+  expect(result.sessions.map((row) => row.id)).toEqual([newest.id]);
+  expect(result.related?.map((row) => row.id)).toEqual([child.id, root.id]);
+  expect(result.related?.every((row) => !Object.hasOwn(row, "running"))).toBe(true);
+  expect(read).toHaveBeenCalledExactlyOnceWith(child.id);
+  expect(list).toHaveBeenCalledWith(expect.objectContaining({ limit: 1 }));
+  const outside = await handleChatSessions(deps, { families: ["subagent"], projectRoot: "/unauthorized", limit: 1 });
+  expect(outside.related).toEqual([]);
 });

@@ -1,3 +1,4 @@
+import type { SessionActivity } from "../../../shared/subagent-events.js";
 import type { RestoredSubAgentRow } from "./use-workflow-tools.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TileSession } from "../components/chat-group-session-registry.js";
@@ -50,91 +51,67 @@ function sessionProjectFromHistory(
  * one hook meant every tile would have refetched the list, and the sidebar
  * would have had to pick one tile's copy of it to render.
  */
-function mergeSessionRows(current: readonly SessionSummary[], incoming: readonly SessionSummary[]): SessionSummary[] {
-  return [...new Map([...current, ...incoming].map((row) => [row.id, row])).values()]
-    .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || b.id.localeCompare(a.id));
-}
-
 export function useSessionList(api: AveApi) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const listRows = useRef<SessionSummary[]>([]);
-  const pointRows = useRef(new Map<string, { row: SessionSummary; generation: number; supplemental: boolean }>());
-  const generation = useRef(0);
-  const inFlightIds = useRef(new Map<string, number>());
+  const [activity, setActivity] = useState<ReadonlyMap<string, SessionActivity>>(new Map());
+  const listedIds = useRef(new Set<string>());
+  const lifetime = useRef(0);
+  const refreshQueue = useRef<{ running: Promise<void> | null; pending: boolean }>({ running: null, pending: false });
 
-  const publishRows = useCallback(() => {
-    setSessions(mergeSessionRows([...pointRows.current.values()].map(({ row }) => row), listRows.current));
-  }, []);
-
-  const loadSessionsPage = useCallback(async (cursor?: { before: string; beforeId: string }) => {
-    const request = ++generation.current;
-    try {
-      const result = await api.chatSessions({
-        families: [...SESSION_FAMILIES],
-        limit: SESSION_LIST_MAX_LIMIT,
-        ...cursor,
-      });
-      if (request !== generation.current) return;
-      listRows.current = [...(result.parents ?? []), ...result.sessions];
-      const received = new Set(listRows.current.map((row) => row.id));
-      for (const [id, point] of pointRows.current) {
-        // Supplemental parents belong only to their response; a refresh may report a deletion.
-        if (point.generation !== request || point.supplemental || received.has(id)) pointRows.current.delete(id);
-      }
-      publishRows();
-    } catch { /* ignore */ }
-  }, [api, publishRows]);
-
-  const refreshSessions = useCallback(() => loadSessionsPage(), [loadSessionsPage]);
-
-  const readMissingChild = useCallback(async (id: string, running: boolean) => {
-    if (inFlightIds.current.has(id)) return;
-    const request = generation.current;
-    inFlightIds.current.set(id, request);
-    try {
-      const result = await api.chatSessions({ id, families: [...SESSION_FAMILIES] });
-      if (request !== generation.current) return;
-      const row = result.sessions.find((candidate) => candidate.id === id);
-      if (!row) return;
-      const known = new Set([...listRows.current.map((listed) => listed.id), ...pointRows.current.keys()]);
-      for (const candidate of [...(result.parents ?? []), { ...row, running }]) {
-        if (!known.has(candidate.id)) pointRows.current.set(candidate.id, {
-          row: candidate, generation: request, supplemental: candidate.id !== id,
-        });
-      }
-      publishRows();
-    } catch { /* A later activity can retry a failed point read. */ }
-    finally {
-      if (inFlightIds.current.get(id) === request) inFlightIds.current.delete(id);
-    }
-  }, [api, publishRows]);
+  const refreshSessions = useCallback((): Promise<void> => {
+    const queue = refreshQueue.current;
+    if (queue.running) { queue.pending = true; return queue.running; }
+    const epoch = lifetime.current;
+    const request = (async () => {
+      do {
+        queue.pending = false;
+        try {
+          const result = await api.chatSessions({ families: [...SESSION_FAMILIES], limit: SESSION_LIST_MAX_LIMIT });
+          if (epoch !== lifetime.current) return;
+          const rows = [...new Map([...(result.related ?? []), ...result.sessions].map((row) => [row.id, row])).values()]
+            .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || b.id.localeCompare(a.id));
+          listedIds.current = new Set(rows.map((row) => row.id));
+          setSessions(rows);
+        } catch { /* A later refresh can retry. */ }
+      } while (queue.pending && epoch === lifetime.current);
+    })();
+    queue.running = request;
+    void request.finally(() => { if (queue.running === request) queue.running = null; });
+    return request;
+  }, [api]);
 
   useEffect(() => {
-    const unsubscribe = api.onAgentSpawnEvent?.((event) => {
-      if (!event.childSessionId) return;
-      const id = event.childSessionId;
-      const running = (event.type === "start" || event.type === "activity") && (event.status === undefined || event.status === "running");
-      const row = listRows.current.find((candidate) => candidate.id === id) ?? pointRows.current.get(id)?.row;
-      if (row) {
-        if (row.running !== running) {
-          listRows.current = listRows.current.map((candidate) => candidate.id === id ? { ...candidate, running } : candidate);
-          const point = pointRows.current.get(id);
-          if (point) pointRows.current.set(id, { ...point, row: { ...point.row, running } });
-          publishRows();
+    const epoch = lifetime.current;
+    setActivity(new Map());
+    const apply = (rows: readonly SessionActivity[], watermark?: number) => {
+      if (epoch !== lifetime.current) return;
+      setActivity((current) => {
+        const next = new Map(current);
+        for (const row of rows) if (row.sequence > (next.get(row.sessionId)?.sequence ?? -1)) next.set(row.sessionId, row);
+        if (watermark !== undefined) {
+          const present = new Set(rows.map((row) => row.sessionId));
+          for (const [id, row] of next) if (!present.has(id) && watermark > row.sequence) next.set(id, { ...row, sequence: watermark, running: false, attention: false });
         }
-      } else if (event.type === "activity") {
-        void readMissingChild(id, running);
-      }
-      if (event.type !== "activity") void refreshSessions();
+        return next;
+      });
+    };
+    const unsubscribe = api.onAgentSpawnEvent?.((event) => {
+      if (event.activity) apply([event.activity]);
+      if (event.childSessionId && (event.type !== "activity" || !listedIds.current.has(event.childSessionId))) void refreshSessions();
     });
+    const seed = () => { void api.agentSpawnSnapshot().then((snapshot) => apply(snapshot.sessions, snapshot.sequence)).catch(() => {}); };
+    const reconnect = () => { seed(); void refreshSessions(); };
+    seed();
+    window.addEventListener("online", reconnect);
     return () => {
-      generation.current += 1;
-      inFlightIds.current.clear();
+      lifetime.current += 1;
+      refreshQueue.current = { running: null, pending: false };
+      window.removeEventListener("online", reconnect);
       unsubscribe?.();
     };
-  }, [api, publishRows, readMissingChild, refreshSessions]);
+  }, [api, refreshSessions]);
 
-  return { sessions, refreshSessions, loadSessionsPage };
+  return { sessions, activity, refreshSessions };
 }
 
 export interface CurrentSessionDeps {

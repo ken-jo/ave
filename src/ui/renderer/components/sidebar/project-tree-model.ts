@@ -107,6 +107,6 @@ export function nestSessionEntries(entries: readonly TreeEntry[]): TreeEntry[] {
 /** A selected or running descendant must remain visible through every ancestor. */
 export function sessionBranchExpanded(entry: Extract<TreeEntry, { kind: "session" }>, selectedId: string | undefined, isRunning: (id: string) => boolean, requested?: boolean): boolean {
   const containsActive = (child: TreeEntry): boolean => child.kind === "session" &&
-    (child.session.id === selectedId || child.session.running === true || isRunning(child.session.id) || (child.children ?? []).some(containsActive));
+    (child.session.id === selectedId || isRunning(child.session.id) || (child.children ?? []).some(containsActive));
   return (entry.children ?? []).some(containsActive) || (requested ?? entry.session.id === selectedId);
 }

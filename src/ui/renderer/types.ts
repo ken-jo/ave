@@ -17,7 +17,7 @@ import type { UpstreamProxyPatch, UpstreamProxyView } from "../../shared/upstrea
 import type { PluginUiExtensionView } from "../../shared/plugin-ui-view.js";
 import type { PluginInstallResultPayload } from "../../contract/app-contract.js";
 import type { ChatStreamEvent, ChatEntry } from "../../lib/chat-stream-state.js";
-import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
+import type { AgentSpawnEvent, SessionActivitySnapshot } from "../../shared/subagent-events.js";
 import type {
   ActiveWorkspaceSurface,
 } from "../../shared/browser-surface.js";
@@ -1238,6 +1238,7 @@ export type AvePreloadApi = {
   onSessionGoalChanged: (
     h: (payload: { sessionId: string; goal: SessionGoal | null }) => void,
   ) => () => void;
+  agentSpawnSnapshot: () => Promise<SessionActivitySnapshot>;
   onAgentSpawnEvent: (
     h: (event: AgentSpawnEvent<ChatEntry>) => void,
   ) => () => void;

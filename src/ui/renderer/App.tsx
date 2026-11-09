@@ -163,7 +163,7 @@ export function App() {
   const chatGroupSessions = useMemo(() => new ChatGroupSessionRegistry(), []);
 
   // The conversation list belongs to the window, independently of tile sessions.
-  const { sessions, refreshSessions } = useSessionList(api);
+  const { sessions, activity: sessionActivity, refreshSessions } = useSessionList(api);
 
   // Window-scoped toasts subscribe before plugin auth can emit them.
   const {
@@ -899,7 +899,7 @@ export function App() {
     const tile = tileSessions.find((candidate) => candidate.sessionId === sessionId || candidate.sideChat?.sessionId === sessionId);
     return tile === undefined || tile.paneHidden || (tile.sideChat?.sessionId === sessionId && !tile.sideChat.shown);
   });
-  const workingSessions = useMemo(() => selectWorkingSessionIds(tileSessions, sessions), [tileSessions, sessions]);
+  const workingSessions = useMemo(() => new Set([...selectWorkingSessionIds(tileSessions, sessions), ...[...sessionActivity.values()].filter((row) => row.running).map((row) => row.sessionId)]), [tileSessions, sessions, sessionActivity]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   const suggestionsPendingCount = useMemo(
     () => overlayQueue.filter((card) => isSuggestionsSession(card.originSessionId)).length,
@@ -2442,7 +2442,7 @@ export function App() {
                 onOpenPaneChat={openPaneChat}
                 onOpenSideChat={(sideChatSessionId, originSessionId) =>
                   void openSideChat(sideChatSessionId, originSessionId)}
-                pendingAnswerSessionIds={pendingAnswers.sessionIds}
+                pendingAnswerSessionIds={new Set([...pendingAnswers.sessionIds, ...[...sessionActivity.values()].filter((row) => row.attention).map((row) => row.sessionId)])}
                 suggestionsPendingCount={suggestionsPendingCount}
                 pluginRequestPending={pendingAnswers.unattributed.length > 0}
                 hasApiKey={effectiveLlmReady}
@@ -2793,7 +2793,7 @@ export function App() {
             </div>
 
             {/* App-level dialogs that remain available after removing setup flows. */}
-            {openSubAgentSession && <SubAgentConversationDialog api={api} session={openSubAgentSession} onClose={() => setOpenSubAgentSession(null)} />}
+            {openSubAgentSession && <SubAgentConversationDialog api={api} session={openSubAgentSession} activity={sessionActivity.get(openSubAgentSession.id)} onClose={() => setOpenSubAgentSession(null)} />}
             <RecentlyDeniedDialog open={recentlyDeniedOpen} onOpenChange={setRecentlyDeniedOpen} />
             <SpotlightTour
               api={api}

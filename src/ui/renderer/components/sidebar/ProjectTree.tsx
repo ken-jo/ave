@@ -580,7 +580,7 @@ export function ProjectTree({
     setShownByScope((current) => ({ ...current, [scope]: (current[scope] ?? page) + page }));
 
   const selectedId = activeSubAgentSessionId ?? (conversationSurfaceVisible ? currentSessionId : undefined);
-  const branchExpanded = (entry: Extract<TreeEntry, { kind: "session" }>) => sessionBranchExpanded(entry, selectedId, (id) => conversationActions?.isResponding(id) ?? false, expandedSessions[entry.session.id]);
+  const branchExpanded = (entry: Extract<TreeEntry, { kind: "session" }>) => sessionBranchExpanded(entry, selectedId, (id) => Boolean(conversationActions?.isResponding(id) || pendingAnswerSessionIds?.has(id)), expandedSessions[entry.session.id]);
 
   // ── Lines, top to bottom.
   const lines: TreeLine[] = [];
@@ -757,7 +757,7 @@ export function ProjectTree({
           active={session.id === activeSubAgentSessionId}
           family={session.family}
           pendingAnswer={pendingAnswerSessionIds?.has(session.id) ?? false}
-          responding={session.running || conversationActions?.isResponding(session.id)}
+          responding={conversationActions?.isResponding(session.id)}
           {...(open ? { onOpenFamilyRow: open } : {})}
           onOpenMenu={(event) => openNativeContextMenu(event, "conversation", familyMenu)}
           t={t}

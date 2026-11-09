@@ -1167,6 +1167,13 @@ export function registerChatHandlers(deps: IpcDeps): void {
     });
     return mutation ?? { ok: false as const, error: STREAMING_ACTIVE };
   });
+  ipcMain.handle(CHANNELS.agentSpawn.snapshot, (e) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.agentSpawn.snapshot, e);
+      return { sequence: 0, sessions: [] };
+    }
+    return deps.getSubAgentRunner?.()?.getSessionActivitySnapshot() ?? { sequence: 0, sessions: [] };
+  });
   ipcMain.handle(CHANNELS.chat.sessions, (e, opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown }) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.chat.sessions, e);
