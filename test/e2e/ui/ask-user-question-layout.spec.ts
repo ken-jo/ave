@@ -87,6 +87,12 @@ test.describe('ask_user_question overlay layout', () => {
       mainWindow,
     }) => {
       await setWindowSize(app, viewport.width, viewport.height);
+      if (viewport.width === 360) {
+        await expect(mainWindow.getByTestId("app-shell")).toHaveAttribute("data-sidebar-state", "hidden");
+      }
+      await expect.poll(() => mainWindow.evaluate(() => document.getAnimations().every(
+        (animation) => !(animation instanceof CSSTransition) || animation.playState !== "running",
+      ))).toBe(true);
 
       const visible = await ensureQuestionOverlayVisible(
         app,
