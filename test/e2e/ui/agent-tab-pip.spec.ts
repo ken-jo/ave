@@ -4,8 +4,8 @@ import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from "./seeded-electron.js";
 
 test.use({ trace: "on" });
-for (const width of [1243, 360]) {
-  test(`floats real agent tabs over content at ${width}px`, async () => {
+for (const [width, height] of [[1243, 800], [1243, 600], [360, 800], [360, 600]]) {
+  test(`floats real agent tabs below chrome at ${width}×${height}`, async () => {
     test.setTimeout(120_000);
     const model = "pip-fixture";
     let stage = 0;
@@ -72,7 +72,7 @@ for (const width of [1243, 360]) {
     try {
       ctx = await launchSeededElectron({ sessionTitle: "Agent tab previews", settings, historyRows: [] });
       fixtureRoot = ctx.tempHome;
-      await setWindowSize(ctx.app, width, 800);
+      await setWindowSize(ctx.app, width, height);
       const page = ctx.page;
       await page.evaluate(async () => {
         await window.aveApi.setApiKey("openai-compatible", "sk-e2e-pip-loopback");
@@ -87,7 +87,7 @@ for (const width of [1243, 360]) {
       };
       if (await toggle.getAttribute("aria-pressed") === "true") await closePanel();
       const composer = pane.getByTestId("composer-textarea");
-      await composer.fill("Open two local pages for the browser task."); await composer.press("Enter");
+      await composer.fill("Open three local pages for the browser task."); await composer.press("Enter");
       approvals = (async () => {
         while (approving) {
           const site = page.getByTestId("browser-site-approval-card").getByRole("button", { name: /^(Allow this site|이 사이트만 허용)$/ }).first();
@@ -108,10 +108,11 @@ for (const width of [1243, 360]) {
         await expect(image).toBeVisible({ timeout: 15_000 });
         const picture = await image.evaluate((element) => {
           const image = element as HTMLImageElement; const r = image.getBoundingClientRect();
-          return { x: r.x, y: r.y, width: r.width, height: r.height, ratio: image.naturalWidth / image.naturalHeight };
+          return { x: r.x, y: r.y, width: r.width, height: r.height, naturalWidth: image.naturalWidth, fit: getComputedStyle(image).objectFit, position: getComputedStyle(image).objectPosition };
         });
         expect(picture.width).toBeGreaterThan(180);
-        expect(picture.width / picture.height).toBeCloseTo(picture.ratio, 2);
+        expect(picture.width / picture.height).toBeCloseTo(16 / 9, 2);
+        expect(picture.naturalWidth).toBeGreaterThan(0); expect(picture.fit).toBe("cover"); expect(picture.position).toBe("0% 0%");
         const badge = await cards.getByText(/^(Live|실시간)$/).boundingBox();
         if (!badge) throw new Error("Live badge bounds missing");
         expect(badge.x).toBeGreaterThanOrEqual(picture.x); expect(badge.y).toBeGreaterThanOrEqual(picture.y);
@@ -119,6 +120,34 @@ for (const width of [1243, 360]) {
         expect(badge.y + badge.height).toBeLessThanOrEqual(picture.y + picture.height);
       }
       else await expect(cards.getByTestId("browser-observation-preview")).toHaveCount(0);
+      const assertControlsClear = async () => {
+        for (const controls of [page.getByTestId("main-toolbar").locator("button"), pane.getByTestId("pane-header").locator("button")]) {
+          let checked = 0;
+          for (const button of await controls.all()) {
+            if (!await button.isVisible() || !await button.isEnabled()) continue;
+            await expect(button).toBeInViewport();
+            expect(await button.evaluate((element) => {
+              const rect = element.getBoundingClientRect();
+              return element.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2));
+            })).toBe(true);
+            await button.click({ trial: true }); checked++;
+          }
+          expect(checked).toBeGreaterThan(0);
+        }
+        const body = await pane.locator("[data-pip-region]").boundingBox();
+        const reserved = await pane.getByTestId(TEST_IDS.composer).boundingBox();
+        if (!body || !reserved) throw new Error("Pane body or composer bounds missing");
+        for (const box of await cards.evaluateAll((elements) => elements.map((element) => {
+          const r = element.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+        }))) {
+          expect(box.top).toBeGreaterThanOrEqual(body.y);
+          expect(box.bottom).toBeLessThanOrEqual(reserved.y);
+          expect(box.left).toBeGreaterThanOrEqual(body.x); expect(box.right).toBeLessThanOrEqual(body.x + body.width);
+        }
+        expect(await page.getByTestId("agent-browser-pip-layer").evaluate((element) => element.scrollHeight <= element.clientHeight)).toBe(true);
+        await page.mouse.move(width / 2, height / 2);
+        await expect(page.getByRole("tooltip")).toHaveCount(0);
+      };
       const firstId = await cards.first().getAttribute("data-tab-id");
       const guest = page.locator(`webview[data-tab-id="${firstId}"]`);
       const guestId = await guest.evaluate((element) => (element as HTMLElement & { getWebContentsId(): number }).getWebContentsId());
@@ -153,7 +182,8 @@ for (const width of [1243, 360]) {
         const r = element.getBoundingClientRect();
         return element.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
       })).toBe(true);
-      await page.screenshot({ path: test.info().outputPath(`agent-tab-pip-approval-${width}.png`) });
+      await assertControlsClear();
+      await page.screenshot({ path: test.info().outputPath(`agent-tab-pip-approval-${width}x${height}.png`) });
       holdApproval = false;
       await expect.poll(() => releaseSecond !== undefined, { timeout: 30_000 }).toBe(true);
       const openSecond = releaseSecond; releaseSecond = undefined; openSecond?.();
@@ -173,37 +203,27 @@ for (const width of [1243, 360]) {
         const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
         return hit === element || element.contains(hit);
       })).toBe(true);
-      await page.screenshot({ path: test.info().outputPath(`agent-tab-pip-${width}.png`) });
-      if (width >= 480) {
-        const addThird = releaseThird; releaseThird = undefined; finish = undefined; addThird?.();
-        await expect.poll(() => finish !== undefined).toBe(true);
-        await expect(cards).toHaveCount(3);
-        await setWindowSize(ctx.app, width, 640);
-        const layer = page.getByTestId("agent-browser-pip-layer");
-        const clippedCard = cards.nth(2);
-        const clippedPicture = clippedCard.getByTestId("browser-observation-preview");
-        await expect.poll(async () => {
-          const picture = await clippedPicture.boundingBox(); const port = await layer.boundingBox();
-          return picture !== null && port !== null && picture.y + picture.height <= port.y;
-        }).toBe(true);
-        await expect(clippedPicture.locator("img")).toHaveCount(0);
-        const clippedId = await clippedCard.getAttribute("data-tab-id");
-        const clippedGuest = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${clippedId}"]`);
-        await expect(clippedGuest).toHaveCSS("visibility", "hidden");
-        await layer.evaluate((element) => element.scrollTo({ top: -element.scrollHeight }));
-        await expect(clippedPicture.locator("img")).toBeVisible();
-        await expect(clippedGuest).toHaveCSS("opacity", "0");
-        await setWindowSize(ctx.app, width, 800);
-        await layer.evaluate((element) => element.scrollTo({ top: 0 }));
-        const target = cards.first().getByRole("button", { name: /^(Open browser tab:|브라우저 탭 열기:)/ });
-        const box = await target.boundingBox(); if (!box) throw new Error("Card bounds missing");
-        await page.mouse.move(box.x + 20, box.y + 20); await page.mouse.down();
-        await page.mouse.move(0, 0, { steps: 8 }); await page.mouse.up();
-        await expect(toggle).toHaveAttribute("aria-pressed", "false");
-        const moved = await cards.first().boundingBox();
-        expect(moved?.x).toBeGreaterThanOrEqual(0); expect(moved?.y).toBeGreaterThanOrEqual(0);
-        expect(moved?.x).toBeLessThan(box.x); expect(moved?.y).toBeLessThan(box.y);
-      }
+      await assertControlsClear();
+      await page.screenshot({ path: test.info().outputPath(`agent-tab-pip-normal-${width}x${height}.png`) });
+      const addThird = releaseThird; releaseThird = undefined; finish = undefined; addThird?.();
+      await expect.poll(() => finish !== undefined).toBe(true);
+      await expect.poll(async () => {
+        const shown = await cards.count();
+        const summary = page.getByTestId("agent-browser-pip-overflow");
+        const hidden = await summary.count() ? Number((await summary.textContent())?.replace("+", "")) : 0;
+        return shown + hidden;
+      }).toBe(3);
+      await assertControlsClear();
+      await page.screenshot({ path: test.info().outputPath(`agent-tab-pip-three-tabs-${width}x${height}.png`) });
+      const target = cards.first().getByRole("button", { name: /^(Open browser tab:|브라우저 탭 열기:)/ });
+      const box = await target.boundingBox(); if (!box) throw new Error("Card bounds missing");
+      await page.mouse.move(box.x + 20, box.y + 20); await page.mouse.down();
+      await page.mouse.move(0, 0, { steps: 8 }); await page.mouse.up();
+      await expect(toggle).toHaveAttribute("aria-pressed", "false");
+      const moved = await cards.first().boundingBox();
+      expect(moved?.x).toBeLessThan(box.x); expect(moved?.y).toBeLessThan(box.y);
+      await assertControlsClear();
+
     } catch (error) {
       if (ctx) {
         await ctx.page.screenshot({ path: test.info().outputPath("failure.png") }).catch(() => {});
