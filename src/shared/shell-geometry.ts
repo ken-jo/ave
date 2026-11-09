@@ -72,16 +72,21 @@ export const BAND_LEAD_PAD_DARWIN = TRAFFIC_LIGHT_RIGHT_EDGE + CHROME_GAP_TIGHT;
 /** Linux mirrors macOS: measured from the window edge, past the renderer's leading buttons and the same gap. */
 export const BAND_LEAD_PAD_LINUX = WINDOW_CONTROLS_RUN + CHROME_GAP_TIGHT;
 
-/** Content titles begin two gutters from the card edge, matching the band label above. */
-export const CONTENT_TITLE_INSET = SHELL_GUTTER * 2;
+/** Where a pane header's content (its glyph, then the title) starts, measured from the navigation card's trailing edge: the pane cell's half-gutter
+ * (`p-(--chrome-gap-tight)`) plus the pane header's inline padding (`px-(--chrome-gap)` in PaneFrame). The band path starts here too. */
+export const CONTENT_TITLE_INSET = CHROME_GAP_TIGHT + SHELL_GUTTER;
 
 /** What the content reserves on its leading edge for the rail: the card inset, the 52px rail card and one gutter. Keep the CSS
  * mirror aligned; the literal is consumed by the source-reading gate. */
 export const COLLAPSED_RAIL_RESERVE = 68;
 
-/** The band's lead while only the rail shows: the content title's line past the rail. On darwin the rail starts below the band,
- * and this lead also clears the native buttons. */
-export const RAIL_BAND_LEAD = COLLAPSED_RAIL_RESERVE + CONTENT_TITLE_INSET;
+/** The rail card's trailing edge (card inset + rail width), mirrored by `--shell-collapsed-rail-edge`. Rail-only content pads to
+ * it, so the pane cell's tight gap is the only air between rail and pane. */
+export const COLLAPSED_RAIL_EDGE = COLLAPSED_RAIL_RESERVE - SHELL_GUTTER;
+
+/** The band's lead while only the rail shows: the content title's line past the rail's trailing edge. CustomTitleBar never pads
+ * less than the platform's own floor, so on macOS (`BAND_LEAD_PAD_DARWIN`) and Linux (`BAND_LEAD_PAD_LINUX`) the window buttons win. */
+export const RAIL_BAND_LEAD = COLLAPSED_RAIL_EDGE + CONTENT_TITLE_INSET;
 
 /** The widest rail control must fit the reserve at the largest supported font scale. */
 export const RAIL_CONTROL_REM = 2.25;

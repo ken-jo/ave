@@ -402,11 +402,12 @@ describe("Sidebar legacy default-root session handling", () => {
 describe("Sidebar card placement", () => {
   it.each([false, true])("starts one band down on every platform (isDarwin=%s)", (isDarwin) => {
     (window as unknown as { avePlatform?: unknown }).avePlatform = { isDarwin, windowControls: isDarwin ? "native" : "trailing" };
-    const { getByTestId, restore } = renderSidebar();
+    const { getByTestId, restore } = renderSidebar({ onWidthChange: vi.fn(), onWidthCommit: vi.fn() });
     try {
       const aside = getByTestId("primary-sidebar");
       expect(aside).toHaveClass("top-(--shell-card-top)");
       expect(aside.className).not.toMatch(/shell-card-top-darwin/);
+      expect(getByTestId("sidebar-resize-handle").style.width).toBe("var(--chrome-gap)");
     } finally {
       restore();
       delete (window as unknown as { avePlatform?: unknown }).avePlatform;

@@ -176,18 +176,32 @@ Breadcrumbs in VS Code sit at the **top of the editor content, on the leading ed
 chrome, above the text — because the path describes what is open, not where the window is. Their
 tokens (`breadcrumb.foreground`, `breadcrumb.activeSelectionForeground`) are content tokens, not
 title-bar tokens. What we take is the association and the edge; what we do not take is the
-storey. Ours runs on the **leading edge of the window band**, starting exactly where the
-sidebar card ends, because the band is the one strip that spans every pane and the path has to
+storey. Ours runs on the **leading edge of the window band**, using the pane's navigation-derived
+baseline subject to window-control clearance, because the band spans every pane and the path has to
 name one location while several panes are open. A path floated to the *trailing* edge would
 read as window furniture and lose the association — that is the placement the rule forbids, and
 it is not this one.
 
-The one exception is Linux, where the window buttons lead the band (close, minimize, maximize, as
-GNOME and macOS order them): the path can never start before `BAND_LEAD_PAD_LINUX` (136px).
-With the sidebar collapsed or overlaid, the path starts at 136px instead of on the rail's line (84px).
-With the sidebar hidden, it starts at 136px instead of at the band edge (12px).
-In both cases it no longer lines up with the content title below; that is the cost of keeping the
-buttons where Linux users expect them.
+The band start and the rendered pane-header content start are separate measurements. The band uses
+the navigation card's trailing edge plus `CONTENT_TITLE_INSET` (12px): the pane cell's 4px half-gutter
+and the header's 8px inline padding. The pane card's 1px border puts its rendered content (the glyph,
+then the title) 1px further in. With the list expanded at its default width in a 1243px window, the
+band starts at 312px and the rendered header content starts at 313px on every platform.
+
+With the sidebar collapsed or overlaid, the navigation-derived baseline before applying the
+platform floor is 72px. The rendered header content starts at 73px. Window controls set the band start separately:
+
+| Platform | Band start | Rendered header content start |
+| --- | --- | --- |
+| macOS | 80px | 73px |
+| Linux | 136px | 73px |
+| Windows | 72px | 73px |
+
+The macOS traffic lights end at 76px; the 80px band floor leaves their 4px gap. Its accepted offset
+from the rendered header content is therefore **80 − 73 = 7px**. Linux reserves 136px for its leading
+window buttons. Windows places its controls at the trailing edge and uses the 72px reference line.
+Hidden navigation retains the platform's band floor: 80px, 136px and 12px respectively.
+The visible sidebar-to-pane gap remains 4px in both expanded and collapsed layouts.
 
 What it names is the **focused pane's location**, since that is where the window is (see
 `docs/design/tiled-chat-groups.md`). Moving focus between panes therefore moves the path, with
@@ -234,6 +248,14 @@ What the frame owns, in order from the outside in:
   pads by the tight chrome gap on every side, so two adjacent halves make the gutter between
   tiles; the frame's floors are measured on its content, and a split subtracts the cell
   inset (`PANE_CELL_INSET`) before comparing.
+  Without persistent banners, the first row shares `--shell-card-top` with the sidebar cards; `--shell-canvas-top`
+  derives the content origin before the cell's half-gutter. Empty banner lanes reserve
+  no height, including when they contain only text placeholders. Visible persistent
+  banners still reserve space above the panes.
+  When navigation sits beside the canvas, its visible gap is `--chrome-gap-tight` (4px),
+  measured from the list card's edge or the collapsed rail's edge. Split panes keep their 8px inner gutter.
+  The sidebar resize handle stays 8px wide inside the list card's trailing edge,
+  clear of pane content and header controls. Hidden navigation keeps the window inset.
 - **Header band.** One row, `--chrome-band-height` tall, the same height as every other
   chrome band. The leading edge starts with the same glyph the sidebar row uses
   for this content, then the title; a longer description lives on the title's hover and is
