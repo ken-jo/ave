@@ -1,3 +1,4 @@
+import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 // Use production protocol, policy and relay modules for permission probes.
 import { app, BrowserWindow, protocol } from "electron";
 import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
@@ -12,6 +13,8 @@ import {
 } from "../../../../src/main/mcp-app-protocol.js";
 import { mcpAppPartitionName } from "../../../../src/shared/mcp-app-partition.js";
 import type { McpUiResourcePermissions } from "../../../../src/mcp/types.js";
+
+configureE2eWindowPolicy();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_ID = "e2e-perm-server";
@@ -89,7 +92,7 @@ async function runCard(
   revokeToken = false,
 ): Promise<void> {
   const win = new BrowserWindow({
-    show: true,
+    show: false,
     width: 500,
     height: 320,
     webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: false },
@@ -109,8 +112,7 @@ async function runCard(
   }
 
   win.webContents.on("did-finish-load", () => {
-    win.show();
-    win.focus();
+    win.showInactive();
     void win.webContents.executeJavaScript(
       `window.__startProbe(${JSON.stringify({
         serverId: SERVER_ID,

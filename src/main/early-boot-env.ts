@@ -7,6 +7,8 @@ import { ensureWorkspaceCwd } from "./ensure-workspace-cwd.js";
 import { MCP_APP_CUSTOM_SCHEME } from "./mcp-app-protocol.js";
 import { CONTENT_ASSET_CUSTOM_SCHEME } from "./content-asset-protocol.js";
 import { scrubPackagedProcessEnv } from "./packaged-env-scrub.js";
+import { configureE2eWindowPolicy } from "./e2e-window-policy.js";
+import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { applyAppUserAgentFallback } from "./browser-user-agent.js";
 import { resolveAppIconPath } from "./app-icon.js";
 import {
@@ -49,6 +51,7 @@ function removeStaleDevToastShortcut(): void {
 }
 
 export function applyRuntimeAppIcon() {
+  if (isBackgroundE2eRuntime()) return;
   const iconPath = resolveAppIconPath();
   if (iconPath && process.platform === "darwin" && app.dock) {
     app.dock.setIcon(iconPath);
@@ -56,6 +59,7 @@ export function applyRuntimeAppIcon() {
 }
 
 export function runEarlyBootEnv(): void {
+  configureE2eWindowPolicy();
   const workspaceCwd = ensureWorkspaceCwd();
   log.info({ workspaceCwd }, "main: cwd anchored to ~/.ave/workspace");
 

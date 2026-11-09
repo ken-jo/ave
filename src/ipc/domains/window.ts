@@ -1,3 +1,4 @@
+import { showWindowForRuntime } from "../../main/e2e-window-presentation.js";
 import { BrowserWindow, ipcMain, type BrowserWindow as ElectronBrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { t } from "../../i18n/index.js";
 import { resolveAppIconPath } from "../../main/app-icon.js";
@@ -93,7 +94,7 @@ export function registerWindowHandlers(deps: IpcDeps): void {
 
     try {
       await win.loadURL(dataUrl);
-      if (!win.isDestroyed()) win.show();
+      if (!win.isDestroyed()) showWindowForRuntime(win);
       return { ok: true, windowId: win.id };
     } catch (err) {
       if (!win.isDestroyed()) win.close();

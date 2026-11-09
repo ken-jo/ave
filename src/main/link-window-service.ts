@@ -1,3 +1,4 @@
+import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // External-link viewers expose no host APIs or captured cookies; the caller chooses in-app or system-browser routing. Use the persistent-browser user
 // agent and flush cookies on close so quick teardown does not lose authenticated sessions.
 import { BrowserWindow, session as electronSession, type WebContents } from "electron";
@@ -131,6 +132,7 @@ export async function openLinkWindow(
   const shellTitle = opts.windowTitle ?? "External Link";
   // Frame settings mirror the main app window so traffic-light spacing stays uniform on macOS and Win/Linux gets the same frameless shell with our own titlebar buttons.
   const win = new BrowserWindow({
+    show: !isBackgroundE2eRuntime(),
     parent: parent ?? undefined,
     width: opts.width ?? 1024,
     height: opts.height ?? 768,
@@ -190,7 +192,7 @@ export async function openLinkWindow(
     };
 
     win.once("ready-to-show", () => {
-      win.show();
+      showWindowForRuntime(win);
       settle(resolve);
     });
     win.once("closed", () => {

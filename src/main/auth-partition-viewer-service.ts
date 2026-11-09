@@ -1,3 +1,4 @@
+import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // Reuses the calling plugin’s auth partition without exposing cookies or a host bridge. Enforce manifest domains on navigation and redirects; deny
 // popups and downloads from the credential-bearing session.
 import { BrowserWindow, session as electronSession } from "electron";
@@ -181,6 +182,7 @@ export async function openAuthPartitionViewer(
   }
 
   const win = new BrowserWindow({
+    show: !isBackgroundE2eRuntime(),
     parent: opts.parent ?? undefined,
     width: 1024,
     height: 768,
@@ -255,7 +257,7 @@ export async function openAuthPartitionViewer(
     };
 
     win.once("ready-to-show", () => {
-      win.show();
+      showWindowForRuntime(win);
       settle(resolve);
     });
     win.once("closed", () => {

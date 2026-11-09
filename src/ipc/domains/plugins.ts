@@ -1,3 +1,4 @@
+import { isBackgroundE2eRuntime, showWindowForRuntime } from "../../main/e2e-window-presentation.js";
 import { stripMcpErrorCode } from "../../shared/mcp-error-code.js";
 import { createPluginRetirementPort, type PluginConfigRetention } from "../../plugins/retired-config.js";
 import { ContributionTrustReviewStaleError } from "../../plugins/plugin-contribution-trust.js";
@@ -1430,8 +1431,8 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     if (win && !win.isDestroyed()) {
       try {
         if (win.isMinimized()) win.restore();
-        win.show();
-        win.focus();
+        showWindowForRuntime(win);
+        if (!isBackgroundE2eRuntime()) win.focus();
         win.webContents.send(IPC_NOTIFICATION_CLICKED, clickPayload);
       } catch (err) {
         log.warn(

@@ -1,6 +1,7 @@
 import { _electron as electron, type ElectronApplication, type Page,
 } from "playwright";
 import { once } from "node:events";
+import { createRequire } from "node:module";
 import { expect } from "@playwright/test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync,
 } from "node:fs";
@@ -12,6 +13,7 @@ import { LLM_VENDOR_DEFAULTS, type LLMVendor,
 import { DEFAULT_APPEARANCE } from "../../../src/shared/appearance-settings.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
+import { resolveE2eExecutable } from "./background-electron.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, "../../..");
@@ -61,9 +63,15 @@ export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" })
  * E2E_CHROMIUM_SWITCHES} in front and {@link E2E_RUNTIME_ENV} over the spec's env (Playwright's default env is `process.env`, so a spec that passes none keeps it), through {@link launchBaseEnv}. */
 export function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
   const baseEnv = launchBaseEnv(options?.env ?? process.env);
+  const executablePath = resolveE2eExecutable(options);
+  // A custom runtime path bypasses automatic loader injection; preserve startup coordination and background rendering switches.
+  const runtimeArgs = executablePath && !options?.executablePath
+    ? ["-r", resolve(dirname(createRequire(import.meta.url).resolve("playwright-core/package.json")), "lib/server/electron/loader.js")]
+    : [];
   return electron.launch({
     ...options,
-    args: [...E2E_CHROMIUM_SWITCHES, ...(options?.args ?? [])],
+    executablePath,
+    args: [...E2E_CHROMIUM_SWITCHES, ...runtimeArgs, ...(options?.args ?? [])],
     env: { ...baseEnv, ...E2E_RUNTIME_ENV },
   });
 }

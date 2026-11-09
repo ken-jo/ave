@@ -1,3 +1,4 @@
+import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 // Use production protocol, partition policy and preload modules so security wiring is exercised directly.
 import { app, BrowserWindow, protocol } from "electron";
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
@@ -10,6 +11,8 @@ import {
   MCP_APP_CUSTOM_SCHEME,
 } from "../../../../src/main/mcp-app-protocol.js";
 import { mcpAppPartitionName } from "../../../../src/shared/mcp-app-partition.js";
+
+configureE2eWindowPolicy();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_ID = "e2e-mcp-server";
