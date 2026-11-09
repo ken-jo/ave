@@ -43,10 +43,7 @@ import { forgetActiveSurface } from "./preview/active-surface.js";
 import { savedSurfaceOf } from "./preview/main-layout-snapshot.js";
 import { webSurfaceLocation } from "./preview/web-surfaces.js";
 import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
-import { agentDrivesBrowserTab, closeBrowserTab, registerBrowserTabHost, useBrowserControlState, useBrowserControlUnavailable } from "./preview/agent-browser-bridge.js";
-import { releaseBrowserObservationSession, useHostedBrowserObservations } from "./preview/browser-observation-bridge.js";
-import { BrowserObservationLiveStrip } from "./preview/BrowserObservationLiveStrip.js";
-import { BrowserObservationPreview } from "./preview/BrowserObservationPreview.js";
+import { closeBrowserTab, registerBrowserTabHost, useBrowserControlState } from "./preview/agent-browser-bridge.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { normalizeBrowserNavigationUrl } from "./preview/url-safety.js";
 import { createPortal } from "react-dom";
@@ -81,8 +78,6 @@ import { matchesShortcut } from "./hooks/use-shortcuts.js";
 
 /** Chat state comes from context; user-action callbacks remain explicit props. */
 export interface ChatViewProps {
-  hiddenBrowserTabIds?: ReadonlySet<string> | undefined;
-  onFocusObservedBrowser?: ((tabId: string) => void) | undefined;
   api: AveApi;
   appDraftSuggestion?: AppDraftBannerProps;
   onAsk: (
@@ -167,7 +162,7 @@ export interface ChatViewProps {
 }
 
 
-export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, sideChatWorking = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
+export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, sideChatWorking = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId, revealMessage, onMessageRevealHandled }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -191,9 +186,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
     llmVendor, llmModel, llmRouteModalities,
   } = useChatContext();
 
-  const observations = useHostedBrowserObservations(currentSessionId ?? "");
   const browserControl = useBrowserControlState();
-  const browserControlUnavailable = useBrowserControlUnavailable();
   const visibleBrowserOwners = useMemo(() => browserTabOwners(currentSessionId, browserControl.tabs.map((tab) => tab.owner)), [currentSessionId, browserControl.tabs]);
 
   // Checkpoint view mode owns both transcript slicing and auto-scroll suppression.
@@ -255,25 +248,6 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
   // Keep workspace tabs in ChatView so closing the rail or navigating away does not destroy them.
   const workspaceTabs = useWorkspaceTabs();
-  const observedBrowsers = observations.flatMap((event) => {
-    if (hidden || browserControlUnavailable || event.kind !== "action" || event.after.action === "tab-close") return [];
-    const tabId = event.after.rendererTabId;
-    if (!tabId) return [];
-    const local = workspaceTabs.tabs.some((tab) => tab.id === tabId);
-    const unseen = local ? !sidePanelOpen || workspaceTabs.activeTabId !== tabId : hiddenBrowserTabIds?.has(tabId);
-    const controlled = browserControl.tabs.some((tab) => tab.kind === "embedded" && tab.rendererTabId === tabId
-      && tab.tabId === event.after.tabId && agentDrivesBrowserTab(tab, event.sessionId));
-    if (!unseen || !controlled) return [];
-    const child = subAgentSpawns.find((spawn) => spawn.childSessionId === event.sessionId);
-    if (child && (child.status === "done" || child.status === "error" || child.status === "interrupted")) return [];
-    return [{ tabId, sessionId: event.sessionId, child }];
-  });
-  const focusObservedBrowser = (tabId: string) => {
-    if (workspaceTabs.hasTab(tabId)) {
-      workspaceTabs.setActiveTabId(tabId);
-      onSidePanelOpenChange(true);
-    } else onFocusObservedBrowser?.(tabId);
-  };
   const handleRevealChangedFile = useCallback((path: string) => {
     workspaceTabs.ensureContainerTab("file-browser");
     setFileReveal((previous) => ({ sessionId: currentSessionId, request: { path, token: (previous?.request.token ?? 0) + 1 } }));
@@ -578,9 +552,6 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
 
   // Key side-chat requests only on nonce to prevent tab changes reopening the panel; refs keep browser registrations stable.
   const browserTabHostRef = useRef({ workspaceTabs, currentSessionId, onSidePanelOpenChange });
-  useEffect(() => () => {
-    if (currentSessionId) releaseBrowserObservationSession(currentSessionId);
-  }, [currentSessionId]);
   useLayoutEffect(() => {
     browserTabHostRef.current = { workspaceTabs, currentSessionId, onSidePanelOpenChange };
   }, [workspaceTabs, currentSessionId, onSidePanelOpenChange]);
@@ -956,15 +927,6 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
       <ChatComposerDock
         dockColumnClass={dockColumnClass}
         notices={<>
-          {observedBrowsers.map(({ tabId: observedTabId, sessionId: observedSessionId, child }) => <div key={observedTabId} data-testid="conversation-browser-observation" className="mb-2 flex items-center gap-2">
-            <div className="min-w-0 flex-1">{child ? <span className="text-xs text-muted-foreground">{child.title}</span> : null}<BrowserObservationLiveStrip tabId={observedTabId} sessionId={observedSessionId} /></div>
-            <button type="button" aria-label={t("agentBrowser.focusObservedPane")} onClick={() => focusObservedBrowser(observedTabId)}
-              className="relative shrink-0 overflow-hidden rounded border" style={{ width: 128, height: 80 }}>
-              <BrowserObservationPreview tabId={observedTabId} sessionId={observedSessionId} observeHidden>
-                <span className="text-xs text-muted-foreground">{t("agentBrowser.observationPreviewUpdating")}</span>
-              </BrowserObservationPreview>
-            </button>
-          </div>)}
           {appDraftSuggestion ? <AppDraftBanner {...appDraftSuggestion}
             onReplace={() => { appDraftSuggestion.onReplace(); composerRef.current?.focus(); }}
             onDismiss={() => { appDraftSuggestion.onDismiss(); composerRef.current?.focus(); }}

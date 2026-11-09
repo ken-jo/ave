@@ -100,6 +100,7 @@
 - Stacking (z-order ladder):
   - Canvas content stays at `z-0`–`z-30` (sticky headers/rails at `z-10`–`z-30`).
   - Docked auxiliary panels use `z-40`; all floating overlays (dialog, popover, command picker, tooltip, toast) share the `z-50` band and rely on portal/mount order within it.
+  - Hidden agent browser tabs have one window-level floating preview each in the `z-40` band, above content and below dialogs. The bottom-right stack reserves the visible composer and pending decision area, so it never covers their controls. Cards are about 240×150px, become favicon/title chips below 480px, and can be dragged within the available window area. Enter or click reveals the tab; Delete or × hides its card until the tab is shown or the agent uses it again. Position and dismissal last only in memory. Previews reuse the browser observation stream; the composer has no browser preview row.
   - Dev-only tier: `--z-dev-overlay` (60, `z-(--z-dev-overlay)`) sits above the overlay band so development tooling such as the component labels stays on top of dialogs. Product UI never uses it.
   - Arbitrary escapes (`z-[9000]`-style) are drift, not a tier.
 - Motion:

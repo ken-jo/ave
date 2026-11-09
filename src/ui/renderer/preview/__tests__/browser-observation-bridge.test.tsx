@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentObservationEvent, BrowserObservationDetail, BrowserObservationEvent } from "../../../../shared/agent-observation.js";
 import { OBSERVATION_LIMITS } from "../../../../shared/agent-observation.js";
 import type { AvePreviewApi } from "../../types.js";
-import { BrowserObservationStore, connectBrowserObservations, releaseBrowserObservationSession } from "../browser-observation-bridge.js";
+import { BrowserObservationStore, connectBrowserObservations } from "../browser-observation-bridge.js";
 import { BrowserObservationLiveStrip } from "../BrowserObservationLiveStrip.js";
 
 const SESSION = "browser-session";
@@ -25,17 +25,16 @@ let disconnect: (() => void) | undefined;
 afterEach(() => { cleanup(); disconnect?.(); disconnect = undefined; });
 
 describe("browser observation retention", () => {
-  it("retains both children's latest events for their parent with stable snapshots", () => {
+  it("retains each child's latest event until its session is released", () => {
     const store = new BrowserObservationStore(async () => ({ ok: true }));
     const first = action(1, { rendererTabId: "browser:a" }, "child-a", "a", "parent");
     const second = action(1, { rendererTabId: "browser:b" }, "child-b", "b", "parent");
     store.accept([first, second]);
-    expect(store.hosted("parent")).toEqual([first, second]);
-    expect(store.hosted("parent")).toBe(store.hosted("parent"));
     expect(store.latest("browser:a", "child-a")).toBe(first);
     expect(store.latest("browser:b", "child-b")).toBe(second);
-    store.releaseSession("child-a");
-    expect(store.hosted("parent")).toEqual([second]);
+    store.accept([{ ...first, seq: 2, kind: "status", before: null, after: { code: "session-cleared" } }]);
+    expect(store.latest("browser:a")).toBeUndefined();
+    expect(store.latest("browser:b")).toBe(second);
     store.dispose();
   });
   it("keeps each tab in one child independently observed when another tab closes", () => {
@@ -43,7 +42,6 @@ describe("browser observation retention", () => {
     const first = action(1, { rendererTabId: "browser:a" }, "child", "one-view", "parent");
     const second = action(2, { rendererTabId: "browser:b" }, "child", "one-view", "parent");
     store.accept([first, second]);
-    expect(store.hosted("parent")).toEqual([first, second]);
     const closed = action(3, { rendererTabId: "browser:b", action: "tab-close" }, "child", "one-view", "parent");
     store.accept([closed]);
     expect(store.latest("browser:a", "child")).toBe(first);
@@ -51,28 +49,6 @@ describe("browser observation retention", () => {
     store.dispose();
   });
 
-  it("selects only the newest exactly hosted event, including status and close, with deterministic ties", () => {
-    const store = new BrowserObservationStore(async () => ({ ok: true }));
-    const first = action(1, {}, "child", "target-a", "parent");
-    store.accept([first]);
-    expect(store.latestHosted("parent")).toBe(first);
-    expect(store.latestHosted("child")).toBeUndefined();
-    expect(store.latestHosted("")).toBeUndefined();
-    expect(store.latestHosted("unrelated")).toBeUndefined();
-    const second = action(2, { rendererTabId: "browser:2" }, "other-child", "target-b", "parent");
-    store.accept([second, { ...first, target: { ...first.target, id: "unrelated", hostSessionId: "other" }, ts: second.ts + 1 }]);
-    expect(store.latestHosted("parent")).toBe(second);
-    const stopped = { ...status(3, "observation-error", "other-child", "parent"), target: second.target };
-    store.accept([stopped]);
-    expect(store.latestHosted("parent")).toBe(stopped);
-    const closed = action(4, { action: "tab-close" }, "other-child", "target-b", "parent");
-    store.accept([closed]);
-    expect(store.latestHosted("parent")).toBe(closed);
-    const tied = { ...closed, target: { ...closed.target, id: "target-z" } };
-    store.accept([tied]);
-    expect(store.latestHosted("parent")).toBe(tied);
-    store.dispose();
-  });
 
   it("consumes the existing mixed-source channel without treating document data as browsing", () => {
     const ack = vi.fn(async () => ({ ok: true }));
@@ -127,7 +103,7 @@ describe("browser observation retention", () => {
     expect(store.latest("browser:1", "parent-session")?.seq).toBe(2);
     expect(store.latest("browser:remaining", "parent-session")).toBeUndefined();
     expect(store.latest("browser:remaining", "unrelated-session")).toBeUndefined();
-    store.releaseSession("parent-session");
+    store.accept([status(3, "session-cleared", SESSION, "parent-session")]);
     expect(store.latest("browser:1", SESSION)).toBeUndefined();
     store.dispose();
   });
@@ -196,7 +172,7 @@ describe("browser observation live strip", () => {
     expect(strip.textContent).toContain("에이전트 브라우징");
     expect(strip.textContent).toContain("example.test/login · 클릭: ‘로그인’");
     expect(view.container.querySelector("button, input, textarea, [contenteditable=true]")).toBeNull();
-    act(() => releaseBrowserObservationSession(SESSION));
+    act(() => emit([status(2, "session-cleared")]));
     expect(screen.queryByTestId("browser-preview-live-strip")).toBeNull();
     expect(screen.getByTestId("browser-observation-slot")).toBe(slot);
     expect(slot.getAttribute("aria-hidden")).toBe("true");

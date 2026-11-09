@@ -654,9 +654,6 @@ export function App() {
     return false;
   }, [activeSurfaceOf]);
 
-  const hiddenBrowserTabIds = useMemo(() => new Set(mainSurfaces.surfaces
-    .filter((surface) => hiddenBrowserPaneOf(chatGroups, mainSurfaces, surface.tabId))
-    .map((surface) => surface.tabId)), [chatGroups, mainSurfaces]);
   const focusObservedBrowser = useCallback((tabId: string) => {
     const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
     if (!surfaces.get(tabId) || hiddenBrowserPaneOf(groups, surfaces, tabId)) openWorkspaceSurface(tabId);
@@ -2741,8 +2738,6 @@ export function App() {
                                       that is. `contents` while the conversation draws, so
                                       the wrapper adds no box of its own. */}
                                   <ChatGroupSession
-                                    hiddenBrowserTabIds={hiddenBrowserTabIds}
-                                    onFocusObservedBrowser={focusObservedBrowser}
                                     chatGroupId={group.id}
                                     api={api}
                                     registry={chatGroupSessions}
