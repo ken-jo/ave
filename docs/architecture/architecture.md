@@ -1356,6 +1356,12 @@ the rows are merged into a single list ordered by `modifiedAt`. A request that
 names no family is answered from the main store alone under its `kind` filter,
 which is what every caller but the sidebar wants.
 
+Lists requesting the `subagent` family page by top-level conversations. The
+limit and time cursor select roots; each selected root includes all listed
+same-project descendants, regardless of their timestamps. Missing-parent and
+cross-project children count as roots. Main and renderer share parent resolution
+so a page boundary cannot turn a child into an orphan.
+
 | Family | Store | Row | Opens |
 | --- | --- | --- | --- |
 | `main` | main | chat glyph, the conversation's title | the conversation, in the focused tile |

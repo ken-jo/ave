@@ -443,3 +443,35 @@ describe("handleChatSessions federated families", () => {
     expect(sessions.map((s) => s.id)).toEqual(["session-main"]);
   });
 });
+
+describe("sidebar root pages", () => {
+  it("returns an older parent with all its children even when more than a page of children are newer", async () => {
+    const parentId = "aaaaaaaa-1111-4111-8111-111111111111";
+    const recentId = "bbbbbbbb-2222-4222-8222-222222222222";
+    const parent = { id: parentId, title: "Parent", modifiedAt: new Date("2020-01-01"), sessionKind: "main" as const };
+    const recent = { ...parent, id: recentId, title: "Recent root", modifiedAt: new Date("2026-11-01") };
+    const children = Array.from({ length: 100 }, (_, index) => ({
+      id: `sub-child-${index}`, title: `Child ${index}`, modifiedAt: new Date("2026-11-02"),
+      sessionKind: "subagent" as const, originSessionId: parentId,
+    }));
+    const grandchild = { ...children[0], id: "sub-grandchild", title: "Grandchild", originSessionId: "sub-child-0", modifiedAt: new Date("2000-01-01"), sessionKind: "subagent" as const };
+    const page = (rows: typeof parent[] | typeof children, options: { limit?: number; before?: Date; beforeId?: string; after?: Date }) => rows
+      .filter((row) => (!options.before || row.modifiedAt < options.before || row.modifiedAt.getTime() === options.before.getTime() && row.id < (options.beforeId ?? "")) && (!options.after || row.modifiedAt >= options.after))
+      .sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime() || b.id.localeCompare(a.id))
+      .slice(0, options.limit);
+    const deps = {
+      conversationLoop: { getSessionId: () => parentId },
+      memoryManager: { sessions: { listSessionsPage: (options: Parameters<typeof page>[1]) => page([parent, recent], options) } },
+      getSubAgentRunner: () => ({ listSubAgentSessions: (options: Parameters<typeof page>[1]) => page([...children, grandchild], options).map((row) => ({ ...row, running: false })) }),
+    } as unknown as IpcDeps;
+    const families = ["main", "subagent"];
+    const all = await handleChatSessions(deps, { families, limit: 100 });
+    expect(all.sessions).toHaveLength(103);
+    expect(all.sessions.find((row) => row.id === parentId)).toMatchObject({ family: "main" });
+    const first = await handleChatSessions(deps, { families, limit: 1 });
+    expect(first.sessions.map((row) => row.id)).toEqual([recentId]);
+    const second = await handleChatSessions(deps, { families, limit: 1, before: recent.modifiedAt.toISOString(), beforeId: recentId });
+    expect(second.sessions).toHaveLength(102);
+    expect(second.sessions.map((row) => row.id)).toEqual(expect.arrayContaining([parentId, ...children.map((row) => row.id), grandchild.id]));
+  });
+});

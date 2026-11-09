@@ -27,6 +27,7 @@ import {
 } from "../../shared/session-lookup.js";
 import type { IpcDeps } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
+import { sessionListParents } from "../../shared/session-list-tree.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { MAX_PROJECT_NAME_CHARS, MAX_PROJECT_ROOT_CHARS, sessionFamilyOf, toSessionListRow } from "../../memory/session-repository.js";
 import { type SessionKind } from "../../shared/session-lookup.js";
@@ -575,8 +576,11 @@ export async function handleChatSessions(
       : "__ave_unauthorized_project_root__"
     : undefined;
   const includeUnscoped = resolvedProject?.authorized === true && resolvedProject.project?.isDefault === true;
+  const rootPages = families?.has("subagent") === true;
+  // Resolve the complete hierarchy before applying a root cursor or limit.
+  const storeWindow = rootPages ? { limit: Number.POSITIVE_INFINITY } : { limit, before, beforeId, after };
   const sessions = memoryManager.sessions
-    .listSessionsPage({ kind: families ? "all" : kind, ...(routineId ? { routineId } : {}), ...(projectRoot ? { projectRoot } : {}), ...(includeUnscoped ? { includeUnscoped: true } : {}), limit, ...(before ? { before } : {}), ...(beforeId ? { beforeId } : {}), ...(after ? { after } : {}) })
+    .listSessionsPage({ kind: families ? "all" : kind, ...(routineId ? { routineId } : {}), ...(projectRoot ? { projectRoot } : {}), ...(includeUnscoped ? { includeUnscoped: true } : {}), ...storeWindow })
     .flatMap((s): SessionListRow[] => {
       // Strip legacy default-project tags at the read boundary so they cannot become named sidebar projects.
       const isLegacyDefaultTagged = Boolean(s.projectRoot) && isDefaultWorkspaceRoot(s.projectRoot!);
@@ -591,7 +595,7 @@ export async function handleChatSessions(
   if (!families) {
     return { current: conversationLoop.getSessionId(), sessions };
   }
-  const pageWindow = { limit, before, beforeId, after, projectRoot, includeUnscoped };
+  const pageWindow = { ...storeWindow, projectRoot, includeUnscoped };
   const federated = [
     ...sessions,
     ...(families.has("work-board") ? await workBoardRunRows(deps, pageWindow) : []),
@@ -601,9 +605,26 @@ export async function handleChatSessions(
     .sort((a, b) => {
       const delta = b.modifiedAt.localeCompare(a.modifiedAt);
       return delta !== 0 ? delta : b.id.localeCompare(a.id);
-    })
-    .slice(0, limit);
-  return { current: conversationLoop.getSessionId(), sessions: federated };
+    });
+  const page = rootPages ? sessionRootPage(federated, { limit, before, beforeId, after }) : federated.slice(0, limit);
+  return { current: conversationLoop.getSessionId(), sessions: page };
+}
+
+function sessionRootPage(rows: readonly SessionListRow[], window: { limit: number; before?: Date; beforeId?: string; after?: Date }): SessionListRow[] {
+  const parents = sessionListParents(rows);
+  const roots = rows.filter((row) => !parents.has(row.id)).filter((row) => {
+    const at = Date.parse(row.modifiedAt);
+    if (window.after && at < window.after.getTime()) return false;
+    if (!window.before) return true;
+    return at < window.before.getTime() || at === window.before.getTime() && window.beforeId !== undefined && row.id < window.beforeId;
+  }).slice(0, window.limit);
+  const selected = new Set(roots.map((row) => row.id));
+  return rows.filter((row) => {
+    let root = row.id;
+    let parent = parents.get(root);
+    while (parent !== undefined) { root = parent; parent = parents.get(root); }
+    return selected.has(root);
+  });
 }
 
 function subAgentRows(

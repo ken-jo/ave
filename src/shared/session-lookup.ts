@@ -1,8 +1,9 @@
 /** Partial-ID lookup spans all persisted kinds, not recency. Main and renderer share the match rule and IPC page ceiling. */
 
 /**
- * Largest page `ave:chat:sessions` will return. The handler clamps to this,
- * so asking for more is indistinguishable from asking for exactly this.
+ * Largest root page `ave:chat:sessions` accepts. When sub-agents are requested,
+ * every selected root includes its descendants in addition to this limit.
+ * Requests without the sub-agent family retain the row limit.
  */
 export const SESSION_LIST_MAX_LIMIT = 100;
 
