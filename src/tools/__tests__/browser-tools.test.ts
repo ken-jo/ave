@@ -1314,6 +1314,15 @@ describe("browser tools", () => {
     expect(JSON.stringify(schema)).not.toContain("token");
   });
 
+  it("refuses an over-limit exact option value without selecting its shorter prefix", async () => {
+    const { run, page, agentTab } = harness();
+    const tab = await agentTab("https://a.example/");
+    const result = await run(BROWSER_TOOL.select, { tabId: tab.handle, ref: "e1", value: `${"p".repeat(1_000)}X` });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("value must be a string of at most 1000 characters");
+    expect(page.calls).toEqual([]);
+  });
+
   it("validates each new typed operand before loading or acting", async () => {
     const { run, page, userTab } = harness();
     const user = userTab("https://a.example/");

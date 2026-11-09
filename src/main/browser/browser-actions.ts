@@ -96,7 +96,7 @@ export async function snapshot(
     const described = await target.cdp.send("DOM.describeNode", { backendNodeId: node.backendDOMNodeId, depth: -1 }) as { node?: SelectNode };
     throwIfAborted(target.signal);
     if (described.node?.nodeName === "SELECT") {
-      try { nativeSelectOptions.set(node.backendDOMNodeId!, nativeOptions(described.node).map(({ value, label, disabled }) => ({ value: value.slice(0, 1000), label: label.slice(0, 200), disabled }))); }
+      try { nativeSelectOptions.set(node.backendDOMNodeId!, nativeOptions(described.node).map(({ value, label, disabled }) => ({ value, label: label.slice(0, 200), disabled }))); }
       catch (err) { if (!(err instanceof BrowserActionError) || !["not-native-select", "ambiguous-select"].includes(err.code)) throw err; }
     }
   }

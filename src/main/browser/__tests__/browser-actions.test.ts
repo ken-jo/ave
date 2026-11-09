@@ -27,6 +27,7 @@ import { withGuardedAction } from "../browser-action-guard.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
 import { type as typeInto } from "../browser-actions.js";
 import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.js";
+import { fenceBrowserContent } from "../../../tools/browser-tools-execute.js";
 import { BrowserTabRegistry } from "../browser-tab-registry.js";
 import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "../browser-select-script.js";
 
@@ -2134,6 +2135,37 @@ it.each(["function", "object", "world", "node"])("rejects a substituted native-s
       arguments: [{ value: "b" }], returnByValue: true });
   })).rejects.toMatchObject({ code: "wrong-input-target" });
   expect(cdp.calls.some(call => call.method === "Runtime.callFunctionOn")).toBe(false);
+});
+
+it.each(["X", "😀", "<browser-content>", "</browser-content>"])("preserves shared-prefix machine values through the snapshot adapter and envelope: %s", async suffix => {
+  const { cdp, actions, approve } = adapterFixture({ agent: true });
+  const prefix = "p".repeat(1_000);
+  const longer = prefix + suffix;
+  cdp.nodes = page([ax("choice", "combobox", "Choice", { backendDOMNodeId: 11 })]);
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    if (method === "DOM.describeNode" && params?.backendNodeId === 11) return { node: { nodeName: "SELECT", backendNodeId: 11,
+      children: [
+        { nodeName: "OPTION", backendNodeId: 21, attributes: ["value", longer], children: [{ nodeName: "#text", nodeValue: "Long option" }] },
+        { nodeName: "OPTION", backendNodeId: 22, attributes: ["value", prefix], children: [{ nodeName: "#text", nodeValue: "Prefix option" }] },
+      ] } };
+    return send(method, params);
+  });
+  const live = await approve("browser_select");
+  const shot = await actions.snapshot(live, {});
+  const readOptions = (text: string): Array<{ value: string; label: string }> => {
+    const json = text.match(/options=(\[[^\n]+\])/u)?.[1];
+    if (!json) throw new Error("Snapshot options unavailable");
+    return JSON.parse(json);
+  };
+  const expected = [{ value: longer, label: "Long option" }, { value: prefix, label: "Prefix option" }];
+  const actual = readOptions(shot.text);
+  expect(actual.map(({ value, label }) => ({ value, label }))).toEqual(expected);
+  expect(new Set(actual.map(option => option.value)).size).toBe(2);
+  const output = fenceBrowserContent({ url: shot.url, title: shot.title, refs: shot.refCount }, shot.text);
+  expect(readOptions(output).map(({ value, label }) => ({ value, label }))).toEqual(expected);
+  expect(output.match(/<browser-content trust="untrusted-web-data">/g)).toHaveLength(1);
+  expect(output.match(/<\/browser-content>/g)).toHaveLength(1);
 });
 
 it.each([false, true])("selects in an awake owned background guest without revealing the panel: %s", async (otherShown) => {
