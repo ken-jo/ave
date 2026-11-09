@@ -30,6 +30,9 @@ const registryCommitGate = vi.hoisted(() => ({
   release: undefined as (() => void) | undefined,
 }));
 
+// Three 2 s stop attempts, separated by 100 ms and 200 ms retirement retries.
+const STOP_RETRY_WINDOW_MS = 3 * 2000 + 100 + 200;
+
 vi.mock("../../registry.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../registry.js")>();
   return {
@@ -567,6 +570,70 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
   });
 
   it.each([
+    [1999, 1, false],
+    [2000, 2, false],
+    [2001, 2, false],
+    [STOP_RETRY_WINDOW_MS - 1, 3, false],
+    [STOP_RETRY_WINDOW_MS, 4, true],
+    [STOP_RETRY_WINDOW_MS + 1, 4, true],
+  ] as const)("settles a disable released at %s ms in %s retirement attempts, caller timed out=%s", async (releaseMs, attempts, callerTimedOut) => {
+    const runtime = makeRuntime();
+    const lifecycle = makeLifecycle(runtime);
+    runtime.setGenerationAccess(lifecycle);
+    await runtime.startAll();
+    const projection = runtime.getRuntimeGenerationProjection("se-plugin");
+    if (!projection?.instance.stop) throw new Error("Plugin stop fixture is missing");
+    const originalStop = projection.instance.stop.bind(projection.instance);
+    let entered!: () => void;
+    const inStop = new Promise<void>(resolve => { entered = resolve; });
+    let settled!: () => void;
+    const stopSettled = new Promise<void>(resolve => { settled = resolve; });
+    let confirmStop!: () => void;
+    const stopGate = new Promise<void>(resolve => { confirmStop = resolve; });
+    const stop = vi.spyOn(projection.instance, "stop").mockImplementation(async () => {
+      entered();
+      await new Promise(resolve => setTimeout(resolve, releaseMs));
+      await stopGate;
+      await originalStop();
+      settled();
+    });
+    const retirement = vi.spyOn(runtime, "prepareRuntimeRetirement");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const disable = runtime.setPluginEnabled("se-plugin", false).then(
+      () => ({ error: undefined }), error => ({ error }),
+    );
+    await inStop;
+    // A release at the deadline cannot confirm shutdown until clock advancement ends.
+    await vi.advanceTimersByTimeAsync(releaseMs);
+    confirmStop();
+    await stopSettled;
+    // Let a timed-out attempt retry only after real child shutdown has confirmed.
+    await vi.advanceTimersByTimeAsync(100);
+    const outcome = await disable;
+    vi.useRealTimers();
+    if (callerTimedOut) expect(outcome.error).toBeInstanceOf(Error);
+    else expect(outcome.error).toBeUndefined();
+    await vi.waitFor(() => {
+      const card = runtime.listPluginCards().find(card => card.id === "se-plugin");
+      expect(card?.loadStatus).toBe("disabled");
+      expect(card?.stopping).toBeUndefined();
+    });
+    expect(retirement).toHaveBeenCalledTimes(attempts);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
+    expect(lifecycle.getActive("se-plugin")).toBeUndefined();
+    const card = runtime.listPluginCards().find(card => card.id === "se-plugin");
+    expect(card).toMatchObject({ loadStatus: "disabled", active: false, runtimeLoaded: false });
+    expect(card?.stopping).toBeUndefined();
+    expect(JSON.parse(await readFile(registryPath, "utf8")).plugins[0].enabled).toBe(false);
+    const journal = JSON.parse(await readFile(join(testDir, "plugin-retirement-journal.json"), "utf8"));
+    expect(journal.retirements).toEqual([]);
+    await runtime.setPluginEnabled("se-plugin", true);
+    await expect(runtime.call("se_ping")).resolves.toBe("pong");
+    await runtime.setPluginEnabled("se-plugin", false);
+  });
+
+  it.each([
     [2500, false, "recover"],
     [12000, false, "recover"],
     [12000, true, "recover"],
@@ -591,17 +658,14 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     let stopped = false;
     let settleStop!: () => void;
     const stopSettled = new Promise<void>(resolve => { settleStop = resolve; });
-    let confirmEarlyStop: (() => void) | undefined;
-    const earlyStopGate = releaseMs === 12000 && !queuedEnable && action === "recover"
-      ? new Promise<void>(resolve => { confirmEarlyStop = resolve; })
-      : undefined;
+    let confirmStop!: () => void;
+    const stopGate = new Promise<void>(resolve => { confirmStop = resolve; });
     const stop = vi.spyOn(projection.instance, "stop").mockImplementation(async () => {
       try {
         entered();
         await new Promise(resolve => setTimeout(resolve, releaseMs));
-        await earlyStopGate;
-        // The release is simulated; child RPC and exit use the real clock.
-        vi.useRealTimers();
+        await stopGate;
+        // Open the gate only after clock advancement, then hold time still for real child IPC.
         await originalStop();
         stopped = true;
         if (action === "reject") throw new Error("late stop rejection");
@@ -643,26 +707,37 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       () => { outcome = {}; }, error => { outcome = { error }; },
     );
     await inStop;
-    await vi.waitFor(() => expect(outcome).toBeDefined(), { timeout: 20000 });
+    await vi.advanceTimersByTimeAsync(Math.min(releaseMs, STOP_RETRY_WINDOW_MS));
+    if (releaseMs < STOP_RETRY_WINDOW_MS) {
+      confirmStop();
+      await stopSettled;
+    }
     await disable;
     stateChanged.mockClear();
-    if (releaseMs > 6000) {
+    if (releaseMs >= STOP_RETRY_WINDOW_MS) {
       expect(runtime.listPluginCards().find(card => card.id === "se-plugin")).toMatchObject({
         loadStatus: "failed", installFailureMessage: expect.stringContaining("unconfirmed; retry"),
       });
       await expect(runtime.restartPlugin("se-plugin")).rejects.toThrow("shutdown is unconfirmed");
       if (releaseMs === 12000 && !queuedEnable && action === "recover") {
         const lifecycleQueue = vi.spyOn(lifecycle, "runInLifecycleQueue");
-        const retirement = vi.spyOn(lifecycle, "deactivateWithCommit");
+        const deactivate = lifecycle.deactivateWithCommit.bind(lifecycle);
+        let enteredRetirement!: () => void;
+        const inRetirement = new Promise<void>(resolve => { enteredRetirement = resolve; });
+        const retirement = vi.spyOn(lifecycle, "deactivateWithCommit").mockImplementation((...args) => {
+          enteredRetirement();
+          return deactivate(...args);
+        });
         let enableOutcome: { error?: unknown } | undefined;
         const earlyEnable = runtime.setPluginEnabled("se-plugin", true).then(
           () => { enableOutcome = {}; }, error => { enableOutcome = { error }; },
         );
         try {
-          await vi.waitFor(() => expect(enableOutcome).toBeDefined(), { timeout: 20000 });
+          await inRetirement;
+          await vi.advanceTimersByTimeAsync(STOP_RETRY_WINDOW_MS);
         } finally {
           if (!enableOutcome) {
-            confirmEarlyStop?.();
+            confirmStop();
             if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(releaseMs);
           }
           await earlyEnable;
@@ -684,7 +759,6 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
         expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("failed");
         expect(stop).toHaveBeenCalledTimes(1);
         expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.lifecycleQuarantined).toBeUndefined();
-        confirmEarlyStop?.();
       }
     }
     expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
@@ -694,7 +768,7 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     });
     const registry = JSON.parse(await readFile(registryPath, "utf8"));
     expect(registry.plugins[0].enabled).toBe(false);
-    if (releaseMs > 6000) expect(outcome?.error).toBeDefined();
+    if (releaseMs >= STOP_RETRY_WINDOW_MS) expect(outcome?.error).toBeDefined();
     else expect(outcome?.error).toBeUndefined();
     expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.lifecycleQuarantined).toBeUndefined();
     const durableRemoval = vi.fn(async () => {
@@ -729,7 +803,9 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     }) : undefined;
     const cancelPendingRestart = vi.spyOn(runtime, "cancelPendingRestart");
     if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(releaseMs);
+    confirmStop();
     await stopSettled;
+    vi.useRealTimers();
     expect(stopped).toBe(true);
     if (action === "overlap") {
       await automaticReady;
@@ -815,7 +891,9 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
       expect(lifecycle.getActive("se-plugin")).toBeUndefined();
       await vi.waitFor(() => {
-        expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("disabled");
+        const card = runtime.listPluginCards().find(card => card.id === "se-plugin");
+        expect(card?.loadStatus).toBe("disabled");
+        expect(card?.stopping).toBeUndefined();
       }, { timeout: 20000 });
       let confirmedEnable: Promise<void> | undefined;
       await withPluginInstallLock("se-plugin", async () => {
@@ -825,7 +903,9 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
       expect(runtime.isPluginEnabled("se-plugin")).toBe(true);
     } else {
       await vi.waitFor(() => {
-        expect(runtime.listPluginCards().find(card => card.id === "se-plugin")?.loadStatus).toBe("disabled");
+        const card = runtime.listPluginCards().find(card => card.id === "se-plugin");
+        expect(card?.loadStatus).toBe("disabled");
+        expect(card?.stopping).toBeUndefined();
       }, { timeout: 20000 });
       const journal = JSON.parse(await readFile(join(testDir, "plugin-retirement-journal.json"), "utf8"));
       expect(journal.retirements).toEqual([]);
