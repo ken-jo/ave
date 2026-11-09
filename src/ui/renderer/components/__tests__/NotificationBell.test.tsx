@@ -215,6 +215,9 @@ describe("ApprovalsBell", () => {
     await waitFor(() => expect(screen.getByTestId("notification-bell-count")).toHaveTextContent("3"));
     expect(screen.getByTestId("notification-bell")).toHaveAccessibleName(/2.*1/);
     expect(screen.getByTestId("notification-bell-error")).toHaveClass("bg-destructive");
+    expect(screen.queryByTestId("notification-center")).toBeNull();
+    expect(screen.queryByTestId("notification-history-row")).toBeNull();
+    expect(screen.queryByText("Install failed")).toBeNull();
     fireEvent.click(screen.getByTestId("notification-bell"));
     const popup = await screen.findByRole("dialog");
     expect(popup).not.toHaveAttribute("aria-live");

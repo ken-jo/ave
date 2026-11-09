@@ -279,10 +279,10 @@ export function NoticeLiveRegion({ toast, errorToast }: { toast: ToastItem | nul
   return (
     <>
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-notice-live="" data-testid="notice-live-polite">
-        {toast !== null && !isError ? <span key={toast.announcementId ?? toast.id}>{toast.message}</span> : ""}
+        {toast !== null && !isError ? <span data-notice-live="" key={toast.announcementId ?? toast.id}>{toast.message}</span> : ""}
       </div>
       <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true" data-notice-live="" data-testid="notice-live-assertive">
-        {assertive ? <span key={assertive.announcementId ?? assertive.id}>{assertive.message}</span> : ""}
+        {assertive ? <span data-notice-live="" key={assertive.announcementId ?? assertive.id}>{assertive.message}</span> : ""}
       </div>
     </>
   );

@@ -2,7 +2,7 @@ import "../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { endAnimation } from "../../../../test/renderer/helpers.js";
-import { NoticeLiveRegion, StatusBar } from "../components/StatusBar.js";
+import { NoticeLiveRegion, NoticeToast, StatusBar } from "../components/StatusBar.js";
 import type { PersistentItem, ToastItem } from "../hooks/use-status-bar.js";
 import { getWebSurfaceOccluders } from "../preview/web-surfaces.js";
 
@@ -315,6 +315,20 @@ describe("StatusBar", () => {
     expect(screen.getByTestId("notice-live-polite")).toHaveTextContent("");
     fireEvent.click(screen.getByTestId("status-toast-dismiss"));
     expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["success", "error"] as const)("keeps a pane's %s text distinct from its marked live announcement", (severity) => {
+    const notice = toast({ severity, message: "Settings result" });
+    render(<>
+      <NoticeLiveRegion toast={notice} />
+      <NoticeToast toast={notice} onDismiss={vi.fn()} wrap />
+    </>);
+    const message = screen.getByText("Settings result");
+    expect(message).toBeVisible();
+    expect(message.closest("[data-notice-live]")).toBeNull();
+    const region = screen.getByTestId(severity === "error" ? "notice-live-assertive" : "notice-live-polite");
+    expect(region).toHaveTextContent("Settings result");
+    expect(region.firstElementChild).toHaveAttribute("data-notice-live");
   });
 
   it("keeps the same live region nodes while the queue advances, so the next notice is announced", () => {

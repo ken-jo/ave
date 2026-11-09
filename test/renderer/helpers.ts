@@ -1,5 +1,5 @@
 import { createElement, type ReactElement } from "react";
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { TooltipProvider } from "../../src/components/ui/tooltip.js";
 import type { MessageQueueStore } from "../../src/ui/renderer/state/message-queue-store.js";
 import { SETTINGS_TABS } from "../../src/shared/settings-tabs.js";
@@ -12,14 +12,18 @@ export { relativeLuminance } from "../contrast-helpers.js";
 export { deferred } from "../../src/__tests__/support/deferred.js";
 
 // Supply empty approval context when rendering dock-owning bodies outside the app.
-/** The status bar shows one toast at a time; dismiss the ones ahead of `text` until it shows. */
-export async function waitForToast(container: HTMLElement, text: string): Promise<void> {
-  await waitFor(() => {
-    const message = container.querySelector('[data-testid="status-toast-message"]');
-    if (message?.textContent?.includes(text)) return;
-    const dismiss = message?.closest("div")?.parentElement?.querySelector<HTMLButtonElement>("button[aria-label]");
-    if (dismiss) fireEvent.click(dismiss);
-    throw new Error(`toast is ${JSON.stringify(message?.textContent ?? null)}, waiting for ${JSON.stringify(text)}`);
+/** Window notices are visible only after opening the bell; return the matching row for its actions. */
+export async function openWindowNotice(container: HTMLElement, text: string): Promise<HTMLElement> {
+  const bell = within(container).getByTestId("notification-bell");
+  if (bell.getAttribute("data-state") !== "open") {
+    await waitFor(() => expect(within(document.body).queryAllByTestId("notification-history-row")).toHaveLength(0));
+    await act(async () => { fireEvent.click(bell); });
+  }
+  return waitFor(() => {
+    const row = within(document.body).queryAllByTestId("notification-history-row").find((item) => item.textContent?.includes(text));
+    if (!row) throw new Error(`No window notice contains ${JSON.stringify(text)}`);
+    expect(row).toBeVisible();
+    return row;
   });
 }
 
