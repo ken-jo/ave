@@ -195,8 +195,8 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
     const activeLiveness = await measureLiveness();
     const hiddenAt = Date.now();
     await page.getByTestId("pane-cell:main").getByTestId("pane-maximize").click();
-    const thumbnailRow = page.getByTestId("conversation-browser-observation");
-    const thumbnail = thumbnailRow.getByRole("button");
+    const thumbnailRow = page.getByTestId("agent-browser-pip-card");
+    const thumbnail = thumbnailRow.getByRole("button", { name: /^(Open browser tab:|브라우저 탭 열기:)/ });
     await expect(thumbnail).toBeVisible();
     await expect(thumbnailRow.getByTestId("browser-observation-slot")).toBeVisible();
     await expect(guestFrame).toHaveCSS("opacity", "0");
@@ -317,11 +317,13 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
     // Another tab handle is refused rather than substituted.
     expect(await page.evaluate((request) => window.ave.preview.requestObservationPreview(request),
       { action: "start" as const, ...binding, tabId: "tab-999", frame: 0 })).toEqual({ ok: false, error: "not-agent-tab" });
+    // Card remounts start independent streams; measure the newly requested stream's frame interval.
+    const firstFrameOffset = (await readCapture()).messages.length;
     expect(await page.evaluate((request) => window.ave.preview.requestObservationPreview(request),
       { action: "start" as const, ...binding, frame: 0 })).toEqual({ ok: true });
-    await expect.poll(async () => (await readCapture()).messages.filter((message) => message.kind === "frame").length,
+    await expect.poll(async () => (await readCapture()).messages.slice(firstFrameOffset).filter((message) => message.kind === "frame").length,
       { timeout: 15_000 }).toBeGreaterThanOrEqual(3);
-    const firstFrames = await page.evaluate(() => (window as unknown as PreviewCapture).previewMessages.filter((message) => message.kind === "frame"));
+    const firstFrames = await page.evaluate((offset) => (window as unknown as PreviewCapture).previewMessages.slice(offset).filter((message) => message.kind === "frame"), firstFrameOffset);
     for (const frame of firstFrames) {
       if (frame.kind !== "frame") continue;
       expect(frame.mimeType).toBe("image/jpeg");

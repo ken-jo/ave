@@ -585,6 +585,7 @@ export function PaneFrame({
               ? "relative flex min-h-0 min-w-0 flex-1 flex-col p-4"
               : "relative flex min-h-0 min-w-0 flex-1 flex-col"}
             data-body-inset={bodyInset}
+            data-pip-region
           >
             {children}
             {lane !== undefined ? <FloatingRightLane>{lane}</FloatingRightLane> : null}

@@ -22,7 +22,7 @@ export class BrowserObservationStore {
   private readonly retiredTargets = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private disposed = false;
-  private readonly hostedCache = new Map<string, readonly BrowserObservationEvent[]>();
+  private allCache: readonly BrowserObservationEvent[] | undefined;
 
   constructor(private readonly acknowledge: (ack: ObservationAck) => Promise<{ ok: boolean }>) {}
 
@@ -86,39 +86,15 @@ export class BrowserObservationStore {
     return latest;
   }
 
-  latestHosted(sessionId: string): BrowserObservationEvent | undefined {
-    if (!sessionId) return undefined;
-    let latest: BrowserObservationEvent | undefined;
-    for (const history of this.histories.values()) {
-      const candidate = history.hostSessionId === sessionId ? history.events.at(-1) : undefined;
-      if (candidate && (!latest || candidate.ts > latest.ts || (candidate.ts === latest.ts
-        && (candidate.seq > latest.seq || (candidate.seq === latest.seq && candidate.target.id > latest.target.id))))) latest = candidate;
+  /** Stable snapshot with at most one latest event per renderer tab. */
+  all(): readonly BrowserObservationEvent[] {
+    if (this.allCache) return this.allCache;
+    const tabs = new Set<string>();
+    for (const history of this.histories.values()) for (const event of history.events) {
+      if (event.kind === "action" && event.after.rendererTabId) tabs.add(event.after.rendererTabId);
     }
-    return latest;
-  }
-
-  hosted(sessionId: string): readonly BrowserObservationEvent[] {
-    const cached = this.hostedCache.get(sessionId);
-    if (cached) return cached;
-    const events = [...this.histories.values()].filter((history) => history.hostSessionId === sessionId)
-      .flatMap((history) => {
-        const latest = history.events.at(-1);
-        if (latest?.kind === "status") return [latest];
-        const tabs = new Map<string, BrowserObservationEvent>();
-        for (const event of history.events) if (event.kind === "action" && event.after.rendererTabId) tabs.set(event.after.rendererTabId, event);
-        return [...tabs.values()];
-      });
-    this.hostedCache.set(sessionId, events);
-    return events;
-  }
-
-  releaseSession(sessionId: string): void {
-    let changed = false;
-    for (const [targetId, history] of this.histories) if (history.sessions.has(sessionId)) {
-      this.release(targetId);
-      changed = true;
-    }
-    if (changed) this.notify();
+    this.allCache = [...tabs].flatMap((tabId) => { const event = this.latest(tabId); return event ? [event] : []; });
+    return this.allCache;
   }
 
   dispose(): void {
@@ -153,7 +129,7 @@ export class BrowserObservationStore {
     while (this.retiredTargets.size > OBSERVATION_LIMITS.maxViews) this.retiredTargets.delete(this.retiredTargets.values().next().value!);
   }
 
-  private notify(): void { this.hostedCache.clear(); for (const listener of this.listeners) listener(); }
+  private notify(): void { this.allCache = undefined; for (const listener of this.listeners) listener(); }
 }
 
 let store: BrowserObservationStore | undefined;
@@ -186,8 +162,6 @@ export function connectBrowserObservations(api: AvePreviewApi): () => void {
   };
 }
 
-export function releaseBrowserObservationSession(sessionId: string): void { store?.releaseSession(sessionId); }
-
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
@@ -203,7 +177,6 @@ export function useBrowserObservation(tabId: string, sessionId?: string): Browse
 }
 
 const EMPTY_OBSERVATIONS: readonly BrowserObservationEvent[] = [];
-
-export function useHostedBrowserObservations(sessionId: string): readonly BrowserObservationEvent[] {
-  return useSyncExternalStore(subscribe, () => store?.hosted(sessionId) ?? EMPTY_OBSERVATIONS, () => EMPTY_OBSERVATIONS);
+export function useBrowserObservations(): readonly BrowserObservationEvent[] {
+  return useSyncExternalStore(subscribe, () => store?.all() ?? EMPTY_OBSERVATIONS, () => EMPTY_OBSERVATIONS);
 }

@@ -21,6 +21,7 @@ const key = (binding: PreviewBinding) => `${binding.targetId}\u0000${binding.ses
  */
 export class BrowserObservationPreviewStore {
   private readonly states = new Map<string, PreviewFrameState>();
+  private readonly startRequests = new Map<string, symbol>();
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly api: PreviewApi) {}
@@ -36,16 +37,21 @@ export class BrowserObservationPreviewStore {
 
   start(binding: PreviewBinding): void {
     const id = key(binding);
+    const request = Symbol();
+    this.startRequests.set(id, request);
     const previous = this.states.get(id);
     if (!previous || previous.status !== "live") this.states.set(id, { updating: true, status: "live" });
     this.notify();
     this.request({ action: "start", ...binding, frame: 0 }, (result) => {
+      if (this.startRequests.get(id) !== request) return;
       if (!result.ok && this.states.has(id)) { this.states.set(id, { updating: false, status: "stopped" }); this.notify(); }
     });
   }
 
   stop(binding: PreviewBinding): void {
-    if (!this.states.delete(key(binding))) return;
+    const id = key(binding);
+    this.startRequests.delete(id);
+    if (!this.states.delete(id)) return;
     this.notify();
     this.request({ action: "stop", ...binding, frame: 0 });
   }
@@ -92,7 +98,7 @@ export class BrowserObservationPreviewStore {
   private notify(): void { for (const listener of this.listeners) listener(); }
 }
 
-/** Shown only when connected, laid out, inside the viewport and not hidden by any ancestor style. */
+/** Shown only where the viewport and clipping ancestors leave a painted rectangle. */
 export function isElementShown(element: Element): boolean {
   if (!element.isConnected || element.ownerDocument.visibilityState !== "visible") return false;
   const view = element.ownerDocument.defaultView;
@@ -100,11 +106,28 @@ export function isElementShown(element: Element): boolean {
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0 || rect.right <= 0 || rect.bottom <= 0
     || rect.left >= view.innerWidth || rect.top >= view.innerHeight) return false;
+  let left = Math.max(0, rect.left); let right = Math.min(view.innerWidth, rect.right);
+  let top = Math.max(0, rect.top); let bottom = Math.min(view.innerHeight, rect.bottom);
+  let contained = true;
   for (let node: Element | null = element; node; node = node.parentElement) {
     const style = view.getComputedStyle(node);
     if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse"
       || Number.parseFloat(style.opacity) === 0 || style.contentVisibility === "hidden") return false;
     if (node.hasAttribute("hidden")) return false;
+    // A fixed descendant escapes scroll clipping until an ancestor establishes its containing block.
+    if (!contained && (style.transform && style.transform !== "none" || style.perspective && style.perspective !== "none"
+      || style.filter && style.filter !== "none" || /(?:paint|layout|strict|content)/.test(style.contain))) contained = true;
+    if (contained && node !== element) {
+      const clip = node.getBoundingClientRect();
+      if (/^(hidden|clip|auto|scroll|overlay)$/.test(style.overflowX) || /^(hidden|clip|auto|scroll|overlay)$/.test(style.overflow)) {
+        left = Math.max(left, clip.left); right = Math.min(right, clip.right);
+      }
+      if (/^(hidden|clip|auto|scroll|overlay)$/.test(style.overflowY) || /^(hidden|clip|auto|scroll|overlay)$/.test(style.overflow)) {
+        top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom);
+      }
+      if (right <= left || bottom <= top) return false;
+    }
+    if (style.position === "fixed") contained = false;
   }
   return true;
 }

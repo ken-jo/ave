@@ -179,8 +179,6 @@ export interface ChatGroupEnvironment {
 }
 
 export interface ChatGroupSessionProps {
-  hiddenBrowserTabIds?: ReadonlySet<string> | undefined;
-  onFocusObservedBrowser?: ((tabId: string) => void) | undefined;
   revealMessage?: ChatMessageRevealRequest | null;
   onMessageRevealHandled?: (nonce: number) => void;
   chatGroupId: string;
@@ -244,7 +242,6 @@ export interface ChatGroupSessionProps {
  * one set of variables.
  */
 export function ChatGroupSession({
-  hiddenBrowserTabIds, onFocusObservedBrowser,
   chatGroupId, api: windowApi, registry, env, children, panelOpen, focused, hidden,
   paneHidden, onSidePanelOpenChange, thumbnailOpen, onThumbnailOpenChange, revealMessage, onMessageRevealHandled,
 }: ChatGroupSessionProps) {
@@ -1046,8 +1043,6 @@ export function ChatGroupSession({
   const content = (
     <ChatContextProvider value={chatContextValue}>
       <ChatView
-        hiddenBrowserTabIds={hiddenBrowserTabIds}
-        onFocusObservedBrowser={onFocusObservedBrowser}
         api={api}
         chatGroupId={chatGroupId}
         revealMessage={revealMessage}

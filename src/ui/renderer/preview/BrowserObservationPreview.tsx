@@ -35,17 +35,20 @@ function useElementShown(element: Element | null, probe: (element: Element) => b
 }
 
 /**
- * A live picture of the agent's tab, shown in the owning conversation while that tab's pane is hidden. It binds to the exact main-issued tab
+ * A live picture of the agent's tab, including floating cards while that tab's pane is hidden. It binds to the exact main-issued tab
  * handle and observation target of the latest agent action for this renderer tab, runs only while shown, and keeps
  * no frame after it stops. Without an agent binding it renders `children` unchanged.
  */
-export function BrowserObservationPreview({ tabId, sessionId, children, probe, active = true, observeHidden = false }: {
+export function BrowserObservationPreview({ tabId, sessionId, children, probe, active = true, observeHidden = false,
+  thumbnail = false }: {
   tabId: string;
   sessionId?: string;
   /** The hosting panel's visibility. A hidden panel stops the preview even before its styles settle. */
   active?: boolean;
   /** Keeps the hidden guest painting at opacity 0 while this preview is live. */
   observeHidden?: boolean;
+  /** Crop a fixed thumbnail to the top-left of the page. */
+  thumbnail?: boolean;
   children?: ReactNode;
   probe?: (element: Element) => boolean;
 }) {
@@ -81,10 +84,10 @@ export function BrowserObservationPreview({ tabId, sessionId, children, probe, a
 
   if (!binding || !store) return <>{children}</>;
   const frame = state?.frame;
-  return <div ref={setElement} data-testid="browser-observation-preview" className="relative h-full min-h-0 w-full"
+  return <div ref={setElement} data-testid="browser-observation-preview" className="relative h-full min-h-0 w-full overflow-hidden"
     data-preview-state={frame ? state?.updating ? "updating" : "live" : state?.status ?? "idle"}>
     {frame ? <img src={frame.src} alt={t("agentBrowser.observationPreview")} draggable={false}
-      className="pointer-events-none h-full w-full select-none object-contain"
+      className={`pointer-events-none h-full w-full select-none ${thumbnail ? "object-cover object-left-top" : "object-contain"}`}
       onLoad={() => store.rendered(binding, frame.frame)} onError={() => store.rendered(binding, frame.frame)} /> : children}
     {observeHidden && frame && !state?.updating ? <span className="pointer-events-none absolute right-1 top-1 rounded bg-background px-1 text-xs">{t("agentBrowser.live")}</span> : null}
     {frame && state?.updating ? <span data-testid="browser-observation-preview-updating"

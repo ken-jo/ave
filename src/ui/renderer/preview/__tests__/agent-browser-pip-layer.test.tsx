@@ -1,0 +1,282 @@
+// @vitest-environment jsdom
+import "../../../../../test/renderer/setup.js";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
+import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import type { BrowserObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest } from "../../../../shared/agent-observation.js";
+import { BROWSER_TOOL } from "../../../../shared/browser-tools.js";
+import { ApprovalDock } from "../../components/permissions/ApprovalDock.js";
+import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
+import type { ApprovalRequest, AveApi, AvePreviewApi } from "../../types.js";
+import { t } from "../../../../i18n/runtime.js";
+import { AgentBrowserPipLayer } from "../AgentBrowserPipLayer.js";
+import { connectBrowserObservations } from "../browser-observation-bridge.js";
+import { registerBrowserTabHost } from "../agent-browser-bridge.js";
+import { clampBrowserPipPosition } from "../browser-pip-position.js";
+import { clearWebSurfaceSlot, getWebSurfaceOccluders, setWebSurfaceElement, isSurfaceDragActive, noteWebSurfaceFavicon, publishLiveWebTabs,
+  requestWebSurfaceLayout, setWebSurfaceSlot, setWebSurfaceUrl, withdrawLiveWebTabs } from "../web-surfaces.js";
+
+const TAB = "browser:pip-1";
+const SECOND_TAB = "browser:pip-2";
+const source = Symbol("pip-tabs");
+let emit: (events: BrowserObservationEvent[]) => void;
+let emitFrame: (message: BrowserObservationPreviewMessage) => void;
+let control: (state: BrowserTabControlState) => void;
+let disconnect: () => void;
+let unregister: () => void;
+let slot: HTMLDivElement;
+let region: HTMLDivElement;
+let api: AveApi;
+const open = vi.fn();
+const previewRequests = vi.fn(async (_request: BrowserObservationPreviewRequest) => ({ ok: true }));
+
+function action(seq = 1, tabId = TAB): BrowserObservationEvent & { kind: "action" } {
+  return { source: "browser", actor: "agent", sessionId: "fixture-session", target: { id: `target-${tabId}`, path: "browser", hostSessionId: "parent" },
+    seq, ts: seq, kind: "action", before: null, after: { action: "snapshot", tabId: `handle-${tabId}`, rendererTabId: tabId,
+      title: "Preview page", url: "https://example.test/" } };
+}
+const cards = () => screen.queryAllByTestId("agent-browser-pip-card");
+const openButton = () => screen.getByRole("button", { name: t("agentBrowser.openPreview", { title: "Preview page" }) });
+const hideButton = () => screen.getByRole("button", { name: t("agentBrowser.hidePreview", { title: "Preview page" }) });
+function show() { return render(<AgentBrowserPipLayer api={api} onOpen={open} />); }
+function activate() { act(() => { control(browserControlFixture([TAB])); emit([action()]); }); }
+
+beforeEach(async () => {
+  vi.clearAllMocks();
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1243 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.testid === "agent-browser-pip-layer") return new DOMRect(Number.parseFloat(this.style.left), Number.parseFloat(this.style.top), Number.parseFloat(this.style.width), Number.parseFloat(this.style.height));
+    if (this.hasAttribute("data-pip-measure")) return new DOMRect(0, 0, Number.parseFloat(this.style.width) || 240, 68);
+    if (this.hasAttribute("data-pip-measure-header")) return new DOMRect(0, 0, 240, 40);
+    if (this.hasAttribute("data-pip-reservation")) return new DOMRect(800, 450, 400, 220);
+    if (this.dataset.testid === "agent-browser-pip-card") return new DOMRect(20, 100, 240, this.dataset.compact === "true" ? 40 : 203);
+    return new DOMRect(0, 0, 600, 150);
+  });
+  region = document.createElement("div"); region.dataset.pipRegion = "";
+  region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 650); document.body.append(region);
+  slot = document.createElement("div");
+  slot.style.display = "none";
+  document.body.append(slot);
+  setWebSurfaceSlot(TAB, slot);
+  publishLiveWebTabs(source, new Set([TAB, SECOND_TAB]));
+  setWebSurfaceUrl(TAB, "https://example.test/");
+  api = makeMockAveApi({ browserTabs: true }).api as unknown as AveApi;
+  unregister = registerBrowserTabHost(api, { sessionId: () => "fixture-session", hasTab: () => true, selectTab: () => {}, closeTab: () => {} });
+  const controls = api.browserTabs;
+  if (!controls) throw new Error("Browser controls missing");
+  const handler = vi.mocked(controls.onControl).mock.calls.at(-1)?.[0];
+  if (!handler) throw new Error("Browser control subscription missing");
+  control = handler;
+  await act(async () => {});
+  disconnect = connectBrowserObservations({
+    onAgentObservation: (handler: typeof emit) => { emit = handler; return () => {}; },
+    onObservationPreview: (handler: typeof emitFrame) => { emitFrame = handler; return () => {}; }, acknowledgeObservation: async () => ({ ok: true }),
+    requestObservationPreview: previewRequests,
+  } as unknown as AvePreviewApi);
+});
+afterEach(async () => {
+  cleanup(); disconnect(); unregister(); clearWebSurfaceSlot(TAB, slot); slot.remove(); region.remove();
+  withdrawLiveWebTabs(source); await Promise.resolve(); vi.restoreAllMocks();
+});
+
+describe("window agent browser previews", () => {
+  it("crops portrait frames into a fixed widescreen picture without resizing after capture stops", () => {
+    show(); activate();
+    act(() => emitFrame({ kind: "frame", targetId: `target-${TAB}`, sessionId: "fixture-session", tabId: `handle-${TAB}`,
+      frame: 1, mimeType: "image/jpeg", data: "portrait", width: 200, height: 400, ts: 1 }));
+    const picture = screen.getByTestId("agent-browser-pip-picture");
+    expect(picture.style.aspectRatio.replaceAll(" ", "")).toBe("16/9");
+    expect(screen.getByRole("img").className).toContain("object-cover");
+    expect(screen.getByRole("img").className).toContain("object-left-top");
+    expect(cards()[0]?.style.width).toBe("240px");
+    expect(cards()[0]?.style.height).toBe("");
+    expect(picture.contains(screen.getByText(t("agentBrowser.live")))).toBe(true);
+    act(() => emitFrame({ kind: "state", targetId: `target-${TAB}`, sessionId: "fixture-session", tabId: `handle-${TAB}`, state: "stopped" }));
+    expect(picture.style.aspectRatio.replaceAll(" ", "")).toBe("16/9");
+    expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("p-8");
+    expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("pb-12");
+    expect(screen.getByTestId("agent-browser-pip-layer").style.top).toBe("100px");
+  });
+  it.each(["approval", "question"])("reserves an ordinary %s outside the settle wrapper and stays below decision surfaces", (kind) => {
+    const composer = document.createElement("div"); composer.dataset.testid = "composer";
+    const decision = document.createElement("section"); decision.dataset.pipReservation = kind;
+    document.body.append(composer, decision);
+    composer.getBoundingClientRect = () => new DOMRect(0, 674, 1243, 100);
+    decision.getBoundingClientRect = () => new DOMRect(800, 450, 400, 220);
+    show(); activate();
+    const layer = screen.getByTestId("agent-browser-pip-layer");
+    expect(layer.style.height).toBe("350px");
+    expect(layer.style.top).toBe("100px");
+    expect(layer.className).toContain("z-30");
+    decision.remove(); composer.remove();
+  });
+  it("takes its bounds from the measured body below the header and updates when the header grows", () => {
+    show(); activate();
+    const layer = screen.getByTestId("agent-browser-pip-layer");
+    expect(layer.style.top).toBe("100px"); expect(layer.style.left).toBe("20px");
+    expect(layer.style.height).toBe("650px");
+    act(() => { region.getBoundingClientRect = () => new DOMRect(30, 140, 1180, 550); requestWebSurfaceLayout(); });
+    expect(layer.style.top).toBe("140px"); expect(layer.style.left).toBe("30px");
+    expect(layer.style.height).toBe("550px");
+    region.remove(); act(() => requestWebSurfaceLayout()); expect(cards()).toHaveLength(0);
+  });
+  it("shows no card without tabs or observations, then hides only the tab actually visible in the panel", () => {
+    show(); expect(cards()).toHaveLength(0);
+    activate(); expect(cards()).toHaveLength(1);
+    act(() => { slot.style.display = "block"; requestWebSurfaceLayout(); });
+    expect(cards()).toHaveLength(0);
+    act(() => { slot.style.display = "none"; requestWebSurfaceLayout(); });
+    expect(cards()).toHaveLength(1);
+    act(() => control(browserControlFixture([], "human", 2)));
+    expect(cards()).toHaveLength(0);
+  });
+  it("stays dismissed for snapshots and scrolls in the same turn, then reappears for a new turn or actual activation", async () => {
+    show(); activate(); fireEvent.click(hideButton()); expect(cards()).toHaveLength(0);
+    act(() => requestWebSurfaceLayout()); expect(cards()).toHaveLength(0);
+    const starts = () => previewRequests.mock.calls.filter(([request]) => (request as { action: string }).action === "start").length;
+    const before = starts();
+    act(() => emit([action(2)])); expect(cards()).toHaveLength(0);
+    const scroll = action(3);
+    act(() => emit([{ ...scroll, after: { ...scroll.after, action: "scroll" } }]));
+    expect(cards()).toHaveLength(0); expect(starts()).toBe(before);
+    const nextTurn = { ...action(4), target: { ...action().target, id: "next-turn" } };
+    act(() => emit([nextTurn])); expect(cards()).toHaveLength(1);
+    fireEvent.click(hideButton());
+    await act(async () => { slot.style.display = "block"; });
+    await act(async () => { slot.style.display = "none"; });
+    expect(cards()).toHaveLength(1);
+  });
+  it("opens with Enter and hides with Delete or the close button", async () => {
+    const user = userEvent.setup(); show(); activate();
+    openButton().focus(); await user.keyboard("{Enter}"); expect(open).toHaveBeenCalledWith(TAB);
+    await user.keyboard("{Delete}"); expect(cards()).toHaveLength(0);
+    act(() => emit([{ ...action(2), target: { ...action().target, id: "keyboard-next-turn" } }])); fireEvent.click(hideButton()); expect(cards()).toHaveLength(0);
+  });
+  it("shows two separate cards with child titles and suppresses ended children", () => {
+    const fixture = makeMockAveApi({ browserTabs: true });
+    // Use this layer's own window API subscription, with the existing control connection.
+    const view = render(<AgentBrowserPipLayer api={fixture.api as unknown as AveApi} onOpen={open} />);
+    act(() => {
+      setWebSurfaceUrl(SECOND_TAB, "https://example.test/");
+      fixture.emitAgentSpawnEvent({ spawnId: "child", childSessionId: "fixture-session", parentSessionId: "parent", type: "start",
+        taskState: "TASK_STATE_SUBMITTED", title: "Research task" });
+      control(browserControlFixture([TAB, SECOND_TAB])); emit([action(), action(1, SECOND_TAB)]);
+    });
+    expect(cards()).toHaveLength(2); expect(cards()[0]?.textContent).toContain("Research task");
+    act(() => fixture.emitAgentSpawnEvent({ spawnId: "child", childSessionId: "fixture-session", parentSessionId: "parent", type: "done",
+      taskState: "TASK_STATE_COMPLETED" }));
+    expect(cards()).toHaveLength(0); view.unmount();
+  });
+  it("renders a favicon and title chip without a screencast below 480px", () => {
+    show(); activate();
+    const starts = previewRequests.mock.calls.filter(([request]) => request.action === "start").length;
+    act(() => { Object.defineProperty(window, "innerWidth", { value: 360 }); noteWebSurfaceFavicon(TAB, "data:image/png;base64,AA=="); fireEvent.resize(window); });
+    expect(cards()[0]).toHaveAttribute("data-compact", "true");
+    expect(openButton().querySelector("img")).not.toBeNull();
+    expect(screen.queryByTestId("browser-observation-preview")).toBeNull();
+    expect(previewRequests.mock.calls.some(([request]) => request.action === "stop")).toBe(true);
+    expect(previewRequests.mock.calls.filter(([request]) => request.action === "start")).toHaveLength(starts);
+  });
+  it("keeps the newest picture and collapses older tabs without retaining their captures", async () => {
+    show(); activate(); await act(async () => {});
+    act(() => {
+      region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 300);
+      setWebSurfaceUrl(SECOND_TAB, "https://example.test/");
+      control(browserControlFixture([TAB, SECOND_TAB], "agent-active", 2)); emit([action(2, SECOND_TAB)]); requestWebSurfaceLayout();
+    });
+    expect(cards()).toHaveLength(2);
+    expect(cards()[0]).toHaveAttribute("data-tab-id", SECOND_TAB);
+    expect(cards()[0]).toHaveAttribute("data-compact", "false");
+    expect(cards()[1]).toHaveAttribute("data-compact", "true");
+    expect(cards()[1]?.querySelector('[data-testid="browser-observation-preview"]')).toBeNull();
+    await act(async () => {});
+    expect(previewRequests.mock.calls.some(([request]) => request.action === "stop" && request.tabId === `handle-${TAB}`)).toBe(true);
+    const layer = screen.getByTestId("agent-browser-pip-layer");
+    expect(layer.className).toContain("overflow-hidden"); expect(layer.className).not.toContain("overflow-y-auto");
+  });
+  it("uses a summary chip when individual chips cannot fit, and opens the first hidden tab", () => {
+    show();
+    const third = "browser:pip-3";
+    act(() => {
+      publishLiveWebTabs(source, new Set([TAB, SECOND_TAB, third]));
+      for (const id of [TAB, SECOND_TAB, third]) setWebSurfaceUrl(id, "https://example.test/");
+      region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 80);
+      control(browserControlFixture([TAB, SECOND_TAB, third]));
+      emit([action(1), action(2, SECOND_TAB), action(3, third)]); requestWebSurfaceLayout();
+    });
+    expect(cards()).toHaveLength(1); expect(cards()[0]).toHaveAttribute("data-tab-id", third);
+    expect(cards()[0]).toHaveAttribute("data-compact", "true");
+    expect(screen.queryByTestId("browser-observation-preview")).toBeNull();
+    const summary = screen.getByTestId("agent-browser-pip-overflow");
+    expect(summary).toHaveTextContent("+2");
+    expect(getWebSurfaceOccluders().has(summary)).toBe(true);
+    expect(summary).toHaveAccessibleName(t("agentBrowser.openHiddenPreviews", { count: 2 }));
+    fireEvent.click(summary); expect(open).toHaveBeenCalledWith(SECOND_TAB);
+    act(() => { region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 20); requestWebSurfaceLayout(); });
+    expect(cards()).toHaveLength(0); expect(screen.queryByTestId("agent-browser-pip-overflow")).toBeNull();
+    expect(getWebSurfaceOccluders().has(summary)).toBe(false);
+  });
+  it("reserves canonical browser-site approval controls without approving through preview activation", () => {
+    const decide = vi.fn();
+    const request: ApprovalRequest = { id: "pip-site", category: "tool", source: "builtin", toolName: BROWSER_TOOL.navigate,
+      toolCategory: "read", args: { url: "https://example.test/" }, browserSite: "https://example.test:443", reason: "Site access",
+      createdAt: 1, requireExplicit: true, allowedChoices: ["allow-once", "deny-once"] };
+    render(<><ApprovalDock queue={[request]} conversationLabel="Browser task" onDecide={decide} />
+      <AgentBrowserPipLayer api={api} onOpen={open} /></>);
+    activate();
+    const panel = screen.getByTestId("tool-approval-panel");
+    expect(panel).toHaveAttribute("data-approval-tool-name", BROWSER_TOOL.navigate);
+    expect(screen.getByTestId("agent-browser-pip-layer").style.height).toBe("350px");
+    fireEvent.click(openButton()); expect(open).toHaveBeenCalledWith(TAB); expect(decide).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: t("toolApprovalDialog.decisionDeny") }));
+    expect(decide).toHaveBeenCalledWith("deny-once", undefined);
+  });
+  it.each(["paused", "foreign-owner", "stale-handle"] as const)("stops the exact preview when control becomes %s", (change) => {
+    show(); activate();
+    const fixture = browserControlFixture([TAB], "agent-active", 2);
+    const next: BrowserTabControlState = { ...fixture, tabs: fixture.tabs.map((tab) => change === "paused"
+      ? { ...tab, mode: "human-paused" } : change === "stale-handle" ? { ...tab, tabId: "replacement-handle" }
+        : { ...tab, owner: { sessionId: "other-session" }, lease: tab.lease ? { ...tab.lease, actor: { sessionId: "other-session" } } : null }) };
+    act(() => control(next));
+    expect(cards()).toHaveLength(0);
+    expect(previewRequests.mock.calls.some(([request]) => request.action === "stop" && request.tabId === `handle-${TAB}`)).toBe(true);
+    const starts = previewRequests.mock.calls.filter(([request]) => request.action === "start").length;
+    act(() => emit([action(2)])); expect(cards()).toHaveLength(0);
+    expect(previewRequests.mock.calls.filter(([request]) => request.action === "start")).toHaveLength(starts);
+  });
+  it("uses hidden slot intent while a parked guest remains painted and preserves an editor draft", () => {
+    const guest = document.createElement("webview"); guest.style.visibility = "visible";
+    const editor = document.createElement("input"); editor.value = "Unfinished draft";
+    const blurred = vi.fn(); editor.addEventListener("blur", blurred);
+    document.body.append(guest, editor); setWebSurfaceElement(TAB, guest); editor.focus();
+    try {
+      show(); activate(); expect(cards()).toHaveLength(1);
+      expect(guest.style.visibility).toBe("visible"); expect(document.activeElement).toBe(editor);
+      expect(editor.value).toBe("Unfinished draft"); expect(blurred).not.toHaveBeenCalled();
+      act(() => { slot.style.display = "block"; requestWebSurfaceLayout(); });
+      expect(cards()).toHaveLength(0); expect(document.activeElement).toBe(editor); expect(blurred).not.toHaveBeenCalled();
+    } finally { setWebSurfaceElement(TAB, null); guest.remove(); editor.remove(); }
+  });
+  it("releases the shared drag state when a dragged card disappears", () => {
+    show(); activate();
+    const button = openButton(); button.setPointerCapture = vi.fn();
+    fireEvent(button, Object.assign(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 20 }),
+      { isPrimary: true, pointerId: 1 }));
+    expect(isSurfaceDragActive()).toBe(true);
+    fireEvent.click(hideButton()); expect(isSurfaceDragActive()).toBe(false);
+  });
+});
+
+it.each([
+  [{ x: 0, y: 0 }, { left: 200, top: 100, width: 400, height: 300 }, { x: 200, y: 100 }],
+  [{ x: 2000, y: 1000 }, { left: 200, top: 100, width: 400, height: 300 }, { x: 360, y: 250 }],
+  [{ x: -40, y: -3 }, { left: 0, top: 0, width: 1243, height: 800 }, { x: 0, y: 0 }],
+  [{ x: 2000, y: 1000 }, { left: 0, top: 0, width: 1243, height: 800 }, { x: 1003, y: 650 }],
+  [{ x: 1003, y: 650 }, { left: 0, top: 0, width: 360, height: 500 }, { x: 120, y: 350 }],
+  [{ x: 10, y: 20 }, { left: 0, top: 0, width: 120, height: 80 }, { x: 0, y: 0 }],
+])("clamps a card to the available window area %j", (point, area, expected) => {
+  expect(clampBrowserPipPosition(point, { width: 240, height: 150 }, area)).toEqual(expected);
+});

@@ -264,6 +264,7 @@ export function AskUserQuestionCard({
   return (
     <Card
       ref={cardRef}
+      data-pip-reservation
       aria-label={t("askUserQuestionCard.cardAriaLabel")}
       className={`${chatSurface({ elevation: "floating" })} w-full max-w-none text-input-bar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/(--opacity-medium) ${className ?? ""}`}
       data-testid="ask-user-question-card"
