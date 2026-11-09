@@ -5,7 +5,7 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
-import type { BrowserObservationEvent, BrowserObservationPreviewMessage } from "../../../../shared/agent-observation.js";
+import type { BrowserObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest } from "../../../../shared/agent-observation.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
 import type { AveApi, AvePreviewApi } from "../../types.js";
 import { t } from "../../../../i18n/runtime.js";
@@ -27,8 +27,9 @@ let unregister: () => void;
 let slot: HTMLDivElement;
 let api: AveApi;
 const open = vi.fn();
+const previewRequests = vi.fn(async (_request: BrowserObservationPreviewRequest) => ({ ok: true }));
 
-function action(seq = 1, tabId = TAB): BrowserObservationEvent {
+function action(seq = 1, tabId = TAB): BrowserObservationEvent & { kind: "action" } {
   return { source: "browser", actor: "agent", sessionId: "fixture-session", target: { id: `target-${tabId}`, path: "browser", hostSessionId: "parent" },
     seq, ts: seq, kind: "action", before: null, after: { action: "snapshot", tabId: `handle-${tabId}`, rendererTabId: tabId,
       title: "Preview page", url: "https://example.test/" } };
@@ -63,7 +64,7 @@ beforeEach(async () => {
   disconnect = connectBrowserObservations({
     onAgentObservation: (handler: typeof emit) => { emit = handler; return () => {}; },
     onObservationPreview: (handler: typeof emitFrame) => { emitFrame = handler; return () => {}; }, acknowledgeObservation: async () => ({ ok: true }),
-    requestObservationPreview: async () => ({ ok: true }),
+    requestObservationPreview: previewRequests,
   } as unknown as AvePreviewApi);
 });
 afterEach(async () => {
@@ -109,10 +110,17 @@ describe("window agent browser previews", () => {
     act(() => control(browserControlFixture([], "human", 2)));
     expect(cards()).toHaveLength(0);
   });
-  it("dismisses until new agent activity or the tab becomes visible and returns", async () => {
+  it("stays dismissed for snapshots and scrolls in the same turn, then reappears for a new turn or actual activation", async () => {
     show(); activate(); fireEvent.click(hideButton()); expect(cards()).toHaveLength(0);
     act(() => requestWebSurfaceLayout()); expect(cards()).toHaveLength(0);
-    act(() => emit([action(2)])); expect(cards()).toHaveLength(1);
+    const starts = () => previewRequests.mock.calls.filter(([request]) => (request as { action: string }).action === "start").length;
+    const before = starts();
+    act(() => emit([action(2)])); expect(cards()).toHaveLength(0);
+    const scroll = action(3);
+    act(() => emit([{ ...scroll, after: { ...scroll.after, action: "scroll" } }]));
+    expect(cards()).toHaveLength(0); expect(starts()).toBe(before);
+    const nextTurn = { ...action(4), target: { ...action().target, id: "next-turn" } };
+    act(() => emit([nextTurn])); expect(cards()).toHaveLength(1);
     fireEvent.click(hideButton());
     await act(async () => { slot.style.display = "block"; });
     await act(async () => { slot.style.display = "none"; });
@@ -122,7 +130,7 @@ describe("window agent browser previews", () => {
     const user = userEvent.setup(); show(); activate();
     openButton().focus(); await user.keyboard("{Enter}"); expect(open).toHaveBeenCalledWith(TAB);
     await user.keyboard("{Delete}"); expect(cards()).toHaveLength(0);
-    act(() => emit([action(2)])); fireEvent.click(hideButton()); expect(cards()).toHaveLength(0);
+    act(() => emit([{ ...action(2), target: { ...action().target, id: "keyboard-next-turn" } }])); fireEvent.click(hideButton()); expect(cards()).toHaveLength(0);
   });
   it("shows two separate cards with child titles and suppresses ended children", () => {
     const fixture = makeMockAveApi({ browserTabs: true });

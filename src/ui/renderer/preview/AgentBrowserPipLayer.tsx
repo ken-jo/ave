@@ -43,7 +43,9 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
   const { t } = useTranslation();
   const tabId = tab.rendererTabId;
   const event = useBrowserObservation(tabId);
-  const [dismissed, setDismissed] = useState<typeof event>();
+  // The host issues one observation target for an acting turn, shared by its actions on this tab.
+  const turnBinding = event ? JSON.stringify([event.sessionId, event.target.id]) : undefined;
+  const [dismissed, setDismissed] = useState<string>();
   const [position, setPosition] = useState<BrowserPipPoint | null>(null);
   const [aspectRatio, setAspectRatio] = useState(4 / 3);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -64,7 +66,7 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
   useEffect(() => { if (visible) setDismissed(undefined); }, [visible]);
   const eligible = event?.kind === "action" && event.after.action !== "tab-close" && event.after.tabId === tab.tabId
     && agentDrivesBrowserTab(tab, event.sessionId) && child?.type !== "done" && child?.type !== "error";
-  const shown = eligible && !visible && dismissed !== event;
+  const shown = eligible && !visible && dismissed !== turnBinding;
   useLayoutEffect(() => {
     const card = cardRef.current;
     if (!shown || !card || !position) return;
@@ -84,7 +86,7 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
   const favicon = webSurfaceFavicon(tabId);
   const width = Math.min(240, Math.max(0, area.width - (EDGE + STACK_PADDING) * 2),
     compact ? 240 : Math.max(0, area.height - EDGE - STACK_PADDING - STACK_BOTTOM_PADDING - CARD_CHROME_HEIGHT) * aspectRatio);
-  const hide = () => setDismissed(event);
+  const hide = () => setDismissed(turnBinding);
   return <div ref={setCard}
     data-testid="agent-browser-pip-card" data-tab-id={tabId} data-compact={compact}
     className="pointer-events-auto relative shrink-0 overflow-hidden rounded-lg border bg-card text-card-foreground shadow-(--elevation-floating)"

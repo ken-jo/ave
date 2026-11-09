@@ -10,6 +10,8 @@ for (const width of [1243, 360]) {
     const model = "pip-fixture";
     let stage = 0;
     let baseUrl = "";
+    let releaseActivity: (() => void) | undefined;
+    let firstHandle = "";
     let releaseSecond: (() => void) | undefined;
     let finish: (() => void) | undefined;
     const failures: string[] = [];
@@ -17,9 +19,9 @@ for (const width of [1243, 360]) {
       response.write(`data: ${JSON.stringify({ id: "pip", object: "chat.completion.chunk", created: 0, model,
         choices: [{ index: 0, delta, finish_reason: reason }] })}\n\n`);
     };
-    const tool = (response: ServerResponse, number: number) => {
-      send(response, { role: "assistant", tool_calls: [{ index: 0, id: `pip-${number}`, type: "function",
-        function: { name: "browser_tab_new", arguments: JSON.stringify({ url: `${baseUrl}/page-${number}` }) } }] }, null);
+    const tool = (response: ServerResponse, number: number, name = "browser_tab_new", args: Record<string, unknown> = { url: `${baseUrl}/page-${number}` }) => {
+      send(response, { role: "assistant", tool_calls: [{ index: 0, id: `pip-${stage}`, type: "function",
+        function: { name, arguments: JSON.stringify(args) } }] }, null);
       send(response, {}, "tool_calls"); response.end("data: [DONE]\n\n");
     };
     const server = createServer(async (request, response) => {
@@ -40,7 +42,12 @@ for (const width of [1243, 360]) {
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
       stage++;
       if (stage === 1) { tool(response, 1); return; }
-      if (stage === 2) { releaseSecond = () => tool(response, 2); response.flushHeaders(); return; }
+      if (stage === 2) {
+        firstHandle = /"tabId"\s*:\s*"(tab-\d+)"/.exec(typeof result === "string" ? result : JSON.stringify(result))?.[1] ?? "";
+        releaseActivity = () => tool(response, 2, "browser_snapshot", { tabId: firstHandle });
+        response.flushHeaders(); return;
+      }
+      if (stage === 3) { releaseSecond = () => tool(response, 2); response.flushHeaders(); return; }
       finish = () => { send(response, { role: "assistant", content: "Browser work complete." }, null); send(response, {}, "stop"); response.end("data: [DONE]\n\n"); };
       response.flushHeaders();
     });
@@ -81,7 +88,7 @@ for (const width of [1243, 360]) {
           await page.waitForTimeout(100);
         }
       })();
-      await expect.poll(() => releaseSecond !== undefined, { timeout: 60_000 }).toBe(true);
+      await expect.poll(() => releaseActivity !== undefined, { timeout: 60_000 }).toBe(true);
       expect(failures).toEqual([]);
       const cards = page.getByTestId("agent-browser-pip-card");
       await expect(cards).toHaveCount(1);
@@ -101,6 +108,10 @@ for (const width of [1243, 360]) {
       expect(await guest.evaluate((element) => (element as HTMLElement & { getWebContentsId(): number }).getWebContentsId())).toBe(guestId);
       await closePanel(); await expect(cards).toHaveCount(1);
       await cards.getByRole("button", { name: /^(Hide browser preview:|브라우저 미리보기 숨기기:)/ }).click();
+      await expect(cards).toHaveCount(0);
+      const takeSnapshot = releaseActivity; releaseActivity = undefined; takeSnapshot?.();
+      await expect.poll(() => releaseSecond !== undefined, { timeout: 30_000 }).toBe(true);
+      expect(firstHandle).toMatch(/^tab-\d+$/);
       await expect(cards).toHaveCount(0);
       await toggle.click(); await closePanel(); await expect(cards).toHaveCount(1);
       holdApproval = true;
@@ -148,7 +159,7 @@ for (const width of [1243, 360]) {
       }
     } finally {
       approving = false;
-      releaseSecond?.(); finish?.();
+      releaseActivity?.(); releaseSecond?.(); finish?.();
       if (approvals) await approvals.catch(() => {});
       if (ctx) await teardownSeededElectron(ctx);
       server.closeAllConnections();
