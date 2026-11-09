@@ -26,6 +26,7 @@ import {
   BrowserActionError, frameTree, mainDocumentContainsNode, ownPageSession, releasePageSession, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession,
 } from "./browser-action-guard.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
+import { readablePageText } from "./browser-page-text.js";
 import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "./browser-select-script.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
@@ -1662,6 +1663,17 @@ export function createBrowserPageActions(
       const challenge = await observeChallenge(live, guest, session, live.signal);
       target.assertCurrent?.(false);
       return { ...shot, ...(challenge ? { challenge } : {}) };
+    }),
+    readText: async (live: LiveTab) => awake(live, async () => {
+      const guest = live.tab.guest;
+      if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+      const target = await targetFor(live, attribution, hostContentOrigin);
+      const nodes = await fullTree(target.cdp);
+      throwIfAborted(target.signal);
+      const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+      const challenge = await observeChallenge(live, guest, session, live.signal);
+      target.assertCurrent?.(false);
+      return { url: target.url(), title: target.title(), ...readablePageText(nodes), ...(challenge ? { challenge } : {}) };
     }),
     screenshot: async (live: LiveTab, options) => {
       return runBrowserCapture(live.signal, TOOL_TIMEOUT_POLICY.browserCaptureMs, async (operation) => {

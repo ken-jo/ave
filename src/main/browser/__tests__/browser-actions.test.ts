@@ -650,7 +650,7 @@ describe("settle", () => {
       const send = vi.fn().mockResolvedValueOnce({ nodes: [{ nodeId: "root", role: { value: "RootWebArea" }, name: { value: "News" } }] })
         .mockResolvedValue({ nodes: [{ nodeId: "headline", role: { value: "heading" }, name: { value: "Today's news" } }] });
       const allowed = vi.fn();
-      const pending = settlePageContent({ send }, new AbortController().signal, allowed);
+      const pending = settlePageContent({ send, onEvent: () => vi.fn() }, new AbortController().signal, allowed);
       await vi.advanceTimersByTimeAsync(100);
       await pending;
       expect(send).toHaveBeenCalledTimes(2);
@@ -662,12 +662,12 @@ describe("settle", () => {
     vi.useFakeTimers();
     try {
       const send = vi.fn().mockResolvedValue({ nodes: [] });
-      const pending = settlePageContent({ send }, new AbortController().signal);
+      const pending = settlePageContent({ send, onEvent: () => vi.fn() }, new AbortController().signal);
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.browserContentSettleMs);
       await pending;
       const controller = new AbortController();
       send.mockImplementationOnce(async () => { controller.abort(); return { nodes: [] }; });
-      await expect(settlePageContent({ send }, controller.signal)).rejects.toMatchObject({ code: "cancelled" });
+      await expect(settlePageContent({ send, onEvent: () => vi.fn() }, controller.signal)).rejects.toMatchObject({ code: "cancelled" });
     } finally { vi.useRealTimers(); }
   });
 
@@ -675,12 +675,12 @@ describe("settle", () => {
     vi.useFakeTimers();
     try {
       const send = vi.fn(() => new Promise(() => {}));
-      const pending = settlePageContent({ send }, new AbortController().signal);
+      const pending = settlePageContent({ send, onEvent: () => vi.fn() }, new AbortController().signal);
       await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.browserContentSettleMs);
       await pending;
       expect(send).toHaveBeenCalledOnce();
       let allowed = true;
-      const revoked = settlePageContent({ send: async () => { allowed = false; return { nodes: [] }; } }, new AbortController().signal,
+      const revoked = settlePageContent({ send: async () => { allowed = false; return { nodes: [] }; }, onEvent: () => vi.fn() }, new AbortController().signal,
         () => { if (!allowed) throw new Error("Site authority revoked"); });
       await expect(revoked).rejects.toThrow("Site authority revoked");
     } finally { vi.useRealTimers(); }
@@ -1746,6 +1746,22 @@ it("wakes a background agent guest for input without selecting or opening its pa
     expect(layoutOps).toContain("sleep");
     expect(guest.setBackgroundThrottling).toHaveBeenLastCalledWith(true);
   } finally { vi.useRealTimers(); }
+});
+
+it.each(["document", "takeover"] as const)("refuses page text when its %s changes during the read", async change => {
+  const { actions, approve, cdp, navigate, registry, guest } = adapterFixture();
+  cdp.nodes = page([ax("text", "StaticText", "Private headline")]);
+  const live = await approve("browser_read_text");
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    const result = await send(method, params);
+    if (method === "Accessibility.getFullAXTree") {
+      if (change === "document") navigate("https://a.example/replaced");
+      else registry.userInput(guest.id, { type: "keyDown" });
+    }
+    return result;
+  });
+  await expect(actions.readText(live)).rejects.toMatchObject({ code: change === "document" ? "document-changed" : "cancelled" });
 });
 
 it("leaves user-owned guests on their existing painting and throttle path", async () => {

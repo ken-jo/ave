@@ -113,7 +113,7 @@ export function fenceBrowserReadContent(header: Record<string, unknown>, body: s
   const render = (length: number) => {
     const truncated = length < body.length;
     let end = length;
-    if (end > 0 && /[\uD800-\uDBFF]/.test(body[end - 1]!)) end--;
+    if (end > 0 && /[\uD800-\uDBFF]/.test(body[end - 1] as string)) end--;
     return fenceBrowserContent({ ...header, ...(truncated ? { truncated: true } : {}) },
       body.slice(0, end) + (truncated ? "\n[truncated]" : ""));
   };
@@ -460,6 +460,22 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       }), ctx.abortSignal);
     },
 
+    [BROWSER_TOOL.readText]: async (input, ctx) => {
+      const target = live(input, ctx);
+      if (!target.ok) return target.result;
+      const changed = unchangedSinceApproval(ctx, target.resolved);
+      if (changed) return changed;
+      return observeAgentBrowserCommand(target.resolved.tab, "snapshot", () => run(async (actions) => {
+        const fresh = recheck(input, ctx, target);
+        if (!fresh.ok) return fresh.result;
+        const changed = unchangedSinceApproval(ctx, fresh.resolved);
+        if (changed) return changed;
+        const page = await actions.readText(pageTarget(ctx, fresh));
+        return { output: fenceBrowserReadContent({ tabId: fresh.resolved.tab.handle, url: page.url, title: page.title,
+          ...(page.truncated ? { truncated: true } : {}), ...(page.challenge ? { challenge: page.challenge } : {}) }, page.text), isError: false };
+      }), ctx.abortSignal);
+    },
+
     [BROWSER_TOOL.screenshot]: async (input, ctx) => {
       const options = parseBrowserScreenshotOptions({
         ...(input.fullPage !== undefined ? { fullPage: input.fullPage } : {}),
@@ -629,6 +645,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   const allowed: Record<BrowserToolName, readonly string[]> = {
     [BROWSER_TOOL.tabs]: ["select", "scope", "includeDirectChildren"],
     [BROWSER_TOOL.snapshot]: ["tabId", "interactive", "delta", "maxChars"],
+    [BROWSER_TOOL.readText]: ["tabId"],
     [BROWSER_TOOL.screenshot]: ["tabId", "fullPage", "ref", "clip"],
     [BROWSER_TOOL.wait]: ["tabId", "text", "timeMs"],
     [BROWSER_TOOL.navigate]: ["tabId", "url"],

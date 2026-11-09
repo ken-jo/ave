@@ -495,6 +495,7 @@ export const en = {
   "be_browserTools.tabsDescription": "List the browser tabs of this window (id, URL, title, who opened it, which one is shown), or show one of them with select. Page actions in a tab you opened with browser_tab_new run under an approval per site; acting in a tab the user opened asks every time.",
   "be_browserTools.tabsSelectDescription": "Tab id to bring to the front.",
   "be_browserTools.snapshotDescription": "Read a browser tab as a bounded accessibility outline sized for one tool result. Elements you can act on carry a ref (for example [ref=e12]) for browser_click and browser_type. Use interactive or delta to narrow a truncated outline.",
+  "be_browserTools.readTextDescription": "Read the main readable page text in one bounded result. Prefer this for headlines, summaries and article reading; use browser_snapshot when you need element refs. Hidden content and child frames are excluded.",
   "be_browserTools.snapshotMaxCharsDescription": "Omit for one inline result. Request up to 50000 characters when you need omitted elements; oversized results retain host chunk recovery. Omit delta to reread the full outline.",
   "be_browserTools.snapshotInteractiveDescription": "Only the elements a person can act on (links, buttons, fields...), as a flat list.",
   "be_browserTools.snapshotDeltaDescription": "Only what changed since your previous snapshot of this tab in the same mode.",
