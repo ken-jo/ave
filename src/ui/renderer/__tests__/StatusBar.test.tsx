@@ -2,8 +2,9 @@ import "../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { endAnimation } from "../../../../test/renderer/helpers.js";
-import { NoticeLiveRegion, StatusBar } from "../components/StatusBar.js";
+import { NoticeLiveRegion, NoticeToast, StatusBar } from "../components/StatusBar.js";
 import type { PersistentItem, ToastItem } from "../hooks/use-status-bar.js";
+import { getWebSurfaceOccluders } from "../preview/web-surfaces.js";
 
 function persistent(overrides: Partial<PersistentItem> = {}): PersistentItem {
   return {
@@ -26,6 +27,13 @@ function toast(overrides: Partial<ToastItem> = {}): ToastItem {
 }
 
 describe("StatusBar", () => {
+  it("keeps the notice visible above native page content until it unmounts", () => {
+    const { unmount } = render(<StatusBar persistent={[]} visibleToast={toast()} onToastDismiss={() => {}} />);
+    const notice = screen.getByTestId("status-toast");
+    expect(getWebSurfaceOccluders().has(notice)).toBe(true);
+    unmount();
+    expect(getWebSurfaceOccluders().has(notice)).toBe(false);
+  });
   // wb-final removed the Ave brand mark from app chrome. The empty status bar renders no brand logo/text — only a
   // zero-footprint spacer that keeps the flex layout stable until the first persistent item arrives.
   it("renders no Ave brand placeholder when there are no persistent items", () => {
@@ -42,12 +50,12 @@ describe("StatusBar", () => {
   it("stays mounted, leaving, after its content is gone and unmounts when the exit animation ends", () => {
     const { rerender } = render(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ message: "로그인이 취소되었습니다" })} />);
     const presence = screen.getByTestId("status-bar-presence");
-    expect(presence.className).toBe("ave-anim-notice-in");
+    expect(presence.className).toContain("ave-anim-notice-in");
     expect(presence.dataset.leaving).toBeUndefined();
 
     rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     // The last content is still drawn, now on its way out.
-    expect(screen.getByTestId("status-bar-presence").className).toBe("ave-anim-notice-out");
+    expect(screen.getByTestId("status-bar-presence").className).toContain("ave-anim-notice-out");
     expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
     expect(screen.getByTestId("status-toast-message")).toHaveTextContent("로그인이 취소되었습니다");
 
@@ -60,8 +68,31 @@ describe("StatusBar", () => {
     rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={null} />);
     expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
     rerender(<StatusBar onToastDismiss={() => {}} persistent={[]} visibleToast={toast({ id: "toast:2", message: "두 번째" })} />);
-    expect(screen.getByTestId("status-bar-presence").className).toBe("ave-anim-notice-in");
+    expect(screen.getByTestId("status-bar-presence").className).toContain("ave-anim-notice-in");
     expect(screen.getByTestId("status-toast-message")).toHaveTextContent("두 번째");
+  });
+
+  it("floats only the toast while persistent indicators stay in flow", () => {
+    const { rerender } = render(<StatusBar persistent={[persistent()]} visibleToast={toast()} onToastDismiss={() => {}} />);
+    const overlay = screen.getByTestId("status-bar-presence");
+    expect(overlay.className).toContain("absolute");
+    expect(overlay.className).toContain("z-30");
+    expect(overlay.className).toContain("bottom-full");
+    expect(overlay.className).toContain("pointer-events-none");
+    expect(screen.getByTestId("status-toast").className).toContain("pointer-events-auto");
+    expect(screen.getByTestId("status-toast").className).not.toContain("max-h-(--chrome-band-height)");
+    expect(overlay.contains(screen.getByText("04:42 KST"))).toBe(false);
+
+    rerender(<StatusBar persistent={[persistent()]} visibleToast={null} onToastDismiss={() => {}} />);
+    expect(screen.getByTestId("status-bar-presence")).toHaveAttribute("data-leaving", "true");
+    endAnimation(screen.getByTestId("status-bar-presence"));
+    expect(screen.queryByTestId("status-toast")).toBeNull();
+    expect(screen.getByText("04:42 KST")).toBeVisible();
+  });
+
+  it("floats composer notices above their anchor", () => {
+    render(<StatusBar persistent={[]} visibleToast={toast()} onToastDismiss={() => {}} />);
+    expect(screen.getByTestId("status-bar-presence").className).toContain("bottom-full");
   });
 
   it("renders persistent items with label and value", () => {
@@ -286,6 +317,20 @@ describe("StatusBar", () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["success", "error"] as const)("keeps a pane's %s text distinct from its marked live announcement", (severity) => {
+    const notice = toast({ severity, message: "Settings result" });
+    render(<>
+      <NoticeLiveRegion toast={notice} />
+      <NoticeToast toast={notice} onDismiss={vi.fn()} wrap />
+    </>);
+    const message = screen.getByText("Settings result");
+    expect(message).toBeVisible();
+    expect(message.closest("[data-notice-live]")).toBeNull();
+    const region = screen.getByTestId(severity === "error" ? "notice-live-assertive" : "notice-live-polite");
+    expect(region).toHaveTextContent("Settings result");
+    expect(region.firstElementChild).toHaveAttribute("data-notice-live");
+  });
+
   it("keeps the same live region nodes while the queue advances, so the next notice is announced", () => {
     const first = toast({ id: "toast:1", severity: "info", message: "first" });
     const second = toast({ id: "toast:2", severity: "info", message: "second" });
@@ -351,6 +396,25 @@ describe("StatusBar", () => {
     );
     fireEvent.click(screen.getByTestId("status-toast-suppress"));
     expect(onSuppress).toHaveBeenCalledTimes(1);
+  });
+
+  it("reannounces identical window errors after another arrival", () => {
+    const firstError = toast({ id: "install", announcementId: 1, severity: "error", message: "Failed" });
+    const { rerender } = render(<NoticeLiveRegion toast={null} errorToast={firstError} />);
+    const region = screen.getByTestId("notice-live-assertive");
+    const originalText = region.firstChild;
+    rerender(<NoticeLiveRegion toast={toast({ announcementId: 2, message: "Installed" })} errorToast={firstError} />);
+    expect(region.firstChild).toBe(originalText);
+    rerender(<NoticeLiveRegion toast={null} errorToast={{ ...firstError, announcementId: 3 }} />);
+    expect(screen.getByTestId("notice-live-assertive")).toBe(region);
+    expect(region).toHaveTextContent("Failed");
+    expect(region.firstChild).not.toBe(originalText);
+  });
+
+  it("announces independent window error and polite arrivals together", () => {
+    render(<NoticeLiveRegion toast={toast({ severity: "success", message: "Installed" })} errorToast={toast({ severity: "error", message: "Failed" })} />);
+    expect(screen.getByTestId("notice-live-polite")).toHaveTextContent("Installed");
+    expect(screen.getByTestId("notice-live-assertive")).toHaveTextContent("Failed");
   });
 
   it("keeps the persistent chips in their own polite status region", () => {

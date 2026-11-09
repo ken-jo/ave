@@ -1,3 +1,4 @@
+import { useBannerNotice } from "../context/NotificationHistoryContext.js";
 // Removed routes block API chat until reconfigured; deprecated models remain usable and show a dismissible catalog notice.
 
 import { useState } from "react";
@@ -13,15 +14,19 @@ export function RetiredProviderNotice({
   onChooseProvider: () => void;
 }) {
   const { t } = useTranslation();
-  if (!retiredProvider) return null;
   const retiredModel = isRetiredLlmModelMarker(retiredProvider) ? retiredProvider : null;
   const title = retiredModel
     ? t("app.retiredModelNoticeTitle", { model: retiredModel.model })
     : t("app.retiredProviderNoticeTitle");
   const body = retiredModel ? t("app.retiredModelNoticeBodyUnlisted") : t("app.retiredProviderNoticeBody");
+  const announcedByHistory = useBannerNotice("banner:retired-provider", retiredProvider ? {
+    severity: "warning", message: `${title} ${body}`,
+    actions: [{ label: retiredModel ? t("app.retiredModelNoticeAction") : t("app.retiredProviderNoticeAction"), run: onChooseProvider }],
+  } : null);
+  if (!retiredProvider) return null;
   return (
     <div
-      role="alert"
+      role={announcedByHistory ? undefined : "alert"}
       className="flex items-center justify-between gap-3 rounded-md mx-2 mt-2 border border-warning/(--opacity-medium) bg-popover px-4 py-2 text-sm text-warning shadow-lg"
       data-testid="retired-provider-notice"
       {...(retiredModel
@@ -57,10 +62,14 @@ export function DeprecatedModelNotice({
   const { t } = useTranslation();
   // Dismissal is per model: choosing another deprecated model tells again.
   const [dismissed, setDismissed] = useState<string | null>(null);
+  const announcedByHistory = useBannerNotice(`banner:deprecated-model:${model}`, model && dismissed !== model ? {
+    severity: "info", message: `${t("app.deprecatedModelNoticeTitle", { model })} ${t("app.deprecatedModelNoticeBody")}`,
+    actions: [{ label: t("app.retiredModelNoticeAction"), run: onChooseModel }],
+  } : null);
   if (!model || dismissed === model) return null;
   return (
     <div
-      role="status"
+      role={announcedByHistory ? undefined : "status"}
       className="flex items-center justify-between gap-3 rounded-md mx-2 mt-2 border border-info/(--opacity-medium) bg-popover px-4 py-2 text-sm text-info shadow-lg"
       data-testid="deprecated-model-notice"
       data-deprecated-model={model}

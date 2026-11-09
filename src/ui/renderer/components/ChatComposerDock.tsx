@@ -373,28 +373,18 @@ export function ChatComposerDock({
         {notices}
         <LatestTurnSummary changes={workspaceChanges} onReveal={onRevealChangedFile} />
       </div>
+      {statusBar ? (
+        <div className={`${dockColumnClass} relative px-6`} data-testid="composer-toast-dock">
+          <NoticeLiveRegion toast={statusBar.visibleToast} />
+          <StatusBar {...statusBar} />
+        </div>
+      ) : null}
       <div className={`${dockColumnClass} flex flex-col overflow-x-hidden pb-1`}>
-        {/* This conversation's notices — an attachment the composer refused,
-            a provider swap mid-turn, a pre-turn compaction — take a row of
-            their own, IN FLOW, above the selector/runtime strip and the
-            composer card, at the composer's width. A notice that overlaid the
-            strip painted over the project selector and the runtime pill and
-            was clipped by them; in flow it pushes them down instead, the same
-            rule the window's notice strip follows. */}
-        {statusBar ? <NoticeLiveRegion toast={statusBar.visibleToast} /> : null}
-        {statusBar && (statusBar.visibleToast !== null || statusBar.persistent.length > 0) ? (
-          <div
-            className="mx-3 mb-2 min-w-0"
-            data-testid="composer-toast-dock"
-          >
-            <StatusBar {...statusBar} />
-          </div>
-        ) : null}
         {/* ONE input box: textarea + the single InputActionBar (action row).
             The session line — model / permission / active / ring — is drawn
             UNDER the box by ComposerStatusRow, not inside it: what is inside
-            the box is about the message being written. The window StatusBar
-            is notifications-only.
+            the box is about the message being written. Window notifications
+            stay in the bell.
             The shared surface paints the edge as an inset hairline so
             the dock's overflow handling cannot clip the composer edge. */}
         <div className={`relative mx-3 mb-2 ${hasApiKey === false || (emptyConversation && onNewChatForProject) ? "pt-9" : ""}`}>

@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { setWindowSize } from "./seeded-electron.js";
 
 // Geometry coverage needs no seeded plugin.
 test.use({ seedViewFixturePlugin: false });
@@ -21,7 +22,7 @@ async function currentSessionId(mainWindow: Page): Promise<string> {
   });
 }
 
-test('approval toast returns from a browser surface and focuses the requesting conversation card', async ({ app, mainWindow }, testInfo) => {
+test('approval cards return from a browser surface without an in-app notification', async ({ app, mainWindow }, testInfo) => {
   const sessionId = await currentSessionId(mainWindow);
   await mainWindow.getByTestId('sidebar-web').click();
   const browser = mainWindow.locator('[data-surface-kind="browser"]');
@@ -36,17 +37,22 @@ test('approval toast returns from a browser surface and focuses the requesting c
       createdAt: Date.now(), requireExplicit: false,
     });
     win.webContents.send('ave:notification:toast', {
+      id: 'main:approval-notice-e2e', createdAt: Date.now(),
       kind: 'approval', title: 'Approval needed', body: 'Write views.c4 · Conversation: Set up diagrams',
       contextRef: { approvalId: 'approval-notice-e2e', sessionId: sid },
     });
   }, sessionId);
   await expect(mainWindow.getByRole('button', { name: /Return to conversation|대화로 돌아가기/ })).toBeVisible();
   await mainWindow.screenshot({ path: testInfo.outputPath('covered-approval.png') });
-  await mainWindow.getByRole('button', { name: /Learn more|자세히 알아보기/ }).click();
+  await expect(mainWindow.getByTestId('status-toast')).toHaveCount(0);
+  await mainWindow.getByTestId('notification-bell').click();
+  await expect(mainWindow.getByTestId('notification-history-row').filter({ hasText: 'Approval needed' })).toHaveCount(0);
+  await mainWindow.keyboard.press('Escape');
+  await mainWindow.getByRole('button', { name: /Return to conversation|대화로 돌아가기/ }).click();
   await expect(browser).not.toBeVisible();
   const panel = mainWindow.getByTestId('tool-approval-panel');
   await expect(panel).toHaveAttribute('data-approval-request-id', 'approval-notice-e2e');
-  await expect(panel).toBeFocused();
+  await expect(panel.getByTestId(TEST_IDS.denyButton)).toBeFocused();
   await mainWindow.screenshot({ path: testInfo.outputPath('conversation-approval.png') });
 });
 
@@ -57,16 +63,7 @@ test('approval dock floats over the route without changing its layout', async ({
 }) => {
   // Session ownership determines composer blocking and focus; sessionless requests belong in the lane.
   const sessionId = await currentSessionId(mainWindow);
-  await app.evaluate(({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows().find(
-      (window) => !window.isDestroyed() && window.isVisible(),
-    );
-    win?.setContentSize(460, 841);
-  });
-  await expect.poll(() => mainWindow.evaluate(() => (
-    Math.abs(window.innerWidth - 460) <= 1
-    && Math.abs(window.innerHeight - 841) <= 1
-  ))).toBe(true);
+  await setWindowSize(app, 460, 841);
 
   // At 460px a sidebar nobody chose a state for folds to the rail once the width is measured; wait for that, then unfold it
   // as the user would, so the read cannot race the fold.
@@ -334,18 +331,7 @@ test('approval dock floats over the route without changing its layout', async ({
   // At minimum height, scroll only the card body while header and decisions remain visible.
   await openWorkBoard();
   await expect(workBoardPanel).toBeVisible();
-  // Native resize tweens can change bounds; override the renderer viewport for deterministic layout checks.
-  const cdp = await mainWindow.context().newCDPSession(mainWindow);
-  await cdp.send('Emulation.setDeviceMetricsOverride', {
-    width: 460,
-    height: 640,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await expect.poll(() => mainWindow.evaluate(() => (
-    Math.abs(window.innerWidth - 460) <= 1
-    && Math.abs(window.innerHeight - 640) <= 1
-  ))).toBe(true);
+  await setWindowSize(app, 460, 640);
   const reviewDetails = dock.getByTestId(TEST_IDS.approvalReviewDetails);
   await reviewDetails.locator('summary').click();
   await expect(reviewDetails).toHaveAttribute('open', '');
@@ -444,16 +430,7 @@ test('an ask that names no conversation is a lane card that covers no composer',
   mainWindow,
 }) => {
   // Sessionless requests belong to the focused pane lane and must not block any composer.
-  await app.evaluate(({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows().find(
-      (window) => !window.isDestroyed() && window.isVisible(),
-    );
-    win?.setContentSize(460, 841);
-  });
-  await expect.poll(() => mainWindow.evaluate(() => (
-    Math.abs(window.innerWidth - 460) <= 1
-    && Math.abs(window.innerHeight - 841) <= 1
-  ))).toBe(true);
+  await setWindowSize(app, 460, 841);
 
   const composerDock = mainWindow.locator('[data-composer-placement]').first();
   await expect(composerDock).toBeVisible();

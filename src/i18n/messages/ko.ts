@@ -3,6 +3,22 @@ import type { MessageCatalogKey } from "./en.js";
 
 export const ko: Record<MessageCatalogKey, string> = {
 
+  "notificationCenter.title": "알림 센터",
+  "notificationCenter.label": "알림: 확인 필요 {approvals}개, 읽지 않은 알림 {unread}개",
+  "notificationCenter.notices": "알림",
+  "notificationCenter.clearAll": "모두 지우기",
+  "notificationCenter.clear": "알림 지우기: {message}",
+  "notificationCenter.empty": "이번 세션의 알림이 없습니다.",
+  "notificationCenter.source.window": "창",
+  "notificationCenter.source.banner": "안내",
+  "notificationCenter.source.system": "시스템",
+  "notificationCenter.source.routine": "루틴",
+  "notificationCenter.source.plugin": "확장",
+  "notificationCenter.source.alert": "경고",
+  "notificationCenter.source.turn-end": "대화",
+  "notificationCenter.source.approval": "승인",
+  "notificationCenter.source.ask-user": "질문",
+
   // agentBrowser
   "agentBrowser.observationBrowsing": "에이전트 브라우징",
   "agentBrowser.observationNavigate": "이동",
@@ -3124,6 +3140,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "mainToolbar.toggleSidebar": "사이드바 숨김/표시",
   "mainToolbar.showSidebar": "사이드바 표시",
   "mainToolbar.devToolsTitle": "Dev Tools (Cmd/Ctrl+Shift+D)",
+  "mainToolbar.statusOverflow": "상태 더 보기 ({count}개)",
   "mainToolbar.devToolsTooltip": "Dev Tools — Preflight 임계 조절 (Cmd/Ctrl+Shift+D)",
   "mainToolbar.unifiedSearch": "통합 검색 ({shortcut})",
   "mainToolbar.sessionStar": "현재 세션 핀 고정",
@@ -6025,6 +6042,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workApprovals.keyboardLegend": "↑ ↓ 항목 이동 · Enter 펼치기 · Tab 카드 안 버튼 · Esc 접기 · 결정은 버튼을 눌러야만 합니다",
   "workApprovals.badge": "확인 필요 {count}",
   "workApprovals.badgeLabel": "확인이 필요한 항목 {count}건",
+  "workApprovals.nothingToReview": "확인할 항목 없음",
   "workApprovals.popoverTitle": "확인 필요 {count}",
   "workApprovals.popoverScope": "모든 프로젝트 · 업무 승인만",
   "workApprovals.popoverFooter": "누르면 그 프로젝트 홈의 카드로 갑니다. 결정은 카드에서 합니다.",

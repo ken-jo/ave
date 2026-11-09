@@ -63,11 +63,14 @@ export interface ScriptedTurn {
 // Wrap transcript arrays so fixture registration cannot mistake them for value/options tuples.
 export interface ScriptedScript {
   turns: readonly ScriptedTurn[];
+  unavailableModels?: readonly string[];
 }
 
 export interface ScriptedProviderHandle {
   baseUrl: string;
   readonly violations: readonly string[];
+  readonly requestedModels: readonly string[];
+  readonly toolResponses: readonly string[];
   close(): Promise<void>;
 }
 
@@ -187,9 +190,12 @@ async function readBody(req: http.IncomingMessage): Promise<string> {
 // Bind to one ephemeral loopback origin; guarded provider requests cannot reach other targets.
 async function startScriptedProvider(
   turns: readonly ScriptedTurn[],
+  unavailableModels: readonly string[] = [],
 ): Promise<ScriptedProviderHandle> {
   const queue = [...turns];
   const violations: string[] = [];
+  const requestedModels: string[] = [];
+  const toolResponses: string[] = [];
 
   const server = http.createServer((req, res) => {
     void (async () => {
@@ -217,6 +223,16 @@ async function startScriptedProvider(
       }
 
       const systemPrompt = systemPromptOf(body);
+      const request = body as { model?: string; messages?: Array<{ role: string }> };
+      if (systemPrompt !== PROVIDER_PING_SYSTEM_PROMPT) requestedModels.push(request.model ?? '');
+      for (const message of request.messages ?? []) {
+        if (message.role === 'tool') toolResponses.push(JSON.stringify(message));
+      }
+      if (systemPrompt !== PROVIDER_PING_SYSTEM_PROMPT && unavailableModels.includes(request.model ?? '')) {
+        res.writeHead(503, { 'content-type': 'application/json', 'retry-after': '0' });
+        res.end(JSON.stringify({ error: { message: 'Model temporarily unavailable' } }));
+        return;
+      }
       res.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache',
@@ -256,6 +272,8 @@ async function startScriptedProvider(
   return {
     baseUrl: `http://127.0.0.1:${port}/v1`,
     violations,
+    requestedModels,
+    toolResponses,
     close: () =>
       new Promise<void>((resolve) => {
         server.closeAllConnections();
@@ -330,6 +348,7 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
     }
     const handle = await startScriptedProvider(
       resolveSeededPaths(scriptedScript.turns, aveHome, seededCorpus),
+      scriptedScript.unavailableModels,
     );
     await use(handle);
     await handle.close();

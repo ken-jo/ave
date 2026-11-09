@@ -512,6 +512,7 @@ function SideChatSession({
         </Button>
       </div>
 
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="side-chat-content">
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div
         ref={scrollViewportRef}
@@ -562,6 +563,8 @@ function SideChatSession({
         data-testid="side-chat-composer-dock"
         data-composer-surface="side"
       >
+        <NoticeLiveRegion toast={visibleToast} />
+        <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} />
         <MessageQueuePanel
           store={messageQueueStore}
           onSendNow={handleMessageQueueSendNow}
@@ -583,12 +586,6 @@ function SideChatSession({
         ) : null}
         {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : targetChip}
         <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={runtime?.autoCompactEnabled} />
-        <NoticeLiveRegion toast={visibleToast} />
-        {visibleToast !== null || persistent.length > 0 ? (
-          <div className="mb-1.5 min-w-0">
-            <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} />
-          </div>
-        ) : null}
         <ComposerFrame>
           <Composer
             ref={composerRef}
@@ -673,6 +670,7 @@ function SideChatSession({
         interactionLocked={approvalHead !== null && approvals.lockedRequestId === approvalHead.id}
         reviewerSuggestion={approvals.reviewerSuggestion}
       />
+      </div>
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { COLLAPSED_RAIL_RESERVE, RAIL_BAND_LEAD } from "../../../shared/shell-geometry.js";
 import { clickSidebarNavRow, mountedTileIds, sidebarNavRowActive, splitIntoNTiles } from "../../../../test/renderer/helpers.js";
 import { MAX_PANES } from "../../../contract/app-contract.js";
-import { act, fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 
 /** Drive navigation through actual controls to verify inline routing and sidebar selection across shell widths. */
@@ -118,9 +118,10 @@ describe("App inline navigation", () => {
 
     await clickSidebarNavRow("features", "sidebar-routines", { metaKey: true });
 
+    fireEvent.click(screen.getByTestId("notification-bell"));
     // The refusal is SAID. A menu row that quietly does nothing is the one outcome a user cannot tell apart from a broken app.
     await waitFor(() => {
-      const toasts = container.querySelectorAll('[data-testid="status-toast-message"]');
+      const toasts = screen.queryAllByTestId("notification-history-row");
       expect([...toasts].some((el) => el.textContent?.includes("자리가 없습니다"))).toBe(true);
     });
     expect(mountedTileIds(container)).toHaveLength(MAX_PANES);

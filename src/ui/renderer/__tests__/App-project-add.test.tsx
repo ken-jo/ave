@@ -2,7 +2,7 @@
 /** Drive refused-add toasts and post-add project activation through App; component-only tests cannot exercise either owner. */
 import "../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { App } from "../App.js";
 import { makeMockAveApi, makeMockAveNamespace } from "../../../../test/renderer/mock-ave-api.js";
 
@@ -76,7 +76,8 @@ describe("App add-project flow", () => {
     const { getByTestId, findAllByTestId } = mountApp({ ok: false, error: "persist-failed" });
     await clickAddProject(getByTestId);
 
-    const toasts = await findAllByTestId("status-toast-message");
+    fireEvent.click(screen.getByTestId("notification-bell"));
+    const toasts = await findAllByTestId("notification-history-row");
     expect(toasts.map((node) => node.textContent).join(" ").trim().length).toBeGreaterThan(0);
   });
 
@@ -88,7 +89,8 @@ describe("App add-project flow", () => {
       { ok: false, error: "settings-unreadable" },
     );
 
-    const toasts = await findAllByTestId("status-toast-message");
+    fireEvent.click(screen.getByTestId("notification-bell"));
+    const toasts = await findAllByTestId("notification-history-row");
     expect(toasts.map((node) => node.textContent).join(" ")).toContain("설정 파일을 읽을 수 없어");
   });
 
@@ -103,7 +105,8 @@ describe("App add-project flow", () => {
       },
     );
 
-    const toasts = await findAllByTestId("status-toast-message");
+    fireEvent.click(screen.getByTestId("notification-bell"));
+    const toasts = await findAllByTestId("notification-history-row");
     expect(toasts.map((node) => node.textContent).join(" ")).toContain("삭제 대기 항목");
     // The roots were readable, so they are still offered — the warning is about the part of the file that was not.
     await waitFor(() => expect(getByTestId("composer-project-selector-trigger")).toBeTruthy());

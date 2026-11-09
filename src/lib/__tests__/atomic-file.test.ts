@@ -6,6 +6,7 @@ import {
   renameSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +20,7 @@ import {
   isMissingPathError,
   replaceStagedFile,
   replaceUtf8FileAtomicSyncIf,
+  syncExistingFileSync,
   writeUtf8FileAtomic,
   writeUtf8FileAtomicSync,
 } from "../atomic-file.js";
@@ -57,6 +59,62 @@ beforeEach(() => {
 afterEach(async () => {
   staging.beforeOpen = undefined;
   await cleanupTmpDir(dir);
+});
+
+describe("syncExistingFileSync", () => {
+  it("flushes an existing file without changing its bytes or modification time", () => {
+    const target = join(dir, "transcript.jsonl");
+    writeFileSync(target, "saved\n");
+    const earlier = new Date("2020-01-01T00:00:00Z");
+    utimesSync(target, earlier, earlier);
+    const before = statSync(target, { bigint: true });
+
+    syncExistingFileSync(target);
+
+    expect(readFileSync(target, "utf8")).toBe("saved\n");
+    expect(statSync(target, { bigint: true }).mtimeNs).toBe(before.mtimeNs);
+  });
+
+  it.each(["win32", "linux"] as const)("syncs and closes the file before the supported directory on %s", (platform) => {
+    const openFile = vi.fn(() => 11);
+    const open = vi.fn(() => 12);
+    const events: string[] = [];
+    const target = join(dir, "transcript.jsonl");
+
+    syncExistingFileSync(target, {
+      platform, openFile, open,
+      fsync: (fd) => { events.push(`sync:${fd}`); },
+      close: (fd) => { events.push(`close:${fd}`); },
+    });
+
+    expect(openFile).toHaveBeenCalledWith(target, platform === "win32" ? "r+" : "r");
+    expect(events).toEqual(platform === "win32"
+      ? ["sync:11", "close:11"]
+      : ["sync:11", "close:11", "sync:12", "close:12"]);
+    if (platform === "win32") expect(open).not.toHaveBeenCalled();
+    else expect(open).toHaveBeenCalledWith(dir);
+  });
+
+  it.each(["open", "file sync", "file close", "directory sync", "directory close"])("propagates %s failure", (step) => {
+    const failure = new Error(step);
+    const close = vi.fn((fd: number) => {
+      if ((step === "file close" && fd === 11) || (step === "directory close" && fd === 12)) throw failure;
+    });
+    const run = () => syncExistingFileSync(join(dir, "transcript.jsonl"), {
+      platform: "linux",
+      openFile: () => { if (step === "open") throw failure; return 11; },
+      open: () => 12,
+      fsync: (fd) => {
+        if ((step === "file sync" && fd === 11) || (step === "directory sync" && fd === 12)) throw failure;
+      },
+      close,
+    });
+
+    if (step.startsWith("directory")) expect(run).toThrow("parent directory sync failed");
+    else expect(run).toThrow(failure);
+    if (step !== "open") expect(close).toHaveBeenCalledWith(11);
+    if (step.startsWith("directory")) expect(close).toHaveBeenCalledWith(12);
+  });
 });
 
 describe("replaceStagedFile", () => {
