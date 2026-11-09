@@ -1,6 +1,7 @@
 import { _electron as electron, type ElectronApplication, type Page,
 } from "playwright";
 import { once } from "node:events";
+import { createRequire } from "node:module";
 import { expect } from "@playwright/test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync,
 } from "node:fs";
@@ -12,8 +13,10 @@ import { LLM_VENDOR_DEFAULTS, type LLMVendor,
 import { DEFAULT_APPEARANCE } from "../../../src/shared/appearance-settings.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
+import { resolveE2eExecutable } from "./background-electron.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const electronProcesses = new WeakMap<ElectronApplication, ReturnType<ElectronApplication["process"]>>();
 export const REPO_ROOT = resolve(HERE, "../../..");
 export const MAIN_ENTRY = resolve(REPO_ROOT, "dist/src/main/main.js");
 
@@ -59,13 +62,22 @@ export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" })
 
 /** The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.ts keeps it that way): Playwright's launch with {@link
  * E2E_CHROMIUM_SWITCHES} in front and {@link E2E_RUNTIME_ENV} over the spec's env (Playwright's default env is `process.env`, so a spec that passes none keeps it), through {@link launchBaseEnv}. */
-export function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
+export async function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
   const baseEnv = launchBaseEnv(options?.env ?? process.env);
-  return electron.launch({
+  const executablePath = resolveE2eExecutable(options);
+  // A custom runtime path bypasses automatic loader injection; preserve startup coordination and background rendering switches.
+  const runtimeArgs = executablePath && !options?.executablePath
+    ? ["-r", resolve(dirname(createRequire(import.meta.url).resolve("playwright-core/package.json")), "lib/server/electron/loader.js")]
+    : [];
+  const app = await electron.launch({
     ...options,
-    args: [...E2E_CHROMIUM_SWITCHES, ...(options?.args ?? [])],
+    executablePath,
+    args: [...E2E_CHROMIUM_SWITCHES, ...runtimeArgs, ...(options?.args ?? [])],
     env: { ...baseEnv, ...E2E_RUNTIME_ENV },
   });
+  // The automation object releases its native implementation on close; retain the process before a spec closes or restarts it.
+  electronProcesses.set(app, app.process());
+  return app;
 }
 
 /** The allow-listed parent env plus `overrides`; an `undefined` override removes the key. A Windows USERPROFILE override also gets its own
@@ -295,6 +307,26 @@ export async function launchSeededElectron(opts: {
   }
 }
 
+/** Keep the inspector connected through native cleanup, then release it so the process can exit. */
+export async function quitElectron(app: ElectronApplication): Promise<void> {
+  const child = electronProcesses.get(app);
+  if (!child) throw new Error("The native process was not registered at launch");
+  const isRunning = child.exitCode === null && child.signalCode === null;
+  const exited = isRunning ? once(child, "exit").then(() => {}) : Promise.resolve();
+  if (isRunning) {
+    const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
+      runtimeApp.once("will-quit", () => resolve());
+      runtimeApp.quit();
+    })).catch((error: unknown) => {
+      if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);
+      return exited;
+    });
+    await Promise.race([readyToExit, exited]);
+  }
+  await app.close().catch(() => {});
+  await exited;
+}
+
 export async function teardownSeededElectron(
   ctx: SeededElectronContext,
   options: { terminate?: boolean } = {},
@@ -306,7 +338,7 @@ export async function teardownSeededElectron(
     child.kill("SIGKILL");
     await exited;
   }
-  await ctx.app.close().catch(() => {});
+  await quitElectron(ctx.app);
   removeSeededElectronDirectories(ctx.userDataDir, ctx.tempHome);
 }
 
@@ -340,7 +372,7 @@ export async function sendRendererStreamEvent(
   }, labelled);
 }
 
-/** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest visible, non-destroyed window: a spec that has opened a
+/** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest non-destroyed window, including hidden startup windows: a spec that has opened a
  * plugin or approval window must still size the shell it is measuring, and area is the only property that distinguishes them from the main process.
  * Reject below-minimum sizes before resizing, then wait up to five seconds for native content and renderer dimensions to agree within one pixel. */
 export async function setWindowSize(
@@ -353,12 +385,12 @@ export async function setWindowSize(
   }
   const { windowId, workArea, workAreaContentLimit } = await app.evaluate(({ BrowserWindow, screen }, size) => {
     const windows = BrowserWindow.getAllWindows().filter(
-      (window) => !window.isDestroyed() && window.isVisible(),
+      (window) => !window.isDestroyed(),
     );
     const target = windows.sort(
       (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
     )[0];
-    if (!target) throw new Error("No visible main window to resize");
+    if (!target) throw new Error("No main window to resize");
     const bounds = target.getBounds();
     const content = target.getContentBounds();
     const outerWidth = size.w + bounds.width - content.width;

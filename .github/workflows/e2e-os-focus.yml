@@ -1,0 +1,34 @@
+name: Native OS focus
+on:
+  schedule:
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-os-focus-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  os-focus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ave
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          persist-credentials: false
+      - uses: ./ave/.github/actions/setup-bun
+        with:
+          bun-version-file: ave/.bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: xvfb-run -a bun run test:ui-e2e:os-focus
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: native-os-focus-results
+          path: ave/test-results
+          retention-days: 7

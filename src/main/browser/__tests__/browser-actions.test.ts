@@ -1,4 +1,5 @@
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
@@ -23,7 +24,8 @@ import {
   type NavigableGuest,
   watchActionNavigation,
 } from "../browser-actions.js";
-import { withGuardedAction } from "../browser-action-guard.js";
+import { ownsPageSession, withGuardedAction } from "../browser-action-guard.js";
+import { startBrowserPreview } from "../../browser-observation-preview.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
 import { type as typeInto } from "../browser-actions.js";
 import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.js";
@@ -1213,7 +1215,7 @@ function adapterFixture(options: {
   const guestEvents = new EventEmitter();
   const debuggerEvents = Object.assign(new EventEmitter(), {
     attach: () => { attached = true; },
-    detach: vi.fn(() => { attached = false; }),
+    detach: vi.fn(() => { attached = false; debuggerEvents.emit("detach", {}, "target closed"); }),
     isAttached: () => attached,
     sendCommand: async (method: string, params?: Record<string, unknown>) => {
       if (method === "Runtime.evaluate") return { result: { value: { width: laidOut ? 1024 : 0, height: laidOut ? 768 : 0, visible: laidOut } } };
@@ -1299,24 +1301,188 @@ function adapterFixture(options: {
   } };
 }
 
+describe("page session connection lifetime", () => {
+  function prepare(value: ReturnType<typeof adapterFixture>) {
+    return value.actions.prepare({ tab: value.tab, signal: new AbortController().signal } as Parameters<typeof value.actions.prepare>[0]);
+  }
+
+  it("revokes preview ownership synchronously after detach and a foreign reconnect", async () => {
+    const value = adapterFixture();
+    await prepare(value);
+    expect(ownsPageSession(value.guest)).toBe(true);
+    value.guest.debugger.detach();
+    value.guest.debugger.attach();
+    expect(ownsPageSession(value.guest)).toBe(false);
+    expect(() => startBrowserPreview(value.guest as never, { frame: vi.fn(), updating: vi.fn(), ended: vi.fn(), isBlank: () => false }))
+      .toThrow("agent's page session");
+    expect(value.cdp.calls.some(({ method }) => method === "Page.startScreencast")).toBe(false);
+    value.cdp.calls.length = 0;
+    await prepare(value);
+    expect(value.cdp.calls.map(({ method }) => method)).toEqual(["DOM.enable", "Accessibility.enable", "Page.enable"]);
+    expect(ownsPageSession(value.guest)).toBe(true);
+  });
+
+  it("clears ownership and the cached connection on guest destruction", async () => {
+    const value = adapterFixture();
+    await prepare(value);
+    const debuggerApi = value.guest.debugger;
+    Object.defineProperty(value.guest, "debugger", { get: () => { throw new Error("The guest was destroyed"); } });
+    expect(() => value.guest.emit("destroyed")).not.toThrow();
+    expect(ownsPageSession(value.guest)).toBe(false);
+    expect(debuggerApi.listenerCount("detach")).toBe(0);
+    Object.defineProperty(value.guest, "debugger", { value: debuggerApi });
+    expect(() => startBrowserPreview(value.guest as never, { frame: vi.fn(), updating: vi.fn(), ended: vi.fn(), isBlank: () => false }))
+      .toThrow("agent's page session");
+    expect(value.cdp.calls.some(({ method }) => method === "Page.startScreencast")).toBe(false);
+  });
+
+  it.each(["detach", "destroyed"])("cannot restore ownership when %s invalidates a pending attachment", async (event) => {
+    const value = adapterFixture();
+    const enabled = deferred<unknown>();
+    const send = value.guest.debugger.sendCommand.bind(value.guest.debugger);
+    vi.spyOn(value.guest.debugger, "sendCommand").mockImplementation((method, params) => method === "Page.enable" ? enabled.promise : send(method, params));
+    const pending = prepare(value);
+    await vi.waitFor(() => expect(value.cdp.calls.map(({ method }) => method)).toContain("Accessibility.enable"));
+    if (event === "detach") {
+      value.guest.debugger.detach();
+      value.guest.debugger.attach();
+    } else value.guest.emit("destroyed");
+    enabled.resolve({});
+    await expect(pending).rejects.toMatchObject({ code: "debugger-unavailable" });
+    expect(ownsPageSession(value.guest)).toBe(false);
+  });
+
+  it("keeps a replacement connection owned when the old attachment completes", async () => {
+    const value = adapterFixture();
+    const enabled = deferred<unknown>();
+    const send = value.guest.debugger.sendCommand.bind(value.guest.debugger);
+    vi.spyOn(value.guest.debugger, "sendCommand").mockImplementationOnce(() => enabled.promise);
+    const old = prepare(value);
+    await Promise.resolve();
+    value.guest.debugger.detach();
+    value.guest.debugger.attach();
+    value.guest.debugger.sendCommand = send;
+    await prepare(value);
+    enabled.resolve({});
+    await expect(old).rejects.toMatchObject({ code: "debugger-unavailable" });
+    expect(ownsPageSession(value.guest)).toBe(true);
+  });
+
+  it("rejects a late parked focus acknowledgement after a foreign reconnect", async () => {
+    const { cdp, guest, registry, actions, approve } = adapterFixture({ agent: true });
+    const live = await approve("browser_press_key");
+    const acknowledgement = deferred<void>();
+    const focus = vi.spyOn(registry, "focusGuest").mockImplementation(() => acknowledgement.promise);
+    const pending = actions.pressKey(live, "Escape");
+    await vi.waitFor(() => expect(focus).toHaveBeenCalledOnce());
+    guest.debugger.detach();
+    guest.debugger.attach();
+    const boundary = cdp.calls.length;
+    acknowledgement.resolve();
+    await expect(pending).rejects.toMatchObject({ code: "debugger-unavailable" });
+    expect(cdp.calls.slice(boundary)).toEqual([]);
+    expect(ownsPageSession(guest)).toBe(false);
+  });
+
+  it("refuses held touch continuation after detach during a park acknowledgement", async () => {
+    const { cdp, guest, registry, actions, approve } = adapterFixture({ agent: true });
+    cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+    const live = await approve("browser_click");
+    const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+    if (!ref) throw new Error("Missing link ref");
+    const entered = deferred<void>();
+    const acknowledgement = deferred<void>();
+    const release = registry.releaseFocus.bind(registry);
+    vi.spyOn(registry, "releaseFocus").mockImplementationOnce(async (id, leaseId) => {
+      await release(id, leaseId);
+      entered.resolve();
+      await acknowledgement.promise;
+    });
+    const pending = actions.click(live, ref);
+    await entered.promise;
+    expect(cdp.calls.some(call => call.method === "Input.dispatchTouchEvent" && call.params?.type === "touchStart")).toBe(true);
+    guest.debugger.detach();
+    guest.debugger.attach();
+    const boundary = cdp.calls.length;
+    acknowledgement.resolve();
+    await expect(pending).rejects.toMatchObject({ code: "debugger-unavailable" });
+    expect(cdp.calls.slice(boundary)).toEqual([]);
+    expect(ownsPageSession(guest)).toBe(false);
+  });
+
+  it("retires pending site approval and old event listeners before a foreign reconnect", async () => {
+    const { cdp, guest, actions, approve } = adapterFixture({ agent: true });
+    const authorization = deferred<void>();
+    const authorizeSite = vi.fn(() => authorization.promise);
+    const live = { ...await approve("browser_press_key"), authorizeSite };
+    await actions.pressKey(live, "Escape");
+    cdp.events.emit("message", "Fetch.requestPaused", {
+      requestId: "old-request", frameId: "main", resourceType: "Document", request: { url: "https://a.example/next" },
+    });
+    await vi.waitFor(() => expect(authorizeSite).toHaveBeenCalledOnce());
+    guest.debugger.detach();
+    guest.debugger.attach();
+    const boundary = cdp.calls.length;
+    expect(guest.debugger.listenerCount("message")).toBe(0);
+    cdp.events.emit("message", "Fetch.requestPaused", {
+      requestId: "foreign-request", frameId: "main", resourceType: "Document", request: { url: "https://a.example/foreign" },
+    });
+    authorization.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(authorizeSite).toHaveBeenCalledOnce();
+    expect(cdp.calls.slice(boundary)).toEqual([]);
+  });
+
+  it.each(["detach", "destroyed", "detach-after-acknowledgement"])("cannot install a site gate after %s invalidates its pending acknowledgement", async (event) => {
+    const { cdp, guest, actions, approve } = adapterFixture({ agent: true });
+    const authorizeSite = vi.fn(async () => {});
+    const live = { ...await approve("browser_press_key"), authorizeSite };
+    const enabled = deferred<unknown>();
+    const send = guest.debugger.sendCommand.bind(guest.debugger);
+    const commands = vi.spyOn(guest.debugger, "sendCommand").mockImplementation((method, params) => method === "Fetch.enable" ? enabled.promise : send(method, params));
+    const pending = actions.pressKey(live, "Escape");
+    await vi.waitFor(() => expect(commands.mock.calls.some(([method]) => method === "Fetch.enable")).toBe(true));
+    const boundary = cdp.calls.length;
+    const invalidate = () => {
+      if (event === "destroyed") guest.emit("destroyed");
+      else { guest.debugger.detach(); guest.debugger.attach(); }
+    };
+    if (event === "detach-after-acknowledgement") {
+      enabled.resolve({});
+      queueMicrotask(invalidate);
+    } else {
+      invalidate();
+      enabled.resolve({});
+    }
+    await expect(pending).rejects.toMatchObject({ code: "debugger-unavailable" });
+    cdp.events.emit("message", "Fetch.requestPaused", {
+      requestId: "foreign-request", frameId: "main", resourceType: "Document", request: { url: "https://a.example/foreign" },
+    });
+    expect(authorizeSite).not.toHaveBeenCalled();
+    expect(guest.debugger.listenerCount("message")).toBe(0);
+    expect(cdp.calls.slice(boundary)).toEqual([]);
+  });
+});
+
 it("replaces site gate disposal across independently loaded action adapters", async () => {
   const { actions, approve, registry, guest, cdp } = adapterFixture();
   const live = { ...await approve("browser_press_key"), authorizeSite: vi.fn(async () => {}) };
   const nextActions = createBrowserPageActions(registry, browserOrigin, () => HOST_CONTENT, {
     decodePng: () => { throw new Error("no image decoder in this fixture"); }, record: () => {},
   });
-  const destroyedBefore = guest.listenerCount("destroyed");
+  expect(guest.listenerCount("destroyed")).toBe(1);
   for (const adapter of [actions, nextActions]) {
     await adapter.pressKey(live, "Escape");
     await adapter.settle(live);
-    expect(guest.listenerCount("destroyed")).toBe(destroyedBefore + 1);
+    expect(guest.listenerCount("destroyed")).toBe(1);
   }
   cdp.events.emit("message", "Fetch.requestPaused", {
     requestId: "later-adapter", frameId: "main", resourceType: "Document", request: { url: "https://a.example/next" },
   });
   await vi.waitFor(() => expect(cdp.calls.filter(call => call.method === "Fetch.continueRequest" && call.params?.requestId === "later-adapter")).toHaveLength(1));
   guest.emit("destroyed");
-  expect(guest.listenerCount("destroyed")).toBe(destroyedBefore);
+  expect(guest.listenerCount("destroyed")).toBe(0);
 });
 
 it("disposes a closed page session without reading its destroyed guest or throwing synchronous send errors", async () => {
@@ -1595,7 +1761,7 @@ it("ignores a destroyed guest before reading its native zoom in a pointer echo",
     if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved") destroyed = true;
     return result;
   });
-  await expect(onFakeClock(() => actions.click(live, ref))).rejects.toMatchObject({ code: "no-pointer-position" });
+  await expect(onFakeClock(() => actions.click(live, ref))).rejects.toMatchObject({ code: "debugger-unavailable" });
   expect(readZoom.mock.results.every(result => result.type === "return")).toBe(true);
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent"]);
   expect(guest.listenerCount("input-event")).toBe(listenerCount);
@@ -1911,6 +2077,43 @@ describe("typed page actions", () => {
     expect(cdp.send).not.toHaveBeenCalled();
   });
 
+  it.each(["darwin", "linux", "win32"] as const)("verifies exact native selection on %s", async (platform) => {
+    const originalPlatform = process.platform;
+    setProcessPlatform(platform);
+    try {
+      const cdp = new FakeCdp();
+      const selectedNodes = (selected: boolean) => page([
+        ax("select", "combobox", "Choice", { backendDOMNodeId: 11, value: { type: "string", value: selected ? "Beta choice" : "Alpha" } }),
+        ax("alpha", "option", "Alpha", { backendDOMNodeId: 21, properties: [{ name: "selected", value: { value: !selected } }] }),
+        ax("beta", "option", "Beta choice", { backendDOMNodeId: 22, properties: [{ name: "selected", value: { value: selected } }] }),
+      ]);
+      cdp.nodes = selectedNodes(false);
+      const refs = new BrowserRefTable();
+      await snapshot(target(cdp), {}, refs);
+      const send = cdp.send.bind(cdp);
+      vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+        if (method === "DOM.describeNode") return { node: { nodeName: "SELECT", backendNodeId: 11, children: [
+          { nodeName: "OPTION", backendNodeId: 21, attributes: ["value", "a"], children: [{ nodeName: "#text", nodeValue: "Alpha" }] },
+          { nodeName: "OPTION", backendNodeId: 22, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "Beta choice" }] },
+        ] } };
+        const result = await send(method, params);
+        if (method === "Runtime.callFunctionOn") cdp.nodes = selectedNodes(true);
+        return result;
+      });
+      await expect(select(target(cdp), "e1", "b", refs)).resolves.toBeUndefined();
+      expect(cdp.inputs()).toEqual([]);
+      expect(cdp.calls).toContainEqual({ method: "Runtime.callFunctionOn", params: {
+        objectId: "select-11", functionDeclaration: SELECT_NATIVE_OPTION, arguments: [{ value: "b" }], returnByValue: true,
+      } });
+      cdp.nodes = selectedNodes(false);
+      vi.mocked(cdp.send).mockImplementation(async (method, params) => method === "DOM.describeNode"
+        ? { node: { nodeName: "SELECT", backendNodeId: 11, children: [{ nodeName: "OPTION", backendNodeId: 22, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "Beta choice" }] }] } }
+        : send(method, params));
+      await expect(select(target(cdp), "e1", "b", refs)).rejects.toMatchObject({ code: "select-unverified" });
+    } finally {
+      setProcessPlatform(originalPlatform);
+    }
+  });
   it("rejects custom select and intermediate navigation instead of declaring selection complete", async () => {
     const cdp = new FakeCdp();
     cdp.nodes = page([ax("select", "combobox", "Choice", { backendDOMNodeId: 11 })]);
@@ -2305,6 +2508,7 @@ describe("native intercepted drag lifetime", () => {
     expect(f.drops()).toHaveLength(0);
     expect(f.guest.debugger.detach).toHaveBeenCalledOnce();
     expect(f.guest.debugger.isAttached()).toBe(false);
+    expect(ownsPageSession(f.guest)).toBe(false);
     expect(f.cdp.events.listenerCount("message")).toBe(1);
     f.guest.emit("destroyed"); // release this fixture window's quarantine
   });
@@ -2314,6 +2518,7 @@ describe("native intercepted drag lifetime", () => {
     await expect(f.run()).rejects.toMatchObject({ code: "cancelled", effectCommitted: true, message: expect.stringContaining("do not repeat") });
     expect(f.drops()).toHaveLength(1);
     expect(f.cdp.calls.filter((call) => call.method.startsWith("Input.")).at(-1)?.params?.type).toBe("drop");
+    expect(ownsPageSession(f.guest)).toBe(true);
   });
 
   it("reports unknown committed effect and quarantines when the drop acknowledgement is lost", async () => {

@@ -10,7 +10,7 @@ test.use({ trace: "on" });
 for (const deviceScale of [1, 2]) {
   for (const appZoom of [0.9, 1, 1.25, 1.5]) {
     for (const guestZoom of appZoom === 1 ? [1, 1.25] : [1, appZoom]) {
-      test(`clicks a parked ref across origins at app zoom ${appZoom} page zoom ${guestZoom} scale ${deviceScale}`, () => exerciseParkedClick(deviceScale, appZoom, guestZoom));
+      test(`@os-focus clicks a parked ref across origins at app zoom ${appZoom} page zoom ${guestZoom} scale ${deviceScale}`, () => exerciseParkedClick(deviceScale, appZoom, guestZoom));
     }
   }
 }
@@ -98,7 +98,9 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
   let approving = true;
   let approvals: Promise<void> | undefined;
   try {
-    ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [], launchArgs: ["--use-mock-keychain", `--force-device-scale-factor=${deviceScale}`] });
+    ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [],
+      launchEnv: { AVE_NATIVE_FIXTURE_MODE: "foreground" },
+      launchArgs: ["--use-mock-keychain", `--force-device-scale-factor=${deviceScale}`] });
     await ctx.app.evaluate(({ app, BrowserWindow }, { delayHitMs, edits }) => {
       const capture = globalThis as unknown as { clickMeasurements: unknown[]; pointerEchoes: unknown[]; destructionPeaks: Record<string, number>; listenerWarnings: string[] };
       capture.clickMeasurements = [];

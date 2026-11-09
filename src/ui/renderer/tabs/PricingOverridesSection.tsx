@@ -1,7 +1,7 @@
 /** Reject malformed pricing rows before saving because normalization silently drops them. Overrides correct reported spend
  * and CSV export. */
 import { EmptyState } from "../../../components/ui/empty-state.js";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
 import { Label } from "../../../components/ui/label.js";
@@ -78,15 +78,17 @@ export function PricingOverridesSection() {
   const [loaded, setLoaded] = useState(false);
   const [saved, setSaved] = useState<readonly PricingOverride[]>([]);
   const [rows, setRows] = useState<DraftRow[]>([]);
+  const pricingSnapshot = useRef<string | undefined>(undefined);
 
   const applySnapshot = useCallback((s: AppSettings) => {
     const next = s.llm?.pricingOverrides ?? [];
-    setSaved(next);
-    // Reseed the table only when the stored list actually moved — this runs on every settings broadcast, including ones caused
-    // by unrelated tabs, and must not wipe rows the user is halfway through entering.
-    setRows((current) => (
-      JSON.stringify(toOverrides(current)) === JSON.stringify(next) ? current : toDraft(next)
-    ));
+    const snapshot = JSON.stringify(next);
+    // Compare persisted snapshots, not the draft: unrelated broadcasts must retain unsaved edits and removals.
+    if (pricingSnapshot.current !== snapshot) {
+      pricingSnapshot.current = snapshot;
+      setSaved(next);
+      setRows((current) => sameAsSaved(current, next) ? current : toDraft(next));
+    }
     setLoaded(true);
   }, []);
 

@@ -16,6 +16,18 @@ vi.mock("electron", () => ({ ipcRenderer: {
 beforeEach(() => { invoke.mockReset(); listeners.clear(); });
 
 describe("private browser and terminal preload boundaries", () => {
+  it.each([0, 1])("accepts native find request identifier %s", async (requestId) => {
+    invoke.mockResolvedValue({ ok: true, value: { requestId } });
+    await expect(buildBrowserWorkspaceApiSurface().find({ tabId: "browser:1", documentGeneration: 1, text: "Ready", forward: true, findNext: true }))
+      .resolves.toEqual({ ok: true, value: { requestId } });
+  });
+
+  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])("rejects invalid native find request identifier %s", async (requestId) => {
+    invoke.mockResolvedValue({ ok: true, value: { requestId } });
+    await expect(buildBrowserWorkspaceApiSurface().find({ tabId: "browser:1", documentGeneration: 1, text: "Ready", forward: true, findNext: true }))
+      .rejects.toThrow("invalid-browser-workspace-result");
+  });
+
   it("queries and subscribes to the same validated session binding shape", async () => {
     const api = buildBrowserTabsApiSurface();
     const state = { revision: 3, bindings: [{ sessionId: "main-session", browserTabIds: ["browser:one"], terminalTabIds: [] }] };

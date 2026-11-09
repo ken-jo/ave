@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell, type IpcMainEvent, type WebContents } from "electron";
 import { zoomLevelToZoomFactor } from "../shared/app-zoom.js";
+import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { bindAppWindowZoom } from "./app-zoom.js";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -138,7 +139,7 @@ export function createWindow(
     ...initialMainWindowBounds(),
     minWidth: MAIN_WINDOW_MIN_WIDTH,
     minHeight: MAIN_WINDOW_MIN_HEIGHT,
-    show: true,
+    show: !isBackgroundE2eRuntime(),
     icon: resolveAppIconPath(),
     autoHideMenuBar: false,
     // Cross-platform titlebar — see `src/main/window-chrome.ts` for the full rationale. The helper unifies main / settings / link / auth.
@@ -311,6 +312,10 @@ export async function loadMainInterface(win: BrowserWindow, reason: string) {
 export function showMainWindow(win: BrowserWindow): void {
   if (win.isDestroyed()) return;
   if (win.isMinimized()) win.restore();
+  if (isBackgroundE2eRuntime()) {
+    win.showInactive();
+    return;
+  }
   win.show();
   win.focus();
   win.moveTop();

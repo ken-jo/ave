@@ -1,3 +1,4 @@
+import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { rememberPluginAuthPartition } from "./plugin-auth-partition-tracker.js";
 export { wirePluginAuthPartitionPersistence, seedPluginAuthPartitions, rememberPluginAuthPartition, getTrackedPluginAuthPartitions, forgetTrackedPluginAuthPartitions } from "./plugin-auth-partition-tracker.js";
 // The host owns login-window lifecycle; plugins supply completion patterns and cookie-domain allowlists.
@@ -369,7 +370,8 @@ async function openAuthWindowInternal(
         `[auth-window:dedup] reusing in-flight visible auth window for partition=${effectivePartition} title=${windowTitle}`,
       );
       if (existing.window.isMinimized()) existing.window.restore();
-      existing.window.focus();
+      if (isBackgroundE2eRuntime()) existing.window.showInactive();
+      else existing.window.focus();
       return existing.promise;
     }
     // Stale entry (window already destroyed but not yet cleaned up) — drop it so the fresh window below registers cleanly.
@@ -388,7 +390,7 @@ async function openAuthWindowInternal(
     // Native controls keep both login lanes independent of host IPC capabilities.
     ...authWindowChromeOptions(),
     // Explicit show:false suppresses initial display and later web-content focus while still permitting navigation and harvest.
-    show: showRequested,
+    show: showRequested && !isBackgroundE2eRuntime(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -396,6 +398,7 @@ async function openAuthWindowInternal(
       sandbox: true,
     },
   });
+  if (showRequested && isBackgroundE2eRuntime()) authWindow.showInactive();
   authWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     configureAuthWebviewAttach({ event, webPreferences: webPreferences as Record<string, unknown>, params, url, partition: effectivePartition });
   });

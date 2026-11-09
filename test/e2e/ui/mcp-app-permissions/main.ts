@@ -1,3 +1,4 @@
+import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 // Use production protocol, policy and relay modules for permission probes.
 import { app, BrowserWindow, protocol } from "electron";
 import { readFileSync, writeFileSync, mkdtempSync, mkdirSync } from "node:fs";
@@ -12,6 +13,8 @@ import {
 } from "../../../../src/main/mcp-app-protocol.js";
 import { mcpAppPartitionName } from "../../../../src/shared/mcp-app-partition.js";
 import type { McpUiResourcePermissions } from "../../../../src/mcp/types.js";
+
+configureE2eWindowPolicy();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_ID = "e2e-perm-server";
@@ -48,9 +51,10 @@ app.on("web-contents-created", (_e, contents) => {
     if (typeof message !== "string" || !message.startsWith("E2E_")) return;
     process.stdout.write(`${message}\n`);
     if (/^E2E_PROBE [a-z-]+ READY$/.test(message)) {
-      contents.focus();
-      contents.sendInputEvent({ type: "mouseDown", x: 35, y: 18, button: "left", clickCount: 1 });
-      contents.sendInputEvent({ type: "mouseUp", x: 35, y: 18, button: "left", clickCount: 1 });
+      void (async () => {
+        await contents.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: 35, y: 18, button: "left", clickCount: 1 });
+        await contents.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: 35, y: 18, button: "left", clickCount: 1 });
+      })().catch((error: unknown) => { console.error(error); app.exit(1); });
     }
     for (const [label, resolve] of doneWaiters) {
       if (message === `E2E_PROBE ${label} DONE`) {
@@ -89,7 +93,7 @@ async function runCard(
   revokeToken = false,
 ): Promise<void> {
   const win = new BrowserWindow({
-    show: true,
+    show: false,
     width: 500,
     height: 320,
     webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: false },
@@ -109,8 +113,7 @@ async function runCard(
   }
 
   win.webContents.on("did-finish-load", () => {
-    win.show();
-    win.focus();
+    win.showInactive();
     void win.webContents.executeJavaScript(
       `window.__startProbe(${JSON.stringify({
         serverId: SERVER_ID,

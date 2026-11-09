@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { setIsPackaged, _resetForTest } from "../../boot/dev-flags.js";
 
 useChromiumRuntime();
 
@@ -23,7 +24,7 @@ const mockedElectron = vi.hoisted(() => ({
     setAppUserModelId: vi.fn(),
     setToastActivatorCLSID: vi.fn(),
     getPath: vi.fn(() => ""),
-    dock: undefined,
+    dock: { setIcon: vi.fn() },
     isPackaged: false,
   },
   protocol: { registerSchemesAsPrivileged: vi.fn() },
@@ -39,14 +40,26 @@ vi.mock("electron", () => ({
 vi.mock("../ensure-workspace-cwd.js", () => ({
   ensureWorkspaceCwd: mockedElectron.ensureWorkspaceCwd,
 }));
+vi.mock("../app-icon.js", () => ({ resolveAppIconPath: () => "/tmp/app-icon.png" }));
 
-import { runEarlyBootEnv } from "../early-boot-env.js";
+import { applyRuntimeAppIcon, runEarlyBootEnv } from "../early-boot-env.js";
 import { buildPersistentBrowserUserAgent } from "../browser-user-agent.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { writeSettingsFile as writeSettings } from "./support/settings-file.js";
 
 
 describe("runEarlyBootEnv", () => {
+  it("keeps background tests out of the Dock while preserving ordinary icons", () => {
+    setIsPackaged(false);
+    setProcessPlatform("darwin");
+    vi.stubEnv("AVE_E2E", "1");
+    vi.stubEnv("NODE_ENV", "test");
+    applyRuntimeAppIcon();
+    expect(mockedElectron.app.dock.setIcon).not.toHaveBeenCalled();
+    vi.stubEnv("NODE_ENV", "production");
+    applyRuntimeAppIcon();
+    expect(mockedElectron.app.dock.setIcon).toHaveBeenCalledWith("/tmp/app-icon.png");
+  });
   let userDataPath: string;
   const realPlatform = process.platform;
 
@@ -73,6 +86,7 @@ describe("runEarlyBootEnv", () => {
   });
 
   afterEach(async () => {
+    _resetForTest();
     vi.unstubAllEnvs();
     setProcessPlatform(realPlatform);
     await cleanupTmpDir(userDataPath);

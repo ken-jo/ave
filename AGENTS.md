@@ -318,8 +318,10 @@ change-triggered; child-process/bundle and tracked-tree invariants plus smoke
 contracts remain unconditional. Proven renderer-only patches omit native
 platform jobs; selected native jobs must succeed in the existing aggregate. Do not manually duplicate
 the full trio around a push. After failure, rerun only failed or invalidated
-checks. No CI workflow and no release gate runs Playwright. The suite
-(`bun run test:ui-e2e`) is local and seeds only fixture plugins from
+checks. No release gate runs the UI suite. The default suite
+(`bun run test:ui-e2e`) is local; the separate native OS-focus project runs
+on a hosted virtual display or explicit local opt-in (see
+[the e2e guide](test/e2e/README.md)). The suite seeds only fixture plugins from
 `test/fixtures`, so it needs nothing outside this repository; run only
 changed-flow specs unless the task requires more.
 

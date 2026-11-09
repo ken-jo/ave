@@ -29,7 +29,7 @@ function result<T>(value: unknown, valid: (value: unknown) => value is T): Brows
 const state = (value: unknown): value is BrowserWorkspaceState => parseBrowserWorkspaceState(value) !== null;
 const requestId = (value: unknown): value is { requestId: number } => {
   const data = record(value);
-  return data !== null && Object.keys(data).length === 1 && Number.isSafeInteger(data.requestId) && Number(data.requestId) >= 1;
+  return data !== null && Object.keys(data).length === 1 && Number.isSafeInteger(data.requestId) && Number(data.requestId) >= 0;
 };
 const factor = (value: unknown): value is { factor: number } => {
   const data = record(value);

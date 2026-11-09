@@ -358,14 +358,13 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
       await test.info().attach("agent-tab-preview-second-site", { path: imagePath, contentType: "image/jpeg" });
     }
 
-    // A native user click in the same tab is a takeover: the preview stops and cannot restart while paused.
+    // Unmarked input in the same tab is a takeover: the preview stops and cannot restart while paused.
     const beforeTakeover = Date.now();
-    await ctx.app.evaluate(({ webContents }) => {
+    await ctx.app.evaluate(async ({ webContents }) => {
       const guest = webContents.getAllWebContents().find((contents) => contents.getURL().includes("second=1"));
       if (!guest) throw new Error("Preview fixture guest unavailable");
-      guest.focus();
-      guest.sendInputEvent({ type: "mouseDown", x: 40, y: 200, button: "left", clickCount: 1 });
-      guest.sendInputEvent({ type: "mouseUp", x: 40, y: 200, button: "left", clickCount: 1 });
+      await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: 40, y: 200, button: "left", clickCount: 1 });
+      await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: 40, y: 200, button: "left", clickCount: 1 });
     });
     await expect.poll(async () => (await readCapture()).messages.some((message) => message.kind === "state"
       && message.state === "stopped" && message.receivedAt >= beforeTakeover), { timeout: 10_000 }).toBe(true);

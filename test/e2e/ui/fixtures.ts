@@ -10,6 +10,7 @@ import {
   buildE2eSecrets,
   buildIsolatedElectronEnv,
   launchElectron,
+  quitElectron,
   makeTreeWritableSync,
 } from "./seeded-electron";
 import { makeTestT, type TestT } from "./i18n.js";
@@ -277,7 +278,7 @@ export const test = base.extend<ElectronFixtures & ElectronOptions>({
         process.stdout.write(`[electron:stderr] ${d}`),
       );
     await use(app);
-    await app.close().catch(() => {});
+    await quitElectron(app);
   },
 
   mainWindow: async ({ app }, use) => {
