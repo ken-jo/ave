@@ -154,14 +154,14 @@ export interface ToolResultArtifact {
 // Session family depends on the owning store as well as metadata; identical kinds can name different namespaces.
 export type SessionNamespace = "main" | "side-chat" | "subagent";
 
-// Return no family for ordinary spawned children; only work-board runs belong in the sidebar list.
+// Classify spawned conversations from their host-written origin.
 export function sessionFamilyOf(
   namespace: SessionNamespace,
   session: Pick<SessionListEntry, "sessionKind" | "workBoardItemId">,
 ): SessionFamily | null {
   if (namespace === "side-chat") return "side-chat";
   if (namespace === "subagent") {
-    return session.workBoardItemId !== undefined ? "work-board" : null;
+    return session.workBoardItemId !== undefined ? "work-board" : "subagent";
   }
   if (session.sessionKind === "main") return "main";
   if (session.sessionKind === "routine") return "routine";
@@ -183,8 +183,8 @@ export function toSessionListRow(
     sessionKind: session.sessionKind,
     family,
     ...(session.workBoardItemId !== undefined ? { workBoardItemId: session.workBoardItemId } : {}),
-    // Only side-chat origins group sidebar rows; spawned children stay in their parent's panel.
-    ...(family === "side-chat" && session.originSessionId
+    // Reuse the host-written conversation origin; checkpoint ancestry is separate.
+    ...((family === "side-chat" || family === "subagent") && session.originSessionId
       ? { originSessionId: session.originSessionId }
       : {}),
     ...(family === "side-chat" && session.paneTabId ? { paneTabId: session.paneTabId } : {}),
@@ -573,6 +573,7 @@ function matchesSessionScope(
     options.workBoardRuns === true &&
     (sessionKind !== "subagent" || parseWorkBoardOriginSessionId(metadata?.originSessionId) === null)
   ) return false;
+  if (options.workBoardRuns === false && parseWorkBoardOriginSessionId(metadata?.originSessionId) !== null) return false;
   if (options.routineId !== undefined && metadata?.routineId !== options.routineId) return false;
   if (
     options.projectRoot !== undefined &&
@@ -1837,7 +1838,7 @@ export class SessionRepository {
           id: session.id,
           modifiedAt: session.modifiedAt,
           sessionKind,
-          title: resolveConversationTitle({ sessionId: session.id, title: metadata?.title || summary.title, routineTitle: metadata?.routineTitle }, t),
+          title: resolveConversationTitle({ sessionId: session.id, title: metadata?.title || metadata?.subAgentTitle || summary.title, routineTitle: metadata?.routineTitle }, t),
           preview: summary.preview,
           routineId: metadata?.routineId,
           routineTitle: metadata?.routineTitle,

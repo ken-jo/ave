@@ -1771,7 +1771,8 @@ describe("Sidebar — every conversation family", () => {
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
     const { getByTestId, getAllByTestId, onLoadSession, restore } = renderSidebar({
-      sessions: [{ ...sideChatRow, paneTabId: tabId, projectRoot: root }],
+      sessions: [{ ...sideChatRow, paneTabId: tabId, projectRoot: root },
+        sessionRow({ id: "pane-child", title: "Delegated research", modifiedAt: new Date().toISOString(), family: "subagent", sessionKind: "subagent", originSessionId: sideChatRow.id, projectRoot: root, running: true })],
       projects: [{ projectRoot: root, projectName: "Pane project" }],
       mainSurfaces: [{ tabId, kind, ordinal: 1, url: null, projectRoot: root }],
       onOpenSideChat, onOpenPaneChat,
@@ -1783,6 +1784,10 @@ describe("Sidebar — every conversation family", () => {
       // The pane chat sits one level under its surface's row, right after it.
       expect(getByTestId("sidebar-surface-tree-" + tabId).nextElementSibling).toBe(getByTestId("sidebar-surface-chats-" + tabId));
       expect(getByTestId("sidebar-row-session-side-1").getAttribute("aria-level")).toBe("3");
+      expect(getByTestId("sidebar-row-session-side-1")).toHaveAttribute("aria-expanded", "true");
+      expect(getByTestId("sidebar-row-session-pane-child")).toHaveAttribute("aria-level", "4");
+      expect(getByTestId(`sidebar-surface-chats-${tabId}`)).toContainElement(getByTestId("sidebar-row-session-pane-child"));
+      expect(getAllByTestId("sidebar-row-session-pane-child")).toHaveLength(1);
       fireEvent.click(getByTestId("sidebar-session-side-1"));
       expect(onOpenPaneChat).toHaveBeenCalledWith(tabId);
       expect(onOpenSideChat).not.toHaveBeenCalled();
@@ -2468,4 +2473,37 @@ describe("Sidebar project tree (cases 05, 18, 19, 20)", () => {
       restore();
     }
   });
+});
+
+it.each(["ko", "en"] as const)("nests child rows with localized controls and the existing arrow navigation (%s)", (locale) => {
+  const onOpenSubAgent = vi.fn();
+  const parent = sessionRow({ id: "parent", title: "Parent", modifiedAt: new Date().toISOString() });
+  const child = sessionRow({ id: "child", title: "Child", family: "subagent", sessionKind: "subagent", originSessionId: "parent", modifiedAt: new Date().toISOString() });
+  const view = renderSidebar({ sessions: [child, parent], currentSessionId: "elsewhere", onOpenSubAgent }, { locale });
+  try {
+    const row = view.getByTestId("sidebar-row-session-parent");
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    expect(view.queryByTestId("sidebar-row-session-child")).toBeNull();
+    const toggle = view.getByTestId("sidebar-session-toggle-parent");
+    expect(toggle.getAttribute("aria-label")).not.toContain("sidebar.");
+    fireEvent.click(toggle);
+    const childRow = view.getByTestId("sidebar-row-session-child");
+    expect(Number(childRow.getAttribute("aria-level"))).toBe(Number(row.getAttribute("aria-level")) + 1);
+    act(() => row.focus());
+    fireEvent.keyDown(row, { key: "ArrowRight" });
+    expect(childRow).toHaveFocus();
+    fireEvent.keyDown(childRow, { key: "Enter" });
+    expect(onOpenSubAgent).toHaveBeenCalledWith(child);
+    fireEvent.keyDown(childRow, { key: "ArrowLeft" });
+    expect(row).toHaveFocus();
+    fireEvent.keyDown(row, { key: "ArrowLeft" });
+    expect(view.queryByTestId("sidebar-row-session-child")).toBeNull();
+    view.rerenderSidebar({ activeSubAgentSessionId: "child" });
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(view.getByTestId("sidebar-row-session-child")).toHaveAttribute("aria-selected", "true");
+    view.rerenderSidebar({ activeSubAgentSessionId: undefined, sessions: [{ ...child, running: true }, parent] });
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    view.rerenderSidebar({ sessions: [child, parent] });
+    expect(row).toHaveAttribute("aria-expanded", "false");
+  } finally { cleanup(); view.restore(); }
 });

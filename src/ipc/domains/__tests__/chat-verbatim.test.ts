@@ -600,7 +600,26 @@ describe("ave:chat:get-sub-agent-transcript", () => {
     });
   });
 
-  it("rejects requests for a non-active parent session before runner lookup", async () => {
+  it("opens a listed child whose parent is no longer active using host-written ownership", async () => {
+    const childSessionId = "sub-6e7c039b-1ae80cfb-d8c8-4a02-806d-4f4d2872a62d";
+    const originSessionId = "5f711b23-ee4f-4cbb-88e0-53b872bbda82";
+    const getPersistedTranscript = vi.fn(() => ({ ok: true, childSessionId, messages: [] }));
+    const isPersistedSpawnOfOrigin = vi.fn(() => true);
+    await setupHandlers(makeConversationLoop(SESSION_ID, []), { getSubAgentRunner: () => ({ getPersistedTranscript, isPersistedSpawnOfOrigin }) });
+    expect(invokeRegisteredHandler(handlers, CHANNEL, { originSessionId, childSessionId, scope: "sidebar" }, "main")).toEqual({ ok: true, childSessionId, messages: [] });
+    expect(isPersistedSpawnOfOrigin).toHaveBeenCalledWith(originSessionId, childSessionId);
+  });
+
+  it("requires persisted ownership for sidebar reads even when the active parent's history has a child reference", async () => {
+    const getPersistedTranscript = vi.fn();
+    await setupHandlers(makeConversationLoop(SESSION_ID, makeAgentSpawnMessages()), { getSubAgentRunner: () => ({ getPersistedTranscript, isPersistedSpawnOfOrigin: () => false }) });
+    const childSessionId = "sub-6e7c039b-1ae80cfb-d8c8-4a02-806d-4f4d2872a62d";
+    expect(invokeRegisteredHandler(handlers, CHANNEL, { originSessionId: SESSION_ID, childSessionId, scope: "sidebar" }, "main")).toEqual({ ok: false, error: "sub-agent-reference-not-found" });
+    expect(invokeRegisteredHandler(handlers, CHANNEL, { originSessionId: SESSION_ID, childSessionId, scope: "unknown" }, "main")).toEqual({ ok: false, error: "invalid-read-scope" });
+    expect(getPersistedTranscript).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unproven non-active parent session", async () => {
     const getPersistedTranscript = vi.fn();
     const loop = makeConversationLoop(SESSION_ID, makeAgentSpawnMessages());
     await setupHandlers(loop, { getSubAgentRunner: () => ({ getPersistedTranscript }) });

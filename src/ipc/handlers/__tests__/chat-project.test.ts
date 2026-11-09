@@ -353,11 +353,18 @@ describe("handleChatSessions federated families", () => {
       conversationLoop: { getSessionId: () => "session-main" },
       memoryManager: { sessions: { listSessionsPage } },
       sideChatMemoryManager: { sessions: { listSessionsPage: listSideChatSessionsPage } },
-      getSubAgentRunner: () => ({ listWorkBoardRunSessions }),
+      getSubAgentRunner: () => ({ listWorkBoardRunSessions, listSubAgentSessions: () => [{ ...runs[3], originSessionId: "session-main", running: true }] }),
       workBoardStore: { get },
     } as unknown as IpcDeps;
     return { deps, listWorkBoardRunSessions, listSessionsPage, listSideChatSessionsPage, get };
   };
+
+  it("carries the persisted child origin and live state through the list contract", async () => {
+    const { deps } = makeDeps();
+    const { sessions } = await handleChatSessions(deps, { families: ["subagent"] });
+    expect(sessions).toEqual([expect.objectContaining({ id: "sub-plain", family: "subagent", originSessionId: "session-main", running: true })]);
+    expect(sessions[0]).not.toHaveProperty("parentSessionId");
+  });
 
   it("stamps a family on every row and merges the four stores by time", async () => {
     const { deps, listWorkBoardRunSessions, listSessionsPage } = makeDeps();

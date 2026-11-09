@@ -596,6 +596,7 @@ export async function handleChatSessions(
     ...sessions,
     ...(families.has("work-board") ? await workBoardRunRows(deps, pageWindow) : []),
     ...(families.has("side-chat") ? sideChatRows(deps, pageWindow) : []),
+    ...(families.has("subagent") ? subAgentRows(deps, pageWindow) : []),
   ]
     .sort((a, b) => {
       const delta = b.modifiedAt.localeCompare(a.modifiedAt);
@@ -603,6 +604,18 @@ export async function handleChatSessions(
     })
     .slice(0, limit);
   return { current: conversationLoop.getSessionId(), sessions: federated };
+}
+
+function subAgentRows(
+  deps: IpcDeps,
+  window: { limit: number; before?: Date; beforeId?: string; after?: Date; projectRoot?: string; includeUnscoped: boolean },
+): SessionListRow[] {
+  const runner = deps.getSubAgentRunner?.();
+  if (!runner) return [];
+  return runner.listSubAgentSessions(window).flatMap((session) => {
+    const row = toSessionListRow("subagent", session);
+    return row?.family === "subagent" ? [{ ...row, running: session.running }] : [];
+  });
 }
 
 async function workBoardRunRows(

@@ -2029,7 +2029,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
         ? p.originSessionId
         : "";
       if (!originSessionId) return { ok: false, error: "invalid-origin-session-id" };
-      if (originSessionId !== group.loop.getSessionId()) {
+      const sidebarRead = p.scope === "sidebar";
+      if (p.scope !== undefined && !sidebarRead) return { ok: false, error: "invalid-read-scope" };
+      if (!sidebarRead && originSessionId !== group.loop.getSessionId()) {
         return { ok: false, error: "origin-session-not-active" };
       }
       const runner = deps.getSubAgentRunner?.();
@@ -2038,14 +2040,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
         ? p.childSessionId
         : undefined;
       if (!childSessionId) return { ok: false, error: "invalid-child-session-id" };
-      const messages = memoryManager.sessions.rehydrateToolResultArtifacts(
-        originSessionId,
-        group.loop.getHistory().getMessages(),
-      ) as GenericMessage[];
-      // Prove ownership from the parent's reference or the child's host-written originSessionId.
+      // Sidebar reads require persisted ownership, including children of inactive or deleted parents.
       const ownedByOrigin = runner.isPersistedSpawnOfOrigin?.(originSessionId, childSessionId) === true;
-      if (!ownedByOrigin && !hasParentSubAgentReference(messages, childSessionId)) {
-        return { ok: false, error: "sub-agent-reference-not-found" };
+      if (!ownedByOrigin) {
+        if (sidebarRead) return { ok: false, error: "sub-agent-reference-not-found" };
+        const messages = memoryManager.sessions.rehydrateToolResultArtifacts(
+          originSessionId,
+          group.loop.getHistory().getMessages(),
+        ) as GenericMessage[];
+        if (!hasParentSubAgentReference(messages, childSessionId)) {
+          return { ok: false, error: "sub-agent-reference-not-found" };
+        }
       }
       return runner.getPersistedTranscript({
         originSessionId,

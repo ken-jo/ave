@@ -1,3 +1,4 @@
+import { toSessionListRow } from "../session-repository.js";
 // Derive work-board item identity from host-written origin once so all session-list consumers agree.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
@@ -77,6 +78,10 @@ describe("listSessions with workBoardRuns", () => {
     expect(runs[0]?.sessionKind).toBe("subagent");
   });
 
+  it("excludes item runs before limiting ordinary child conversations", () => {
+    expect(mm.sessions.listSessions({ kind: "subagent", workBoardRuns: false }).map((entry) => entry.id).sort()).toEqual([BRIEFING, CHAT_CHILD].sort());
+  });
+
   it("pages the same way as the other listings", () => {
     const page = mm.sessions.listSessionsPage({ kind: "subagent", workBoardRuns: true, limit: 5 });
     expect(page.map((entry) => entry.id)).toEqual([RUN]);
@@ -106,8 +111,8 @@ describe("sessionFamilyOf", () => {
     expect(sessionFamilyOf("subagent", { sessionKind: "subagent", workBoardItemId: 12 })).toBe("work-board");
   });
 
-  it("has no family for a sub-agent that is not an item's run", () => {
-    expect(sessionFamilyOf("subagent", { sessionKind: "subagent" })).toBeNull();
+  it("lists an ordinary spawned conversation in its own family", () => {
+    expect(sessionFamilyOf("subagent", { sessionKind: "subagent" })).toBe("subagent");
   });
 
   it("has no family for a kind the main store should not be holding", () => {
@@ -117,7 +122,7 @@ describe("sessionFamilyOf", () => {
 
 describe("the family value set", () => {
   it("names every member of the union, once", () => {
-    expect([...SESSION_FAMILIES].sort()).toEqual(["main", "routine", "side-chat", "work-board"]);
+    expect([...SESSION_FAMILIES].sort()).toEqual(["main", "routine", "side-chat", "subagent", "work-board"]);
     expect(new Set(SESSION_FAMILIES).size).toBe(SESSION_FAMILIES.length);
   });
 
@@ -125,7 +130,7 @@ describe("the family value set", () => {
     expect(SESSION_FAMILIES.every(isSessionFamily)).toBe(true);
     // A newer renderer naming a family this host does not have is dropped, not
     // refused — the request stays answerable.
-    expect(isSessionFamily("subagent")).toBe(false);
+    expect(isSessionFamily("subagent")).toBe(true);
     expect(isSessionFamily(undefined)).toBe(false);
     expect(isSessionFamily("toString")).toBe(false);
   });
@@ -140,8 +145,9 @@ describe("the family value set", () => {
       "main": true,
       "routine": true,
       "work-board": true,
+      subagent: true,
     };
-    expect(Object.keys(incomplete)).toHaveLength(3);
+    expect(Object.keys(incomplete)).toHaveLength(4);
   });
 });
 
@@ -161,6 +167,15 @@ describe("originSessionId on a listed row", () => {
 
   afterEach(async () => {
     await cleanupTmpDir(dir);
+  });
+
+  it("carries the persisted child origin to the shared preload and renderer row without using fork ancestry", async () => {
+    await mm.sessions.saveSessionMetadata(SIDE, { sessionKind: "subagent", originSessionId: MAIN, parentSessionId: "fork-ancestor", subAgentTitle: "Research" });
+    const entry = mm.sessions.listSessions({ kind: "subagent" })[0];
+    if (!entry) throw new Error("missing-child-session");
+    const row = toSessionListRow("subagent", entry);
+    expect(row).toMatchObject({ family: "subagent", originSessionId: MAIN, title: "Research" });
+    expect(row).not.toHaveProperty("parentSessionId");
   });
 
   it("carries the conversation a session was started from, and nothing when there is none", () => {

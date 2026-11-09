@@ -8,6 +8,7 @@ import { ThemeProvider } from "./theme/index.js";
 import { OverlayContextProvider, type OverlayItem } from "./context/OverlayContext.js";
 import { CustomTitleBar } from "./components/CustomTitleBar.js";
 import { MainToolbar } from "./MainToolbar.js";
+import { SubAgentConversationDialog } from "./dialogs/SubAgentConversationDialog.js";
 import { Sidebar, type SidebarLaunchKind } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
 import { DeprecatedModelNotice, RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
@@ -1599,6 +1600,7 @@ export function App() {
   }, [handleViewSelect]);
 
   /** Side-chat requests are one-shot events; nonce distinguishes repeated requests for the same ids. */
+  const [openSubAgentSession, setOpenSubAgentSession] = useState<SessionSummary | null>(null);
   const [sideChatOpenRequest, setSideChatOpenRequest] = useState<SideChatOpenRequest | null>(null);
   const sideChatRequestNonce = useRef(0);
   const openSideChat = useCallback(async (sideChatSessionId: string, originSessionId?: string) => {
@@ -2435,6 +2437,8 @@ export function App() {
                   return loaded;
                 }}
                 onOpenWorkBoardItem={openWorkBoardItem}
+                activeSubAgentSessionId={openSubAgentSession?.id}
+                onOpenSubAgent={setOpenSubAgentSession}
                 onOpenPaneChat={openPaneChat}
                 onOpenSideChat={(sideChatSessionId, originSessionId) =>
                   void openSideChat(sideChatSessionId, originSessionId)}
@@ -2789,6 +2793,7 @@ export function App() {
             </div>
 
             {/* App-level dialogs that remain available after removing setup flows. */}
+            {openSubAgentSession && <SubAgentConversationDialog api={api} session={openSubAgentSession} onClose={() => setOpenSubAgentSession(null)} />}
             <RecentlyDeniedDialog open={recentlyDeniedOpen} onOpenChange={setRecentlyDeniedOpen} />
             <SpotlightTour
               api={api}

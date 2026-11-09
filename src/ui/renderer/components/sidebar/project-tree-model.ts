@@ -1,3 +1,4 @@
+import { projectRootEquals } from "../../../../shared/project-identity.js";
 import type { SessionSummary } from "../../hooks/use-sessions.js";
 import type { SidebarSurface } from "../../hooks/use-sidebar-items.js";
 
@@ -12,7 +13,7 @@ const DAY_MS = 86_400_000;
 export type TreeBucket = "pinned" | "last7Days" | "last30Days" | "older";
 
 export type TreeEntry =
-  | { kind: "session"; key: string; session: SessionSummary; at: number }
+  | { kind: "session"; key: string; session: SessionSummary; at: number; children?: TreeEntry[] }
   | { kind: "surface"; key: string; surface: SidebarSurface; at: number };
 
 export function sessionEntryKey(sessionId: string): string {
@@ -72,4 +73,40 @@ export function bucketEntries(
     else out.push({ bucket, entries: [entry] });
   }
   return out;
+}
+
+/** Group only listed parents in the same project. Missing parents and invalid cycles remain reachable roots. */
+export function nestSessionEntries(entries: readonly TreeEntry[]): TreeEntry[] {
+  const sessions = new Map(entries.flatMap((entry) => entry.kind === "session" ? [[entry.session.id, entry] as const] : []));
+  const parentOf = new Map<string, string>();
+  for (const [id, entry] of sessions) {
+    const origin = entry.session.family === "subagent" ? entry.session.originSessionId : undefined;
+    const parent = origin ? sessions.get(origin) : undefined;
+    if (origin && parent && origin !== id && (entry.session.projectRoot === undefined && parent.session.projectRoot === undefined || projectRootEquals(entry.session.projectRoot, parent.session.projectRoot))) parentOf.set(id, origin);
+  }
+  for (const id of parentOf.keys()) {
+    const seen = new Set([id]);
+    let next = parentOf.get(id);
+    while (next !== undefined) {
+      if (seen.has(next)) { parentOf.delete(next); break; }
+      seen.add(next);
+      next = parentOf.get(next);
+    }
+  }
+  const children = new Map<string, TreeEntry[]>();
+  for (const entry of entries) {
+    const parent = entry.kind === "session" ? parentOf.get(entry.session.id) : undefined;
+    if (parent) children.set(parent, [...(children.get(parent) ?? []), entry]);
+  }
+  const nest = (entry: TreeEntry): TreeEntry => entry.kind === "session"
+    ? { ...entry, children: (children.get(entry.session.id) ?? []).map(nest) }
+    : entry;
+  return entries.filter((entry) => entry.kind !== "session" || !parentOf.has(entry.session.id)).map(nest);
+}
+
+/** A selected or running descendant must remain visible through every ancestor. */
+export function sessionBranchExpanded(entry: Extract<TreeEntry, { kind: "session" }>, selectedId: string | undefined, isRunning: (id: string) => boolean, requested?: boolean): boolean {
+  const containsActive = (child: TreeEntry): boolean => child.kind === "session" &&
+    (child.session.id === selectedId || child.session.running === true || isRunning(child.session.id) || (child.children ?? []).some(containsActive));
+  return (entry.children ?? []).some(containsActive) || (requested ?? entry.session.id === selectedId);
 }

@@ -161,6 +161,8 @@ export interface SidebarProps {
    * rail's loop is window-wide and its store isolated, so the row cannot be
    * loaded into a tile the way a conversation is.
    */
+  activeSubAgentSessionId?: string;
+  onOpenSubAgent?: (session: SessionSummary) => void;
   onOpenSideChat?: (sideChatSessionId: string, originSessionId?: string) => void;
   /** Open the live terminal or page and its own chat panel. */
   onOpenPaneChat?: (tabId: string) => void;
@@ -764,6 +766,8 @@ export function Sidebar({
   onLoadSession,
   onOpenWorkBoardItem,
   onOpenSideChat,
+  activeSubAgentSessionId,
+  onOpenSubAgent,
   onOpenPaneChat,
   onRefreshProjects,
   onProjectError,
@@ -1325,6 +1329,8 @@ export function Sidebar({
                   onLoadSession={onLoadSession}
                   onOpenWorkBoardItem={onOpenWorkBoardItem}
                   onOpenSideChat={onOpenSideChat}
+                  activeSubAgentSessionId={activeSubAgentSessionId}
+                  onOpenSubAgent={onOpenSubAgent}
                   onOpenPaneChat={onOpenPaneChat}
                   onNewChatForProject={onNewChatForProject}
                   onRemoveProject={onRemoveProject}

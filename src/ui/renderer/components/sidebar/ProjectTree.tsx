@@ -28,6 +28,8 @@ import { projectTestId } from "./ProjectCombobox.js";
 import { orderedProjects, ProjectMark } from "./ProjectMenu.js";
 import {
   bucketEntries,
+  nestSessionEntries,
+  sessionBranchExpanded,
   GROUP_PAGE_SIZE,
   sessionEntryKey,
   TREE_PAGE_SIZE,
@@ -44,6 +46,7 @@ const SESSION_FAMILY_LABEL_KEYS: Record<SessionFamily, string> = {
   routine: "sidebar.routineConversation",
   "work-board": "sidebar.workBoardConversation",
   "side-chat": "sidebar.sideChatConversation",
+  subagent: "sidebar.subAgentConversation",
 };
 
 /** The sidebar's one add-project flow, run from the project menu and the list's right-click. */
@@ -132,6 +135,8 @@ function InlineRename({
 
 function SessionRow({
   tree,
+  expanded,
+  onToggleExpanded,
   session,
   active,
   onLoadSession,
@@ -152,6 +157,8 @@ function SessionRow({
 }: {
   /** The row's place in the tree's keyboard model (case 20). */
   tree: TreeRowProps;
+  expanded?: boolean;
+  onToggleExpanded?: () => void;
   session: SessionSummary;
   active: boolean;
   onLoadSession?: (sessionId: string) => boolean | void | Promise<boolean | void>;
@@ -204,6 +211,7 @@ function SessionRow({
       role="treeitem"
       aria-level={tree.level}
       aria-selected={active}
+      aria-expanded={expanded}
       tabIndex={tree.tabIndex}
       data-tree-key={tree.treeKey}
       data-testid={`sidebar-row-session-${session.id}`}
@@ -238,7 +246,15 @@ function SessionRow({
           fourth control. A pinned row keeps the pin showing: the state has to
           be readable without hovering every row to find it. */}
       <span className="relative ml-2 flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-        {onTogglePin ? (
+        {onToggleExpanded ? (
+          <button type="button" tabIndex={-1} className="absolute inset-0 flex items-center justify-center rounded-sm hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label={t(expanded ? "sidebar.collapseConversation" : "sidebar.expandConversation", { title: session.title })}
+            data-testid={`sidebar-session-toggle-${session.id}`}
+            onClick={(event) => { event.stopPropagation(); onToggleExpanded(); }}>
+            {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          </button>
+        ) : null}
+        {onTogglePin && !onToggleExpanded ? (
           <button
             type="button"
             tabIndex={-1}
@@ -267,9 +283,9 @@ function SessionRow({
           hiddenFromAccessibility
           workingTestId={`sidebar-session-responding-${session.id}`}
           badgeTestId={`sidebar-pending-answer-${session.id}`}
-          markClassName={isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible"}
+          markClassName={onToggleExpanded || isPinned ? "invisible" : "group-hover:invisible group-focus-within:invisible"}
           // Positioned after the pin, so it must let the pin take the click.
-          className="pointer-events-none"
+          className={onToggleExpanded ? "pointer-events-none invisible" : "pointer-events-none"}
           mark={
             /* Decorative here: the whole slot is hidden from assistive tech, and the row's button names the family (non-main
                rows) and the state in its sr-only text instead. */
@@ -399,7 +415,7 @@ type TreeLine =
   | { type: "header"; key: string; bucket: TreeBucket }
   | { type: "group"; key: string; project: ProjectIdentity; expanded: boolean; count: number }
   | { type: "entry"; key: string; entry: TreeEntry; level: number }
-  | { type: "pane-chat"; key: string; session: SessionSummary; level: number }
+  | { type: "pane-chat"; key: string; entry: Extract<TreeEntry, { kind: "session" }>; level: number }
   | { type: "more"; key: string; scope: string; hidden: number; level: number }
   | { type: "empty"; key: string; level: number };
 
@@ -446,6 +462,8 @@ export interface ProjectTreeProps {
   conversationSurfaceVisible: boolean;
   onLoadSession?: (sessionId: string) => boolean | void | Promise<boolean | void>;
   onOpenWorkBoardItem?: (itemId: number) => void;
+  activeSubAgentSessionId?: string;
+  onOpenSubAgent?: (session: SessionSummary) => void;
   onOpenSideChat?: (sideChatSessionId: string, originSessionId?: string) => void;
   /** Open the live terminal or page and its own chat panel. */
   onOpenPaneChat?: (tabId: string) => void;
@@ -494,6 +512,8 @@ export function ProjectTree({
   onLoadSession,
   onOpenWorkBoardItem,
   onOpenSideChat,
+  activeSubAgentSessionId,
+  onOpenSubAgent,
   onOpenPaneChat,
   onNewChatForProject,
   onRemoveProject,
@@ -525,6 +545,7 @@ export function ProjectTree({
   const [showArchived, setShowArchived] = useState(false);
   // How many rows each list shows; a list not listed shows its first page.
   const [shownByScope, setShownByScope] = useState<Readonly<Record<string, number>>>({});
+  const [expandedSessions, setExpandedSessions] = useState<Readonly<Record<string, boolean>>>({});
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const treeRef = useRef<HTMLDivElement | null>(null);
   const keyActions = useRef(new Map<string, RowKeyActions>());
@@ -540,38 +561,52 @@ export function ProjectTree({
     || (bindingsLoaded && (Boolean(session.archivedAt) || Boolean(paneSurfaceOf(session)))));
   const hasArchivedSessions = listableSessions.some(isSessionArchived);
   const shownSessions = listableSessions.filter((session) => showArchived || !isSessionArchived(session));
-  // A pane chat is listed under its terminal or page, not on its own.
-  const topSessions = shownSessions.filter((session) => !paneSurfaceOf(session));
+  const paneSessionEntries = new Map<string, Extract<TreeEntry, { kind: "session" }>>();
   const sessionRoot = new Map(sessions.map((session) => [session.id, session.projectRoot]));
   const surfaceRoot = (surface: SidebarSurface) => surface.projectRoot ?? (surface.sessionId ? sessionRoot.get(surface.sessionId) : undefined);
   const now = Date.now();
-  const entriesOf = (project: ProjectIdentity): TreeEntry[] => treeEntries({
-    sessions: topSessions.filter((session) => belongsToProject(session.projectRoot, project, projects)),
+  const entriesOf = (project: ProjectIdentity): TreeEntry[] => nestSessionEntries(treeEntries({
+    sessions: shownSessions.filter((session) => belongsToProject(session.projectRoot, project, projects)),
     surfaces: surfaces.filter((surface) => belongsToProject(surfaceRoot(surface), project, projects)),
     isPinned: isSessionPinned,
     surfaceAt: (tabId) => surfaceUsedAt(tabId, now),
+  })).filter((entry) => {
+    if (entry.kind !== "session" || !paneSurfaceOf(entry.session)) return true;
+    paneSessionEntries.set(entry.session.id, entry);
+    return false;
   });
   const shownCount = (scope: string, page: number) => shownByScope[scope] ?? page;
   const showMore = (scope: string, page: number) =>
     setShownByScope((current) => ({ ...current, [scope]: (current[scope] ?? page) + page }));
 
+  const selectedId = activeSubAgentSessionId ?? (conversationSurfaceVisible ? currentSessionId : undefined);
+  const branchExpanded = (entry: Extract<TreeEntry, { kind: "session" }>) => sessionBranchExpanded(entry, selectedId, (id) => conversationActions?.isResponding(id) ?? false, expandedSessions[entry.session.id]);
+
   // ── Lines, top to bottom.
   const lines: TreeLine[] = [];
   const pushEntries = (scope: string, entries: TreeEntry[], page: number, level: number, withHeaders: boolean) => {
     const shown = entries.slice(0, shownCount(scope, page));
-    const emit = (entry: TreeEntry) => {
-      lines.push({ type: "entry", key: entry.key, entry, level });
+    const emit = (entry: TreeEntry, entryLevel = level) => {
+      lines.push({ type: "entry", key: entry.key, entry, level: entryLevel });
+      if (entry.kind === "session" && branchExpanded(entry)) {
+        for (const child of entry.children ?? []) emit(child, entryLevel + 1);
+      }
       if (entry.kind !== "surface") return;
       for (const session of shownSessions.filter((each) => paneSurfaceOf(each)?.tabId === entry.surface.tabId)) {
-        lines.push({ type: "pane-chat", key: sessionEntryKey(session.id), session, level: level + 1 });
+        const paneEntry = paneSessionEntries.get(session.id);
+        if (!paneEntry) continue;
+        lines.push({ type: "pane-chat", key: paneEntry.key, entry: paneEntry, level: entryLevel + 1 });
+        if (branchExpanded(paneEntry)) {
+          for (const child of paneEntry.children ?? []) emit(child, entryLevel + 2);
+        }
       }
     };
     if (withHeaders) {
       for (const { bucket, entries: rows } of bucketEntries(shown, now, isSessionPinned)) {
         lines.push({ type: "header", key: `header:${scope}:${bucket}`, bucket });
-        rows.forEach(emit);
+        rows.forEach((entry) => { emit(entry); });
       }
-    } else shown.forEach(emit);
+    } else shown.forEach((entry) => { emit(entry); });
     const hidden = entries.length - shown.length;
     if (hidden > 0) lines.push({ type: "more", key: `more:${scope}`, scope, hidden, level });
   };
@@ -687,6 +722,8 @@ export function ProjectTree({
   // transcript; `main` loads into the tile through `onLoadSession`.
   const openFamilyRow = (session: SessionSummary): (() => void) | undefined => {
     switch (session.family) {
+      case "subagent":
+        return () => onOpenSubAgent?.(session);
       case "main":
         return undefined;
       case "routine":
@@ -702,12 +739,13 @@ export function ProjectTree({
   };
 
   // A row that is not a main conversation is READ-ONLY here: rename, archive, pin, delete and drag act on the main session
-  // store, which three of the four families do not live in. It offers the one thing it can do — open.
-  const renderFamilyRow = (session: SessionSummary, key: string, level: number) => {
+  // store. Other families offer their owning transcript’s open action.
+  const renderFamilyRow = (session: SessionSummary, key: string, level: number, branch: { expanded?: boolean; onToggleExpanded?: () => void } = {}) => {
     const open = openFamilyRow(session);
     const familyMenu = (open ? { "conversation.open": open } : {}) as NativeContextMenuHandlers;
     actions.set(key, {
       open: () => open?.(),
+      toggle: branch.onToggleExpanded,
       menu: (row) => void openNativeContextMenu(rowMenuEvent(row), "conversation", familyMenu),
     });
     return (
@@ -715,10 +753,11 @@ export function ProjectTree({
         <SessionRow
           tree={treeRow(key, level)}
           session={session}
-          active={false}
+          {...branch}
+          active={session.id === activeSubAgentSessionId}
           family={session.family}
           pendingAnswer={pendingAnswerSessionIds?.has(session.id) ?? false}
-          responding={conversationActions?.isResponding(session.id)}
+          responding={session.running || conversationActions?.isResponding(session.id)}
           {...(open ? { onOpenFamilyRow: open } : {})}
           onOpenMenu={(event) => openNativeContextMenu(event, "conversation", familyMenu)}
           t={t}
@@ -738,8 +777,11 @@ export function ProjectTree({
     );
   };
 
-  const renderSessionRow = (listed: SessionSummary, key: string, level: number) => {
-    if (listed.family !== "main") return renderFamilyRow(listed, key, level);
+  const renderSessionRow = (entry: Extract<TreeEntry, { kind: "session" }>, key: string, level: number) => {
+    const listed = entry.session;
+    const expanded = branchExpanded(entry);
+    const branch = entry.children?.length ? { expanded, onToggleExpanded: () => setExpandedSessions((current) => ({ ...current, [listed.id]: !expanded })) } : {};
+    if (listed.family !== "main") return renderFamilyRow(listed, key, level, branch);
     // The dedicated Suggestions conversation is named from the catalog by its id and carries the number of suggestions
     // waiting in it.
     const suggestions = isSuggestionsSession(listed.id);
@@ -747,6 +789,7 @@ export function ProjectTree({
     const canRename = Boolean(conversationActions) && !suggestions;
     actions.set(key, {
       open: () => void onLoadSession?.(session.id),
+      toggle: branch.onToggleExpanded,
       ...(onOpenSessionBeside ? { openBeside: () => onOpenSessionBeside(session.id) } : {}),
       ...(canRename ? { rename: () => setRenamingKey(key) } : {}),
       menu: (row) => void openNativeContextMenu(rowMenuEvent(row), "conversation", conversationMenuHandlers(session)),
@@ -754,6 +797,7 @@ export function ProjectTree({
     return (
       <SessionRow
         key={key}
+        {...branch}
         tree={treeRow(key, level)}
         session={session}
         pendingCount={suggestions ? suggestionsPendingCount : 0}
@@ -997,10 +1041,10 @@ export function ProjectTree({
         return renderGroupRow(line);
       case "entry":
         return line.entry.kind === "session"
-          ? renderSessionRow(line.entry.session, line.key, line.level)
+          ? renderSessionRow(line.entry, line.key, line.level)
           : renderSurfaceRow(line.entry.surface, line.key, line.level);
       case "pane-chat":
-        return renderFamilyRow(line.session, line.key, line.level);
+        return renderSessionRow(line.entry, line.key, line.level);
       case "more": {
         const page = line.scope === "project" ? TREE_PAGE_SIZE : GROUP_PAGE_SIZE;
         actions.set(line.key, { open: () => showMore(line.scope, page) });
@@ -1060,7 +1104,12 @@ export function ProjectTree({
       }
       if (line.type === "entry" && line.entry.kind === "surface") {
         const chats: TreeLine[] = [];
-        while (index < from.length && from[index]!.type === "pane-chat") chats.push(from[index++]!);
+        while (index < from.length) {
+          const next = from[index]!;
+          if ((next.type !== "pane-chat" && next.type !== "entry") || next.level <= line.level) break;
+          chats.push(next);
+          index += 1;
+        }
         const tabId = line.entry.surface.tabId;
         out.push(
           <Fragment key={line.key}>

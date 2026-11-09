@@ -1983,6 +1983,20 @@ export class SubAgentRunner {
     });
   }
 
+  /** List ordinary child conversations from the same store that records their origin. */
+  listSubAgentSessions(
+    options: Pick<ListSessionsOptions, "limit" | "before" | "beforeId" | "after" | "projectRoot" | "includeUnscoped"> = {},
+  ): Array<SessionListEntry & { running: boolean }> {
+    return this.deps.subAgentMemoryManager.sessions.listSessionsPage({
+      ...options,
+      kind: "subagent",
+      workBoardRuns: false,
+    }).map((session) => ({
+      ...session,
+      running: this.activeChildren.get(session.id)?.loop.hasActiveTurn() ?? false,
+    }));
+  }
+
   /** Whether `childSessionId` is a sub-agent this exact parent spawned. Answers ownership from the record the HOST wrote at spawn time rather than from the parent's transcript, which compaction may have stripped
    * the linking tool_result out of. Both ids must be well-formed and the child must actually be a sub-agent session: a main session id must never satisfy this, or it would become a way to read another conversation. */
   isPersistedSpawnOfOrigin(originSessionId: string, childSessionId: string): boolean {

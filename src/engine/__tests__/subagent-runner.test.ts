@@ -3242,6 +3242,8 @@ describe("listWorkBoardRunSessions", () => {
       subAgentMemoryManager,
     });
     const before = new Date("2026-09-03T00:00:00Z");
+    runner.listSubAgentSessions({ limit: 3, before, beforeId: "x", projectRoot: "/workspace/project" });
+    expect(listSessionsPage).toHaveBeenCalledWith({ limit: 3, before, beforeId: "x", projectRoot: "/workspace/project", kind: "subagent", workBoardRuns: false });
     runner.listWorkBoardRunSessions({ limit: 3, before, beforeId: "x" });
     expect(listSessionsPage).toHaveBeenCalledWith({
       limit: 3,

@@ -8,7 +8,7 @@ export const SESSION_LIST_MAX_LIMIT = 100;
 
 export type SessionKind = "main" | "routine" | "subagent";
 
-/** The main store lists main and routine kinds only; subagent runs arrive through the work-board family. */
+/** The main store lists main and routine kinds only; child sessions use their own store. */
 export type SessionListKindFilter = Exclude<SessionKind, "subagent"> | "all";
 
 /** Key by the union so a new filter cannot be omitted from runtime validation. */
@@ -23,7 +23,7 @@ export function isSessionListKindFilter(value: unknown): value is SessionListKin
 }
 
 /** Main and routine use the main store; work-board and side-chat rows come from separate stores. */
-export type SessionFamily = "main" | "routine" | "work-board" | "side-chat";
+export type SessionFamily = "main" | "routine" | "work-board" | "side-chat" | "subagent";
 
 /** Key by the union so adding a family cannot leave runtime validation silently incomplete. */
 const SESSION_FAMILY_TABLE: Readonly<Record<SessionFamily, true>> = Object.freeze({
@@ -31,6 +31,7 @@ const SESSION_FAMILY_TABLE: Readonly<Record<SessionFamily, true>> = Object.freez
   "routine": true,
   "work-board": true,
   "side-chat": true,
+  subagent: true,
 });
 
 export const SESSION_FAMILIES: readonly SessionFamily[] = Object.freeze(
@@ -42,7 +43,7 @@ export function isSessionFamily(value: unknown): value is SessionFamily {
   return typeof value === "string" && Object.hasOwn(SESSION_FAMILY_TABLE, value);
 }
 
-/** Main stamps family once for every consumer. originSessionId is a side-chat parent, distinct from checkpoint/fork parentSessionId. */
+/** Main stamps family once for every consumer. originSessionId is a side-chat or sub-agent parent, distinct from checkpoint/fork parentSessionId. */
 export interface SessionListRow {
   id: string;
   modifiedAt: string;
@@ -54,10 +55,12 @@ export interface SessionListRow {
   /** Present on a work-board run row — the item it opens. */
   workBoardItemId?: number;
   /**
-   * Present on a side-chat row — the conversation it belongs to, so the
+   * Present on a side-chat or sub-agent row — the conversation it belongs to, so the
    * sidebar can draw it under that conversation instead of beside it.
    */
   originSessionId?: string;
+  /** Live host state for a child whose turn is still executing. */
+  running?: boolean;
   /** Host-recorded pane identity; current host bindings determine whether it is still live. */
   paneTabId?: string;
   routineId?: string;
