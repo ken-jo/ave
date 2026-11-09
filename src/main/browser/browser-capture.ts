@@ -7,16 +7,28 @@ import { captureScrollContext, captureScrollParameters, scrollBrowserCapture } f
 import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-capture-operation.js";
 
 const activeCaptures = new WeakSet<object>();
+const CAPTURE_VIEWPORT_FIELDS = ["pageX", "pageY", "clientWidth", "clientHeight", "zoom", "scale"] as const;
+interface CaptureViewport {
+  pageX: number; pageY: number; clientWidth: number; clientHeight: number;
+  zoom?: number; scale?: number;
+}
 
 /** Read the native viewport without changing its host slot or focus; the caller owns wake activity. */
 export async function captureBrowserViewport(guest: Pick<WebContents, "capturePage" | "getZoomFactor">, assertCurrent: () => void): Promise<BrowserViewportImage> {
   assertCurrent();
+  const zoom = guest.getZoomFactor();
   const image = await guest.capturePage(undefined, { stayHidden: true, stayAwake: false });
   assertCurrent();
+  if (guest.getZoomFactor() !== zoom) throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
   const { width, height } = image.getSize();
   if (image.isEmpty() || width < 1 || height < 1) throw new BrowserActionError("screenshot-failed", "the tab returned no image");
   if (width * height > BROWSER_CAPTURE_LIMITS.pixels) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
-  return { data: image.toPNG({ scaleFactor: 1 }).toString("base64"), cssScale: guest.getZoomFactor() };
+  const png = image.toPNG({ scaleFactor: 1 });
+  if (png.length < 24 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new BrowserActionError("screenshot-failed", "the tab returned an invalid image");
+  const pixelWidth = png.readUInt32BE(16), pixelHeight = png.readUInt32BE(20);
+  if (pixelWidth < 1 || pixelHeight < 1 || pixelWidth * pixelHeight > BROWSER_CAPTURE_LIMITS.pixels) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
+  // A requested scale can be absent from the native image; use the encoded representation's actual density.
+  return { data: png.toString("base64"), cssScale: zoom * pixelWidth / width };
 }
 
 /** Full pages retain the current CSS width and truncate their bottom at the pixel limit. */
@@ -45,7 +57,7 @@ async function capturePage(
     if (!parseBrowserScreenshotOptions(options) || options.ref !== undefined) throw new BrowserActionError("invalid-capture", "use one capture mode with valid CSS capture bounds");
     const metrics = await cdp.send("Page.getLayoutMetrics") as {
       cssContentSize: BrowserCaptureClip;
-      cssVisualViewport: { pageX: number; pageY: number; clientWidth: number; clientHeight: number };
+      cssVisualViewport: CaptureViewport;
     };
     throwIfAborted(captureSignal);
     const viewport = metrics.cssVisualViewport;
@@ -95,6 +107,13 @@ async function capturePage(
       }) as { data?: string } : await captureViewport();
     }
     throwIfAborted(captureSignal);
+    if (!options.fullPage) {
+      const after = await cdp.send("Page.getLayoutMetrics") as typeof metrics;
+      throwIfAborted(captureSignal);
+      if (!after.cssVisualViewport || CAPTURE_VIEWPORT_FIELDS.some((field) => after.cssVisualViewport[field] !== viewport[field])) {
+        throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
+      }
+    }
     if (typeof result.data !== "string" || result.data.length === 0) throw new BrowserActionError("screenshot-failed", "the tab returned no image");
     let data = result.data;
     let bytes = Buffer.byteLength(data, "base64");

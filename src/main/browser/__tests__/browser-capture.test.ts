@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { captureBrowserPage } from "../browser-capture.js";
+import { captureBrowserPage, captureBrowserViewport } from "../browser-capture.js";
+import type { WebContents } from "electron";
 import type { CdpSession } from "../browser-action-guard.js";
 
 function image(width: number, height: number): string {
@@ -43,6 +44,39 @@ function fixture(width = 800, height = 2400) {
 }
 
 describe("browser capture", () => {
+  it("clips the requested CSS row when native PNG density differs from the requested representation", async () => {
+    const { default: sharp } = await import("sharp");
+    const pixels = Buffer.alloc(8 * 8 * 3);
+    for (let row = 0; row < 8; row += 1) for (let column = 0; column < 8; column += 1) pixels[(row * 8 + column) * 3 + (row < 4 ? 0 : 2)] = 255;
+    const png = await sharp(pixels, { raw: { width: 8, height: 8, channels: 3 } }).png().toBuffer();
+    const guest = { getZoomFactor: () => 1, capturePage: async () => ({ getSize: () => ({ width: 4, height: 4 }), isEmpty: () => false, toPNG: () => png }) } as unknown as Pick<WebContents, "capturePage" | "getZoomFactor">;
+    const cdp: CdpSession = { onEvent: () => () => {}, send: async () => ({ cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 4, clientHeight: 4 } }) };
+    const result = await captureBrowserPage(cdp, new AbortController().signal, { clip: { x: 0, y: 3, width: 4, height: 1 } }, 1, 1000, () => captureBrowserViewport(guest, () => {}));
+    const decoded = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
+    expect(result).toMatchObject({ width: 4, height: 1 });
+    expect([...decoded.subarray(0, 3)]).toEqual([0, 0, 255]);
+  });
+
+  it.each(["pageX", "pageY", "clientWidth", "clientHeight", "zoom", "scale"])("rejects a region when %s changes during readback", async (field) => {
+    const viewport = { pageX: 0, pageY: 0, clientWidth: 4, clientHeight: 4, zoom: 1, scale: 1 };
+    const cdp: CdpSession = { onEvent: () => () => {}, send: async () => ({ cssVisualViewport: { ...viewport } }) };
+    const { default: sharp } = await import("sharp");
+    // These are the pixels at document rows 4-7 after a scroll, not the requested row 1.
+    const data = (await sharp({ create: { width: 4, height: 4, channels: 3, background: "blue" } }).png().toBuffer()).toString("base64");
+    await expect(captureBrowserPage(cdp, new AbortController().signal, { clip: { x: 0, y: 1, width: 4, height: 1 } }, 1, 1000, async () => {
+      const key = field as keyof typeof viewport;
+      viewport[key] += 4;
+      return { data, cssScale: 1 };
+    })).rejects.toMatchObject({ code: "screenshot-unavailable", message: "the viewport changed during capture" });
+  });
+
+  it("rejects native readback when guest zoom changes while pixels are being captured", async () => {
+    let zoom = 1;
+    const guest = { getZoomFactor: () => zoom, capturePage: async () => { zoom = 1.25; return {}; } } as unknown as Pick<WebContents, "capturePage" | "getZoomFactor">;
+    await expect(captureBrowserViewport(guest, () => {})).rejects.toMatchObject({ code: "screenshot-unavailable" });
+    expect(zoom).toBe(1.25);
+  });
+
   it("captures the full content without scrolling and reports its dimensions", async () => {
     const { cdp, send, signal } = fixture();
     expect(await captureBrowserPage(cdp, signal, { fullPage: true })).toMatchObject({
@@ -58,7 +92,8 @@ describe("browser capture", () => {
   it("captures the scrolled viewport by default", async () => {
     const { cdp, send, signal } = fixture();
     expect(await captureBrowserPage(cdp, signal)).toMatchObject({ width: 800, height: 600 });
-    expect(send).toHaveBeenLastCalledWith("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
+    expect(send).toHaveBeenCalledWith("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
+    expect(send).toHaveBeenLastCalledWith("Page.getLayoutMetrics");
   });
   it("uses native viewport readback without waiting for absent animation frames", async () => {
     const { cdp, send, signal } = fixture();
