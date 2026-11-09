@@ -751,9 +751,9 @@
    * as the chrome block above, since the sidebar card's top edge is what puts
    * the cluster strip on the traffic lights' line.
    *
-   * The inset is the shell's gutter by construction — the air between the
-   * window and a card is the air between that card and its neighbour — so it
-   * aliases `--chrome-gap` instead of restating the pixel count. The bottom
+   * The window inset and the split tiles' gutter share `--chrome-gap`.
+   * Navigation leaves only `--chrome-gap-tight` before the first pane card.
+   * The inset aliases the gutter instead of restating its pixel count. The bottom
    * inset is larger: a card resting exactly on the window's bottom edge reads
    * as stuck to it rather than floating. `SHELL_GUTTER`
    * (shared/shell-geometry.ts) is the same value for the arithmetic done in

@@ -2504,7 +2504,7 @@ export function App() {
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
                   className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-[var(--motion-normal)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
-                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-reserve)" : ""
+                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-[calc(var(--shell-collapsed-rail-reserve)-var(--chrome-gap))]" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
                   style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
@@ -2658,7 +2658,7 @@ export function App() {
                                     than nested flex containers, so a tile's rectangle is
                                     one number that the layout, a drag hit-test, and a
                                     measurement in a test all read the same way. */}
-                                <div className="min-h-0 min-w-0 flex-1 pb-(--chrome-gap) pl-(--chrome-gap-tight) pr-(--chrome-gap) pt-0" data-testid="pane-row">
+                                <div className={`min-h-0 min-w-0 flex-1 pb-(--chrome-gap) pr-(--chrome-gap) pt-0 ${sidebarHidden ? "pl-(--chrome-gap-tight)" : "pl-0"}`} data-testid="pane-row">
                                 {/* The positioning context is INSIDE the padding: an
                                     absolutely-positioned child resolves against the padding
                                     box, so anchoring the tiles to the row itself would eat

@@ -36,7 +36,8 @@ async function mountShell(container: HTMLElement) {
 }
 
 function expectCollapsedGeometry(main: HTMLElement, band: HTMLElement) {
-  expect(main.classList.contains("pl-(--shell-collapsed-rail-reserve)")).toBe(true);
+  expect(main.classList.contains("pl-[calc(var(--shell-collapsed-rail-reserve)-var(--chrome-gap))]")).toBe(true);
+  expect(main.querySelector('[data-testid="pane-row"]')).toHaveClass("pl-0");
   expect(main.style.paddingLeft).toBe("");
   expect(band.style.paddingLeft).toBe(COLLAPSED_BAND_LEAD);
 }
