@@ -57,87 +57,79 @@ function mergeSessionRows(current: readonly SessionSummary[], incoming: readonly
 
 export function useSessionList(api: AveApi) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const rowsRef = useRef<SessionSummary[]>([]);
-  const runningById = useRef(new Map<string, boolean>());
-  const inFlightIds = useRef(new Set<string>());
-  const lifetime = useRef(0);
-  const pageRequest = useRef(0);
-  const refreshing = useRef(false);
+  const listRows = useRef<SessionSummary[]>([]);
+  const pointRows = useRef(new Map<string, { row: SessionSummary; generation: number; supplemental: boolean }>());
+  const generation = useRef(0);
+  const inFlightIds = useRef(new Map<string, number>());
 
-  const publishRows = useCallback((rows: SessionSummary[]) => {
-    const next = rows.map((row) => {
-      const running = runningById.current.get(row.id);
-      return running === undefined || row.running === running ? row : { ...row, running };
-    });
-    rowsRef.current = next;
-    setSessions(next);
+  const publishRows = useCallback(() => {
+    setSessions(mergeSessionRows([...pointRows.current.values()].map(({ row }) => row), listRows.current));
   }, []);
 
   const loadSessionsPage = useCallback(async (cursor?: { before: string; beforeId: string }) => {
-    if (cursor && refreshing.current) return;
-    if (!cursor) refreshing.current = true;
-    const request = ++pageRequest.current;
-    const epoch = lifetime.current;
-    const knownAtRequest = new Set(rowsRef.current.map((row) => row.id));
+    const request = ++generation.current;
     try {
       const result = await api.chatSessions({
         families: [...SESSION_FAMILIES],
         limit: SESSION_LIST_MAX_LIMIT,
         ...cursor,
       });
-      if (epoch !== lifetime.current || request !== pageRequest.current) return;
-      const received = new Set(result.sessions.map((row) => row.id));
-      const activeRows = rowsRef.current.filter((row) => runningById.current.get(row.id) === true && !received.has(row.id));
-      const activeParents = new Set(activeRows.flatMap((row) => row.originSessionId ? [row.originSessionId] : []));
-      const retained = rowsRef.current.filter((row) => runningById.current.get(row.id) === true || activeParents.has(row.id));
-      const observedSince = rowsRef.current.filter((row) => !knownAtRequest.has(row.id));
-      publishRows(mergeSessionRows(cursor ? rowsRef.current : retained, [...(result.parents ?? []), ...result.sessions, ...observedSince]));
+      if (request !== generation.current) return;
+      listRows.current = [...(result.parents ?? []), ...result.sessions];
+      const received = new Set(listRows.current.map((row) => row.id));
+      for (const [id, point] of pointRows.current) {
+        // Supplemental parents belong only to their response; a refresh may report a deletion.
+        if (point.generation !== request || point.supplemental || received.has(id)) pointRows.current.delete(id);
+      }
+      publishRows();
     } catch { /* ignore */ }
-    finally {
-      if (epoch === lifetime.current && request === pageRequest.current) refreshing.current = false;
-    }
   }, [api, publishRows]);
 
   const refreshSessions = useCallback(() => loadSessionsPage(), [loadSessionsPage]);
 
-  const readMissingChild = useCallback(async (id: string) => {
+  const readMissingChild = useCallback(async (id: string, running: boolean) => {
     if (inFlightIds.current.has(id)) return;
-    inFlightIds.current.add(id);
-    const epoch = lifetime.current;
+    const request = generation.current;
+    inFlightIds.current.set(id, request);
     try {
       const result = await api.chatSessions({ id, families: [...SESSION_FAMILIES] });
-      if (epoch !== lifetime.current) return;
+      if (request !== generation.current) return;
       const row = result.sessions.find((candidate) => candidate.id === id);
-      if (!row || rowsRef.current.some((listed) => listed.id === id)) return;
-      const known = new Set(rowsRef.current.map((listed) => listed.id));
-      const additions = [...(result.parents ?? []), row].filter((candidate) => !known.has(candidate.id));
-      publishRows(mergeSessionRows(rowsRef.current, additions));
+      if (!row) return;
+      const known = new Set([...listRows.current.map((listed) => listed.id), ...pointRows.current.keys()]);
+      for (const candidate of [...(result.parents ?? []), { ...row, running }]) {
+        if (!known.has(candidate.id)) pointRows.current.set(candidate.id, {
+          row: candidate, generation: request, supplemental: candidate.id !== id,
+        });
+      }
+      publishRows();
     } catch { /* A later activity can retry a failed point read. */ }
     finally {
-      if (epoch === lifetime.current) inFlightIds.current.delete(id);
+      if (inFlightIds.current.get(id) === request) inFlightIds.current.delete(id);
     }
   }, [api, publishRows]);
 
   useEffect(() => {
-    const epoch = lifetime.current;
     const unsubscribe = api.onAgentSpawnEvent?.((event) => {
-      if (epoch !== lifetime.current || !event.childSessionId) return;
+      if (!event.childSessionId) return;
       const id = event.childSessionId;
       const running = (event.type === "start" || event.type === "activity") && (event.status === undefined || event.status === "running");
-      runningById.current.set(id, running);
-      const row = rowsRef.current.find((candidate) => candidate.id === id);
+      const row = listRows.current.find((candidate) => candidate.id === id) ?? pointRows.current.get(id)?.row;
       if (row) {
-        if (row.running !== running) publishRows(rowsRef.current);
+        if (row.running !== running) {
+          listRows.current = listRows.current.map((candidate) => candidate.id === id ? { ...candidate, running } : candidate);
+          const point = pointRows.current.get(id);
+          if (point) pointRows.current.set(id, { ...point, row: { ...point.row, running } });
+          publishRows();
+        }
       } else if (event.type === "activity") {
-        void readMissingChild(id);
+        void readMissingChild(id, running);
       }
       if (event.type !== "activity") void refreshSessions();
     });
     return () => {
-      lifetime.current += 1;
+      generation.current += 1;
       inFlightIds.current.clear();
-      refreshing.current = false;
-      runningById.current.clear();
       unsubscribe?.();
     };
   }, [api, publishRows, readMissingChild, refreshSessions]);
