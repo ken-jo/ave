@@ -1,14 +1,10 @@
-import { currentEffectGateContext } from "../permissions/effect-enforcement.js";
-import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 /** Browser tools reach only the calling conversation's window; sub-agents inherit it, while routines and headless lanes receive no schemas.
  * User tabs use their conversation's surface choice; main seals target identities and execution rechecks opener and origin after approval.
  * Refuse changed targets without acting, frame all page content as untrusted, and load main-owned actions on first use. */
-import { createDynamicTool, toolSessionId, type Tool, type ToolPolicyContext } from "./base.js";
-import { authorizedApprovalMemoryScope } from "./approval-memory-context.js";
-import { runBrowserReadInLane } from "./browser-read-lane.js";
+import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
-import { BROWSER_TOOL, browserOrigin, type BrowserToolName, type BrowserPageReadiness, type BrowserPageSnapshot, type BrowserWaitResult } from "../shared/browser-tools.js";
+import { BROWSER_TOOL, browserOrigin, type BrowserToolName, type BrowserPageReadiness, type BrowserPageSnapshot } from "../shared/browser-tools.js";
 export { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import type { ApprovalMemoryScope, BrowserTabOpener } from "../shared/permissions-events.js";
@@ -68,7 +64,7 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   screenshot(target: BrowserActionTab<G>, options?: { fullPage?: boolean }): Promise<{ data: string; mimeType: string; bytes: number }>;
   /** Best-effort display thumbnail of the tab (from `png` when given); never throws. */
   capturePreview?(target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined>;
-  waitFor(target: BrowserActionTab<G>, options: { text?: string; timeMs?: number }): Promise<BrowserWaitResult>;
+  waitFor(target: BrowserActionTab<G>, options: { text?: string; timeMs?: number }): Promise<{ found: boolean; waitedMs: number }>;
   click(target: BrowserActionTab<G>, ref: string): Promise<void>;
   hover(target: BrowserActionTab<G>, ref: string): Promise<void>;
   drag(target: BrowserActionTab<G>, sourceRef: string, targetRef: string): Promise<void>;
@@ -237,39 +233,8 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
   // The execute bodies load on the first browser call, outside the initial bundle.
   let executors: Promise<BrowserToolExecutors> | undefined;
   const execute = (name: BrowserToolName) => async (raw: unknown, ctx: ToolExecutionContext): Promise<ToolExecutionResult> => {
-    const input = asInput(raw);
-    const observation = name === BROWSER_TOOL.snapshot || name === BROWSER_TOOL.screenshot || name === BROWSER_TOOL.wait;
-    const approved = authorizedApprovalMemoryScope(ctx);
-    const approvedTabId = approved?.kind === "browser-origin" || approved?.kind === "browser-agent-tabs" ? approved.tabId : undefined;
-    const pinnedInput = observation && input.tabId === undefined && approvedTabId !== undefined ? { ...input, tabId: approvedTabId } : input;
-    const target = observation ? policy.resolveTab(pinnedInput, toolSessionId(ctx)) : undefined;
-    const guest = target?.tab.guest;
     executors ??= import("./browser-tools-execute.js").then((module) => module.createBrowserToolExecutors(deps, policy));
-    const executorPromise = executors;
-    if (!observation) return (await executors)[name](input, ctx);
-    if (!target || !guest) {
-      const { fenceBrowserContent } = await import("./browser-tools-execute.js");
-      return { output: fenceBrowserContent({ error: "Browser target unavailable before read" }), isError: true };
-    }
-    const pinned = { ...pinnedInput, tabId: target.tab.handle };
-    try {
-      return await runBrowserReadInLane(guest, ctx.abortSignal, async () => {
-        const loaded = await executorPromise;
-        const effectContext = currentEffectGateContext();
-        const authority = effectContext?.permissionContext?.remoteControllerAuthority;
-        if (!await refreshRemoteControllerBoundToSession(authority, effectContext?.sessionId)) throw new Error("remote-controller-revoked");
-        effectContext?.assertAuthorizationCurrent?.();
-        if (!isRemoteControllerBoundToSession(authority, effectContext?.sessionId)) throw new Error("remote-controller-revoked");
-        ctx.abortSignal?.throwIfAborted();
-        const fresh = policy.resolveTab(pinned, toolSessionId(ctx));
-        if (!fresh || fresh.tab.guest !== guest || guest.isDestroyed()) throw new Error("Browser target changed while waiting to read");
-        // The action executor rechecks the exact approved document, origin and opener after the wait.
-        return loaded[name](pinned, ctx);
-      });
-    } catch (error) {
-      const { fenceBrowserContent } = await import("./browser-tools-execute.js");
-      return { output: fenceBrowserContent({ error: error instanceof Error ? error.message : "Browser read cancelled" }), isError: true };
-    }
+    return (await executors)[name](asInput(raw), ctx);
   };
 
   const tabIdProperty = { type: "string", description: t("be_browserTools.tabIdDescription") };
@@ -309,7 +274,6 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
     createDynamicTool({
       ...common,
       name: BROWSER_TOOL.snapshot,
-      parallelSafe: true,
       description: t("be_browserTools.snapshotDescription"),
       category: "network",
       categoryForInput: readOnAgentTab,
@@ -325,7 +289,6 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
     createDynamicTool({
       ...common,
       name: BROWSER_TOOL.screenshot,
-      parallelSafe: true,
       description: t("be_browserTools.screenshotDescription"),
       category: "network",
       categoryForInput: readOnAgentTab,
@@ -337,7 +300,6 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
     createDynamicTool({
       ...common,
       name: BROWSER_TOOL.wait,
-      parallelSafe: true,
       approvalMemoryScope: pageScope,
       description: t("be_browserTools.waitDescription"),
       category: "read",

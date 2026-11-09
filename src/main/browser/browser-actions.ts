@@ -13,7 +13,7 @@ import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
 import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared/agent-observation.js";
 import { validateExternalUrl } from "../../shared/external-url.js";
-import { browserOrigin, type BrowserPageReadiness, type BrowserPageSnapshot, type BrowserWaitResult } from "../../shared/browser-tools.js";
+import { browserOrigin, type BrowserPageReadiness, type BrowserPageSnapshot } from "../../shared/browser-tools.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
@@ -170,28 +170,26 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-// A missing text condition observes document loading; timeMs always caps the wait.
-export async function waitFor(
+// Wait for `text` to appear on the page, or for `timeMs`.
+async function waitFor(
   target: ActionTarget,
   options: { text?: string; timeMs?: number },
-): Promise<BrowserWaitResult> {
+): Promise<{ found: boolean; waitedMs: number }> {
   const started = Date.now();
   const limit = Math.min(options.timeMs ?? WAIT_MAX_MS, WAIT_MAX_MS);
-  if (options.text === undefined && !target.isLoading) throw new BrowserActionError("loading-unavailable", "the page loading state is unavailable");
+  if (options.text === undefined) {
+    await sleep(limit, target.signal);
+    throwIfAborted(target.signal);
+    return { found: false, waitedMs: Date.now() - started };
+  }
   for (;;) {
     throwIfAborted(target.signal);
-    target.assertCurrent?.(false);
-    if (options.text === undefined) {
-      if (!target.isLoading?.()) return { found: true, reason: "load-complete", loading: false, waitedMs: Date.now() - started };
-    } else {
-      await target.cdp.send("DOM.getDocument", { depth: 0 });
-      const search = await target.cdp.send("DOM.performSearch", { query: options.text }) as { searchId: string; resultCount: number };
-      await target.cdp.send("DOM.discardSearchResults", { searchId: search.searchId });
-      if (search.resultCount > 0) return { found: true, reason: "text-found", loading: target.isLoading?.() ?? false, waitedMs: Date.now() - started };
-    }
-    const elapsed = Date.now() - started;
-    if (elapsed >= limit) return { found: false, reason: "timeout", loading: target.isLoading?.() ?? false, waitedMs: elapsed };
-    await sleep(Math.min(WAIT_POLL_MS, limit - elapsed), target.signal);
+    await target.cdp.send("DOM.getDocument", { depth: 0 });
+    const search = await target.cdp.send("DOM.performSearch", { query: options.text }) as { searchId: string; resultCount: number };
+    await target.cdp.send("DOM.discardSearchResults", { searchId: search.searchId });
+    if (search.resultCount > 0) return { found: true, waitedMs: Date.now() - started };
+    if (Date.now() - started >= limit) return { found: false, waitedMs: Date.now() - started };
+    await sleep(WAIT_POLL_MS, target.signal);
   }
 }
 
@@ -1258,7 +1256,6 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     tabId: live.tab.handle,
     url: () => guest.getURL(),
     title: () => guest.getTitle(),
-    isLoading: () => guest.isLoadingMainFrame(),
     cdp,
     injectInput: (inject) => attribution.withAgentInput(guest.id, inject),
     press: async (run) => {

@@ -1101,16 +1101,12 @@ export async function executeAuthorizedToolInvocation(
       abortSignal: signal,
     };
     if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
-    const executionPolicyEpoch = services.permissionManager?.getPolicyEpoch();
     let execution: ReturnType<Tool["execute"]>;
     try {
       execution = runWithToolExecutionCwd(executionCwd, () =>
         runWithEffectLedger(effectLedger, () =>
           runWithEffectGateContext(
             {
-              assertAuthorizationCurrent: () => {
-                if (executionPolicyEpoch !== services.permissionManager?.getPolicyEpoch()) throw new Error("Permission policy changed while waiting to execute");
-              },
               headless: invocationPermissionContext.headless === true,
               executionCwd,
               abortSignal: signal,

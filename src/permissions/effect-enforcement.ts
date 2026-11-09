@@ -44,8 +44,6 @@ export const pathReadEffectPaths: ReadonlySet<string> = new Set(Object.entries(H
 
 // The executor binds a context for each invocation; exact one-shot grants live only in that frame.
 export interface EffectGateContext {
-  /** Host-issued validity fence for authorization retained across a tool-owned queue. */
-  readonly assertAuthorizationCurrent?: () => void;
   // True iff this invocation runs in a headless/routine policy lane.
   readonly headless: boolean;
   // Whether this host process can present and settle a local approval.

@@ -24,15 +24,6 @@ export type BrowserToolName = (typeof BROWSER_TOOL)[keyof typeof BROWSER_TOOL];
 export const BROWSER_PAGE_STRING_MAX_CHARS = 200;
 export const BROWSER_OUTPUT_MAX_CHARS = 50_000;
 
-export interface BrowserWaitResult {
-  readonly found: boolean;
-  readonly waitedMs: number;
-  readonly reason: "load-complete" | "text-found" | "timeout";
-  readonly loading: boolean;
-}
-
-export const BROWSER_DOCUMENT_READY_HINT = "The main document is usable. Snapshot and click work while loading; wait only when you need loading to finish.";
-
 export interface BrowserPageReadiness {
   readonly url: string;
   readonly loading: boolean;
