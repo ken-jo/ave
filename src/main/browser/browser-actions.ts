@@ -1,7 +1,7 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
 import { captureBrowserPage, captureBrowserViewport } from "./browser-capture.js";
-import type { BrowserScreenshotOptions } from "../../shared/browser-capture.js";
+import { parseBrowserScreenshotOptions, type BrowserScreenshotOptions } from "../../shared/browser-capture.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { browserControlLifecycle } from "./browser-control-lifecycle.js";
 import { subscribeBrowserGuestDestroyed, type BrowserLifecycleGuest } from "./browser-guest-lifecycle.js";
@@ -120,9 +120,32 @@ export async function screenshot(
   target: ActionTarget,
   maxMs: number = TOOL_TIMEOUT_POLICY.browserCaptureMs,
   options: BrowserScreenshotOptions = {},
+  refs: BrowserRefTable = browserRefs,
   pixelRatio = 1,
 ) {
-  return captureBrowserPage(target.cdp, target.signal, options, pixelRatio, maxMs, target.captureViewport);
+  const parsed = parseBrowserScreenshotOptions(options);
+  if (!parsed) throw new BrowserActionError("invalid-capture", "use one capture mode; clip requires finite non-negative x/y and positive width/height");
+  let clip = parsed.clip;
+  if (parsed.ref !== undefined) {
+    const backendNodeId = await resolveRef(target, parsed.ref, refs);
+    let border: number[] | undefined;
+    try {
+      const result = await target.cdp.send("DOM.getBoxModel", { backendNodeId }) as { model?: { border?: number[] } };
+      border = result.model?.border;
+    } catch (error) {
+      throwIfAborted(target.signal);
+      if (error instanceof BrowserActionError) throw error;
+      throw new BrowserActionError("stale-ref", "the element has no capture bounds; take a new browser_snapshot");
+    }
+    throwIfAborted(target.signal);
+    if (border?.length !== 8 || !border.every(Number.isFinite)) throw new BrowserActionError("screenshot-unavailable", "the element has no visible capture bounds");
+    const metrics = await target.cdp.send("Page.getLayoutMetrics") as { cssVisualViewport: { pageX: number; pageY: number } };
+    const xs = border.filter((_value, index) => index % 2 === 0), ys = border.filter((_value, index) => index % 2 === 1);
+    clip = { x: Math.min(...xs) + metrics.cssVisualViewport.pageX, y: Math.min(...ys) + metrics.cssVisualViewport.pageY,
+      width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+    if (await resolveRef(target, parsed.ref, refs) !== backendNodeId) throw new BrowserActionError("stale-ref", "the element changed during capture; take a new browser_snapshot");
+  }
+  return captureBrowserPage(target.cdp, target.signal, { ...(parsed.fullPage !== undefined ? { fullPage: parsed.fullPage } : {}), ...(clip ? { clip } : {}) }, pixelRatio, maxMs, target.captureViewport);
 }
 
 const WAIT_POLL_MS = 250;
@@ -1452,7 +1475,7 @@ export function createBrowserPageActions(
         const target = await targetFor(live, attribution, hostContentOrigin);
         const guest = live.tab.guest;
         if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-        return screenshot(target, TOOL_TIMEOUT_POLICY.browserCaptureMs, options, capturePixelRatioForGuest(guest));
+        return screenshot(target, TOOL_TIMEOUT_POLICY.browserCaptureMs, options, browserRefs, capturePixelRatioForGuest(guest));
       });
     },
     capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),

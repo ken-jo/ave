@@ -471,7 +471,7 @@ export const en = {
   "be_browserTools.snapshotDescription": "Read a browser tab as an accessibility outline. Elements you can act on carry a ref (for example [ref=e12]) for browser_click and browser_type. Up to 50,000 characters.",
   "be_browserTools.snapshotInteractiveDescription": "Only the elements a person can act on (links, buttons, fields...), as a flat list.",
   "be_browserTools.snapshotDeltaDescription": "Only what changed since your previous snapshot of this tab in the same mode.",
-  "be_browserTools.screenshotDescription": "Take a screenshot of what a browser tab shows.",
+  "be_browserTools.screenshotDescription": "Capture a browser tab's visible area, full page, snapshot element, or document-coordinate region.",
   "be_browserTools.waitDescription": "Wait until text appears in a browser tab, or for a time (at most 30 seconds).",
   "be_browserTools.waitTextDescription": "Text to wait for.",
   "be_browserTools.waitTimeDescription": "Milliseconds to wait (with text: the most to wait).",

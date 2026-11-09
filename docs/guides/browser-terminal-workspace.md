@@ -115,7 +115,7 @@ have not been proved reliable; requesting it fails before capture.
 | `browser_select` | `ref`, `value`; native single-select only |
 | `browser_scroll` | `ref`, `direction` (`up`, `down`, `left`, `right`), `pixels` |
 | `browser_upload` | `ref`; opens the approved native picker |
-| `browser_screenshot` | Viewport only; omit `fullPage` or use `false` |
+| `browser_screenshot` | Viewport by default; `ref` or document-CSS `clip` captures a visible region. Embedded full-page capture remains unavailable. |
 
 Each accepts an optional `tabId` from `browser_tabs`. Unknown fields are rejected.
 

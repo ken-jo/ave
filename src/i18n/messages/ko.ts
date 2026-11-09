@@ -473,7 +473,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_browserTools.snapshotDescription": "브라우저 탭을 접근성 개요로 읽습니다. 동작할 수 있는 요소에는 browser_click과 browser_type에 쓸 ref(예: [ref=e12])가 붙습니다. 최대 50,000자입니다.",
   "be_browserTools.snapshotInteractiveDescription": "사람이 조작할 수 있는 요소(링크, 버튼, 입력란 등)만 평평한 목록으로 보여 줍니다.",
   "be_browserTools.snapshotDeltaDescription": "같은 모드로 이 탭을 이전에 읽은 뒤 바뀐 부분만 보여 줍니다.",
-  "be_browserTools.screenshotDescription": "브라우저 탭에 보이는 화면을 캡처합니다.",
+  "be_browserTools.screenshotDescription": "브라우저 탭의 보이는 화면, 전체 페이지, 스냅샷 요소 또는 문서 좌표의 영역을 캡처합니다.",
   "be_browserTools.waitDescription": "브라우저 탭에 텍스트가 나타날 때까지, 또는 정한 시간 동안(최대 30초) 기다립니다.",
   "be_browserTools.waitTextDescription": "기다릴 텍스트.",
   "be_browserTools.waitTimeDescription": "기다릴 밀리초(텍스트와 함께 쓰면 최대 대기 시간).",

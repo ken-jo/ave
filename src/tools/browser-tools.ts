@@ -302,7 +302,15 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       categoryForInput: readOnAgentTab,
       isReadOnly: (raw) => readOnAgentTab(raw) === "read",
       approvalMemoryScope: pageScope,
-      jsonSchema: object({ tabId: tabIdProperty, fullPage: { type: "boolean", description: t("be_browserTools.fullPageDescription") } }),
+      jsonSchema: object({
+        tabId: tabIdProperty,
+        fullPage: { type: "boolean", description: t("be_browserTools.fullPageDescription") },
+        ref: { ...refProperty.ref, pattern: "^e\\d+$", maxLength: 100 },
+        clip: { type: "object", additionalProperties: false, required: ["x", "y", "width", "height"], properties: {
+          x: { type: "number", minimum: 0 }, y: { type: "number", minimum: 0 },
+          width: { type: "number", exclusiveMinimum: 0 }, height: { type: "number", exclusiveMinimum: 0 },
+        } },
+      }),
       execute: execute(BROWSER_TOOL.screenshot),
     }),
     createDynamicTool({
