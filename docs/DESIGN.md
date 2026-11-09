@@ -581,7 +581,9 @@ determine whether a tile can split or a panel can dock.
     owning pane and are not copied into the bell. Its popover has two sections:
     - **확인 필요** reuses the work approval list, grouped by project, with "모두 보기" and rows
       that only navigate to the existing cards; decisions stay on those cards;
-    - **알림** keeps up to 50 notices in memory for this app session, newest first. Each row
+    - **알림** keeps up to 50 historical notices in memory for this app session, plus banners
+      that are still showing. Rows sort by original arrival time, newest first, with stable
+      ID ordering for ties; replay delivery order does not decide retention. Each row
       shows severity, message, source and relative time, offers its original action when present,
       and can be cleared with ×; "모두 지우기" clears the history. Restarting the app clears it too.
     - the badge counts work approval items plus unread notices. Opening the bell marks notices
@@ -599,7 +601,9 @@ determine whether a tile can split or a panel can dock.
       enter the in-app notification history: their cards own attention.
   - **Banner** for persistent conditions that need action. Retired-provider, deprecated-model,
     marketplace-announcement and document-engine-install banners stay in their current places
-    and also enter the bell with the same actions while showing. A dismissed banner's row may
+    and also enter the bell with the same actions while showing. Showing banners stay outside
+    the history cap even when older than the retained history. Once hidden, their rows become
+    ordinary capped history. A dismissed banner's row may
     remain as history; clearing its history row does not dismiss the banner. Rerendering a visible
     banner refreshes its actions without creating another unread notice; actions disappear when
     the banner stops showing, and a queued action cannot switch to a later banner or operation.

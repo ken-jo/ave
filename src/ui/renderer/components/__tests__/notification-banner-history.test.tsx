@@ -270,6 +270,7 @@ describe("banner notification history", () => {
       <DocumentEngineInstallContent api={api} onDismiss={vi.fn()} />
     </NotificationHistoryContext.Provider>);
     const button = await screen.findByRole("button", { name: t("documentEngine.retry") });
+    await waitFor(() => expect(history.getSnapshot()[0]?.actions?.[0]?.label).toBe(button.textContent));
     expect(button).toBeDisabled();
     expect(screen.getByTestId("document-engine-install").querySelector('[role="alert"], [role="status"], [aria-live]')).toBeNull();
     const record = required(history.getSnapshot()[0]);

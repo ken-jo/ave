@@ -25,6 +25,12 @@ export interface NoticeRecord extends ToastItem {
   actions?: NoticeAction[];
 }
 
+function compareNoticeArrival(left: NoticeRecord, right: NoticeRecord): number {
+  return right.createdAt - left.createdAt
+    || right.id.localeCompare(left.id, "en", { numeric: true })
+    || (left.id < right.id ? 1 : left.id > right.id ? -1 : 0);
+}
+
 /** Window lifetime only: clearing a record never changes its producer's state. */
 export function createNotificationHistory() {
   let records: NoticeRecord[] = [];
@@ -34,11 +40,19 @@ export function createNotificationHistory() {
   let pendingAnnouncements: NoticeRecord[] = [];
   // Local rows can evict a main row from the visible cap; that must not make its replay a new arrival.
   const receivedIds = new Set<string>();
+  const visibleBannerIds = new Set<string>();
   let open = false;
   let sequence = 0;
   let arrival = 0;
   const listeners = new Set<() => void>();
   const emit = () => { for (const listener of listeners) listener(); };
+  const retainRecords = (items: readonly NoticeRecord[]): NoticeRecord[] => {
+    let historicalCount = 0;
+    return [...items].sort(compareNoticeArrival).filter((item) => {
+      if (visibleBannerIds.has(item.id)) return true;
+      return historicalCount++ < NOTIFICATION_HISTORY_LIMIT;
+    });
+  };
   const upsert = (id: string, input: NoticeInput): string => {
     if (input.notification?.kind === "approval" || input.notification?.kind === "ask-user") return id;
     const createdAt = input.createdAt ?? Date.now();
@@ -46,7 +60,7 @@ export function createNotificationHistory() {
       ...input, id, announcementId: ++arrival, createdAt, expiresAt: createdAt, read: open,
       source: input.source ?? input.notification?.kind ?? "window",
     };
-    records = [record, ...records.filter((item) => item.id !== id)].slice(0, NOTIFICATION_HISTORY_LIMIT);
+    records = retainRecords([record, ...records.filter((item) => item.id !== id)]);
     latest = record;
     pendingAnnouncements.push(record);
     const errors = record.severity === "error";
@@ -71,6 +85,28 @@ export function createNotificationHistory() {
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     push: (input: NoticeInput) => upsert(`notice:${++sequence}`, input),
     upsert,
+    upsertBanner: (id: string, input: NoticeInput) => {
+      visibleBannerIds.add(id);
+      return upsert(id, { ...input, source: "banner" });
+    },
+    // Effect re-entry resumes the same occurrence without another unread arrival or announcement.
+    restoreBanner: (id: string, snapshot: readonly NoticeRecord[]) => {
+      visibleBannerIds.add(id);
+      const retainedIds = new Set(records.map((item) => item.id));
+      const missing = snapshot.filter((item) => !retainedIds.has(item.id));
+      if (missing.length === 0) return;
+      records = retainRecords([...records, ...missing]);
+      emit();
+    },
+    hideBanner: (id: string) => {
+      const visible = visibleBannerIds.delete(id);
+      const current = records.find((item) => item.id === id);
+      if (!visible && !current?.actions?.length) return;
+      const next = retainRecords(records.map((item) => item.id === id && item.actions?.length ? { ...item, actions: [] } : item));
+      if (next.length === records.length && next.every((item, index) => item === records[index])) return;
+      records = next;
+      emit();
+    },
     receive: (id: string, input: NoticeInput) => {
       if (receivedIds.has(id)) return id;
       receivedIds.add(id);

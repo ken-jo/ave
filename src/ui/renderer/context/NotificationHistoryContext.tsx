@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef } from "react";
-import type { NoticeInput, NotificationHistory } from "../notification-history.js";
+import type { NoticeInput, NoticeRecord, NotificationHistory } from "../notification-history.js";
 
 export const NotificationHistoryContext = createContext<NotificationHistory | null>(null);
 
@@ -9,9 +9,10 @@ export function useBannerNotice(id: string, notice: NoticeInput | null) {
   const latest = useRef(notice);
   latest.current = notice;
   const registered = useRef<string | null>(null);
+  const suspended = useRef<{ history: NotificationHistory; id: string; records: readonly NoticeRecord[] } | null>(null);
   useEffect(() => {
     latest.current = notice;
-    if (!history || !notice) { registered.current = null; history?.updateActions(id, []); return; }
+    if (!history || !notice) { registered.current = null; suspended.current = null; history?.hideBanner(id); return; }
     const signature = JSON.stringify([id, notice.message, notice.severity]);
     const actions = (notice.actions ?? []).map((action, index) => ({
       key: action.key,
@@ -20,10 +21,19 @@ export function useBannerNotice(id: string, notice: NoticeInput | null) {
       run: () => { const current = latest.current?.actions?.[index]; if (registered.current === signature && current && (current.key ?? current.label) === (action.key ?? action.label) && !current.disabled) current.run(); },
     }));
     if (registered.current !== signature) {
-      history.upsert(id, { ...notice, source: "banner", actions });
+      history.upsertBanner(id, { ...notice, actions });
       registered.current = signature;
-    } else history.updateActions(id, actions);
+    } else {
+      if (suspended.current?.history === history && suspended.current.id === id) history.restoreBanner(id, suspended.current.records);
+      history.updateActions(id, actions);
+    }
+    suspended.current = null;
   }, [history, id, notice]);
-  useEffect(() => () => { latest.current = null; history?.updateActions(id, []); }, [history, id]);
+  useEffect(() => () => {
+    latest.current = null;
+    const records = history?.getSnapshot();
+    suspended.current = history && records?.some((item) => item.id === id) ? { history, id, records } : null;
+    history?.hideBanner(id);
+  }, [history, id]);
   return history !== null && notice !== null;
 }

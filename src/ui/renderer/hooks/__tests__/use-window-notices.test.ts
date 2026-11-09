@@ -106,7 +106,7 @@ describe("useWindowNotices — install lifecycle producer", () => {
     emit({ slug: "ev\x00il", success: true });
     expect(result.current.records[0]?.message).toBe("evil 설치 완료");
     emit({ slug: "a\tb\nc\rd\x7f", success: true });
-    expect(result.current.records[0]?.message).toBe("abcd 설치 완료");
+    expect(result.current.records.map((record) => record.message)).toEqual(expect.arrayContaining(["evil 설치 완료", "abcd 설치 완료"]));
   });
 
   it("replaces a slug's earlier result with the latest outcome", () => {
