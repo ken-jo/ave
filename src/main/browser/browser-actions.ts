@@ -8,7 +8,9 @@ import { validateExternalUrl } from "../../shared/external-url.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { BrowserDocumentChangedError, type TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
-import { BrowserActionError, frameTree, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
+import {
+  BrowserActionError, frameTree, ownPageSession, releasePageSession, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession,
+} from "./browser-action-guard.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
@@ -30,9 +32,12 @@ async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted
   const pending = attachCdp(guest, signal, onTrackingStarted);
   attached.set(guest, pending);
   try {
-    return await pending;
+    const session = await pending;
+    ownPageSession(guest);
+    return session;
   } catch (err) {
     attached.delete(guest);
+    releasePageSession(guest);
     throw err;
   }
 }
@@ -1310,6 +1315,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
             if (!clean || (state.dropSent && !state.dropped)) {
               // An unproved cleanup or drop outcome cannot own later input.
               attached.delete(guest);
+              releasePageSession(guest);
               try { guest.debugger.detach(); } catch { /* guest destruction also ends its session */ }
               markWedged(host.windowId, guest, new Promise(() => {}));
             }

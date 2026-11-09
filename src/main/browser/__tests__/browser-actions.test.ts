@@ -24,7 +24,7 @@ import {
   type NavigableGuest,
   watchActionNavigation,
 } from "../browser-actions.js";
-import { withGuardedAction } from "../browser-action-guard.js";
+import { ownsPageSession, withGuardedAction } from "../browser-action-guard.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
 import { type as typeInto } from "../browser-actions.js";
 import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.js";
@@ -1911,6 +1911,7 @@ describe("native intercepted drag lifetime", () => {
     expect(f.drops()).toHaveLength(0);
     expect(f.guest.debugger.detach).toHaveBeenCalledOnce();
     expect(f.guest.debugger.isAttached()).toBe(false);
+    expect(ownsPageSession(f.guest)).toBe(false);
     expect(f.cdp.events.listenerCount("message")).toBe(1);
     f.guest.emit("destroyed"); // release this fixture window's quarantine
   });
@@ -1920,6 +1921,7 @@ describe("native intercepted drag lifetime", () => {
     await expect(f.run()).rejects.toMatchObject({ code: "cancelled", effectCommitted: true, message: expect.stringContaining("do not repeat") });
     expect(f.drops()).toHaveLength(1);
     expect(f.cdp.calls.filter((call) => call.method.startsWith("Input.")).at(-1)?.params?.type).toBe("drop");
+    expect(ownsPageSession(f.guest)).toBe(true);
   });
 
   it("reports unknown committed effect and quarantines when the drop acknowledgement is lost", async () => {

@@ -1,15 +1,17 @@
 import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScreencastClosedError } from "../../observation/browser-screencast.js";
+import { ownPageSession } from "../browser/browser-action-guard.js";
 import { isUniformJpeg, startBrowserPreview, type PreviewGuest } from "../browser-observation-preview.js";
 
-function guest(attached = true) {
+function guest(attached = true, ownedByPageActions = attached) {
   const debuggerEmitter = Object.assign(new EventEmitter(), {
     isAttached: vi.fn(() => attached),
     attach: vi.fn(() => { throw new Error("A preview must never attach a debugger"); }),
     sendCommand: vi.fn((_method: string, _params?: object) => new Promise<unknown>(() => {})),
   });
   const contents = Object.assign(new EventEmitter(), { id: 7, isDestroyed: () => false, debugger: debuggerEmitter });
+  if (ownedByPageActions) ownPageSession(contents);
   return contents;
 }
 const callbacks = () => ({ frame: vi.fn(), updating: vi.fn(), ended: vi.fn(), isBlank: () => false });
@@ -23,6 +25,14 @@ describe("agent browser preview guest wiring", () => {
     expect(() => startBrowserPreview(detached as unknown as PreviewGuest, callbacks())).toThrow("agent's page session");
     expect(detached.debugger.attach).not.toHaveBeenCalled();
     expect(detached.debugger.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it("rejects a guest whose debugger another client attached when the page actions never owned its session", () => {
+    const foreign = guest(true, false);
+    expect(() => startBrowserPreview(foreign as unknown as PreviewGuest, callbacks())).toThrow("agent's page session");
+    expect(foreign.debugger.attach).not.toHaveBeenCalled();
+    expect(foreign.debugger.sendCommand).not.toHaveBeenCalled();
+    expect(foreign.debugger.listenerCount("message")).toBe(0);
   });
 
   it("re-arms on main-frame commit and ignores same-document navigation", async () => {
