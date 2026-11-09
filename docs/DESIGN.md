@@ -234,6 +234,14 @@ What the frame owns, in order from the outside in:
   pads by the tight chrome gap on every side, so two adjacent halves make the gutter between
   tiles; the frame's floors are measured on its content, and a split subtracts the cell
   inset (`PANE_CELL_INSET`) before comparing.
+  Without persistent banners, the first row shares `--shell-card-top` with the sidebar cards; `--shell-canvas-top`
+  derives the content origin before the cell's half-gutter. Empty banner lanes reserve
+  no height, including when they contain only text placeholders. Visible persistent
+  banners still reserve space above the panes.
+  When navigation sits beside the canvas, its visible gap is `--chrome-gap-tight` (4px),
+  measured from the list card's edge or the collapsed rail's edge. Split panes keep their 8px inner gutter.
+  The sidebar resize handle stays 8px wide inside the list card's trailing edge,
+  clear of pane content and header controls. Hidden navigation keeps the window inset.
 - **Header band.** One row, `--chrome-band-height` tall, the same height as every other
   chrome band. The leading edge starts with the same glyph the sidebar row uses
   for this content, then the title; a longer description lives on the title's hover and is
