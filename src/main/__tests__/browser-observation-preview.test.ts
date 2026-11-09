@@ -283,14 +283,16 @@ describe("agent browser live preview", () => {
   it("stops the page screencast before an agent closes its guest", async () => {
     const observed = await agentClick();
     request("start", observed.target.id);
+    const active = started[0];
+    if (!active) throw new Error("Expected the browser preview to start.");
     let finishStop = () => {};
-    started[0]!.stop.mockImplementationOnce(() => new Promise<void>((resolve) => { finishStop = resolve; }));
+    active.stop.mockImplementationOnce(() => new Promise<void>((resolve) => { finishStop = resolve; }));
     let closing = false;
     const close = runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "tab-close", async () => {
       closing = true;
       return 1;
     }));
-    await vi.waitFor(() => expect(started[0]!.stop).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(active.stop).toHaveBeenCalledOnce());
     expect(closing).toBe(false);
     expect(messages()).toEqual([]);
     let overlappingRun = false;
@@ -308,8 +310,10 @@ describe("agent browser live preview", () => {
   it("keeps a live preview registered when stopping it fails before tab close", async () => {
     const observed = await agentClick();
     request("start", observed.target.id);
+    const active = started[0];
+    if (!active) throw new Error("Expected the browser preview to start.");
     const stopError = new Error("Page.stopScreencast failed");
-    started[0]!.stop.mockRejectedValueOnce(stopError);
+    active.stop.mockRejectedValueOnce(stopError);
     let closing = false;
     await expect(runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "tab-close", async () => {
       closing = true;
@@ -321,7 +325,7 @@ describe("agent browser live preview", () => {
       closing = true;
       return 1;
     }));
-    expect(started[0]!.stop).toHaveBeenCalledTimes(2);
+    expect(active.stop).toHaveBeenCalledTimes(2);
     expect(closing).toBe(true);
     expect(messages().at(-1)).toMatchObject({ kind: "state", state: "stopped" });
   });

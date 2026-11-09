@@ -6,7 +6,9 @@ import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededEl
 
 const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
 
-test("user area capture stays in host chrome and attaches actual page pixels to the composer", async ({ browserName: _browserName }, testInfo) => {
+test("user area capture stays in host chrome and attaches actual page pixels to the composer",
+  { annotation: { type: "isolated-app", description: "Exercises native clipboard contents and a seeded conversation" } },
+  async ({ browserName: _browserName }, testInfo) => {
   const server = createServer((_request, response) => {
     response.setHeader("content-type", "text/html; charset=utf-8");
     response.end('<!doctype html><title>Capture attachment fixture</title><style>body{margin:0;background:#00a65a;font:24px sans-serif;height:2600px}h1{margin:0;padding:20px;height:80px;box-sizing:border-box;overflow:hidden;white-space:nowrap;background:#3355aa;color:white}</style><h1>Capture attachment fixture</h1>');

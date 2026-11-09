@@ -129,7 +129,8 @@ describe("browser capture", () => {
     let frameId = 0;
     let notifyStarted!: () => void;
     const started = new Promise<void>(resolve => { notifyStarted = resolve; });
-    const original = send.getMockImplementation()!;
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
     send.mockImplementation(async (method, params) => {
       if (method !== "Runtime.callFunctionOn") return original(method, params);
       const painted = runInNewContext(`(${params?.functionDeclaration})()`, {
@@ -150,9 +151,13 @@ describe("browser capture", () => {
     await started;
     if (state === "painted") {
       expect(readback).not.toHaveBeenCalled();
-      frames.get(1)!();
+      const firstFrame = frames.get(1);
+      if (!firstFrame) throw new Error("Capture fixture did not request its first paint frame");
+      firstFrame();
       expect(readback).not.toHaveBeenCalled();
-      frames.get(2)!();
+      const secondFrame = frames.get(2);
+      if (!secondFrame) throw new Error("Capture fixture did not request its second paint frame");
+      secondFrame();
     } else if (state === "hidden-during-paint") {
       visibility = "hidden";
       for (const listener of listeners) listener();
@@ -165,7 +170,8 @@ describe("browser capture", () => {
   it("cancels paint admission before native readback", async () => {
     const { cdp, send } = fixture();
     const abort = new AbortController();
-    const original = send.getMockImplementation()!;
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
     send.mockImplementation(async (method, params) => {
       if (method !== "Runtime.callFunctionOn") return original(method, params);
       abort.abort();
@@ -177,7 +183,8 @@ describe("browser capture", () => {
   });
   it("bounds paint admission when visible frames stop", async () => {
     const { cdp, send, signal } = fixture();
-    const original = send.getMockImplementation()!;
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
     send.mockImplementation(async (method, params) => method === "Runtime.callFunctionOn" ? new Promise(() => {}) : original(method, params));
     const readback = vi.fn();
     await expect(captureBrowserPage(cdp, signal, {}, 1, 20, readback)).rejects.toMatchObject({ code: "screenshot-timeout" });

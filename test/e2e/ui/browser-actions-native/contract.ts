@@ -36,5 +36,7 @@ export interface NativeBrowserFixture {
   readonly ready: boolean;
   run(action: NativeAction): Promise<NativeActionResult>;
   read(): Promise<NativeActionResult>;
+  reset(): Promise<void>;
+  assertClean(): Promise<void>;
   close(): Promise<void>;
 }

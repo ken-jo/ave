@@ -1,3 +1,4 @@
+import { assertNativeBrowserState, clearNativeBrowserStorage } from "../native-browser-state.js";
 import { app, BrowserWindow, ipcMain, nativeImage, type WebContents } from "electron";
 import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 import { createServer } from "node:http";
@@ -8,12 +9,15 @@ import { browserCapturePixelRatio } from "../../../../src/main/browser/browser-c
 import { browserTabRegistry } from "../../../../src/main/browser/browser-tab-registry.js";
 import { trackBrowserGuest } from "../../../../src/main/browser/browser-guest-tracking.js";
 import { browserOrigin } from "../../../../src/shared/browser-tools.js";
+import { AVE_SIDE_BROWSER_PARTITION } from "../../../../src/shared/side-browser.js";
 import type { BrowserScreenshotOptions } from "../../../../src/shared/browser-capture.js";
 import type { BrowserTabBindRequest } from "../../../../src/shared/browser-surface.js";
 import type { BrowserActionTab } from "../../../../src/tools/browser-tools.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./contract.js";
 
 configureE2eWindowPolicy();
+// Window replacement between tests keeps this worker-owned process alive.
+app.on("window-all-closed", () => {});
 
 function requiredPath(name: string): string {
   const path = process.env[name];
@@ -105,20 +109,28 @@ async function capture(options: BrowserScreenshotOptions, zoom = 1): Promise<Cap
   } finally { browserTabRegistry.releaseControl(tabId, lease.id); }
 }
 
-void app.whenReady().then(async () => {
-  app.setPath("userData", join(runtime, "profile"));
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Capture fixture server is unavailable");
-  const origin = `http://127.0.0.1:${address.port}`;
+let origin = "";
+
+async function reset(): Promise<void> {
+  if (guest && !guest.isDestroyed()) guest.setZoomFactor(1);
+  for (const window of BrowserWindow.getAllWindows()) {
+    browserTabRegistry.releaseWindow(window.id);
+    window.destroy();
+  }
+  await clearNativeBrowserStorage(AVE_SIDE_BROWSER_PARTITION);
+  ipcMain.removeHandler("capture-fixture-bind");
+  tabId = "";
+  requestId = "";
   win = new BrowserWindow({ width: 1180, height: 860, show: false,
     webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(assets, "preload.cjs") } });
   win.showInactive();
+  const windowId = win.id;
+  win.once("closed", () => browserTabRegistry.releaseWindow(windowId));
   win.webContents.on("console-message", (event) => { process.stderr.write(`[capture-host] ${event.message}\n`); });
   win.webContents.on("will-attach-webview", (_event, preferences) => {
     preferences.contextIsolation = true; preferences.sandbox = true; preferences.nodeIntegration = false; delete preferences.preload;
   });
-  win.webContents.on("did-attach-webview", (_event, contents) => { guest = contents; trackBrowserGuest(guest, win.id); });
+  win.webContents.on("did-attach-webview", (_event, contents) => { guest = contents; guest.setZoomFactor(1); trackBrowserGuest(guest, win.id); });
   ipcMain.handle("capture-fixture-bind", (event, request: BrowserTabBindRequest) => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Capture fixture sender is unauthorized");
     return browserTabRegistry.bindTab(win.id, request);
@@ -142,7 +154,18 @@ void app.whenReady().then(async () => {
   const bootstrap = browserTabRegistry.acquireControl(record(), actor);
   try { await actions.navigate({ tab: record(), signal: record().actions.signal, leaseId: bootstrap.id }, `${origin}/page`, origin); }
   finally { browserTabRegistry.releaseControl(tabId, bootstrap.id); }
-  const fixture: CaptureNativeFixture = { ready: true, capture, close: async () => {
+  guest.setZoomFactor(1);
+  win.webContents.setZoomFactor(1);
+}
+
+void app.whenReady().then(async () => {
+  app.setPath("userData", join(runtime, "profile"));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Capture fixture server is unavailable");
+  origin = `http://127.0.0.1:${address.port}`;
+  await reset();
+  const fixture: CaptureNativeFixture = { ready: true, capture, reset, assertClean: async () => assertNativeBrowserState(win, guest, rendererTabId), close: async () => {
     guest.stop(); win.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   } };

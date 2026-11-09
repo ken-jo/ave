@@ -1,3 +1,4 @@
+import { assertNativeBrowserState, clearNativeBrowserStorage } from "../native-browser-state.js";
 import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 import { app, BrowserWindow, nativeImage, type WebContents, type WebPreferences } from "electron";
 import { createServer } from "node:http";
@@ -53,6 +54,8 @@ export interface WorkspaceNativeFixture {
   find(forward: boolean, findNext: boolean): Promise<{ matches: number; activeMatchOrdinal: number }>;
   preview(): Promise<{ preview: BrowserPreview; bytes: number; decodedWidth: number; decodedHeight: number; focusPreserved: boolean }>;
   hiddenPreviewRace(): Promise<{ secondError: string; firstError: string; hiddenError: string; hidden: boolean }>;
+  reset(): Promise<void>;
+  assertClean(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -150,21 +153,30 @@ async function hiddenPreviewRace() {
 
 const foreground = process.env.AVE_NATIVE_FIXTURE_MODE === "foreground";
 configureE2eWindowPolicy();
+// Window replacement between tests keeps this worker-owned process alive.
+app.on("window-all-closed", () => {});
 
-void app.whenReady().then(async () => {
-  await fs.mkdir(runtime, { recursive: true });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Workspace fixture server did not start");
-  const origin = `http://127.0.0.1:${address.port}`;
-  installSideBrowserPartitionPolicy();
+let origin = "";
+
+async function reset(): Promise<void> {
+  if (guest && !guest.isDestroyed()) guest.setZoomFactor(1);
+  disposeBrowserWorkspaceService();
+  for (const window of BrowserWindow.getAllWindows()) {
+    browserTabRegistry.releaseWindow(window.id);
+    if (!window.isDestroyed()) window.destroy();
+  }
+  await clearNativeBrowserStorage(AVE_SIDE_BROWSER_PARTITION);
+  nativeEvents.length = 0;
+  requestId = "";
+  mainHandle = "";
   owner = new BrowserWindow({ width: 940, height: 740, x: 40, y: 40, show: false,
     webPreferences: { webviewTag: true, contextIsolation: true, sandbox: true, nodeIntegration: false } });
   if (foreground) owner.show();
   else owner.showInactive();
   registerMainWindow(owner, "primary");
   const windowId = owner.id;
-  owner.once("closed", () => { browserTabRegistry.releaseWindow(windowId); unregisterMainWindow(owner); });
+  const registeredOwner = owner;
+  owner.once("closed", () => { browserTabRegistry.releaseWindow(windowId); unregisterMainWindow(registeredOwner); });
   owner.webContents.on("will-attach-webview", (event, preferences, params) => {
     if (configureSideBrowserWebviewAttach({ event, webPreferences: preferences as unknown as Record<string, unknown>, params }) !== "accepted") event.preventDefault();
   });
@@ -172,6 +184,7 @@ void app.whenReady().then(async () => {
   const attached = new Promise<void>((resolve) => { finishAttach = resolve; });
   owner.webContents.once("did-attach-webview", (_event, contents) => {
     guest = contents;
+    guest.setZoomFactor(1);
     guest.prependListener("did-create-window", (child: BrowserWindow) => {
       const childWindowId = child.id;
       const childGuestId = child.webContents.id;
@@ -203,9 +216,21 @@ void app.whenReady().then(async () => {
   mainHandle = outcome.tabId;
   await guest.loadURL(`${origin}/page`);
   browserTabRegistry.setActiveSurface(owner.id, { kind: "browser", tabId: rendererTabId });
+  guest.setZoomFactor(1);
+  owner.webContents.setZoomFactor(1);
   if (foreground) { app.focus({ steal: true }); owner.focus(); }
+}
+
+void app.whenReady().then(async () => {
+  await fs.mkdir(runtime, { recursive: true });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Workspace fixture server did not start");
+  origin = `http://127.0.0.1:${address.port}`;
+  installSideBrowserPartitionPolicy();
+  await reset();
   const fixture: WorkspaceNativeFixture = {
-    ready: true, read, find, preview, hiddenPreviewRace,
+    ready: true, read, find, preview, hiddenPreviewRace, reset, assertClean: async () => assertNativeBrowserState(owner, guest, rendererTabId),
     openPopup: () => guest.executeJavaScript('document.getElementById("popup").click()', true),
     closePopup: () => {
       if (owner.isDestroyed() || !getMainWindows().includes(owner)) throw new Error("Popup owner is not a registered main window");

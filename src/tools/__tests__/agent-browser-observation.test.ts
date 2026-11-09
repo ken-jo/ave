@@ -69,10 +69,12 @@ describe("agent browser command admission", () => {
   });
   it.each(["pause", "lease", "abort"] as const)("refuses an effect when %s changes while observation begins", async (change) => {
     const controller = new AbortController();
+    const initialLease = tab.lease;
+    if (!initialLease) throw new Error("Expected an active browser control lease.");
     sink.begin = vi.fn(async () => {
       await Promise.resolve();
       if (change === "pause") tab.controlMode = "human-paused";
-      if (change === "lease") tab.lease = { ...tab.lease!, id: "replacement" };
+      if (change === "lease") tab.lease = { ...initialLease, id: "replacement" };
       if (change === "abort") controller.abort();
       return { complete, dispose, target };
     });
