@@ -1,3 +1,5 @@
+import type { NotificationClickPayload } from "../../../../shared/notification-types.js";
+
 export type StatusBarSeverity = "info" | "success" | "warning" | "error";
 
 /**
@@ -7,15 +9,7 @@ export type StatusBarSeverity = "info" | "success" | "warning" | "error";
  * field lets the StatusBar render a click handler for notification toasts
  * only without coupling the component to every producer.
  */
-export interface NotificationToastMeta {
-  kind: "turn-end" | "routine" | "ask-user" | "approval" | "plugin" | "alert" | "system";
-  contextRef?: {
-    sessionId?: string;
-    routineId?: string;
-    questionId?: string;
-    approvalId?: string;
-  };
-}
+export type NotificationToastMeta = NotificationClickPayload;
 
 export interface PersistentItem {
   id: string;
@@ -47,6 +41,8 @@ export interface PersistentItem {
 
 export interface ToastItem {
   id: string;
+  /** A new delivery can announce identical text again without remounting the live region. */
+  announcementId?: number;
   severity: StatusBarSeverity;
   message: string;
   /** Duration this toast should stay visible after it reaches the queue head. */

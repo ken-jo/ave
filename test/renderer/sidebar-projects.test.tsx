@@ -3,9 +3,9 @@
  * project home. */
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
-import { waitForToast } from "./helpers.js";
+import { openWindowNotice } from "./helpers.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
 import { clearActiveSurface } from "../../src/ui/renderer/preview/active-surface.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
@@ -171,8 +171,8 @@ describe("sidebar projects", () => {
     const add = await waitFor(() => { const el = byTestId("project-menu-add"); expect(el).not.toBeNull(); return el!; });
     await act(async () => { fireEvent.click(add); });
     await waitFor(() => expect(byTestId("sidebar-project-header")?.textContent).toContain("notes"));
-    await waitForToast(container, "notes 프로젝트를 추가하고 전환했습니다.");
-    await act(async () => { fireEvent.click(container.querySelector('[data-testid="status-toast-action"]')!); });
+    const notice = await openWindowNotice(container, "notes 프로젝트를 추가하고 전환했습니다.");
+    await act(async () => { fireEvent.click(within(notice).getByRole("button", { name: "이전 프로젝트로" })); });
     await waitFor(() => expect(byTestId("sidebar-project-header")?.textContent).toContain("shop"));
   });
 
@@ -281,7 +281,7 @@ describe("sidebar projects", () => {
     await waitFor(() => expect(byTestId("sidebar-project-header")?.textContent).toContain("notes"));
 
     expect(() => act(() => { chooseDynamicMenuItem("move:/ws/shop"); })).toThrow("project-unknown");
-    await waitForToast(container, "그 프로젝트가 더 이상 열려 있지 않아 터미널 또는 페이지를 옮기지 않았습니다.");
+    await openWindowNotice(container, "그 프로젝트가 더 이상 열려 있지 않아 터미널 또는 페이지를 옮기지 않았습니다.");
     // Still the default project's terminal.
     await act(async () => { fireEvent.click(byTestId("sidebar-project-button")!); });
     await act(async () => { fireEvent.click(await waitFor(() => { const el = byTestId("project-menu-project-ws"); expect(el).not.toBeNull(); return el!; })); });
@@ -313,16 +313,16 @@ describe("sidebar projects", () => {
       expect(byTestId("remove-project-dialog")).toBeNull();
       expect(workspaceApi().previewRemoveRoot).toHaveBeenCalledWith("/ws/shop");
       expect(workspaceApi().removeRoot).toHaveBeenCalledWith("/ws/shop");
-      await waitForToast(rendered.container, "shop 프로젝트를 제거했습니다.");
+      const notice = await openWindowNotice(rendered.container, "shop 프로젝트를 제거했습니다.");
       // Nothing the window remembers still points at the folder.
       await waitFor(() => expect(rendered.api.updateSettings).toHaveBeenCalledWith({
         system: expect.objectContaining({ recentProjectRoots: ["/ws"], expandedProjectRoots: ["/ws"] }),
       }));
 
-      await act(async () => { fireEvent.click(rendered.container.querySelector('[data-testid="status-toast-action"]')!); });
-      expect(workspaceApi().pickRoot).toHaveBeenCalledWith({ ackToken: "undo:/ws/shop" });
+      await act(async () => { fireEvent.click(within(notice).getByRole("button", { name: "되돌리기" })); });
+      await waitFor(() => expect(workspaceApi().pickRoot).toHaveBeenCalledWith({ ackToken: "undo:/ws/shop" }));
       await waitFor(() => expect(byTestId("sidebar-project-ws-shop")).not.toBeNull());
-      await waitForToast(rendered.container, "shop 프로젝트를 다시 추가했습니다.");
+      await openWindowNotice(rendered.container, "shop 프로젝트를 다시 추가했습니다.");
     });
 
     it("asks first when something would be lost, with 취소 focused, and keeps the project on 취소", async () => {
@@ -389,7 +389,7 @@ describe("sidebar projects", () => {
       const rendered = await renderForRemoval();
       workspaceApi().previewRemoveRoot.mockResolvedValueOnce({ ok: false, error: "preview-failed" });
       await chooseRemove(rendered);
-      await waitForToast(rendered.container, "이 프로젝트를 제거하면 무엇이 사라지는지 확인하지 못해 제거하지 않았습니다.");
+      await openWindowNotice(rendered.container, "이 프로젝트를 제거하면 무엇이 사라지는지 확인하지 못해 제거하지 않았습니다.");
       expect(workspaceApi().removeRoot).not.toHaveBeenCalled();
       expect(byTestId("sidebar-project-ws-shop")).not.toBeNull();
     });
@@ -397,10 +397,10 @@ describe("sidebar projects", () => {
     it("says it is too late when 되돌리기 comes after the token expired", async () => {
       const rendered = await renderForRemoval();
       await chooseRemove(rendered);
-      await waitForToast(rendered.container, "shop 프로젝트를 제거했습니다.");
+      const notice = await openWindowNotice(rendered.container, "shop 프로젝트를 제거했습니다.");
       workspaceApi().pickRoot.mockResolvedValueOnce({ ok: false, error: "ack-expired" });
-      await act(async () => { fireEvent.click(rendered.container.querySelector('[data-testid="status-toast-action"]')!); });
-      await waitForToast(rendered.container, "되돌릴 수 있는 시간이 지났습니다.");
+      await act(async () => { fireEvent.click(within(notice).getByRole("button", { name: "되돌리기" })); });
+      await openWindowNotice(rendered.container, "되돌릴 수 있는 시간이 지났습니다.");
       expect(byTestId("sidebar-project-ws-shop")).toBeNull();
     });
   });
@@ -424,7 +424,7 @@ describe("sidebar projects", () => {
     await waitFor(() => expect(byTestId("sidebar-project-header")?.textContent).toContain("notes"));
     const darwin = isDarwin();
     await act(async () => { fireEvent.keyDown(window, { key: "t", shiftKey: true, metaKey: darwin, ctrlKey: !darwin }); });
-    await waitForToast(container, "프로젝트 목록을 아직 불러오지 못해 이 터미널 또는 페이지를 열지 않았습니다.");
+    await openWindowNotice(container, "프로젝트 목록을 아직 불러오지 못해 이 터미널 또는 페이지를 열지 않았습니다.");
     expect(shownSurfaces(container)).toEqual([]);
   });
 

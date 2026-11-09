@@ -16,7 +16,7 @@ import {
 import { extractPluginAuthErrorCode } from "../utils/plugin-auth-error.js";
 import type { usePluginMarketplace } from "./use-plugin-marketplace.js";
 import type { usePluginAuthStatuses } from "./use-plugin-auth-status.js";
-import type { useStatusBar } from "./use-status-bar.js";
+import type { useWindowNotices } from "./use-window-notices.js";
 import type { TranslateFn } from "../../../i18n/translate.js";
 
 type Api = ReturnType<typeof getApi>;
@@ -26,7 +26,7 @@ type PluginCards = PluginMarketplace["pluginCards"];
 type PluginView = PluginViews[number];
 type PluginAuthStatuses = ReturnType<typeof usePluginAuthStatuses>["statuses"];
 type RefreshPluginAuthStatus = ReturnType<typeof usePluginAuthStatuses>["refresh"];
-type PushToast = ReturnType<typeof useStatusBar>["pushToast"];
+type PushToast = ReturnType<typeof useWindowNotices>["pushToast"];
 
 export interface UsePluginViewRoutingDeps {
   api: Api;
@@ -206,7 +206,7 @@ export function usePluginViewRouting({
               next.set(pluginId, message);
               return next;
             });
-            statusPushToast({ severity: "error", message, ttlMs: 10000 });
+            statusPushToast({ severity: "error", message });
           } finally {
             pluginAuthLoginInflightRef.current.delete(inflightKey);
           }

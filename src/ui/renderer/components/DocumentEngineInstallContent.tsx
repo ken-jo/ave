@@ -1,3 +1,4 @@
+import { useBannerNotice } from "../context/NotificationHistoryContext.js";
 import { Loader } from "../../../components/ui/loader.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Trash2, X } from "lucide-react";
@@ -108,6 +109,22 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
   // Runtime admission of an installed engine is not an install operation and cannot be cancelled.
   const cancellable = working && state?.phase !== "verifying-installation";
 
+  const historyActions = statusReadFailed
+    ? [{ label: t("documentEngine.checkAgain"), disabled: acting, run: () => { void refresh(); } }]
+    : cancellable
+      ? [{ label: t("documentEngine.cancel"), disabled: acting || state?.phase === "cancelling", run: () => { void handleAction("cancel"); } }]
+      : working ? []
+        : ready ? [{ label: t("documentEngine.uninstall"), disabled: acting, run: () => { void handleAction("uninstall"); } }]
+          : [{ label: t(error ? "documentEngine.retry" : "documentEngine.install"), disabled: acting || (!state && !error) || !supported, run: () => { void handleAction("install"); } }];
+  if (!statusReadFailed && !working && !ready && (error === "integrity-failed" || error === "signature-failed")) {
+    historyActions.push({ label: t("documentEngine.uninstall"), disabled: acting, run: () => { void handleAction("uninstall"); } });
+  }
+  const announcedByHistory = useBannerNotice("banner:document-engine", onDismiss ? {
+    severity: error && error !== "cancelled" ? "error" : "info",
+    message: [t("documentEngine.title"), t("documentEngine.description"), error ? t(installationErrorKey(error)) : null].filter(Boolean).join(" "),
+    actions: historyActions,
+  } : null);
+
   return <section className="space-y-3 rounded-lg border border-border bg-background p-4" data-testid="document-engine-install">
     <div className="flex items-start gap-3">
       <Download aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -139,7 +156,7 @@ export function DocumentEngineInstallContent({ onDismiss, api = getApi().documen
         value={state.downloadedBytes} aria-label={t("documentEngine.downloading")} />}
     </div>}
     {ready && <p role="status" className="text-xs text-muted-foreground">{t("documentEngine.ready")}</p>}
-    {error && <p role={error === "cancelled" ? "status" : "alert"} className="text-xs text-destructive">{t(installationErrorKey(error))}</p>}
+    {error && <p role={announcedByHistory ? undefined : error === "cancelled" ? "status" : "alert"} className="text-xs text-destructive">{t(installationErrorKey(error))}</p>}
     {statusReadFailed && error === "integrity-failed" ? <p className="text-xs text-muted-foreground">{t("documentEngine.repairRequired")}</p> : null}
     {!supported && !error && <p role="status" className="text-xs text-muted-foreground">{t("documentEngine.unsupported")}</p>}
     <div className="flex flex-wrap gap-2">

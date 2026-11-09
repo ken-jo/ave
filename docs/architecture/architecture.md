@@ -913,8 +913,10 @@ Important rules:
   tool call does not end the turn: the loop re-prompts it a bounded number of
   times before returning, because that reasoning states the action the model
   meant to take next.
-- Foreground turn-end notices stay out of the composer notification area; system
-  notifications are reserved for background or non-focused app state.
+- Window notices, including foreground turn-end records, enter the bell's session
+  history rather than the composer notification area. OS delivery keeps its focus,
+  settings and cooldown gates and also records the event in the bell. Approval
+  and ask-user requests stay on their cards and never enter the in-app history.
 - The main window uses one responsive layout. A wide canvas may show up to
   four conversations; a narrow canvas draws the focused tile while preserving
   the tree, hidden conversations, and the saved maximized choice. Each tile is

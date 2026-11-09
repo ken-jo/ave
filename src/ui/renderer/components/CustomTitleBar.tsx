@@ -1,5 +1,5 @@
 /** Empty title-bar space remains draggable; interactive controls opt out. Native controls stay on their platform side. */
-import { useCallback, useEffect, useState, type ReactNode, type MouseEvent } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -68,8 +68,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   const handleMinimize = useCallback(() => { void getWindowBridge().minimize(); }, []);
   const handleMaximize = useCallback(() => { void getWindowBridge().toggleMaximize(); }, []);
   const handleClose = useCallback(() => { void getWindowBridge().close(); }, []);
-  const handleDoubleClick = useCallback((event: MouseEvent<HTMLDivElement>) => {
-    if (event.target instanceof Element && event.target.closest('[data-testid="status-toast"]')) return;
+  const handleDoubleClick = useCallback(() => {
     void getWindowBridge().toggleMaximize();
   }, []);
 
