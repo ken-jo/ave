@@ -23,26 +23,49 @@ import {
 } from "./browser-snapshot.js";
 
 const attached = new WeakMap<WebContents, Promise<CdpSession>>();
+const sessionGenerations = new WeakMap<WebContents, object>();
 
-// The guest's CDP session, attached on first use and kept for the guest's life.
+// Cache only the current debugger connection; a detached connection cannot own later page input.
 async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
   throwIfAborted(signal);
   const existing = attached.get(guest);
   if (existing) return existing;
-  const pending = attachCdp(guest, signal, onTrackingStarted);
+  const generation = {};
+  sessionGenerations.set(guest, generation);
+  const debuggerApi = guest.debugger;
+  const invalidate = (): void => {
+    if (sessionGenerations.get(guest) === generation) {
+      sessionGenerations.delete(guest);
+      attached.delete(guest);
+      releasePageSession(guest);
+    }
+    debuggerApi.removeListener("detach", invalidate);
+    guest.removeListener("destroyed", invalidate);
+  };
+  const assertCurrent = (): void => {
+    if (sessionGenerations.get(guest) !== generation || guest.isDestroyed()) {
+      throw new BrowserActionError("debugger-unavailable", "the page debugger session ended; try again");
+    }
+  };
+  debuggerApi.once("detach", invalidate);
+  guest.once("destroyed", invalidate);
+  const pending = Promise.resolve().then(() => {
+    assertCurrent();
+    return attachCdp(guest, signal, onTrackingStarted, assertCurrent);
+  });
   attached.set(guest, pending);
   try {
     const session = await pending;
+    assertCurrent();
     ownPageSession(guest);
     return session;
   } catch (err) {
-    attached.delete(guest);
-    releasePageSession(guest);
+    invalidate();
     throw err;
   }
 }
 
-async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
+async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void, assertCurrent: () => void): Promise<CdpSession> {
   try {
     if (!guest.debugger.isAttached()) guest.debugger.attach("1.3");
   } catch (err) {
@@ -52,7 +75,10 @@ async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStar
     );
   }
   const session: CdpSession = {
-    send: (method, params) => guest.debugger.sendCommand(method, params ?? {}) as Promise<unknown>,
+    send: (method, params) => {
+      assertCurrent();
+      return guest.debugger.sendCommand(method, params ?? {}) as Promise<unknown>;
+    },
     onEvent: (listener) => {
       const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => listener(method, params);
       guest.debugger.on("message", onMessage);
@@ -65,6 +91,7 @@ async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStar
   throwIfAborted(signal);
   await session.send("Page.enable");
   throwIfAborted(signal);
+  assertCurrent();
   // Establish this epoch before approval seals its document identity.
   onTrackingStarted();
   return session;

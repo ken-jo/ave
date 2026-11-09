@@ -25,6 +25,7 @@ import {
   watchActionNavigation,
 } from "../browser-actions.js";
 import { ownsPageSession, withGuardedAction } from "../browser-action-guard.js";
+import { startBrowserPreview } from "../../browser-observation-preview.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
 import { type as typeInto } from "../browser-actions.js";
 import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.js";
@@ -1102,7 +1103,7 @@ function adapterFixture(options: {
   const guestEvents = new EventEmitter();
   const debuggerEvents = Object.assign(new EventEmitter(), {
     attach: () => { attached = true; },
-    detach: vi.fn(() => { attached = false; }),
+    detach: vi.fn(() => { attached = false; debuggerEvents.emit("detach", {}, "target closed"); }),
     isAttached: () => attached,
     sendCommand: async (method: string, params?: Record<string, unknown>) => {
       const result = await cdp.send(method, params);
@@ -1169,6 +1170,74 @@ function adapterFixture(options: {
     cdp.events.emit("message", "Page.frameNavigated", { frame: cdp.frameTree.frame });
   } };
 }
+
+describe("page session connection lifetime", () => {
+  function prepare(value: ReturnType<typeof adapterFixture>) {
+    return value.actions.prepare({ tab: value.tab, signal: new AbortController().signal } as Parameters<typeof value.actions.prepare>[0]);
+  }
+
+  it("revokes preview ownership synchronously after detach and a foreign reconnect", async () => {
+    const value = adapterFixture();
+    await prepare(value);
+    expect(ownsPageSession(value.guest)).toBe(true);
+    value.guest.debugger.detach();
+    value.guest.debugger.attach();
+    expect(ownsPageSession(value.guest)).toBe(false);
+    expect(() => startBrowserPreview(value.guest as never, { frame: vi.fn(), updating: vi.fn(), ended: vi.fn(), isBlank: () => false }))
+      .toThrow("agent's page session");
+    expect(value.cdp.calls.some(({ method }) => method === "Page.startScreencast")).toBe(false);
+    value.cdp.calls.length = 0;
+    await prepare(value);
+    expect(value.cdp.calls.map(({ method }) => method)).toEqual(["DOM.enable", "Accessibility.enable", "Page.enable"]);
+    expect(ownsPageSession(value.guest)).toBe(true);
+  });
+
+  it("clears ownership and the cached connection on guest destruction", async () => {
+    const value = adapterFixture();
+    await prepare(value);
+    const debuggerApi = value.guest.debugger;
+    Object.defineProperty(value.guest, "debugger", { get: () => { throw new Error("The guest was destroyed"); } });
+    expect(() => value.guest.emit("destroyed")).not.toThrow();
+    expect(ownsPageSession(value.guest)).toBe(false);
+    expect(debuggerApi.listenerCount("detach")).toBe(0);
+    Object.defineProperty(value.guest, "debugger", { value: debuggerApi });
+    expect(() => startBrowserPreview(value.guest as never, { frame: vi.fn(), updating: vi.fn(), ended: vi.fn(), isBlank: () => false }))
+      .toThrow("agent's page session");
+    expect(value.cdp.calls.some(({ method }) => method === "Page.startScreencast")).toBe(false);
+  });
+
+  it.each(["detach", "destroyed"])("cannot restore ownership when %s invalidates a pending attachment", async (event) => {
+    const value = adapterFixture();
+    const enabled = deferred<unknown>();
+    const send = value.guest.debugger.sendCommand.bind(value.guest.debugger);
+    vi.spyOn(value.guest.debugger, "sendCommand").mockImplementation((method, params) => method === "Page.enable" ? enabled.promise : send(method, params));
+    const pending = prepare(value);
+    await vi.waitFor(() => expect(value.cdp.calls.map(({ method }) => method)).toContain("Accessibility.enable"));
+    if (event === "detach") {
+      value.guest.debugger.detach();
+      value.guest.debugger.attach();
+    } else value.guest.emit("destroyed");
+    enabled.resolve({});
+    await expect(pending).rejects.toMatchObject({ code: "debugger-unavailable" });
+    expect(ownsPageSession(value.guest)).toBe(false);
+  });
+
+  it("keeps a replacement connection owned when the old attachment completes", async () => {
+    const value = adapterFixture();
+    const enabled = deferred<unknown>();
+    const send = value.guest.debugger.sendCommand.bind(value.guest.debugger);
+    vi.spyOn(value.guest.debugger, "sendCommand").mockImplementationOnce(() => enabled.promise);
+    const old = prepare(value);
+    await Promise.resolve();
+    value.guest.debugger.detach();
+    value.guest.debugger.attach();
+    value.guest.debugger.sendCommand = send;
+    await prepare(value);
+    enabled.resolve({});
+    await expect(old).rejects.toMatchObject({ code: "debugger-unavailable" });
+    expect(ownsPageSession(value.guest)).toBe(true);
+  });
+});
 
 it("executes the first cold action with an unchanged page after one approval binding", async () => {
   const { cdp, tab, actions, approve } = adapterFixture();
