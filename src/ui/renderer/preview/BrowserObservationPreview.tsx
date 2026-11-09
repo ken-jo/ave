@@ -21,12 +21,14 @@ function useElementShown(element: Element | null, probe: (element: Element) => b
     const timer = setInterval(check, VISIBILITY_POLL_MS);
     const view = element.ownerDocument.defaultView;
     element.ownerDocument.addEventListener("visibilitychange", check);
+    element.ownerDocument.addEventListener("scroll", check, true);
     view?.addEventListener("resize", check);
     const intersection = typeof IntersectionObserver === "function" ? new IntersectionObserver(check) : undefined;
     intersection?.observe(element);
     return () => {
       clearInterval(timer);
       element.ownerDocument.removeEventListener("visibilitychange", check);
+      element.ownerDocument.removeEventListener("scroll", check, true);
       view?.removeEventListener("resize", check);
       intersection?.disconnect();
     };

@@ -208,3 +208,63 @@ it("matches the floating picture and its badge bounds to the actual captured asp
   expect(screen.getByRole("img").parentElement).toBe(picture);
   expect(screen.getByText("실시간").parentElement).toBe(picture);
 });
+
+it.each(["overflow: hidden", "overflow-y: auto", "overflow-y: scroll", "overflow-y: clip"])(
+  "rejects a picture wholly clipped by an ancestor with %s while still inside the window", (style) => {
+    const scrollport = document.createElement("div"); scrollport.style.cssText = style;
+    const picture = document.createElement("div"); scrollport.append(picture); document.body.append(scrollport);
+    scrollport.getBoundingClientRect = () => new DOMRect(20, 250, 240, 300);
+    picture.getBoundingClientRect = () => new DOMRect(20, 100, 240, 140);
+    expect(isElementShown(picture)).toBe(false);
+    picture.getBoundingClientRect = () => new DOMRect(20, 240, 240, 140);
+    expect(isElementShown(picture)).toBe(true);
+    scrollport.remove();
+  },
+);
+
+it("lets a dragged fixed card escape its old stack's scroll clipping", () => {
+  const stack = document.createElement("div"); stack.style.cssText = "position: fixed; overflow: auto";
+  const card = document.createElement("div"); card.style.cssText = "position: fixed; overflow: hidden";
+  const picture = document.createElement("div"); card.append(picture); stack.append(card); document.body.append(stack);
+  stack.getBoundingClientRect = () => new DOMRect(700, 200, 240, 300);
+  card.getBoundingClientRect = picture.getBoundingClientRect = () => new DOMRect(20, 100, 240, 140);
+  expect(isElementShown(picture)).toBe(true);
+  stack.remove();
+});
+
+it("stops and drops the screencast and hidden painting when scrolling the picture wholly outside the stack", () => {
+  const scrollport = document.createElement("div"); scrollport.style.overflowY = "auto";
+  scrollport.getBoundingClientRect = () => new DOMRect(20, 250, 240, 300); document.body.append(scrollport);
+  const view = render(<BrowserObservationPreview tabId="browser:1" sessionId={SESSION} observeHidden />, { container: scrollport });
+  act(() => emitEvents([action(1)]));
+  const picture = screen.getByTestId("browser-observation-preview");
+  let y = 300;
+  picture.getBoundingClientRect = () => new DOMRect(20, y, 240, 140);
+  fireEvent.scroll(scrollport);
+  expect(actions()).toEqual(["start"]);
+  act(() => emitPreview(frame(1)));
+  expect(isHiddenWebSurfaceObserved("browser:1")).toBe(true);
+  y = 100;
+  fireEvent.scroll(scrollport);
+  expect(actions()).toEqual(["start", "stop"]);
+  expect(screen.queryByRole("img")).toBeNull();
+  expect(isHiddenWebSurfaceObserved("browser:1")).toBe(false);
+  y = 300;
+  fireEvent.scroll(scrollport);
+  expect(actions()).toEqual(["start", "stop", "start"]);
+  view.unmount(); scrollport.remove();
+});
+
+it.each(["new-action", "scroll-restart"])("ignores an older failed capture start after a successful %s", async (scope) => {
+  const pending: Array<(result: { ok: boolean }) => void> = [];
+  const api = { requestObservationPreview: vi.fn((request: { action: string }) => request.action === "start"
+    ? new Promise<{ ok: boolean }>((resolve) => pending.push(resolve)) : Promise.resolve({ ok: true })), onObservationPreview: () => () => {} };
+  const store = new BrowserObservationPreviewStore(api as unknown as AvePreviewApi);
+  store.start(BINDING);
+  if (scope === "scroll-restart") store.stop(BINDING);
+  store.start(BINDING);
+  pending[1]?.({ ok: true }); await Promise.resolve();
+  pending[0]?.({ ok: false }); await Promise.resolve();
+  expect(store.get(BINDING)?.status).toBe("live");
+  store.dispose();
+});

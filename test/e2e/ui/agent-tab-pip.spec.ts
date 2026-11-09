@@ -12,6 +12,9 @@ for (const width of [1243, 360]) {
     let baseUrl = "";
     let releaseActivity: (() => void) | undefined;
     let firstHandle = "";
+    let fixtureRoot = "";
+    let releaseApproval: (() => void) | undefined;
+    let releaseThird: (() => void) | undefined;
     let releaseSecond: (() => void) | undefined;
     let finish: (() => void) | undefined;
     const failures: string[] = [];
@@ -47,7 +50,12 @@ for (const width of [1243, 360]) {
         releaseActivity = () => tool(response, 2, "browser_snapshot", { tabId: firstHandle });
         response.flushHeaders(); return;
       }
-      if (stage === 3) { releaseSecond = () => tool(response, 2); response.flushHeaders(); return; }
+      if (stage === 3) {
+        releaseApproval = () => tool(response, 3, "write_file", { path: `${fixtureRoot}/pip-approval.txt`, content: "Preview approval fixture.\n" });
+        response.flushHeaders(); return;
+      }
+      if (stage === 4) { releaseSecond = () => tool(response, 2); response.flushHeaders(); return; }
+      if (stage === 5) releaseThird = () => tool(response, 3);
       finish = () => { send(response, { role: "assistant", content: "Browser work complete." }, null); send(response, {}, "stop"); response.end("data: [DONE]\n\n"); };
       response.flushHeaders();
     });
@@ -63,6 +71,7 @@ for (const width of [1243, 360]) {
     let approvals: Promise<void> | undefined;
     try {
       ctx = await launchSeededElectron({ sessionTitle: "Agent tab previews", settings, historyRows: [] });
+      fixtureRoot = ctx.tempHome;
       await setWindowSize(ctx.app, width, 800);
       const page = ctx.page;
       await page.evaluate(async () => {
@@ -94,7 +103,21 @@ for (const width of [1243, 360]) {
       await expect(cards).toHaveCount(1);
       await expect(cards.first()).toBeVisible();
       await expect(cards.first()).toHaveAttribute("data-compact", String(width < 480));
-      if (width >= 480) await expect(cards.getByTestId("browser-observation-preview").locator("img")).toBeVisible({ timeout: 15_000 });
+      if (width >= 480) {
+        const image = cards.getByTestId("browser-observation-preview").locator("img");
+        await expect(image).toBeVisible({ timeout: 15_000 });
+        const picture = await image.evaluate((element) => {
+          const image = element as HTMLImageElement; const r = image.getBoundingClientRect();
+          return { x: r.x, y: r.y, width: r.width, height: r.height, ratio: image.naturalWidth / image.naturalHeight };
+        });
+        expect(picture.width).toBeGreaterThan(180);
+        expect(picture.width / picture.height).toBeCloseTo(picture.ratio, 2);
+        const badge = await cards.getByText(/^(Live|실시간)$/).boundingBox();
+        if (!badge) throw new Error("Live badge bounds missing");
+        expect(badge.x).toBeGreaterThanOrEqual(picture.x); expect(badge.y).toBeGreaterThanOrEqual(picture.y);
+        expect(badge.x + badge.width).toBeLessThanOrEqual(picture.x + picture.width);
+        expect(badge.y + badge.height).toBeLessThanOrEqual(picture.y + picture.height);
+      }
       else await expect(cards.getByTestId("browser-observation-preview")).toHaveCount(0);
       const firstId = await cards.first().getAttribute("data-tab-id");
       const guest = page.locator(`webview[data-tab-id="${firstId}"]`);
@@ -110,12 +133,14 @@ for (const width of [1243, 360]) {
       await cards.getByRole("button", { name: /^(Hide browser preview:|브라우저 미리보기 숨기기:)/ }).click();
       await expect(cards).toHaveCount(0);
       const takeSnapshot = releaseActivity; releaseActivity = undefined; takeSnapshot?.();
-      await expect.poll(() => releaseSecond !== undefined, { timeout: 30_000 }).toBe(true);
+      await expect.poll(() => releaseApproval !== undefined, { timeout: 30_000 }).toBe(true);
       expect(firstHandle).toMatch(/^tab-\d+$/);
       await expect(cards).toHaveCount(0);
-      await toggle.click(); await closePanel(); await expect(cards).toHaveCount(1);
+      await toggle.click();
+      await expect(page.locator(`[data-testid="web-surface-frame"][data-tab-id="${firstId}"]`)).toHaveCSS("opacity", "1");
+      await closePanel(); await expect(cards).toHaveCount(1);
       holdApproval = true;
-      const openSecond = releaseSecond; releaseSecond = undefined; openSecond?.();
+      const requestApproval = releaseApproval; releaseApproval = undefined; requestApproval?.();
       const approval = page.getByTestId(TEST_IDS.approvalDock);
       await expect(approval).toBeVisible();
       await expect(page.getByTestId(TEST_IDS.routeCanvas).getByTestId("agent-browser-pip-layer")).toHaveCount(1);
@@ -130,6 +155,8 @@ for (const width of [1243, 360]) {
       })).toBe(true);
       await page.screenshot({ path: test.info().outputPath(`agent-tab-pip-approval-${width}.png`) });
       holdApproval = false;
+      await expect.poll(() => releaseSecond !== undefined, { timeout: 30_000 }).toBe(true);
+      const openSecond = releaseSecond; releaseSecond = undefined; openSecond?.();
       await expect.poll(() => finish !== undefined, { timeout: 30_000 }).toBe(true);
       expect(failures).toEqual([]);
       await expect(cards).toHaveCount(2);
@@ -148,6 +175,26 @@ for (const width of [1243, 360]) {
       })).toBe(true);
       await page.screenshot({ path: test.info().outputPath(`agent-tab-pip-${width}.png`) });
       if (width >= 480) {
+        const addThird = releaseThird; releaseThird = undefined; finish = undefined; addThird?.();
+        await expect.poll(() => finish !== undefined).toBe(true);
+        await expect(cards).toHaveCount(3);
+        await setWindowSize(ctx.app, width, 640);
+        const layer = page.getByTestId("agent-browser-pip-layer");
+        const clippedCard = cards.nth(2);
+        const clippedPicture = clippedCard.getByTestId("browser-observation-preview");
+        await expect.poll(async () => {
+          const picture = await clippedPicture.boundingBox(); const port = await layer.boundingBox();
+          return picture !== null && port !== null && picture.y + picture.height <= port.y;
+        }).toBe(true);
+        await expect(clippedPicture.locator("img")).toHaveCount(0);
+        const clippedId = await clippedCard.getAttribute("data-tab-id");
+        const clippedGuest = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${clippedId}"]`);
+        await expect(clippedGuest).toHaveCSS("visibility", "hidden");
+        await layer.evaluate((element) => element.scrollTo({ top: -element.scrollHeight }));
+        await expect(clippedPicture.locator("img")).toBeVisible();
+        await expect(clippedGuest).toHaveCSS("opacity", "0");
+        await setWindowSize(ctx.app, width, 800);
+        await layer.evaluate((element) => element.scrollTo({ top: 0 }));
         const target = cards.first().getByRole("button", { name: /^(Open browser tab:|브라우저 탭 열기:)/ });
         const box = await target.boundingBox(); if (!box) throw new Error("Card bounds missing");
         await page.mouse.move(box.x + 20, box.y + 20); await page.mouse.down();
@@ -157,9 +204,14 @@ for (const width of [1243, 360]) {
         expect(moved?.x).toBeGreaterThanOrEqual(0); expect(moved?.y).toBeGreaterThanOrEqual(0);
         expect(moved?.x).toBeLessThan(box.x); expect(moved?.y).toBeLessThan(box.y);
       }
+    } catch (error) {
+      if (ctx) {
+        await ctx.page.screenshot({ path: test.info().outputPath("failure.png") }).catch(() => {});
+      }
+      throw error;
     } finally {
       approving = false;
-      releaseActivity?.(); releaseSecond?.(); finish?.();
+      releaseActivity?.(); releaseApproval?.(); releaseSecond?.(); finish?.();
       if (approvals) await approvals.catch(() => {});
       if (ctx) await teardownSeededElectron(ctx);
       server.closeAllConnections();
