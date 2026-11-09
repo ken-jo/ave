@@ -14,8 +14,11 @@ packaged executables are untouched; foreground fixtures use the original runtime
 Keyboard input goes through the page input channel; embedded guest pointer input
 must target the guest directly instead of relying on native host focus routing.
 
-Tests whose subject requires native OS focus carry `@os-focus`. Run them only
-on a disposable desktop or by explicit local opt-in:
+Tests whose subject requires native OS focus carry `@os-focus`. Their
+`os-focus` project exists only when `AVE_E2E_OS_FOCUS=1` is set, so any direct
+`playwright test --config config/playwright.config.ts` invocation without that
+flag, with or without `--project`, runs background tests only. Run them only on
+a disposable desktop or by explicit local opt-in (the script sets the flag):
 
 ```sh
 bun run test:ui-e2e:os-focus
