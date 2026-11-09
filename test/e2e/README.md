@@ -77,18 +77,12 @@ specs and `--repeat-each=2 --fully-parallel --workers=1 --shuffle 534`. Confirm
 the `shared-app-pid` annotations show reuse within each worker. Keep the project
 `background` and the output directory inside the checkout.
 
-On a shared host, set `NATIVE_E2E_LOCK` to the host-provided
-`native-e2e-lock.sh` path, then wrap **every** native e2e invocation, including
-background runs:
+Background mode is the default, and background runs may execute in parallel.
+Keep every `--output` directory inside the checkout.
 
-```sh
-"$NATIVE_E2E_LOCK" bun run test:ui-e2e
-"$NATIVE_E2E_LOCK" bun run test:ui-e2e:os-focus
-```
-
-Keep OS-focus runs serial. Their internal foreground fixture mode is selected
-by the tagged tests. It bypasses the background policy and presents its own
-windows; it does not use the app's background main-window presenter.
+Run `@os-focus` cases only with `AVE_E2E_OS_FOCUS=1`. Their tagged foreground
+fixtures present native windows. Rerun a focus-only failure alone before
+reporting it as a regression.
 
 The native select specs also run on an unlocked developer Mac. Selection uses
 the closed control's keyboard typeahead on macOS: arrow keys open a system-owned
