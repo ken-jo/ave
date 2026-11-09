@@ -52,6 +52,7 @@ for (const width of [1243, 360]) {
     (settings.llm as { vendors: Record<string, { baseUrl: string }> }).vendors["openai-compatible"].baseUrl = `${baseUrl}/v1`;
     let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
     let approving = true;
+    let holdApproval = false;
     let approvals: Promise<void> | undefined;
     try {
       ctx = await launchSeededElectron({ sessionTitle: "Agent tab previews", settings, historyRows: [] });
@@ -76,7 +77,7 @@ for (const width of [1243, 360]) {
           const site = page.getByTestId("browser-site-approval-card").getByRole("button", { name: /^(Allow this site|이 사이트만 허용)$/ }).first();
           if (await site.isVisible()) await site.click();
           const toolApproval = page.getByTestId(TEST_IDS.approvalDock).getByTestId(TEST_IDS.approveButton).first();
-          if (await toolApproval.isVisible()) await toolApproval.click();
+          if (!holdApproval && await toolApproval.isVisible()) await toolApproval.click();
           await page.waitForTimeout(100);
         }
       })();
@@ -102,7 +103,22 @@ for (const width of [1243, 360]) {
       await cards.getByRole("button", { name: /^(Hide browser preview:|브라우저 미리보기 숨기기:)/ }).click();
       await expect(cards).toHaveCount(0);
       await toggle.click(); await closePanel(); await expect(cards).toHaveCount(1);
+      holdApproval = true;
       const openSecond = releaseSecond; releaseSecond = undefined; openSecond?.();
+      const approval = page.getByTestId(TEST_IDS.approvalDock);
+      await expect(approval).toBeVisible();
+      await expect(page.getByTestId(TEST_IDS.routeCanvas).getByTestId("agent-browser-pip-layer")).toHaveCount(1);
+      await expect.poll(async () => {
+        const approvalBox = await approval.boundingBox();
+        const cardBoxes = await cards.evaluateAll((elements) => elements.map((element) => element.getBoundingClientRect().bottom));
+        return approvalBox !== null && cardBoxes.every((bottom) => bottom < approvalBox.y);
+      }).toBe(true);
+      expect(await approval.evaluate((element) => {
+        const r = element.getBoundingClientRect();
+        return element.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+      })).toBe(true);
+      await page.screenshot({ path: test.info().outputPath(`agent-tab-pip-approval-${width}.png`) });
+      holdApproval = false;
       await expect.poll(() => finish !== undefined, { timeout: 30_000 }).toBe(true);
       expect(failures).toEqual([]);
       await expect(cards).toHaveCount(2);

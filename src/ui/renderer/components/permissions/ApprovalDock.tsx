@@ -271,6 +271,7 @@ export function ApprovalDock({
   return (
     <section
       ref={rootRef}
+      data-pip-reservation
       className={`${chatSurface({ elevation: "floating" })} pointer-events-auto absolute z-40 mx-auto flex min-w-0 max-w-(--reading-column-max) flex-col overflow-hidden text-input-bar-foreground`}
       style={{
         left: "max(0.75rem, env(safe-area-inset-left, 0px))",

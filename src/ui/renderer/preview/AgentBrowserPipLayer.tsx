@@ -1,6 +1,5 @@
 import { Globe, X } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation } from "../../../i18n/react.js";
 import type { BrowserTabControlView } from "../../../shared/browser-surface.js";
 import type { AgentSpawnEvent } from "../../../shared/subagent-events.js";
@@ -32,7 +31,7 @@ function availableArea() {
   };
   // Input and pending decisions always keep their controls, even when a card was dragged there.
   for (const element of document.querySelectorAll<HTMLElement>(
-    `[data-testid="${TEST_IDS.composer}"], [data-web-surface-occluder="settle"] > *`,
+    `[data-testid="${TEST_IDS.composer}"], [data-pip-reservation], [data-web-surface-occluder="settle"] > *`,
   )) reserve(element);
   return { width: window.innerWidth, height: Math.max(0, bottom) };
 }
@@ -170,8 +169,8 @@ export function AgentBrowserPipLayer({ api, onOpen }: { api: AveApi; onOpen: (ta
     window.addEventListener("resize", check);
     return () => { off(); observer.disconnect(); window.clearInterval(timer); window.removeEventListener("resize", check); };
   }, []);
-  return createPortal(<div data-testid="agent-browser-pip-layer"
-    className="pointer-events-none fixed right-4 top-4 z-40 flex max-w-full flex-col-reverse items-end gap-2 overflow-y-auto p-8 pb-12"
+  return <div data-testid="agent-browser-pip-layer"
+    className="pointer-events-none fixed right-4 top-4 z-30 flex max-w-full flex-col-reverse items-end gap-2 overflow-y-auto p-8 pb-12"
     style={{ height: Math.max(0, area.height - EDGE) }}>
     {!unavailable ? control.tabs.flatMap((tab) => {
       if (tab.kind !== "embedded" || tab.rendererTabId === null || !surfaces.some((surface) => surface.tabId === tab.rendererTabId)) return [];
@@ -179,5 +178,5 @@ export function AgentBrowserPipLayer({ api, onOpen }: { api: AveApi; onOpen: (ta
         child={children.get(tab.lease?.actor.sessionId ?? tab.owner?.sessionId ?? "")}
         visible={visibleTabs.includes(tab.rendererTabId)} area={area} onOpen={onOpen} />;
     }) : null}
-  </div>, document.body);
+  </div>;
 }

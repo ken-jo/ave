@@ -87,6 +87,18 @@ describe("window agent browser previews", () => {
     expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("pb-12");
     expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("right-4");
   });
+  it.each(["approval", "question"])("reserves an ordinary %s outside the settle wrapper and stays below decision surfaces", (kind) => {
+    const composer = document.createElement("div"); composer.dataset.testid = "composer";
+    const decision = document.createElement("section"); decision.dataset.pipReservation = kind;
+    document.body.append(composer, decision);
+    composer.getBoundingClientRect = () => new DOMRect(0, 674, 1243, 100);
+    decision.getBoundingClientRect = () => new DOMRect(800, 450, 400, 220);
+    show(); activate();
+    const layer = screen.getByTestId("agent-browser-pip-layer");
+    expect(layer.style.height).toBe("418px");
+    expect(layer.className).toContain("z-30");
+    decision.remove(); composer.remove();
+  });
   it("shows no card without tabs or observations, then hides only the tab actually visible in the panel", () => {
     show(); expect(cards()).toHaveLength(0);
     activate(); expect(cards()).toHaveLength(1);

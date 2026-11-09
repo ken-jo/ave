@@ -2636,6 +2636,7 @@ export function App() {
                     className="relative isolate flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
                     data-testid={TEST_IDS.routeCanvas}
                   >
+                    <AgentBrowserPipLayer api={api} onOpen={focusObservedBrowser} />
                     {/* Inner ErrorBoundary scoped to the routed main content so a
                         single failing plugin (e.g. stale manifest schema mismatch —
                         issue #736) does NOT bring down MainToolbar / Settings page /
@@ -2854,7 +2855,6 @@ export function App() {
                 (see WebSurfaceLayer). Portaled to <body>: no ancestor here may
                 capture its fixed positioning or its stacking. */}
             <WebSurfaceLayer api={api} />
-            <AgentBrowserPipLayer api={api} onOpen={focusObservedBrowser} />
           </OverlayContextProvider>
           </ApprovalSurfaceProvider>
           </PaneChatNavigationProvider>
