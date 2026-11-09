@@ -36,7 +36,7 @@ async function mountShell(container: HTMLElement) {
 }
 
 function expectCollapsedGeometry(main: HTMLElement, band: HTMLElement) {
-  expect(main.classList.contains("pl-[calc(var(--shell-collapsed-rail-reserve)-var(--chrome-gap))]")).toBe(true);
+  expect(main.classList.contains("pl-(--shell-collapsed-rail-edge)")).toBe(true);
   expect(main.querySelector('[data-testid="pane-row"]')).toHaveClass("pl-0");
   expect(main.style.paddingLeft).toBe("");
   expect(band.style.paddingLeft).toBe(COLLAPSED_BAND_LEAD);
@@ -142,7 +142,7 @@ describe("App sidebar overlay", () => {
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
     expect(main.hasAttribute("data-sidebar-overlay")).toBe(false);
-    expect(main.classList.contains("pl-(--shell-collapsed-rail-reserve)")).toBe(false);
+    expect(main.classList.contains("pl-(--shell-collapsed-rail-edge)")).toBe(false);
     expect(main.style.paddingLeft).toBe(EXPANDED_MAIN_RESERVE);
     expect(band.style.paddingLeft).toBe(EXPANDED_BAND_LEAD);
     await act(async () => { fireEvent.keyDown(document, { key: "Escape" }); });

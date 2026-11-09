@@ -2504,7 +2504,7 @@ export function App() {
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
                   className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-[var(--motion-normal)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
-                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-[calc(var(--shell-collapsed-rail-reserve)-var(--chrome-gap))]" : ""
+                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-edge)" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
                   style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}

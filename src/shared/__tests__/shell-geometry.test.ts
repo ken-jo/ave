@@ -9,6 +9,7 @@ import {
   CHROME_GAP_TIGHT,
   WINDOW_CONTROL_BUTTON_WIDTH,
   windowControlsPlacement,
+  COLLAPSED_RAIL_EDGE,
   COLLAPSED_RAIL_RESERVE,
   CONTENT_TITLE_INSET,
   RAIL_CONTROL_REM,
@@ -80,14 +81,27 @@ describe("shell card top (styles.css)", () => {
     const value = declared(name);
     const literal = /^(\d+(?:\.\d+)?)px$/.exec(value);
     if (literal) return Number(literal[1]);
-    const calculation = /^calc\(\s*var\((--[\w-]+)\)\s*([+-])\s*var\((--[\w-]+)\)\s*\)$/.exec(value);
-    if (calculation) return px(calculation[1]) + (calculation[2] === "+" ? 1 : -1) * px(calculation[3]);
-    throw new Error(`${name}: unsupported value ${value}`);
+    const alias = /^var\((--[\w-]+)\)$/.exec(value);
+    if (alias) return px(alias[1]);
+    // calc() of var() terms joined by + or -, the only shape the shell tokens use.
+    const calculation = /^calc\((.*)\)$/.exec(value);
+    if (!calculation) throw new Error(`${name}: unsupported value ${value}`);
+    const terms = /^\s*var\((--[\w-]+)\)((?:\s*[+-]\s*var\(--[\w-]+\))*)\s*$/.exec(calculation[1]);
+    if (!terms) throw new Error(`${name}: unsupported calc ${value}`);
+    let total = px(terms[1]);
+    for (const [, sign, term] of terms[2].matchAll(/([+-])\s*var\((--[\w-]+)\)/g)) total += (sign === "+" ? 1 : -1) * px(term);
+    return total;
   }
 
   it("starts the sidebar card at or below the window band on every platform", () => {
     expect(px("--shell-card-top")).toBeGreaterThanOrEqual(px("--chrome-band-height"));
     expect(css).not.toMatch(/--shell-card-top-darwin/);
+  });
+
+  it("puts the rail-only content edge on the rail card's trailing edge", () => {
+    expect(px("--shell-collapsed-rail-edge")).toBe(px("--shell-card-inset") + px("--shell-collapsed-rail-width"));
+    expect(px("--shell-collapsed-rail-edge")).toBe(COLLAPSED_RAIL_EDGE);
+    expect(COLLAPSED_RAIL_EDGE).toBe(60);
   });
 
   it("derives the canvas origin from the shared card top and the cell half-gutter", () => {

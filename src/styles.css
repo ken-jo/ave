@@ -787,6 +787,10 @@
      * larger type scale. */
     --shell-collapsed-rail-reserve: 68px;
     --shell-collapsed-rail-width: calc(var(--shell-collapsed-rail-reserve) - var(--shell-card-inset) - var(--chrome-gap));
+    /* The rail card's trailing edge: its inset plus its width. With only the
+     * rail showing, the content pads to this edge and the pane cell's own
+     * `--chrome-gap-tight` is the whole gap, so nothing is subtracted back. */
+    --shell-collapsed-rail-edge: calc(var(--shell-card-inset) + var(--shell-collapsed-rail-width));
   }
   /* Content measures — how wide a column of prose gets to be, and how tall the
    * panels that hold a scrolling body are. rem, unlike the shell geometry

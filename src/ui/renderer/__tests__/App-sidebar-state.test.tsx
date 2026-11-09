@@ -13,7 +13,7 @@ describe("App sidebar visibility", () => {
     expect(view.container.querySelector('[data-testid="primary-sidebar"]')).toBeNull();
     const main = view.container.querySelector("main")!;
     expect(main.style.paddingLeft).toBe("0px");
-    expect(main.classList.contains("pl-[calc(var(--shell-collapsed-rail-reserve)-var(--chrome-gap))]")).toBe(false);
+    expect(main.classList.contains("pl-(--shell-collapsed-rail-edge)")).toBe(false);
     expect(main.querySelector('[data-testid="pane-row"]')).toHaveClass("pl-(--chrome-gap-tight)");
     expect(view.api.updateSettings.mock.calls.filter(([patch]) =>
       (patch as { system?: { sidebarState?: string } }).system?.sidebarState)).toHaveLength(0);

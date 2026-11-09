@@ -79,6 +79,10 @@ export const CONTENT_TITLE_INSET = SHELL_GUTTER * 2;
  * mirror aligned; the literal is consumed by the source-reading gate. */
 export const COLLAPSED_RAIL_RESERVE = 68;
 
+/** The rail card's trailing edge (card inset + rail width), mirrored by `--shell-collapsed-rail-edge`. Rail-only content pads to
+ * it, so the pane cell's tight gap is the only air between rail and pane. */
+export const COLLAPSED_RAIL_EDGE = COLLAPSED_RAIL_RESERVE - SHELL_GUTTER;
+
 /** The band's lead while only the rail shows: the content title's line past the rail. On darwin the rail starts below the band,
  * and this lead also clears the native buttons. */
 export const RAIL_BAND_LEAD = COLLAPSED_RAIL_RESERVE + CONTENT_TITLE_INSET;
