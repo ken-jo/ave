@@ -12,6 +12,7 @@ import { LLM_VENDOR_DEFAULTS, type LLMVendor,
 import { DEFAULT_APPEARANCE } from "../../../src/shared/appearance-settings.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
+export { withNativeFocusDiagnostics } from "./native-focus.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, "../../..");

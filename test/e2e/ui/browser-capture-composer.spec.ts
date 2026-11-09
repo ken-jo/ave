@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
-import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from "./seeded-electron.js";
+import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron, withNativeFocusDiagnostics } from "./seeded-electron.js";
 
 const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
 
@@ -25,7 +25,7 @@ test("user area capture stays in host chrome and attaches actual page pixels to 
       app.focus({ steal: true });
       BrowserWindow.getAllWindows().find((window) => window.isVisible())?.focus();
     });
-    await expect.poll(() => ctx?.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.isVisible())?.isFocused())).toBe(true);
+    await withNativeFocusDiagnostics(ctx.app, testInfo, () => expect.poll(() => ctx?.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.isVisible())?.isFocused())).toBe(true));
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
     await ctx.page.getByTestId("chat-side-panel-add-tab").click();
     await ctx.page.getByTestId("chat-side-panel-launcher-menu-browser").click();

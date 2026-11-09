@@ -4,7 +4,7 @@ import { build } from "esbuild";
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIsolatedElectronEnv, launchElectron, setWindowSize } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, setWindowSize, withNativeFocusDiagnostics } from "./seeded-electron.js";
 import type { BrowserScreenshotOptions } from "../../../src/shared/browser-capture.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./browser-capture-native/contract.js";
 
@@ -42,7 +42,7 @@ async function launch(testInfo: TestInfo): Promise<ElectronApplication> {
       fixtureApp.focus({ steal: true });
       BrowserWindow.getAllWindows()[0]?.focus();
     });
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isFocused())).toBe(true);
+    await withNativeFocusDiagnostics(app, testInfo, () => expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isFocused())).toBe(true));
     return app;
   } catch (error) { await app.close().catch(() => {}); throw error; }
 }

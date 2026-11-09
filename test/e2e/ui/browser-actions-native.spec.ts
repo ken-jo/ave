@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIsolatedElectronEnv, launchElectron, setWindowSize } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, setWindowSize, withNativeFocusDiagnostics } from "./seeded-electron.js";
 import type { NativeAction, NativeActionResult, NativeBrowserFixture } from "./browser-actions-native/contract.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -68,7 +68,7 @@ async function launch(testInfo: TestInfo, mode: FixtureMode): Promise<ElectronAp
       testInfo.setTimeout(300_000);
       process.stdout.write(`[native-focus] title=Native action host pid=${app.process().pid} executable=${app.process().spawnfile}\n`);
     }
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isFocused()), { timeout: diagnostic ? 240_000 : 5_000 }).toBe(true);
+    await withNativeFocusDiagnostics(app, testInfo, () => expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isFocused()), { timeout: diagnostic ? 240_000 : 5_000 }).toBe(true));
     return app;
   } catch (error) { await close(app); throw error; }
 }
