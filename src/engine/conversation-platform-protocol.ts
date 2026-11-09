@@ -171,6 +171,8 @@ export type PlatformConversationEvent =
   | {
     readonly kind: "turn.completed";
     readonly route?: "command";
+    /** Owner queues discard work from the revoked session scope. */
+    readonly projectWorkRevoked?: true;
     /** Owner-safe terminal state for a host with no approval surface. */
     readonly authorizationRequired?: AuthorizationRequiredState;
   }

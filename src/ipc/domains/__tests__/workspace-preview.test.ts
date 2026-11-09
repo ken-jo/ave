@@ -1528,6 +1528,26 @@ describe("workspace handlers", () => {
       }
     });
 
+    it("counts and revokes a secondary main-chat tile exactly once", async () => {
+      const revoke = vi.fn(() => ({ sessionDirectoriesRemoved: 1, turnDirectoriesRemoved: 0 }));
+      const count = vi.fn(() => 1);
+      const primary = previewDeps();
+      const tile = { countTurnsAbortedByWorkspaceRootRemoval: count, revokeWorkspaceRoot: revoke };
+      registerWorkspaceHandlers({
+        ...(primary as object),
+        listChatGroupLoops: () => [(primary as { conversationLoop: unknown }).conversationLoop, tile],
+      } as never);
+      try {
+        expect(await invoke(CHANNELS.workspace.previewRemoveRoot, OK_FRAME, root))
+          .toMatchObject({ ok: true, counts: { streamingSessions: 1 } });
+        expect(await invoke(CHANNELS.workspace.removeRoot, OK_FRAME, root)).toMatchObject({ ok: true });
+        expect(count).toHaveBeenCalledExactlyOnceWith(canonicalizePathForMatch(root), expect.any(Object));
+        expect(revoke).toHaveBeenCalledExactlyOnceWith(canonicalizePathForMatch(root), expect.any(Object));
+      } finally {
+        registerWorkspaceHandlers(deps);
+      }
+    });
+
     it("refuses to preview what it would refuse to remove", async () => {
       registerWorkspaceHandlers(previewDeps());
       try {

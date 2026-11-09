@@ -336,6 +336,7 @@ export async function runStreamedTurn(
   );
   send({
     kind: "turn.completed",
+    ...(result.projectWorkRevoked ? { projectWorkRevoked: true as const } : {}),
     ...(result.route === "command" ? { route: "command" } : {}),
     ...(authorizationRequired
       ? { authorizationRequired }

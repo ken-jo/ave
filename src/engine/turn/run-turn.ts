@@ -3,6 +3,7 @@ import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/
 import { runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
 import { runWithHostTerminalTurn } from "../../tools/host-terminal-turn.js";
 import { randomUUID } from "node:crypto";
+import { raceWithAbort } from "../../shared/abortable-deadline.js";
 import type { ConversationLoop as LoopContext } from "../conversation-loop.js";
 import type {
   RunTurnOptions,
@@ -198,32 +199,17 @@ async function runTurnInSpan(
 
     self.tracer.step("REQUEST_ENTRY", { inputLen: turnInput.length, inputOrigin,
   });
-    if (self.providerPending) await self.whenProviderReady();
-    let activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
-    if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
-      try {
-        // Revalidate provider posture at execution for stale loops missed by settings refresh.
-        await self.refreshProvider();
-      } catch {
-        // A failed rebuild clears the client and records its kind; the route stays unconfigured.
-      }
-      activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
-    }
-    if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
-      const buildError = self.providerBuildError;
-      const err = t("be_conversationLoop.llmProviderNotConfigured") + (buildError ? ` (${buildError})` : "");
-      callbacks?.onError?.(err);
-      throw new Error(err);
-    }
-
+    // Admission exposes cancellation before the first provider-readiness await.
+    const sessionEpoch = self.sessionEpoch;
     const ac = new AbortController();
     self.currentAbortController = ac;
+    const onParentAbort = () => ac.abort(abortSignal?.reason ?? new Error("parent aborted turn"));
     if (abortSignal?.aborted) {
       ac.abort(abortSignal.reason ?? new Error("parent aborted turn"));
     } else {
       abortSignal?.addEventListener(
         "abort",
-        () => ac.abort(abortSignal.reason ?? new Error("parent aborted turn")),
+        onParentAbort,
         { once: true },
       );
     }
@@ -255,12 +241,40 @@ async function runTurnInSpan(
     const finalizeTurnState = async () => {
       if (turnStateFinalized) return;
       turnStateFinalized = true;
+      abortSignal?.removeEventListener("abort", onParentAbort);
+      if (self.sessionEpoch !== sessionEpoch || (self.currentAbortController !== null && self.currentAbortController !== ac)) return;
       self.currentAbortController = null;
       self.turnAdditionalDirectories = [];
       await self.dropPendingGuidance("turn-ended", callbacks);
     };
 
     try {
+    try {
+      if (self.providerPending) {
+        await raceWithAbort(self.whenProviderReady(), turnSignal);
+        turnSignal.throwIfAborted();
+      }
+      let activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
+      if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
+        try {
+          // Revalidate provider posture at execution for stale loops missed by settings refresh.
+          await raceWithAbort(self.refreshProvider(), turnSignal);
+        } catch {
+          // A failed rebuild clears the client and records its kind; the route stays unconfigured.
+        }
+        turnSignal.throwIfAborted();
+        activeChatRuntime = self.deps.settingsService.get("llm").activeChatRuntime;
+      }
+      if (!providerMatchesActiveChatRuntime(self.provider, activeChatRuntime)) {
+        const buildError = self.providerBuildError;
+        const err = t("be_conversationLoop.llmProviderNotConfigured") + (buildError ? ` (${buildError})` : "");
+        callbacks?.onError?.(err);
+        throw new Error(err);
+      }
+    } catch (error) {
+      if (turnSignal.aborted) return { text: "", toolCalls: [], route: "general", stopReason: "interrupted" };
+      throw error;
+    }
     let routeResult = routeInput(turnInput);
     const classification = routeResult.route === "command" ? "command" : "general";
     self.tracer.step("ROUTE_RESOLVE", { route: routeResult.route });

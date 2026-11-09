@@ -41,6 +41,8 @@ export type ChatStreamEvent = {
   result?: string;
   isError?: boolean;
   cancelled?: boolean;
+  /** A project removal revokes the queued work as well as the current reply. */
+  projectWorkRevoked?: true;
   input?: Record<string, unknown>;
   groupId?: string;
   toolUseId?: string;

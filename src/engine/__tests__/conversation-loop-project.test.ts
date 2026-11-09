@@ -5,6 +5,10 @@ import {
   makeConversationLoopMemoryManager,
 } from "./conversation-loop-test-helpers.js";
 import type { ConversationLoopDeps } from "../conversation-loop.js";
+import type { LLMProvider } from "../llm/types.js";
+import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { SubAgentRunner } from "../subagent-runner.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 
 function makeProjectLoop(defaultRoot: string) {
   const setProjectContext = vi.fn();
@@ -234,6 +238,18 @@ describe("ConversationLoop project identity", () => {
     expect(loop.getSessionExecutionCwd()).toBe(siblingRoot);
   });
 
+  it("does not mistake a nested project's root for membership in its parent project", async () => {
+    const parentRoot = "/workspace/alpha";
+    const childRoot = `${parentRoot}/child`;
+    const { loop } = makeRevocableProjectLoop("/workspace/default", new Set([childRoot]));
+    await loop.newConversation("main", { projectRoot: childRoot });
+    const controller = new AbortController();
+    loop.currentAbortController = controller;
+    expect(loop.countTurnsAbortedByWorkspaceRootRemoval(parentRoot)).toBe(0);
+    loop.revokeWorkspaceRoot(parentRoot);
+    expect(controller.signal.aborted).toBe(false);
+  });
+
   it("aborts an affected active turn with the workspace-removal reason", async () => {
     const defaultRoot = "C:\\Users\\example\\.ave\\workspace";
     const removedRoot = "C:\\workspace\\alpha";
@@ -265,7 +281,7 @@ describe("ConversationLoop project identity", () => {
     expect(controller.signal.aborted).toBe(false);
   });
 
-  it("aborts an unrelated project turn when the removed root was in global scope", async () => {
+  it("keeps an unrelated project turn running when the removed root was in global scope", async () => {
     const defaultRoot = "C:\\Users\\example\\.ave\\workspace";
     const removedRoot = "C:\\workspace\\alpha";
     const unrelatedRoot = "D:\\workspace\\beta";
@@ -277,8 +293,7 @@ describe("ConversationLoop project identity", () => {
     // Carry the pre-persist snapshot because the settings list has already shrunk.
     loop.revokeWorkspaceRoot(removedRoot, { globalScopeWasAuthorized: true });
 
-    expect(controller.signal.aborted).toBe(true);
-    expect((controller.signal.reason as Error).message).toBe("workspace-removal");
+    expect(controller.signal.aborted).toBe(false);
   });
 
   it("answers whether a removal would stop its turn by the same test the removal aborts by, and never for an idle loop", async () => {
@@ -288,7 +303,7 @@ describe("ConversationLoop project identity", () => {
     const cases = [
       { projectRoot: removedRoot, options: {}, aborts: true },
       { projectRoot: unrelatedRoot, options: {}, aborts: false },
-      { projectRoot: unrelatedRoot, options: { globalScopeWasAuthorized: true }, aborts: true },
+      { projectRoot: unrelatedRoot, options: { globalScopeWasAuthorized: true }, aborts: false },
     ];
     for (const { projectRoot, options, aborts } of cases) {
       const { loop } = makeRevocableProjectLoop(defaultRoot, new Set([projectRoot]));
@@ -300,5 +315,164 @@ describe("ConversationLoop project identity", () => {
       loop.revokeWorkspaceRoot(removedRoot, options);
       expect(controller.signal.aborted).toBe(aborts);
     }
+  });
+
+  it.each(["main", "subagent"] as const)("aborts project A's %s streaming turn while project B continues to completion", async (kind) => {
+    const defaultRoot = "/workspace/default";
+    const removedRoot = "/workspace/alpha";
+    const otherRoot = "/workspace/beta";
+    const authorizedRoots = new Set([removedRoot, otherRoot]);
+    const running = [removedRoot, otherRoot].map((projectRoot) => {
+      const { loop } = makeRevocableProjectLoop(defaultRoot, authorizedRoots);
+      loop.initializeConversation(kind, { projectRoot });
+      // Even a turn with explicit access to A still belongs to B.
+      loop.addSessionAdditionalDirectory(removedRoot);
+      loop.addTurnAdditionalDirectory(`${removedRoot}/scratch`);
+      loop.deps.additionalDirectories = [removedRoot];
+      loop.deps.getAdditionalDirectories = () => [...authorizedRoots];
+      const started = deferred<void>();
+      const finish = deferred<void>();
+      const provider: LLMProvider = {
+        vendor: "openai",
+        async *streamTurn({ abortSignal }) {
+          started.resolve();
+          yield { type: "text_delta", text: "started " };
+          const abort = () => finish.resolve();
+          abortSignal?.addEventListener("abort", abort, { once: true });
+          try {
+            if (!abortSignal?.aborted) await finish.promise;
+            abortSignal?.throwIfAborted();
+            yield { type: "text_delta", text: "finished" };
+            yield { type: "message_complete", stopReason: "end_turn" };
+          } finally {
+            abortSignal?.removeEventListener("abort", abort);
+          }
+        },
+      };
+      (loop as { provider: LLMProvider | null }).provider = provider;
+      const turn = loop.runTurn("keep working", undefined, undefined, userKeyboardTurn());
+      return { loop, started, finish, turn };
+    });
+    const [a, b] = running;
+    const runner = new SubAgentRunner({} as never);
+    const children = (runner as unknown as { activeChildren: Map<string, unknown> }).activeChildren;
+    for (const { loop } of running) {
+      children.set(loop.sessionId, { childSessionId: loop.sessionId, loop });
+    }
+    try {
+      await Promise.all(running.map(({ started }) => started.promise));
+      const options = { globalScopeWasAuthorized: true };
+      const previewCount = kind === "subagent"
+        ? runner.countTurnsAbortedByWorkspaceRootRemoval(removedRoot, options)
+        : running.reduce((count, { loop }) => count + loop.countTurnsAbortedByWorkspaceRootRemoval(removedRoot, options), 0);
+      authorizedRoots.delete(removedRoot);
+      if (kind === "subagent") runner.revokeWorkspaceRoot(removedRoot, options);
+      else for (const { loop } of running) loop.revokeWorkspaceRoot(removedRoot, options);
+      expect(await a.turn).toMatchObject({ stopReason: "interrupted", projectWorkRevoked: true });
+      expect(b.loop.hasActiveTurn()).toBe(true);
+      expect(b.loop.currentAbortController?.signal.aborted).toBe(false);
+      expect(previewCount).toBe(1);
+      expect(b.loop.getTurnAdditionalDirectories()).not.toContain(removedRoot);
+      expect(b.loop.getTurnAdditionalDirectories()).not.toContain(`${removedRoot}/scratch`);
+      b.finish.resolve();
+      expect(await b.turn).toMatchObject({ text: "started finished", stopReason: "end_turn" });
+    } finally {
+      for (const { loop, finish } of running) {
+        loop.abortCurrentTurn();
+        finish.resolve();
+      }
+      await Promise.all(running.map(({ turn }) => turn));
+    }
+  });
+
+  it("allows an idle unbound loop to revoke directory grants without inventing a project", () => {
+    const { loop } = makeProjectLoop("/workspace/default");
+    loop.addTurnAdditionalDirectory("/workspace/alpha/scratch");
+    expect(loop.countTurnsAbortedByWorkspaceRootRemoval("/workspace/alpha")).toBe(0);
+    expect(loop.revokeWorkspaceRoot("/workspace/alpha").turnDirectoriesRemoved).toBe(1);
+  });
+
+  it.each(["initialization", "refresh"] as const)("cancels project work admitted while provider %s is pending", async (phase) => {
+    const root = "/workspace/alpha";
+    const authorizedRoots = new Set([root]);
+    const { loop } = makeRevocableProjectLoop("/workspace/default", authorizedRoots);
+    loop.initializeConversation("main", { projectRoot: root });
+    const ready = deferred<void>();
+    const streamTurn = vi.fn(async function* () {
+      yield { type: "text_delta" as const, text: "must not execute" };
+      yield { type: "message_complete" as const, stopReason: "end_turn" as const };
+    });
+    const provider: LLMProvider = { vendor: "openai", streamTurn };
+    loop.provider = phase === "initialization" ? provider : null;
+    const waiting = phase === "initialization"
+      ? vi.spyOn(loop, "whenProviderReady").mockImplementation(() => ready.promise)
+      : vi.spyOn(loop, "refreshProvider").mockImplementation(async () => { await ready.promise; loop.provider = provider; });
+    const pending = vi.spyOn(loop, "providerPending", "get").mockReturnValue(phase === "initialization");
+    const turn = loop.runTurn("admitted in alpha", undefined, undefined, userKeyboardTurn());
+    try {
+      expect(waiting).toHaveBeenCalledOnce();
+      const count = loop.countTurnsAbortedByWorkspaceRootRemoval(root);
+      authorizedRoots.delete(root);
+      loop.revokeWorkspaceRoot(root);
+      ready.resolve();
+      expect((await turn).stopReason).toBe("interrupted");
+      expect(streamTurn).not.toHaveBeenCalled();
+      expect(count).toBe(1);
+      expect(loop.hasActiveTurn()).toBe(false);
+      expect(await loop.runTurn("old queued work", undefined, undefined, { inputOrigin: "queue-auto" }))
+        .toMatchObject({ stopReason: "interrupted", projectWorkRevoked: true });
+      expect(streamTurn).not.toHaveBeenCalled();
+      await loop.newConversation("main");
+      loop.provider = provider;
+      expect((await loop.runTurn("fresh work", undefined, undefined, userKeyboardTurn())).stopReason)
+        .toBe("end_turn");
+      expect(streamTurn).toHaveBeenCalledOnce();
+    } finally {
+      ready.resolve();
+      await turn;
+      pending.mockRestore();
+      waiting.mockRestore();
+    }
+  });
+
+  it.each(["main", "routine"] as const)("leaves a legitimately unbound %s turn running during project removal", async (kind) => {
+    const { loop } = makeProjectLoop("/workspace/default");
+    loop.initializeConversation(kind);
+    loop.provider = {
+      vendor: "openai",
+      async *streamTurn() {
+        expect(loop.sessionProjectRoot).toBeNull();
+        expect(loop.countTurnsAbortedByWorkspaceRootRemoval("/workspace/alpha")).toBe(0);
+        loop.revokeWorkspaceRoot("/workspace/alpha");
+        expect(loop.currentAbortController?.signal.aborted).toBe(false);
+        yield { type: "text_delta", text: "unbound work completed" };
+        yield { type: "message_complete", stopReason: "end_turn" };
+      },
+    };
+    expect(await loop.runTurn("work", undefined, undefined, userKeyboardTurn()))
+      .toMatchObject({ text: "unbound work completed", stopReason: "end_turn" });
+  });
+
+  it("rejects a project name without a root as an inconsistent binding", () => {
+    const { loop } = makeProjectLoop("/workspace/default");
+    loop.sessionProjectName = "alpha";
+    loop.currentAbortController = new AbortController();
+    expect(() => loop.countTurnsAbortedByWorkspaceRootRemoval("/workspace/alpha"))
+      .toThrow("Active turn project binding is inconsistent");
+  });
+
+  it.each(["", "   ", "relative", "/bad\0root"])("rejects an active turn with an unresolved project root %s before revoking scope", (projectRoot) => {
+    const { loop } = makeProjectLoop("/workspace/default");
+    loop.sessionProjectRoot = projectRoot;
+    loop.addTurnAdditionalDirectory("/workspace/alpha/scratch");
+    const controller = new AbortController();
+    loop.currentAbortController = controller;
+    const options = { globalScopeWasAuthorized: true };
+    expect(() => loop.countTurnsAbortedByWorkspaceRootRemoval("/workspace/alpha", options))
+      .toThrow("Active turn project root cannot be resolved");
+    expect(() => loop.revokeWorkspaceRoot("/workspace/alpha", options))
+      .toThrow("Active turn project root cannot be resolved");
+    expect(controller.signal.aborted).toBe(false);
+    expect(loop.getTurnAdditionalDirectories()).toContain("/workspace/alpha/scratch");
   });
 });

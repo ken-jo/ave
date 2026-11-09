@@ -1,4 +1,5 @@
 import type { ConversationLoop, SessionTransitionLease } from "../conversation-loop.js";
+import { posix, win32 } from "node:path";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { type SessionKind } from "../../shared/session-lookup.js";
 import type { GenericMessage } from "../llm/types.js";
@@ -121,24 +122,33 @@ function applyFreshSessionState(
 }
 
 /**
- * Whether removing `removedRoot` stops this loop's turn: the turn's snapshotted scope references the removed root, or the
- * root was in global scope. The removal aborts by this test and its preview counts by it, so the two cannot drift.
+ * Only a turn belonging to the removed project stops. Directory grants do not establish project ownership.
+ * Preview counting and turn cancellation use this same project selector.
  */
 export function workspaceRootRemovalAffectsTurn(
   self: ConversationLoop,
   removedRoot: string,
-  options: WorkspaceRootRevocationOptions = {},
 ): boolean {
+  return self.hasActiveTurn() && workspaceRootRemovalOwnsSession(self, removedRoot);
+}
+
+function workspaceRootRemovalOwnsSession(self: ConversationLoop, removedRoot: string): boolean {
+  if (self.sessionProjectRoot === null) {
+    if (self.sessionProjectName !== null || self.sessionProjectIsDefault) {
+      throw new Error("Active turn project binding is inconsistent");
+    }
+    return false;
+  }
+  const projectRoot = normalizeProjectString(self.sessionProjectRoot);
+  if (!projectRoot || projectRoot.includes("\0") || (!posix.isAbsolute(projectRoot) && !win32.isAbsolute(projectRoot))) {
+    throw new Error("Active turn project root cannot be resolved");
+  }
+  if (self.sessionProjectIsDefault && self.deps.isDefaultProjectRoot?.(projectRoot) === false) {
+    throw new Error("Active turn project binding is inconsistent");
+  }
   const normalizedRoot = normalizeProjectString(removedRoot);
   if (!normalizedRoot) return false;
-  const isRevoked = createWorkspaceRootRevocationFilter(normalizedRoot, options.preserveRoots ?? []);
-  return Boolean(
-    options.globalScopeWasAuthorized === true
-      || (self.sessionProjectRoot && isRevoked(self.sessionProjectRoot))
-      || self.sessionAdditionalDirectories.some(isRevoked)
-      || self.turnAdditionalDirectories.some(isRevoked)
-      || (self.deps.additionalDirectories ?? []).some(isRevoked),
-  );
+  return projectRootEquals(projectRoot, normalizedRoot);
 }
 
 // Revoke grants under removed roots; keep independently authorized children and fall back for unauthorized projects.
@@ -161,9 +171,8 @@ export function revokeWorkspaceRoot(
     normalizedRoot,
     options.preserveRoots ?? [],
   );
-  if (workspaceRootRemovalAffectsTurn(self, removedRoot, options)) {
-    // Abort only loops whose snapshotted execution directory references the removed root.
-    self.abortCurrentTurn(new Error("workspace-removal"));
+  if (workspaceRootRemovalOwnsSession(self, removedRoot)) {
+    self.revokeProjectWork();
   }
 
   const retainedSessionDirectories = previousSessionDirectories.filter(

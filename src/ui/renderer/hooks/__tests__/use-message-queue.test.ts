@@ -5,7 +5,7 @@ import { renderHook, act } from "@testing-library/react";
 import { useCallback, useRef, useState } from "react";
 import { useMessageQueue, type UseMessageQueueParams } from "../use-message-queue.js";
 import { useSideChat } from "../use-side-chat.js";
-import type { ComposerHandle } from "../../components/Composer.js";
+import type { ComposerHandle, ComposerSurface } from "../../components/Composer.js";
 import type { Attachment } from "../../types/attachments.js";
 import type { ChatStreamEvent } from "../../../../lib/chat-stream-state.js";
 import type { UserKeyboardIntentSnapshot } from "../../../../shared/chat-origin.js";
@@ -522,7 +522,7 @@ describe("useMessageQueue end-of-turn drain (side chat)", () => {
   });
 });
 
-function makeDeferredQueueGuide() {
+function makeDeferredQueueGuide(surface: ComposerSurface = "main", isCurrentTurnEvent?: UseMessageQueueParams["isCurrentTurnEvent"]) {
   let emit!: (event: ChatStreamEvent) => void;
   type GuideResult = { ok: true } | { ok: false; error: string };
   let resolve!: (value: GuideResult) => void;
@@ -537,9 +537,9 @@ function makeDeferredQueueGuide() {
     return () => {};
   };
   const { result, rerender } = renderHook(({ sessionId, streaming = true }: { sessionId: string; streaming?: boolean }) => useMessageQueue({
-    surface: "main", subscribeStream, composerRef: { current: null },
+    surface, subscribeStream, composerRef: { current: null },
     currentSessionId: sessionId, question: "", attachments: [], streaming,
-    setQuestion: () => {}, setAttachments: () => {}, onAsk, guide, onAbort: vi.fn(),
+    setQuestion: () => {}, setAttachments: () => {}, onAsk, guide, onAbort: vi.fn(), isCurrentTurnEvent,
   }), { initialProps: { sessionId: "queue-session" } as { sessionId: string; streaming?: boolean } });
   act(() => {
     result.current.messageQueueStore.add("first");
@@ -551,6 +551,68 @@ function makeDeferredQueueGuide() {
     accept: () => act(async () => { pending.resolve({ ok: true }); await pending.promise; }),
   };
 }
+
+describe("project work revocation", () => {
+  it.each(["accepted", "refused"] as const)("discards an in-flight send reservation despite a late %s disposition", async (disposition) => {
+    const f = makeDeferredQueueGuide();
+    const delivery = deferred<void>();
+    let settle: (() => void) | undefined;
+    f.onAsk.mockImplementation((_text, _intent, options) => {
+      settle = disposition === "accepted" ? options?.onAccepted : options?.onRefused;
+      return delivery.promise;
+    });
+    await act(async () => { f.emit({ type: "done" }); });
+    expect(f.onAsk).toHaveBeenCalledOnce();
+    expect(f.result.current.messageQueueStore.getItems()).toHaveLength(2);
+    f.emit({ type: "done", projectWorkRevoked: true });
+    expect(f.result.current.messageQueueStore.getItems()).toEqual([]);
+    await act(async () => {
+      if (!settle) throw new Error("Queue disposition was not registered");
+      settle();
+      delivery.resolve();
+      await delivery.promise;
+    });
+    expect(f.result.current.messageQueueStore.getItems()).toEqual([]);
+    expect(f.onAsk).toHaveBeenCalledOnce();
+  });
+  it("does not discard another turn's queue for a stale removal frame", () => {
+    const f = makeDeferredQueueGuide("main", (event) => event.streamId === 2);
+    f.emit({ type: "done", streamId: 1, projectWorkRevoked: true });
+    expect(f.result.current.messageQueueStore.getItems()).toHaveLength(2);
+    expect(f.onAsk).not.toHaveBeenCalled();
+    f.emit({ type: "done", streamId: 2, projectWorkRevoked: true });
+    expect(f.result.current.messageQueueStore.getItems()).toEqual([]);
+  });
+  it.each(["main", "side"] as const)("drops the %s queue when its project work is revoked", async (surface) => {
+    const f = makeDeferredQueueGuide(surface);
+    await act(async () => { f.emit({ type: "done", projectWorkRevoked: true }); });
+    expect(f.result.current.messageQueueStore.getItems()).toEqual([]);
+    expect(f.onAsk).not.toHaveBeenCalled();
+  });
+
+  it("invalidates a drain already scheduled before the revocation frame", async () => {
+    const f = makeDeferredQueueGuide();
+    f.emit({ type: "done" });
+    f.emit({ type: "done", projectWorkRevoked: true });
+    await act(async () => { await Promise.resolve(); });
+    expect(f.onAsk).not.toHaveBeenCalled();
+  });
+
+  it.each(["accepted", "refused"] as const)("drops reserved rows and ignores a late %s guide reply", async (reply) => {
+    const f = makeDeferredQueueGuide();
+    f.emit({ type: "tool_end" });
+    act(() => f.result.current.messageQueueStore.add("later"));
+    f.emit({ type: "guidance_dropped" });
+    f.emit({ type: "done", projectWorkRevoked: true });
+    await act(async () => {
+      f.pending.resolve(reply === "accepted" ? { ok: true } : { ok: false, error: "no-active-turn" });
+      await f.pending.promise;
+    });
+    expect(f.result.current.messageQueueStore.getItems()).toEqual([]);
+    expect(f.onAsk).not.toHaveBeenCalled();
+    expect(f.guide.onError).not.toHaveBeenCalled();
+  });
+});
 
 describe("queue reorder with concurrent delivery", () => {
   it("does not confirm a new order once that batch is already in flight", async () => {

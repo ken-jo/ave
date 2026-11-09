@@ -43,6 +43,7 @@ export function assembleAppServices(ctx: ReadyBootContext): AppServices {
     sideChatMemoryManager: ctx.sideChatMemoryManager,
     // Pass group-loop resolution through to IPC so secondary chat groups can be built.
     resolveChatGroupLoop: ctx.resolveChatGroupLoop,
+    listChatGroupLoops: ctx.listChatGroupLoops,
     releaseChatGroupLoop: ctx.releaseChatGroupLoop,
     findLoopBySessionId: ctx.findLoopBySessionId,
     findChatGroupLoop: ctx.findChatGroupLoop,

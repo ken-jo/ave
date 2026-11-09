@@ -14,6 +14,15 @@ const DECISION: TurnDecisionEvent = {
 };
 
 describe("runStreamedTurn loop.decision emission", () => {
+  it("publishes the session work revocation on completion", async () => {
+    const { loop, runTurn } = makeLoop();
+    runTurn.mockResolvedValue({ text: "", toolCalls: [], route: "default", stopReason: "interrupted", projectWorkRevoked: true });
+    const sink = vi.fn();
+    await runStreamedTurn(loop, "go", sink, userKeyboardTurn());
+    expect(sink).toHaveBeenCalledWith({ kind: "turn.completed", projectWorkRevoked: true });
+    expect(projectSharedConversationEvent({ kind: "turn.completed", projectWorkRevoked: true }))
+      .toEqual({ kind: "turn.completed" });
+  });
   it("publishes each decision the turn reports, verbatim", async () => {
     const { loop, runTurn } = makeLoop();
     runTurn.mockImplementation(async (..._args: unknown[]) => {

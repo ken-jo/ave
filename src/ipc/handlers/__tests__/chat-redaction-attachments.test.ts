@@ -53,6 +53,19 @@ afterEach(() => {
 });
 
 describe("chat send attachment PII redaction", () => {
+  it("publishes completion only after follow-up work can acquire admission", async () => {
+    const fixture = makeFixture(false);
+    const activity = createConversationActivityCoordinator();
+    fixture.context.trackStreamTurn = (factory) => activity.trackTurn(factory);
+    fixture.context.onTurnSettled = activity.onTurnSettled;
+    const busyAtCompletion: boolean[] = [];
+    fixture.context.createStreamEventSink = () => (event) => {
+      fixture.sink(event);
+      if (event.kind === "turn.completed") busyAtCompletion.push(activity.isBusy());
+    };
+    await handleChatSend(fixture.deps, { input: "queued", inputOrigin: "queue-auto" }, fixture.context);
+    expect(busyAtCompletion).toEqual([false]);
+  });
   it("redacts resolved file context and the independently persisted display text", async () => {
     const fixture = makeFixture(true);
     const expansion = vi.spyOn(fileMentionContext, "expandFileMentionContext").mockResolvedValueOnce({

@@ -165,6 +165,7 @@ function projectPlatformConversationEventToLegacyChatFrame(
     case "turn.completed":
       return streamFrame(streamChannel, withStreamId({
         type: "done",
+        ...(event.projectWorkRevoked ? { projectWorkRevoked: true } : {}),
         ...(event.route === "command" ? { route: "command" } : {}),
       }));
     case "privacy.redacted":

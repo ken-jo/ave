@@ -188,6 +188,7 @@ export class BootContext {
   /** The side-chat store; the conversation list reads it beside the main one. */
   declare sideChatMemoryManager: MemoryManager;
   declare resolveChatGroupLoop: (chatGroupId: string) => ConversationLoop;
+  declare listChatGroupLoops: () => ConversationLoop[];
   declare releaseChatGroupLoop: (chatGroupId: string) => void;
   declare findLoopBySessionId: (sessionId: string) => ConversationLoop | undefined;
   declare findChatGroupLoop: (chatGroupId: string) => ConversationLoop | undefined;
@@ -298,6 +299,7 @@ const BOOT_CONTEXT_FIELDS = [
   "paneChatLoops",
   "sideChatMemoryManager",
   "resolveChatGroupLoop",
+  "listChatGroupLoops",
   "releaseChatGroupLoop",
   "findLoopBySessionId",
   "findChatGroupLoop",
