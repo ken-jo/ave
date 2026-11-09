@@ -17,6 +17,7 @@ import type { GenericMessage } from "../../engine/llm/types.js";
 import type { ConversationLoop, TurnResult } from "../../engine/conversation-loop.js";
 import { serializeHistoryMessage } from "../../shared/chat-history.js";
 import {
+  deferTurnCompletion,
   runStreamedTurn,
   type ConversationStreamEventSink,
 } from "../handlers/chat-stream.js";
@@ -336,11 +337,12 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       p.input as string,
       attachments,
     );
+    const completion = deferTurnCompletion(sink);
     const turnPromise = (async () => {
       return runStreamedTurn(
         loop,
         sanitized.input,
-        sink,
+        completion.sink,
         {
           inputOrigin,
           ...(userKeyboardIntent ? { userKeyboardIntent } : {}),
@@ -350,30 +352,34 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
         },
       );
     })().finally(async () => {
-      if (turns.active === turnPromise) {
-        turns.active = null;
-        turns.sendRequestId = null;
-        turns.senderId = null;
-        turns.sessionId = null;
-      }
-      // Persist row facts after the turn creates a session file; no await may split admission from active-turn tracking.
-      const previousWrite = originWritesBySession.get(turnSideChatSessionId) ?? Promise.resolve();
-      const rowWrite = previousWrite.then(() => recordSideChatRow(
-        store,
-        turnSideChatSessionId,
-        p.originSessionId,
-        pane?.tabId,
-      ));
-      originWritesBySession.set(turnSideChatSessionId, rowWrite);
       try {
-        await rowWrite;
+        if (turns.active === turnPromise) {
+          turns.active = null;
+          turns.sendRequestId = null;
+          turns.senderId = null;
+          turns.sessionId = null;
+        }
+        // Persist row facts after the turn creates a session file; no await may split admission from active-turn tracking.
+        const previousWrite = originWritesBySession.get(turnSideChatSessionId) ?? Promise.resolve();
+        const rowWrite = previousWrite.then(() => recordSideChatRow(
+          store,
+          turnSideChatSessionId,
+          p.originSessionId,
+          pane?.tabId,
+        ));
+        originWritesBySession.set(turnSideChatSessionId, rowWrite);
+        try {
+          await rowWrite;
+        } finally {
+          if (originWritesBySession.get(turnSideChatSessionId) === rowWrite) originWritesBySession.delete(turnSideChatSessionId);
+        }
+        const ending = turns.endAfterTurn;
+        if (ending !== null) {
+          turns.endAfterTurn = null;
+          await closePaneChat(ending.windowId, ending.tabId);
+        }
       } finally {
-        if (originWritesBySession.get(turnSideChatSessionId) === rowWrite) originWritesBySession.delete(turnSideChatSessionId);
-      }
-      const ending = turns.endAfterTurn;
-      if (ending !== null) {
-        turns.endAfterTurn = null;
-        await closePaneChat(ending.windowId, ending.tabId);
+        completion.publish();
       }
     });
     turns.active = turnPromise;

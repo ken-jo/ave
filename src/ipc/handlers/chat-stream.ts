@@ -25,6 +25,26 @@ import {
 
 export type ConversationStreamEventSink = PlatformConversationEventSink;
 
+/** Hold the terminal event while its caller finishes post-turn work that still owns the turn lease. */
+export function deferTurnCompletion(sink: ConversationStreamEventSink): {
+  sink: ConversationStreamEventSink;
+  publish(): void;
+} {
+  let completion: Extract<PlatformConversationEvent, { kind: "turn.completed" }> | undefined;
+  return {
+    sink: (event) => {
+      if (event.kind === "turn.completed") completion = event;
+      else sink(event);
+    },
+    publish: () => {
+      if (!completion) return;
+      const event = completion;
+      completion = undefined;
+      sink(event);
+    },
+  };
+}
+
 export async function runStreamedTurn(
   conversationLoop: ConversationLoop,
   input: string,

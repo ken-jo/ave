@@ -58,6 +58,7 @@ import {
   llmRouteBaseUrlSignature,
 } from "../../shared/llm-vendor-defaults.js";
 import {
+  deferTurnCompletion,
   runStreamedTurn,
   type ConversationStreamEventSink,
 } from "../handlers/chat-stream.js";
@@ -532,23 +533,28 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, input, attachments);
       const safeDisplayText = displayText === undefined ? undefined
         : sanitizeOutgoingInput(settingsService, sink, displayText);
-      const result = await runStreamedTurn(
-        loop,
-        sanitized.input,
-        sink,
-        {
-          ...(abortSignal ? { abortSignal } : {}),
-          ...(replayStagedInputOrigin ? { inputOrigin: replayStagedInputOrigin } : { inputOrigin: "user-keyboard" as const, userKeyboardIntent }),
-          ...(sanitized.attachments && sanitized.attachments.length > 0
-            ? { attachments: sanitized.attachments }
-            : {}),
-          ...(rolePrompt ? { rolePrompt } : {}),
-          ...(safeDisplayText !== undefined ? { displayText: safeDisplayText } : {}),
-          ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
-        },
-      );
-      await markMainActiveAfterTurn(groupDeps, sanitized.input, replayStagedInputOrigin ?? "user-keyboard");
-      return result;
+      const completion = deferTurnCompletion(sink);
+      try {
+        const result = await runStreamedTurn(
+          loop,
+          sanitized.input,
+          completion.sink,
+          {
+            ...(abortSignal ? { abortSignal } : {}),
+            ...(replayStagedInputOrigin ? { inputOrigin: replayStagedInputOrigin } : { inputOrigin: "user-keyboard" as const, userKeyboardIntent }),
+            ...(sanitized.attachments && sanitized.attachments.length > 0
+              ? { attachments: sanitized.attachments }
+              : {}),
+            ...(rolePrompt ? { rolePrompt } : {}),
+            ...(safeDisplayText !== undefined ? { displayText: safeDisplayText } : {}),
+            ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
+          },
+        );
+        await markMainActiveAfterTurn(groupDeps, sanitized.input, replayStagedInputOrigin ?? "user-keyboard");
+        return result;
+      } finally {
+        completion.publish();
+      }
     };
     const tryStreamTurn = <T>(
       factory: (transport: StreamTurnTransport) => Promise<T>,
@@ -997,24 +1003,29 @@ export function registerChatHandlers(deps: IpcDeps): void {
         ) {
           return { text: "", toolCalls: [], route: "default", stopReason: "blocked" };
         }
-        const result = await runStreamedTurn(
-          conversationLoop,
-          mailboxTurn.initialGuidance,
-          sink,
-          {
-            inputOrigin: "agent-message",
-            abortSignal,
-            approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
-            displayText: mailboxTurn.displayText,
-            subAgentReport: mailboxTurn.childTitle === undefined
-              ? {}
-              : { title: mailboxTurn.childTitle },
-          },
-        );
-        if (conversationLoop.getSessionId() !== parentSessionId) return result;
-        await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
-        await markMainActiveAfterTurn(deps, mailboxTurn.initialGuidance, "agent-message");
-        return result;
+        const completion = deferTurnCompletion(sink);
+        try {
+          const result = await runStreamedTurn(
+            conversationLoop,
+            mailboxTurn.initialGuidance,
+            completion.sink,
+            {
+              inputOrigin: "agent-message",
+              abortSignal,
+              approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
+              displayText: mailboxTurn.displayText,
+              subAgentReport: mailboxTurn.childTitle === undefined
+                ? {}
+                : { title: mailboxTurn.childTitle },
+            },
+          );
+          if (conversationLoop.getSessionId() !== parentSessionId) return result;
+          await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
+          await markMainActiveAfterTurn(deps, mailboxTurn.initialGuidance, "agent-message");
+          return result;
+        } finally {
+          completion.publish();
+        }
       });
     });
   }

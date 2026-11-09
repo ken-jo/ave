@@ -35,6 +35,7 @@ import { projectRootEquals } from "../../shared/project-identity.js";
 import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
 import { expandFileMentionContext } from "./file-mention-context.js";
 import {
+  deferTurnCompletion,
   runStreamedTurn,
   type ConversationStreamEventSink,
 } from "./chat-stream.js";
@@ -495,41 +496,47 @@ export async function handleChatSend(
       }
       abortSignal?.throwIfAborted();
       turnEntered = true;
-      const result = await runStreamedTurn(
-        conversationLoop,
-        sanitized.input,
-        sink,
-        {
-          attachments: sanitized.attachments,
-          inputOrigin,
-          // Desktop sends only: the payload's userActivation is preload's report of a consumed gesture token (parse refuses a
-          // user-keyboard payload without it); main mints the turn's one verified intent from it.
-          ...(inputOrigin === "user-keyboard" ? { userKeyboardIntent: mintUserKeyboardIntent({ inputOrigin, userActivation }) } : {}),
-          ...(displayText === undefined ? {} : { displayText }),
-          ...((inputOrigin === "user-keyboard" && userActivation === true || ctx.remoteControllerAuthority !== undefined)
-            ? { requestAnchorRawIntent: input }
-            : {}),
-          ...(personaPrompt.rolePrompt ? { rolePrompt: personaPrompt.rolePrompt } : {}),
-          ...(turnScopedPluginIds ? { turnScopedPluginIds } : {}),
-          ...(mailboxTurn
-            ? {
-                initialGuidance: mailboxTurn.initialGuidance,
-                initialGuidanceDisplayText: mailboxTurn.displayText,
-                approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
-                subAgentReport: mailboxTurn.childTitle === undefined
-                  ? {}
-                  : { title: mailboxTurn.childTitle },
-              }
-            : {}),
-          ...(ctx.remoteControllerAuthority
-            ? { remoteControllerAuthority: ctx.remoteControllerAuthority }
-            : {}),
-          ...(abortSignal === undefined ? {} : { abortSignal }),
-        },
-      );
-      await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
-      await markMainActiveAfterTurn(deps, sanitized.input, inputOrigin);
-      return result;
+      const completion = deferTurnCompletion(sink);
+      try {
+        const result = await runStreamedTurn(
+          conversationLoop,
+          sanitized.input,
+          completion.sink,
+          {
+            attachments: sanitized.attachments,
+            inputOrigin,
+            // Desktop sends only: the payload's userActivation is preload's report of a consumed gesture token (parse refuses a
+            // user-keyboard payload without it); main mints the turn's one verified intent from it.
+            ...(inputOrigin === "user-keyboard" ? { userKeyboardIntent: mintUserKeyboardIntent({ inputOrigin, userActivation }) } : {}),
+            ...(displayText === undefined ? {} : { displayText }),
+            ...((inputOrigin === "user-keyboard" && userActivation === true || ctx.remoteControllerAuthority !== undefined)
+              ? { requestAnchorRawIntent: input }
+              : {}),
+            ...(personaPrompt.rolePrompt ? { rolePrompt: personaPrompt.rolePrompt } : {}),
+            ...(turnScopedPluginIds ? { turnScopedPluginIds } : {}),
+            ...(mailboxTurn
+              ? {
+                  initialGuidance: mailboxTurn.initialGuidance,
+                  initialGuidanceDisplayText: mailboxTurn.displayText,
+                  approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
+                  subAgentReport: mailboxTurn.childTitle === undefined
+                    ? {}
+                    : { title: mailboxTurn.childTitle },
+                }
+              : {}),
+            ...(ctx.remoteControllerAuthority
+              ? { remoteControllerAuthority: ctx.remoteControllerAuthority }
+              : {}),
+            ...(abortSignal === undefined ? {} : { abortSignal }),
+          },
+        );
+        await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
+        await markMainActiveAfterTurn(deps, sanitized.input, inputOrigin);
+        return result;
+      } finally {
+        // `done` starts queue-auto work, so publish it only after every awaited owner of this turn has settled.
+        completion.publish();
+      }
     } catch (error) {
       if (turnEntered || !abortSignal?.aborted) throw error;
       sink({ kind: "turn.completed" });
