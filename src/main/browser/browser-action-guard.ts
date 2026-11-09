@@ -21,6 +21,7 @@ export interface ActionTarget {
   readonly tabId: string;
   url(): string;
   title(): string;
+  isLoading?(): boolean;
   readonly cdp: CdpSession;
   injectInput<T>(inject: () => Promise<T>): Promise<T>;
   // Run one press (pointer move, touch start, touch end) as the only touch sequence in the page's window, and fail unless it reached this page.

@@ -19,7 +19,7 @@ import {
   recordApproval,
 } from "../../permissions/user-approval-store.js";
 import { BrowserTabRegistry, type BrowserGuest } from "../../main/browser/browser-tab-registry.js";
-import { BROWSER_TOOL } from "../../shared/browser-tools.js";
+import { BROWSER_DOCUMENT_READY_HINT, BROWSER_TOOL } from "../../shared/browser-tools.js";
 import { isSessionOnlyApprovalMemoryScope, type ApprovalMemoryScope } from "../../shared/permissions-events.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -85,7 +85,7 @@ function fakeActions() {
     waitFor: (target) => new Promise((resolve, reject) => {
       targets.push(target);
       calls.push({ action: "waitFor", tab: target.tab.handle, args: [] });
-      pending = { resolve: () => resolve({ found: true, waitedMs: 1 }) };
+      pending = { resolve: () => resolve({ found: true, waitedMs: 1, reason: "text-found", loading: false }) };
       target.signal.addEventListener("abort", () => {
         const error = new Error(`nothing more was done: ${(target.signal.reason as Error).message}`);
         error.name = "BrowserActionError";
@@ -1068,7 +1068,7 @@ describe("browser tools", () => {
     expect(badRef.output).toContain("ref must be an element ref");
     const ok = await run(BROWSER_TOOL.navigate, { tabId: agent.handle, url: "https://b.example/page" });
     expect(ok.isError).toBe(false);
-    expect(browserHeader(ok.output)).toMatchObject({ url: "https://b.example/page", loading: false });
+    expect(browserHeader(ok.output)).toMatchObject({ url: "https://b.example/page", loading: false, readiness: BROWSER_DOCUMENT_READY_HINT });
     expect(page.calls).toEqual([{ action: "navigate", tab: agent.handle, args: ["https://b.example/page"] }]);
     expect(cards.length).toBeGreaterThan(0);
   });
@@ -1105,7 +1105,7 @@ describe("browser tools", () => {
     h.tabs.bindTab(1, { tabId: "renderer-610", webContentsId: 610, requestId: h.ops.at(-1)!.requestId! });
     const result = await opening;
     expect(result.isError).toBe(false);
-    expect(browserHeader(result.output)).toMatchObject({ tabId: "tab-1", url: "https://a.example/start", loading: false, openedBy: "agent" });
+    expect(browserHeader(result.output)).toMatchObject({ tabId: "tab-1", url: "https://a.example/start", loading: false, readiness: BROWSER_DOCUMENT_READY_HINT, openedBy: "agent" });
     expect(h.cards).toHaveLength(1);
     expect(h.cards[0]?.browserSite).toBe("https://a.example:443");
     expect(h.page.calls.map((call) => call.action)).toEqual(["navigate"]);
@@ -1229,7 +1229,24 @@ describe("browser tools", () => {
     await vi.waitFor(() => expect(page.calls).toHaveLength(1));
     expect(page.targets[0]?.approval).toMatchObject({ tabId: tab.handle, documentId: expect.any(Number), controlGeneration: expect.any(Number) });
     page.release();
-    expect((await pending).isError).toBe(false);
+    const result = await pending;
+    expect(result.isError).toBe(false);
+    expect(browserHeader(result.output)).toMatchObject({ found: true, waitedMs: 1, reason: "text-found", loading: false });
+  });
+
+  it("waits for loading with an explicit tab and no text or time cap", async () => {
+    const { run, page, agentTab } = harness();
+    const tab = await agentTab("https://a.example/");
+    const waitFor = vi.fn(async (_target: BrowserActionTab<FakeGuest>, options: { text?: string; timeMs?: number }) => {
+      expect(options).toEqual({});
+      return { found: true, waitedMs: 2, reason: "load-complete" as const, loading: false };
+    });
+    page.actions.waitFor = waitFor;
+    const result = await run(BROWSER_TOOL.wait, { tabId: tab.handle });
+    expect(result.isError).toBe(false);
+    expectBrowserFence(result.output);
+    expect(browserHeader(result.output)).toEqual({ tabId: tab.handle, found: true, waitedMs: 2, reason: "load-complete", loading: false });
+    expect(waitFor).toHaveBeenCalledTimes(1);
   });
 
   it("bounds page URLs and titles to 200 characters and preserves a valid capped result", async () => {
@@ -1383,7 +1400,7 @@ describe("browser tools", () => {
     expect(cards[0]).toMatchObject({ browserSite: "https://a.example:443", exactRecordAllowed: false });
     expect(result.isError).toBe(false);
     expect(result.output).toContain('"url":"https://a.example/start"');
-    expect(browserHeader(result.output)).toMatchObject({ loading: false });
+    expect(browserHeader(result.output)).toMatchObject({ loading: false, readiness: BROWSER_DOCUMENT_READY_HINT });
     expect(result.output).toContain('"openedBy":"agent"');
     expect(page.calls).toEqual([{ action: "navigate", tab: "tab-1", args: ["https://a.example/start"] }]);
     expect(tabs.liveTab("tab-1")?.opener).toBe("agent");

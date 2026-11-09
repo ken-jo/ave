@@ -7,7 +7,7 @@ import type { BrowserObservationAction, BrowserObservationElement } from "../sha
 import { toolSessionId } from "./base.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
 import { validateExternalUrl } from "../shared/external-url.js";
-import { BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS, BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
+import { BROWSER_DOCUMENT_READY_HINT, BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS, BROWSER_TOOL, type BrowserToolName } from "../shared/browser-tools.js";
 import { browserControlLifecycle } from "../main/browser/browser-control-lifecycle.js";
 import { awaitBrowserPopupNavigation } from "../main/browser/browser-popup-navigation.js";
 import type { BrowserGuest } from "../main/browser/browser-tab-registry.js";
@@ -337,7 +337,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           },
           ...(ctx.abortSignal ? { callerSignal: ctx.abortSignal } : {}) }, url.url, url.origin);
         if (guest) await awaitBrowserPopupNavigation(guest, lease.id);
-        return fenced({ tabId: outcome.tabId, ...loaded, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
+        return fenced({ tabId: outcome.tabId, ...loaded, readiness: BROWSER_DOCUMENT_READY_HINT, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
       }), ctx.abortSignal, url.url); } finally { lifecycle?.cancel(); deps.tabs.releaseControl(tab.handle, lease.id); }
   };
 
@@ -462,7 +462,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (input.timeMs !== undefined && (!Number.isInteger(input.timeMs) || (input.timeMs as number) < 1 || (input.timeMs as number) > MAX_WAIT_MS)) {
         return failure(`timeMs must be an integer from 1 to ${MAX_WAIT_MS}`);
       }
-      if (input.text === undefined && input.timeMs === undefined) return failure("give text to wait for, timeMs, or both");
+      if (input.tabId === undefined && input.text === undefined && input.timeMs === undefined) return failure("give tabId, text, or a loading time cap");
       const target = live(input, ctx);
       if (!target.ok) return target.result;
       const changed = unchangedSinceApproval(ctx, target.resolved);
@@ -512,7 +512,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           if (changed) return changed;
         }
         const loaded = await actions.navigate(pageTarget(ctx, fresh, leaseSignal), url.url, url.origin);
-        return fenced({ tabId: target.resolved.tab.handle, ...loaded, title: target.resolved.tab.guest?.getTitle() ?? "" });
+        return fenced({ tabId: target.resolved.tab.handle, ...loaded, readiness: BROWSER_DOCUMENT_READY_HINT, title: target.resolved.tab.guest?.getTitle() ?? "" });
       }, url.url);
     },
 
