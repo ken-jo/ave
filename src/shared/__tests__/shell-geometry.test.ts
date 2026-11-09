@@ -80,13 +80,18 @@ describe("shell card top (styles.css)", () => {
     const value = declared(name);
     const literal = /^(\d+(?:\.\d+)?)px$/.exec(value);
     if (literal) return Number(literal[1]);
-    const sum = /^calc\(\s*var\((--[\w-]+)\)\s*\+\s*var\((--[\w-]+)\)\s*\)$/.exec(value);
-    if (sum) return px(sum[1]) + px(sum[2]);
+    const calculation = /^calc\(\s*var\((--[\w-]+)\)\s*([+-])\s*var\((--[\w-]+)\)\s*\)$/.exec(value);
+    if (calculation) return px(calculation[1]) + (calculation[2] === "+" ? 1 : -1) * px(calculation[3]);
     throw new Error(`${name}: unsupported value ${value}`);
   }
 
   it("starts the sidebar card at or below the window band on every platform", () => {
     expect(px("--shell-card-top")).toBeGreaterThanOrEqual(px("--chrome-band-height"));
     expect(css).not.toMatch(/--shell-card-top-darwin/);
+  });
+
+  it("derives the canvas origin from the shared card top and the cell half-gutter", () => {
+    expect(px("--shell-canvas-top") + px("--chrome-gap-tight")).toBe(px("--shell-card-top"));
+    expect(px("--shell-canvas-top")).toBeGreaterThanOrEqual(px("--chrome-band-height"));
   });
 });
