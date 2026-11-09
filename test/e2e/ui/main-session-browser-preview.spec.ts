@@ -209,7 +209,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
       return window.webContents.getZoomFactor();
     }, appZoom);
     expect(hostFactor).toBeCloseTo(appZoom);
-    const { page } = ctx;
+    const { app, page } = ctx;
     const panelToggle = page.getByTestId(TEST_IDS.panePanelToggle);
     await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
     await page.evaluate(async () => {
@@ -348,16 +348,18 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     await page.locator(`[role="presentation"][data-tab-id="${afterEnd.rendererTabId}"]`).getByRole("tab").click();
     const retainedFrame = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${afterEnd.rendererTabId}"]`);
     await expect(retainedFrame).toHaveCSS("visibility", "visible");
-    await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, secondUrl)).attached).toBe(true);
+    await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, secondUrl)).attached).toBe(true);
     await expect(page.getByTestId("agent-browser-control-badge")).toHaveCount(0);
     await expect(page.getByTestId("chat-side-panel-tab-agent-controlled")).toHaveCount(0);
     const retained = await ctx.app.evaluate(({ webContents }, url) => webContents.getAllWebContents().filter(contents => contents.getURL() === url).map(contents => ({ id: contents.id, url: contents.getURL(), destroyed: contents.isDestroyed() })), secondUrl);
     expect(retained).toHaveLength(1);
     expect(retained[0]).toMatchObject({ id: nativeId, url: secondUrl, destroyed: false });
     // Explicit trusted-chrome focus must move actual native ownership to the visible page.
-    const focused = await page.evaluate(async target => window.aveApi.browserTabs!.nativeSurface({
-      action: "focus", tabId: target.rendererTabId, webContentsId: target.id,
-    }), { rendererTabId: afterEnd.rendererTabId, id: nativeId });
+    const focused = await page.evaluate(async target => {
+      const tabs = window.aveApi.browserTabs;
+      if (!tabs) throw new Error("Native browser focus API unavailable");
+      return tabs.nativeSurface({ action: "focus", tabId: target.rendererTabId, webContentsId: target.id });
+    }, { rendererTabId: afterEnd.rendererTabId, id: nativeId });
     expect(focused.ok).toBe(true);
     const running = ctx;
     const keyboardTarget = () => running.app.evaluate(({ webContents }, url) => {

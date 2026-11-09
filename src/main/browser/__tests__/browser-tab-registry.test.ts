@@ -65,7 +65,8 @@ describe("BrowserTabRegistry", () => {
   it("authorizes independent creation from the matching pending actor and preserves its durable host identity", async () => {
     const { registry, ops } = setup();
     const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
-    const requestId = ops.at(-1)!.request.requestId;
+    const requestId = ops.at(-1)?.request.requestId;
+    if (!requestId) throw new Error("Missing native creation request");
     expect(registry.authorizeNativeSurface(1, "native-page", requestId)).toBe(true);
     expect(registry.authorizeNativeSurface(2, "native-page", requestId)).toBe(false);
     expect(registry.authorizeNativeSurface(1, "native-page", "other-request")).toBe(false);
@@ -90,10 +91,13 @@ describe("BrowserTabRegistry", () => {
     const guest = new FakeGuest(502, "about:blank");
     const nativeFocus = vi.spyOn(guest, "focus");
     registry.guestAttached(guest, 1, { kind: "native-view" });
-    registry.bindTab(1, { tabId: "native-page", webContentsId: guest.id, requestId: ops.at(-1)!.request.requestId, parked: true });
+    const requestId = ops.at(-1)?.request.requestId;
+    if (!requestId) throw new Error("Missing native creation request");
+    registry.bindTab(1, { tabId: "native-page", webContentsId: guest.id, requestId, parked: true });
     const opened = await opening;
     if (!opened.ok) throw new Error("Missing independent page");
-    const tab = registry.liveTab(opened.tabId)!;
+    const tab = registry.liveTab(opened.tabId);
+    if (!tab) throw new Error("Missing independent page binding");
     const lease = registry.acquireControl(tab, ACTOR);
     const beforeOps = ops.length;
     await registry.focusGuest(guest.id);

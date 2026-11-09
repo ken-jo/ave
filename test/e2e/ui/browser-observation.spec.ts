@@ -211,8 +211,9 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
     await expect(strip).toContainText("클릭: ‘Continue’");
     const guestId = await ctx.app.evaluate(({ webContents }, url) => {
       const targets = webContents.getAllWebContents().filter(contents => contents.getURL() === url);
-      if (targets.length !== 1) throw new Error(`Expected one observation target, found ${targets.length}`);
-      return targets[0]!.id;
+      const [target] = targets;
+      if (targets.length !== 1 || !target) throw new Error(`Expected one observation target, found ${targets.length}`);
+      return target.id;
     }, pageUrl);
     try {
       await expect.poll(() => ctx!.app.evaluate(({ webContents }, id) => {

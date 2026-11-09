@@ -8,8 +8,9 @@ export async function browserHostIdentity(app: ElectronApplication, page: Page):
 export async function browserTargetId(app: ElectronApplication, url: string): Promise<number> {
   return app.evaluate(({ webContents }, targetUrl) => {
     const targets = webContents.getAllWebContents().filter(contents => contents.getURL() === targetUrl);
-    if (targets.length !== 1) throw new Error(`Expected one native browser target, found ${targets.length}`);
-    return targets[0]!.id;
+    const [target] = targets;
+    if (targets.length !== 1 || !target) throw new Error(`Expected one native browser target, found ${targets.length}`);
+    return target.id;
   }, url);
 }
 
@@ -17,8 +18,8 @@ export async function inspectBrowserTarget(app: ElectronApplication, windowId: n
   return app.evaluate(({ BrowserWindow, webContents }, target) => {
     const owner = BrowserWindow.fromId(target.windowId);
     const matches = webContents.getAllWebContents().filter(contents => contents.getURL() === target.url);
-    if (!owner || matches.length !== 1) throw new Error("Native browser target or owner is unavailable");
-    const contents = matches[0]!;
+    const [contents] = matches;
+    if (!owner || matches.length !== 1 || !contents) throw new Error("Native browser target or owner is unavailable");
     type NativeView = { children: NativeView[]; webContents?: { id: number } };
     const contains = (view: NativeView): boolean => view.webContents?.id === contents.id || view.children.some(contains);
     return {

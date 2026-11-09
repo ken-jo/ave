@@ -207,7 +207,8 @@ it("updates a bootstrap agent tab label from native navigation and page titles w
   renderPanel(<HarnessPanel api={api(native)} sessionId="parent" targets={[]} files={[]} initialSelectedId={null} initialAgentTab />);
   await act(async () => {});
   const page = screen.getByTestId("chat-side-panel-browser-native");
-  const tabId = page.dataset.tabId!;
+  const tabId = page.dataset.tabId;
+  if (!tabId) throw new Error("Page identity is missing");
   expect(screen.getByRole("tab", { name: /about:blank/ })).toBeInTheDocument();
   act(() => { native.publish(tabId, { url: "https://example.com/" }); });
   expect(screen.getByRole("tab", { name: /example.com/ })).toBeInTheDocument();

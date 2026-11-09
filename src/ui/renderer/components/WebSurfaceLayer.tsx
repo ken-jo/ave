@@ -399,9 +399,13 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
 }
 
 function NativeGuestFrame({ api, surface }: { api: BrowserTabsApi; surface: WebSurface }) {
+  const { t } = useTranslation();
   const frameRef = useRef<HTMLDivElement | null>(null);
-  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const viewportRef = useRef<HTMLButtonElement | null>(null);
   const [binding, setBinding] = useState<BrowserNativeSurfaceState | null>(null);
+  const targetUrl = useRef(surface.url);
+  const requestedUrl = useRef(surface.url);
+  useEffect(() => { targetUrl.current = surface.url; }, [surface.url]);
   useEffect(() => {
     let mounted = true;
     let placement: NativePlacement | undefined;
@@ -419,9 +423,10 @@ function NativeGuestFrame({ api, surface }: { api: BrowserTabsApi; surface: WebS
       placement = { frame, viewport, api, surface: created, sequence: 0, requestedKey: "", parked: !created.visible };
       nativePlaced.set(surface.tabId, placement);
       setBinding(created);
-      if (acquisition.initialNavigation && surface.bindRequestId === undefined && surface.url !== created.url) {
+      if (acquisition.initialNavigation && surface.bindRequestId === undefined && targetUrl.current !== created.url) {
+        requestedUrl.current = targetUrl.current;
         void requestNativeBrowserSurface(api, { action: "navigate", tabId: surface.tabId,
-          webContentsId: created.webContentsId, url: surface.url });
+          webContentsId: created.webContentsId, url: targetUrl.current });
       }
       requestWebSurfaceLayout();
     }).catch((error: unknown) => console.warn("Native browser creation failed.", error));
@@ -435,22 +440,21 @@ function NativeGuestFrame({ api, surface }: { api: BrowserTabsApi; surface: WebS
       }
     };
   }, [api, surface.tabId, surface.bindRequestId]);
-  const requestedUrl = useRef(surface.url);
   useEffect(() => {
     if (!binding || requestedUrl.current === surface.url) return;
     requestedUrl.current = surface.url;
     void requestNativeBrowserSurface(api, { action: "navigate", tabId: surface.tabId,
       webContentsId: binding.webContentsId, url: surface.url });
   }, [api, binding, surface.tabId, surface.url]);
-  const attach = useCallback((element: HTMLDivElement | null) => {
+  const attach = useCallback((element: HTMLButtonElement | null) => {
     viewportRef.current = element;
     setNativeWebSurfaceElement(surface.tabId, element);
   }, [surface.tabId]);
   return <div ref={frameRef} data-testid="web-surface-frame" data-tab-id={surface.tabId} data-surface-host="native"
     style={{ position: "fixed", overflow: "hidden", visibility: "hidden", pointerEvents: "none", left: 0, top: 0, width: 0, height: 0 }}>
-    <div ref={attach} tabIndex={0} data-testid="chat-side-panel-browser-native" data-tab-id={surface.tabId}
+    <button ref={attach} type="button" aria-label={t("browserWorkspace.title")} data-testid="chat-side-panel-browser-native" data-tab-id={surface.tabId}
       onFocus={() => { void commandNativeBrowserSurface(surface.tabId, "focus"); }}
-      style={{ position: "absolute", width: 1024, height: 768 }} />
+      style={{ position: "absolute", width: 1024, height: 768, border: 0, padding: 0, background: "transparent" }} />
   </div>;
 }
 

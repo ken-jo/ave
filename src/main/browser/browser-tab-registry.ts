@@ -504,7 +504,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   userFocus(guestId: number, explicit = false): void {
     const entry = this.attached.get(guestId);
-    if (!entry || entry.kind !== "native-view" || entry.parked !== false || entry.guest.isDestroyed()
+    if (entry?.kind !== "native-view" || entry.parked !== false || entry.guest.isDestroyed()
       || !explicit && (this.agentFocusScopes.get(guestId) ?? 0) > 0) return;
     for (const tab of this.tabs.values()) if (tab.guest === entry.guest) this.pauseRecord(tab, false);
   }

@@ -115,7 +115,7 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
         contents.on("render-process-gone", (_crash, details) => state.previewCrashes.push({ guestId: contents.id, ...details }));
       });
     });
-    const page = ctx.page;
+    const { app, page } = ctx;
     const host = await browserHostIdentity(ctx.app, page);
     await setWindowSize(ctx.app, 1280, 800);
     const errors: string[] = [];
@@ -179,7 +179,6 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
       id: nativePageId, type: "window", embedded: false, attached: true,
     });
     // Measure inside the real parked guest; a visible shell rect alone cannot prove its animation clock is running.
-    const app = ctx.app;
     const measureLiveness = () => app.evaluate(async ({ webContents }, url) => {
       const guest = webContents.getAllWebContents().find((contents) => contents.getURL() === url);
       if (!guest) throw new Error("Parked preview guest unavailable");
@@ -205,7 +204,7 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
     const thumbnail = thumbnailRow.getByRole("button", { name: /^(Open browser tab:|브라우저 탭 열기:)/ });
     await expect(thumbnail).toBeVisible();
     await expect(thumbnailRow.getByTestId("browser-observation-slot")).toBeVisible();
-    await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, firstUrl)).attached).toBe(false);
+    await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, firstUrl)).attached).toBe(false);
     expect(await guestFrame.evaluate((element) => element.contains(document.activeElement))).toBe(false);
     expect(await page.locator(`webview[data-tab-id="${rendererTabId}"]`).count()).toBe(0);
     expect(await browserTargetId(ctx.app, firstUrl)).toBe(nativePageId);
@@ -311,27 +310,31 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
     const hiddenFrames = (await readCapture()).messages.filter((message) => message.kind === "frame" && message.receivedAt >= hiddenAt);
     expect(hiddenFrames.length).toBeGreaterThanOrEqual(3);
     for (const frame of hiddenFrames) expect(frame).toMatchObject(binding);
-    const controlBeforeReveal = await page.evaluate(async id =>
-      (await window.aveApi.browserTabs!.getState()).tabs.find(tab => tab.tabId === id), tabId);
+    const readControl = () => page.evaluate(async id => {
+      const tabs = window.aveApi.browserTabs;
+      if (!tabs) throw new Error("Preview browser control unavailable");
+      const control = (await tabs.getState()).tabs.find(tab => tab.tabId === id);
+      if (!control) throw new Error("Preview browser control target unavailable");
+      return control;
+    }, tabId);
+    const controlBeforeReveal = await readControl();
     expect(controlBeforeReveal).toMatchObject({ mode: "agent-active" });
     await page.screenshot({ path: test.info().outputPath("conversation-browser-thumbnail.png") });
     await thumbnail.click();
     await expect(thumbnailRow).toHaveCount(0);
     await expect(page.getByTestId("browser-observation-preview")).toHaveCount(0);
-    await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, firstUrl)).attached).toBe(true);
+    await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, firstUrl)).attached).toBe(true);
     expect(await browserTargetId(ctx.app, firstUrl)).toBe(nativePageId);
-    expect(await page.evaluate(async id =>
-      (await window.aveApi.browserTabs!.getState()).tabs.find(tab => tab.tabId === id), tabId))
-      .toMatchObject({ mode: "agent-active", generation: controlBeforeReveal!.generation, owner: controlBeforeReveal!.owner });
+    expect(await readControl())
+      .toMatchObject({ mode: "agent-active", generation: controlBeforeReveal.generation, owner: controlBeforeReveal.owner });
     // Narrow mode also reveals the original pane via the same focus path.
     await setWindowSize(ctx.app, 900, 700);
     await page.getByTestId(`sidebar-session-${click.target.hostSessionId}`).click();
     await expect(thumbnail).toBeVisible();
     await thumbnail.click();
     await expect(thumbnailRow).toHaveCount(0);
-    expect(await page.evaluate(async id =>
-      (await window.aveApi.browserTabs!.getState()).tabs.find(tab => tab.tabId === id), tabId))
-      .toMatchObject({ mode: "agent-active", generation: controlBeforeReveal!.generation, owner: controlBeforeReveal!.owner });
+    expect(await readControl())
+      .toMatchObject({ mode: "agent-active", generation: controlBeforeReveal.generation, owner: controlBeforeReveal.owner });
     await setWindowSize(ctx.app, 1280, 800);
     // Focusing the hidden pane carried the maximize to it; restore the split so the conversation and its approvals show again.
     await page.locator('[data-testid="pane-maximize"][aria-pressed="true"]:visible').click();
@@ -402,7 +405,7 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
 
     // Paused observation must not keep a hidden guest painting.
     await page.getByTestId("pane-cell:main").getByTestId("pane-maximize").click();
-    await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, secondUrl)).attached).toBe(false);
+    await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, secondUrl)).attached).toBe(false);
     await expect(thumbnailRow).toHaveCount(0);
     await page.getByTestId(`sidebar-surface-${rendererTabId}`).click();
     await page.getByTestId("pane").filter({ has: page.getByTestId("agent-browser-control-resume") }).getByTestId("pane-close").click();

@@ -87,9 +87,17 @@ test("keeps an agent page mounted through blank bootstrap and first navigation",
     const bootstraps = await ctx.app.evaluate((_main, id) =>
       (globalThis as unknown as { blankBootstraps: { id: number; at: number }[] }).blankBootstraps.filter(entry => entry.id === id), guestId);
     expect(bootstraps).toHaveLength(1);
-    expect(bootstraps[0]!.at).toBeLessThanOrEqual(firstPageRequestAt);
+    const [bootstrap] = bootstraps;
+    if (!bootstrap) throw new Error("Native page blank bootstrap unavailable");
+    expect(bootstrap.at).toBeLessThanOrEqual(firstPageRequestAt);
     expect(pageRequests).toBe(1);
-    const preferences = await ctx.app.evaluate(({ webContents }, id) => webContents.fromId(id)?.getLastWebPreferences(), guestId);
+    const preferences = await ctx.app.evaluate(({ webContents }, id) => {
+      const target = webContents.fromId(id);
+      if (!target || !("getLastWebPreferences" in target) || typeof target.getLastWebPreferences !== "function") {
+        throw new Error("Native page preferences unavailable");
+      }
+      return target.getLastWebPreferences();
+    }, guestId);
     expect(preferences).toMatchObject({ contextIsolation: true, sandbox: true, nodeIntegration: false });
     expect(await inspectBrowserTarget(ctx.app, host.windowId, url)).toMatchObject({ id: guestId, type: "window", embedded: false });
     await expect(ctx.page.getByTestId("chat-side-panel-url-viewer")).toContainText(url);

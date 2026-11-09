@@ -55,6 +55,13 @@ function makeApi() {
 }
 
 let store: WorkspaceTabsStore | null = null;
+function openNativeAgentTab(url: string, requestId: string): string {
+  if (!store) throw new Error("Workspace tabs are unavailable");
+  const tabId = store.openAgentBrowserTab(url, requestId, true, "s1");
+  if (!tabId) throw new Error("Agent page did not open");
+  return tabId;
+}
+
 let previousWindowAve: unknown;
 beforeEach(() => {
   setNativeBrowserTabIds([]);
@@ -132,7 +139,7 @@ describe("ChatSidePanel agent browser", () => {
     const { api, native } = makeApi();
     render(<Harness api={api} />);
     let tabId = "";
-    await act(async () => { tabId = store!.openAgentBrowserTab("about:blank", "browser-op-blank", true, "s1")!; });
+    await act(async () => { tabId = openNativeAgentTab("about:blank", "browser-op-blank"); });
     const page = screen.getByTestId("chat-side-panel-browser-native");
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const openExternal = within(viewer).getByRole("button");
@@ -155,7 +162,7 @@ describe("ChatSidePanel agent browser", () => {
     const { api, native } = makeApi();
     render(<Harness api={api} />);
     let tabId = "";
-    await act(async () => { tabId = store!.openAgentBrowserTab("about:blank", "browser-op-observed", true, "s1")!; });
+    await act(async () => { tabId = openNativeAgentTab("about:blank", "browser-op-observed"); });
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const page = screen.getByTestId("chat-side-panel-browser-native");
     const openExternal = within(viewer).getByRole("button");
@@ -176,9 +183,11 @@ describe("ChatSidePanel agent browser", () => {
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/page" })));
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://a.example/page#section", isMainFrame: true })));
-    expect(committedWebSurfaceLocation(webview.dataset.tabId!)).toBe("https://a.example/page#section");
+    const tabId = webview.dataset.tabId;
+    if (!tabId) throw new Error("Page identity is missing");
+    expect(committedWebSurfaceLocation(tabId)).toBe("https://a.example/page#section");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://frame.example/", isMainFrame: false })));
-    expect(committedWebSurfaceLocation(webview.dataset.tabId!)).toBe("https://a.example/page#section");
+    expect(committedWebSurfaceLocation(tabId)).toBe("https://a.example/page#section");
     fireEvent.click(within(viewer).getByRole("button"));
     expect(api.openExternalUrl).toHaveBeenCalledWith("https://a.example/bootstrap");
     expect(webview).toHaveAttribute("src", "https://a.example/bootstrap");
@@ -194,7 +203,9 @@ describe("ChatSidePanel agent browser", () => {
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/previous" })));
     expect(openExternal).toBeEnabled();
     act(() => webview.dispatchEvent(new Event("did-attach")));
-    expect(committedWebSurfaceLocation(webview.dataset.tabId!)).toBeNull();
+    const tabId = webview.dataset.tabId;
+    if (!tabId) throw new Error("Page identity is missing");
+    expect(committedWebSurfaceLocation(tabId)).toBeNull();
     expect(openExternal).toBeEnabled();
     expect(within(viewer).getByText("https://a.example/bootstrap")).toBeInTheDocument();
   });
@@ -286,7 +297,7 @@ describe("ChatSidePanel agent browser", () => {
     const { api, native } = makeApi();
     render(<Harness api={api} />);
     let tabId = "";
-    await act(async () => { tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-3", true, "s1")!; });
+    await act(async () => { tabId = openNativeAgentTab("https://a.example/", "browser-op-3"); });
     expect(native.nativeSurface.mock.calls.filter(([r]) => r.action === "create")).toEqual([[{ action: "create", tabId, requestId: "browser-op-3" }]]);
     expect(api.browserTabs!.bindTab).not.toHaveBeenCalled();
     expect(screen.queryByTestId("chat-side-panel-browser-webview")).toBeNull();

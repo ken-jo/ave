@@ -1,5 +1,5 @@
 import type { BrowserTabsApi } from "../../../shared/browser-surface.js";
-import type { BrowserNativeSurfaceRequest, BrowserNativeSurfaceState } from "../../../shared/browser-native-surface.js";
+import type { BrowserNativeSurfaceRequest, BrowserNativeSurfaceResult, BrowserNativeSurfaceState } from "../../../shared/browser-native-surface.js";
 import {
   getWebSurfaces, nativeWebSurfaceState, setNativeWebSurfaceState, subscribeWebSurfaceRetirement,
 } from "./web-surfaces.js";
@@ -37,7 +37,7 @@ export function connectNativeBrowserSurfaces(api: BrowserTabsApi): () => void {
 export async function createNativeBrowserSurface(api: BrowserTabsApi, tabId: string, requestId?: string): Promise<NativeBrowserSurfaceAcquisition | null> {
   const registration = { api };
   clients.set(tabId, registration);
-  let result;
+  let result: BrowserNativeSurfaceResult;
   try {
     result = await api.nativeSurface({ action: "create", tabId, ...(requestId === undefined ? {} : { requestId }) });
   } catch (error) {

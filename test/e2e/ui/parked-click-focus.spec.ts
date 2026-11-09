@@ -8,7 +8,9 @@ import { browserHostIdentity, browserTargetId, inspectBrowserTarget } from "./br
 
 test.use({ trace: "on" });
 test("parked agent click preserves the composer throughout native dispatch", () => exerciseParkedClick(false));
+test("presented agent click preserves the composer throughout native dispatch", () => exerciseParkedClick(false, false, false, true));
 test("@os-focus parked agent click preserves native composer focus", () => exerciseParkedClick(true));
+test("@os-focus presented agent click preserves native composer focus", () => exerciseParkedClick(true, false, false, true));
 test("visible user takeover invalidates control before a resumed parked click", () => exerciseParkedClick(false, true));
 test("@os-focus visible user takeover restores native keyboard ownership before agent resume", () => exerciseParkedClick(true, true));
 if (process.platform === "darwin") {
@@ -18,14 +20,14 @@ if (process.platform === "darwin") {
 interface PressSample {
   label: string;
   windowFocused: boolean;
-  focusedFrame: number;
+  focusedFrame: number | undefined;
   hostFrame: number;
   targetId: number;
   focusedContentsId: number | null;
   editor: { active: string; draft: string; blurs: number; sameElement: boolean };
 }
 
-async function exerciseParkedClick(foreground: boolean, takeover = false, osTyping = false): Promise<void> {
+async function exerciseParkedClick(foreground: boolean, takeover = false, osTyping = false, presented = false): Promise<void> {
   const model = "static-editor-press-fixture";
   let phase = 0,
     url = "",
@@ -176,7 +178,7 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
         };
       });
     }, { ...host, url });
-    const page = ctx.page;
+    const { app, page } = ctx;
     await page.evaluate(async () => {
       await window.aveApi.setApiKey("openai-compatible", "sk-e2e-loopback-editor");
       const mode = await window.ave.permission.setMode("allow");
@@ -210,16 +212,16 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
     // Establish a real once-visible viewport before parking the guest.
     const toggle = page.getByTestId(TEST_IDS.panePanelToggle);
     if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
-    await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, url)).attached).toBe(true);
+    await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, url)).attached).toBe(true);
     const targetId = await browserTargetId(ctx.app, url);
     expect(await inspectBrowserTarget(ctx.app, host.windowId, url)).toMatchObject({ id: targetId, type: "window", embedded: false });
     prepareSnapshot?.();
     await expect.poll(() => release !== undefined, { timeout: 30_000 }).toBe(true);
 
     expect(ref).toMatch(/^e\d+$/);
-    await page.getByTestId("chat-side-panel-close").click();
-    await expect(toggle).toHaveAttribute("aria-pressed", "false");
-    await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, url)).attached).toBe(false);
+    if (!presented) await page.getByTestId("chat-side-panel-close").click();
+    await expect(toggle).toHaveAttribute("aria-pressed", String(presented));
+    await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, url)).attached).toBe(presented);
     approve = false;
     await approvals;
     if (foreground) {
@@ -231,7 +233,7 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
         owner.webContents.focus();
       }, host.windowId);
       await expect
-        .poll(() => ctx!.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isFocused())))
+        .poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isFocused())))
         .toBe(true);
     }
     await page.evaluate(() => {
@@ -318,13 +320,21 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
     expect(beforePress?.targetId).toBe(targetId);
     expect(afterPress?.targetId).toBe(targetId);
     expect(after).toMatchObject({ active: "press-editor", draft: "unfinished rename draft", blurs: 0, sameElement: true });
+    expect(await inspectBrowserTarget(app, host.windowId, url)).toMatchObject({ id: targetId, attached: presented });
     if (takeover) {
-      const beforeTakeover = await page.evaluate(async target =>
-        (await window.aveApi.browserTabs!.getState()).tabs.find(tab => tab.tabId === target), tabId);
+      const control = () => page.evaluate(async target => {
+        const tabs = window.aveApi.browserTabs;
+        if (!tabs) throw new Error("Native browser control API unavailable");
+        const control = (await tabs.getState()).tabs.find(tab => tab.tabId === target);
+        if (!control) throw new Error("Native browser control target unavailable");
+        return control;
+      }, tabId);
+      const beforeTakeover = await control();
       expect(beforeTakeover).toMatchObject({ mode: "agent-active", rendererTabId: expect.any(String) });
-      const rendererTabId = beforeTakeover!.rendererTabId!;
+      const rendererTabId = beforeTakeover.rendererTabId;
+      if (!rendererTabId) throw new Error("Native browser renderer identity unavailable");
       await toggle.click();
-      await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, url)).attached).toBe(true);
+      await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, url)).attached).toBe(true);
       if (osTyping) {
         const point = await ctx.app.evaluate(async ({ BrowserWindow, webContents }, input) => {
           const owner = BrowserWindow.fromId(input.windowId);
@@ -349,16 +359,16 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
         }, { windowId: host.windowId, targetId });
         await promisify(execFile)("/usr/bin/osascript", ["-e", 'on run argv\ntell application "System Events" to click at {(item 1 of argv as integer), (item 2 of argv as integer)}\nend run', String(point.x), String(point.y)]);
       } else {
-        const focus = await page.evaluate(async target => window.aveApi.browserTabs!.nativeSurface({
-          action: "focus", tabId: target.rendererTabId, webContentsId: target.targetId,
-        }), { rendererTabId, targetId });
+        const focus = await page.evaluate(async target => {
+          const tabs = window.aveApi.browserTabs;
+          if (!tabs) throw new Error("Native browser focus API unavailable");
+          return tabs.nativeSurface({ action: "focus", tabId: target.rendererTabId, webContentsId: target.targetId });
+        }, { rendererTabId, targetId });
         expect(focus.ok).toBe(true);
       }
-      const control = () => page.evaluate(async target =>
-        (await window.aveApi.browserTabs!.getState()).tabs.find(tab => tab.tabId === target), tabId);
-      await expect.poll(async () => (await control())?.mode).toBe("human-paused");
+      await expect.poll(async () => (await control()).mode).toBe("human-paused");
       const paused = await control();
-      expect(paused!.generation).toBeGreaterThan(beforeTakeover!.generation);
+      expect(paused.generation).toBeGreaterThan(beforeTakeover.generation);
       expect(await browserTargetId(ctx.app, url)).toBe(targetId);
       attemptWhilePaused?.();
       await expect.poll(() => resumeAgent !== undefined).toBe(true);
@@ -375,7 +385,7 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
         await page.executeJavaScript("document.getElementById('page-editor').focus()");
       }, targetId);
       if (foreground) {
-        await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, url)).focusedContentsId).toBe(targetId);
+        await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, url)).focusedContentsId).toBe(targetId);
       }
       if (osTyping) {
         await promisify(execFile)("/usr/bin/osascript", ["-e", 'on run argv\ntell application "System Events" to keystroke item 1 of argv\nend run', "PAGEKEYS"]);
@@ -388,19 +398,23 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
           target.sendInputEvent({ type: "keyUp", keyCode: "P" });
         }, targetId);
       }
-      await expect.poll(() => ctx!.app.evaluate(async ({ webContents }, id) => {
+      await expect.poll(() => app.evaluate(async ({ webContents }, id) => {
         const target = webContents.fromId(id);
         if (!target) throw new Error("Native takeover target unavailable");
         return target.executeJavaScript("document.getElementById('page-editor').value");
       }, targetId)).toBe(osTyping ? "PAGEKEYS" : "P");
       await expect(composer).toHaveValue("unfinished rename draft");
-      const resumed = await page.evaluate(async tab => window.aveApi.browserTabs!.resume(tab), rendererTabId);
+      const resumed = await page.evaluate(async tab => {
+        const tabs = window.aveApi.browserTabs;
+        if (!tabs) throw new Error("Native browser resume API unavailable");
+        return tabs.resume(tab);
+      }, rendererTabId);
       expect(resumed.ok).toBe(true);
       const resumedControl = await control();
-      expect(resumedControl!.generation).toBeGreaterThan(paused!.generation);
-      expect(resumedControl).toMatchObject({ mode: "agent-active", owner: beforeTakeover!.owner });
+      expect(resumedControl.generation).toBeGreaterThan(paused.generation);
+      expect(resumedControl).toMatchObject({ mode: "agent-active", owner: beforeTakeover.owner });
       await page.getByTestId("chat-side-panel-close").click();
-      await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, url)).attached).toBe(false);
+      await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, url)).attached).toBe(false);
       await composer.focus();
       await page.evaluate(() => { (window as unknown as { pressEditorState: { blurs: number } }).pressEditorState.blurs = 0; });
       resumeAgent?.();
@@ -408,7 +422,7 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
       resumedClick?.();
       await expect.poll(() => finish !== undefined).toBe(true);
       if (foreground) {
-        await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, url)).focusedContentsId).toBe(host.chromeId);
+        await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, url)).focusedContentsId).toBe(host.chromeId);
       }
       if (osTyping) {
         await promisify(execFile)("/usr/bin/osascript", ["-e", 'on run argv\ntell application "System Events" to keystroke item 1 of argv\nend run', "HOSTKEYS"]);
@@ -431,7 +445,7 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
       expect(await browserTargetId(ctx.app, url)).toBe(targetId);
       const finalRouting = await inspectBrowserTarget(ctx.app, host.windowId, url);
       expect(finalRouting).toMatchObject({ id: targetId, attached: false, focusedHostFrame: finalRouting.hostFrame });
-      expect(await control()).toMatchObject({ mode: "agent-active", generation: resumedControl!.generation, owner: beforeTakeover!.owner });
+      expect(await control()).toMatchObject({ mode: "agent-active", generation: resumedControl.generation, owner: beforeTakeover.owner });
       expect(results.filter(result => /"error"\s*:/.test(result))).toEqual([pausedResult]);
     }
     finish?.();

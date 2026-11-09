@@ -90,8 +90,8 @@ for (const fixture of DOCUMENT_FIXTURES) test(`returns main-document readiness a
     await expect(page.getByTestId("chat-main-column").getByText("Usable document confirmed.", { exact: true })).toBeVisible({ timeout: 60_000 });
     const guest = await ctx.app.evaluate(({ webContents }, url) => {
       const targets = webContents.getAllWebContents().filter(contents => contents.getURL() === url);
-      if (targets.length !== 1) throw new Error(`Expected one readiness target, found ${targets.length}`);
-      const page = targets[0]!;
+      const [page] = targets;
+      if (targets.length !== 1 || !page) throw new Error(`Expected one readiness target, found ${targets.length}`);
       return { url: page.getURL(), loading: page.isLoading(), title: page.getTitle(), type: page.getType(), embedded: Boolean(page.hostWebContents) };
     }, `${baseUrl}/document?navigated`);
     console.log("Native document readiness measurements", JSON.stringify({ measurements, guest }));

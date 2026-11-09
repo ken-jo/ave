@@ -6,9 +6,15 @@ export function nativeSurfaceFixture() {
   const states = new Map<string, BrowserNativeSurfaceState>();
   const initialNavigations = new Map<string, boolean>();
   const listeners = new Set<(event: BrowserNativeSurfaceChanged) => void>();
+  const stateFor = (tabId: string) => {
+    const state = states.get(tabId);
+    if (!state) throw new Error("Native page fixture is missing");
+    return state;
+  };
   const publish = (tabId: string, patch: Partial<BrowserNativeSurfaceState>) => {
     if (patch.url !== undefined) initialNavigations.set(tabId, false);
-    const state = { ...states.get(tabId)!, ...patch, revision: (states.get(tabId)?.revision ?? 0) + 1 };
+    const previous = stateFor(tabId);
+    const state = { ...previous, ...patch, revision: previous.revision + 1 };
     states.set(tabId, state);
     for (const listener of listeners) listener({ tabId, surface: state });
     return state;
@@ -29,8 +35,9 @@ export function nativeSurfaceFixture() {
       initialNavigations.delete(request.tabId);
       return { ok: true, surface: null };
     }
+    if (!states.has(request.tabId)) return { ok: false, error: "stale-surface" };
     const surface = request.action === "present" ? publish(request.tabId, { visible: request.bounds !== null })
-      : request.action === "navigate" ? publish(request.tabId, { url: request.url }) : states.get(request.tabId)!;
+      : request.action === "navigate" ? publish(request.tabId, { url: request.url }) : stateFor(request.tabId);
     return { ok: true, surface };
   });
   const api = {

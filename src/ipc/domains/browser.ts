@@ -62,6 +62,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
     userFocus: (guestId, explicit) => browserTabRegistry.userFocus(guestId, explicit),
     userNavigate: (windowId, tabId) => { browserTabRegistry.stop(windowId, tabId); },
   });
+  const surfaces = nativeSurfaces;
 
   ipcMain.handle(CHANNELS.browser.nativeSurface, (event, payload: unknown): Promise<BrowserNativeSurfaceResult> | BrowserNativeSurfaceResult => {
     if (!validateHostRendererSender(event)) {
@@ -71,7 +72,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
     const owner = mainWindowForContents(event.sender);
     const request = parseBrowserNativeSurfaceRequest(payload);
     if (!owner || !request) return { ok: false, error: "bad-request" };
-    return nativeSurfaces!.request(owner.id, request);
+    return surfaces.request(owner.id, request);
   });
 
   browserTabRegistry.setBindingPersistence({

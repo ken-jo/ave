@@ -81,7 +81,8 @@ describe("private browser and terminal preload boundaries", () => {
     await expect(api.nativeSurface(request)).rejects.toThrow("invalid-native-browser-surface");
     const receive = vi.fn();
     const off = api.onNativeSurfaceChanged(receive);
-    const listener = listeners.get(CHANNELS.browser.nativeSurfaceChanged)!;
+    const listener = listeners.get(CHANNELS.browser.nativeSurfaceChanged);
+    if (!listener) throw new Error("Native surface listener was not registered");
     listener(undefined, { tabId: surface.tabId, surface });
     expect(receive).toHaveBeenCalledWith({ tabId: surface.tabId, surface });
     expect(() => listener(undefined, { tabId: "browser:other", surface })).toThrow("invalid-native-browser-surface");
