@@ -38,7 +38,7 @@ const server = createServer(async (request, response) => {
   } else {
     response.setHeader("content-type", "text/html");
     const page = await fs.readFile(pagePath, "utf8");
-    response.end(page.replace("</style>", "#drag{background:#36a;color:white}</style>").replace('aria-label="Drag source">Drag source</div>', 'aria-label="Drag source"></div>'));
+    response.end(page.replace("</style>", "#drag{background:#36a;color:white}body{background:linear-gradient(to bottom,#e5533d 0 480px,#2f78dc 480px 960px,#d6b527 960px 1440px,#914dc8 1440px 1920px,#00a65a 1920px)}</style>").replace('aria-label="Drag source">Drag source</div>', 'aria-label="Drag source"></div>'));
   }
 });
 
@@ -97,6 +97,7 @@ async function capture(options: BrowserScreenshotOptions, zoom = 1): Promise<Cap
       return [red, green, blue];
     };
     return { data: image.data, dimensions, viewport: state.viewport, content: state.content, element: state.element,
+      bandPixelsRGB: [200, 700, 1200, 1700, 2200].map((y) => pixel((dimensions.width * Math.min(dimensions.height - 1, y) + Math.min(dimensions.width - 1, 700)) * 4)),
       bottomPixelRGB: pixel(offset), elementPixelsRGB: [0.25, 0.5, 0.75].map((fraction) => pixel((dimensions.width * Math.floor(dimensions.height * fraction) + Math.floor(dimensions.width / 2)) * 4)), truncated: image.truncated };
   } finally { browserTabRegistry.releaseControl(tabId, lease.id); }
 }

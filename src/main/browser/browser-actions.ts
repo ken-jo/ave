@@ -3,6 +3,7 @@
 import { captureBrowserPage, captureBrowserViewport } from "./browser-capture.js";
 import { parseBrowserScreenshotOptions, type BrowserScreenshotOptions } from "../../shared/browser-capture.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { captureContextGone, captureScrollParameters } from "./browser-capture-scroll.js";
 import { browserControlLifecycle } from "./browser-control-lifecycle.js";
 import { subscribeBrowserGuestDestroyed, type BrowserLifecycleGuest } from "./browser-guest-lifecycle.js";
 import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
@@ -60,6 +61,10 @@ async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStar
   }
   // The guest's native property becomes unreadable at destruction; its session still owns listener cleanup.
   const session: CdpSession = {
+    captureKey: guest,
+    clearDeviceMetrics: async () => {
+      if (!guest.isDestroyed()) await pageDebugger.sendCommand("Emulation.clearDeviceMetricsOverride");
+    },
     send: async (method, params) => pageDebugger.sendCommand(method, params ?? {}) as Promise<unknown>,
     onEvent: (listener) => {
       const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => listener(method, params);
@@ -1145,7 +1150,16 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     await session.send("Emulation.setFocusEmulationEnabled", { enabled: true });
     assertCurrent(false);
   };
+  const captureDocumentId = live.tab.documentId, captureControlGeneration = live.tab.controlGeneration;
   const cdp: CdpSession = {
+    captureKey: guest,
+    fullPageTiling: live.tab.targetKind === "embedded",
+    restoreCaptureScroll: async (position) => {
+      if (guest.isDestroyed() || live.tab.guest !== guest || live.tab.documentId !== captureDocumentId || live.tab.controlGeneration !== captureControlGeneration) return;
+      try { await session.send("Runtime.callFunctionOn", captureScrollParameters(position, false)); }
+      catch (error) { if (!captureContextGone(error)) throw error; }
+    },
+    clearDeviceMetrics: session.clearDeviceMetrics,
     onEvent: (listener) => session.onEvent(listener),
     send: async (method, params) => {
       assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
@@ -1470,7 +1484,6 @@ export function createBrowserPageActions(
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
       awake(live, async () => snapshot(await targetFor(live, attribution, hostContentOrigin), options)),
     screenshot: async (live: LiveTab, options) => {
-      if (options?.fullPage && live.tab.targetKind === "embedded") throw new BrowserActionError("screenshot-unavailable", "full-page capture is unavailable for embedded browser surfaces");
       return awake(live, async () => {
         const target = await targetFor(live, attribution, hostContentOrigin);
         const guest = live.tab.guest;

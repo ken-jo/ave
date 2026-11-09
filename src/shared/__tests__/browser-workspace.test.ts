@@ -20,9 +20,20 @@ describe("browser workspace wire validation", () => {
   it("accepts only bounded PNG capture results and explicit scaling metadata", () => {
     const capture = { ...TARGET, dataUrl: "data:image/png;base64,YQ==", width: 200, height: 100, bytes: 1, originalWidth: 400, originalHeight: 200, scale: 0.5, truncated: false };
     expect(parseBrowserWorkspaceCapture(capture)).toEqual(capture);
-    for (const fields of [{ dataUrl: "data:image/svg+xml;base64,YQ==" }, { width: 32_000_001 }, { scale: 0 }, { bytes: 10 * 1024 * 1024 + 1 }, { truncated: true }, { path: "/tmp/capture.png" }]) {
+    expect(parseBrowserWorkspaceCapture({ ...capture, scale: 1, originalHeight: 1000, truncated: true })).not.toBeNull();
+    for (const fields of [{ dataUrl: "data:image/svg+xml;base64,YQ==" }, { width: 32_000_001 }, { scale: 0 }, { bytes: 10 * 1024 * 1024 + 1 }, { truncated: "true" }, { path: "/tmp/capture.png" }]) {
       expect(parseBrowserWorkspaceCapture({ ...capture, ...fields })).toBeNull();
     }
+  });
+  it("requires complete scroll-and-stitch metadata with preserved sticky headers", () => {
+    const capture = { ...TARGET, dataUrl: "data:image/png;base64,YQ==", width: 200, height: 100, bytes: 1, originalWidth: 200, originalHeight: 1000, scale: 1, truncated: true };
+    const metadata = { captureMethod: "scroll-and-stitch", stickyHeadersDeduplicated: false };
+    expect(parseBrowserWorkspaceCapture({ ...capture, ...metadata })).toEqual({ ...capture, ...metadata });
+    for (const fields of [
+      { captureMethod: "scroll-and-stitch" }, { stickyHeadersDeduplicated: false },
+      { ...metadata, captureMethod: "viewport" }, { ...metadata, captureMethod: undefined },
+      { ...metadata, stickyHeadersDeduplicated: true }, { ...metadata, stickyHeadersDeduplicated: undefined },
+    ]) expect(parseBrowserWorkspaceCapture({ ...capture, ...fields })).toBeNull();
   });
   it("rejects extra operands, agent handles without document proof, invalid generations and path-like URLs", () => {
     expect(parseBrowserWorkspaceRequest("preview", TARGET)).toEqual(TARGET);

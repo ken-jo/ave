@@ -1573,14 +1573,6 @@ it("reports the page a clicked link commits after the click is acknowledged", as
 });
 
 describe("page action thumbnails", () => {
-  it("refuses embedded full-page output before reading inaccurate pixels", async () => {
-    const { actions, approve, cdp } = adapterFixture({ agent: true });
-    const live = await approve("browser_screenshot");
-    const before = cdp.calls.length;
-    await expect(actions.screenshot(live, { fullPage: true })).rejects.toMatchObject({ code: "screenshot-unavailable" });
-    expect(cdp.calls).toHaveLength(before);
-  });
-
   it("hands the call's signals to the capture, so a stopped call never starts one", async () => {
     const actions = createBrowserPageActions(new BrowserTabRegistry(), browserOrigin, () => null, {
       decodePng: () => { throw new Error("no image decoder in this fixture"); },

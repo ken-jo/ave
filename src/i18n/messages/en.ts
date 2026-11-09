@@ -466,7 +466,7 @@ export const en = {
   "be_boot.routineWakeNote": "Scheduled prompt · {title} · not a message from you\n\n{prompt}",
 
   // be_browserTools
-  "be_browserTools.fullPageDescription": "Request full-page capture where supported. Embedded tabs currently reject it. Images exceeding 32 million pixels are scaled down to fit the pixel limit.",
+  "be_browserTools.fullPageDescription": "Capture the full page at the current viewport width. Embedded tabs scroll and stitch viewport images, preserving repeated fixed or sticky content. The 32-million-pixel limit truncates the bottom; originalHeight reports the full page height, and metadata reports the capture method and preserved sticky headers.",
   "be_browserTools.hoverDescription": "Hover over an element ref from browser_snapshot.",
   "be_browserTools.dragDescription": "Drag from sourceRef to targetRef with the native pointer. Both endpoints must be visible in the same document.",
   "be_browserTools.selectDescription": "Select an enabled option by value in a native single SELECT. Custom, multiple and ambiguous controls are refused.",

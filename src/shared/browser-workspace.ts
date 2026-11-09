@@ -145,7 +145,11 @@ export function parseBrowserWorkspacePreview(value: unknown): BrowserPreview | n
 
 /** Capture bytes remain page-derived image data even when they originate in host browser chrome. */
 export function parseBrowserWorkspaceCapture(value: unknown): BrowserCapture | null {
-  if (!isRecord(value) || !keys(value, ["tabId", "documentGeneration", "dataUrl", "width", "height", "bytes", "originalWidth", "originalHeight", "scale", "truncated"]) || !target(value)) return null;
+  if (!isRecord(value)) return null;
+  const captureMetadataFields = Object.hasOwn(value, "captureMethod") || Object.hasOwn(value, "stickyHeadersDeduplicated")
+    ? ["captureMethod", "stickyHeadersDeduplicated"] : [];
+  if (!keys(value, ["tabId", "documentGeneration", "dataUrl", "width", "height", "bytes", "originalWidth", "originalHeight", "scale", "truncated", ...captureMetadataFields]) || !target(value)) return null;
+  if (captureMetadataFields.length > 0 && (value.captureMethod !== "scroll-and-stitch" || value.stickyHeadersDeduplicated !== false)) return null;
   if (typeof value.dataUrl !== "string" || value.dataUrl.length > Math.ceil(BROWSER_CAPTURE_LIMITS.bytes * 4 / 3) + 22
     || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value.dataUrl)) return null;
   const dimensions = [value.width, value.height, value.originalWidth, value.originalHeight];
@@ -153,7 +157,7 @@ export function parseBrowserWorkspaceCapture(value: unknown): BrowserCapture | n
     || Number(value.width) * Number(value.height) > BROWSER_CAPTURE_LIMITS.pixels
     || !Number.isSafeInteger(value.bytes) || Number(value.bytes) < 1 || Number(value.bytes) > BROWSER_CAPTURE_LIMITS.bytes
     || typeof value.scale !== "number" || !Number.isFinite(value.scale) || value.scale <= 0 || value.scale > 1
-    || value.truncated !== false) return null;
+    || typeof value.truncated !== "boolean") return null;
   return value as unknown as BrowserCapture;
 }
 function validPreviewImage(record: Record<string, unknown>): boolean {

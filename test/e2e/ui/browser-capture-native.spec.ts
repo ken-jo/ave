@@ -20,7 +20,7 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
   await Promise.all([
     build({ entryPoints: [join(FIXTURE, "preload.ts")], outfile: join(assets, "preload.cjs"), bundle: true, format: "cjs", platform: "node", external: ["electron"], logLevel: "silent" }),
     build({ entryPoints: [join(FIXTURE, "renderer.tsx")], outfile: join(assets, "renderer.js"), bundle: true, format: "iife", platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"test"' }, logLevel: "silent" }),
-    build({ entryPoints: [join(FIXTURE, "main.ts")], outfile: mainOut, bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron"],
+    build({ entryPoints: [join(FIXTURE, "main.ts")], outfile: mainOut, bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron", "@napi-rs/canvas"],
       banner: { js: "import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);" }, logLevel: "silent" }),
   ]);
 });
@@ -62,17 +62,63 @@ async function attachImage(testInfo: TestInfo, name: string, result: CaptureNati
   await testInfo.attach(name, { path, contentType: "image/png" });
 }
 
-test("native full-page capture includes the tall page bottom pixels", async ({ browserName: _browserName }, testInfo) => {
-  const app = await launch(testInfo);
-  try {
-    const result = await capture(app, { fullPage: true });
-    await attachImage(testInfo, "full-page-capture", result);
-    expect(result.dimensions.height).toBeGreaterThan(result.viewport.height * 2);
-    expect(result.dimensions).toEqual(result.content);
-    expect(result.bottomPixelRGB).toEqual([0, 166, 90]);
-    expect(result.truncated).toBe(false);
-  } finally { await close(app); }
-});
+function expectFixtureBands(result: CaptureNativeResult): void {
+  const expected = [[229, 83, 61], [47, 120, 220], [214, 181, 39], [145, 77, 200], [0, 166, 90]];
+  expect(result.bandPixelsRGB).toHaveLength(expected.length);
+  // Native display color conversion can round an individual channel by one.
+  for (const [index, band] of expected.entries()) {
+    for (const [channel, value] of band.entries()) expect(Math.abs((result.bandPixelsRGB[index]?.[channel] ?? -255) - value)).toBeLessThanOrEqual(2);
+  }
+  for (const [channel, value] of [0, 166, 90].entries()) expect(Math.abs((result.bottomPixelRGB[channel] ?? -255) - value)).toBeLessThanOrEqual(2);
+}
+
+async function layout(app: ElectronApplication) {
+  const native = await app.evaluate(({ BrowserWindow, webContents }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+    if (!window || !guest) throw new Error("Capture fixture native layout is unavailable");
+    return { bounds: window.getContentBounds(), zoom: guest.getZoomFactor() };
+  });
+  const guest = await app.evaluate(async ({ webContents }) => {
+    const contents = webContents.getAllWebContents().find((entry) => entry.getType() === "webview");
+    if (!contents) throw new Error("Capture fixture guest is unavailable");
+    return contents.executeJavaScript("({width:visualViewport.width,height:visualViewport.height,x:scrollX,y:scrollY})");
+  });
+  return { native, guest, slot: await (await app.firstWindow()).locator("#slot").boundingBox() };
+}
+
+for (const zoom of [1, 1.25]) {
+  test(`native full-page capture includes the tall page bottom pixels at zoom ${zoom}`, async ({ browserName: _browserName }, testInfo) => {
+    const app = await launch(testInfo);
+    let before: Awaited<ReturnType<typeof layout>> | undefined;
+    try {
+      await app.evaluate(async ({ webContents }, zoom) => {
+        const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+        if (!guest) throw new Error("Capture fixture guest is unavailable");
+        guest.setZoomFactor(zoom);
+        await guest.executeJavaScript("scrollTo(0,123)");
+      }, zoom);
+      before = await layout(app);
+      // Scroll positions quantize to rendered pixels at guest zoom.
+      expect(Math.abs(before.guest.y - 123)).toBeLessThanOrEqual(1 / zoom);
+      const result = await capture(app, { fullPage: true }, zoom);
+      await attachImage(testInfo, "full-page-capture", result);
+      expect(result.dimensions.height).toBeGreaterThan(result.viewport.height * 2);
+      expect(result.dimensions.width).toBe(Math.ceil(result.viewport.width));
+      // Layout metrics and DOM scroll height can round differently at fractional zoom.
+      expect(Math.abs(result.dimensions.height - result.content.height)).toBeLessThanOrEqual(1);
+      expectFixtureBands(result);
+      expect(result.truncated).toBe(false);
+    } finally {
+      try {
+        if (before) {
+          await expect.poll(() => layout(app)).toEqual(before);
+          await testInfo.attach("restored-panel-layout", { body: JSON.stringify({ before, after: await layout(app) }), contentType: "application/json" });
+        }
+      } finally { await close(app); }
+    }
+  });
+}
 
 for (const zoom of [1, 1.25]) {
   test(`native ref capture keeps the element CSS size at zoom ${zoom}`, async ({ browserName: _browserName }, testInfo) => {
@@ -101,8 +147,8 @@ test("native parked agent tab wakes for full-page capture without selecting its 
     await expect.poll(() => frame.evaluate((element) => getComputedStyle(element).visibility), { timeout: 15_000 }).toBe("hidden");
     const result = await capture(app, { fullPage: true });
     expect(result.dimensions.height).toBeGreaterThan(result.viewport.height * 2);
-    expect(result.dimensions).toEqual(result.content);
-    expect(result.bottomPixelRGB).toEqual([0, 166, 90]);
+    expect(result.dimensions).toEqual({ width: result.viewport.width, height: result.content.height });
+    expectFixtureBands(result);
     await expect(host.locator("#slot")).toBeHidden();
     await expect(frame).toHaveAttribute("aria-hidden", "true");
     await attachImage(testInfo, "parked-full-page-capture", result);

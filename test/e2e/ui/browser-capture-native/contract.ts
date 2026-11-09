@@ -7,6 +7,7 @@ export interface CaptureNativeResult {
   readonly content: { width: number; height: number };
   readonly element: { width: number; height: number };
   readonly bottomPixelRGB: readonly number[];
+  readonly bandPixelsRGB: readonly (readonly number[])[];
   readonly elementPixelsRGB: readonly (readonly number[])[];
   readonly truncated: boolean;
 }

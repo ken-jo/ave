@@ -3,6 +3,7 @@ import { parseBrowserWorkspaceRequest, type BrowserCapture, type BrowserCaptureR
 import { BrowserActionError, type CdpSession } from "./browser-action-guard.js";
 import { captureBrowserPage, captureBrowserViewport } from "./browser-capture.js";
 import { browserCapturePixelRatio } from "./browser-capture-desktop.js";
+import { captureContextGone, captureScrollParameters } from "./browser-capture-scroll.js";
 
 interface CaptureTarget { readonly guest: WebContents; readonly documentGeneration: number }
 interface BrowserWorkspaceCaptureDeps {
@@ -28,7 +29,6 @@ export class BrowserWorkspaceCapture {
     if (!this.deps.isWindowVisible(windowId)) throw new Error("window-hidden");
     if (this.inFlight.has(windowId)) throw new Error("capture-busy");
     const guest = target.guest;
-    if (request.fullPage && guest.getType() === "webview") throw new Error("capture-unavailable");
     const zoom = guest.getZoomFactor();
     const controller = new AbortController();
     const entry = { guestId: guest.id, controller };
@@ -43,6 +43,17 @@ export class BrowserWorkspaceCapture {
       const pageDebugger = guest.debugger;
       if (!pageDebugger.isAttached()) pageDebugger.attach("1.3");
       const cdp: CdpSession = {
+        captureKey: guest,
+        fullPageTiling: true,
+        restoreCaptureScroll: async (position) => {
+          const live = this.deps.liveTab(windowId, request.tabId);
+          if (guest.isDestroyed() || live?.guest !== guest || live.documentGeneration !== request.documentGeneration || guest.getZoomFactor() !== zoom) return;
+          try { await pageDebugger.sendCommand("Runtime.callFunctionOn", captureScrollParameters(position, false)); }
+          catch (error) { if (!captureContextGone(error)) throw error; }
+        },
+        clearDeviceMetrics: async () => {
+          if (!guest.isDestroyed()) await pageDebugger.sendCommand("Emulation.clearDeviceMetricsOverride");
+        },
         send: async (method, params) => {
           assertCurrent();
           const result = await pageDebugger.sendCommand(method, params ?? {});

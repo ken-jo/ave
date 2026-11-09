@@ -1,11 +1,15 @@
 /** Capture geometry is in document CSS pixels; output dimensions are PNG pixels. */
 export interface BrowserCaptureClip { readonly x: number; readonly y: number; readonly width: number; readonly height: number }
 export interface BrowserScreenshotOptions { readonly fullPage?: boolean; readonly ref?: string; readonly clip?: BrowserCaptureClip }
+export interface BrowserViewportImage { readonly data: string; readonly cssScale?: number }
+export interface BrowserCaptureScroll { readonly executionContextId: number; readonly x: number; readonly y: number }
 export interface BrowserScreenshot {
   readonly data: string; readonly mimeType: "image/png"; readonly bytes: number;
   readonly width: number; readonly height: number;
   readonly originalWidth: number; readonly originalHeight: number;
-  readonly scale: number; readonly truncated: false;
+  readonly scale: number; readonly truncated: boolean;
+  readonly captureMethod?: "scroll-and-stitch";
+  readonly stickyHeadersDeduplicated?: false;
 }
 export const BROWSER_CAPTURE_LIMITS = { pixels: 32_000_000, bytes: 10 * 1024 * 1024 } as const;
 

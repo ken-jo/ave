@@ -9,18 +9,34 @@ function image(width: number, height: number): string {
   return header.toString("base64");
 }
 function fixture(width = 800, height = 2400) {
+  let override: { width: number; height: number; deviceScaleFactor: number } | undefined;
+  let viewport = { pageX: 10, pageY: 20, clientWidth: width, clientHeight: 600 };
   const send = vi.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
-    if (method === "Runtime.evaluate") return {};
+    if (method === "Emulation.setDeviceMetricsOverride") {
+      override = params as typeof override;
+      return {};
+    }
+    if (method === "Emulation.clearDeviceMetricsOverride") { override = undefined; return {}; }
     if (method === "Page.getLayoutMetrics") return {
       cssContentSize: { x: 0, y: 0, width, height },
-      cssVisualViewport: { pageX: 10, pageY: 20, clientWidth: 800, clientHeight: 600 },
+      cssVisualViewport: viewport,
     };
-    const clip = params?.clip as { width: number; height: number; scale: number } | undefined;
-    if (!clip) {
-      const { default: sharp } = await import("sharp");
-      return { data: (await sharp({ create: { width: 800, height: 600, channels: 3, background: "#fff" } }).png().toBuffer()).toString("base64") };
+    if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+    if (method === "Page.createIsolatedWorld") return { executionContextId: 73 };
+    if (method === "Runtime.callFunctionOn") {
+      const values = params?.arguments as Array<{ value: unknown }>;
+      viewport = { ...viewport, pageX: Number(values[0]?.value), pageY: Number(values[1]?.value) };
+      return {};
     }
-    return { data: image(Math.floor(clip.width * clip.scale), Math.floor(clip.height * clip.scale)) };
+    if (override?.deviceScaleFactor === 1) return { data: image(override.width, override.height) };
+    if (method === "Page.captureScreenshot") {
+      const { default: sharp } = await import("sharp");
+      const ratio = override?.deviceScaleFactor ?? 1;
+      return { data: (await sharp({ create: {
+        width: Math.round((override?.width ?? width) * ratio), height: Math.round((override?.height ?? 600) * ratio), channels: 3, background: "#fff",
+      } }).png().toBuffer()).toString("base64") };
+    }
+    return {};
   });
   const cdp: CdpSession = { send, onEvent: () => () => {} };
   return { cdp, send, signal: new AbortController().signal };
@@ -32,10 +48,12 @@ describe("browser capture", () => {
     expect(await captureBrowserPage(cdp, signal, { fullPage: true })).toMatchObject({
       width: 800, height: 2400, originalWidth: 800, originalHeight: 2400, scale: 1, truncated: false,
     });
-    expect(send).toHaveBeenLastCalledWith("Page.captureScreenshot", {
-      format: "png", captureBeyondViewport: true, fromSurface: true,
-      clip: { x: 0, y: 0, width: 800, height: 2400, scale: 1 },
-    });
+    expect(send).toHaveBeenCalledWith("Emulation.setDeviceMetricsOverride", { width: 800, height: 2400, deviceScaleFactor: 1, mobile: false });
+    expect(send).toHaveBeenCalledWith("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
+    expect(send).toHaveBeenCalledWith("Emulation.clearDeviceMetricsOverride");
+    expect(send).toHaveBeenLastCalledWith("Runtime.callFunctionOn", expect.objectContaining({
+      arguments: [{ value: 10 }, { value: 20 }, { value: false }],
+    }));
   });
   it("captures the scrolled viewport by default", async () => {
     const { cdp, send, signal } = fixture();
@@ -50,16 +68,30 @@ describe("browser capture", () => {
     expect(send.mock.calls.some(([method]) => method === "Runtime.evaluate")).toBe(false);
     expect(send.mock.calls.some(([method]) => method === "Page.captureScreenshot")).toBe(false);
   });
-  it("reduces oversized pages proportionally under the pixel limit", async () => {
+  it("truncates oversized pages at the pixel limit and reports their real height", async () => {
     const { cdp, signal } = fixture(8000, 16000);
     expect(await captureBrowserPage(cdp, signal, { fullPage: true })).toMatchObject({
-      width: 4000, height: 8000, originalWidth: 8000, originalHeight: 16000, scale: 0.5, truncated: false,
+      width: 8000, height: 4000, originalWidth: 8000, originalHeight: 16000, scale: 1, truncated: true,
     });
   });
-  it("normalizes the capture scale for native pixel density", async () => {
+  it("captures a capped page from the top and restores its initial scroll", async () => {
+    const { cdp, send, signal } = fixture(800, 50_000);
+    expect(await captureBrowserPage(cdp, signal, { fullPage: true })).toMatchObject({
+      width: 800, height: 40_000, originalHeight: 50_000, truncated: true,
+    });
+    const scrolls = send.mock.calls.filter(([method]) => method === "Runtime.callFunctionOn").map(([, params]) =>
+      (params as { arguments: Array<{ value: unknown }> }).arguments.map((argument) => argument.value),
+    );
+    expect(scrolls).toEqual([[0, 0, true], [10, 20, false]]);
+    const cleared = send.mock.calls.findIndex(([method]) => method === "Emulation.clearDeviceMetricsOverride");
+    const restored = send.mock.calls.findLastIndex(([method]) => method === "Runtime.callFunctionOn");
+    expect(cleared).toBeGreaterThanOrEqual(0);
+    expect(restored).toBeGreaterThan(cleared);
+  });
+  it("preserves device scale during capture and returns CSS-sized image pixels", async () => {
     const { cdp, send, signal } = fixture();
-    await captureBrowserPage(cdp, signal, { fullPage: true }, 2.5);
-    expect(send.mock.lastCall?.[1]?.clip).toMatchObject({ scale: 0.4 });
+    expect(await captureBrowserPage(cdp, signal, { fullPage: true }, 2.5)).toMatchObject({ width: 800, height: 2400 });
+    expect(send).toHaveBeenCalledWith("Emulation.setDeviceMetricsOverride", expect.objectContaining({ deviceScaleFactor: 2.5 }));
   });
   it("bounds layout waits as well as PNG encoding", async () => {
     const { cdp, signal } = fixture();
@@ -80,9 +112,38 @@ describe("browser capture", () => {
   });
   it("rejects an invalid PNG before returning it", async () => {
     const { cdp, signal, send } = fixture();
-    send.mockImplementation(async (method) => method === "Page.getLayoutMetrics"
-      ? { cssContentSize: { x: 0, y: 0, width: 800, height: 2400 } }
-      : { data: "invalid" });
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
+    send.mockImplementation(async (method, params) => method === "Page.captureScreenshot" ? { data: "invalid" } : original(method, params));
     await expect(captureBrowserPage(cdp, signal, { fullPage: true })).rejects.toMatchObject({ code: "screenshot-failed" });
+    expect(send).toHaveBeenCalledWith("Emulation.clearDeviceMetricsOverride");
+    expect(send).toHaveBeenLastCalledWith("Runtime.callFunctionOn", expect.any(Object));
+  });
+  it("clears device metrics after a stalled screenshot reaches its deadline", async () => {
+    const { cdp, signal, send } = fixture();
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
+    send.mockImplementation((method, params) => method === "Page.captureScreenshot" ? new Promise(() => {}) : original(method, params));
+    await expect(captureBrowserPage(cdp, signal, { fullPage: true }, 1, 60)).rejects.toMatchObject({ code: "screenshot-timeout" });
+    expect(send).toHaveBeenCalledWith("Emulation.clearDeviceMetricsOverride");
+    expect(send).toHaveBeenLastCalledWith("Runtime.callFunctionOn", expect.any(Object));
+  });
+  it("uses cleanup authority after caller cancellation without reusing page-action authority", async () => {
+    const { cdp, send } = fixture();
+    const abort = new AbortController();
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
+    const clear = vi.fn(async () => {});
+    const restore = vi.fn(async () => {});
+    cdp.clearDeviceMetrics = clear;
+    cdp.restoreCaptureScroll = restore;
+    send.mockImplementation(async (method, params) => {
+      if (method === "Page.captureScreenshot") { abort.abort(); return new Promise(() => {}); }
+      if (abort.signal.aborted) throw new Error("Page action authority ended");
+      return original(method, params);
+    });
+    await expect(captureBrowserPage(cdp, abort.signal, { fullPage: true })).rejects.toMatchObject({ code: "cancelled" });
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(restore).toHaveBeenCalledWith({ executionContextId: 73, x: 10, y: 20 });
   });
 });

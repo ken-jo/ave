@@ -38,6 +38,8 @@ const ALLOWED_CDP_METHODS = new Set([
   "Input.cancelDragging",
   "Page.enable",
   "Page.captureScreenshot",
+  "Emulation.setDeviceMetricsOverride",
+  "Emulation.clearDeviceMetricsOverride",
   "Page.getFrameTree",
   "Page.getLayoutMetrics",
   "Page.frameNavigated",
@@ -68,14 +70,20 @@ describe("browser tool CDP surface", () => {
       expect(source.match(/expression:/g)).toHaveLength(1);
       expect(source).toContain('browserLayoutReady(session: CdpSession)');
     }
-    const named = [...source.matchAll(CDP_LITERAL)].map((match) => match[1]!);
+    const named = [...source.matchAll(CDP_LITERAL)].flatMap((match) => match[1] === undefined ? [] : [match[1]]);
     const siteNavigation = path === "src/main/browser/browser-site-navigation.ts";
     const siteMethods = new Set(["Fetch.requestPaused", "Fetch.continueRequest", "Fetch.failRequest", "Fetch.enable"]);
     const selection = path === "src/main/browser/browser-actions.ts" || path === "src/main/browser/browser-action-guard.ts";
+    const captureScroll = new Set([
+      "src/main/browser/browser-capture-scroll.ts",
+      "src/main/browser/browser-capture.ts",
+      "src/main/browser/browser-workspace-capture.ts",
+    ]);
     const selectionMethods = new Set(["Page.createIsolatedWorld", "DOM.resolveNode", "Runtime.callFunctionOn", "Runtime.releaseObject"]);
     expect(named.filter((method) => !ALLOWED_CDP_METHODS.has(method) && !(siteNavigation && siteMethods.has(method))
       && !(selection && selectionMethods.has(method)) && !(path === "src/main/browser/browser-actions.ts" && method === "Emulation.setFocusEmulationEnabled")
-      && !(layoutProbe && method === "Runtime.evaluate"))).toEqual([]);
+      && !(layoutProbe && method === "Runtime.evaluate")
+      && !(captureScroll.has(path) && ["Page.createIsolatedWorld", "Runtime.callFunctionOn"].includes(method)))).toEqual([]);
     for (const forbidden of [
       /\bRuntime\./,
       /\bNetwork\./,
@@ -88,7 +96,11 @@ describe("browser tool CDP surface", () => {
     ]) {
       if (layoutProbe && forbidden.source === "\\bRuntime\\.") continue;
       if (siteNavigation && forbidden.source === "\\bFetch\\.") continue;
-      const checked = selection ? source.replace(/(["'])Runtime\.(?:callFunctionOn|releaseObject)\1/g, '""') : source;
+      let checked = selection ? source.replace(/(["'])Runtime\.(?:callFunctionOn|releaseObject)\1/g, '""') : source;
+      if (captureScroll.has(path)) {
+        expect(source).toContain("captureScrollParameters(");
+        checked = checked.replace(/(["'])Runtime\.callFunctionOn\1/g, '""');
+      }
       expect(checked, `${path} must not use ${forbidden}`).not.toMatch(forbidden);
     }
   });
@@ -107,7 +119,7 @@ describe("browser tool CDP surface", () => {
 
   it("keeps dynamic dispatch confined to the checked session adapter", () => {
     const source = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
-    const sends = [...source.matchAll(/\.send\(\s*([^,)]+)/g)].map((match) => match[1]!.trim());
+    const sends = [...source.matchAll(/\.send\(\s*([^,)]+)/g)].flatMap((match) => match[1] === undefined ? [] : [match[1].trim()]);
     expect(sends.length).toBeGreaterThan(10);
     // The one pass-through is the session wrapper that forwards to webContents.debugger.
     expect(sends.filter((argument) => !/^"[A-Z][A-Za-z]+\.[a-z][A-Za-z]+"$/.test(argument))).toEqual(["method"]);
@@ -121,6 +133,7 @@ describe("browser tool CDP surface", () => {
     // Direct focus setup and cleanup route no OS input; all interactive effects still use the checked wrapper.
     expect([...body.matchAll(/session\.send\("[^"]+"[^)]*\)/g)].map((match) => match[0])).toEqual([
       'session.send("Emulation.setFocusEmulationEnabled", { enabled: true })',
+      'session.send("Runtime.callFunctionOn", captureScrollParameters(position, false)',
       'session.send("DOM.getDocument", { depth: -1, pierce: true })',
       'session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })',
       'session.send("Input.dispatchDragEvent", { type: "dragCancel", ...destination })',
@@ -128,5 +141,19 @@ describe("browser tool CDP surface", () => {
       'session.send("Input.setInterceptDrags", { enabled: false })',
       'session.send("Emulation.setFocusEmulationEnabled", { enabled: false })',
     ]);
+  });
+
+  it("keeps capture scrolling in a fixed isolated-world function", () => {
+    const scroll = readFileSync(join(REPO, "src/main/browser/browser-capture-scroll.ts"), "utf8");
+    const capture = readFileSync(join(REPO, "src/main/browser/browser-capture.ts"), "utf8");
+    const workspace = readFileSync(join(REPO, "src/main/browser/browser-workspace-capture.ts"), "utf8");
+    const actions = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
+    expect(scroll).toContain('const CAPTURE_SCROLL = "function(x,y,paint)');
+    expect(scroll).toContain('cdp.send("Runtime.callFunctionOn", captureScrollParameters(position, true))');
+    for (const [source, restore] of [[capture, 'captureScrollParameters(scrollRestore, false)'], [workspace, 'captureScrollParameters(position, false)'], [actions, 'captureScrollParameters(position, false)']] as const) {
+      expect(source).toContain(restore);
+      expect(source).not.toMatch(/Runtime\.callFunctionOn[^\n]*functionDeclaration:/);
+      expect(source).not.toMatch(/Runtime\.callFunctionOn[^\n]*expression:/);
+    }
   });
 });

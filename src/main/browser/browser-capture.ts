@@ -1,24 +1,36 @@
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
-import { BROWSER_CAPTURE_LIMITS, parseBrowserScreenshotOptions, type BrowserCaptureClip, type BrowserScreenshot, type BrowserScreenshotOptions } from "../../shared/browser-capture.js";
+import { BROWSER_CAPTURE_LIMITS, parseBrowserScreenshotOptions, type BrowserCaptureClip, type BrowserCaptureScroll, type BrowserScreenshot, type BrowserScreenshotOptions, type BrowserViewportImage } from "../../shared/browser-capture.js";
 import { BrowserActionError, throwIfAborted, type CdpSession } from "./browser-action-guard.js";
 import type { WebContents } from "electron";
+import { captureBrowserTiles } from "./browser-capture-tiles.js";
+import { captureScrollContext, captureScrollParameters, scrollBrowserCapture } from "./browser-capture-scroll.js";
+
+const activeCaptures = new WeakSet<object>();
 
 /** Read the native viewport without changing its host slot or focus; the caller owns wake activity. */
-export async function captureBrowserViewport(guest: Pick<WebContents, "capturePage">, assertCurrent: () => void): Promise<{ data: string }> {
+export async function captureBrowserViewport(guest: Pick<WebContents, "capturePage" | "getZoomFactor">, assertCurrent: () => void): Promise<BrowserViewportImage> {
   assertCurrent();
   const image = await guest.capturePage(undefined, { stayHidden: true, stayAwake: false });
   assertCurrent();
   const { width, height } = image.getSize();
   if (image.isEmpty() || width < 1 || height < 1) throw new BrowserActionError("screenshot-failed", "the tab returned no image");
   if (width * height > BROWSER_CAPTURE_LIMITS.pixels) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
-  return { data: image.toPNG({ scaleFactor: 1 }).toString("base64") };
+  return { data: image.toPNG({ scaleFactor: 1 }).toString("base64"), cssScale: guest.getZoomFactor() };
 }
 
-/** Capture one surface without scrolling it. Oversized content is proportionally reduced, never cropped. */
+/** Full pages retain the current CSS width and truncate their bottom at the pixel limit. */
 export async function captureBrowserPage(
   cdp: CdpSession, signal: AbortSignal, options: BrowserScreenshotOptions = {},
-  pixelRatio = 1, maxMs: number = TOOL_TIMEOUT_POLICY.browserCaptureMs, captureViewport?: () => Promise<{ data: string }>,
+  pixelRatio = 1, maxMs: number = TOOL_TIMEOUT_POLICY.browserCaptureMs, captureViewport?: () => Promise<BrowserViewportImage>,
 ): Promise<BrowserScreenshot> {
+  const key = cdp.captureKey ?? cdp;
+  if (activeCaptures.has(key)) throw new BrowserActionError("screenshot-busy", "another capture is using this tab");
+  activeCaptures.add(key);
+  const started = Date.now();
+  const restoreBudget = options.fullPage ? Math.min(TOOL_TIMEOUT_POLICY.browserCaptureRestoreMs, maxMs / 2) : 0;
+  let metricsOverridden = false;
+  let scrollRestore: BrowserCaptureScroll | undefined;
+  const tiled = options.fullPage === true && cdp.fullPageTiling === true;
   const lifetime = new AbortController();
   const captureSignal = AbortSignal.any([signal, lifetime.signal]);
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -32,7 +44,11 @@ export async function captureBrowserPage(
     };
     throwIfAborted(captureSignal);
     const viewport = metrics.cssVisualViewport;
-    const clip = options.clip ?? (options.fullPage ? metrics.cssContentSize : {
+    if (!viewport || ![viewport.pageX, viewport.pageY, viewport.clientWidth, viewport.clientHeight].every(Number.isFinite)
+      || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) {
+      throw new BrowserActionError("screenshot-unavailable", "the page has no valid viewport");
+    }
+    const clip = options.clip ?? (options.fullPage ? { ...metrics.cssContentSize, width: viewport.clientWidth } : {
       x: viewport.pageX, y: viewport.pageY, width: viewport.clientWidth, height: viewport.clientHeight,
     });
     if (!clip || ![clip.x, clip.y, clip.width, clip.height, pixelRatio].every(Number.isFinite)
@@ -40,17 +56,39 @@ export async function captureBrowserPage(
       throw new BrowserActionError("screenshot-unavailable", "the page has no valid capture bounds");
     }
     const originalWidth = Math.ceil(clip.width), originalHeight = Math.ceil(clip.height);
-    const scale = Math.min(1, Math.sqrt(BROWSER_CAPTURE_LIMITS.pixels / (originalWidth * originalHeight)));
+    const scale = options.fullPage ? 1 : Math.min(1, Math.sqrt(BROWSER_CAPTURE_LIMITS.pixels / (originalWidth * originalHeight)));
+    const renderScale = tiled ? 1 : pixelRatio;
+    const captureHeight = options.fullPage
+      ? Math.min(originalHeight, Math.floor(Math.floor(BROWSER_CAPTURE_LIMITS.pixels / Math.ceil(originalWidth * renderScale)) / renderScale))
+      : originalHeight;
+    if (captureHeight < 1) throw new BrowserActionError("screenshot-limit", "the viewport width exceeds the capture pixel limit");
     if (!options.fullPage && (![viewport.pageX, viewport.pageY, viewport.clientWidth, viewport.clientHeight].every(Number.isFinite)
       || viewport.clientWidth <= 0 || viewport.clientHeight <= 0 || clip.x < viewport.pageX || clip.y < viewport.pageY
       || clip.x + clip.width > viewport.pageX + viewport.clientWidth
       || clip.y + clip.height > viewport.pageY + viewport.clientHeight)) {
       throw new BrowserActionError("screenshot-unavailable", "the capture region is outside the viewport; scroll it into view and take a new snapshot");
     }
-    const result = options.fullPage || !captureViewport ? await cdp.send("Page.captureScreenshot", {
-      format: "png", captureBeyondViewport: options.fullPage === true, fromSurface: true,
-      ...(options.fullPage ? { clip: { ...clip, scale: scale / pixelRatio } } : {}),
-    }) as { data?: string } : await captureViewport();
+    if (options.fullPage && !tiled) {
+      const executionContextId = await captureScrollContext(cdp);
+      throwIfAborted(captureSignal);
+      scrollRestore = { executionContextId, x: viewport.pageX, y: viewport.pageY };
+      metricsOverridden = true;
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width: originalWidth, height: captureHeight, deviceScaleFactor: pixelRatio, mobile: false,
+      });
+      throwIfAborted(captureSignal);
+      await scrollBrowserCapture(cdp, { executionContextId, x: 0, y: 0 });
+      throwIfAborted(captureSignal);
+    }
+    let result: { data?: string; cssScale?: number };
+    if (tiled) {
+      if (!captureViewport) throw new BrowserActionError("screenshot-unavailable", "the tab has no native viewport readback");
+      result = await captureBrowserTiles(cdp, captureSignal, originalWidth, captureHeight, viewport, captureViewport, (position) => { scrollRestore = position; });
+    } else {
+      result = options.fullPage || !captureViewport ? await cdp.send("Page.captureScreenshot", {
+        format: "png", captureBeyondViewport: false, fromSurface: true,
+      }) as { data?: string } : await captureViewport();
+    }
     throwIfAborted(captureSignal);
     if (typeof result.data !== "string" || result.data.length === 0) throw new BrowserActionError("screenshot-failed", "the tab returned no image");
     let data = result.data;
@@ -60,9 +98,22 @@ export async function captureBrowserPage(
     if (header.length < 24 || header.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new BrowserActionError("screenshot-failed", "the tab returned an invalid image");
     let width = header.readUInt32BE(16), height = header.readUInt32BE(20);
     if (width < 1 || height < 1 || width * height > BROWSER_CAPTURE_LIMITS.pixels) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
-    if (!options.fullPage) {
+    if (options.fullPage) {
+      if (Math.abs(width - originalWidth * renderScale) > 1 || Math.abs(height - captureHeight * renderScale) > 1) {
+        throw new BrowserActionError("screenshot-unavailable", "the tab did not render the full capture viewport");
+      }
+      if (width !== originalWidth || height !== captureHeight) {
+        const { default: sharp } = await import("sharp");
+        throwIfAborted(captureSignal);
+        const encoded = await sharp(Buffer.from(data, "base64"), { limitInputPixels: BROWSER_CAPTURE_LIMITS.pixels })
+          .resize({ width: originalWidth, height: captureHeight, fit: "fill" }).png().toBuffer({ resolveWithObject: true });
+        throwIfAborted(captureSignal);
+        data = encoded.data.toString("base64"); bytes = encoded.data.byteLength;
+        width = encoded.info.width; height = encoded.info.height;
+      }
+    } else {
       // Crop the already painted viewport: a first protocol clip can return pixels from the wrong origin.
-      const xScale = width / viewport.clientWidth, yScale = height / viewport.clientHeight;
+      const xScale = result.cssScale ?? width / viewport.clientWidth, yScale = result.cssScale ?? height / viewport.clientHeight;
       const left = Math.max(0, Math.floor((clip.x - viewport.pageX) * xScale));
       const top = Math.max(0, Math.floor((clip.y - viewport.pageY) * yScale));
       const right = Math.min(width, Math.ceil((clip.x + clip.width - viewport.pageX) * xScale));
@@ -78,14 +129,41 @@ export async function captureBrowserPage(
       width = encoded.info.width; height = encoded.info.height;
       if (bytes > BROWSER_CAPTURE_LIMITS.bytes) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture byte limit; capture a smaller region");
     }
-    return { data, mimeType: "image/png", bytes, width, height, originalWidth, originalHeight, scale, truncated: false };
+    if (bytes > BROWSER_CAPTURE_LIMITS.bytes) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture byte limit; capture a smaller region");
+    return { data, mimeType: "image/png", bytes, width, height, originalWidth, originalHeight, scale, truncated: captureHeight < originalHeight,
+      ...(tiled ? { captureMethod: "scroll-and-stitch" as const, stickyHeadersDeduplicated: false as const } : {}) };
   };
   return Promise.race([capture(), new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       const error = new BrowserActionError("screenshot-timeout", "the tab did not return an image within the capture deadline");
       reject(error); lifetime.abort(error);
-    }, maxMs);
+    }, maxMs - restoreBudget);
     onAbort = () => { try { throwIfAborted(signal); } catch (error) { reject(error); } };
     if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
-  })]).finally(() => { clearTimeout(timer); if (onAbort) signal.removeEventListener("abort", onAbort); });
+  })]).finally(async () => {
+    clearTimeout(timer);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+    lifetime.abort();
+    let restoreTimer: ReturnType<typeof setTimeout> | undefined;
+    let releaseCapture = true;
+    try {
+      if (metricsOverridden || scrollRestore) {
+        const restore = async () => {
+          try {
+            if (metricsOverridden) await (cdp.clearDeviceMetrics ? cdp.clearDeviceMetrics() : cdp.send("Emulation.clearDeviceMetricsOverride"));
+          } finally {
+            if (scrollRestore) await (cdp.restoreCaptureScroll ? cdp.restoreCaptureScroll(scrollRestore) : cdp.send("Runtime.callFunctionOn", captureScrollParameters(scrollRestore, false)));
+          }
+        };
+        releaseCapture = false;
+        const restored = restore().then(() => { activeCaptures.delete(key); });
+        await Promise.race([
+          restored,
+          new Promise<never>((_resolve, reject) => {
+            restoreTimer = setTimeout(() => reject(new BrowserActionError("screenshot-restore-failed", "the tab did not restore its viewport in time")), Math.max(0, maxMs - (Date.now() - started)));
+          }),
+        ]);
+      }
+    } finally { clearTimeout(restoreTimer); if (releaseCapture) activeCaptures.delete(key); }
+  });
 }

@@ -111,6 +111,38 @@ test("user area capture stays in host chrome and attaches actual page pixels to 
     expect(clipboard.centerRGB).toEqual([0, 166, 90]);
     const guestOverlayCount = await ctx.app.evaluate(async ({ webContents }, id) => webContents.fromId(id)?.executeJavaScript('document.querySelectorAll("[data-testid=browser-capture-overlay]").length'), guestId);
     expect(guestOverlayCount).toBe(0);
+    const panelBefore = await view.boundingBox();
+    const captureApp = ctx.app;
+    const position = () => captureApp.evaluate(async ({ webContents }, id) => {
+      const guest = webContents.fromId(id);
+      if (!guest) throw new Error("Captured guest disappeared");
+      return guest.executeJavaScript("({x:scrollX,y:scrollY,width:innerWidth,height:innerHeight})");
+    }, guestId);
+    const positionBefore = await position();
+    await ctx.page.getByTestId("browser-capture-menu").click();
+    await ctx.page.getByTestId("browser-capture-full-page").click();
+    await expect(composer).toHaveValue(/\[Image #2\]/);
+    await ctx.page.getByTestId("attachment-chip-collapsed").click();
+    const fullPageImage = ctx.page.getByTestId("attachment-overlay-body").getByRole("img", { name: "Image #2" });
+    await expect(fullPageImage).toBeVisible();
+    expect(await fullPageImage.evaluate((element: HTMLImageElement) => element.naturalHeight)).toBe(2600);
+    const fullPageData = await fullPageImage.getAttribute("src");
+    if (!fullPageData) throw new Error("Full-page attachment is unavailable");
+    await ctx.page.keyboard.press("Escape");
+    await expect.poll(position).toEqual(positionBefore);
+    expect(await view.boundingBox()).toEqual(panelBefore);
+    const restoredPanelPath = testInfo.outputPath("browser-full-page-restored-panel.png");
+    await ctx.page.screenshot({ path: restoredPanelPath });
+    await testInfo.attach("full-page-restored-panel", { path: restoredPanelPath, contentType: "image/png" });
+    const restoredStatePath = testInfo.outputPath("browser-full-page-restored-layout.json");
+    await fs.writeFile(restoredStatePath, JSON.stringify({ before: { panel: panelBefore, page: positionBefore }, after: { panel: await view.boundingBox(), page: await position() } }, null, 2));
+    await fs.writeFile(testInfo.outputPath("browser-user-full-page.png"), Buffer.from(fullPageData.split(",")[1] ?? "", "base64"));
+    const fullClipboardHeight = await captureApp.evaluate(async ({ clipboard, nativeImage }) => {
+      const item = (await clipboard.read()).find((entry) => entry.types.includes("image/png"));
+      if (!item) throw new Error("Full-page clipboard image is unavailable");
+      return nativeImage.createFromBuffer(Buffer.from(await (await item.getType("image/png")).arrayBuffer())).getSize().height;
+    });
+    expect(fullClipboardHeight).toBe(2600);
   } finally {
     if (ctx) await teardownSeededElectron(ctx);
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

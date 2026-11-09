@@ -468,7 +468,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_boot.routineWakeNote": "예약된 프롬프트 · {title} · 사용자 메시지가 아닙니다\n\n{prompt}",
 
   // be_browserTools
-  "be_browserTools.fullPageDescription": "지원되는 탭에서 전체 페이지 캡처를 요청합니다. 임베디드 탭에서는 현재 사용할 수 없습니다. 3,200만 픽셀을 초과하면 픽셀 제한에 맞춰 축소합니다.",
+  "be_browserTools.fullPageDescription": "현재 뷰포트 너비로 전체 페이지를 캡처합니다. 임베디드 탭은 스크롤하며 뷰포트 이미지를 이어 붙이고 고정·스티키 콘텐츠의 반복을 유지합니다. 3,200만 픽셀 제한을 넘으면 하단을 자릅니다. originalHeight는 전체 페이지 높이를, 메타데이터는 캡처 방식과 스티키 헤더 반복 유지 여부를 알립니다.",
   "be_browserTools.hoverDescription": "browser_snapshot의 요소 ref 위로 포인터를 옮깁니다.",
   "be_browserTools.dragDescription": "네이티브 포인터로 sourceRef에서 targetRef로 드래그합니다. 두 끝점이 같은 문서의 화면에 보여야 합니다.",
   "be_browserTools.selectDescription": "네이티브 단일 SELECT에서 value로 활성 옵션을 선택합니다. 사용자 정의·다중·모호한 컨트롤은 거부합니다.",

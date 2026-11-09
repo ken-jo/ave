@@ -451,7 +451,9 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         const image = await actions.screenshot(pageTarget(ctx, fresh), options);
         const browserPreview = await previewOf(actions, pageTarget(ctx, fresh), image.data);
         return withPreview({
-          output: fenceBrowserContent({ tabId: target.resolved.tab.handle, url: target.resolved.tab.guest?.getURL() ?? "", fullPage: input.fullPage === true, width: image.width, height: image.height, originalWidth: image.originalWidth, originalHeight: image.originalHeight, scale: image.scale, truncated: image.truncated }),
+          output: fenceBrowserContent({ tabId: target.resolved.tab.handle, url: target.resolved.tab.guest?.getURL() ?? "", fullPage: input.fullPage === true, width: image.width, height: image.height, originalWidth: image.originalWidth, originalHeight: image.originalHeight, scale: image.scale, truncated: image.truncated,
+            ...(image.captureMethod ? { captureMethod: image.captureMethod, stickyHeadersDeduplicated: image.stickyHeadersDeduplicated } : {}),
+          }),
           isError: false,
           image: { data: image.data, mimeType: image.mimeType, bytes: image.bytes },
         }, browserPreview);

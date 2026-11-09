@@ -24,7 +24,7 @@ test.beforeAll(async ({}, testInfo) => {
   await build({ entryPoints: [join(FIXTURE_DIR, "preload.ts")], outfile: preloadOut, bundle: true, format: "cjs", platform: "node", external: ["electron"], logLevel: "silent" });
   await build({
     entryPoints: [join(FIXTURE_DIR, "main.ts")], outfile: mainOut,
-    bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron"],
+    bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron", "@napi-rs/canvas"],
     banner: { js: "import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);" }, logLevel: "silent",
   });
 });

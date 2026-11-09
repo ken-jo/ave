@@ -1342,7 +1342,19 @@ describe("browser tools", () => {
     expect(result.output).toContain('"fullPage":true');
     expect(result.output).toContain('"originalHeight":2400');
     expect(result.output).toContain('<browser-content');
+    expect(browserHeader(result.output)).not.toHaveProperty("captureMethod");
+    expect(browserHeader(result.output)).not.toHaveProperty("stickyHeadersDeduplicated");
     expect(page.calls).toEqual([{ action: "screenshot", tab: user.handle, args: [{ fullPage: true }] }]);
+  });
+
+  it("reports scroll-and-stitch limits and preserved sticky headers in the page envelope", async () => {
+    const { run, page, userTab } = harness();
+    const user = userTab("https://a.example/");
+    page.actions.screenshot = async () => ({ data: "iVBORw0KGgo=", mimeType: "image/png", bytes: 8, width: 800, height: 2400, originalWidth: 800, originalHeight: 50_000, scale: 1, truncated: true, captureMethod: "scroll-and-stitch", stickyHeadersDeduplicated: false });
+    const result = await run(BROWSER_TOOL.screenshot, { tabId: user.handle, fullPage: true });
+    expect(result.isError).toBe(false);
+    expectBrowserFence(result.output);
+    expect(browserHeader(result.output)).toMatchObject({ fullPage: true, height: 2400, originalHeight: 50_000, scale: 1, truncated: true, captureMethod: "scroll-and-stitch", stickyHeadersDeduplicated: false });
   });
 
   it("attaches a validated display thumbnail to snapshot and screenshot completions, never failing the tool", async () => {
