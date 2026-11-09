@@ -1,7 +1,9 @@
+import type { BaseWindow } from "electron";
+import type { MainWindow } from "../../../main/main-window-host.js";
 import { requireDesktopHost, type BootHost } from "../../host-runtime.js";
 /** Resolve runtime bindings lazily; effect-wrapper order and the single HTTP-verb read are security invariants. */
 import { registerWorkerOutputFlow, workerOutputFlowOf } from "../../../permissions/worker-flow.js";
-import type { BrowserWindow } from "electron";
+
 import { randomUUID } from "node:crypto";
 import { normalizeAllowedHosts, urlHostMatchesAllowList } from "../../../main/host-allow-list.js";
 import type { AuthRedirectCatchers } from "../../../main/auth-redirect-catcher.js";
@@ -203,19 +205,19 @@ export interface CreateHostApiFactoryDeps {
   pluginRuntimeAuditLog: PluginStorageAuditLog;
   networkFetch: HostFetchTransport;
   /** Boot-captured fallback only; use getMainWindow for live targeting after windows reopen. */
-  mainWindow: BrowserWindow | null;
+  mainWindow: MainWindow | null;
   /** Optional in minimal hosts; production resolves the live main window. */
-  getMainWindow?: () => BrowserWindow | null;
+  getMainWindow?: () => MainWindow | null;
   openAuthWindowService: (
-    parent: BrowserWindow,
+    parent: BaseWindow,
     opts: OpenAuthWindowBaseOptions & { returnFinalUrl?: boolean },
   ) => Promise<AuthWindowCookie[] | OpenAuthWindowFinalUrlResult>;
   openLinkWindowService: (
-    parent: BrowserWindow,
+    parent: BaseWindow,
     opts: { url: string; windowTitle?: string; persistPartition?: string },
   ) => Promise<void>;
   openAuthPartitionViewerService: (
-    parent: BrowserWindow,
+    parent: BaseWindow,
     opts: import("../../../main/auth-partition-viewer-service.js").OpenAuthPartitionViewerOptions,
   ) => Promise<void>;
   clearAuthPartitionService: (partition: string) => Promise<void>;
@@ -278,8 +280,8 @@ export function createHostApiFactory(
   const leaseDenialAudit = deps.leaseDenialAudit ?? new LeaseDenialAudit(bootAuditLogger);
 
   /** Resolve the current window on every send; null means no desktop surface. */
-  const liveMainWindow = (): BrowserWindow | null => getMainWindow ? getMainWindow() : mainWindow;
-  const requireMainWindow = (): BrowserWindow => {
+  const liveMainWindow = (): MainWindow | null => getMainWindow ? getMainWindow() : mainWindow;
+  const requireMainWindow = (): MainWindow => {
     const win = liveMainWindow();
     if (!win || win.isDestroyed()) throw new Error("Host UI requires an active main window");
     return win;

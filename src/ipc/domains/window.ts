@@ -1,5 +1,6 @@
+import { mainWindowForContents } from "../../main/app-state.js";
 import { showWindowForRuntime } from "../../main/e2e-window-presentation.js";
-import { BrowserWindow, ipcMain, type BrowserWindow as ElectronBrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { BrowserWindow, ipcMain, type BaseWindow as ElectronBaseWindow, type IpcMainInvokeEvent } from "electron";
 import { t } from "../../i18n/index.js";
 import { resolveAppIconPath } from "../../main/app-icon.js";
 import {
@@ -16,9 +17,9 @@ export { registerWindowEventListeners } from "../../main/window-event-listeners.
 
 export function registerWindowHandlers(deps: IpcDeps): void {
   const { auditLogger, getMainWindow } = deps;
-  const getSenderWindow = (e: IpcMainInvokeEvent): ElectronBrowserWindow | null =>
-    BrowserWindow.fromWebContents(e.sender);
-  const getSenderWindowOrMain = (e: IpcMainInvokeEvent): ElectronBrowserWindow | null =>
+  const getSenderWindow = (e: IpcMainInvokeEvent): ElectronBaseWindow | null =>
+    (mainWindowForContents(e.sender) ?? BrowserWindow.fromWebContents(e.sender));
+  const getSenderWindowOrMain = (e: IpcMainInvokeEvent): ElectronBaseWindow | null =>
     getSenderWindow(e) ?? getMainWindow();
   const canUseWindowControl = (e: IpcMainInvokeEvent): boolean =>
     validateHostRendererSender(e) || isWindowControlOwned(e.sender);

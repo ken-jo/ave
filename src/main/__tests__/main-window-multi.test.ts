@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_APPEARANCE } from "../../shared/appearance-settings.js";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { release } from "node:os";
 import { resolve } from "node:path";
@@ -22,6 +23,7 @@ const electronMock = vi.hoisted(() => {
     readonly show = vi.fn(() => { this.visible = true; });
     readonly showInactive = vi.fn(() => { this.visible = true; });
     readonly focus = vi.fn();
+    readonly setBackgroundColor = vi.fn();
     readonly moveTop = vi.fn();
     readonly restore = vi.fn();
     readonly loadFile = vi.fn(async () => undefined);
@@ -30,6 +32,7 @@ const electronMock = vi.hoisted(() => {
       id: this.id * 100,
       isDestroyed: () => this.destroyed,
       setWindowOpenHandler: vi.fn(),
+      focus: vi.fn(),
       setZoomLevel: vi.fn(),
       setVisualZoomLevelLimits: vi.fn(async () => undefined),
       on: (name: string, fn: Listener) => this.pushContents(name, fn),
@@ -63,7 +66,7 @@ const electronMock = vi.hoisted(() => {
     close() {
       let prevented = false;
       this.emit("close", { preventDefault: () => { prevented = true; } });
-      if (prevented) return false;
+      if (prevented) return this.destroyed;
       this.destroyed = true;
       this.emit("closed");
       return true;
@@ -83,6 +86,10 @@ vi.mock("electron", () => ({
   Menu: { buildFromTemplate: vi.fn(() => ({})), setApplicationMenu: vi.fn() },
   nativeImage: {},
   Tray: class {},
+}));
+vi.mock("../main-window-host.js", () => ({
+  createMainWindowHost: (options: Record<string, unknown>, webPreferences: unknown) => new electronMock.FakeBrowserWindow({ ...options, webPreferences: { contextIsolation: true, nodeIntegration: false, ...(webPreferences as object) } }),
+  closeMainWindowUi: (window: InstanceType<typeof electronMock.FakeBrowserWindow>) => { window.destroyed = true; window.emit("closed"); },
 }));
 vi.mock("node:fs", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:fs")>();
@@ -139,7 +146,7 @@ describe("main windows", () => {
     vi.stubEnv("NODE_ENV", "test");
     const win = open();
     try {
-      expect(win.options).toMatchObject({ show: false });
+      expect(win.options).toMatchObject({ show: false, focusable: false });
       showMainWindow(win as never);
       expect(win.showInactive).toHaveBeenCalledOnce();
       expect(win.focus).not.toHaveBeenCalled();
@@ -182,6 +189,37 @@ describe("main windows", () => {
     applyAppZoomLevel(2);
     for (const win of shells) expect(win.webContents.setZoomLevel).toHaveBeenCalledWith(2);
     expect(guest.webContents.setZoomLevel).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel the final native close after application cleanup", () => {
+    const window = open();
+    appState.setAppShutdownStarted(true);
+    appState.setAppShutdownCompleted(true);
+    try { expect(window.close()).toBe(true); }
+    finally { appState.setAppShutdownStarted(false); appState.setAppShutdownCompleted(false); }
+  });
+
+  it("holds the native close while application cleanup is still running", () => {
+    const window = open();
+    appState.setAppShutdownStarted(true);
+    try {
+      expect(window.close()).toBe(false);
+      expect(window.destroyed).toBe(false);
+      expect(window.hide).not.toHaveBeenCalled();
+    } finally { appState.setAppShutdownStarted(false); }
+  });
+
+  it("updates the native ground from host theme changes and releases its subscription", async () => {
+    electronMock.nativeTheme.prefersReducedTransparency = true;
+    const window = open();
+    electronMock.nativeTheme.prefersReducedTransparency = false;
+    const { emitEvent } = await import("../../boot/types.js");
+    emitEvent("host.theme.changed", { shell: "dark", tokens: { "--ave-bg": "hsl(220, 20%, 10%)" } });
+    expect(window.setBackgroundColor).toHaveBeenCalledWith("hsl(220, 20%, 10%)");
+    window.emit("closed");
+    window.setBackgroundColor.mockClear();
+    emitEvent("host.theme.changed", { shell: "light", tokens: { "--ave-bg": "#ffffff" } });
+    expect(window.setBackgroundColor).not.toHaveBeenCalled();
   });
 
   it("opens a centered responsive window without stale appearance arguments", () => {
@@ -523,7 +561,7 @@ describe("main windows", () => {
 
   it("quits from the last window only when the close preference says quit", () => {
     appState.setServices({
-      settingsService: { getAll: () => ({ system: { closeBehavior: "quit" }, appearance: { mode: "system" } }) },
+      settingsService: { getAll: () => ({ system: { closeBehavior: "quit" }, appearance: { ...DEFAULT_APPEARANCE, mode: "system" } }) },
     } as never);
     const first = open();
     const second = open();

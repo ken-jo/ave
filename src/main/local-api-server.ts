@@ -1,7 +1,8 @@
+import type { MainWindow } from "./main-window-host.js";
 // Start no listener or discovery write unless an independently opted-in route family has a handler. A fresh per-boot bearer is never logged; discovery
 // uses openFeatureNamespace and the local OS user boundary.
 import { randomBytes } from "node:crypto";
-import type { BrowserWindow } from "electron";
+
 import type { AppServices } from "../boot.js";
 import type { SettingsService } from "../data/settings-store.js";
 import { resolveEnvBackedBoolean } from "../shared/env-backed-settings.js";
@@ -284,8 +285,8 @@ function buildExternalMutationApproverFromAgentAction(
 // A disabled gate opens no socket and writes no state; repeated starts return the existing server.
 interface LocalApiStartInput {
   services: AppServices;
-  getMainWindow: () => BrowserWindow | null;
-  getAppWindows: () => Array<BrowserWindow | null | undefined>;
+  getMainWindow: () => MainWindow | null;
+  getAppWindows: () => Array<MainWindow | null | undefined>;
   conversationSurfaceRuntime?: ConversationSurfaceRuntime;
   createA2ARouter?: A2ARouterFactory;
   log?: (message: string) => void;

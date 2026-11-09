@@ -436,6 +436,30 @@ describe("runAppShutdownCleanup ordering (critic M1)", () => {
     }
   });
 
+  it("settles active turns before waiting for document unload and service teardown", async () => {
+    getServices.mockReturnValue(makeServices());
+    vi.resetModules();
+    const runtime = await configuredShutdown();
+    const { registerRunningTurn } = await import("../../engine/turn/turn-journal.js");
+    const unloaded = deferred<void>();
+    const closeDocuments = vi.fn(async (_signal: AbortSignal) => { calls.push("closeDocuments"); await unloaded.promise; });
+    runtime.configureAppShutdownHost(createBootHostFixture({
+      exit: hostExit,
+      desktop: createDesktopHostFixture({ beforeShutdown: unregisterAllGlobalShortcuts, closeDocuments }),
+    }));
+    const running = registerRunningTurn(() => { calls.push("interruptRunningTurn"); running.settle(); });
+    try {
+      const cleanup = runtime.runAppShutdownCleanup({ reason: "before-quit", exitOnTimeout: false });
+      await vi.waitFor(() => expect(closeDocuments).toHaveBeenCalledOnce());
+      expect(calls.indexOf("unregister")).toBeLessThan(calls.indexOf("interruptRunningTurn"));
+      expect(calls.indexOf("interruptRunningTurn")).toBeLessThan(calls.indexOf("closeDocuments"));
+      expect(stopDocumentEngineSessions).not.toHaveBeenCalled();
+      unloaded.resolve();
+      expect(await cleanup).toBe("completed");
+      expect(calls.indexOf("closeDocuments")).toBeLessThan(calls.indexOf("servicesShutdown"));
+    } finally { running.settle(); unloaded.resolve(); }
+  });
+
   it("closes the file log sink LAST, after unregister runs FIRST", async () => {
     getServices.mockReturnValue(makeServices());
     vi.resetModules();

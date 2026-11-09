@@ -1,3 +1,4 @@
+import type { MainWindow } from "./main/main-window-host.js";
 import { readPluginRegistry, vouchedInstalledPluginIds } from "./plugins/registry.js";
 import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
 import { approvalSurfaceResolver } from "./boot/approval-surface.js";
@@ -44,7 +45,7 @@ import { configureHostResources } from "./main/host-resources.js";
  * No plugin-specific code lives here — all plugins register themselves via the
  * HostApi manufactured in `steps/plugin-runtime.ts`.
  */
-import type { BrowserWindow } from "electron";
+
 import { CHANNELS } from "./contract/app-contract.js";
 import { basename, resolve } from "node:path";
 import { sweepOrphanUninstallDirs } from "./plugins/orphan-uninstall-sweeper.js";
@@ -149,7 +150,7 @@ export type { AppServices } from "./boot/types.js";
 export type BootLaunch = "interactive" | "headless";
 
 /**
- * @param getMainWindow Live BrowserWindow getter — must read the current
+ * @param getMainWindow Live MainWindow getter — must read the current
  *   `main.ts` binding because Electron close+reopen replaces the window.
  *   Bootstrap-time consumers (e.g. plugin event bridge) take the resolved
  *   `mainWindow`; runtime consumers (e.g. routinesScheduler) take this getter.
@@ -159,8 +160,8 @@ export type BootLaunch = "interactive" | "headless";
  */
 export async function bootstrap(
   projectRoot: string,
-  mainWindow: BrowserWindow | null,
-  getMainWindow: () => BrowserWindow | null,
+  mainWindow: MainWindow | null,
+  getMainWindow: () => MainWindow | null,
   launch: BootLaunch,
   host: BootHost,
 ): Promise<AppServices> {
@@ -657,7 +658,7 @@ export async function bootstrap(
   // Workflow system tools — services constructed up-front so the
   // tool registry can register them in one pass below. Late bindings
   // (subAgentRunner, askUserQuestionGate) hop through closures so the
-  // ConversationLoop / BrowserWindow are available before the tool fires.
+  // ConversationLoop / MainWindow are available before the tool fires.
   // (routinesStore is constructed above — it must exist before initPluginRuntime.)
   const routinesScheduler = new RoutinesScheduler(routinesStore, async () => {
     const registry = await readPluginRegistry(pluginPaths.registryPath);

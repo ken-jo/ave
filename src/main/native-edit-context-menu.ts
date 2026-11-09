@@ -1,6 +1,7 @@
+import { mainWindowForContents } from "./app-state.js";
 import { BrowserWindow, Menu, type MenuItemConstructorOptions, type WebContents } from "electron";
 
-// Install the OS-native editing menu for trusted BrowserWindow renderers. Domain-specific menus use the allow-listed UI IPC bridge instead; this
+// Install the OS-native editing menu for trusted app and auxiliary renderers. Domain-specific menus use the allow-listed UI IPC bridge instead; this
 // listener deliberately reacts only to editable controls or selected text.
 export function installNativeEditContextMenu(contents: WebContents): void {
   contents.on("context-menu", (event, params) => {
@@ -23,7 +24,7 @@ export function installNativeEditContextMenu(contents: WebContents): void {
         ];
 
     const menu = Menu.buildFromTemplate(template);
-    const window = BrowserWindow.fromWebContents(contents);
+    const window = mainWindowForContents(contents) ?? BrowserWindow.fromWebContents(contents);
     menu.popup(window
       ? { window, x: params.x, y: params.y }
       : { x: params.x, y: params.y });

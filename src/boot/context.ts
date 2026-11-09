@@ -1,10 +1,11 @@
+import type { MainWindow } from "../main/main-window-host.js";
 import type { BootHost } from "./host-runtime.js";
 import type { AppServices, PaneChatLoops } from "./types.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { WorkerEgressAllowlists } from "../permissions/egress-runtime.js";
 /** Boot steps progressively populate one context with services and boot-only dependencies.
  * An exhaustive own-property gate proves required producers ran before assembly. */
-import type { BrowserWindow } from "electron";
+
 import type { AveHomeDocUpgradeMarker } from "../main/seed-ave-home-docs.js";
 import type { PythonRuntimeBootstrapper } from "../main/python-runtime.js";
 import type { BashAstValidator } from "../main/bash-ast-validator.js";
@@ -73,16 +74,16 @@ type WorkBoardStorage = ReturnType<typeof import("../work-board/storage.js").cre
 export interface BootContextInputs {
   host: BootHost;
   projectRoot: string;
-  mainWindow: BrowserWindow | null;
-  getMainWindow: () => BrowserWindow | null;
+  mainWindow: MainWindow | null;
+  getMainWindow: () => MainWindow | null;
 }
 
 export class BootContext {
   declare readonly host: BootHost;
   // ── Inputs (available immediately) ─────────────────────────────────────────
   declare readonly projectRoot: string;
-  declare readonly mainWindow: BrowserWindow | null;
-  declare readonly getMainWindow: () => BrowserWindow | null;
+  declare readonly mainWindow: MainWindow | null;
+  declare readonly getMainWindow: () => MainWindow | null;
 
   // Always present, disabled unless `AVE_TELEMETRY` names a sink. Held on the context so
   // post-boot can flush it on quit and the conversation wiring can hand its tracer to the loops.

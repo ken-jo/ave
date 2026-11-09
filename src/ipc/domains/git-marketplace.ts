@@ -1,3 +1,4 @@
+import { mainWindowForContents } from "../../main/app-state.js";
 // Compose the marketplace lazily behind host-renderer-only IPC; no network work starts before a request.
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell, type IpcMainInvokeEvent } from "electron";
 import { randomBytes } from "node:crypto";
@@ -772,7 +773,7 @@ export function registerGitMarketplaceHandlers(
     }
     try {
       const options = { title: t("mainDialog.marketplacePickFolderTitle"), properties: ["openDirectory" as const, "dontAddToRecent" as const] };
-      const parent = BrowserWindow.fromWebContents(event.sender);
+      const parent = (mainWindowForContents(event.sender) ?? BrowserWindow.fromWebContents(event.sender));
       const picked = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
       const path = picked.filePaths[0];
       return { ok: true, value: picked.canceled || !path ? null : picks.hold(path) };

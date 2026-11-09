@@ -1,5 +1,6 @@
+import type { MainWindow } from "./main-window-host.js";
 // Shared runtime accessors return live values, never snapshots.
-import type { BrowserWindow, Tray, WebContents } from "electron";
+import type { Tray, WebContents } from "electron";
 import type { AppServices } from "../boot.js";
 import { terminalOwnerWindowId } from "./terminal/pty-manager.js";
 import { updateApprovalSurface } from "../permissions/approval-surface-registry.js";
@@ -10,7 +11,7 @@ import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketpla
 export type MainWindowRole = "primary" | "secondary";
 
 // Capture native identities while the window is live; closed handlers cannot read them.
-const mainWindows = new Map<BrowserWindow, { id: number; surface: WebContents; onDestroyed: () => void }>();
+const mainWindows = new Map<MainWindow, { id: number; surface: WebContents; onDestroyed: () => void }>();
 let focusedMainWindowId: number | null = null;
 let primaryMainWindowId: number | null = null;
 // Main window ids, least to most recently focused (opening counts as focus).
@@ -27,20 +28,20 @@ function recordFocus(id: number): void {
   });
 }
 
-function liveMainWindows(): BrowserWindow[] {
+function liveMainWindows(): MainWindow[] {
   return [...mainWindows.keys()].filter((win) => !win.isDestroyed());
 }
 
-export function getMainWindows(): BrowserWindow[] {
+export function getMainWindows(): MainWindow[] {
   return liveMainWindows();
 }
 
-export function getMainWindow(): BrowserWindow | null {
+export function getMainWindow(): MainWindow | null {
   const live = liveMainWindows();
   return live.find((win) => win.id === focusedMainWindowId) ?? live.at(-1) ?? null;
 }
 
-export function getPrimaryMainWindow(): BrowserWindow | null {
+export function getPrimaryMainWindow(): MainWindow | null {
   return liveMainWindows().find((win) => win.id === primaryMainWindowId) ?? null;
 }
 
@@ -49,7 +50,7 @@ export function nextMainWindowRole(): MainWindowRole {
   return getPrimaryMainWindow() === null ? "primary" : "secondary";
 }
 
-export function registerMainWindow(win: BrowserWindow, role: MainWindowRole): void {
+export function registerMainWindow(win: MainWindow, role: MainWindowRole): void {
   if (mainWindows.has(win)) throw new Error("main-window-already-registered");
   const id = win.id;
   const surface = win.webContents;
@@ -64,7 +65,7 @@ export function registerMainWindow(win: BrowserWindow, role: MainWindowRole): vo
   recordFocus(id);
 }
 
-export function unregisterMainWindow(win: BrowserWindow): void {
+export function unregisterMainWindow(win: MainWindow): void {
   const entry = mainWindows.get(win);
   if (!entry) return;
   const { id, surface, onDestroyed } = entry;
@@ -83,13 +84,13 @@ export function unregisterMainWindow(win: BrowserWindow): void {
   updateApprovalSurface({ kind: "release-owner", surface });
 }
 
-export function markMainWindowFocused(win: BrowserWindow): void {
+export function markMainWindowFocused(win: MainWindow): void {
   const entry = mainWindows.get(win);
   if (entry && !win.isDestroyed()) recordFocus(entry.id);
 }
 
 // The live main window whose renderer is `contents`, or null.
-export function mainWindowForContents(contents: unknown): BrowserWindow | null {
+export function mainWindowForContents(contents: unknown): MainWindow | null {
   return liveMainWindows().find((win) => win.webContents === contents) ?? null;
 }
 
@@ -144,7 +145,7 @@ export function setSideChatOwnerContents(contents: WebContents | null): void {
 }
 
 // The live main window the side chat was last driven from, or null.
-export function sideChatOwnerWindow(): BrowserWindow | null {
+export function sideChatOwnerWindow(): MainWindow | null {
   const owner = sideChatOwnerContents;
   return owner && !owner.isDestroyed() ? mainWindowForContents(owner) : null;
 }

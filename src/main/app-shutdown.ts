@@ -224,6 +224,9 @@ export async function runAppShutdownCleanup(options: {
         );
       }
       if (signal.aborted) return;
+      // Running turns have settled before document unload can close their native page and terminal owners.
+      await shutdownHost?.desktop?.closeDocuments(signal);
+      if (signal.aborted) return;
       // Await converter exit and private-directory cleanup before service teardown and the generic child drain.
       await stopHostDocumentEngineSessions();
       if (signal.aborted) return;

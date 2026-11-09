@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
+import { closeMainWindowDocuments } from "../main/main-window-host.js";
+import { app, BaseWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
 import { desktopSecretEncryption } from "../main/desktop-secret-encryption.js";
 import { browserCapturePixelRatio } from "../main/browser/browser-capture-desktop.js";
 import { browserGuestOwnerWindow } from "../main/browser/browser-guest-owner.js";
@@ -45,7 +46,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       hasSingleInstanceLock: () => app.hasSingleInstanceLock(),
       getAppWindows,
       openOAuthLogin: openLogin,
-      getFocusedWindow: () => BrowserWindow.getFocusedWindow(),
+      getFocusedWindow: () => BaseWindow.getFocusedWindow(),
       findSessionSurface: findSessionMainWindowContents,
       findTerminalSurface: findTerminalMainWindowContents,
       getAuthPartition: (partition) => session.fromPartition(partition),
@@ -65,7 +66,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       initializeNotificationPresenter: () => Notification.isSupported(),
       notificationOptions: {
         isReady: () => app.isReady(),
-        isAnyWindowFocused: () => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && window.isFocused()),
+        isAnyWindowFocused: () => BaseWindow.getAllWindows().some((window) => !window.isDestroyed() && window.isFocused()),
         notificationFactory: (options) => {
           const notification = new Notification(options);
           return { show: () => notification.show(), on: (event, handler) => notification.on(event, handler) };
@@ -99,6 +100,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
         unregisterAllGlobalShortcuts();
         peekFloatingDock()?.shutdown();
       },
+      closeDocuments: (signal) => closeMainWindowDocuments(getAppWindows(), signal),
     },
   };
   const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath));

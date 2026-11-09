@@ -1,7 +1,8 @@
+import type { MainWindow } from "../main/main-window-host.js";
 import type { BootHost } from "./host-runtime.js";
 import { isAveHomeConfigurationOwner } from "../shared/ave-home-configuration-access.js";
 /** Create core services before loading plugins. */
-import type { BrowserWindow } from "electron";
+
 import { SettingsService } from "../data/settings-store.js";
 import { initPiiRedactionPolicy } from "../audit/dlp-filter.js";
 import { getIsPackaged } from "./dev-flags.js";
@@ -81,7 +82,7 @@ export async function applyBootLocale(
   setLocale(loaded ? bootLocale : DEFAULT_LOCALE);
 }
 
-export async function bootstrapCoreServices(mainWindow: BrowserWindow | null, host: BootHost,
+export async function bootstrapCoreServices(mainWindow: MainWindow | null, host: BootHost,
 ): Promise<CoreServices> {
   // Attach the sink before core boot logs; close it last so shutdown logs are captured.
   if (shouldEnableFileLogSink()) {

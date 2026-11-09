@@ -1,8 +1,9 @@
-import type { BrowserWindow } from "electron";
+import type { MainWindow } from "./main-window-host.js";
+
 import { CHANNELS } from "../contract/app-contract.js";
 
 // Keep native window creation independent of the IPC handler graph.
-export function registerWindowEventListeners(win: BrowserWindow): void {
+export function registerWindowEventListeners(win: MainWindow): void {
   const broadcastMaximized = (maximized: boolean) => {
     try {
       win.webContents.send(CHANNELS.window.maximizedChanged, maximized);

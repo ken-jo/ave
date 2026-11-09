@@ -1,7 +1,7 @@
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // External-link viewers expose no host APIs or captured cookies; the caller chooses in-app or system-browser routing. Use the persistent-browser user
 // agent and flush cookies on close so quick teardown does not lose authenticated sessions.
-import { BrowserWindow, session as electronSession, type WebContents } from "electron";
+import { BrowserWindow, type BaseWindow, session as electronSession, type WebContents } from "electron";
 import { existsSync } from "node:fs";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
 import { getCommonChromeOptions } from "./window-chrome.js";
@@ -120,7 +120,7 @@ export function attachLinkNavigationGuards(contents: WebContents): void {
 
 // Resolve on load or normal user close; reject only failure to begin loading.
 export async function openLinkWindow(
-  parent: BrowserWindow | null | undefined,
+  parent: BaseWindow | null | undefined,
   opts: OpenLinkWindowOptions,
 ): Promise<void> {
   if (opts.persistPartition) {

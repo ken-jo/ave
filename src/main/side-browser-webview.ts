@@ -1,8 +1,8 @@
+import type { MainWindow } from "./main-window-host.js";
 import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { handleAgentBrowserPopup } from "./browser/browser-popup-navigation.js";
 import {
   session,
-  type BrowserWindow,
   type BrowserWindowConstructorOptions,
   type DownloadItem,
   type Event as ElectronEvent,
@@ -153,7 +153,7 @@ export function isSideBrowserPopupUrlAllowed(url: string): boolean {
   return isHttpUrl(url);
 }
 
-function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructorOptions {
+function sideBrowserPopupOptions(owner: MainWindow): BrowserWindowConstructorOptions {
   const webPreferences: Record<string, unknown> = {};
   hardenRemoteWebPreferences(webPreferences);
   return {
@@ -170,7 +170,7 @@ function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructor
 
 // Guard guests and every popup recursively; global webview guards do not cover top-level popup windows.
 // Require inherited session identity and parent popups to the owning main window; close foreign-session children.
-export function attachSideBrowserWebview(contents: WebContents, owner: BrowserWindow): void {
+export function attachSideBrowserWebview(contents: WebContents, owner: MainWindow): void {
   markAsLinkOwned(contents);
   observeBrowserWorkspaceGuest(contents, owner);
   contents.setWindowOpenHandler(({ url, postBody }) => {

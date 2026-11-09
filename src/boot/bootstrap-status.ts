@@ -1,6 +1,7 @@
+import type { MainWindow } from "../main/main-window-host.js";
 /** Bootstrap failures are non-fatal; publish status and retain an in-memory snapshot for late renderers. */
 
-import type { BrowserWindow } from "electron";
+
 import { CHANNELS } from "../contract/app-contract.js";
 import type { AppBootstrapStatus } from "../shared/bootstrap-status.js";
 
@@ -13,7 +14,7 @@ export function latestBootstrapStatus(): AppBootstrapStatus | null {
 
 /** Record even when the window is unavailable; sending is best-effort. */
 export function notifyBootstrapStatus(
-  mainWindow: BrowserWindow | null | undefined,
+  mainWindow: MainWindow | null | undefined,
   status: AppBootstrapStatus,
 ): void {
   // Record before checking the window because cold boot has no listener.

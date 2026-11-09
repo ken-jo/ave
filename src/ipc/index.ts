@@ -1,3 +1,4 @@
+import type { MainWindow } from "../main/main-window-host.js";
 /**
  * IPC registration orchestrator.
  *
@@ -80,7 +81,7 @@ import { registerTailnetSharingHandlers } from "./domains/tailnet-sharing.js";
 import { registerTelegramConnectionHandlers } from "./domains/telegram-connection.js";
 import type { IpcDeps } from "./types.js";
 import type { AppServices } from "../boot/types.js";
-import type { BrowserWindow } from "electron";
+
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "../main/conversation-command-port.js";
 import type { TailnetSharingOwnerService } from "../main/tailnet-sharing-owner-service.js";
@@ -103,8 +104,8 @@ export interface IpcRegistration {
 
 export function registerIpcHandlers(
   services: AppServices,
-  getMainWindow: () => BrowserWindow | null,
-  getAppWindows: () => Array<BrowserWindow | null | undefined> = () => [getMainWindow()],
+  getMainWindow: () => MainWindow | null,
+  getAppWindows: () => Array<MainWindow | null | undefined> = () => [getMainWindow()],
   conversationSurfaceRuntime?: ConversationSurfaceRuntime,
   conversationCommandPort?: ConversationCommandPort,
   tailnetSharingOwnerService?: TailnetSharingOwnerService,

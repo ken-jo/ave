@@ -30,8 +30,8 @@ export function registerUsageHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.usage.exportCsv, async (e, rows: Array<Record<string, string | number>>) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.usage.exportCsv, e); return UNAUTHORIZED_FRAME; }
-    const { dialog, BrowserWindow } = await import("electron");
-    const win = BrowserWindow.getFocusedWindow() ?? undefined;
+    const { dialog, BaseWindow } = await import("electron");
+    const win = BaseWindow.getFocusedWindow() ?? undefined;
     const result = win
       ? await dialog.showSaveDialog(win, { defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] })
       : await dialog.showSaveDialog({ defaultPath: "ave-usage.csv", filters: [{ name: "CSV", extensions: ["csv"] }] });
