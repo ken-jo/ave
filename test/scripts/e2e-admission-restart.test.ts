@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ElectronApplication, Page } from "playwright";
 import { deferred } from "../../src/__tests__/support/deferred.js";
 import { admitFixturePlugins } from "../e2e/ui/admit-fixture-plugins.js";
@@ -22,7 +24,8 @@ function createRestartFixture() {
   const firstWindow = vi.fn().mockResolvedValue(page);
   const restarted = { process: () => child, firstWindow } as unknown as ElectronApplication;
   const original = {} as ElectronApplication;
-  const context = { app: original, mainWindow: page, aveHome: "/fixture/home/.ave", userDataDir: "/fixture/profile", tempHome: "/fixture/home" };
+  const tempHome = join(tmpdir(), "ave-admission-fixture");
+  const context = { app: original, mainWindow: page, aveHome: join(tempHome, ".ave"), userDataDir: join(tempHome, "profile"), tempHome };
   launch.mockResolvedValue(restarted);
   return { context, original, restarted, page, child, firstWindow };
 }
