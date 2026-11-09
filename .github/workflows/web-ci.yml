@@ -63,6 +63,8 @@ jobs:
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
       - uses: ./.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           bun-version-file: .bun-version
       - name: Install (retry on transient registry flakes)

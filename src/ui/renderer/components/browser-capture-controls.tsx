@@ -55,7 +55,7 @@ function CaptureAreaOverlay({ selection, onCancel, onSelect }: {
     width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y),
   } : null;
   return createPortal(<div ref={overlayRef} role="dialog" aria-label={t("browserCapture.area")} tabIndex={-1}
-    data-testid="browser-capture-overlay" className="fixed z-50 cursor-crosshair touch-none select-none bg-background/20 outline-none"
+    data-testid="browser-capture-overlay" className="fixed z-50 cursor-crosshair touch-none select-none bg-background/(--opacity-light) outline-none"
     style={{ left: selection.bounds.x, top: selection.bounds.y, width: selection.bounds.width, height: selection.bounds.height }}
     onPointerDown={(event) => {
       if (event.button !== 0 || pointerIdRef.current !== null) return;
@@ -84,7 +84,7 @@ function CaptureAreaOverlay({ selection, onCancel, onSelect }: {
       onSelect({ x: Math.min(current.x, start.x) / zoom, y: Math.min(current.y, start.y) / zoom, width: width / zoom, height: height / zoom });
     }}>
     <span className="pointer-events-none absolute left-2 top-2 rounded bg-popover px-2 py-1 text-xs text-popover-foreground shadow-e2">{t("browserCapture.areaHint")}</span>
-    {rectangle ? <div data-testid="browser-capture-rectangle" className="pointer-events-none absolute border-2 border-primary bg-primary/10"
+    {rectangle ? <div data-testid="browser-capture-rectangle" className="pointer-events-none absolute border-2 border-primary bg-primary/(--opacity-subtle)"
       style={{ left: rectangle.x, top: rectangle.y, width: rectangle.width, height: rectangle.height }} /> : null}
   </div>, document.body);
 }

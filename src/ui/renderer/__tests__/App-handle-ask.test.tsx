@@ -100,6 +100,10 @@ describe("App.handleAsk — /load command routing", () => {
         childSessionId: "sub-old-child",
       });
     });
+    const panelToggle = container.querySelector(testIdSelector(TEST_IDS.panePanelToggle));
+    if (!panelToggle) throw new Error("Missing activity panel toggle");
+    expect(panelToggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(panelToggle);
     await waitFor(() => {
       expect(container.textContent).toContain("이전 세션 live 서브에이전트");
     });

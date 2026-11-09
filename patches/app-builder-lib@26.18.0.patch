@@ -1,0 +1,28 @@
+diff --git a/out/util/electronGet.js b/out/util/electronGet.js
+index 11a859b..11d373d 100644
+--- a/out/util/electronGet.js
++++ b/out/util/electronGet.js
+@@ -322,6 +322,23 @@ async function downloadArtifactToFile(config, label) {
+             return Promise.resolve();
+         },
+     };
++    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
++    if (token) {
++        const authorization = `Bearer ${token}`;
++        const authenticate = options => {
++            const url = options.url;
++            if (url.protocol === "https:" && (url.hostname === "github.com" || url.hostname === "api.github.com")) {
++                options.headers.authorization = authorization;
++            }
++            else if (options.headers.authorization === authorization) {
++                delete options.headers.authorization;
++            }
++        };
++        downloadOptions.hooks = {
++            ...downloadOptions.hooks,
++            beforeRequest: [...(downloadOptions.hooks?.beforeRequest || []), authenticate],
++        };
++    }
+     const configWithProgress = { ...config, downloadOptions };
+     try {
+         let filePath;

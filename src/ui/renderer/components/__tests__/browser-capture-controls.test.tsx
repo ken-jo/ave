@@ -40,8 +40,10 @@ describe("browser user captures", () => {
     const { capture, guest } = mount();
     await choose("browser-capture-area");
     const overlay = await screen.findByTestId("browser-capture-overlay");
-    expect(document.body).toContainElement(overlay);
+    expect(overlay.parentElement).toBe(document.body);
     expect(guest).not.toContainElement(overlay);
+    expect({ left: overlay.style.left, top: overlay.style.top, width: overlay.style.width, height: overlay.style.height })
+      .toEqual({ left: "100px", top: "150px", width: "500px", height: "400px" });
     overlay.setPointerCapture = vi.fn();
     fireEvent.pointerDown(overlay, { button: 0, pointerId: 1, clientX: 125, clientY: 175 });
     fireEvent.pointerMove(overlay, { pointerId: 1, clientX: 375, clientY: 300 });

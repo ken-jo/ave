@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { renderApp } from "../../../../test/renderer/render-app.js";
-import { approvalRequest, clickSidebarNavRow, endAnimation, splitIntoTwoTiles } from "../../../../test/renderer/helpers.js";
+import { approvalRequest, clickSidebarNavRow, splitIntoTwoTiles } from "../../../../test/renderer/helpers.js";
 import { MOCK_DEFAULT_SESSION_ID } from "../../../../test/renderer/mock-ave-api.js";
 import { A2ATaskState } from "../../../shared/a2a.js";
 
-describe("App notification toasts", () => {
+describe("App notification history", () => {
   const originalGlobalResizeObserver = globalThis.ResizeObserver;
   const originalWindowResizeObserver = window.ResizeObserver;
 
@@ -38,29 +38,29 @@ describe("App notification toasts", () => {
     vi.restoreAllMocks();
   });
 
-  it("routes the Learn more action through notifyClick and dismisses the toast", async () => {
+  it("routes the details action through notifyClick and retains session history", async () => {
     const user = userEvent.setup();
     const { api, emitNotificationToast } = await renderApp();
 
     emitNotificationToast({
-      kind: "ask-user",
-      title: "질문",
-      body: "진행해도 될까요?",
-      contextRef: { questionId: "q-1" },
+      id: "main:1",
+      createdAt: Date.now(),
+      kind: "routine",
+      title: "완료",
+      body: "작업이 완료되었습니다",
+      contextRef: { routineId: "r-1" },
     });
 
+    await user.click(screen.getByTestId("notification-bell"));
     await user.click(await screen.findByRole("button", { name: /자세히 알아보기|Learn more/ }));
 
     expect(api.notifyClick).toHaveBeenCalledWith({
-      kind: "ask-user",
-      contextRef: { questionId: "q-1" },
+      kind: "routine",
+      contextRef: { routineId: "r-1" },
     });
-    // Dismissed: the bar draws the toast once more on its way out, then leaves.
-    await waitFor(() => {
-      expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true");
-    });
-    endAnimation(screen.getByTestId("status-bar-presence"));
-    expect(screen.queryByTestId("status-toast-message")).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId("notification-center")).toBeNull());
+    await user.click(screen.getByTestId("notification-bell"));
+    expect(screen.getByTestId("notification-history-row")).toHaveTextContent("작업이 완료되었습니다");
   });
 
   it("handles clicked session notifications by loading the referenced chat", async () => {
@@ -86,9 +86,8 @@ describe("App notification toasts", () => {
   });
 
   it.each(["work-board", "web"])("returns from the covering %s surface and focuses the requesting conversation card", async (surface) => {
-    const user = userEvent.setup();
     const title = "그래 두개 진행해보자";
-    const { api, container, emitApproval, emitNotificationToast, emitNotificationClicked } = await renderApp({
+    const { api, container, emitApproval, emitNotificationClicked } = await renderApp({
       hasApiKey: true,
       sessions: [{ id: MOCK_DEFAULT_SESSION_ID, title, modifiedAt: "2026-01-01T00:00:00Z" }],
       history: { sessionId: MOCK_DEFAULT_SESSION_ID, messages: [
@@ -110,19 +109,11 @@ describe("App notification toasts", () => {
     );
     expect(screen.getAllByText(`현재 화면 뒤에 있는 대화의 요청: ${title}`)).toHaveLength(1);
     expect(api.onNotificationClicked).toHaveBeenCalledTimes(1);
-    api.notifyClick.mockImplementation(async (payload) => {
-      emitNotificationClicked(payload);
-      return { ok: true };
-    });
-    await act(async () => {
-      emitNotificationToast({
-        kind: "approval",
-        title: "승인이 필요합니다",
-        body: "views.c4 파일 쓰기 · 대화: 그래 두개 진행해보자",
-        contextRef: { approvalId: "notice-write", sessionId: MOCK_DEFAULT_SESSION_ID },
-      });
-    });
-    await user.click(await screen.findByRole("button", { name: /자세히 알아보기|Learn more/ }));
+    // OS notification clicks still reveal the request's own card.
+    await act(async () => emitNotificationClicked({
+      kind: "approval",
+      contextRef: { approvalId: "notice-write", sessionId: MOCK_DEFAULT_SESSION_ID },
+    }));
     await waitFor(() => {
       expect(container.querySelector(surfaceSelector)).toBeNull();
       const panel = screen.getByTestId("tool-approval-panel");
@@ -165,81 +156,6 @@ describe("App notification toasts", () => {
     await act(async () => emitApprovalSettled("req-approval"));
     await splitIntoTwoTiles(container);
     expect(api.onNotificationClicked).toHaveBeenCalledTimes(1);
-  });
-
-  it("drops each approval toast when its request settles, so only pending requests are announced", async () => {
-    const { emitApproval, emitApprovalSettled, emitNotificationToast } = await renderApp();
-    const ids = Array.from({ length: 9 }, (_, i) => `burst-${i + 1}`);
-    await act(async () => {
-      for (const id of ids) {
-        emitNotificationToast({ kind: "approval", title: "승인이 필요합니다", body: `request ${id}`,
-          contextRef: { approvalId: id, sessionId: MOCK_DEFAULT_SESSION_ID } });
-        emitApproval(approvalRequest({ id, nonce: `nonce-${id}`, sessionId: MOCK_DEFAULT_SESSION_ID }));
-      }
-    });
-    expect(await screen.findByTestId("status-toast-message")).toHaveTextContent("request burst-1");
-    expect(screen.getByText("+8")).toBeInTheDocument();
-
-    await act(async () => ids.slice(0, 6).forEach((id) => emitApprovalSettled(id)));
-    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("request burst-7");
-    expect(screen.getByText("+2")).toBeInTheDocument();
-
-    await act(async () => ids.slice(6, 8).forEach((id) => emitApprovalSettled(id)));
-    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("request burst-9");
-    expect(screen.queryByText(/^\+\d+$/)).toBeNull();
-
-    await act(async () => emitApprovalSettled("burst-9"));
-    await waitFor(() => expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true"));
-    endAnimation(screen.getByTestId("status-bar-presence"));
-    expect(screen.queryByTestId("status-toast-message")).toBeNull();
-  });
-
-  it("drops a toast whose request never reached this window once the host settles it, and only that one", async () => {
-    const { emitApprovalSettled, emitNotificationToast } = await renderApp();
-    await act(async () => {
-      for (const id of ["orphan", "kept"]) {
-        emitNotificationToast({ kind: "approval", title: "승인이 필요합니다", body: `request ${id}`,
-          contextRef: { approvalId: id, sessionId: MOCK_DEFAULT_SESSION_ID } });
-      }
-    });
-    expect(await screen.findByTestId("status-toast-message")).toHaveTextContent("request orphan");
-    await act(async () => emitApprovalSettled("unrelated"));
-    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("request orphan");
-    expect(screen.getByText("+1")).toBeInTheDocument();
-    await act(async () => emitApprovalSettled("orphan"));
-    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("request kept");
-    expect(screen.queryByText(/^\+\d+$/)).toBeNull();
-  });
-
-  it("drops an approval toast when the request is answered in this window", async () => {
-    const { emitApproval, emitNotificationToast } = await renderApp();
-    await act(async () => {
-      emitNotificationToast({ kind: "approval", title: "승인이 필요합니다", body: "request answered",
-        contextRef: { approvalId: "answered", sessionId: MOCK_DEFAULT_SESSION_ID } });
-      emitApproval(approvalRequest({ id: "answered", nonce: "nonce-answered", sessionId: MOCK_DEFAULT_SESSION_ID }));
-    });
-    expect(await screen.findByTestId("status-toast-message")).toHaveTextContent("request answered");
-    await act(async () => fireEvent.click(screen.getByTestId("approve-button")));
-    await waitFor(() => expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true"));
-    endAnimation(screen.getByTestId("status-bar-presence"));
-    expect(screen.queryByTestId("status-toast-message")).toBeNull();
-  });
-
-  it("drops the toast of a queued request whose answer is in flight once the host settles it", async () => {
-    const { emitApproval, emitApprovalSettled, emitNotificationToast } = await renderApp();
-    vi.mocked(window.ave.approval.respond).mockImplementation(() => new Promise(() => undefined));
-    await act(async () => {
-      emitNotificationToast({ kind: "approval", title: "승인이 필요합니다", body: "request in flight",
-        contextRef: { approvalId: "in-flight", sessionId: MOCK_DEFAULT_SESSION_ID } });
-      emitApproval(approvalRequest({ id: "in-flight", nonce: "nonce-in-flight", sessionId: MOCK_DEFAULT_SESSION_ID }));
-    });
-    expect(await screen.findByTestId("status-toast-message")).toHaveTextContent("request in flight");
-    await act(async () => fireEvent.click(screen.getByTestId("approve-button")));
-    expect(screen.getByTestId("status-toast-message")).toHaveTextContent("request in flight");
-    await act(async () => emitApprovalSettled("in-flight"));
-    await waitFor(() => expect(screen.getByTestId("status-bar-presence").dataset.leaving).toBe("true"));
-    endAnimation(screen.getByTestId("status-bar-presence"));
-    expect(screen.queryByTestId("status-toast-message")).toBeNull();
   });
 
   it("names an untitled in-panel approval from its first user message", async () => {

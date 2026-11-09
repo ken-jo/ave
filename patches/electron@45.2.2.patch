@@ -1,0 +1,38 @@
+diff --git a/install.js b/install.js
+index 1d0f702..52a9ad8 100755
+--- a/install.js
++++ b/install.js
+@@ -42,6 +42,7 @@ downloadArtifact({
+   artifactName: 'electron',
+   force: process.env.force_no_cache === 'true',
+   cacheRoot: process.env.electron_config_cache,
++  downloader: authenticatedDownloader(),
+   checksums:
+     process.env.electron_use_remote_checksums || process.env.npm_config_electron_use_remote_checksums
+       ? undefined
+@@ -58,3 +59,25 @@ downloadArtifact({
++function authenticatedDownloader() {
++  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
++  if (!token) return undefined;
++  return {
++    async download(url, targetFilePath, options = {}) {
++      const requestUrl = new URL(url);
++      const headers = new Headers(options.headers);
++      if (requestUrl.protocol === 'https:' &&
++          (requestUrl.hostname === 'github.com' || requestUrl.hostname === 'api.github.com')) {
++        headers.set('Authorization', `Bearer ${token}`);
++      }
++      const response = await fetch(url, { ...options, headers });
++      if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
++      if (!response.body) throw new Error('Response body is empty');
++      await fs.promises.mkdir(path.dirname(targetFilePath), { recursive: true });
++      const { pipeline } = require('node:stream/promises');
++      const { Readable } = require('node:stream');
++      await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(targetFilePath));
++    }
++  };
++}
++
+ function isInstalled() {
+   try {
+     if (fs.readFileSync(path.join(__dirname, 'dist', 'version'), 'utf-8').replace(/^v/, '') !== version) {

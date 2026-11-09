@@ -5,17 +5,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { renderApp } from "../../../../test/renderer/render-app.js";
-import {
-  COLLAPSED_RAIL_RESERVE,
-  CONTENT_TITLE_INSET,
-  RAIL_BAND_LEAD,
-} from "../../../shared/shell-geometry.js";
+import { COLLAPSED_RAIL_RESERVE } from "../../../shared/shell-geometry.js";
 import { SIDEBAR_DEFAULT_WIDTH } from "../../../shared/side-panel.js";
 
-/** jsdom has no OS lights: the band's rail-only lead is the plain-platform one. */
-const COLLAPSED_BAND_LEAD = `${RAIL_BAND_LEAD}px`;
-const EXPANDED_BAND_LEAD = `${COLLAPSED_RAIL_RESERVE + SIDEBAR_DEFAULT_WIDTH + CONTENT_TITLE_INSET}px`;
+/** jsdom has no layout or OS lights, so these are the x where a pane header's content starts in a real window (shell-pane-alignment.spec.ts
+ * measures them): rail edge 60 / list card edge 300, plus the pane cell's 4px half-gutter and the header's 8px padding. Written
+ * as numbers so a drift in the shared constants fails here instead of being recomputed. */
+const COLLAPSED_BAND_LEAD = "72px";
+const EXPANDED_BAND_LEAD = "312px";
 const EXPANDED_MAIN_RESERVE = `${COLLAPSED_RAIL_RESERVE + SIDEBAR_DEFAULT_WIDTH}px`;
+
+/** The two classes that put the title on the band lead's line; a change to either must move the lead with it. */
+function expectTitleInsetClasses(main: HTMLElement) {
+  expect(main.querySelector('[data-testid^="pane-cell:"]')).toHaveClass("p-(--chrome-gap-tight)");
+  expect(main.querySelector('[data-testid="pane-header"]')).toHaveClass("px-(--chrome-gap)");
+}
 
 /** The fold button: in the list's header while the list shows, first in the band once it is folded. */
 function currentToggle(container: HTMLElement): HTMLButtonElement {
@@ -32,13 +36,18 @@ async function mountShell(container: HTMLElement) {
   expect(aside).toBeTruthy();
   expect(main).toBeTruthy();
   expect(band).toBeTruthy();
+  // One explicit shrinkable column: a wide band row cannot widen the shell and push the panes past the window.
+  expect(container.querySelector('[data-testid="app-shell"]')).toHaveClass("grid-cols-[minmax(0,1fr)]");
+  expect(band).toHaveClass("min-w-0");
   return { toggle, aside, main, band };
 }
 
 function expectCollapsedGeometry(main: HTMLElement, band: HTMLElement) {
-  expect(main.classList.contains("pl-(--shell-collapsed-rail-reserve)")).toBe(true);
+  expect(main.classList.contains("pl-(--shell-collapsed-rail-edge)")).toBe(true);
+  expect(main.querySelector('[data-testid="pane-row"]')).toHaveClass("pl-0");
   expect(main.style.paddingLeft).toBe("");
   expect(band.style.paddingLeft).toBe(COLLAPSED_BAND_LEAD);
+  expectTitleInsetClasses(main);
 }
 
 describe("App sidebar overlay", () => {
@@ -141,7 +150,7 @@ describe("App sidebar overlay", () => {
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
     expect(aside.hasAttribute("data-sidebar-overlay")).toBe(false);
     expect(main.hasAttribute("data-sidebar-overlay")).toBe(false);
-    expect(main.classList.contains("pl-(--shell-collapsed-rail-reserve)")).toBe(false);
+    expect(main.classList.contains("pl-(--shell-collapsed-rail-edge)")).toBe(false);
     expect(main.style.paddingLeft).toBe(EXPANDED_MAIN_RESERVE);
     expect(band.style.paddingLeft).toBe(EXPANDED_BAND_LEAD);
     await act(async () => { fireEvent.keyDown(document, { key: "Escape" }); });

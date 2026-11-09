@@ -494,7 +494,7 @@ export const CHANNELS = {
   },
   notification: {
     clicked: "ave:notification:clicked",
-    // In-app toast push (main → renderer).
+    // History records (main → renderer); listener readiness { ready: boolean } invokes the same channel.
     toast: "ave:notification:toast",
   },
   settings: {

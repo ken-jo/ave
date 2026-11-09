@@ -1,6 +1,22 @@
 /** English message catalog, grouped by namespace. */
 export const en = {
 
+  "notificationCenter.title": "Notifications",
+  "notificationCenter.label": "Notifications: {approvals} need review, {unread} unread notices",
+  "notificationCenter.notices": "Notices",
+  "notificationCenter.clearAll": "Clear all",
+  "notificationCenter.clear": "Clear notice: {message}",
+  "notificationCenter.empty": "No notices this session.",
+  "notificationCenter.source.window": "Window",
+  "notificationCenter.source.banner": "Announcement",
+  "notificationCenter.source.system": "System",
+  "notificationCenter.source.routine": "Routine",
+  "notificationCenter.source.plugin": "Extension",
+  "notificationCenter.source.alert": "Alert",
+  "notificationCenter.source.turn-end": "Conversation",
+  "notificationCenter.source.approval": "Approval",
+  "notificationCenter.source.ask-user": "Question",
+
   // agentBrowser
   "agentBrowser.observationBrowsing": "Agent browsing",
   "agentBrowser.observationNavigate": "Navigate",
@@ -3130,6 +3146,7 @@ export const en = {
   "mainToolbar.toggleSidebar": "Toggle Sidebar Visibility",
   "mainToolbar.showSidebar": "Show sidebar",
   "mainToolbar.devToolsTitle": "Dev Tools (Cmd/Ctrl+Shift+D)",
+  "mainToolbar.statusOverflow": "More status controls ({count})",
   "mainToolbar.devToolsTooltip": "Dev Tools — Preflight threshold adjustment (Cmd/Ctrl+Shift+D)",
   "mainToolbar.unifiedSearch": "Unified Search ({shortcut})",
   "mainToolbar.sessionStar": "Pin current session",
@@ -6031,6 +6048,7 @@ export const en = {
   "workApprovals.keyboardLegend": "↑ ↓ move · Enter expand · Tab buttons in the card · Esc collapse · decisions only by pressing a button",
   "workApprovals.badge": "Needs review {count}",
   "workApprovals.badgeLabel": "{count} items need your review",
+  "workApprovals.nothingToReview": "Nothing to review",
   "workApprovals.popoverTitle": "Needs review {count}",
   "workApprovals.popoverScope": "All projects · work approvals only",
   "workApprovals.popoverFooter": "Opens the card in that project's home. Decide on the card.",

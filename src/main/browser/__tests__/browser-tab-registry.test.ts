@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserDocumentChangedError, BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";
 import { parseBrowserTabControlState, parseBrowserTabOpRequest, type BrowserTabControlState, type BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
+import { _browserPopupNavigationStateForTest, awaitBrowserPopupNavigation, handleAgentBrowserPopup, setBrowserPopupNavigation } from "../browser-popup-navigation.js";
+import type { BrowserActionTab } from "../../../tools/browser-tools.js";
 
 const ACTOR = { sessionId: "conversation" };
 
@@ -35,7 +37,7 @@ function setup() {
   registry.setRendererLink({
     sendTabOp: (windowId, request) => {
       ops.push({ windowId, request });
-      if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId) registry.completeFocus(windowId, request.requestId, true);
+      if (request.op === "capture-focus" || request.op === "restore-focus") registry.completeFocus(windowId, request.requestId, true);
       return true;
     },
     sendControl: (windowId, state) => control.push({ windowId, state }),
@@ -59,6 +61,95 @@ afterEach(() => {
 });
 
 describe("BrowserTabRegistry", () => {
+
+  it.each(["release", "turn-end", "pause", "stop", "destroy", "replace", "window-close"] as const)("retires pending popup authority on %s without waiting for the popup opener", async (ending) => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "popup-owner", webContentsId: 88, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing owned tab");
+    const tab = registry.liveTab(opened.tabId);
+    if (!tab) throw new Error("Missing live owned tab");
+    const guest = tab.guest;
+    if (!guest) throw new Error("Missing owned guest");
+    const lease = await runWithAgentObservationTurn({ sessionId: ACTOR.sessionId, turnId: "popup-turn" }, () =>
+      runWithAgentObservationInvocation({ sessionId: ACTOR.sessionId, toolUseId: "popup-action" }, async () => registry.acquireControl(tab, ACTOR)));
+    const popup = deferred<void>();
+    setBrowserPopupNavigation({ tab, signal: tab.actions.signal, leaseId: lease.id, authorizeSite: async () => {}, openSitePopup: () => popup.promise } satisfies BrowserActionTab<FakeGuest>);
+    handleAgentBrowserPopup(guest, "https://other.example/", false);
+    const pending = awaitBrowserPopupNavigation(guest, lease.id);
+    const outcome = pending.then(() => "opened", () => "retired");
+    if (ending === "release") registry.releaseControl(tab.handle, lease.id);
+    if (ending === "turn-end") registry.endTurnControl(ACTOR.sessionId, "popup-turn");
+    if (ending === "pause") registry.pause(1, "popup-owner");
+    if (ending === "stop") registry.stop(1, "popup-owner");
+    if (ending === "destroy") registry.guestDestroyed(88);
+    if (ending === "replace") attachTab(registry, { tabId: "popup-owner", webContentsId: 89 }, 1, "about:blank");
+    if (ending === "window-close") registry.releaseWindow(1);
+    try {
+      await expect(Promise.race([outcome, new Promise(resolve => setTimeout(() => resolve("still pending"), 10))])).resolves.toBe("retired");
+      expect(_browserPopupNavigationStateForTest(guest).pending).toBe(0);
+      if (ending === "release" || ending === "turn-end" || ending === "pause" || ending === "replace") expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(true);
+      if (ending === "replace") {
+        registry.stop(1, "popup-owner");
+        expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(true);
+      }
+      if (ending === "stop") expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(false);
+    } finally { popup.resolve(); await outcome; }
+  });
+
+  it("keeps native popup denial with a physical guest moved between agent tabs", async () => {
+    const { registry, ops } = setup();
+    for (const [tabId, webContentsId] of [["source", 88], ["destination", 89]] as const) {
+      const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+      attachTab(registry, { tabId, webContentsId, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+      expect((await opening).ok).toBe(true);
+    }
+    const source = registry.liveRendererTab(1, "source");
+    const destination = registry.liveRendererTab(1, "destination");
+    if (!source || !destination) throw new Error("Missing live agent tabs");
+    const guest = source.guest;
+    if (!guest) throw new Error("Missing source guest");
+    const lease = registry.acquireControl(source, ACTOR);
+    const open = vi.fn(async () => {});
+    setBrowserPopupNavigation({ tab: source, signal: source.actions.signal, leaseId: lease.id, authorizeSite: async () => {}, openSitePopup: open } satisfies BrowserActionTab<FakeGuest>);
+    expect(registry.bindTab(1, { tabId: "destination", webContentsId: guest.id })).toEqual({ ok: true });
+    expect(source.guest).toBeNull();
+    expect(destination.guest).toBe(guest);
+    attachTab(registry, { tabId: "source", webContentsId: 91 }, 1, "about:blank");
+    registry.stop(1, "source");
+    expect(source.guest?.id).toBe(91);
+    expect(source.opener).toBe("user");
+    for (let index = 0; index < 20; index++) expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(true);
+    expect(_browserPopupNavigationStateForTest(guest).pending).toBe(0);
+    expect(open).not.toHaveBeenCalled();
+    attachTab(registry, { tabId: "user-destination", webContentsId: 90 }, 1, "about:blank");
+    expect(registry.bindTab(1, { tabId: "user-destination", webContentsId: guest.id })).toEqual({ ok: true });
+    expect(destination.guest).toBeNull();
+    expect(registry.liveRendererTab(1, "user-destination")?.opener).toBe("user");
+    expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(false);
+  });
+
+  it("keeps popup authorization alive through document changes within its exact lease", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "popup-navigation", webContentsId: 88, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing owned tab");
+    const tab = registry.liveTab(opened.tabId);
+    if (!tab) throw new Error("Missing live owned tab");
+    const guest = tab.guest;
+    if (!guest) throw new Error("Missing owned guest");
+    const lease = registry.acquireControl(tab, ACTOR);
+    const open = vi.fn(async () => {});
+    setBrowserPopupNavigation({ tab, signal: tab.actions.signal, leaseId: lease.id, authorizeSite: async () => {}, openSitePopup: open } satisfies BrowserActionTab<FakeGuest>);
+    registry.navigationStarted(88, "https://a.example/next");
+    registry.documentChanged(88);
+    expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(true);
+    await expect(awaitBrowserPopupNavigation(guest, lease.id)).resolves.toBeUndefined();
+    expect(open).toHaveBeenCalledOnce();
+    registry.releaseControl(tab.handle, lease.id);
+  });
 
   it("ends only the finished actor's active control while preserving ownership and human pauses", async () => {
     const { registry, ops, control } = setup();
@@ -1029,9 +1120,48 @@ describe("scoped browser control", () => {
     expect(ops).toHaveLength(count);
     expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
     await registry.releaseFocus(71, tab.lease?.id);
-    expect(ops).toHaveLength(count);
+    expect(ops).toHaveLength(count + 1);
+    expect(ops.at(-1)?.request.op).toBe("restore-focus");
     registry.userInput(71, { type: "keyDown" });
     await expect(registry.focusGuest(71)).rejects.toThrow("active control");
+  });
+
+  it("awaits the parked routing acknowledgement without capturing or borrowing native focus", async () => {
+    const { registry, tab } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    registry.setAgentTabAwake(71, true);
+    await registry.focusGuest(71);
+    const requests: BrowserTabOpRequest[] = [];
+    registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (_windowId, request) => { requests.push(request); return true; } });
+    let settled = false;
+    const restoring = Promise.resolve(registry.releaseFocus(71, lease.id)).then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.op).toBe("restore-focus");
+    expect(requests[0]).not.toHaveProperty("receiptId");
+    const request = requests[0];
+    if (!request) throw new Error("Missing restore request");
+    expect(registry.completeFocus(2, request.requestId, true)).toBe(false);
+    expect(registry.completeFocus(1, request.requestId, true)).toBe(true);
+    await restoring;
+    expect(settled).toBe(true);
+  });
+
+  it("does not restore focus or send a renderer operation while another window is frontmost", async () => {
+    const { registry, tab, guest } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    registry.setAgentTabAwake(71, true);
+    await registry.focusGuest(71);
+    const send = vi.fn(() => true);
+    registry.setRendererLink({ isWindowVisible: () => true, isWindowFocused: () => false, sendControl: () => {}, sendTabOp: send });
+    guest.focus();
+    const blur = vi.spyOn(guest, "blur");
+    await registry.releaseFocus(guest.id, lease.id);
+    registry.restoreParkedGuestFocus(guest.id);
+    expect(send).not.toHaveBeenCalled();
+    expect(blur).not.toHaveBeenCalled();
+    expect(guest.isFocused()).toBe(true);
   });
 
   it("blocks only real parked keyboard input and restores even after takeover", async () => {

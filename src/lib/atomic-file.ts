@@ -27,6 +27,7 @@ const DIRECTORY_SYNC_ERROR_CODE = "ATOMIC_FILE_DIRECTORY_SYNC_FAILED";
 
 interface ParentDirectorySyncRuntime {
   platform: NodeJS.Platform;
+  openFile?(filePath: string, flags: "r" | "r+"): number;
   open(parentDir: string): number;
   fsync(fd: number): void;
   close(fd: number): void;
@@ -115,6 +116,20 @@ export function replaceStagedFile(
 export function isMissingPathError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
   return code === "ENOENT" || code === "ENOTDIR";
+}
+
+/** Confirm existing bytes and their directory entry without rewriting or changing modification time. */
+export function syncExistingFileSync(
+  filePath: string,
+  runtime: ParentDirectorySyncRuntime = DEFAULT_PARENT_DIRECTORY_SYNC_RUNTIME,
+): void {
+  const fd = (runtime.openFile ?? openSync)(filePath, runtime.platform === "win32" ? "r+" : "r");
+  try {
+    runtime.fsync(fd);
+  } finally {
+    runtime.close(fd);
+  }
+  syncParentDirectoryAfterRename(dirname(filePath), runtime);
 }
 
 function syncParentDirectoryAfterRename(

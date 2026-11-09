@@ -44,6 +44,8 @@ import { makeTestTreeWritable } from "../../plugins/__tests__/test-helpers.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 import { configuredTestTmpRoot } from "../../__tests__/support/test-tmp-root.js";
+import { aveHome } from "../../shared/ave-home.js";
+import { policyHomeAnchors } from "../../shared/policy-home.js";
 
 let home: string;
 let previousAveHome: string | undefined;
@@ -215,9 +217,17 @@ describe("the private roots in a sandbox read deny", () => {
       expect(denyRead).not.toContain(appOwnedSandboxTempRoot());
       expect(denyRead).not.toContain(appOwnedSandboxHomeRoot());
       expect(denyRead).not.toContain(appOwnedTerminalHandoffRoot());
-      const others = floor.filter((path) => !appOwnedSandboxPrivateRoots().includes(path));
-      // A marked `{ path, literal: true }` entry (ASRT 0.0.79) is kept, so it fails the equality.
-      expect(denyRead.filter((path) => typeof path !== "string" || !/\[[pef]\]$/.test(path))).toEqual(others);
+      const globRoots = new Set([
+        ...appOwnedSandboxPrivateRoots(),
+        aveHome(),
+        ...policyHomeAnchors().map((anchor) => join(anchor, ".ave")),
+      ].flatMap((root) => [root, existsSync(root) ? realpathSync(root) : root]));
+      // Home boundaries also preserve child re-allows; every other deny stays literal.
+      expect(denyRead).toEqual(floor.map((path) => {
+        if (!globRoots.has(path)) return path;
+        const real = existsSync(path) ? realpathSync(path) : path;
+        return `${real.slice(0, -1)}[${real.slice(-1)}]`;
+      }));
     },
   );
 

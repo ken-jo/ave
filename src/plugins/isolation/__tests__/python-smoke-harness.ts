@@ -46,6 +46,7 @@ function uvEnvironment(cache: string): NodeJS.ProcessEnv {
     UV_PYTHON_BIN_DIR: join(cache, "bin"),
     UV_PYTHON_INSTALL_BIN: "0",
     UV_CACHE_DIR: join(cache, "uv"),
+    ...(process.env.AVE_PYTHON_DOWNLOAD_MIRROR ? { UV_PYTHON_INSTALL_MIRROR: process.env.AVE_PYTHON_DOWNLOAD_MIRROR } : {}),
   };
 }
 

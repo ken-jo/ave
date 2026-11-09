@@ -99,7 +99,7 @@
   - Elevation uses `--surface-hairline`, `--elevation-raised`, and `--elevation-floating` rather than raw `shadow-xl`/`shadow-2xl`.
 - Stacking (z-order ladder):
   - Canvas content stays at `z-0`–`z-30` (sticky headers/rails at `z-10`–`z-30`).
-  - Docked auxiliary panels use `z-40`; all floating overlays (dialog, popover, command picker, tooltip, toast) share the `z-50` band and rely on portal/mount order within it.
+  - Conversation notices use `z-30`, below request cards and docked auxiliary panels at `z-40`. Other floating overlays (dialog, popover, command picker, tooltip) share `z-50` and rely on portal/mount order within it.
   - Dev-only tier: `--z-dev-overlay` (60, `z-(--z-dev-overlay)`) sits above the overlay band so development tooling such as the component labels stays on top of dialogs. Product UI never uses it.
   - Arbitrary escapes (`z-[9000]`-style) are drift, not a tier.
 - Motion:
@@ -110,16 +110,13 @@
   - Motion budget: a UI transition (enter, exit, hover, state swap) takes at most about 200ms —
     `--motion-fast` (120ms) or `--motion-base` (180ms) — and animates `transform` and `opacity`
     only. `--motion-slow` and `--motion-layout` are the only steps above it and are kept for
-    in-flow size changes; the notice strip's height animation below is that exception, not a
-    licence for other properties.
+    in-flow size changes.
   - One loader: every in-progress spin is the `Loader` primitive (`src/components/ui/loader.tsx`),
     at the 12/14/16 icon steps, never a raw `animate-spin`. Under `prefers-reduced-motion` it
     stands still and the adjacent label or disabled control carries the busy state; pulses on
     skeletons and activity dots stop the same way (`motion-reduce:animate-none`).
-  - An in-flow surface that appears and disappears (the status bar, the window's notice
-    strip) animates its height too — `ave-anim-notice-in/-out`, a grid row from 0fr to
-    1fr with a fade — and stays mounted through its exit, so what sits below it moves
-    with it instead of jumping.
+  - Pane-local notices fade on `--motion-fast` without changing layout, using opacity and
+    transform above conversation docks. Each stays mounted through its exit.
 - Imagery/iconography:
   - Use lucide icons for actions and categories when available.
   - Icon sizes (de-facto standard): 14px (`h-3.5 w-3.5`) is the default in dense chrome and buttons; 12px (`h-3 w-3`) inline beside captions/metadata; 16px (`h-4 w-4`) in comfortable rows and dialogs. Larger sizes are reserved for identity marks (plugin/app icons), not actions.
@@ -179,18 +176,32 @@ Breadcrumbs in VS Code sit at the **top of the editor content, on the leading ed
 chrome, above the text — because the path describes what is open, not where the window is. Their
 tokens (`breadcrumb.foreground`, `breadcrumb.activeSelectionForeground`) are content tokens, not
 title-bar tokens. What we take is the association and the edge; what we do not take is the
-storey. Ours runs on the **leading edge of the window band**, starting exactly where the
-sidebar card ends, because the band is the one strip that spans every pane and the path has to
+storey. Ours runs on the **leading edge of the window band**, using the pane's navigation-derived
+baseline subject to window-control clearance, because the band spans every pane and the path has to
 name one location while several panes are open. A path floated to the *trailing* edge would
 read as window furniture and lose the association — that is the placement the rule forbids, and
 it is not this one.
 
-The one exception is Linux, where the window buttons lead the band (close, minimize, maximize, as
-GNOME and macOS order them): the path can never start before `BAND_LEAD_PAD_LINUX` (136px).
-With the sidebar collapsed or overlaid, the path starts at 136px instead of on the rail's line (84px).
-With the sidebar hidden, it starts at 136px instead of at the band edge (12px).
-In both cases it no longer lines up with the content title below; that is the cost of keeping the
-buttons where Linux users expect them.
+The band start and the rendered pane-header content start are separate measurements. The band uses
+the navigation card's trailing edge plus `CONTENT_TITLE_INSET` (12px): the pane cell's 4px half-gutter
+and the header's 8px inline padding. The pane card's 1px border puts its rendered content (the glyph,
+then the title) 1px further in. With the list expanded at its default width in a 1243px window, the
+band starts at 312px and the rendered header content starts at 313px on every platform.
+
+With the sidebar collapsed or overlaid, the navigation-derived baseline before applying the
+platform floor is 72px. The rendered header content starts at 73px. Window controls set the band start separately:
+
+| Platform | Band start | Rendered header content start |
+| --- | --- | --- |
+| macOS | 80px | 73px |
+| Linux | 136px | 73px |
+| Windows | 72px | 73px |
+
+The macOS traffic lights end at 76px; the 80px band floor leaves their 4px gap. Its accepted offset
+from the rendered header content is therefore **80 − 73 = 7px**. Linux reserves 136px for its leading
+window buttons. Windows places its controls at the trailing edge and uses the 72px reference line.
+Hidden navigation retains the platform's band floor: 80px, 136px and 12px respectively.
+The visible sidebar-to-pane gap remains 4px in both expanded and collapsed layouts.
 
 What it names is the **focused pane's location**, since that is where the window is (see
 `docs/design/tiled-chat-groups.md`). Moving focus between panes therefore moves the path, with
@@ -237,6 +248,14 @@ What the frame owns, in order from the outside in:
   pads by the tight chrome gap on every side, so two adjacent halves make the gutter between
   tiles; the frame's floors are measured on its content, and a split subtracts the cell
   inset (`PANE_CELL_INSET`) before comparing.
+  Without persistent banners, the first row shares `--shell-card-top` with the sidebar cards; `--shell-canvas-top`
+  derives the content origin before the cell's half-gutter. Empty banner lanes reserve
+  no height, including when they contain only text placeholders. Visible persistent
+  banners still reserve space above the panes.
+  When navigation sits beside the canvas, its visible gap is `--chrome-gap-tight` (4px),
+  measured from the list card's edge or the collapsed rail's edge. Split panes keep their 8px inner gutter.
+  The sidebar resize handle stays 8px wide inside the list card's trailing edge,
+  clear of pane content and header controls. Hidden navigation keeps the window inset.
 - **Header band.** One row, `--chrome-band-height` tall, the same height as every other
   chrome band. The leading edge starts with the same glyph the sidebar row uses
   for this content, then the title; a longer description lives on the title's hover and is
@@ -334,12 +353,16 @@ What is deliberately NOT in this frame, and where it goes instead:
   card. A pill's detail is its tooltip, so a busy pill stays hoverable and focusable.
 - **An announcement from the marketplace** is external content: a dismissible banner in the
   top banner stack whose only action is navigation to a settings section. It moves the user;
-  it changes nothing on their behalf.
+  it changes nothing on their behalf. While shown, it also enters the window bell's history
+  with the same action.
+- **A window notice** enters the bell's history. The bell also contains the existing work
+  approval list, grouped by project, whose rows only navigate to their cards. Neither a
+  notice nor a pending work item needs a separate title-bar surface.
 
 The rule that sorts a new surface: if the turn cannot continue without the answer, it is the
-card over the composer; if the user can act on it later, it is the lane or a pill; if it only
-informs, it is a banner. A surface placed in the wrong tier is a frame violation the same way
-a control in the wrong part is a token violation.
+card over the composer; if the user can act on it later, it is the lane or a pill; a persistent
+condition is a banner, and a transient window report goes to the bell. A surface placed in the
+wrong tier is a frame violation the same way a control in the wrong part is a token violation.
 
 ### Agent status slot
 
@@ -559,27 +582,62 @@ determine whether a tile can split or a panel can dock.
 - Offline/slow network: keep local app navigation responsive and isolate remote failure to the affected operation.
 - Notification hierarchy (pick the narrowest surface that fits; it serves the Attention principle — when no surface is necessary, send nothing):
   - **Inline status** next to the affected control — the default for operation results.
-  - **Toast** for transient confirmations of a user-initiated action (e.g. saved); auto-dismissing, never load-bearing.
-  - Notice rules. Every transient notice is a notice queue (`useStatusNotices`) drawn by `NoticeToast`
-    (`src/ui/renderer/components/StatusBar.tsx`), so the rules are enforced once:
-    - severity sets the role: each strip renders one persistent `NoticeLiveRegion` whose text
-      follows the queue head — errors in its `role="alert"` region, everything else in its
-      `role="status"` region — and the visible notice itself is not live, so a remounted notice
-      can never swallow the next announcement;
-    - an error stays until dismissed and every notice has a close button; brief confirmations auto-dismiss;
-    - a queue shows one notice at a time and later ones wait behind it (`+N`). Each strip owns one
-      queue — the window strip, each tile's composer dock, the side chat, the settings save
-      confirmation — so a tile's notice never repeats in the tile beside it;
+  - **Pane-local notice** for transient confirmations of a user-initiated action (e.g. saved).
+    The composer dock, side chat and settings save confirmation keep their own inline status
+    queues (`useStatusNotices`), drawn by `NoticeToast` in `StatusBar.tsx`:
+    - a queue shows one notice at a time and later ones wait behind it (`+N`); a tile's notice
+      never repeats in the tile beside it;
+    - errors stay until dismissed and every notice has a close button; brief confirmations
+      auto-dismiss;
+    - conversation notices float at `z-30`, below request cards and clipped below their pane
+      toolbar and above the composer; they never move layout;
     - while a modal dialog is open (`DialogContent` registers in `modal-presence.ts`) queues are
       held: nothing shows, expires or is dropped, and the head shows with its full time once the
       modal closes. A notice never takes focus;
-    - a notice that repeats by nature (a re-applied low-risk approval, a set-aside conversation)
+    - a pane-local notice that repeats by nature
       is marked `suppressible` and offers "Don't show again", persisted per kind; errors cannot be,
       and Settings → Permissions → "Show hidden notices again" undoes every choice;
-    - progress is drawn in context (the installing row, the running panel), never as a global toast;
     - width is capped at `min(100%, 24rem)` and the notice fades in on `--motion-fast`.
-  - **Banner** for persistent, page-scoped conditions that need action (e.g. update available); dismissible, stays until resolved.
-  - **OS notification** only for events the user must see while the window is unfocused; always mirrored by in-app state.
+  - **Window bell** is the single window notification centre. Transient window notices enter
+    it without floating elsewhere or reserving title-bar space. Pane-local notices stay in their
+    owning pane and are not copied into the bell. Its popover has two sections:
+    - **확인 필요** reuses the work approval list, grouped by project, with "모두 보기" and rows
+      that only navigate to the existing cards; decisions stay on those cards;
+    - **알림** keeps up to 50 historical notices in memory for this app session, plus banners
+      that are still showing. Rows sort by original arrival time, newest first, with stable
+      ID ordering for ties; replay delivery order does not decide retention. Each row
+      shows severity, message, source and relative time, offers its original action when present,
+      and can be cleared with ×; "모두 지우기" clears the history. Restarting the app clears it too.
+    - the badge counts work approval items plus unread notices. Opening the bell marks notices
+      read; notices arriving while it is open are read. Any unread error gives the bell a
+      destructive-colour dot;
+    - app and plugin update badges keep their actions and move into the status overflow menu
+      below 768px of available toolbar width. The bell stays outside that menu, like the
+      navigation arrows;
+    - main-process system, routine, plugin, alert and turn-end records enter the same history,
+      including when the OS also shows a notification. A capped main-process ring retains these
+      records across renderer reloads with stable identity and arrival time. Replay preserves
+      existing rows without duplication; a reload can restore cleared rows because read/clear
+      state belongs to the renderer. The ring ends with the app session and never writes to disk.
+      Approval and ask-user requests never
+      enter the in-app notification history: their cards own attention.
+  - **Banner** for persistent conditions that need action. Retired-provider, deprecated-model,
+    marketplace-announcement and document-engine-install banners stay in their current places
+    and also enter the bell with the same actions while showing. Showing banners stay outside
+    the history cap even when older than the retained history. Once hidden, their rows become
+    ordinary capped history. A dismissed banner's row may
+    remain as history; clearing its history row does not dismiss the banner. Rerendering a visible
+    banner refreshes its actions without creating another unread notice; actions disappear when
+    the banner stops showing, and a queued action cannot switch to a later banner or operation.
+  - **OS notification** keeps its existing focus and settings gates; delivery also records the
+    same event in the bell, except approval and ask-user requests, which keep their card surfaces.
+  - Shared notice rules:
+    - `NoticeLiveRegion` announces new notices: errors assertively through `role="alert"`,
+      others politely through `role="status"`. Visible notices and the bell popup are not live;
+    - the bell's accessible label includes the approval and unread counts. Its popover supports
+      keyboard opening and closing and returns focus to the bell on dismissal; choosing a row
+      hands focus to its destination;
+    - progress stays in context (the installing row, the running panel), never as a global toast.
 
 ## Content voice
 - Tone: concise, operational, literal.

@@ -3,7 +3,7 @@ import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
-import { clickSidebarNavRow, deferred, emitAgentTabNew, splitIntoTwoTiles, submitChatMessage, waitForToast } from "./helpers.js";
+import { clickSidebarNavRow, deferred, emitAgentTabNew, splitIntoTwoTiles, submitChatMessage, openWindowNotice } from "./helpers.js";
 import * as mainSurfaceStore from "../../src/ui/renderer/preview/main-surfaces.js";
 import { SURFACE_DRAG_TYPE, getSideTabsSink } from "../../src/ui/renderer/preview/surface-moves.js";
 import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
@@ -355,7 +355,7 @@ describe("main-area terminal and web panels", () => {
     const { container } = await renderApp({ hasApiKey: true, workspaceListRootsResult: { ok: false, error: "listing failed" } });
     const listRoots = (window as unknown as { ave: { workspace: { listRoots: ReturnType<typeof vi.fn> } } }).ave.workspace.listRoots;
 
-    await waitForToast(container, "프로젝트: listing failed");
+    await openWindowNotice(container, "프로젝트: listing failed");
     const launcher = (id: string) => document.querySelector<HTMLButtonElement>(`[data-testid="sidebar-rail"] [data-testid="${id}"]`)!;
     await waitFor(() => expect(launcher("sidebar-terminal").getAttribute("aria-label")).toBe("새 터미널 · 프로젝트 목록을 불러오지 못했습니다 · 다시 시도"));
     expect(launcher("sidebar-terminal").disabled).toBe(false);
@@ -377,7 +377,7 @@ describe("main-area terminal and web panels", () => {
 
     const move = document.querySelector<HTMLButtonElement>(`[data-tab-id="${tabId}"] [data-testid="chat-side-panel-move-to-main"]`)!;
     await act(async () => { fireEvent.click(move); });
-    await waitForToast(container, "프로젝트 목록을 아직 불러오지 못해 이 터미널 또는 페이지를 열지 않았습니다.");
+    await openWindowNotice(container, "프로젝트 목록을 아직 불러오지 못해 이 터미널 또는 페이지를 열지 않았습니다.");
     expect(sideTabIds()).toContain(tabId);
     expect(shownSurfaces(container)).toEqual([]);
   });
@@ -863,8 +863,7 @@ describe("main-area terminal and web panels", () => {
       surfaceStore.close(tabId);
       fireEvent.click(row);
     });
-    await waitFor(() => expect(container.querySelector('[data-testid="status-toast-message"]')?.textContent)
-      .toContain("이 터미널 또는 페이지는 이 창에서 더 이상 사용할 수 없습니다."));
+    await openWindowNotice(container, "이 터미널 또는 페이지는 이 창에서 더 이상 사용할 수 없습니다.");
     expect(container.querySelector('[data-testid="pane-chat"]')).toBeNull();
   });
 
@@ -892,8 +891,7 @@ describe("main-area terminal and web panels", () => {
     await publishPaneBinding(api, sessionId, tabId);
     refuseReveal = true;
     await act(async () => { fireEvent.click(container.querySelector(`[data-testid="sidebar-session-${sessionId}"]`)!); });
-    await waitFor(() => expect(container.querySelector('[data-testid="status-toast-message"]')?.textContent)
-      .toContain("터미널 또는 페이지를 열 수 없습니다. 작업 공간에서 해당 화면을 선택한 뒤 다시 시도해 주세요."));
+    await openWindowNotice(container, "터미널 또는 페이지를 열 수 없습니다. 작업 공간에서 해당 화면을 선택한 뒤 다시 시도해 주세요.");
     expect(container.querySelector('[data-testid="pane-chat"]')).toBeNull();
   });
 

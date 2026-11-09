@@ -283,16 +283,26 @@ async function downloadTarget(target) {
   await mkdir(destDir, { recursive: true });
 
   const url = `https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${target.archive}`;
-  log(`Downloading: ${url}`);
 
-  const buffer = await fetchBytesWithRetry(url, {
+  const archiveCache = process.env.AVE_UV_DOWNLOAD_CACHE_DIR;
+  if (archiveCache && !path.isAbsolute(archiveCache)) throw new Error("AVE_UV_DOWNLOAD_CACHE_DIR must be absolute");
+  const cachedArchive = archiveCache ? path.join(archiveCache, `${UV_VERSION}-${target.archiveSha256}-${target.archive}`) : null;
+  const cacheHit = cachedArchive !== null && existsSync(cachedArchive);
+  log(cacheHit ? `Checking cached archive: ${target.archive}` : `Downloading: ${url}`);
+  const buffer = cacheHit ? await readFile(cachedArchive) : await fetchBytesWithRetry(url, {
     httpError: (resp) => `HTTP ${resp.status} ${resp.statusText} — ${url}`,
     log: (msg) => log(`  ${msg}`),
   });
 
-  log(`  Downloaded ${(buffer.length / 1024 / 1024).toFixed(1)} MB — extracting ${target.bin}...`);
-
   const verification = await verifyArchiveSha256(target, buffer);
+  // Cached source bytes pass the release pin again before extraction.
+  if (cachedArchive && !cacheHit) {
+    await mkdir(archiveCache, { recursive: true });
+    const temporary = `${cachedArchive}.${process.pid}.tmp`;
+    await writeFile(temporary, buffer);
+    await rename(temporary, cachedArchive);
+  }
+  if (cacheHit) log(`Reused verified archive: ${target.archive}`);
 
   let fileData;
   if (target.type === "tar.gz") {

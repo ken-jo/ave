@@ -138,7 +138,7 @@ describe("ChatSidePanel agent browser", () => {
     expect(openExternal).toBeDisabled();
     webview.getWebContentsId = () => 42;
     act(() => webview.dispatchEvent(new Event("did-attach")));
-    await waitFor(() => expect(api.browserTabs!.bindTab).toHaveBeenCalledWith({ tabId, webContentsId: 42, requestId: "browser-op-blank" }));
+    await waitFor(() => expect(api.browserTabs!.bindTab).toHaveBeenCalledWith({ tabId, webContentsId: 42, requestId: "browser-op-blank", parked: true }));
     act(() => {
       webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/approved" }));
       store!.openPinned({ source: "browser", url: "https://b.example/" });
@@ -300,10 +300,11 @@ describe("ChatSidePanel agent browser", () => {
     act(() => {
       webview.dispatchEvent(new Event("did-attach"));
     });
-    await waitFor(() => expect(bindTab).toHaveBeenCalledTimes(3));
-    expect(bindTab).toHaveBeenLastCalledWith({ tabId, webContentsId: 42, requestId: "browser-op-3" });
+    const bindings = () => bindTab.mock.calls.map(([request]) => request).filter(request => request.requestId === "browser-op-3");
+    await waitFor(() => expect(bindings()).toHaveLength(3));
+    expect(bindings().at(-1)).toEqual({ tabId, webContentsId: 42, requestId: "browser-op-3", parked: true });
     await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(bindTab).toHaveBeenCalledTimes(3);
+    expect(bindings()).toHaveLength(3);
   });
 
   it("refuses an unsafe url for an agent tab", () => {
