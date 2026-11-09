@@ -97,7 +97,7 @@ async function capture(options: BrowserScreenshotOptions, zoom = 1): Promise<Cap
       return [red, green, blue];
     };
     return { data: image.data, dimensions, viewport: state.viewport, content: state.content, element: state.element,
-      bandPixelsRGB: [200, 700, 1200, 1700, 2200].map((y) => pixel((dimensions.width * Math.min(dimensions.height - 1, y) + Math.min(dimensions.width - 1, 700)) * 4)),
+      bandPixelsRGB: [200, 500, 700, 980, 1200, 1460, 1700, 1940, 2200].map((y) => pixel((dimensions.width * Math.min(dimensions.height - 1, y) + Math.min(dimensions.width - 1, 700)) * 4)),
       bottomPixelRGB: pixel(offset), elementPixelsRGB: [0.25, 0.5, 0.75].map((fraction) => pixel((dimensions.width * Math.floor(dimensions.height * fraction) + Math.floor(dimensions.width / 2)) * 4)), truncated: image.truncated };
   } finally { browserTabRegistry.releaseControl(tabId, lease.id); }
 }

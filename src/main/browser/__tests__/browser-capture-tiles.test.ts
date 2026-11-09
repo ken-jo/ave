@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
-import { captureBrowserPage } from "../browser-capture.js";
+import { captureBrowserPage, captureBrowserViewport } from "../browser-capture.js";
+import type { WebContents } from "electron";
 import { captureScrollParameters } from "../browser-capture-scroll.js";
 import type { CdpSession } from "../browser-action-guard.js";
 
@@ -30,7 +31,7 @@ async function tile(pageY: number): Promise<string> {
   return (await sharp(pixels, { raw: { width: WIDTH, height: VIEWPORT_HEIGHT, channels: 3 } }).png().toBuffer()).toString("base64");
 }
 
-function tiledSession() {
+function tiledSession(pixelRatio = 1, zoom = 1) {
   let pageY = 0;
   const restore = vi.fn(async () => {});
   const send = vi.fn(async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
@@ -55,18 +56,26 @@ function tiledSession() {
   };
   return {
     cdp, send, restore,
-    captureViewport: async () => ({ data: await tile(pageY), cssScale: 1 }),
+    captureViewport: async () => {
+      const png = await sharp(Buffer.from(await tile(pageY), "base64"))
+        .resize({ width: WIDTH * pixelRatio * zoom, height: VIEWPORT_HEIGHT * pixelRatio * zoom, kernel: "nearest" }).png().toBuffer();
+      const guest = { getZoomFactor: () => zoom, capturePage: async () => ({
+        getSize: () => ({ width: WIDTH * pixelRatio * zoom, height: VIEWPORT_HEIGHT * pixelRatio * zoom }), isEmpty: () => false, toPNG: () => png,
+      }) } as unknown as Pick<WebContents, "capturePage" | "getZoomFactor">;
+      return captureBrowserViewport(guest, () => {}, pixelRatio);
+    },
   };
 }
 
 describe("browser capture tiles", () => {
-  it("stitches native viewport captures once, clips the bottom overlap, and restores the original scroll", async () => {
-    const { cdp, send, restore, captureViewport } = tiledSession();
+  it.each([{ pixelRatio: 1, zoom: 1 }, { pixelRatio: 2, zoom: 1 }, { pixelRatio: 2, zoom: 1.25 }])("stitches every document row and clips the overlap at density $pixelRatio and zoom $zoom", async ({ pixelRatio, zoom }) => {
+    const { cdp, send, restore, captureViewport } = tiledSession(pixelRatio, zoom);
     const result = await captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport);
     expect(result).toMatchObject({ width: WIDTH, height: CONTENT_HEIGHT, originalHeight: CONTENT_HEIGHT, truncated: false, captureMethod: "scroll-and-stitch" });
     const decoded = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer({ resolveWithObject: true });
     expect(decoded.info).toMatchObject({ width: WIDTH, height: CONTENT_HEIGHT, channels: 4 });
     const pixel = (row: number) => [...decoded.data.subarray(row * WIDTH * 4, row * WIDTH * 4 + 3)];
+    for (let row = 0; row < CONTENT_HEIGHT; row += 1) expect(pixel(row)).toEqual(colorAt(row));
     expect(pixel(0)).toEqual(COLORS[0]);
     expect(pixel(3)).toEqual(COLORS[0]);
     expect(pixel(4)).toEqual(COLORS[1]);

@@ -1417,7 +1417,6 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     onDestroyed: (listener) => subscribeBrowserGuestDestroyed(guest, listener),
     signal: live.signal,
     documentId: () => live.tab.documentId,
-    captureViewport: () => captureBrowserViewport(guest, () => assertCurrent(false)),
     navigationOutcome: () => !live.callerSignal?.aborted && live.tab.controlMode !== "human-paused" && live.tab.guest === guest && !guest.isDestroyed() && live.tab.lease?.id === live.leaseId,
     iframeOrigins: () => guest.mainFrame.framesInSubtree
       .filter((frame) => frame !== guest.mainFrame)
@@ -1505,7 +1504,12 @@ export function createBrowserPageActions(
           const target = await operation.wait(targetFor(scoped, attribution, hostContentOrigin));
           const guest = live.tab.guest;
           if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-          return captureScreenshot(target, operation, options ?? {}, browserRefs, capturePixelRatioForGuest(guest));
+          const pixelRatio = capturePixelRatioForGuest(guest);
+          const assertCaptureCurrent = () => {
+            target.assertCurrent?.(false);
+            if (capturePixelRatioForGuest(guest) !== pixelRatio) throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
+          };
+          return captureScreenshot({ ...target, captureViewport: () => captureBrowserViewport(guest, assertCaptureCurrent, pixelRatio) }, operation, options ?? {}, browserRefs, pixelRatio);
         });
       });
     },

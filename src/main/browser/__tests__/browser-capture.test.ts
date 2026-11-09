@@ -44,14 +44,15 @@ function fixture(width = 800, height = 2400) {
 }
 
 describe("browser capture", () => {
-  it("clips the requested CSS row when native PNG density differs from the requested representation", async () => {
+  it.each([{ pixelRatio: 1, zoom: 1 }, { pixelRatio: 2, zoom: 1 }, { pixelRatio: 2, zoom: 1.25 }, { pixelRatio: 3, zoom: 1 }])("clips CSS rows when native dimensions already use device pixels ($pixelRatio, $zoom)", async ({ pixelRatio, zoom }) => {
     const { default: sharp } = await import("sharp");
-    const pixels = Buffer.alloc(8 * 8 * 3);
-    for (let row = 0; row < 8; row += 1) for (let column = 0; column < 8; column += 1) pixels[(row * 8 + column) * 3 + (row < 4 ? 0 : 2)] = 255;
-    const png = await sharp(pixels, { raw: { width: 8, height: 8, channels: 3 } }).png().toBuffer();
-    const guest = { getZoomFactor: () => 1, capturePage: async () => ({ getSize: () => ({ width: 4, height: 4 }), isEmpty: () => false, toPNG: () => png }) } as unknown as Pick<WebContents, "capturePage" | "getZoomFactor">;
+    const size = 4 * pixelRatio * zoom;
+    const pixels = Buffer.alloc(size * size * 3);
+    for (let row = 0; row < size; row += 1) for (let column = 0; column < size; column += 1) pixels[(row * size + column) * 3 + (row < size / 2 ? 0 : 2)] = 255;
+    const png = await sharp(pixels, { raw: { width: size, height: size, channels: 3 } }).png().toBuffer();
+    const guest = { getZoomFactor: () => zoom, capturePage: async () => ({ getSize: () => ({ width: size, height: size }), isEmpty: () => false, toPNG: () => png }) } as unknown as Pick<WebContents, "capturePage" | "getZoomFactor">;
     const cdp: CdpSession = { onEvent: () => () => {}, send: async () => ({ cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 4, clientHeight: 4 } }) };
-    const result = await captureBrowserPage(cdp, new AbortController().signal, { clip: { x: 0, y: 3, width: 4, height: 1 } }, 1, 1000, () => captureBrowserViewport(guest, () => {}));
+    const result = await captureBrowserPage(cdp, new AbortController().signal, { clip: { x: 0, y: 3, width: 4, height: 1 } }, pixelRatio, 1000, () => captureBrowserViewport(guest, () => {}, pixelRatio));
     const decoded = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
     expect(result).toMatchObject({ width: 4, height: 1 });
     expect([...decoded.subarray(0, 3)]).toEqual([0, 0, 255]);
@@ -73,7 +74,7 @@ describe("browser capture", () => {
   it("rejects native readback when guest zoom changes while pixels are being captured", async () => {
     let zoom = 1;
     const guest = { getZoomFactor: () => zoom, capturePage: async () => { zoom = 1.25; return {}; } } as unknown as Pick<WebContents, "capturePage" | "getZoomFactor">;
-    await expect(captureBrowserViewport(guest, () => {})).rejects.toMatchObject({ code: "screenshot-unavailable" });
+    await expect(captureBrowserViewport(guest, () => {}, 1)).rejects.toMatchObject({ code: "screenshot-unavailable" });
     expect(zoom).toBe(1.25);
   });
 

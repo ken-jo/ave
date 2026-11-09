@@ -63,7 +63,8 @@ async function attachImage(testInfo: TestInfo, name: string, result: CaptureNati
 }
 
 function expectFixtureBands(result: CaptureNativeResult): void {
-  const expected = [[229, 83, 61], [47, 120, 220], [214, 181, 39], [145, 77, 200], [0, 166, 90]];
+  // Sample beyond each band boundary as well as its interior to detect stretched tiles.
+  const expected = [[229, 83, 61], [47, 120, 220], [47, 120, 220], [214, 181, 39], [214, 181, 39], [145, 77, 200], [145, 77, 200], [0, 166, 90], [0, 166, 90]];
   expect(result.bandPixelsRGB).toHaveLength(expected.length);
   // Native display color conversion can round an individual channel by one.
   for (const [index, band] of expected.entries()) {

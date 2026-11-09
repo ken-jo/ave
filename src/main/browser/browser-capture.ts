@@ -14,8 +14,9 @@ interface CaptureViewport {
 }
 
 /** Read the native viewport without changing its host slot or focus; the caller owns wake activity. */
-export async function captureBrowserViewport(guest: Pick<WebContents, "capturePage" | "getZoomFactor">, assertCurrent: () => void): Promise<BrowserViewportImage> {
+export async function captureBrowserViewport(guest: Pick<WebContents, "capturePage" | "getZoomFactor">, assertCurrent: () => void, pixelRatio: number): Promise<BrowserViewportImage> {
   assertCurrent();
+  if (!Number.isFinite(pixelRatio) || pixelRatio <= 0) throw new BrowserActionError("screenshot-unavailable", "the view has no valid pixel density");
   const zoom = guest.getZoomFactor();
   const image = await guest.capturePage(undefined, { stayHidden: true, stayAwake: false });
   assertCurrent();
@@ -27,8 +28,8 @@ export async function captureBrowserViewport(guest: Pick<WebContents, "capturePa
   if (png.length < 24 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new BrowserActionError("screenshot-failed", "the tab returned an invalid image");
   const pixelWidth = png.readUInt32BE(16), pixelHeight = png.readUInt32BE(20);
   if (pixelWidth < 1 || pixelHeight < 1 || pixelWidth * pixelHeight > BROWSER_CAPTURE_LIMITS.pixels) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
-  // A requested scale can be absent from the native image; use the encoded representation's actual density.
-  return { data: png.toString("base64"), cssScale: zoom * pixelWidth / width };
+  // Readback is tagged as a 1x image even when its bitmap uses the view's device scale.
+  return { data: png.toString("base64"), cssScale: zoom * pixelRatio };
 }
 
 /** Full pages retain the current CSS width and truncate their bottom at the pixel limit. */

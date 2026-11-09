@@ -32,13 +32,15 @@ export class BrowserWorkspaceCapture {
     if (this.inFlight.has(windowId)) throw new Error("capture-busy");
     const guest = target.guest;
     const zoom = guest.getZoomFactor();
+    const pixelRatio = browserCapturePixelRatio(guest);
     const controller = new AbortController();
     const entry = { guestId: guest.id, controller };
     this.inFlight.set(windowId, entry);
     const assertCurrent = () => {
       const live = this.deps.liveTab(windowId, request.tabId);
       if (controller.signal.aborted || live?.guest !== guest || guest.isDestroyed()
-        || live.documentGeneration !== request.documentGeneration || guest.getZoomFactor() !== zoom) throw new Error("stale-document");
+        || live.documentGeneration !== request.documentGeneration || guest.getZoomFactor() !== zoom
+        || browserCapturePixelRatio(guest) !== pixelRatio) throw new Error("stale-document");
       if (!this.deps.isWindowVisible(windowId)) throw new Error("window-hidden");
     };
     try {
@@ -81,7 +83,7 @@ export class BrowserWorkspaceCapture {
         const result = await captureBrowserPage(cdp, operation.signal, {
           ...(request.fullPage === undefined ? {} : { fullPage: request.fullPage }),
           ...(clip === undefined ? {} : { clip }),
-        }, browserCapturePixelRatio(guest), maxMs, () => captureBrowserViewport(guest, assertCurrent), operation);
+        }, pixelRatio, maxMs, () => captureBrowserViewport(guest, assertCurrent, pixelRatio), operation);
         assertCurrent();
         const bytes = Buffer.from(result.data, "base64");
         const image = nativeImage.createFromBuffer(bytes);

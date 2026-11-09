@@ -4,18 +4,19 @@ import sharp from "sharp";
 import { BrowserWorkspaceCapture } from "../browser-workspace-capture.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 
-const { writeImage } = vi.hoisted(() => ({ writeImage: vi.fn(async () => {}) }));
+const { writeImage, display } = vi.hoisted(() => ({ writeImage: vi.fn(async () => {}), display: { scaleFactor: 1 } }));
 vi.mock("electron", () => ({
   clipboard: { write: writeImage },
   ClipboardItem: class { constructor(readonly items: unknown) {} },
   nativeImage: { createFromBuffer: () => ({ isEmpty: () => false }) },
   BrowserWindow: { fromWebContents: () => null },
-  screen: { getPrimaryDisplay: () => ({ scaleFactor: 1 }) },
+  screen: { getPrimaryDisplay: () => display },
 }));
 
 const TARGET = { tabId: "browser:capture", documentGeneration: 1 };
 function fixture() {
   writeImage.mockClear();
+  display.scaleFactor = 1;
   let generation = 1, zoom = 1;
   let visible = true, live = true;
   const sendCommand = vi.fn(async (method: string, _params?: unknown): Promise<unknown> => {
@@ -36,6 +37,37 @@ function fixture() {
 }
 
 describe("user browser capture boundary", () => {
+  it("maps a user area to device-scaled bitmap rows without trusting the 1x image tag", async () => {
+    const { capture, capturePage } = fixture();
+    display.scaleFactor = 2;
+    const pixels = Buffer.alloc(1600 * 1200 * 3);
+    for (let row = 0; row < 1200; row += 1) for (let column = 0; column < 1600; column += 1) {
+      const offset = (row * 1600 + column) * 3;
+      const color = row < 160 ? [51, 85, 170] : [0, 166, 90];
+      pixels[offset] = color[0] ?? 0; pixels[offset + 1] = color[1] ?? 0; pixels[offset + 2] = color[2] ?? 0;
+    }
+    const png = await sharp(pixels, { raw: { width: 1600, height: 1200, channels: 3 } }).png().toBuffer();
+    capturePage.mockImplementation(async () => ({ getSize: () => ({ width: 1600, height: 1200 }), isEmpty: () => false, toPNG: () => png }));
+    const result = await capture.capture(1, { ...TARGET, clip: { x: 30, y: 100, width: 160, height: 100 } });
+    const decoded = await sharp(Buffer.from(result.dataUrl.split(",")[1] ?? "", "base64")).raw().toBuffer();
+    expect(result).toMatchObject({ width: 160, height: 100 });
+    expect([...decoded.subarray(0, 3)]).toEqual([0, 166, 90]);
+    expect(writeImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a display-density change during readback without writing the clipboard", async () => {
+    const { capture, capturePage } = fixture();
+    const original = capturePage.getMockImplementation();
+    if (!original) throw new Error("Missing capture implementation");
+    capturePage.mockImplementation(async () => {
+      const image = await original();
+      display.scaleFactor = 2;
+      return image;
+    });
+    await expect(capture.capture(1, TARGET)).rejects.toThrow("stale-document");
+    expect(writeImage).not.toHaveBeenCalled();
+  });
+
   it("converts viewport clips to document CSS coordinates and copies only the revalidated image", async () => {
     const { capture, sendCommand, capturePage, attach, detach } = fixture();
     const result = await capture.capture(1, { ...TARGET, clip: { x: 20, y: 30, width: 200, height: 100 } });
