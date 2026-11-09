@@ -58,6 +58,18 @@ describe("shell geometry: collapsed rail reserve", () => {
 });
 
 describe("window controls placement", () => {
+  it.each([
+    ["darwin", BAND_LEAD_PAD_DARWIN, 80],
+    ["linux", BAND_LEAD_PAD_LINUX, 136],
+    ["win32", BAND_EDGE_PAD, 72],
+  ] as const)("keeps %s band and rendered header starts on their pixel contracts", (_platform, bandFloor, railBandStart) => {
+    expect(Math.max(bandFloor, RAIL_BAND_LEAD)).toBe(railBandStart);
+    expect(COLLAPSED_RAIL_EDGE + CONTENT_TITLE_INSET + 1).toBe(73);
+    // The default expanded list is 232px wide; only its rendered content includes the card's 1px border.
+    expect(Math.max(bandFloor, COLLAPSED_RAIL_RESERVE + 232 + CONTENT_TITLE_INSET)).toBe(312);
+    expect(COLLAPSED_RAIL_RESERVE + 232 + CONTENT_TITLE_INSET + 1).toBe(313);
+  });
+
   it("leaves macOS its lights, trails on Windows and leads on Linux", () => {
     expect(windowControlsPlacement("darwin")).toBe("native");
     expect(windowControlsPlacement("win32")).toBe("trailing");
