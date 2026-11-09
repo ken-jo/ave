@@ -52,7 +52,9 @@ test("remote server settings show authentication progress, success and reauthent
     fixture.finish?.(true);
   });
   await expect(row.getByRole("status")).toHaveText(t("mcpTab.authenticated"));
-  await expect(settings.getByText(t("mcpTab.authSuccess", { id: "remote-a" }), { exact: true })).toBeVisible();
+  const notice = settings.getByRole("tabpanel", { name: t("settingsContent.tabMcp"), exact: true }).getByTestId("status-toast-message");
+  await expect(notice).toHaveText(t("mcpTab.authSuccess", { id: "remote-a" }));
+  await expect(notice).toBeVisible();
   await testInfo.attach("authenticated-server", { body: await row.screenshot(), contentType: "image/png" });
 
   await app.evaluate(() => {
@@ -66,7 +68,8 @@ test("remote server settings show authentication progress, success and reauthent
   await app.evaluate(() => {
     (globalThis as unknown as { __mcpOAuthUiFixture: { finish?: (authenticated: boolean) => void } }).__mcpOAuthUiFixture.finish?.(false);
   });
-  await expect(settings.getByText(t("mcpTab.authRequiredMessage"), { exact: true })).toBeVisible();
+  await expect(notice).toHaveText(t("mcpTab.authRequiredMessage"));
+  await expect(notice).toBeVisible();
   await expect(row.getByRole("status")).toHaveText(t("mcpTab.authRequired"));
   expect(await app.evaluate(() => (globalThis as unknown as { __mcpOAuthUiFixture: { calls: unknown[][] } }).__mcpOAuthUiFixture.calls))
     .toEqual([["remote-a"], ["remote-a"]]);
@@ -84,7 +87,8 @@ test("remote server settings show authentication progress, success and reauthent
   await settings.getByLabel(t("mcpTab.serverIdLabel"), { exact: true }).fill("remote-b");
   await settings.getByLabel(t("mcpTab.urlRequiredLabel"), { exact: true }).fill("https://example.test/other");
   await settings.getByRole("button", { name: t("mcpTab.addButton"), exact: true }).click();
-  await expect(settings.getByText(t("mcpTab.serverSavedAuthRequired", { id: "remote-b" }), { exact: true })).toBeVisible();
+  await expect(notice).toHaveText(t("mcpTab.serverSavedAuthRequired", { id: "remote-b" }));
+  await expect(notice).toBeVisible();
   const addedRow = settings.locator('[data-mcp-server-id="remote-b"]');
   await expect(addedRow.getByRole("status")).toHaveText(t("mcpTab.authRequired"));
   await expect(addedRow.getByRole("button", { name: t("mcpTab.authenticateButton"), exact: true })).toBeEnabled();
