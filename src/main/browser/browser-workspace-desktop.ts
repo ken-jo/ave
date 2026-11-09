@@ -112,6 +112,7 @@ function focusPopup(window: BrowserWindow): Promise<boolean> {
   const contents = window.webContents;
   if (contents.isDestroyed()) return Promise.resolve(false);
   if (isBackgroundE2eRuntime()) {
+    if (window.isMinimized()) window.restore();
     window.showInactive();
     return whenFocusEmulated(contents);
   }

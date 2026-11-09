@@ -55,7 +55,8 @@ const electronMock = vi.hoisted(() => {
       for (const fn of this.listeners.get(name) ?? []) fn(...args);
     }
     isDestroyed() { return this.destroyed; }
-    isMinimized() { return false; }
+    minimized = false;
+    isMinimized() { return this.minimized; }
     isVisible() { return this.visible; }
     isAlwaysOnTop() { return false; }
     // What Electron does when nothing prevented `close`.
@@ -144,6 +145,13 @@ describe("main windows", () => {
       expect(win.focus).not.toHaveBeenCalled();
       expect(win.show).not.toHaveBeenCalled();
       expect(win.moveTop).not.toHaveBeenCalled();
+      expect(win.restore).not.toHaveBeenCalled();
+      win.minimized = true;
+      showMainWindow(win as never);
+      expect(win.restore).toHaveBeenCalledOnce();
+      expect(win.showInactive).toHaveBeenCalledTimes(2);
+      expect(win.focus).not.toHaveBeenCalled();
+      expect(win.show).not.toHaveBeenCalled();
     } finally { vi.unstubAllEnvs(); _resetForTest(); }
   });
   it.each([{ packaged: false, flag: "" }, { packaged: true, flag: "1" }])("preserves initial visibility outside the unpackaged test runtime (%s)", ({ packaged, flag }) => {
