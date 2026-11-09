@@ -11,6 +11,7 @@ export function configureE2eWindowPolicy(): void {
   app.on("web-contents-created", (_event, contents) => {
     if (contents.getType() !== "window" && contents.getType() !== "webview") return;
     contents.on("dom-ready", () => {
+      contents.setBackgroundThrottling(false);
       if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
       void contents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true }).catch((error: unknown) => {
         if (contents.isDestroyed()) return;
