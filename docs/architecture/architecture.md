@@ -1360,7 +1360,9 @@ Lists requesting the `subagent` family page by top-level conversations. The
 limit and time cursor select roots; each selected root includes all listed
 same-project descendants, regardless of their timestamps. Missing-parent and
 cross-project children count as roots. Main and renderer share parent resolution
-so a page boundary cannot turn a child into an orphan.
+so a page boundary cannot turn a child into an orphan. Activity frames update
+listed child state without fetching the list; omitted children wait for the next
+lifecycle event or explicit refresh.
 
 | Family | Store | Row | Opens |
 | --- | --- | --- | --- |

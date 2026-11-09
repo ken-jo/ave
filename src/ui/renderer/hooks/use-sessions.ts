@@ -53,9 +53,6 @@ function sessionProjectFromHistory(
 export function useSessionList(api: AveApi) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
-  const sessionsRef = useRef(sessions);
-  sessionsRef.current = sessions;
-
   const refreshSessions = useCallback(async () => {
     try {
       // Request all session families with the widest allowed page so routine and side-chat rows do not crowd out conversations.
@@ -69,7 +66,7 @@ export function useSessionList(api: AveApi) {
 
   useEffect(() => api.onAgentSpawnEvent?.((event) => {
     if (!event.childSessionId) return;
-    if (event.type !== "activity" || !sessionsRef.current.some((session) => session.id === event.childSessionId)) void refreshSessions();
+    if (event.type !== "activity") void refreshSessions();
     const running = (event.type === "start" || event.type === "activity") && (event.status === undefined || event.status === "running");
     setSessions((current) => current.some((session) => session.id === event.childSessionId && session.running !== running)
       ? current.map((session) => session.id === event.childSessionId ? { ...session, running } : session)
