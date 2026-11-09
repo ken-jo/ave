@@ -5962,6 +5962,7 @@ export const en = {
   "workApprovals.keyboardLegend": "↑ ↓ move · Enter expand · Tab buttons in the card · Esc collapse · decisions only by pressing a button",
   "workApprovals.badge": "Needs review {count}",
   "workApprovals.badgeLabel": "{count} items need your review",
+  "workApprovals.nothingToReview": "Nothing to review",
   "workApprovals.popoverTitle": "Needs review {count}",
   "workApprovals.popoverScope": "All projects · work approvals only",
   "workApprovals.popoverFooter": "Opens the card in that project's home. Decide on the card.",

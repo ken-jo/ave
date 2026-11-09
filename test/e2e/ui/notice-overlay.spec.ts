@@ -97,6 +97,10 @@ for (const width of [360, 1243]) {
     const center = page.getByTestId("notification-center");
     await expect(center).toHaveAttribute("role", "dialog");
     await expect(center).not.toHaveAttribute("aria-live");
+    const approvals = center.getByTestId("notification-approvals");
+    await expect(approvals.getByTestId("work-approvals-empty")).toHaveText("Nothing to review");
+    await expect(approvals.getByTestId("work-approvals-popover-view-all")).toHaveCount(0);
+    await expect(approvals.locator("footer")).toHaveCount(0);
     const row = center.getByTestId("notification-history-row").filter({ hasText: "bell-install-result" });
     await expect(row).toBeVisible();
     await expect(row.locator("time")).toBeVisible();

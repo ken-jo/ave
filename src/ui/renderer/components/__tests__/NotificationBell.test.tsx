@@ -112,6 +112,20 @@ describe("ApprovalsBell", () => {
     expect(screen.queryByTestId("notification-bell-count")).toBeNull();
   });
 
+  it("shows a quiet empty approval section without an empty list or footer", async () => {
+    const { api } = stubApi({ ok: true, items: [], total: 0, projects: PROJECTS });
+    render(<ApprovalsBell api={api} onOpenItem={vi.fn()} onOpenAll={vi.fn()} />);
+    fireEvent.click(screen.getByTestId("notification-bell"));
+    const empty = await screen.findByTestId("work-approvals-empty");
+    expect(empty).toHaveTextContent("확인할 항목 없음");
+    const section = screen.getByTestId("notification-approvals");
+    expect(section.querySelector("h2")).toHaveTextContent("확인 필요");
+    expect(section.querySelectorAll("p")).toHaveLength(1);
+    expect(section.querySelector("header + div")).toBeNull();
+    expect(section.querySelector("footer")).toBeNull();
+    expect(screen.queryByTestId("work-approvals-popover-view-all")).toBeNull();
+  });
+
   it("shows a failed approval list as an error instead of treating it as empty", async () => {
     const { api } = stubApi({ ok: false, error: "work-approvals-source-unavailable", source: "proposal" });
     render(<ApprovalsBell api={api} onOpenItem={vi.fn()} onOpenAll={vi.fn()} />);
@@ -119,6 +133,7 @@ describe("ApprovalsBell", () => {
     expect(screen.getByTestId("notification-bell").getAttribute("title")).toContain("불러오지 못했습니다");
     fireEvent.click(screen.getByTestId("notification-bell"));
     expect(await screen.findByTestId("work-approvals-list-error")).toHaveTextContent("불러오지 못했습니다");
+    expect(screen.queryByTestId("work-approvals-empty")).toBeNull();
   });
 
   it("keeps the count live on the change signal", async () => {

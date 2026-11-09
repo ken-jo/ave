@@ -5964,6 +5964,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workApprovals.keyboardLegend": "↑ ↓ 항목 이동 · Enter 펼치기 · Tab 카드 안 버튼 · Esc 접기 · 결정은 버튼을 눌러야만 합니다",
   "workApprovals.badge": "확인 필요 {count}",
   "workApprovals.badgeLabel": "확인이 필요한 항목 {count}건",
+  "workApprovals.nothingToReview": "확인할 항목 없음",
   "workApprovals.popoverTitle": "확인 필요 {count}",
   "workApprovals.popoverScope": "모든 프로젝트 · 업무 승인만",
   "workApprovals.popoverFooter": "누르면 그 프로젝트 홈의 카드로 갑니다. 결정은 카드에서 합니다.",

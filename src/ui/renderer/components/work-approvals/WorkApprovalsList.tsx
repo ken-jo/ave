@@ -59,6 +59,8 @@ export function WorkApprovalsList({ state, projectRoot, onOpenItem, onOpenAll, n
           <h2 className="text-sm font-semibold">{t("workApprovals.popoverTitle", { count: total })}</h2>
           <span className="text-dense text-muted-foreground">{t("workApprovals.popoverScope")}</span>
         </header>
+        {state.status === "ready" && total === 0 && <p className="px-3 py-3 text-sm text-muted-foreground" data-testid="work-approvals-empty">{t("workApprovals.nothingToReview")}</p>}
+        {groups.length > 0 && <>
         <div className="max-h-80 space-y-2 overflow-y-auto px-2 py-2">
           {groups.map((group) => (
             <section key={group.id} data-testid="work-approvals-popover-group" data-group={group.id}>
@@ -103,6 +105,7 @@ export function WorkApprovalsList({ state, projectRoot, onOpenItem, onOpenAll, n
             {t("workApprovals.popoverViewAll")}
           </button>
         </footer>
+        </>}
 
   </section>;
 }
