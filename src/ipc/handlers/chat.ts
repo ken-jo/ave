@@ -36,6 +36,7 @@ import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
 import { expandFileMentionContext } from "./file-mention-context.js";
 import {
   runStreamedTurn,
+  bufferTurnCompletion,
   type ConversationStreamEventSink,
 } from "./chat-stream.js";
 
@@ -442,7 +443,7 @@ export async function handleChatSend(
   const turnScopedPluginIds = resolvePluginPromptScope(personaPromptStore, pluginPromptId, input);
   const validated = validateUserContentParts(attachments);
   const streamId = ctx.allocateStreamId();
-  const sink = ctx.createStreamEventSink(streamId);
+  const { sink, flush } = bufferTurnCompletion(ctx.createStreamEventSink(streamId));
   return ctx.trackStreamTurn(async (admissionSignal) => {
     const abortSignal = admissionSignal && ctx.abortSignal
       ? AbortSignal.any([admissionSignal, ctx.abortSignal]) : admissionSignal ?? ctx.abortSignal;
@@ -535,7 +536,7 @@ export async function handleChatSend(
       sink({ kind: "turn.completed" });
       return { text: "", toolCalls: [], route: "default", stopReason: "interrupted" };
     }
-  });
+  }).finally(flush);
 }
 
 // Omitted families preserves main-store filtering; explicit families request cross-store federation.

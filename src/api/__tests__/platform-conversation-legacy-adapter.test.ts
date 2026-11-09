@@ -9,6 +9,20 @@ import {
 } from "../platform-conversation-legacy-adapter.js";
 
 describe("platform conversation legacy adapter", () => {
+  it("preserves project work revocation in the terminal owner frame", () => {
+    const sink = vi.fn();
+    const send = createLegacyChatStreamEventSink(sink, { streamId: 7 });
+    send({ kind: "turn.completed", projectWorkRevoked: true });
+    expect(sink).toHaveBeenCalledWith(CHANNELS.chat.stream, { type: "done", streamId: 7, projectWorkRevoked: true });
+    const timeline = createPlatformConversationTimeline();
+    createPlatformConversationLegacyStreamAdapter(timeline).subscribe(sink);
+    timeline.publish({
+      conversationId: "removed-project-session",
+      turnId: createPlatformTurnId(8),
+      event: { kind: "turn.completed", projectWorkRevoked: true },
+    });
+    expect(sink).toHaveBeenLastCalledWith(CHANNELS.chat.stream, { type: "done", streamId: 8, projectWorkRevoked: true });
+  });
   it("fans one semantic timeline event out as the exact existing owner frame", () => {
     const timeline = createPlatformConversationTimeline();
     const electron = createPlatformConversationLegacyStreamAdapter(timeline);

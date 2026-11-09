@@ -18,7 +18,7 @@ import type { ConversationLoop, TurnResult } from "../../engine/conversation-loo
 import { serializeHistoryMessage } from "../../shared/chat-history.js";
 import {
   runStreamedTurn,
-  type ConversationStreamEventSink,
+  bufferTurnCompletion,
 } from "../handlers/chat-stream.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import type { SideChatOperationFailure } from "../../shared/side-chat-operation.js";
@@ -319,7 +319,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     registerApprovalOwner(loop, senderWindow.webContents);
     if (pane === null) { setSideChatOwnerContents(e.sender); railShellOwnerId = e.sender.id; }
     const streamTarget = e.sender;
-    const sink: ConversationStreamEventSink = createLegacyChatStreamEventSink(
+    const { sink, flush } = bufferTurnCompletion(createLegacyChatStreamEventSink(
       buildSink(streamTarget),
       {
         streamId,
@@ -328,7 +328,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
         streamChannel: CHANNELS.sidechat.stream,
         fallbackChannel: CHANNELS.sidechat.fallback,
       },
-    );
+    ));
     // Apply the main-chat DLP boundary at this send site too.
     const sanitized = sanitizeOutgoingTurnContent(
       settingsService,
@@ -365,6 +365,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
         pane?.tabId,
       ));
       originWritesBySession.set(turnSideChatSessionId, rowWrite);
+      flush();
       try {
         await rowWrite;
       } finally {

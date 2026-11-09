@@ -880,6 +880,9 @@ Workspace roots follow one host-owned lifecycle:
    admitted turns and later submissions are cancelled until an explicit session
    transition establishes a new work scope. Rebinding execution directories to
    the default project does not authorize the removed project's pending work.
+   The terminal owner event carries that same work-revocation state so queues
+   discard pending and reserved rows, invalidate scheduled drains, and ignore
+   late guide replies instead of resubmitting under the default project.
 4. Preserve conversation transcripts during the mandatory pre-removal metadata
    detachment. Under a metadata lock, clear only `projectRoot` and `projectName`
    from matching sessions, retain every other metadata field and the JSONL

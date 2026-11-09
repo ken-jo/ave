@@ -25,6 +25,25 @@ import {
 
 export type ConversationStreamEventSink = PlatformConversationEventSink;
 
+/** Hold completion until the owner releases admission, so queue follow-ups cannot overtake cleanup. */
+export function bufferTurnCompletion(publish: ConversationStreamEventSink): {
+  sink: ConversationStreamEventSink;
+  flush: () => void;
+} {
+  let completion: Extract<PlatformConversationEvent, { kind: "turn.completed" }> | undefined;
+  return {
+    sink: (event) => {
+      if (event.kind === "turn.completed") completion = event;
+      else publish(event);
+    },
+    flush: () => {
+      const event = completion;
+      completion = undefined;
+      if (event) publish(event);
+    },
+  };
+}
+
 export async function runStreamedTurn(
   conversationLoop: ConversationLoop,
   input: string,
@@ -297,6 +316,7 @@ export async function runStreamedTurn(
   );
   send({
     kind: "turn.completed",
+    ...(result.projectWorkRevoked ? { projectWorkRevoked: true as const } : {}),
     ...(result.route === "command" ? { route: "command" } : {}),
     ...(authorizationRequired
       ? { authorizationRequired }

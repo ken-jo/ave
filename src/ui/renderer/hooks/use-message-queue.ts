@@ -165,7 +165,7 @@ export function useMessageQueue({
     },
     [composerRef],
   );
-  useEffect(() => {
+  const resetQueue = useCallback(() => {
     messageQueueStore.clear();
     queueDeliveryEpochRef.current += 1;
     queueAutoInflightRef.current = false;
@@ -175,7 +175,9 @@ export function useMessageQueue({
     // brake-point hand-offs in the new one. Reset them with the queue.
     guideFlushInflightRef.current = null;
     startQueueTurn();
-  }, [currentSessionId, messageQueueStore, startQueueTurn]);
+  }, [messageQueueStore, startQueueTurn]);
+
+  useEffect(() => { resetQueue(); }, [currentSessionId, resetQueue]);
 
   const drainPendingQueue = useCallback(function drainPendingQueue({ deferSend = true, itemIds, intent, composerItemId }: {
     deferSend?: boolean;
@@ -289,6 +291,10 @@ export function useMessageQueue({
       // A frame from a superseded turn drives nothing here: not the brake-point hand-off, not the delivery bookkeeping, and
       // above all not the end-of-turn drain.
       if (isCurrentTurnEvent && !isCurrentTurnEvent(ev)) return;
+      if (ev.type === "done" && ev.projectWorkRevoked === true) {
+        resetQueue();
+        return;
+      }
       if (ev.type === "user_message") {
         startQueueTurn();
         return;
@@ -339,7 +345,7 @@ export function useMessageQueue({
       }
     });
     return unsub;
-  }, [subscribeStream, flushQueueViaGuide, messageQueueStore, drainPendingQueue, startQueueTurn, isCurrentTurnEvent]);
+  }, [subscribeStream, flushQueueViaGuide, messageQueueStore, drainPendingQueue, startQueueTurn, isCurrentTurnEvent, resetQueue]);
 
   // Do not drain on transient streaming=false; use real brake points or explicit user injection. An empty queue leaves
   // Escape as abort only.

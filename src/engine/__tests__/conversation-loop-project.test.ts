@@ -368,7 +368,7 @@ describe("ConversationLoop project identity", () => {
       authorizedRoots.delete(removedRoot);
       if (kind === "subagent") runner.revokeWorkspaceRoot(removedRoot, options);
       else for (const { loop } of running) loop.revokeWorkspaceRoot(removedRoot, options);
-      expect((await a.turn).stopReason).toBe("interrupted");
+      expect(await a.turn).toMatchObject({ stopReason: "interrupted", projectWorkRevoked: true });
       expect(b.loop.hasActiveTurn()).toBe(true);
       expect(b.loop.currentAbortController?.signal.aborted).toBe(false);
       expect(previewCount).toBe(1);
@@ -419,8 +419,8 @@ describe("ConversationLoop project identity", () => {
       expect(streamTurn).not.toHaveBeenCalled();
       expect(count).toBe(1);
       expect(loop.hasActiveTurn()).toBe(false);
-      expect((await loop.runTurn("old queued work", undefined, undefined, { inputOrigin: "queue-auto" })).stopReason)
-        .toBe("interrupted");
+      expect(await loop.runTurn("old queued work", undefined, undefined, { inputOrigin: "queue-auto" }))
+        .toMatchObject({ stopReason: "interrupted", projectWorkRevoked: true });
       expect(streamTurn).not.toHaveBeenCalled();
       await loop.newConversation("main");
       loop.provider = provider;

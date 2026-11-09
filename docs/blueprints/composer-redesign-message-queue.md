@@ -69,7 +69,7 @@ Store rules:
 - Caps: 50 items, 8000 characters per item. `add` and `update` throw past
   either cap and on empty text; the composer keeps its text when `add` fails.
 - Items expire 30 minutes after creation or last edit, pruned lazily on read.
-- The store is in memory and is cleared when the session changes.
+- The store is in memory and is cleared when the session changes or its project work is revoked.
 - Item actions in the panel: toggle selection, edit (double-click; empty text
   removes the row), move up/down, send now, remove. Moves preserve selection,
   identity and expiration, and cannot cross a reserved or handed-off row.
@@ -113,7 +113,15 @@ The side chat has no guide channel; its queue drains only at turn end.
 
 ### Turn-end auto-send
 
-On `done` for the current turn, pending (neither reserved nor handed-off) items are removed and
+On `done` with `projectWorkRevoked: true`, clear pending and reserved rows,
+invalidate scheduled drains, and discard late guide replies. The host's session
+work fence also cancels submissions already crossing the transport; see
+[project removal](../architecture/architecture.md#project-identity).
+
+Ordinary main and side-chat sends publish completion after releasing admission,
+so a queue follow-up can acquire the next turn instead of racing final cleanup.
+
+On ordinary `done` for the current turn, pending (neither reserved nor handed-off) items are removed and
 sent as a new turn with `inputOrigin: "queue-auto"`:
 
 - A re-entrancy guard (`queueAutoInflightRef`) ignores further `done` events

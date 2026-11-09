@@ -868,9 +868,10 @@ export class ConversationLoop {
       throw new Error("conversation-loop:session-transition-in-progress");
     }
     if (this.projectWorkRevoked) {
-      return { text: "", toolCalls: [], route: "general", stopReason: "interrupted" };
+      return { text: "", toolCalls: [], route: "general", stopReason: "interrupted", projectWorkRevoked: true };
     }
-    return turnExtensionPolicyContext.run(
+    const sessionEpoch = this.sessionEpoch;
+    const result = await turnExtensionPolicyContext.run(
       resolveTurnExtensionPolicy(options?.remoteControllerAuthority, this.deps.headless === true, {
         ownerUnattended: options?.unattendedAuthority !== undefined,
         approvalSurface: this.deps.approvalSurface,
@@ -882,6 +883,9 @@ export class ConversationLoop {
       }),
       () => runTurn(this, input, callbacks, abortSignal, options),
     );
+    return this.projectWorkRevoked && this.sessionEpoch === sessionEpoch
+      ? { ...result, projectWorkRevoked: true }
+      : result;
   }
 
   rebuildToolSchemas(scope: ToolScope): ToolSchema[] {
