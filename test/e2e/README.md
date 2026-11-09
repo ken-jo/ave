@@ -12,12 +12,22 @@ On macOS the launcher clones a temporary test-only runtime bundle with
 The entrypoint then sets the `prohibited` activation policy. An accessory app
 is not enough: when another app quits or deactivates, macOS can hand
 activation to an accessory app whose window is ordered front, and the owner's
-keystrokes would then land in a test window. A prohibited app cannot be
-activated, while its windows still render and take page input.
+keystrokes would then land in a test window. In this test runtime, prohibited
+apps remain inactive while their windows render and take emulated page input.
 Each worker reuses its copy and removes it at exit. The installed runtime and
 packaged executables are untouched; foreground fixtures use the original runtime.
 Keyboard input goes through the page input channel; embedded guest pointer input
 must target the guest directly instead of relying on native host focus routing.
+
+The documented [activation-policy contract](https://www.electronjs.org/docs/latest/api/app#appsetactivationpolicypolicy-macos)
+defines `prohibited` as removing the Dock and disallowing window creation and
+activation. Window rendering here is runtime-specific behavior beyond that
+documented contract. Background rendering and emulated page input do not establish
+coverage for native message boxes, native menus or the menu bar, Dock integration,
+or OS drag-and-drop. Tests exercising these surfaces must carry `@os-focus` and
+use foreground fixture mode. Current dialog and menu tests intercept native
+presentation; drag/drop tests use page input or synthetic events. The fixture's
+Dock activation is already limited to its `@os-focus` foreground select tests.
 
 Tests whose subject requires native OS focus carry `@os-focus`. Their
 `os-focus` project exists only when `AVE_E2E_OS_FOCUS=1` is set, so any direct
