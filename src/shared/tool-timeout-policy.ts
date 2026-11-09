@@ -42,8 +42,6 @@ export const TOOL_TIMEOUT_POLICY = {
   imagePreparationMs: 30_000,
   // Includes layout and PNG encoding for browser captures.
   browserCaptureMs: 10_000,
-  // Reserve part of the capture deadline to restore the guest's native viewport.
-  browserCaptureRestoreMs: 1_000,
   // A panel request must be acknowledged by its originating visible renderer.
   documentPanelAckMs: 10_000,
   // Optional document engine download, provenance checks and bounded native conversion.

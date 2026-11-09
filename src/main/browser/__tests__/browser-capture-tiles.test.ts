@@ -195,7 +195,7 @@ describe("browser capture tiles", () => {
       },
       onEvent: () => () => {},
     };
-    await expect(captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 60)).rejects.toMatchObject({ code: "screenshot-restore-failed" });
+    await expect(captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 60)).rejects.toMatchObject({ code: "screenshot-timeout" });
     await expect(captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 60)).rejects.toMatchObject({ code: "screenshot-busy" });
     if (!finishRestore) throw new Error("Restore did not start");
     finishRestore();

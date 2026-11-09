@@ -122,7 +122,7 @@ describe("browser tool CDP surface", () => {
     const sends = [...source.matchAll(/\.send\(\s*([^,)]+)/g)].flatMap((match) => match[1] === undefined ? [] : [match[1].trim()]);
     expect(sends.length).toBeGreaterThan(10);
     // The one pass-through is the session wrapper that forwards to webContents.debugger.
-    expect(sends.filter((argument) => !/^"[A-Z][A-Za-z]+\.[a-z][A-Za-z]+"$/.test(argument))).toEqual(["method"]);
+    expect(sends.filter((argument) => !/^"[A-Z][A-Za-z]+\.[a-z][A-Za-z]+"$/.test(argument))).toEqual(["method", "method"]);
     expect(source).toContain("const sent = session.send(method, params);");
   });
 

@@ -4,6 +4,7 @@ import { BrowserActionError, throwIfAborted, type CdpSession } from "./browser-a
 import type { WebContents } from "electron";
 import { captureBrowserTiles } from "./browser-capture-tiles.js";
 import { captureScrollContext, captureScrollParameters, scrollBrowserCapture } from "./browser-capture-scroll.js";
+import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-capture-operation.js";
 
 const activeCaptures = new WeakSet<object>();
 
@@ -22,19 +23,23 @@ export async function captureBrowserViewport(guest: Pick<WebContents, "capturePa
 export async function captureBrowserPage(
   cdp: CdpSession, signal: AbortSignal, options: BrowserScreenshotOptions = {},
   pixelRatio = 1, maxMs: number = TOOL_TIMEOUT_POLICY.browserCaptureMs, captureViewport?: () => Promise<BrowserViewportImage>,
+  operation?: BrowserCaptureOperation,
+): Promise<BrowserScreenshot> {
+  return operation ? capturePage(cdp, operation, options, pixelRatio, captureViewport)
+    : runBrowserCapture(signal, maxMs, (active) => capturePage(cdp, active, options, pixelRatio, captureViewport));
+}
+
+async function capturePage(
+  cdp: CdpSession, operation: BrowserCaptureOperation, options: BrowserScreenshotOptions,
+  pixelRatio: number, captureViewport?: () => Promise<BrowserViewportImage>,
 ): Promise<BrowserScreenshot> {
   const key = cdp.captureKey ?? cdp;
   if (activeCaptures.has(key)) throw new BrowserActionError("screenshot-busy", "another capture is using this tab");
   activeCaptures.add(key);
-  const started = Date.now();
-  const restoreBudget = options.fullPage ? Math.min(TOOL_TIMEOUT_POLICY.browserCaptureRestoreMs, maxMs / 2) : 0;
   let metricsOverridden = false;
   let scrollRestore: BrowserCaptureScroll | undefined;
   const tiled = options.fullPage === true && cdp.fullPageTiling === true;
-  const lifetime = new AbortController();
-  const captureSignal = AbortSignal.any([signal, lifetime.signal]);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let onAbort: (() => void) | undefined;
+  const captureSignal = operation.signal;
   const capture = async (): Promise<BrowserScreenshot> => {
     throwIfAborted(captureSignal);
     if (!parseBrowserScreenshotOptions(options) || options.ref !== undefined) throw new BrowserActionError("invalid-capture", "use one capture mode with valid CSS capture bounds");
@@ -133,18 +138,7 @@ export async function captureBrowserPage(
     return { data, mimeType: "image/png", bytes, width, height, originalWidth, originalHeight, scale, truncated: captureHeight < originalHeight,
       ...(tiled ? { captureMethod: "scroll-and-stitch" as const, stickyHeadersDeduplicated: false as const } : {}) };
   };
-  return Promise.race([capture(), new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => {
-      const error = new BrowserActionError("screenshot-timeout", "the tab did not return an image within the capture deadline");
-      reject(error); lifetime.abort(error);
-    }, maxMs - restoreBudget);
-    onAbort = () => { try { throwIfAborted(signal); } catch (error) { reject(error); } };
-    if (signal.aborted) onAbort(); else signal.addEventListener("abort", onAbort, { once: true });
-  })]).finally(async () => {
-    clearTimeout(timer);
-    if (onAbort) signal.removeEventListener("abort", onAbort);
-    lifetime.abort();
-    let restoreTimer: ReturnType<typeof setTimeout> | undefined;
+  return operation.wait(capture()).finally(async () => {
     let releaseCapture = true;
     try {
       if (metricsOverridden || scrollRestore) {
@@ -157,13 +151,8 @@ export async function captureBrowserPage(
         };
         releaseCapture = false;
         const restored = restore().finally(() => { activeCaptures.delete(key); });
-        await Promise.race([
-          restored,
-          new Promise<never>((_resolve, reject) => {
-            restoreTimer = setTimeout(() => reject(new BrowserActionError("screenshot-restore-failed", "the tab did not restore its viewport in time")), Math.max(0, maxMs - (Date.now() - started)));
-          }),
-        ]);
+        await operation.wait(restored);
       }
-    } finally { clearTimeout(restoreTimer); if (releaseCapture) activeCaptures.delete(key); }
+    } finally { if (releaseCapture) activeCaptures.delete(key); }
   });
 }

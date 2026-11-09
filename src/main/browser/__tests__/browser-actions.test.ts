@@ -788,6 +788,63 @@ describe("screenshot", () => {
       message: expect.stringContaining("capture deadline"),
     });
   });
+
+  it.each(["Page.getFrameTree", "DOM.getBoxModel"])("bounds stalled capture preparation at %s by its original deadline and caller cancellation", async (method) => {
+    const { cdp, refs } = snapshotFixture();
+    cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    const send = cdp.send.bind(cdp);
+    vi.useFakeTimers();
+    try {
+      for (const cancelled of [false, true]) {
+        const entered = deferred<void>(), response = deferred<unknown>();
+        const spy = vi.spyOn(cdp, "send").mockImplementation((name, params) => {
+          if (name === method) { entered.resolve(); return response.promise; }
+          return send(name, params);
+        });
+        const caller = new AbortController();
+        const pending = screenshot({ ...target(cdp), signal: caller.signal }, 20, { ref }, refs);
+        const rejected = expect(pending).rejects.toMatchObject({ code: cancelled ? "cancelled" : "screenshot-timeout" });
+        await entered.promise;
+        expect(vi.getTimerCount()).toBe(1);
+        if (cancelled) caller.abort(); else await vi.advanceTimersByTimeAsync(21);
+        await rejected;
+        expect(vi.getTimerCount()).toBe(0);
+        response.resolve(cdp.frameTree);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(cdp.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+        spy.mockRestore();
+      }
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not reset the capture deadline after resolving a ref", async () => {
+    const { cdp, refs } = snapshotFixture();
+    cdp.nodes = page([ax("b", "button", "Save", { backendDOMNodeId: 3 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    const send = cdp.send.bind(cdp), box = deferred<unknown>(), entered = deferred<void>();
+    const readback = deferred<void>();
+    vi.spyOn(cdp, "send").mockImplementation((method, params) => {
+      if (method === "DOM.getBoxModel") { entered.resolve(); return box.promise; }
+      if (method === "Page.captureScreenshot") { readback.resolve(); return new Promise(() => {}); }
+      return send(method, params);
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = screenshot(target(cdp), 20, { ref }, refs);
+      const rejected = expect(pending).rejects.toMatchObject({ code: "screenshot-timeout" });
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(15);
+      box.resolve({ model: { border: [0, 0, 10, 0, 10, 10, 0, 10] } });
+      await readback.promise;
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(6);
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
 });
 
 describe("focus before keyboard input", () => {

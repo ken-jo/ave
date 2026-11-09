@@ -1,6 +1,7 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
 import { captureBrowserPage, captureBrowserViewport } from "./browser-capture.js";
+import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-capture-operation.js";
 import { parseBrowserScreenshotOptions, type BrowserScreenshotOptions } from "../../shared/browser-capture.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { captureContextGone, captureScrollParameters } from "./browser-capture-scroll.js";
@@ -122,12 +123,26 @@ export async function snapshot(
 }
 
 export async function screenshot(
-  target: ActionTarget,
+  initialTarget: ActionTarget,
   maxMs: number = TOOL_TIMEOUT_POLICY.browserCaptureMs,
   options: BrowserScreenshotOptions = {},
   refs: BrowserRefTable = browserRefs,
   pixelRatio = 1,
 ) {
+  return runBrowserCapture(initialTarget.signal, maxMs, (operation) => captureScreenshot(initialTarget, operation, options, refs, pixelRatio));
+}
+
+async function captureScreenshot(
+  initialTarget: ActionTarget, operation: BrowserCaptureOperation, options: BrowserScreenshotOptions,
+  refs: BrowserRefTable, pixelRatio: number,
+) {
+  const target: ActionTarget = { ...initialTarget, signal: operation.signal, cdp: {
+    ...initialTarget.cdp,
+    send: async (method, params) => {
+      operation.signal.throwIfAborted();
+      return operation.wait(initialTarget.cdp.send(method, params));
+    },
+  } };
   const parsed = parseBrowserScreenshotOptions(options);
   if (!parsed) throw new BrowserActionError("invalid-capture", "use one capture mode; clip requires finite non-negative x/y and positive width/height");
   let clip = parsed.clip;
@@ -150,7 +165,7 @@ export async function screenshot(
       width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
     if (await resolveRef(target, parsed.ref, refs) !== backendNodeId) throw new BrowserActionError("stale-ref", "the element changed during capture; take a new browser_snapshot");
   }
-  return captureBrowserPage(target.cdp, target.signal, { ...(parsed.fullPage !== undefined ? { fullPage: parsed.fullPage } : {}), ...(clip ? { clip } : {}) }, pixelRatio, maxMs, target.captureViewport);
+  return captureBrowserPage(initialTarget.cdp, operation.signal, { ...(parsed.fullPage !== undefined ? { fullPage: parsed.fullPage } : {}), ...(clip ? { clip } : {}) }, pixelRatio, undefined, initialTarget.captureViewport, operation);
 }
 
 const WAIT_POLL_MS = 250;
@@ -1484,11 +1499,14 @@ export function createBrowserPageActions(
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
       awake(live, async () => snapshot(await targetFor(live, attribution, hostContentOrigin), options)),
     screenshot: async (live: LiveTab, options) => {
-      return awake(live, async () => {
-        const target = await targetFor(live, attribution, hostContentOrigin);
-        const guest = live.tab.guest;
-        if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-        return screenshot(target, TOOL_TIMEOUT_POLICY.browserCaptureMs, options, browserRefs, capturePixelRatioForGuest(guest));
+      return runBrowserCapture(live.signal, TOOL_TIMEOUT_POLICY.browserCaptureMs, async (operation) => {
+        const scoped = { ...live, signal: operation.signal };
+        return awake(scoped, async () => {
+          const target = await operation.wait(targetFor(scoped, attribution, hostContentOrigin));
+          const guest = live.tab.guest;
+          if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+          return captureScreenshot(target, operation, options ?? {}, browserRefs, capturePixelRatioForGuest(guest));
+        });
       });
     },
     capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),

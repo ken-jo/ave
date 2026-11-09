@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { WebContents } from "electron";
 import sharp from "sharp";
 import { BrowserWorkspaceCapture } from "../browser-workspace-capture.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
 
 const { writeImage } = vi.hoisted(() => ({ writeImage: vi.fn(async () => {}) }));
 vi.mock("electron", () => ({
@@ -91,5 +92,25 @@ describe("user browser capture boundary", () => {
     await expect(pending).rejects.toThrow("stale-document");
     finish({});
     expect(writeImage).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("bounds user-area preparation and stops late readback (cancelled=%s)", async (cancelled) => {
+    const { capture, sendCommand, capturePage } = fixture();
+    const entered = deferred<void>(), response = deferred<unknown>();
+    sendCommand.mockImplementationOnce(() => { entered.resolve(); return response.promise; });
+    vi.useFakeTimers();
+    try {
+      const pending = capture.capture(1, { ...TARGET, clip: { x: 0, y: 0, width: 10, height: 10 } }, 20);
+      const rejected = expect(pending).rejects.toThrow(cancelled ? "stale-document" : "capture-unavailable");
+      await entered.promise;
+      expect(vi.getTimerCount()).toBe(1);
+      if (cancelled) capture.invalidateWindow(1); else await vi.advanceTimersByTimeAsync(21);
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+      response.resolve({});
+      await vi.advanceTimersByTimeAsync(1);
+      expect(capturePage).not.toHaveBeenCalled();
+      expect(writeImage).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 });

@@ -1584,8 +1584,10 @@ and truncates the bottom at the pixel limit. Output includes dimensions, scale,
 report `captureMethod: "scroll-and-stitch"` and
 `stickyHeadersDeduplicated: false` together. Parked agent tabs retain the shared
 activity wake ownership before reading layout or capturing.
-Capture cleanup restores the original scroll position and clears any temporary
-viewport override within the existing capture deadline.
+Preparation, readback and cleanup share one cancellation signal and capture
+deadline. Cleanup attempts to restore the original scroll position and clear any
+temporary viewport override even on cancellation; a still-pending cleanup retains
+guest capture ownership until it settles.
 Selection verifies the final native value and rejects unsupported controls.
 Native single-select uses a fixed function in an isolated action world on one
 host-resolved main-document object, with only the requested option value as data.
