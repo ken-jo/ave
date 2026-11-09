@@ -24,6 +24,9 @@ import { isSessionOnlyApprovalMemoryScope, type ApprovalMemoryScope } from "../.
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { browserOrigin, createBrowserTools, type BrowserActionTab, type BrowserPageActions } from "../browser-tools.js";
+import { gateBrowserSiteNavigation } from "../../main/browser/browser-site-navigation.js";
+import type { CdpSession } from "../../main/browser/browser-action-guard.js";
+import { handleAgentBrowserPopup, setBrowserPopupNavigation } from "../../main/browser/browser-popup-navigation.js";
 import { fenceBrowserContent } from "../browser-tools-execute.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { runWithAgentObservationTurn } from "../agent-observation-context.js";
@@ -34,6 +37,10 @@ import type { BrowserObservationDetail, ObservationIdentity } from "../../shared
 class FakeGuest implements BrowserGuest {
   constructor(readonly id: number, public url: string, public title = "Page") {}
   destroyed = false;
+  close(options: { waitForBeforeUnload: boolean }): void {
+    expect(options.waitForBeforeUnload).toBe(false);
+    this.destroyed = true;
+  }
   isDestroyed(): boolean {
     return this.destroyed;
   }
@@ -93,11 +100,12 @@ function fakeActions() {
     click: record("click") as BrowserPageActions<FakeGuest>["click"],
     type: record("type") as BrowserPageActions<FakeGuest>["type"],
     pressKey: record("pressKey") as BrowserPageActions<FakeGuest>["pressKey"],
-    settle: async (target) => ({ url: target.tab.guest!.url }),
+    settle: async (target) => ({ url: target.tab.guest!.url, loading: false }),
     navigate: async (target, url) => {
       calls.push({ action: "navigate", tab: target.tab.handle, args: [url] });
+      await target.authorizeSite?.(url);
       target.tab.guest!.url = url;
-      return { url };
+      return { url, loading: false };
     },
   };
   return { actions, calls, targets, release: () => pending?.resolve() };
@@ -146,11 +154,14 @@ describe("browser tools", () => {
   /** Window 1 hosts the conversation (and its child); window 2 hosts another. Every card is answered
    * allow, remembered for the session when the card allows remembering. `onCard` runs while the card is open. */
   function harness(options: {
+    siteChoice?: import("../../shared/permissions-events.js").BrowserSiteChoice;
+    denySite?: boolean;
     surfaceChoice?: UserOwnedSurfaceChoice;
     denySurface?: boolean;
     logicalReview?: (input: import("../../permissions/reviewer/user-owned-surface-reviewer.js").UserOwnedSurfaceReviewInput) => Promise<{ consistent: boolean; reason: string }>;
     headless?: boolean;
-    onCard?: (card: ApprovalRequest) => void;
+    onCard?: (card: ApprovalRequest) => void | Promise<void>;
+    denyAction?: boolean;
     beforeActions?: () => void | Promise<void>;
     onPrepare?: (target: BrowserActionTab<FakeGuest>) => void | Promise<void>;
     mode?: "default" | "strict" | "auto" | "allow";
@@ -171,7 +182,7 @@ describe("browser tools", () => {
     page.actions.prepare = async (target) => options.onPrepare?.(target);
     const browserTools = createBrowserTools<FakeGuest>({
       windowIdForHostedSession: (sessionId) => sessionId === HOST_SESSION ? 1 : sessionId === OTHER_WINDOW_SESSION ? 2 : null,
-      liveOriginSessionId: (sessionId) => sessionId === CHILD_SESSION ? HOST_SESSION : undefined,
+      liveOriginSessionId: (sessionId) => sessionId === CHILD_SESSION || sessionId === "child-b" ? HOST_SESSION : undefined,
       tabs,
       pickUploadFiles: async () => null,
       opensAgentTabs: () => options.noTabOpener !== true,
@@ -193,10 +204,12 @@ describe("browser tools", () => {
       recentlyDenied: makeRecentlyDeniedStore(join(aveHomeDir, "deferred.jsonl")),
     });
     const cards: ApprovalRequest[] = [];
+    const settled: unknown[] = [];
     const recordings: Promise<void>[] = [];
     const nativeWebContents = {
       isDestroyed: () => false,
       send: (channel: string, request: ApprovalRequest) => {
+        if (channel === "ave:approval:settled") settled.push(request);
         if (channel !== "ave:approval:request") return;
         cards.push(request);
         recordings.push((async () => {
@@ -215,10 +228,11 @@ describe("browser tools", () => {
               riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
             });
           }
-          options.onCard?.(request);
+          await options.onCard?.(request);
           gate.resolveFromDesktopRenderer(request.id, {
             requestId: request.id,
-            choice: options.denySurface && request.userOwnedSurface ? "deny-once" : "allow-once",
+            choice: options.denyAction && !request.browserSite || options.denySurface && request.userOwnedSurface || options.denySite && request.browserSite ? "deny-once" : "allow-once",
+            ...(!options.denySite && request.browserSite ? { browserSiteChoice: options.siteChoice ?? "this-site" } : {}),
             ...(!options.denySurface && request.userOwnedSurface && !request.userOwnedSurfaceReviewFallback ? { userOwnedSurfaceChoice: options.surfaceChoice ?? "ask" } : {}),
             nonce: request.nonce,
             hmac: request.hmac,
@@ -264,8 +278,261 @@ describe("browser tools", () => {
       guest.url = url;
       return { handle: outcome.tabId, guest };
     };
-    return { run, cards, page, tabs, userTab, agentTab, ops, browserTools, manager };
+    return { run, cards, settled, gate, page, tabs, userTab, agentTab, ops, browserTools, manager };
   }
+
+  it("asks for a new site once and lets later tools and same-origin navigation run", async () => {
+    const h = harness();
+    const tab = await h.agentTab("https://a.example");
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/first" })).isError).toBe(false);
+    expect(h.cards).toHaveLength(1);
+    expect(h.cards[0].browserSite).toBe("https://b.example:443");
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/second" })).isError).toBe(false);
+    expect((await h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" })).isError).toBe(false);
+    expect(h.cards).toHaveLength(1);
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "http://b.example/" })).isError).toBe(false);
+    expect(h.cards).toHaveLength(2);
+    h.manager.endSession(HOST_SESSION);
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/again" });
+    expect(h.cards).toHaveLength(3);
+  });
+
+  it("keeps any-site consent separate from user-owned tabs and child sessions", async () => {
+    const h = harness({ siteChoice: "any-site" });
+    const tab = await h.agentTab("https://a.example");
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/" });
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "http://c.example:8080/" });
+    expect(h.cards).toHaveLength(1);
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/child" }, CHILD_SESSION);
+    expect(h.cards).toHaveLength(2);
+    const user = h.userTab("https://b.example/");
+    await h.run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
+    expect(h.cards.at(-1)?.userOwnedSurface).toBe("browser");
+    const before = h.page.calls.length;
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "file:///example" })).isError).toBe(true);
+    expect(h.page.calls).toHaveLength(before);
+  });
+
+  it.each(["allow", "deny", "revoke"])("enforces destination ask before remembered site consent: %s", async (answer) => {
+    let resolve!: () => void;
+    const wait = new Promise<void>(done => { resolve = done; });
+    const h = harness({ denyAction: answer === "deny", onCard: () => wait });
+    const tab = await h.agentTab("https://a.example/");
+    h.manager.browserSites.allow(HOST_SESSION, "https://a.example/", "any-site");
+    await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "ask" }, { kind: "user" });
+    let continued = false;
+    h.page.actions.click = async target => {
+      if (!target.authorizeSite) throw new Error("Missing site authorization");
+      await target.authorizeSite("https://restricted.example/redirect");
+      continued = true;
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(h.cards).toHaveLength(1));
+    expect(continued).toBe(false);
+    expect(h.cards[0]?.browserSite).toBeUndefined();
+    expect(h.cards[0]).toMatchObject({ exactRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
+    if (answer === "revoke") await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "deny" }, { kind: "user" });
+    resolve();
+    expect((await action).isError).toBe(answer !== "allow");
+    expect(continued).toBe(answer === "allow");
+  });
+
+  it.each(["this-site", "any-site", "destination-ask"] as const)("retracts cancelled native navigation approval without late grants: %s", async choice => {
+    for (const loss of ["takeover", "destroy", "release"] as const) {
+      let answer = () => {};
+      const delayed = new Promise<void>(resolve => { answer = resolve; });
+      const h = harness({ siteChoice: choice === "any-site" ? "any-site" : "this-site", onCard: () => delayed });
+      const tab = await h.agentTab("https://a.example/");
+      if (choice === "destination-ask") await h.manager.addRulePersist({ pattern: "WebFetch(domain:restricted.example)", action: "ask" }, { kind: "user" });
+      const calls: string[] = [];
+      let event: Parameters<CdpSession["onEvent"]>[0] = () => {};
+      const cdp: CdpSession = { send: async method => { calls.push(method); }, onEvent: listener => { event = listener; return () => {}; } };
+      h.page.actions.click = async target => {
+        if (!target.authorizeSite) throw new Error("Missing site authorization");
+        const gate = await gateBrowserSiteNavigation(cdp, "main", { active: () => !target.signal.aborted, signal: target.signal, authorize: target.authorizeSite });
+        event("Fetch.requestPaused", { requestId: "original", frameId: "main", resourceType: "Document", request: { url: "https://restricted.example/" } });
+        try {
+          await vi.waitFor(() => expect(gate.waiting()).toBe(false));
+          gate.assertAllowed();
+        } finally { gate(); }
+      };
+      const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+      await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+      const card = h.cards.at(-1);
+      if (!card) throw new Error("Missing pending card");
+      if (loss === "takeover") h.tabs.userInput(tab.guest.id, { type: "keyDown" });
+      else if (loss === "destroy") { tab.guest.destroyed = true; h.tabs.guestDestroyed(tab.guest.id); }
+      else {
+        const live = h.tabs.liveTabInWindow(tab.handle, 1);
+        if (!live?.lease) throw new Error("Missing lease");
+        h.tabs.releaseControl(tab.handle, live.lease.id);
+      }
+      try {
+        await vi.waitFor(() => expect(h.gate.pendingCount).toBe(0));
+        expect(h.gate.getRequestSnapshot(card.id)).toBeNull();
+        expect(h.settled).toHaveLength(1);
+      } finally { answer(); }
+      expect((await action).isError).toBe(true);
+      expect(calls).toContain("Fetch.failRequest");
+      expect(calls).not.toContain("Fetch.continueRequest");
+      expect(h.manager.browserSites.allows(HOST_SESSION, "https://restricted.example/")).toBe(false);
+      expect(h.manager.browserSites.allows(HOST_SESSION, "https://another.example/")).toBe(false);
+    }
+  });
+
+  it.each([false, true])("keeps popup consent inside the click lease through opener navigation: %s", async navigateOpener => {
+    let answer = () => {};
+    const delayed = new Promise<void>(resolve => { answer = resolve; });
+    const h = harness({ onCard: () => delayed });
+    const tab = await h.agentTab("https://a.example/");
+    const before = h.ops.length;
+    h.page.actions.click = async target => {
+      setBrowserPopupNavigation(target);
+      expect(handleAgentBrowserPopup(tab.guest, "https://popup.example/", false)).toBe(true);
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+    try {
+      expect(h.tabs.liveTabInWindow(tab.handle, 1)?.lease).not.toBeNull();
+      expect(h.ops).toHaveLength(before);
+      if (navigateOpener) {
+        h.tabs.documentChanged(tab.guest.id);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(h.gate.pendingCount).toBe(1);
+      }
+    } finally { answer(); }
+    await vi.waitFor(() => expect(h.ops.length).toBe(before + 1));
+    const popup = new FakeGuest(900, "about:blank");
+    h.tabs.guestAttached(popup, 1);
+    const requestId = h.ops.at(-1)?.requestId;
+    if (!requestId) throw new Error("Missing popup request");
+    h.tabs.bindTab(1, { tabId: "renderer-popup", webContentsId: popup.id, requestId });
+    expect((await action).isError).toBe(false);
+    expect(popup.url).toBe("https://popup.example/");
+    expect(h.tabs.liveTabInWindow(tab.handle, 1)?.lease).toBeNull();
+  });
+
+  it.each([["this-site", false], ["this-site", true], ["any-site", false], ["any-site", true]] as const)("cancels intercepted %s consent after a failed input and document transition %s", async (siteChoice, changeDocument) => {
+    let answer = () => {};
+    const delayed = new Promise<void>(resolve => { answer = resolve; });
+    const h = harness({ siteChoice, onCard: () => delayed });
+    const tab = await h.agentTab("https://a.example/");
+    const calls: string[] = [];
+    let event: Parameters<CdpSession["onEvent"]>[0] = () => {};
+    const cdp: CdpSession = { send: async method => { calls.push(method); }, onEvent: listener => { event = listener; return () => {}; } };
+    let clickFailed = false;
+    h.page.actions.click = async target => {
+      if (!target.authorizeSite) throw new Error("Missing site authorization");
+      const adapterSignal = new AbortController().signal;
+      const gate = await gateBrowserSiteNavigation(cdp, "main", { active: () => true, signal: adapterSignal, authorize: target.authorizeSite });
+      event("Fetch.requestPaused", { requestId: "intercepted", frameId: "main", resourceType: "Document", request: { url: "https://pending.example/" } });
+      await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+      if (changeDocument) {
+        h.tabs.documentChanged(tab.guest.id);
+        await Promise.resolve();
+      }
+      gate();
+      clickFailed = true;
+      throw new Error("input failed after requesting navigation");
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(clickFailed).toBe(true));
+    try { await vi.waitFor(() => expect(h.gate.pendingCount).toBe(0)); }
+    finally { answer(); }
+    expect((await action).isError).toBe(true);
+    expect(calls).not.toContain("Fetch.continueRequest");
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://pending.example/")).toBe(false);
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://other.example/")).toBe(false);
+  });
+
+  it("cancels pending popup consent when the originating click fails", async () => {
+    let answer = () => {};
+    const delayed = new Promise<void>(resolve => { answer = resolve; });
+    const h = harness({ onCard: () => delayed });
+    const tab = await h.agentTab("https://a.example/");
+    const before = h.ops.length;
+    let clickFailed = false;
+    h.page.actions.click = async target => {
+      setBrowserPopupNavigation(target);
+      handleAgentBrowserPopup(tab.guest, "https://popup.example/", false);
+      await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+      clickFailed = true;
+      throw new Error("click failed after opening a popup");
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(clickFailed).toBe(true));
+    try { await vi.waitFor(() => expect(h.gate.pendingCount).toBe(0)); }
+    finally { answer(); }
+    expect((await action).isError).toBe(true);
+    expect(h.ops).toHaveLength(before);
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://popup.example/")).toBe(false);
+  });
+
+  it("reports popup denial on the originating click instead of a successful click", async () => {
+    const h = harness({ denySite: true });
+    const tab = await h.agentTab("https://a.example/");
+    const before = h.ops.length;
+    h.page.actions.click = async target => {
+      setBrowserPopupNavigation(target);
+      handleAgentBrowserPopup(tab.guest, "https://popup.example/", false);
+    };
+    const result = await h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("Browser popup could not open");
+    expect(h.ops).toHaveLength(before);
+    expect(h.tabs.liveTabInWindow(tab.handle, 1)?.lease).toBeNull();
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://popup.example/")).toBe(false);
+  });
+
+  it.each([["this-site", false], ["this-site", true], ["any-site", false], ["any-site", true]] as const)("cancels popup consent without a late %s grant after document transition %s", async (siteChoice, navigateOpener) => {
+    let answer = () => {};
+    const delayed = new Promise<void>(resolve => { answer = resolve; });
+    const h = harness({ siteChoice, onCard: () => delayed });
+    const tab = await h.agentTab("https://a.example/");
+    const before = h.ops.length;
+    h.page.actions.click = async target => {
+      setBrowserPopupNavigation(target);
+      handleAgentBrowserPopup(tab.guest, "https://popup.example/", false);
+    };
+    const action = h.run(BROWSER_TOOL.click, { tabId: tab.handle, ref: "e1" });
+    await vi.waitFor(() => expect(h.gate.pendingCount).toBe(1));
+    const live = h.tabs.liveTabInWindow(tab.handle, 1);
+    if (!live) throw new Error("Missing originating tab");
+    try {
+      expect(live.lease).not.toBeNull();
+      if (navigateOpener) {
+        h.tabs.documentChanged(tab.guest.id);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(h.gate.pendingCount).toBe(1);
+      }
+      if (live.lease) h.tabs.releaseControl(tab.handle, live.lease.id);
+      await vi.waitFor(() => expect(h.gate.pendingCount).toBe(0));
+    } finally { answer(); }
+    const result = await action;
+    expect(result.isError).toBe(true);
+    expect(result.output).toMatch(/popup|cancel|released/i);
+    expect(h.ops).toHaveLength(before);
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://popup.example/")).toBe(false);
+    expect(h.manager.browserSites.allows(HOST_SESSION, "https://other.example/")).toBe(false);
+  });
+
+  it("asks a human for exfiltration even after any-site consent", async () => {
+    const h = harness({ siteChoice: "any-site", mode: "allow" });
+    const tab = await h.agentTab("https://a.example");
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/" });
+    const before = h.cards.length;
+    await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/?token=secret" });
+    expect(h.cards.length).toBeGreaterThan(before);
+    expect(h.cards.at(-1)?.browserSite).toBeUndefined();
+  });
+
+  it("does not load a denied site or retain the denied choice", async () => {
+    const h = harness({ denySite: true });
+    const tab = await h.agentTab("https://a.example");
+    for (let i = 0; i < 2; i += 1) expect((await h.run(BROWSER_TOOL.navigate, { tabId: tab.handle, url: "https://b.example/" })).isError).toBe(true);
+    expect(h.cards).toHaveLength(2);
+    expect(h.page.calls).toHaveLength(0);
+  });
 
   function browserObservations() {
     const completed: Array<{ identity: ObservationIdentity; detail: BrowserObservationDetail; downloadUrl?: string }> = [];
@@ -285,6 +552,39 @@ describe("browser tools", () => {
     });
     return { completed, begun };
   }
+
+  it("publishes each concurrent child's opened page for composer previews", async () => {
+    const observed = browserObservations();
+    const prepared = new Set<number>();
+    const h = harness({ onPrepare: target => {
+      const guest = target.tab.guest;
+      if (!guest) throw new Error("Missing guest");
+      prepared.add(guest.id); h.tabs.documentChanged(guest.id);
+    } });
+    const navigate = h.page.actions.navigate;
+    h.page.actions.navigate = async (target, url, origin) => {
+      const guest = target.tab.guest;
+      if (!guest) throw new Error("Missing guest");
+      if (!prepared.has(guest.id)) h.tabs.documentChanged(guest.id);
+      if (target.signal.aborted) throw new Error("browser document changed");
+      return navigate(target, url, origin);
+    };
+    const children = [CHILD_SESSION, "child-b"];
+    const actions = children.map(sessionId => runWithAgentObservationTurn({ sessionId, turnId: "open-pages" }, () =>
+      h.run(BROWSER_TOOL.tabNew, { url: `https://a.example/${sessionId}` }, sessionId)));
+    await vi.waitFor(() => expect(h.ops.filter(op => op.op === "new")).toHaveLength(2));
+    for (const [index, op] of h.ops.filter(op => op.op === "new").entries()) {
+      const guest = new FakeGuest(601 + index, "about:blank");
+      h.tabs.guestAttached(guest, 1);
+      if (!op.requestId) throw new Error("Missing tab request");
+      h.tabs.bindTab(1, { tabId: `child-page-${index}`, webContentsId: guest.id, requestId: op.requestId });
+    }
+    expect((await Promise.all(actions)).every(result => !result.isError)).toBe(true);
+    expect(observed.completed.map(entry => entry.identity.sessionId).sort()).toEqual([...children].sort());
+    expect(new Set(observed.completed.map(entry => entry.detail.rendererTabId)).size).toBe(2);
+    expect(h.tabs.listTabs(1).every(tab => tab.mode === "agent-active")).toBe(true);
+    expect(h.tabs.activeBrowserTab(1)).toBeUndefined();
+  });
 
   it("observes admitted model commands without retaining input strings", async () => {
     const observed = browserObservations();
@@ -363,7 +663,7 @@ describe("browser tools", () => {
     expect(result.output).toContain("browser_navigate");
     expect(h.ops.filter((op) => op.op === "new")).toHaveLength(0);
     // The category never follows pane state, so the call is asked like any network open before it is refused.
-    expect(h.cards.map((card) => card.toolName)).toEqual([BROWSER_TOOL.tabNew]);
+    expect(h.cards).toHaveLength(0);
     expect((await h.run(BROWSER_TOOL.tabs, {})).output).toContain(`it works in ${attached.handle}`);
   });
 
@@ -438,8 +738,9 @@ describe("browser tools", () => {
       tabs.bindTab(1, { tabId: "renderer-500", webContentsId: 500, requestId: ops.at(-1)!.requestId! });
     }
     expect((await opening).isError).toBe(false);
-    expect(cards).toHaveLength(1);
-    expect(cards[0]!.approvalMemory).toMatchObject({ scope: { kind: "browser-origin", origin: browserOrigin("https://evil.com") } });
+    expect(cards.filter((card) => card.browserSite !== undefined)).toHaveLength(1);
+    expect(cards.find(card => card.browserSite !== undefined)).toMatchObject({ browserSite: browserOrigin("https://evil.com"), exactRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
+    if (action === "ask") expect(cards.some(card => card.browserSite === undefined && card.exactRecordAllowed === false)).toBe(true);
   });
 
   it("reads an agent tab without asking and asks again when the user selects Ask", async () => {
@@ -460,6 +761,37 @@ describe("browser tools", () => {
     await run(BROWSER_TOOL.snapshot, { tabId: user.handle });
     expect(cards).toHaveLength(2);
     expect(page.calls.map((call) => call.action)).toEqual(["snapshot", "snapshot", "snapshot"]);
+  });
+
+  it("prepares a newly approved child tab before capturing its action signal", async () => {
+    let prepared = false;
+    const h = harness({ onPrepare: (target) => {
+      const guest = target.tab.guest;
+      if (!guest) throw new Error("Missing guest");
+      h.tabs.documentChanged(guest.id); prepared = true;
+    } });
+    const navigate = h.page.actions.navigate;
+    h.page.actions.navigate = async (target, url, origin) => {
+      const guest = target.tab.guest;
+      if (!guest) throw new Error("Missing guest");
+      if (!prepared) h.tabs.documentChanged(guest.id);
+      if (target.signal.aborted) throw new Error("browser document changed");
+      return navigate(target, url, origin);
+    };
+    const opening = h.run(BROWSER_TOOL.tabNew, { url: "https://a.example/start" }, CHILD_SESSION);
+    await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("new"));
+    const guest = new FakeGuest(501, "about:blank");
+    h.tabs.guestAttached(guest, 1);
+    const requestId = h.ops.at(-1)?.requestId;
+    if (!requestId) throw new Error("Missing tab request");
+    h.tabs.bindTab(1, { tabId: "child-page", webContentsId: guest.id, requestId });
+    expect((await opening).isError).toBe(false);
+    const tab = h.tabs.liveTab("tab-1");
+    if (!tab) throw new Error("Missing live tab");
+    expect(tab.controlMode).toBe("agent-active");
+    expect(tab.owner?.sessionId).toBe(CHILD_SESSION);
+    expect(h.cards.filter(card => card.browserSite)).toHaveLength(1);
+    expect((await h.run(BROWSER_TOOL.snapshot, { tabId: tab.handle }, CHILD_SESSION)).isError).toBe(false);
   });
 
   it("waits for cold observation before the one allow-mode action prompt", async () => {
@@ -645,7 +977,8 @@ describe("browser tools", () => {
   it("asks before every action in a user tab, with nothing to remember", async () => {
     const { run, cards, page, userTab } = harness();
     const user = userTab("https://a.example/");
-    await run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
+    const clicked = await run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
+    expect(browserHeader(clicked.output)).toMatchObject({ url: "https://a.example/", loading: false });
     await run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
     expect(cards).toHaveLength(2);
     for (const card of cards) {
@@ -666,13 +999,12 @@ describe("browser tools", () => {
     expect(page.calls.map((call) => call.action)).toEqual(["click", "type", "navigate"]);
   });
 
-  it("remembers an action per origin in an agent tab, for the session only", async () => {
+  it("allows agent page actions without a tool approval", async () => {
     const { run, cards, page, agentTab } = harness();
     const agent = await agentTab("https://a.example/");
     await run(BROWSER_TOOL.type, { tabId: agent.handle, ref: "e1", text: "hello" });
     await run(BROWSER_TOOL.type, { tabId: agent.handle, ref: "e2", text: "world" });
-    expect(cards).toHaveLength(1);
-    expect(cards[0]!.approvalMemory).toMatchObject({ kind: "key", scope: { kind: "browser-origin", tabOpener: "agent" } });
+    expect(cards).toHaveLength(0);
     expect(page.calls.filter((call) => call.action === "type").map((call) => call.args.slice(0, 2))).toEqual([["e1", "hello"], ["e2", "world"]]);
   });
 
@@ -701,7 +1033,8 @@ describe("browser tools", () => {
 
   it("re-checks an agent tab the user took over while the card was open", async () => {
     let takeOver: (() => void) | undefined;
-    const { run, page, agentTab, tabs } = harness({ onCard: () => takeOver?.() });
+    const { run, page, agentTab, tabs, manager } = harness({ onCard: () => takeOver?.() });
+    manager.setRules([{ pattern: BROWSER_TOOL.pressKey, action: "ask" }]);
     const agent = await agentTab("https://a.example/");
     takeOver = () => tabs.stop(1, `renderer-${agent.guest.id}`);
     const result = await run(BROWSER_TOOL.pressKey, { tabId: agent.handle, key: "Enter" });
@@ -723,8 +1056,8 @@ describe("browser tools", () => {
     expect(invalidNavigationCards).toHaveLength(1);
     expect(invalidNavigationCards[0].requireExplicit).toBe(true);
     expect(JSON.stringify(invalidNavigationCards[0].args)).not.toContain("user:pw@");
-    expect(invalidNavigationCards[0].allowedChoices).toBeUndefined();
-    expect(invalidNavigationCards[0].persistentAllowAllowed).toBe(true);
+    expect(invalidNavigationCards[0].allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(invalidNavigationCards[0].persistentAllowAllowed).toBe(false);
     expect(invalidNavigationCards[0].approvalMemory).toMatchObject({ scope: { kind: "browser-origin", tabOpener: "agent" } });
     const refused = await run(BROWSER_TOOL.tabNew, { url: "javascript:alert(1)" });
     expect(refused.isError).toBe(true);
@@ -735,6 +1068,7 @@ describe("browser tools", () => {
     expect(badRef.output).toContain("ref must be an element ref");
     const ok = await run(BROWSER_TOOL.navigate, { tabId: agent.handle, url: "https://b.example/page" });
     expect(ok.isError).toBe(false);
+    expect(browserHeader(ok.output)).toMatchObject({ url: "https://b.example/page", loading: false });
     expect(page.calls).toEqual([{ action: "navigate", tab: agent.handle, args: ["https://b.example/page"] }]);
     expect(cards.length).toBeGreaterThan(0);
   });
@@ -754,20 +1088,42 @@ describe("browser tools", () => {
     expect(listed.output).not.toContain(`"${elsewhere.handle}"`);
 
     // Hosting-window discovery does not confer authority over a parent-owned resource.
-    expect((await run(BROWSER_TOOL.snapshot, { tabId: agent.handle }, CHILD_SESSION)).isError).toBe(false);
+    expect((await run(BROWSER_TOOL.snapshot, { tabId: agent.handle }, CHILD_SESSION)).isError).toBe(true);
     const headless = await run(BROWSER_TOOL.tabs, {}, "routine-run");
     expect(headless.isError).toBe(true);
     expect(headless.output).toContain("this session has no browser");
-    expect(page.calls.map((call) => call.action)).toEqual(["snapshot"]);
+    expect(page.calls.map((call) => call.action)).toEqual([]);
   });
 
-  it("defaults to the window's shown browser tab", async () => {
+  it.each([false, true])("opens an agent tab for navigate without a shown tab, including an empty bound pane: %s", async (pane) => {
+    const h = harness({ noTabOpener: pane });
+    if (pane) h.tabs.bindConversationSurface(HOST_SESSION, { windowId: 1, surface: { kind: "browser", tabId: "renderer-610" } });
+    const opening = h.run(BROWSER_TOOL.navigate, { url: "https://a.example/start" });
+    await vi.waitFor(() => expect(h.ops.at(-1)?.op).toBe("new"));
+    const guest = new FakeGuest(610, "about:blank", "Start");
+    h.tabs.guestAttached(guest, 1);
+    h.tabs.bindTab(1, { tabId: "renderer-610", webContentsId: 610, requestId: h.ops.at(-1)!.requestId! });
+    const result = await opening;
+    expect(result.isError).toBe(false);
+    expect(browserHeader(result.output)).toMatchObject({ tabId: "tab-1", url: "https://a.example/start", loading: false, openedBy: "agent" });
+    expect(h.cards).toHaveLength(1);
+    expect(h.cards[0]?.browserSite).toBe("https://a.example:443");
+    expect(h.page.calls.map((call) => call.action)).toEqual(["navigate"]);
+  });
+
+  it("does not open a replacement for an explicit missing tab", async () => {
+    const h = harness();
+    expect((await h.run(BROWSER_TOOL.navigate, { tabId: "tab-99", url: "https://a.example/" })).isError).toBe(true);
+    expect(h.ops).toHaveLength(0);
+  });
+
+  it("defaults to an owned background tab when none is shown", async () => {
     const { run, page, agentTab, tabs } = harness();
     const agent = await agentTab("https://a.example/");
-    expect((await run(BROWSER_TOOL.snapshot, {})).output).toContain("no browser tab is shown");
+    expect((await run(BROWSER_TOOL.snapshot, {})).isError).toBe(false);
     tabs.setActiveSurface(1, { kind: "browser", tabId: `renderer-${agent.guest.id}` });
     expect((await run(BROWSER_TOOL.snapshot, {})).isError).toBe(false);
-    expect(page.calls).toEqual([{ action: "snapshot", tab: agent.handle, args: [] }]);
+    expect(page.calls).toEqual([{ action: "snapshot", tab: agent.handle, args: [] }, { action: "snapshot", tab: agent.handle, args: [] }]);
   });
 
   it.each([BROWSER_TOOL.click, BROWSER_TOOL.navigate, BROWSER_TOOL.snapshot])("binds an omitted tabId to the tab approved for %s", async (name) => {
@@ -813,7 +1169,7 @@ describe("browser tools", () => {
     expect(page.calls).toEqual([]);
   });
 
-  it("remembers the origin while passing each invocation's fresh tab and document identity", async () => {
+  it("passes each agent invocation's fresh tab and document identity without a card", async () => {
     const { run, cards, page, tabs, agentTab } = harness();
     const first = await agentTab("https://a.example/first");
     const second = await agentTab("https://a.example/second");
@@ -821,7 +1177,7 @@ describe("browser tools", () => {
     const secondTab = tabs.liveTab(second.handle)!;
     Object.assign(secondTab, { documentId: 7 });
     expect((await run(BROWSER_TOOL.click, { tabId: second.handle, ref: "e1" })).isError).toBe(false);
-    expect(cards).toHaveLength(1);
+    expect(cards).toHaveLength(0);
     expect(page.targets.map((target) => (target as unknown as { approval: unknown }).approval)).toEqual([
       { tabId: first.handle, origin: "https://a.example:443", documentId: expect.any(Number), controlGeneration: expect.any(Number) },
       { tabId: second.handle, origin: "https://a.example:443", documentId: 7, controlGeneration: expect.any(Number) },
@@ -939,7 +1295,7 @@ describe("browser tools", () => {
     expect(tab.lease).toBeNull();
   });
 
-  it("uses ordinary session approval for agent-tab uploads and accepts no host paths", async () => {
+  it("asks for each agent-tab upload and accepts no host paths", async () => {
     const { run, cards, page, agentTab, browserTools } = harness();
     const agent = await agentTab("https://a.example/");
     for (let call = 0; call < 2; call++) {
@@ -947,14 +1303,24 @@ describe("browser tools", () => {
       expect(result.isError).toBe(false);
       expect(browserHeader(result.output)).toMatchObject({ status: "selected", files: [{ name: "chosen.txt", bytes: 12 }] });
     }
-    expect(cards).toHaveLength(1);
-    expect(cards[0].allowedChoices).toBeUndefined();
+    expect(cards).toHaveLength(2);
+    expect(cards[0].allowedChoices).toEqual(["allow-once", "deny-once"]);
+    expect(cards[0].exactRecordAllowed).toBe(false);
     expect(cards[0].userOwnedSurface).toBeUndefined();
     expect(cards[0].approvalMemory).toMatchObject({ scope: { kind: "browser-origin", tabOpener: "agent" } });
     expect((await run(BROWSER_TOOL.upload, { tabId: agent.handle, ref: "e1", path: "/tmp/secret" })).isError).toBe(true);
     expect(page.calls.filter((call) => call.action === "upload")).toHaveLength(2);
     const schema = browserTools.find((tool) => tool.name === BROWSER_TOOL.upload)!.toJsonSchema();
     expect(JSON.stringify(schema)).not.toContain("token");
+  });
+
+  it("refuses an over-limit exact option value without selecting its shorter prefix", async () => {
+    const { run, page, agentTab } = harness();
+    const tab = await agentTab("https://a.example/");
+    const result = await run(BROWSER_TOOL.select, { tabId: tab.handle, ref: "e1", value: `${"p".repeat(1_000)}X` });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("value must be a string of at most 1000 characters");
+    expect(page.calls).toEqual([]);
   });
 
   it("validates each new typed operand before loading or acting", async () => {
@@ -1023,9 +1389,10 @@ describe("browser tools", () => {
     tabs.bindTab(1, { tabId: "renderer-500", webContentsId: 500, requestId: ops.at(-1)!.requestId! });
     const result = await opening;
     expect(cards).toHaveLength(1);
-    expect(cards[0]!.approvalMemory).toMatchObject({ scope: { kind: "browser-origin", origin: "https://a.example:443", tabOpener: "agent" } });
+    expect(cards[0]).toMatchObject({ browserSite: "https://a.example:443", exactRecordAllowed: false });
     expect(result.isError).toBe(false);
     expect(result.output).toContain('"url":"https://a.example/start"');
+    expect(browserHeader(result.output)).toMatchObject({ loading: false });
     expect(result.output).toContain('"openedBy":"agent"');
     expect(page.calls).toEqual([{ action: "navigate", tab: "tab-1", args: ["https://a.example/start"] }]);
     expect(tabs.liveTab("tab-1")?.opener).toBe("agent");
@@ -1072,6 +1439,7 @@ describe("browser tools", () => {
       // A borrowed tab has a resumable controller while retaining user lifetime.
       h.tabs.acquireControl(h.tabs.liveTab(tab.handle)!, { sessionId: HOST_SESSION });
     }
+    h.manager.setRules([{ pattern: BROWSER_TOOL.tabClose, action: "ask" }]);
     const before = h.ops.length;
     const result = await h.run(BROWSER_TOOL.tabClose, { tabId: tab.handle });
     expect(changed).toBe(true);

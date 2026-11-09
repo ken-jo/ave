@@ -13,6 +13,7 @@ import {
   currentAgentObservationIdentity,
   drainAgentObservationHome,
   observeAgentDocumentMutation,
+  onAgentObservationTurnEnd,
   registerAgentObservationHome,
   runWithAgentObservationInvocation,
   runWithAgentObservationTurn,
@@ -52,6 +53,20 @@ afterEach(async () => {
 
 
 describe("agent document observation context", () => {
+  it.each(["completed", "interrupted", "errored"])("notifies resource owners at the end of a %s turn without ending its session", async (outcome) => {
+    const ended = vi.fn();
+    const unsubscribe = onAgentObservationTurnEnd(ended);
+    try {
+      await runWithAgentObservationTurn(TURN, async () => {
+        expect(ended).not.toHaveBeenCalled();
+        if (outcome !== "completed") throw new Error(outcome);
+      }).catch((error) => { if (outcome === "completed") throw error; });
+      expect(ended).toHaveBeenCalledExactlyOnceWith(TURN.sessionId, TURN.turnId);
+      unsubscribe();
+      await runWithAgentObservationTurn({ ...TURN, turnId: "next-turn" }, async () => {});
+      expect(ended).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
   it("does not derive observation authority from file-tool metadata", async () => {
     const path = join(directory, "notes.txt");
     const result = await new WriteFileTool().execute({ path, content: "user content" }, {

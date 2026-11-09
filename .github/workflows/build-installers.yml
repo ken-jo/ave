@@ -157,6 +157,8 @@ jobs:
       # user's bun home; on Windows it is a checksum-verified release download
       # (see the action).
       - uses: ./.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           bun-version-file: .bun-version
       - name: Restore package manager and installer caches
@@ -219,8 +221,12 @@ jobs:
           fi
           dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' "${tools[@]#*:}" 2>/dev/null | sort -u || true
       - name: Install dependencies
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: bun install --frozen-lockfile
       - name: Build installer
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         id: build
         shell: bash
         run: |

@@ -10,7 +10,7 @@ import { createDynamicTool } from "../../../tools/base.js";
 import { ToolRegistry } from "../../../tools/registry.js";
 import { ConversationLoop } from "../../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../../llm/types.js";
-import { MAX_TOOL_RESULT_LINES } from "../../../shared/tool-result-trim.js";
+import { MAX_TOOL_RESULT_TOKENS } from "../../../shared/tool-result-trim.js";
 import { ConversationHistory } from "../../conversation-history.js";
 import type { GenericMessage } from "../../llm/types.js";
 import {
@@ -157,7 +157,7 @@ describe("directory instructions in the query loop", () => {
 
 describe("directory instruction budgets", () => {
   it("cuts a long file so the whole tool result stays under the per-result cap", () => {
-    const lines = Array.from({ length: 150 }, (_, index) => `rule line ${index}`);
+    const lines = Array.from({ length: 150 }, (_, index) => `rule line ${index}: ${"x".repeat(80)}`);
     writeFileSync(join(project, "src", "AGENTS.md"), lines.join("\n"));
     const result = attach(new Map())!;
     expect(result.text).toContain("rule line 0");
@@ -169,7 +169,7 @@ describe("directory instruction budgets", () => {
 
   it("waits for a later touch when the tool output already fills the result budget", () => {
     const attached = new Map<string, number>();
-    const fullOutput = Array.from({ length: MAX_TOOL_RESULT_LINES }, (_, index) => `line ${index}`).join("\n");
+    const fullOutput = "x".repeat(MAX_TOOL_RESULT_TOKENS * 4);
     expect(attach(attached, { toolResultContent: fullOutput })).toBeUndefined();
     expect(attached.size).toBe(0);
     expect(attach(attached)?.text).toContain("src rule");

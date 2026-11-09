@@ -404,9 +404,12 @@ export async function queryLoop(
     type PendingGuidanceDelivery = {
       entries: Array<(typeof self.guidanceQueue)[number]>;
       joined: string;
-      historyMessage: ReturnType<typeof self.history.append> | null;
+      rows: Array<{
+        text: string;
+        source?: GuidanceInjectionSource;
+        historyMessage: ReturnType<typeof self.history.append>;
+      }>;
       round: number;
-      subAgentSource: GuidanceInjectionSource | undefined;
     };
     let pendingGuidanceDelivery: PendingGuidanceDelivery | null = null;
     const ownedOutputCaptures: ToolOutputCapture[] = [];
@@ -415,12 +418,11 @@ export async function queryLoop(
       const delivery = pendingGuidanceDelivery;
       if (!delivery) return;
       pendingGuidanceDelivery = null;
-      const injectionId = delivery.historyMessage?.meta?.hostInjectionId;
-      // Revoke the original native quotation provenance even when compaction replaced its row object.
-      if (delivery.historyMessage !== null) self.history.removeExact(delivery.historyMessage);
-      if (injectionId !== undefined) {
-        // Remove by durable row ID; compaction can replace object identity and cause duplicate redelivery.
-        self.history.removeByHostInjectionId(injectionId);
+      for (const row of delivery.rows) {
+        const injectionId = row.historyMessage.meta.hostInjectionId;
+        self.history.removeExact(row.historyMessage);
+        // Compaction can replace object identity; revoke its durable copy as well.
+        if (injectionId !== undefined) self.history.removeByHostInjectionId(injectionId);
       }
       // Requeue drained entries; outer cleanup clears the controller before delivering drop dispositions.
       self.guidanceQueue = [...delivery.entries, ...self.guidanceQueue];
@@ -435,17 +437,18 @@ export async function queryLoop(
           Promise.resolve().then(() => entry.onInjected?.())),
       );
       // A committed delivery without its appended row violates the injection invariant.
-      const committedRow = delivery.historyMessage;
-      if (committedRow === null) {
+      if (delivery.rows.length === 0) {
         throw new Error("[guidance] committed a guidance batch that never reached history");
       }
-      try {
-        callbacks?.onGuidanceInjected?.(delivery.joined, {
-          messageId: committedRow.meta.messageId,
-          ...(delivery.subAgentSource ? { source: delivery.subAgentSource } : {}),
-        });
-      } catch {
-        // Renderer notification failure must not invalidate a committed round.
+      for (const row of delivery.rows) {
+        try {
+          callbacks?.onGuidanceInjected?.(row.text, {
+            messageId: row.historyMessage.meta.messageId,
+            ...(row.source ? { source: row.source } : {}),
+          });
+        } catch {
+          // Renderer notification failure must not invalidate a committed round.
+        }
       }
       self.tracer.step("GUIDANCE_INJECTED", {
         round: delivery.round,
@@ -541,14 +544,11 @@ export async function queryLoop(
               Promise.resolve().then(() => entry.onDropped?.("joined-limit"))),
           );
         }
-        const injectedContent = t("be_conversationLoop.guidanceInjectionHeader", { joined });
-        const subAgentSource = subAgentSourceForBatch(kept);
         const delivery: PendingGuidanceDelivery = {
           entries: kept,
           joined,
-          historyMessage: null,
+          rows: [],
           round,
-          subAgentSource,
         };
         pendingGuidanceDelivery = delivery;
         // Compact before appending guidance so the newly injected instruction cannot be summarized away.
@@ -579,19 +579,30 @@ export async function queryLoop(
             );
           }
         }
-        const historyMessage = self.history.append({
-          role: "user",
-          content: injectedContent,
-          // Stamp all injected batches host-owned; mixed child/user content must not become parent-authored evidence.
-          meta: {
-            hostInjectionId: randomUUID(),
-            // Persist bare display text separately from the prompt envelope so reload and composer restore agree.
-            displayText: joined,
-            ...(subAgentHistoryMeta(subAgentSource).meta ?? {}),
-          },
-        // Only a batch the user typed, every entry of it, is the user's own words; anything else marks another principal at the history.
-        }, kept.every(isUserTypedGuidance) ? { principal: "user-keyboard", userText: { sessionId: effectiveSessionId, text: joined } } : undefined);
-        delivery.historyMessage = historyMessage;
+        // Split display roles at this same boundary, after computing permission provenance for the entire batch.
+        const groups: typeof kept[] = [];
+        for (const entry of kept) {
+          const previous = groups.at(-1);
+          if (previous && previous[0]?.source?.kind === entry.source?.kind) previous.push(entry);
+          else groups.push([entry]);
+        }
+        for (const group of groups) {
+          const source = subAgentSourceForBatch(group);
+          const promptText = groups.length === 1 ? joined : group.map((entry) => entry.text).join("\n\n");
+          const displayText = groups.length === 1 && group.every((entry) => entry.displayText === undefined)
+            ? joined : group.map((entry) => entry.displayText ?? entry.text).join("\n\n");
+          const historyMessage = self.history.append({
+            role: "user",
+            content: source ? promptText : t("be_conversationLoop.guidanceInjectionHeader", { joined: promptText }),
+            // Mixed child/user batches must not become parent-authored evidence.
+            meta: {
+              hostInjectionId: randomUUID(),
+              displayText,
+              ...(subAgentHistoryMeta(source).meta ?? {}),
+            },
+          }, kept.every(isUserTypedGuidance) ? { principal: "user-keyboard", userText: { sessionId: effectiveSessionId, text: joined } } : undefined);
+          delivery.rows.push({ text: displayText, ...(source ? { source } : {}), historyMessage });
+        }
       }
 
       // Progress notifications are request-only and count assistant rounds, not retry or continuation iterations.
@@ -2058,15 +2069,14 @@ function isUserTypedGuidance(entry: { text: string; principal?: "user-keyboard" 
 
 /** Attribute to children only when every entry is a child report; mixed user guides keep user framing. */
 function subAgentSourceForBatch(
-  entries: readonly { subAgentTitle?: string }[],
+  entries: readonly { source?: GuidanceInjectionSource }[],
 ): GuidanceInjectionSource | undefined {
-  if (entries.length === 0) return undefined;
-  const titles = [...new Set(entries.map((entry) => entry.subAgentTitle))];
-  if (titles.includes(undefined)) return undefined;
+  if (entries.length === 0 || entries.some((entry) => entry.source?.kind !== "sub-agent")) return undefined;
+  const titles = [...new Set(entries.map((entry) => entry.source?.title))];
   return {
     kind: "sub-agent",
     // Mixed-child batches stay unnamed so no child receives credit for another report.
-    ...(titles.length === 1 ? { title: titles[0]! } : {}),
+    ...(titles.length === 1 && titles[0] !== undefined ? { title: titles[0] } : {}),
   };
 }
 

@@ -20,6 +20,21 @@ beforeEach(() => { vi.useFakeTimers(); });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("agent browser preview guest wiring", () => {
+  it("releases preview listeners without reading the destroyed guest's debugger", async () => {
+    const contents = guest();
+    const pageDebugger = contents.debugger;
+    const observed = callbacks();
+    startBrowserPreview(contents as unknown as PreviewGuest, observed);
+    Object.defineProperty(contents, "debugger", { get: () => { throw new Error("Object has been destroyed"); } });
+    expect(() => contents.emit("destroyed")).not.toThrow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(observed.ended).toHaveBeenCalledOnce();
+    expect(pageDebugger.listenerCount("message")).toBe(0);
+    expect(pageDebugger.listenerCount("detach")).toBe(0);
+    expect(contents.listenerCount("destroyed")).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("uses only the agent's existing in-process page session", () => {
     const detached = guest(false);
     expect(() => startBrowserPreview(detached as unknown as PreviewGuest, callbacks())).toThrow("agent's page session");

@@ -95,8 +95,9 @@ export interface GuidanceQueueEntry {
   approvalReasonPrefix?: string;
   /** Host-owned hop context for a message-triggered receiver turn. */
   a2aCausalContext?: A2AAgentCausalContext;
-  // Structured child provenance prevents quoted labels from impersonating a child report.
-  subAgentTitle?: string;
+  // Host-owned display provenance is independent of permission provenance and report titles.
+  source?: import("./turn/types.js").GuidanceInjectionSource;
+  displayText?: string;
   /** Set only by queueUserGuidance (the renderer's guide path). Absent means another principal: a plugin, an app, an agent or a child. */
   principal?: "user-keyboard";
 }
@@ -108,7 +109,7 @@ export interface SessionTransitionLease {
 }
 type GuidanceDisposition = Pick<
   GuidanceQueueEntry,
-  "onInjected" | "onDropped" | "approvalReasonPrefix" | "a2aCausalContext" | "subAgentTitle"
+  "onInjected" | "onDropped" | "approvalReasonPrefix" | "a2aCausalContext" | "source" | "displayText"
 >;
 
 function providerBuildErrorKind(error: unknown): string {

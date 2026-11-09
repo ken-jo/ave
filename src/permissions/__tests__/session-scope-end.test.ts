@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
 
 const releaseEgressSessions = vi.fn<(ended: (sessionId: string) => boolean) => void>();
 vi.mock("../egress-runtime.js", () => ({ releaseEgressSessions }));
@@ -13,7 +14,7 @@ vi.mock("../../main/terminal/pty-manager.js", () => ({ releaseConversationTermin
 
 const { PermissionManager } = await import("../permission-manager.js");
 const { endSessionScopedPermissions } = await import("../session-scope-end.js");
-const { dropSessionApprovals, listSessionApprovals, recordApproval, setApprovalConversationRootResolver, __resetSessionStoreForTest } = await import("../user-approval-store.js");
+const { lookupUserDecision, dropSessionApprovals, listSessionApprovals, recordApproval, setApprovalConversationRootResolver, __resetSessionStoreForTest } = await import("../user-approval-store.js");
 
 // The sessions the egress release selected, among the ones named.
 function releasedAmong(...sessionIds: string[]): string[] {
@@ -71,9 +72,49 @@ describe("ending a conversation's session scope", () => {
     expect(releasedAmong("ending")).toEqual(["ending"]);
   });
 
-  // A sub-agent session shares its root's session rules and approvals but holds its own egress session hosts.
+  // The root resolver groups cleanup without sharing permission choices.
   const tree: Record<string, string> = { "child-1": "root", "child-2": "root", "other-child": "other" };
   const withTree = () => setApprovalConversationRootResolver((sessionId) => tree[sessionId] ?? sessionId);
+
+  it("does not inherit parent or sibling command rules", async () => {
+    withTree();
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.addSessionRule("root", "Bash(printf parent)");
+    manager.addSessionRule("child-1", "Bash(printf child)");
+    expect(manager.listSessionRules("child-1")).toEqual(["Bash(printf child)"]);
+    expect(manager.listSessionRules("child-2")).toEqual([]);
+    expect(manager.listSessionRules("root")).toEqual(["Bash(printf parent)"]);
+  });
+
+  it("does not inherit parent or sibling exact session choices", async () => {
+    withTree();
+    const lookup = (id: string) => lookupUserDecision("bash", '{"command":"printf parent"}', "builtin", undefined, undefined, undefined, id);
+    await recordApproval("bash", '{"command":"printf parent"}', "builtin", { scope: "session", sessionId: "root", verdictAtApproval: "medium", nlJustification: null });
+    expect(await lookup("root")).not.toBeNull();
+    expect(await lookup("child-1")).toBeNull();
+    await recordApproval("bash", '{"command":"printf parent"}', "builtin", { scope: "session", sessionId: "child-1", verdictAtApproval: "medium", nlJustification: null });
+    expect(await lookup("child-1")).not.toBeNull();
+    expect(await lookup("child-2")).toBeNull();
+  });
+
+  it("does not inherit a parent floor grant and clears child grants with the root", () => {
+    withTree();
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.setMode("allow");
+    const plan = buildHostShellExecutionPlan({ platform: "linux", requestedSandbox: true, executionMode: "host",
+      activeCapability: { kind: "none", confidence: "verified", platform: "linux", reason: "unavailable" }, unavailableSandboxRequiresAsk: true });
+    const decision = (sessionId: string) => manager.checkDetailed("bash", "builtin", "shell", null, {
+      ...plain("printf ready", sessionId), hostShellExecutionPlan: plan,
+    });
+    manager.addFloorSessionGrant("root", { code: "sandbox-unavailable" });
+    expect(decision("root")).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
+    expect(decision("child-1")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    manager.addFloorSessionGrant("child-1", { code: "sandbox-unavailable" });
+    expect(decision("child-1")).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
+    expect(decision("child-2")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+    endSessionScopedPermissions("root", manager);
+    expect(decision("child-1")).toMatchObject({ decision: "ask", reasonCode: "sandbox-unavailable" });
+  });
 
   it("ends the whole tree when its root conversation is deleted", async () => {
     withTree();
@@ -92,25 +133,28 @@ describe("ending a conversation's session scope", () => {
     expect(releasedAmong("root", "child-1", "child-2", "other", "other-child")).toEqual(["root", "child-1", "child-2"]);
   });
 
-  it("ends only a deleted sub-agent session's own egress hosts, keeping its root's rules and approvals", async () => {
+  it("ends only a deleted child's choices, keeping parent choices", async () => {
     withTree();
     const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.addSessionRule("root", "Bash(printf parent)");
     manager.addSessionRule("child-1", "Bash(printf ready)");
+    await recordApproval("web_fetch", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "root" });
     await recordApproval("web_fetch", "{}", "builtin", { scope: "session", verdictAtApproval: "low", nlJustification: null, sessionId: "child-1" });
 
     endSessionScopedPermissions("child-1", manager);
 
-    expect(manager.listSessionRules("root")).toEqual(["Bash(printf ready)"]);
-    expect(manager.checkDetailed("bash", "builtin", "shell", null, plain("printf ready", "child-2"))).toMatchObject({ decision: "allow" });
+    expect(manager.listSessionRules("root")).toEqual(["Bash(printf parent)"]);
+    expect(manager.listSessionRules("child-1")).toEqual([]);
+    expect(manager.checkDetailed("bash", "builtin", "shell", null, plain("printf ready", "child-2"))).toMatchObject({ decision: "ask" });
     expect(listSessionApprovals().map((entry) => entry.sessionId)).toEqual(["root"]);
     expect(releasedAmong("root", "child-1", "child-2")).toEqual(["child-1"]);
   });
 
-  it("refuses to end root-held session state by a sub-agent id", () => {
+  it("permits independent child cleanup", () => {
     withTree();
     const manager = new PermissionManager(join(dir, "permissions.json"));
-    expect(() => manager.endSession("child-1")).toThrow(/root conversation/);
-    expect(() => dropSessionApprovals("child-1")).toThrow(/root conversation/);
+    expect(manager.endSession("child-1")).toBe(false);
+    expect(dropSessionApprovals("child-1")).toBe(0);
   });
 
   it("releases counted invocation identities only when the root session ends", () => {

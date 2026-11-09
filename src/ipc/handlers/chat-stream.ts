@@ -40,6 +40,7 @@ export async function runStreamedTurn(
     /** Plugin of the host-resolved, user-selected plugin prompt; scopes this turn only. */
     turnScopedPluginIds?: ReadonlySet<string>;
     initialGuidance?: string;
+    initialGuidanceDisplayText?: string;
     subAgentReport?: { title?: string };
     approvalReasonPrefix?: string;
     /** Host-owned remote-controller authority, never parsed from chat input. */
@@ -272,6 +273,7 @@ export async function runStreamedTurn(
       ...(options.rolePrompt ? { rolePrompt: options.rolePrompt } : {}),
       ...(options.turnScopedPluginIds ? { turnScopedPluginIds: options.turnScopedPluginIds } : {}),
       ...(options.initialGuidance ? { initialGuidance: options.initialGuidance } : {}),
+      ...(options.initialGuidanceDisplayText !== undefined ? { initialGuidanceDisplayText: options.initialGuidanceDisplayText } : {}),
       ...(options.subAgentReport ? { subAgentReport: options.subAgentReport } : {}),
       ...(options.approvalReasonPrefix
         ? { approvalReasonPrefix: options.approvalReasonPrefix }

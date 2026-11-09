@@ -335,7 +335,8 @@ export class A2ASubAgentMessageBus {
         wrapChildReportForParentJudgment(entry.formattedText),
         {
           approvalReasonPrefix: entry.approvalLabel,
-          subAgentTitle: entry.childTitle,
+          source: { kind: "sub-agent", title: entry.childTitle },
+          displayText: entry.formattedText,
           onInjected: () => this.acknowledgeParentMailbox(
             entry.parentSessionId,
             [entry.id],

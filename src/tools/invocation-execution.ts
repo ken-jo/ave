@@ -21,6 +21,10 @@ import { runWithEffectLedger, type EffectLedger } from "../permissions/effect-le
 import { runWithToolExecutionCwd } from "./execution-context.js";
 import { runWithAgentObservationInvocation } from "./agent-observation-context.js";
 import { preparedShellCommand } from "./prepared-shell-invocation.js";
+import { screenEgressRequest } from "../permissions/reviewer/risk-classifier.js";
+import { browserApprovalCardFacts, isCanonicalBrowserTool } from "./browser-tools.js";
+import { browserOrigin } from "../shared/browser-tools.js";
+import { validateExternalUrl } from "../shared/external-url.js";
 import { isCanonicalWebFetchTool } from "./web-fetch.js";
 import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
 import { CHOKEPOINT_EFFECT } from "../permissions/effect-kind.js";
@@ -727,6 +731,50 @@ export async function executeAuthorizedToolInvocation(
   const ownerPluginSandboxRoot = tool.pluginId ? resolveOwnerPluginSandboxRoot(tool.pluginId) : undefined;
   const executionContext: ToolExecutionContext = {
     cwd: executionCwd,
+    ...(isCanonicalBrowserTool(tool) ? {
+      authorizeBrowserSite: async (url: string, lifecycleSignal?: AbortSignal): Promise<void> => {
+        const siteSignal = AbortSignal.any([...(abortSignal ? [abortSignal] : []), ...(lifecycleSignal ? [lifecycleSignal] : [])]);
+        const manager = services.permissionManager;
+        const gate = services.approvalGate;
+        const origin = browserOrigin(url);
+        if (!manager || !gate || !sessionId || origin === null || !validateExternalUrl(url).ok || invocationPermissionContext.headless || invocationPermissionContext.approvalSurface === "unavailable") throw new Error(NO_APPROVER_MESSAGE);
+        siteSignal.throwIfAborted();
+        if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
+        const policyEpoch = manager.getPolicyEpoch();
+        const rules = await manager.checkNetworkRules(url, executionCwd, false);
+        if (rules.admissionDenial || rules.decision === "deny") throw new Error(rules.admissionDenial ?? "Browser destination denied");
+        const screened = screenEgressRequest({ url, allowPrivateNetwork: false });
+        if (rules.decision === "ask" || (rules.exfiltration || screened.outcome === "screened") && !(humanApproved && url === finalInput.url)) {
+          const actionDecision = await gate.requestAndWait({
+            id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network", args: { url },
+            reason: rules.decision === "ask" ? "A destination rule requires approval for this navigation." : "This navigation carries an exfiltration signal and requires human consent.", createdAt: Date.now(), sessionId, abortSignal: siteSignal,
+            remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority, forceExplicit: true,
+            durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
+          });
+          if (actionDecision.choice !== "allow-once" || isHostApprovalRejectedDecision(actionDecision)) throw new Error("Browser navigation denied");
+          siteSignal.throwIfAborted();
+          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || manager.getPolicyEpoch() !== policyEpoch) throw new Error("Browser navigation authority changed");
+        }
+        if (manager.browserSites.allows(sessionId, url)) {
+          siteSignal.throwIfAborted();
+          if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId) || manager.getPolicyEpoch() !== policyEpoch || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Browser navigation authority changed");
+          return;
+        }
+        const decision = await gate.requestAndWait({
+          id: randomUUID(), category: "tool", toolName: tool.name, source: "builtin", toolCategory: "network",
+          browserSite: origin, args: { url }, reason: "Opening this site requires session consent.", createdAt: Date.now(),
+          sessionId, abortSignal: siteSignal, remoteControllerAuthority: invocationPermissionContext.remoteControllerAuthority,
+          forceExplicit: true, durableApprovalRecordAllowed: false, allowedChoices: ["allow-once", "deny-once"],
+        });
+        siteSignal.throwIfAborted();
+        if (!await refreshRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("remote-controller-revoked");
+        if (manager.getPolicyEpoch() !== policyEpoch || !isRemoteControllerBoundToSession(invocationPermissionContext.remoteControllerAuthority, sessionId)) throw new Error("Permission policy changed during site approval");
+        const choice = gate.consumeBrowserSiteChoice(decision, sessionId, origin);
+        if (decision.choice !== "allow-once" || choice === undefined || isHostApprovalRejectedDecision(decision)) throw new Error("Browser site opening denied");
+        siteSignal.throwIfAborted();
+        manager.browserSites.allow(sessionId, url, choice);
+      },
+    } : {}),
     ...(isCanonicalWebFetchTool(tool) && services.permissionManager && typeof finalInput.url === "string" ? {
       authorizeNetworkTarget: (() => {
         const initialUrl = new URL(finalInput.url as string);
@@ -965,6 +1013,7 @@ export async function executeAuthorizedToolInvocation(
       args: finalInput, reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${reason}` : reason,
       ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
       createdAt: Date.now(), abortSignal,
+      ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
         ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
@@ -1001,6 +1050,7 @@ export async function executeAuthorizedToolInvocation(
     }
     const liveRequest: ApprovalRequestInput = { ...request,
       userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined,
+      ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
         ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),

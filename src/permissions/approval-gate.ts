@@ -1,3 +1,5 @@
+import { browserOrigin } from "../shared/browser-tools.js";
+import { isBrowserSiteChoice, type BrowserSiteChoice } from "../shared/permissions-events.js";
 import { aveHome, isAveHomeConfigurationRefused } from "../shared/ave-home.js";
 import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
@@ -100,7 +102,15 @@ interface EgressHostApproval {
   readonly projectCwd?: string;
 }
 
+export interface PendingApprovalSummary {
+  toolName: string;
+  target: string;
+}
+
 export interface ApprovalRequest {
+  browserSite?: string;
+  // Display-only title derived from host-tracked child provenance.
+  requestingAgentTitle?: string;
   id: string;
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;
@@ -213,7 +223,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle"
 > & {
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
@@ -266,6 +276,7 @@ export type ApprovalChoice =
   "allow-once" | "allow-session" | "allow-always" | "deny-once" | "deny-always";
 
 export interface ApprovalDecision {
+  browserSiteChoice?: BrowserSiteChoice;
   requestId: string;
   choice: ApprovalChoice;
   userOwnedSurfaceChoice?: UserOwnedSurfaceChoice;
@@ -452,6 +463,7 @@ interface PendingEntry {
   /** Unattributed cards stay with their recipient until that window leaves. */
   unattributedOwner?: WebContents;
   exactSaveTransition?: ApprovalPolicyTransition & { scope: string };
+  browserSite?: string;
   userOwnedSurface?: UserOwnedSurface;
   userOwnedSurfaceReviewFallback?: true;
   ruleSaveTransition?: ApprovalPolicyTransition;
@@ -684,6 +696,14 @@ export class ApprovalGate {
   private readonly approvedPolicyMutations = new WeakMap<ApprovalDecision, ApprovalPolicyMutation>();
   private readonly authenticatedDirectoryAnswers = new WeakSet<ApprovalDecision>();
   private readonly exactSaveTokens = new WeakMap<object, { requestId: string; entry: PendingEntry; before: string }>();
+  private readonly approvedBrowserSites = new WeakMap<ApprovalDecision, { sessionId: string; origin: string; choice: BrowserSiteChoice }>();
+
+  consumeBrowserSiteChoice(decision: ApprovalDecision, sessionId: string, origin: string): BrowserSiteChoice | undefined {
+    const receipt = this.approvedBrowserSites.get(decision);
+    this.approvedBrowserSites.delete(decision);
+    return receipt?.sessionId === sessionId && receipt.origin === origin ? receipt.choice : undefined;
+  }
+
   private readonly approvedSurfaceChoices = new WeakMap<ApprovalDecision, { sessionId: string; surface: UserOwnedSurface; choice: UserOwnedSurfaceChoice }>();
 
   consumeUserOwnedSurfaceChoice(decision: ApprovalDecision, sessionId: string, surface: UserOwnedSurface): UserOwnedSurfaceChoice | undefined {
@@ -934,6 +954,9 @@ export class ApprovalGate {
   // Send an approval request to the renderer and wait for the response. ConversationLoop.executeOne awaits this and blocks the turn. The requireExplicit field controls renderer dismiss behavior.
   async requestAndWait(req: ApprovalRequestInput): Promise<ApprovalDecision> {
     assertEgressHostRequestShape(req);
+    if (req.browserSite !== undefined && (browserOrigin(req.browserSite) !== req.browserSite || !req.sessionId || req.source !== "builtin" || req.forceExplicit !== true || req.durableApprovalRecordAllowed !== false || req.evaluationContext?.headless === true)) {
+      return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once" });
+    }
     if (this.lifetime.signal.aborted) {
       return markHostApprovalRejectedDecision({ requestId: req.id, choice: "deny-once" });
     }
@@ -956,13 +979,14 @@ export class ApprovalGate {
       remoteControllerAuthority,
       abortSignal,
       childProvenance,
+      requestingAgentTitle: _requestedAgentTitle,
       reviewerOutcome,
       reviewerApprovalBasis,
       approvalRuleBasis,
       verifiedShellCommand,
       hostShellExecutionPlan,
       ...request
-    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown };
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
@@ -1160,6 +1184,7 @@ export class ApprovalGate {
       : builtShellRule;
     const fullReq: ApprovalRequest = {
       ...request,
+      ...(childProvenance === undefined ? {} : { requestingAgentTitle: maskSensitiveData(childProvenance.childTitle).masked.slice(0, 240) }),
       ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
       ...(isAveHomeConfigurationRefused(aveHome()) ? { homeFolderRefused: true as const } : {}),
       ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
@@ -1376,6 +1401,7 @@ export class ApprovalGate {
       }
 
       this.pending.set(fullReq.id, {
+        ...(fullReq.browserSite === undefined ? {} : { browserSite: fullReq.browserSite }),
         ...(userOwnedSurface === undefined ? {} : { userOwnedSurface }),
         ...(userOwnedSurface !== undefined && requestedSurfaceReviewFallback === true ? { userOwnedSurfaceReviewFallback: true as const } : {}),
         resolve: settle,
@@ -1689,7 +1715,7 @@ export class ApprovalGate {
       entry.resolve(rejected);
       return rejected;
     }
-    if ((entry.userOwnedSurface !== undefined || entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
+    if ((entry.browserSite !== undefined || entry.userOwnedSurface !== undefined || entry.hostShellExecutionPermitBinding?.executionMode === "host" || entry.hostTerminal !== undefined) && !nativeRenderer) {
       // Signed card contents authenticate a request, not the answering surface. Reject plugin/platform answers while keeping the desktop request pending.
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
@@ -1720,6 +1746,14 @@ export class ApprovalGate {
       return forcedDecision;
     }
 
+    if ((decision.browserSiteChoice !== undefined && (entry.browserSite === undefined || decision.choice !== "allow-once" || !isBrowserSiteChoice(decision.browserSiteChoice))) ||
+      (entry.browserSite !== undefined && decision.choice === "allow-once" && !isBrowserSiteChoice(decision.browserSiteChoice))) {
+      clearTimeout(entry.timer);
+      this.pending.delete(requestId);
+      const rejected = markHostApprovalRejectedDecision({ requestId, choice: "deny-once" });
+      entry.resolve(rejected);
+      return rejected;
+    }
     if ((decision.userOwnedSurfaceChoice !== undefined &&
       (entry.userOwnedSurface === undefined || entry.userOwnedSurfaceReviewFallback === true || decision.choice !== "allow-once" || !isUserOwnedSurfaceChoice(decision.userOwnedSurfaceChoice))) ||
       (entry.userOwnedSurface !== undefined && entry.userOwnedSurfaceReviewFallback !== true && decision.choice === "allow-once" && !isUserOwnedSurfaceChoice(decision.userOwnedSurfaceChoice))) {
@@ -1798,6 +1832,9 @@ export class ApprovalGate {
     this.pending.delete(requestId);
     if (nativeRenderer && entry.userOwnedSurface !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isUserOwnedSurfaceChoice(resolvedDecision.userOwnedSurfaceChoice)) {
       this.approvedSurfaceChoices.set(resolvedDecision, { sessionId: entry.sessionId, surface: entry.userOwnedSurface, choice: resolvedDecision.userOwnedSurfaceChoice });
+    }
+    if (nativeRenderer && entry.browserSite !== undefined && entry.sessionId !== undefined && resolvedDecision.choice === "allow-once" && isBrowserSiteChoice(resolvedDecision.browserSiteChoice)) {
+      this.approvedBrowserSites.set(resolvedDecision, { sessionId: entry.sessionId, origin: entry.browserSite, choice: resolvedDecision.browserSiteChoice });
     }
     const exactTransition = entry.exactSaveTransition;
     if (nativeRenderer && entry.kind === "out-of-allowed-dir" && resolvedDecision.choice.startsWith("allow")) {
@@ -1913,6 +1950,22 @@ export class ApprovalGate {
       riskCeilingAtApproval: entry.riskCeilingAtApproval,
       verdictAtApproval: entry.verdictAtApproval,
     };
+  }
+
+  // A status projection uses display-masked fields only, never the raw execution arguments.
+  pendingSessionApproval(sessionId: string): PendingApprovalSummary | null {
+    for (const entry of this.pending.values()) {
+      if (entry.sessionId !== sessionId || !isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) continue;
+      const request = entry.rendererRequest;
+      const args = request?.args;
+      const fields = args !== null && typeof args === "object" ? args as Record<string, unknown> : {};
+      const target = request?.browserSite ?? request?.outOfAllowedDir?.candidatePath
+        ?? request?.egressHost?.host
+        ?? [fields.url, fields.path, fields.file_path, fields.command, fields.tabId].find((value): value is string => typeof value === "string")
+        ?? entry.toolName;
+      return { toolName: entry.toolName, target: maskSensitiveData(target).masked.slice(0, 500) };
+    }
+    return null;
   }
 
   // Pending cards for this renderer's currently hosted sessions and terminals. Reloaded or moved conversations recover their signed cards without disclosing other windows' requests.

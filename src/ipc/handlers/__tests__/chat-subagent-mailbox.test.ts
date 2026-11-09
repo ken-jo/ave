@@ -51,6 +51,7 @@ describe("parent sub-agent mailbox turns", () => {
       parentSessionId: "parent-1",
       entryIds: ["message-1", "message-2"],
       initialGuidance: wrapChildReportForParentJudgment("child one\n\nchild two"),
+      displayText: "child one\n\nchild two",
       approvalReasonPrefix: "[Sub-Agent: multiple sources]",
     });
     expect(fixture.peekParentMailbox).toHaveBeenCalledWith("parent-1");

@@ -83,9 +83,23 @@ describe("browser IPC", () => {
       .toEqual({ ok: false, error: "guest-not-hosted" });
     expect(invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "", webContentsId: 41 }))
       .toEqual({ ok: false, error: "bad-request" });
+    expect(invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "browser:1", webContentsId: 41, parked: "false" }))
+      .toEqual({ ok: false, error: "bad-request" });
     expect(invoke(CHANNELS.browser.bindTab, hostFrameEvent(), { tabId: "browser:1", webContentsId: 41 }))
       .toEqual({ ok: false, error: "bad-request" });
     expect(browserTabRegistry.listTabs(7).map((tab) => tab.url)).toEqual(["https://a.example/"]);
+  });
+
+  it("accepts focus receipts only from the matching host window", () => {
+    const payload = { requestId: "receipt", restored: true };
+    expect(invoke(CHANNELS.browser.completeFocus, isolatedAppFrameEvent(), payload)).toEqual({ ok: false });
+    expect(invoke(CHANNELS.browser.completeFocus, hostFrameEvent(), payload)).toEqual({ ok: false });
+    expect(invoke(CHANNELS.browser.completeFocus, fromWindow(), { requestId: "receipt", restored: "true" })).toEqual({ ok: false });
+    expect(invoke(CHANNELS.browser.completeFocus, fromWindow(), payload)).toEqual({ ok: false });
+    const complete = vi.spyOn(browserTabRegistry, "completeFocus").mockReturnValue(true);
+    expect(invoke(CHANNELS.browser.completeFocus, fromWindow(), payload)).toEqual({ ok: true });
+    expect(complete).toHaveBeenCalledWith(7, "receipt", true);
+    complete.mockRestore();
   });
 
   it("takes a renderer's refusal only from the host frame, for a request id it names", () => {

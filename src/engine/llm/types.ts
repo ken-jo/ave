@@ -151,8 +151,7 @@ export interface MessageMeta {
    * Tool-result generic size cap marker (Issue #902).
    *
    * Set by `ConversationHistory.append`/`restore` on tool_result messages
-   * whose raw content exceeds `MAX_TOOL_RESULT_LINES` or
-   * `MAX_TOOL_RESULT_TOKENS` (shared/tool-result-trim.ts). The in-memory
+   * whose raw content exceeds `MAX_TOOL_RESULT_TOKENS` (shared/tool-result-trim.ts). The in-memory
    * `content` stays raw verbatim; this field records the original size so
    * provider serialization can substitute a stub and session persistence can
    * keep the raw payload in a file-backed artifact.

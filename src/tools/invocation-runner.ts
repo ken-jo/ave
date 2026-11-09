@@ -1,4 +1,4 @@
-import { userOwnedBrowserScopeOf } from "./browser-tools.js";
+import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { issueReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { makeRecentlyDeniedInvocationRef } from "../permissions/reviewer/recently-denied-replay.js";
@@ -1397,6 +1397,7 @@ export async function runToolInvocation(
       let directoryPermission = behavior !== undefined ? manager.recheckPermission(behavior.reviewedPermission) : manager.checkDetailed(toolUse.name, source, invocationCategory, overlayTriggerOrigin, {
         ...invocationPermissionContext, sessionId, projectRulesCwd: shellSubject?.cwd ?? executionCwd,
         userOwnedBrowser: userOwnedBrowserScopeOf(tool, approvalMemory),
+        agentBrowser: agentBrowserScopeOf(tool, approvalMemory),
         ...(terminalScope?.lane === "manual" ? { hostTerminalTurn: terminalScope, trustOrigin: invocationPermissionContext.trustOrigin } : {}),
         ...(invocationCategory === "read" && blockReadsOutsideWorkingDirectories ? { admissionDenial: { code: "read-boundary", reason: "This read is outside the configured allowed directories." } } : {}),
         ...(invocationCategory === "shell" ? { ...(shellSubject ? { ruleSubject: shellSubject } : {}), hostShellExecutionPlan,
@@ -1600,6 +1601,7 @@ export async function runToolInvocation(
           // matches dispatchReviewer lookup key — end-to-end symmetry.
           ...(approvalCacheKey ? { approvalCacheKey } : {}),
           approvalMemory,
+          ...browserApprovalCardFacts(tool, approvalMemory),
           ...hostTerminalApprovalFacts(tool, approvalMemory, finalInput.command),
           ...userOwnedSurfaceCardFacts(dirLayerResult),
         };

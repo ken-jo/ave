@@ -894,7 +894,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
       onInjected?: () => void;
       onDropped?: (reason: "joined-limit" | "turn-ended") => void;
       approvalReasonPrefix?: string;
-      subAgentTitle?: string;
+      source?: { kind: "sub-agent"; title?: string };
+      displayText?: string;
     } | undefined;
     const mailbox = {
       enqueue,
@@ -933,7 +934,8 @@ describe("A2ASubAgentMessageBus security boundary", () => {
     })).resolves.toMatchObject({ ok: true, disposition: "queued" });
     expect(entries).toHaveLength(1);
     expect(dispositionCallbacks?.approvalReasonPrefix).toBe("[Sub-Agent: worker]");
-    expect(dispositionCallbacks?.subAgentTitle).toBe("worker");
+    expect(dispositionCallbacks?.source).toEqual({ kind: "sub-agent", title: "worker" });
+    expect(dispositionCallbacks?.displayText).toBe(entries[0]?.formattedText);
     // Keep durable reports canonical so draining cannot repeat the parent instruction.
     const injectedText = queueGuidanceWithDisposition.mock.calls[0]?.[0] as string;
     expect(injectedText.endsWith(entries[0]?.formattedText ?? "")).toBe(true);

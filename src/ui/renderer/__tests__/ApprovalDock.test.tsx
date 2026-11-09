@@ -6,7 +6,7 @@ import { act, render, fireEvent, waitFor } from "@testing-library/react";
 import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers, unattributedRequestLabel } from "../components/permissions/ApprovalDock.js";
 import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
-import { t } from "../../../i18n/runtime.js";
+import { t, getLocale, setLocale } from "../../../i18n/runtime.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../shared/permission-reviewer-framework.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
@@ -77,6 +77,47 @@ describe("ApprovalDock", () => {
     expect(actions.classList.contains("@max-[14rem]:grid-cols-1")).toBe(true);
   });
 
+  it.each(["en", "ko"] as const)("renders attributed site cards without raw keys or repeated headings in %s", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    const cards = ["First page reader", "Second page reader"].map((title, index) => makeRequest({
+      id: `site-${index}`, source: "builtin", toolName: "browser_navigate", browserSite: "https://en.wikipedia.org:443",
+      requestingAgentTitle: title, args: { url: "https://en.wikipedia.org/" }, allowedChoices: ["allow-once", "deny-once"],
+    }));
+    const decide = vi.fn();
+    const shown = render(<ApprovalDock conversationLabel="Parent task" queue={cards} onDecide={decide} />);
+    try {
+      const title = t("toolApprovalDialog.siteTitle", { origin: "https://en.wikipedia.org" });
+      expect(shown.getAllByRole("heading", { name: title })).toHaveLength(1);
+      expect(shown.container.textContent).not.toContain(":443");
+      expect(shown.container.textContent).not.toMatch(/toolApprovalDialog\./);
+      expect(shown.getByText(t("toolApprovalDialog.requestingAgent", { title: "First page reader" }))).toBeInTheDocument();
+      expect(shown.getByText("Parent task")).toBeInTheDocument();
+      fireEvent.click(shown.getByRole("button", { name: t("toolApprovalDialog.siteAllow") }));
+      expect(decide).toHaveBeenCalledExactlyOnceWith("allow-once", undefined, { browserSiteChoice: "this-site" });
+      shown.rerender(<ApprovalDock conversationLabel="Parent task" queue={cards.slice(1)} onDecide={decide} />);
+      expect(shown.getByText(t("toolApprovalDialog.requestingAgent", { title: "Second page reader" }))).toBeInTheDocument();
+      expect(shown.getByRole("button", { name: t("toolApprovalDialog.decisionDeny") })).toBeEnabled();
+      expect(decide).toHaveBeenCalledOnce();
+    } finally { shown.unmount(); setLocale(previous); }
+  });
+
+  it.each(["en", "ko"] as const)("frames a builtin sub-agent approval as the action in %s", (locale) => {
+    const previous = getLocale();
+    setLocale(locale);
+    const request = makeRequest({ source: "builtin", toolName: "agent_spawn", toolCategory: "write", args: { title: "Read two pages" },
+      exactRecordAllowed: false, persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
+    const decide = vi.fn();
+    const shown = render(<ApprovalDock conversationLabel="conversation" queue={[request]} onDecide={decide} />);
+    try {
+      expect(shown.getByRole("heading", { level: 2, name: t("toolApprovalDialog.spawnActionTitle", { title: "Read two pages" }) })).toBeInTheDocument();
+      expect(shown.queryByRole("heading", { name: t("toolApprovalDialog.toolApprovalTitle") })).toBeNull();
+      expect(shown.getByTestId("approval-tool-identity")).toHaveTextContent("agent_spawn");
+      expect(shown.queryByTestId("approval-remember-selector")).toBeNull();
+      expect(decide).not.toHaveBeenCalled();
+    } finally { shown.unmount(); setLocale(previous); }
+  });
+
   it("renders without crashing with empty queue", () => {
     const { container } = render(
       <ApprovalDock conversationLabel="conversation" queue={[]} onDecide={vi.fn()} />,
@@ -117,7 +158,7 @@ describe("ApprovalDock", () => {
     expect(dock?.getAttribute("data-approval-args")).toBe('{"path":"/tmp/test.txt"}');
   });
 
-  it("labels agent-action approval requests separately from tool execution", async () => {
+  it("names plugin tool use in the approval heading", async () => {
     render(
       <ApprovalDock conversationLabel="conversation"
         queue={[
@@ -135,7 +176,7 @@ describe("ApprovalDock", () => {
       />,
     );
     await waitFor(() => {
-      expect(document.body.textContent).toContain("에이전트 작업 승인");
+      expect(document.body.textContent).toContain("sample-plugin의 sample_plugin_decide_approval_with_host을(를) 사용해도 될까요?");
       expect(document.body.textContent).toContain("sample_plugin_decide_approval_with_host");
       expect(document.body.textContent).toContain("sample-plugin");
       expect(document.body.textContent).toContain("agent_external_api_call");

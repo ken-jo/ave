@@ -242,12 +242,17 @@ describe("native popup desktop controls", () => {
     popupGuest.focus = () => undefined;
     const popup = new Window(2, popupGuest);
     const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asWindow(window))!;
+    const focusListeners = popupGuest.listeners("focus");
+    const destructionListeners = popupGuest.listeners("destroyed");
     const selected = browserTabRegistry.requestTabOp(window.id, { op: "select", tabId: handle });
+    expect(popupGuest.listenerCount("focus")).toBe(focusListeners.length + 1);
+    expect(destructionListeners).toHaveLength(1);
+    expect(popupGuest.listeners("destroyed")).toEqual(destructionListeners);
     popup.destroyed = true;
     expect(() => popup.emit("closed")).not.toThrow();
     await expect(selected).resolves.toEqual({ ok: false, error: "native-operation-failed" });
-    expect(popupGuest.listenerCount("focus")).toBe(0);
-    expect(popupGuest.listenerCount("destroyed")).toBe(1);
+    expect(popupGuest.listeners("focus")).toEqual(focusListeners);
+    expect(popupGuest.listeners("destroyed")).toEqual(destructionListeners);
   });
 
   it("fails native selection when window focus does not reach the popup's own guest", async () => {

@@ -15,7 +15,7 @@ import type { ReviewerSuggestion } from "./use-permission-signals.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { getAccessibilitySignalEngine } from "../accessibility-signal-engine.js";
 
-export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope" | "userOwnedSurfaceChoice">;
+export type ApprovalDecisionExtras = Pick<ApprovalDecision, "elicitationContent" | "egressScope" | "userOwnedSurfaceChoice" | "browserSiteChoice">;
 
 /** One window FIFO routes each card to the surface claiming its session or children.
  * Use live ownership predicates; the window dock receives only unclaimed requests. */
@@ -210,6 +210,7 @@ export function useApproval(): ApprovalQueueApi {
           nonce: current.nonce,
           hmac: current.hmac,
           ...(extras?.egressScope === undefined ? {} : { egressScope: extras.egressScope }),
+          ...(extras?.browserSiteChoice === undefined ? {} : { browserSiteChoice: extras.browserSiteChoice }),
           ...(extras?.userOwnedSurfaceChoice === undefined ? {} : { userOwnedSurfaceChoice: extras.userOwnedSurfaceChoice }),
           ...(extras && "elicitationContent" in extras
             ? { elicitationContent: extras.elicitationContent }

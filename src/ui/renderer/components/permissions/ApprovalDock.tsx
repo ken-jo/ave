@@ -7,6 +7,7 @@ import type { ReviewerSuggestion } from "../../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../../types.js";
 import type { UserApprovalVerdict } from "../../../../shared/permissions-events.js";
 import { Badge } from "../../../../components/ui/badge.js";
+import { approvalAction } from "./approval-action.js";
 import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import { FLOATING_LANE_ITEM_WIDTH } from "../FloatingRightLane.js";
 import { MODAL_DIALOG_SELECTOR, TEST_IDS, testIdSelector } from "../../../../shared/test-ids.js";
@@ -250,11 +251,7 @@ export function ApprovalDock({
 
   if (!request) return null;
 
-  const title = request.kind === "egress-host"
-    ? t("egressApprovalCard.dockTitle")
-    : request.kind === "agent-action"
-    ? t("toolApprovalDialog.agentActionTitle")
-    : t("toolApprovalDialog.toolApprovalTitle");
+  const title = approvalAction(request, t).title;
   const liveRequestLabel = `${title}. ${request.toolName}`;
   const remaining = Math.max(0, queue.length - 1);
 
@@ -362,11 +359,7 @@ export function ApprovalLaneCard({
   const titleId = useId();
   const request = queue[0];
   if (!request) return null;
-  const title = request.kind === "egress-host"
-    ? t("egressApprovalCard.dockTitle")
-    : request.kind === "agent-action"
-    ? t("toolApprovalDialog.agentActionTitle")
-    : t("toolApprovalDialog.toolApprovalTitle");
+  const title = approvalAction(request, t).title;
   const remaining = Math.max(0, queue.length - 1);
   return (
     <section

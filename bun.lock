@@ -122,6 +122,8 @@
   ],
   "patchedDependencies": {
     "@anthropic-ai/sandbox-runtime@0.0.80": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch",
+    "app-builder-lib@26.18.0": "patches/app-builder-lib@26.18.0.patch",
+    "electron@45.2.2": "patches/electron@45.2.2.patch",
     "node-pty@1.1.0": "patches/node-pty@1.1.0.patch",
   },
   "packages": {

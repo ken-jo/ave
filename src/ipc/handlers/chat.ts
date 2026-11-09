@@ -47,6 +47,7 @@ export interface ParentMailboxTurn {
   parentSessionId: string;
   entryIds: string[];
   initialGuidance: string;
+  displayText: string;
   approvalReasonPrefix: string;
   childTitle?: string;
 }
@@ -112,6 +113,7 @@ export async function prepareParentMailboxTurn(deps: IpcDeps): Promise<ParentMai
     initialGuidance: wrapChildReportForParentJudgment(
       entries.map((entry) => entry.formattedText).join("\n\n"),
     ),
+    displayText: entries.map((entry) => entry.formattedText).join("\n\n"),
     approvalReasonPrefix: mailboxApprovalPrefix(entries),
     ...(singleChildTitle !== undefined ? { childTitle: singleChildTitle } : {}),
   };
@@ -512,6 +514,7 @@ export async function handleChatSend(
           ...(mailboxTurn
             ? {
                 initialGuidance: mailboxTurn.initialGuidance,
+                initialGuidanceDisplayText: mailboxTurn.displayText,
                 approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
                 subAgentReport: mailboxTurn.childTitle === undefined
                   ? {}

@@ -3,7 +3,8 @@ import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
-import { deferred, submitChatMessage } from "../../../../test/renderer/helpers.js";
+import { browserControlFixture } from "../../../__tests__/support/browser-control-fixture.js";
+import { deferred, emitAgentTabNew, submitChatMessage } from "../../../../test/renderer/helpers.js";
 import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import {
@@ -12,6 +13,7 @@ import {
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
+import type { BrowserTabsApi } from "../../../shared/browser-surface.js";
 import type { AgentObservationEvent } from "../../../shared/agent-observation.js";
 import type { AvePreviewApi } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
@@ -64,6 +66,75 @@ function installDeterministicScrollMetrics(initialScrollHeight = 2400, clientHei
 }
 
 describe("ChatView", () => {
+  it("shows two labelled child previews with the panel closed and preserves their guests on reveal", async () => {
+    const { container, api, emitAgentSpawnEvent } = await renderApp({ hasApiKey: true, browserTabs: true });
+    await submitChatMessage(container, "delegate browser work");
+    await waitFor(() => expect(api.chatSend.mock.calls.length).toBeGreaterThan(0));
+    const browserTabs = api.browserTabs as unknown as { emitBrowserTabOp(request: unknown): void };
+    const children = ["child-a", "child-b"];
+    for (const child of children) await act(async () => {
+      emitAgentSpawnEvent({ spawnId: child, childSessionId: child, type: "start", taskState: "TASK_STATE_SUBMITTED",
+        title: child, parentSessionId: MOCK_DEFAULT_SESSION_ID });
+      browserTabs.emitBrowserTabOp({ op: "new", requestId: child, url: "https://example.test/", active: false,
+        sessionId: MOCK_DEFAULT_SESSION_ID, ownerSessionId: child });
+    });
+    const guestsBefore = [...document.querySelectorAll<HTMLElement>("webview[data-tab-id]")];
+    expect(guestsBefore).toHaveLength(2);
+    const ids = guestsBefore.map((guest) => guest.dataset.tabId as string);
+    const control = browserControlFixture(ids, "agent-active", 100);
+    control.tabs.forEach((tab, index) => { Object.assign(tab, { owner: { sessionId: children[index], directParentSessionId: MOCK_DEFAULT_SESSION_ID },
+      lease: null }); });
+    const emitControl = vi.mocked((api.browserTabs as unknown as BrowserTabsApi).onControl).mock.calls.at(-1)?.[0];
+    const emit = vi.mocked(window.ave.preview.onAgentObservation).mock.calls[0]?.[0];
+    if (!emitControl || !emit) throw new Error("Browser subscriptions missing");
+    act(() => {
+      emitControl(control);
+      emit(ids.map((id, index): AgentObservationEvent => ({ source: "browser", actor: "agent", sessionId: children[index] as string,
+        target: { id: children[index] as string, path: "browser", hostSessionId: MOCK_DEFAULT_SESSION_ID }, seq: 1, ts: 1,
+        kind: "action", before: null, after: { action: "snapshot", tabId: `handle-${id}`, rendererTabId: id, url: "https://example.test/", title: "Example" } })));
+    });
+    await waitFor(() => expect(container.querySelectorAll('[data-testid="conversation-browser-observation"]')).toHaveLength(2));
+    const toggle = container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLElement;
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    const rows = [...container.querySelectorAll<HTMLElement>('[data-testid="conversation-browser-observation"]')];
+    rows.forEach((row, index) => { expect(row.textContent).toContain(children[index]);
+      expect(row.querySelector('[data-testid="browser-observation-preview"]')).not.toBeNull(); });
+    const guests = ids.map((id) => document.querySelector(`webview[data-tab-id="${id}"]`));
+    fireEvent.click(within(rows[0] as HTMLElement).getByRole("button"));
+    await waitFor(() => expect(toggle.getAttribute("aria-pressed")).toBe("true"));
+    ids.forEach((id, index) => { expect(document.querySelector(`webview[data-tab-id="${id}"]`)).toBe(guests[index]); });
+    expect(container.querySelectorAll('[data-testid="conversation-browser-observation"]')).toHaveLength(1);
+    await act(async () => emitAgentSpawnEvent({ spawnId: "child-a", childSessionId: "child-a", type: "done",
+      taskState: "TASK_STATE_COMPLETED", title: "child-a", parentSessionId: MOCK_DEFAULT_SESSION_ID, summary: "Example https://example.test/" }));
+    const finished = within(container).getByRole("tab", { name: /child-a/, hidden: true });
+    expect(finished.textContent).toContain(t("subAgentCard.statusDone"));
+    ids.forEach((id, index) => { expect(document.querySelector(`webview[data-tab-id="${id}"]`)).toBe(guests[index]); });
+  });
+  it.each(["snapshot", "wait", "scroll"] as const)("shows and focuses the preview of a never-shown side tab during %s", async (action) => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    await emitAgentTabNew(container, api, { requestId: "never-shown", url: "https://example.test/" });
+    const tabId = (container.querySelector<HTMLElement>('[data-testid="chat-side-panel-browser-tab-host"]') as HTMLElement).dataset.tabId as string;
+    const guest = document.querySelector(`webview[data-tab-id="${tabId}"]`);
+    const controls = api.browserTabs as unknown as { emitBrowserControl(ids: string[]): void };
+    const emit = vi.mocked(window.ave.preview.onAgentObservation).mock.calls[0]?.[0] as Parameters<AvePreviewApi["onAgentObservation"]>[0];
+    const event: AgentObservationEvent = { source: "browser", actor: "agent", sessionId: "fixture-session",
+      target: { id: "never-shown-target", path: "browser", hostSessionId: MOCK_DEFAULT_SESSION_ID }, seq: 1, ts: 1,
+      kind: "action", before: null, after: { action, tabId: `handle-${tabId}`, rendererTabId: tabId,
+        url: "https://example.test/", title: "Example" } };
+    act(() => { controls.emitBrowserControl([tabId]); emit([event]); });
+    const row = await waitFor(() => {
+      const found = container.querySelector<HTMLElement>('[data-testid="conversation-browser-observation"]');
+      expect(found).not.toBeNull();
+      return found as HTMLElement;
+    });
+    const toggle = container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLElement;
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    expect(row.querySelector('[data-testid="browser-observation-preview"]')).not.toBeNull();
+    fireEvent.click(within(row).getByRole("button"));
+    await waitFor(() => expect(toggle.getAttribute("aria-pressed")).toBe("true"));
+    await waitFor(() => expect(container.querySelector('[data-testid="conversation-browser-observation"]')).toBeNull());
+    expect(document.querySelector(`webview[data-tab-id="${tabId}"]`)).toBe(guest);
+  });
   it.each(["close-race", "move-race", "session-switch"])("shows one hosted hidden-pane thumbnail, focuses it and clears it on %s", async (ending) => {
     const tabId = "browser:abc12345-1";
     const surface = { kind: "browser", tabId, ordinal: 1, url: "https://example.test/", cwd: null, projectRoot: process.cwd() };
@@ -1251,7 +1322,7 @@ describe("ChatView", () => {
     await waitFor(() => expect(container.textContent).toContain("어제의 조사"));
   });
 
-  it("a sub-agent starting now opens the tab, and the tab leaves with the conversation", async () => {
+  it("a live sub-agent registers a tab without opening the panel, scoped to its conversation", async () => {
     const OTHER = "sess-other";
     const { container, emitAgentSpawnEvent } = await renderApp({
       hasApiKey: true,
@@ -1267,6 +1338,8 @@ describe("ChatView", () => {
     await act(async () => {
       emitAgentSpawnEvent({ spawnId: "live-now", type: "start", taskState: "TASK_STATE_SUBMITTED", title: "지금 조사", parentSessionId: MOCK_DEFAULT_SESSION_ID });
     });
+    expect(container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))?.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLElement);
     await waitFor(() => expect(container.querySelector('[data-testid="chat-side-panel-tab-subagent"]')).not.toBeNull());
 
     await act(async () => {

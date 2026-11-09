@@ -25,6 +25,32 @@ let disconnect: (() => void) | undefined;
 afterEach(() => { cleanup(); disconnect?.(); disconnect = undefined; });
 
 describe("browser observation retention", () => {
+  it("retains both children's latest events for their parent with stable snapshots", () => {
+    const store = new BrowserObservationStore(async () => ({ ok: true }));
+    const first = action(1, { rendererTabId: "browser:a" }, "child-a", "a", "parent");
+    const second = action(1, { rendererTabId: "browser:b" }, "child-b", "b", "parent");
+    store.accept([first, second]);
+    expect(store.hosted("parent")).toEqual([first, second]);
+    expect(store.hosted("parent")).toBe(store.hosted("parent"));
+    expect(store.latest("browser:a", "child-a")).toBe(first);
+    expect(store.latest("browser:b", "child-b")).toBe(second);
+    store.releaseSession("child-a");
+    expect(store.hosted("parent")).toEqual([second]);
+    store.dispose();
+  });
+  it("keeps each tab in one child independently observed when another tab closes", () => {
+    const store = new BrowserObservationStore(async () => ({ ok: true }));
+    const first = action(1, { rendererTabId: "browser:a" }, "child", "one-view", "parent");
+    const second = action(2, { rendererTabId: "browser:b" }, "child", "one-view", "parent");
+    store.accept([first, second]);
+    expect(store.hosted("parent")).toEqual([first, second]);
+    const closed = action(3, { rendererTabId: "browser:b", action: "tab-close" }, "child", "one-view", "parent");
+    store.accept([closed]);
+    expect(store.latest("browser:a", "child")).toBe(first);
+    expect(store.latest("browser:b", "child")).toBe(closed);
+    store.dispose();
+  });
+
   it("selects only the newest exactly hosted event, including status and close, with deterministic ties", () => {
     const store = new BrowserObservationStore(async () => ({ ok: true }));
     const first = action(1, {}, "child", "target-a", "parent");
@@ -98,7 +124,8 @@ describe("browser observation retention", () => {
   it("shows a child-owned close in its established parent session and isolates unrelated sessions", () => {
     const store = new BrowserObservationStore(async () => ({ ok: true }));
     store.accept([action(1, {}, SESSION, TARGET, "parent-session"), action(2, { action: "tab-close" }, SESSION, TARGET, "parent-session")]);
-    expect(store.latest("browser:remaining", "parent-session")?.seq).toBe(2);
+    expect(store.latest("browser:1", "parent-session")?.seq).toBe(2);
+    expect(store.latest("browser:remaining", "parent-session")).toBeUndefined();
     expect(store.latest("browser:remaining", "unrelated-session")).toBeUndefined();
     store.releaseSession("parent-session");
     expect(store.latest("browser:1", SESSION)).toBeUndefined();

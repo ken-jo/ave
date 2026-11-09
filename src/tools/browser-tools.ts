@@ -4,7 +4,7 @@
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
-import { BROWSER_TOOL, browserOrigin, type BrowserToolName } from "../shared/browser-tools.js";
+import { BROWSER_TOOL, browserOrigin, type BrowserToolName, type BrowserPageReadiness, type BrowserPageSnapshot } from "../shared/browser-tools.js";
 export { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import type { ApprovalMemoryScope, BrowserTabOpener } from "../shared/permissions-events.js";
@@ -23,6 +23,7 @@ import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import type { BrowserUploadPickerRequest, BrowserUploadResult } from "../main/browser/browser-upload.js";
 import { t } from "../i18n/index.js";
 import { issueUserOwnedBrowserScope } from "../permissions/user-owned-browser-scope.js";
+import type { ApprovalRequestInput } from "../permissions/approval-gate.js";
 
 /** What the tools need of the main-side tab registry. */
 interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
@@ -34,7 +35,7 @@ interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
   acquireControl(tab: BrowserTabRecord<G>, actor: BrowserSessionActor): BrowserControlLease;
   releaseControl(tabId: string, leaseId: string): void;
   /** The tab a conversation acts on when a call names none (its pane chat's tab, else the shown one). */
-  defaultBrowserTab(windowId: number, sessionId: string): DefaultBrowserTab;
+  defaultBrowserTab(windowId: number, sessionId: string, ownerSessionId?: string): DefaultBrowserTab;
   /** The pane a pane chat is bound to, if any. */
   conversationSurface(windowId: number, sessionId: string): { kind: "browser" | "terminal"; tabId: string } | undefined;
   requestTabOp(
@@ -50,6 +51,8 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
   readonly signal: AbortSignal;
   readonly leaseId?: string;
   readonly callerSignal?: AbortSignal;
+  readonly authorizeSite?: (url: string, signal?: AbortSignal) => Promise<void>;
+  readonly openSitePopup?: (url: string) => Promise<void>;
   readonly approval?: { readonly tabId: string; readonly origin: string; readonly documentId: number; readonly controlGeneration: number };
   readonly onObservationTarget?: (element: BrowserObservationElement, downloadUrl?: string) => void;
 }
@@ -58,14 +61,7 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
 export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   /** Establish document observation before approval captures its identity. */
   prepare(target: BrowserActionTab<G>): Promise<void>;
-  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<{
-    url: string;
-    title: string;
-    text: string;
-    truncated: boolean;
-    refCount: number;
-    delta: boolean;
-  }>;
+  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<BrowserPageSnapshot>;
   screenshot(target: BrowserActionTab<G>, options?: { fullPage?: boolean }): Promise<{ data: string; mimeType: string; bytes: number }>;
   /** Best-effort display thumbnail of the tab (from `png` when given); never throws. */
   capturePreview?(target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined>;
@@ -81,9 +77,9 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   }): Promise<BrowserUploadResult>;
   type(target: BrowserActionTab<G>, ref: string, text: string, options: { submit?: boolean }): Promise<void>;
   pressKey(target: BrowserActionTab<G>, key: string, ref?: string): Promise<void>;
-  navigate(target: BrowserActionTab<G>, url: string, approvedOrigin: string): Promise<{ url: string }>;
-  /** Wait (bounded) for a newly opened tab's first page to finish loading. */
-  settle(target: BrowserActionTab<G>): Promise<{ url: string }>;
+  navigate(target: BrowserActionTab<G>, url: string, approvedOrigin: string): Promise<BrowserPageReadiness>;
+  /** Wait for a committed main document; subresources may still be loading. */
+  settle(target: BrowserActionTab<G>): Promise<BrowserPageReadiness>;
 }
 
 export interface BrowserToolDeps<G extends BrowserGuest = BrowserGuest> extends SessionWindowScopeDeps {
@@ -108,6 +104,20 @@ const canonicalBrowserTools = new WeakSet<object>();
 export function userOwnedBrowserScopeOf(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): Extract<ApprovalMemoryScope, { kind: "browser-origin" }> | undefined {
   return canonicalBrowserTools.has(tool) && memory?.kind === "key" && memory.scope.kind === "browser-origin" && memory.scope.tabOpener === "user"
     ? memory.scope : undefined;
+}
+
+export function isCanonicalBrowserTool(tool: unknown): boolean {
+  return typeof tool === "object" && tool !== null && canonicalBrowserTools.has(tool);
+}
+
+export function browserApprovalCardFacts(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): Pick<ApprovalRequestInput, "allowedChoices" | "durableApprovalRecordAllowed"> {
+  return canonicalBrowserTools.has(tool) && memory?.kind === "key" && (memory.scope.kind === "browser-origin" || memory.scope.kind === "browser-agent-tabs")
+    ? { allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false }
+    : {};
+}
+
+export function agentBrowserScopeOf(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): true | undefined {
+  return canonicalBrowserTools.has(tool) && tool.name !== BROWSER_TOOL.upload && memory?.kind === "key" && (memory.scope.kind === "browser-agent-tabs" || memory.scope.kind === "browser-origin" && memory.scope.tabOpener === "agent") ? true : undefined;
 }
 
 export function isCanonicalBrowserNavigationTool(tool: unknown): boolean {
@@ -145,7 +155,7 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       const scope = resolveSessionWindow(sessionId, deps);
       if (!scope) return undefined;
       if (input.tabId !== undefined && (typeof input.tabId !== "string" || !BROWSER_TAB_ID_PATTERN.test(input.tabId))) return undefined;
-      const fallback = input.tabId === undefined ? deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId) : undefined;
+      const fallback = input.tabId === undefined ? deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, sessionId) : undefined;
       const handle = (input.tabId as string | undefined) ?? (fallback?.ok ? fallback.handle : undefined);
       if (handle === undefined) return undefined;
       const tab = deps.tabs.liveTabInWindow(handle, scope.windowId);
@@ -317,7 +327,14 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       categoryForInput: urlCategory,
       approvalMemoryScope: async (raw, ctx) => {
         const resolved = await observedTab(raw, ctx);
-        return urlScope(raw, resolved?.opener, resolved?.tab);
+        if (resolved) return urlScope(raw, resolved.opener, resolved.tab);
+        const input = asInput(raw);
+        const scope = policy.windowOf(ctx?.sessionId);
+        if (input.tabId === undefined && scope && !deps.tabs.defaultBrowserTab(scope.windowId, scope.hostSessionId, ctx?.sessionId).ok) {
+          const opening = policy.tabNewTarget(scope);
+          if (opening.ok && (deps.tabs.conversationSurface(scope.windowId, scope.hostSessionId) === undefined || opening.inTabId !== undefined)) return urlScope(raw, "agent");
+        }
+        return undefined;
       },
       jsonSchema: object({ tabId: tabIdProperty, url: { type: "string", description: t("be_browserTools.urlDescription") } }, ["url"]),
       execute: execute(BROWSER_TOOL.navigate),

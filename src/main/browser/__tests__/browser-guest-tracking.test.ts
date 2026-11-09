@@ -3,7 +3,8 @@ import type { WebContents } from "electron";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const registry = vi.hoisted(() => ({
-  guestAttached: vi.fn(), guestDestroyed: vi.fn(), userInput: vi.fn(), documentChanged: vi.fn(), navigationStarted: vi.fn(),
+  guestAttached: vi.fn(), guestDestroyed: vi.fn(), userInput: vi.fn(), documentChanged: vi.fn(), navigationStarted: vi.fn(), metadataChanged: vi.fn(),
+  isParkedKeyboardInput: vi.fn(() => false), restoreParkedGuestFocus: vi.fn(),
 }));
 vi.mock("../browser-tab-registry.js", () => ({
   browserTabRegistry: registry,
@@ -18,6 +19,29 @@ function guest() {
 beforeEach(() => vi.clearAllMocks());
 
 describe("native browser guest tracking", () => {
+  it("blocks real keyboard delivery to a parked guest and returns its focus", () => {
+    const contents = guest();
+    registry.isParkedKeyboardInput.mockReturnValueOnce(true);
+    trackBrowserGuest(contents as unknown as WebContents, 3);
+    const event = { preventDefault: vi.fn() };
+    const input = { type: "keyDown", key: "x" };
+    contents.emit("before-input-event", event, input);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(registry.userInput).toHaveBeenCalledWith(71, input);
+    expect(registry.restoreParkedGuestFocus).toHaveBeenCalledWith(71);
+    contents.emit("focus");
+    expect(registry.restoreParkedGuestFocus).toHaveBeenCalledTimes(2);
+  });
+
+  it("publishes committed navigation and title changes, excluding subframe routes", () => {
+    const contents = guest();
+    trackBrowserGuest(contents as unknown as WebContents, 3);
+    contents.emit("did-navigate", {}, "https://example.com/");
+    contents.emit("page-title-updated", {}, "Example");
+    contents.emit("did-navigate-in-page", {}, "https://example.com/#route", true);
+    contents.emit("did-navigate-in-page", {}, "https://frame.example/", false);
+    expect(registry.metadataChanged.mock.calls).toEqual([[71], [71], [71]]);
+  });
   it("forwards raw mouse receipts once with original coordinates while ignoring their normalized copies", () => {
     const contents = guest();
     trackBrowserGuest(contents as unknown as WebContents, 3);

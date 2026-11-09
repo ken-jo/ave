@@ -33,7 +33,7 @@ test("keeps a requested blank tab mounted through its first navigation", async (
     await ctx.app.evaluate(({ BrowserWindow }, { channel, sessionId }) => {
       const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
       if (!window) throw new Error("Main window unavailable");
-      window.webContents.send(channel, { requestId: "browser-op-bootstrap", op: "new", url: "about:blank", active: true, sessionId });
+      window.webContents.send(channel, { requestId: "browser-op-bootstrap", op: "new", url: "about:blank", active: true, sessionId, ownerSessionId: sessionId });
     }, { channel: CHANNELS.browser.tabOp, sessionId: SESSION_ID });
     const view = ctx.page.getByTestId("chat-side-panel-browser-webview");
     await expect(view).toHaveAttribute("src", "about:blank");

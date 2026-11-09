@@ -272,8 +272,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     expect(Boolean(result[0].is_error)).toBe(!permitted);
   });
 
-  // Rule: a session allow belongs to the root conversation. Every agent in that tree (the conversation
-  // and the sub-agents spawned from it, at any depth) shares it; separate root conversations never do.
+  // Session approvals belong only to the requesting agent, including nested children.
   const ROOT_A = "11111111-1111-4111-8111-111111111111";
   const ROOT_B = "22222222-2222-4222-8222-222222222222";
   const CHILD_A1 = "sub-aa-33333333-3333-4333-8333-333333333333";
@@ -284,12 +283,13 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     [CHILD_A1]: ROOT_A, [CHILD_A2]: ROOT_A, [GRANDCHILD_A1]: CHILD_A1, [CHILD_B1]: ROOT_B,
   };
   it.each([
-    { name: "a parent allow covers its sub-agent", recordedBy: ROOT_A, calledBy: CHILD_A1, permitted: true },
-    { name: "a nested sub-agent allow covers the root conversation", recordedBy: GRANDCHILD_A1, calledBy: ROOT_A, permitted: true },
-    { name: "a sub-agent allow covers its sibling within the same root", recordedBy: CHILD_A1, calledBy: CHILD_A2, permitted: true },
+    { name: "an agent uses its own allow", recordedBy: CHILD_A1, calledBy: CHILD_A1, permitted: true },
+    { name: "a parent allow does not cover its sub-agent", recordedBy: ROOT_A, calledBy: CHILD_A1, permitted: false },
+    { name: "a nested sub-agent allow does not cover the parent", recordedBy: GRANDCHILD_A1, calledBy: ROOT_A, permitted: false },
+    { name: "a sub-agent allow does not cover its sibling", recordedBy: CHILD_A1, calledBy: CHILD_A2, permitted: false },
     { name: "a sub-agent allow never reaches another root conversation", recordedBy: CHILD_A1, calledBy: CHILD_B1, permitted: false },
     { name: "another root's allow never reaches this conversation", recordedBy: ROOT_B, calledBy: ROOT_A, permitted: false },
-  ])("session approvals are keyed by root conversation: $name", async ({ recordedBy, calledBy, permitted }) => {
+  ])("session approvals are keyed by requesting session: $name", async ({ recordedBy, calledBy, permitted }) => {
     setApprovalConversationRootResolver(createRootSessionResolver((id) => SUBAGENT_ORIGINS[id]));
     const execute = vi.fn(async () => "wrote");
     const registry = new ToolRegistry();

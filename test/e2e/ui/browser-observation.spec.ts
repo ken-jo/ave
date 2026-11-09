@@ -194,6 +194,8 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
     approvals = (async () => {
       const deadline = Date.now() + 100_000;
       while (approving && Date.now() < deadline) {
+        const site = page.getByTestId("browser-site-approval-card").getByRole("button", { name: /^(Allow this site|이 사이트만 허용)$/ }).first();
+        if (await site.isVisible()) await site.click();
         const button = page.getByTestId(TEST_IDS.approvalDock).getByTestId(TEST_IDS.approveButton).first();
         if (await button.isVisible()) await button.click();
         await page.waitForTimeout(100);
@@ -204,7 +206,7 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
     expect(tabId).toMatch(/^tab-\d+$/);
     expect(clickRef).toMatch(/^e\d+$/);
     expect(typeRef).toMatch(/^e\d+$/);
-    const strip = page.getByTestId("browser-preview-live-strip");
+    const strip = page.getByTestId("chat-side-panel-url-viewer").getByTestId("browser-preview-live-strip");
     await expect(strip).toContainText("에이전트 브라우징");
     await expect(strip).toContainText("클릭: ‘Continue’");
     const guestId = await page.getByTestId("chat-side-panel-browser-webview").evaluate((element) =>

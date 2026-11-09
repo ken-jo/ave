@@ -1,6 +1,7 @@
 import { BrowserDocumentChangedError } from "./browser-tab-registry.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
+import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "./browser-select-script.js";
 
 interface NativeDragReceipt { intercepted(): BrowserDragData | undefined }
 
@@ -34,8 +35,9 @@ export interface ActionTarget {
   press<T>(run: () => Promise<T>): Promise<T>;
   pointerInput<T>(run: () => Promise<T>): Promise<T>;
   wheelInput<T>(run: () => Promise<T>): Promise<T>;
-  releaseFocus(): void;
+  releaseFocus(restoreNativeFocus?: boolean): void | Promise<void>;
   focusPage(): Promise<void>;
+  preparePageFocus?(): Promise<void>;
   mouseDrag?<T>(run: (receipt: NativeDragReceipt) => Promise<T>): Promise<T>;
   navigationOutcome?(): boolean;
   onDestroyed?(listener: () => void): () => void;
@@ -80,11 +82,11 @@ export async function frameTree(cdp: CdpSession): Promise<FrameTree> {
   return result.frameTree;
 }
 
-function containsNode(node: DomNode | undefined, id: number): boolean {
+export function mainDocumentContainsNode(node: DomNode | undefined, id: number): boolean {
   if (!node) return false;
   if (!node.nodeName || /^(?:IFRAME|FRAME)$/i.test(node.nodeName)) return false;
   if (node.backendNodeId === id) return true;
-  return [...(node.children ?? []), ...(node.shadowRoots ?? [])].some((child) => containsNode(child, id));
+  return [...(node.children ?? []), ...(node.shadowRoots ?? [])].some((child) => mainDocumentContainsNode(child, id));
 }
 
 // One document lease, invalidated by navigation, checked at every CDP boundary.
@@ -103,6 +105,8 @@ export async function withGuardedAction(
   let completedInput = false;
   let inputNode: number | undefined;
   let touchPoint: { x: number; y: number } | undefined;
+  let selectionContextId: number | undefined;
+  let selectionObjectId: string | undefined;
   const stop = target.cdp.onEvent((method) => {
     if (method === "Page.frameNavigated" || method === "Page.frameDetached" || method === "DOM.documentUpdated") invalidated = true;
   });
@@ -140,7 +144,22 @@ export async function withGuardedAction(
           const input = method.startsWith("Input.");
           const keyboard = method === "Input.dispatchKeyEvent" || method === "Input.insertText";
           const upload = method === "DOM.setFileInputFiles";
-          const effect = input || upload || method === "DOM.focus" || method === "DOM.scrollIntoViewIfNeeded";
+          const effect = input || upload || method === "DOM.focus" || method === "DOM.scrollIntoViewIfNeeded" || method === "Runtime.callFunctionOn";
+          if (method === "Page.createIsolatedWorld" && (params?.frameId !== frameId || params.worldName !== BROWSER_ACTION_WORLD
+            || Object.keys(params).some(key => key !== "frameId" && key !== "worldName"))) wrongTarget();
+          if (method === "DOM.resolveNode") {
+            if (inputNode === undefined || selectionContextId === undefined || params?.backendNodeId !== inputNode
+              || params.executionContextId !== selectionContextId || Object.keys(params).some(key => key !== "backendNodeId" && key !== "executionContextId")) wrongTarget();
+            const document = await read("DOM.getDocument", { depth: -1, pierce: true }) as { root?: DomNode };
+            if (!mainDocumentContainsNode(document.root, inputNode)) wrongTarget();
+          }
+          if (method === "Runtime.callFunctionOn" && (selectionObjectId === undefined || params?.objectId !== selectionObjectId
+            || params.functionDeclaration !== SELECT_NATIVE_OPTION || params.returnByValue !== true
+            || !Array.isArray(params.arguments) || params.arguments.length !== 1 || typeof params.arguments[0]?.value !== "string"
+            || Object.keys(params.arguments[0]).length !== 1
+            || Object.keys(params).some(key => !["objectId", "functionDeclaration", "arguments", "returnByValue"].includes(key)))) wrongTarget();
+          if (method === "Runtime.releaseObject" && (selectionObjectId === undefined || params?.objectId !== selectionObjectId
+            || Object.keys(params).length !== 1)) wrongTarget();
           if (effect) {
             const current = await frameTree({ ...target.cdp, send: read });
             if (current.frame.id !== frameId || current.frame.loaderId !== loaderId
@@ -164,7 +183,10 @@ export async function withGuardedAction(
               if (!position) wrongTarget();
               // Input points are in the viewport; the hit test takes document points (measured: on a page scrolled sideways the viewport point found nothing). The
               // scroll offset turns one into the other. The offset is fractional on a scaled display, and CDP takes only whole pixels: the one holding the point.
-              const metrics = await read("Page.getLayoutMetrics") as { cssVisualViewport?: { pageX?: unknown; pageY?: unknown } };
+              const metrics = await read("Page.getLayoutMetrics") as { cssVisualViewport?: { pageX?: unknown; pageY?: unknown; clientWidth?: number; clientHeight?: number } };
+              if (metrics.cssVisualViewport?.clientWidth === 0 || metrics.cssVisualViewport?.clientHeight === 0) {
+                throw new BrowserActionError("tab-not-laid-out", "the tab is not laid out; show the tab and retry");
+              }
               const scrollX = metrics.cssVisualViewport?.pageX;
               const scrollY = metrics.cssVisualViewport?.pageY;
               if (typeof scrollX !== "number" || typeof scrollY !== "number") wrongTarget();
@@ -175,14 +197,14 @@ export async function withGuardedAction(
               // A child frame is represented by a placeholder, never a ref. Unknown or out-of-process recipients therefore fail closed.
               if (point.frameId !== frameId || !point.backendNodeId) wrongTarget();
               const subtree = await read("DOM.describeNode", { backendNodeId: inputNode, depth: -1, pierce: true }) as { node?: DomNode };
-              if (!containsNode(subtree.node, point.backendNodeId)) wrongTarget();
+              if (!mainDocumentContainsNode(subtree.node, point.backendNodeId)) wrongTarget();
             }
             if (upload) {
               if (inputNode === undefined || params?.backendNodeId !== inputNode || !Array.isArray(params.files)
                 || params.files.length === 0 || !params.files.every((path) => typeof path === "string")
                 || Object.keys(params).some((key) => key !== "backendNodeId" && key !== "files")) wrongTarget();
               const document = await read("DOM.getDocument", { depth: -1, pierce: true }) as { root?: DomNode };
-              if (!containsNode(document.root, inputNode)) wrongTarget();
+              if (!mainDocumentContainsNode(document.root, inputNode)) wrongTarget();
               const described = await read("DOM.describeNode", { backendNodeId: inputNode }) as { node?: DomNode & { attributes?: string[] } };
               const attributes = described.node?.attributes ?? [];
               const typeIndex = attributes.findIndex((attribute, index) => index % 2 === 0 && attribute.toLowerCase() === "type");
@@ -202,6 +224,16 @@ export async function withGuardedAction(
           assertCurrent(keyboard);
           if (effect) completedInput = input && finishingInput;
           const result = await target.cdp.send(method, params);
+          if (method === "Page.createIsolatedWorld") {
+            const context = result as { executionContextId?: number };
+            if (!Number.isInteger(context.executionContextId)) wrongTarget();
+            selectionContextId = context.executionContextId;
+          }
+          if (method === "DOM.resolveNode") {
+            const resolved = result as { object?: { objectId?: string } };
+            if (typeof resolved.object?.objectId !== "string") wrongTarget();
+            selectionObjectId = resolved.object.objectId;
+          }
           assertCurrent();
           return result;
         },

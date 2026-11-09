@@ -121,6 +121,7 @@ describe.runIf(process.platform === "win32")("runtime boundary read grants under
     const uvEnv = { ...process.env, UV_PYTHON_INSTALL_DIR: join(env, "python"), UV_CACHE_DIR: join(env, "uv-cache"),
       // Reuse only downloaded archives; the interpreter, venv and package cache remain inside this fixture.
       UV_PYTHON_CACHE_DIR: process.env.UV_PYTHON_CACHE_DIR ?? join(env, "python-archives"),
+      ...(process.env.AVE_PYTHON_DOWNLOAD_MIRROR ? { UV_PYTHON_INSTALL_MIRROR: process.env.AVE_PYTHON_DOWNLOAD_MIRROR } : {}),
       UV_PYTHON_PREFERENCE: "only-managed", UV_NO_PROGRESS: "1" };
     execFileSync(uv, ["python", "install", PYTHON_VERSION], { env: uvEnv, windowsHide: true, stdio: "pipe" });
     execFileSync(uv, ["venv", join(env, "venv"), "--python", PYTHON_VERSION], { env: uvEnv, windowsHide: true, stdio: "pipe" });

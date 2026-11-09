@@ -22,6 +22,7 @@ export class BrowserObservationStore {
   private readonly retiredTargets = new Set<string>();
   private readonly listeners = new Set<() => void>();
   private disposed = false;
+  private readonly hostedCache = new Map<string, readonly BrowserObservationEvent[]>();
 
   constructor(private readonly acknowledge: (ack: ObservationAck) => Promise<{ ok: boolean }>) {}
 
@@ -75,8 +76,7 @@ export class BrowserObservationStore {
     for (const history of this.histories.values()) {
       const sameSession = sessionId !== undefined && history.sessions.has(sessionId);
       const action = history.events.findLast((event) => event.kind === "action"
-        && ((event.after.rendererTabId === tabId && (sessionId === undefined || sameSession))
-          || (sameSession && event.after.action === "tab-close")));
+        && event.after.rendererTabId === tabId && (sessionId === undefined || sameSession));
       const status = history.events.at(-1);
       const candidate = status?.kind === "status" && (sameSession || action) && status.seq >= (action?.seq ?? 0) ? status : action;
       if (!candidate) continue;
@@ -95,6 +95,21 @@ export class BrowserObservationStore {
         && (candidate.seq > latest.seq || (candidate.seq === latest.seq && candidate.target.id > latest.target.id))))) latest = candidate;
     }
     return latest;
+  }
+
+  hosted(sessionId: string): readonly BrowserObservationEvent[] {
+    const cached = this.hostedCache.get(sessionId);
+    if (cached) return cached;
+    const events = [...this.histories.values()].filter((history) => history.hostSessionId === sessionId)
+      .flatMap((history) => {
+        const latest = history.events.at(-1);
+        if (latest?.kind === "status") return [latest];
+        const tabs = new Map<string, BrowserObservationEvent>();
+        for (const event of history.events) if (event.kind === "action" && event.after.rendererTabId) tabs.set(event.after.rendererTabId, event);
+        return [...tabs.values()];
+      });
+    this.hostedCache.set(sessionId, events);
+    return events;
   }
 
   releaseSession(sessionId: string): void {
@@ -138,7 +153,7 @@ export class BrowserObservationStore {
     while (this.retiredTargets.size > OBSERVATION_LIMITS.maxViews) this.retiredTargets.delete(this.retiredTargets.values().next().value!);
   }
 
-  private notify(): void { for (const listener of this.listeners) listener(); }
+  private notify(): void { this.hostedCache.clear(); for (const listener of this.listeners) listener(); }
 }
 
 let store: BrowserObservationStore | undefined;
@@ -187,6 +202,8 @@ export function useBrowserObservation(tabId: string, sessionId?: string): Browse
   return useSyncExternalStore(subscribe, () => store?.latest(tabId, sessionId), () => undefined);
 }
 
-export function useHostedBrowserObservation(sessionId: string): BrowserObservationEvent | undefined {
-  return useSyncExternalStore(subscribe, () => store?.latestHosted(sessionId), () => undefined);
+const EMPTY_OBSERVATIONS: readonly BrowserObservationEvent[] = [];
+
+export function useHostedBrowserObservations(sessionId: string): readonly BrowserObservationEvent[] {
+  return useSyncExternalStore(subscribe, () => store?.hosted(sessionId) ?? EMPTY_OBSERVATIONS, () => EMPTY_OBSERVATIONS);
 }

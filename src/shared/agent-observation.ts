@@ -37,7 +37,7 @@ export type DocumentObservationEvent =
   | DocumentEventBase & { kind: "status"; before: null; after: { code: DocumentObservationStatus } };
 
 export type BrowserObservationAction = "navigate" | "click" | "type" | "tab-open" | "tab-close" | "tab-switch"
-  | "download" | "hover" | "drag" | "select" | "scroll" | "upload" | "press-key";
+  | "download" | "hover" | "drag" | "select" | "scroll" | "upload" | "press-key" | "snapshot" | "screenshot" | "wait";
 export interface BrowserObservationElement { ref: string; role: string; name: string; redacted: boolean }
 export interface BrowserObservationDetail {
   action: BrowserObservationAction;

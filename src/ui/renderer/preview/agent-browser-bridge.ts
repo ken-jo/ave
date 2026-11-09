@@ -3,8 +3,9 @@
 import { useSyncExternalStore } from "react";
 import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import type { AveApi } from "../types.js";
-import { getWebSurfaceElement, noteWebSurfaceFavicon } from "./web-surfaces.js";
+import { getWebSurfaceElement, getWebSurfaceSlot, noteWebSurfaceFavicon, requestWebSurfaceLayout, setWebSurfaceAwake } from "./web-surfaces.js";
 import { guestFaviconSource } from "./favicon-source.js";
+import { isElementShown } from "./browser-observation-preview.js";
 
 export interface BrowserTabHost {
   /** The conversation this host's chat view shows, or null. */
@@ -55,18 +56,71 @@ function isWebview(element: Element): boolean {
 /**
  * Where keyboard focus was in the app before a browser page took it, so the
  * agent holds page focus only while it acts. Remembers the last focused
- * element that is not a page (<webview>); `restore` gives focus back to it,
+ * element for pointer actions; visible native focus borrowing uses a scoped receipt. `restore` gives focus back to it,
  * but only while a page still holds focus: if the user has moved on, their
  * focus stays where they put it.
  */
 export class HostFocusMemory {
   /** Most recent last. Several, because the latest (an approval card's button) is often gone by the time focus comes back. */
   private recent: HTMLElement[] = [];
+  private focusRevision = 0;
+  private readonly receipts = new Map<string, { guest: HTMLElement; previous: HTMLElement; previousGuestId?: number; moved: boolean; borrowed: boolean }>();
+
+  private visible(element: HTMLElement): boolean {
+    const bounds = element.getBoundingClientRect();
+    const style = this.doc.defaultView?.getComputedStyle(element);
+    return element.isConnected && element.closest("[inert], [hidden]") === null && bounds.width > 0 && bounds.height > 0
+      && style?.display !== "none" && style?.visibility !== "hidden" && this.doc.visibilityState === "visible";
+  }
+
+  capture(receiptId: string, guest: HTMLElement): boolean {
+    const previous = this.doc.activeElement;
+    if (this.receipts.size > 0 || !guest.isConnected || !(previous instanceof HTMLElement) || previous === guest || !this.visible(previous)) return false;
+    let previousGuestId: number | undefined;
+    if (isWebview(previous)) {
+      try { previousGuestId = (previous as HTMLElement & { getWebContentsId(): number }).getWebContentsId(); } catch { return false; }
+      if (!Number.isSafeInteger(previousGuestId) || previousGuestId <= 0) return false;
+    }
+    this.receipts.set(receiptId, { guest, previous, previousGuestId, moved: false, borrowed: false });
+    return true;
+  }
+
+  restoreReceipt(receiptId: string, guest: HTMLElement | null, preserveFocus = false): boolean {
+    const receipt = this.receipts.get(receiptId);
+    if (!receipt) return false;
+    if (guest !== receipt.guest && (guest !== null || receipt.guest.isConnected)) {
+      if (!receipt.guest.isConnected) this.receipts.delete(receiptId);
+      return false;
+    }
+    this.receipts.delete(receiptId);
+    if (receipt.moved || preserveFocus) return true;
+    const active = this.doc.activeElement;
+    if (active === receipt.previous) return true;
+    if (active !== receipt.guest && active !== this.doc.body) return true;
+    if (!this.visible(receipt.previous)) {
+      if (receipt.previousGuestId !== undefined) return false;
+      this.restore();
+      return this.doc.activeElement !== receipt.guest;
+    }
+    if (receipt.previousGuestId !== undefined) {
+      try { if ((receipt.previous as HTMLElement & { getWebContentsId(): number }).getWebContentsId() !== receipt.previousGuestId) return false; } catch { return false; }
+    }
+    receipt.previous.focus();
+    if (this.doc.activeElement === receipt.previous) return true;
+    if (receipt.previousGuestId !== undefined) return false;
+    this.restore();
+    return this.doc.activeElement !== receipt.guest;
+  }
 
   constructor(private readonly doc: Document) {}
 
   readonly onFocusIn = (event: FocusEvent): void => {
+    this.focusRevision++;
     const target = event.target;
+    for (const receipt of this.receipts.values()) {
+      if (target === receipt.guest && !receipt.borrowed) receipt.borrowed = true;
+      else if (target !== receipt.guest && (target !== receipt.previous || receipt.borrowed)) receipt.moved = true;
+    }
     if (!(target instanceof HTMLElement) || isWebview(target)) return;
     this.recent = [...this.recent.filter((element) => element !== target), target].slice(-HOST_FOCUS_HISTORY);
   };
@@ -76,12 +130,34 @@ export class HostFocusMemory {
     return () => this.doc.removeEventListener("focusin", this.onFocusIn, true);
   }
 
-  restore(): void {
+  restore(parkedGuest?: HTMLElement | null): void {
     const active = this.doc.activeElement;
-    if (!(active instanceof HTMLElement) || !isWebview(active)) return;
-    const back = [...this.recent].reverse().find((element) => element.isConnected && element.closest("[inert]") === null);
-    if (back) back.focus();
-    else active.blur();
+    if (parkedGuest !== undefined) {
+      if (!this.doc.hasFocus()) return;
+      if (active === this.doc.body || active === null) {
+        for (const back of [...this.recent].reverse()) {
+          if (!this.visible(back)) continue;
+          const revision = this.focusRevision;
+          back.focus({ preventScroll: true });
+          if (this.focusRevision !== revision || this.doc.activeElement !== active) break;
+        }
+      }
+      if (!this.doc.hasFocus()) return;
+      const current = this.doc.activeElement;
+      let frame: Window | null = this.doc.defaultView;
+      if (current !== parkedGuest && current instanceof HTMLIFrameElement) frame = current.contentWindow;
+      else if (current !== parkedGuest && current instanceof HTMLElement && isWebview(current)) frame = current.shadowRoot?.querySelector("iframe")?.contentWindow ?? null;
+      // Change the frame's native routing without running an editor's DOM blur handlers.
+      frame?.focus();
+      return;
+    }
+    if (!(active instanceof HTMLElement) || !isWebview(active) && active !== this.doc.body) return;
+    for (const back of [...this.recent].reverse()) {
+      if (!this.visible(back)) continue;
+      back.focus();
+      if (this.doc.activeElement !== active) return;
+    }
+    active.blur();
   }
 }
 
@@ -93,6 +169,14 @@ let hostFocus: HostFocusMemory | null = null;
  * (`inTabId`) that no host can load into, so the caller tells main at once instead of letting the agent wait out the
  * timeout. */
 export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: readonly BrowserTabHost[] = hosts): "refused" | undefined {
+  if (request.op === "wake" || request.op === "sleep") {
+    setWebSurfaceAwake(request.tabId, request.op === "wake");
+    return;
+  }
+  if (request.op === "capture-focus") {
+    const guest = getWebSurfaceElement(request.tabId);
+    return guest && hostFocus?.capture(request.requestId, guest) ? undefined : "refused";
+  }
   if (request.op === "focus") {
     const guest = getWebSurfaceElement(request.tabId);
     if (!guest?.isConnected || document.visibilityState !== "visible" || guest.closest("[inert]")) return;
@@ -102,7 +186,15 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
     return;
   }
   if (request.op === "restore-focus") {
-    hostFocus?.restore();
+    if (request.receiptId !== undefined) {
+      return hostFocus?.restoreReceipt(request.receiptId, getWebSurfaceElement(request.tabId), request.preserveFocus || !document.hasFocus()) ? undefined : "refused";
+    }
+    const guest = getWebSurfaceElement(request.tabId);
+    const slot = getWebSurfaceSlot(request.tabId);
+    // Parking keeps the old frame painted until acknowledgement; the slot owns display intent.
+    if (guest === document.activeElement && slot && isElementShown(slot)) return;
+    if (!hostFocus) return "refused";
+    hostFocus.restore(guest);
     return;
   }
   if (request.op === "new" && request.inTabId !== undefined) {
@@ -114,9 +206,9 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
   }
   if (request.op === "new") {
     // Main names the conversation on every agent tab it opens; one that names none has no owner to give the tab.
-    const owner = request.sessionId;
+    const owner = request.ownerSessionId;
     if (owner === undefined) throw new Error(`browser-tab-op-unowned: new tab ${request.requestId} names no conversation`);
-    const host = candidates.find((candidate) => candidate.openAgentTab !== undefined && candidate.sessionId() === owner);
+    const host = candidates.find((candidate) => candidate.openAgentTab !== undefined && candidate.sessionId() === request.sessionId);
     host?.openAgentTab?.(request.url, request.requestId, request.active, owner);
     return;
   }
@@ -153,7 +245,10 @@ export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () =>
     let current = true;
     const tabs = api.browserTabs;
     const offOp = tabs.onTabOp((request) => {
-      if (routeBrowserTabOp(request) === "refused") void tabs.refuseTabOp(request.requestId);
+      const result = routeBrowserTabOp(request);
+      if (request.op === "capture-focus" || request.op === "restore-focus") {
+        void tabs.completeFocus(request.requestId, result !== "refused");
+      } else if (result === "refused") void tabs.refuseTabOp(request.requestId);
     });
     const offControl = api.browserTabs.onControl((state) => setControlState(state));
     void api.browserTabs.getState().then((state) => {
@@ -193,6 +288,19 @@ function subscribeControl(listener: () => void): () => void {
 /** Bind retries while main has not yet seen the guest attach. */
 const BIND_RETRY_LIMIT = 20;
 const BIND_RETRY_MS = 100;
+const acceptedBindings = new WeakMap<HTMLElement, number>();
+
+/** A live guest stays visible until main has blocked parked input and returned native focus. */
+export async function reportGuestParking(api: AveApi, webview: HTMLElement, tabId: string, parked: boolean): Promise<boolean> {
+  try {
+    const guest = webview as HTMLElement & { getWebContentsId?: () => number };
+    const id = guest.getWebContentsId?.();
+    if (id === undefined) return true;
+    if (acceptedBindings.get(webview) !== id || !api.browserTabs) return false;
+    const result = await api.browserTabs.bindTab({ tabId, webContentsId: id, parked });
+    return result.ok && acceptedBindings.get(webview) === id && guest.getWebContentsId?.() === id;
+  } catch { return false; }
+}
 
 /** Bind on attach and first dom-ready; retry guest-not-live because renderer attach can precede main's guest registration. */
 export function bindGuestToTab(
@@ -230,9 +338,15 @@ export function bindGuestToTab(
     void browserTabs.bindTab({
       tabId,
       webContentsId,
+      parked: !isElementShown(webview),
       ...(requestId === undefined ? {} : { requestId }),
     }).then((result) => {
-      if (cancelled || sequence !== bindSequence || result.ok) return;
+      if (cancelled || sequence !== bindSequence) return;
+      if (result.ok) {
+        acceptedBindings.set(webview, webContentsId);
+        requestWebSurfaceLayout();
+        return;
+      }
       sentFor = undefined;
       if (result.error === "guest-not-live" && attempt < BIND_RETRY_LIMIT) {
         retry = setTimeout(() => onAttach(attempt + 1), BIND_RETRY_MS);
@@ -262,6 +376,7 @@ export function bindGuestToTab(
   // Already attached (the tab id or request changed on a live guest).
   onAttach();
   return () => {
+    acceptedBindings.delete(webview);
     cancelled = true;
     if (retry !== undefined) clearTimeout(retry);
     webview.removeEventListener("did-attach", onAttachEvent);

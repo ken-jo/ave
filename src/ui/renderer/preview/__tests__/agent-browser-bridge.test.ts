@@ -1,9 +1,9 @@
 /** Each browser operation targets exactly one owning store; new tabs go beside the requesting conversation. */
 import { describe, expect, it, vi } from "vitest";
-import { agentDrivesBrowserTab, bindGuestToTab, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
+import { agentDrivesBrowserTab, bindGuestToTab, reportGuestParking, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
-import { noteWebSurfaceFavicon, setWebSurfaceElement, webSurfaceFavicon } from "../web-surfaces.js";
+import { clearWebSurfaceSlot, noteWebSurfaceFavicon, setWebSurfaceElement, setWebSurfaceSlot, webSurfaceFavicon } from "../web-surfaces.js";
 
 function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { calls: string[] } {
   const calls: string[] = [];
@@ -49,7 +49,41 @@ describe("user browser navigation", () => {
   });
 });
 
+describe("child browser routing", () => {
+  it("opens sibling tabs beside their parent under distinct owners without selecting them", () => {
+    const parent = host("parent", []);
+    for (const owner of ["child-a", "child-b"]) routeBrowserTabOp({ requestId: owner, op: "new", url: "about:blank", active: false,
+      sessionId: "parent", ownerSessionId: owner }, [parent]);
+    expect(parent.calls).toEqual(["new about:blank child-a false child-a", "new about:blank child-b false child-b"]);
+  });
+});
+
 describe("guest binding", () => {
+  it("reports parking only for an accepted live binding", async () => {
+    const frame = document.createElement("div");
+    const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
+    vi.spyOn(guest, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100, top: 0, left: 0, bottom: 100, right: 100 } as DOMRect);
+    frame.appendChild(guest);
+    document.body.appendChild(frame);
+    frame.style.visibility = "hidden";
+    const bindTab = vi.fn(async () => ({ ok: true }));
+    const unbind = bindGuestToTab({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:visible", undefined);
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:visible", webContentsId: 31, parked: true });
+    await Promise.resolve();
+    frame.style.visibility = "visible";
+    expect(await reportGuestParking({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:visible", false)).toBe(true);
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:visible", webContentsId: 31, parked: false });
+    frame.style.opacity = "0";
+    expect(await reportGuestParking({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:visible", true)).toBe(true);
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:visible", webContentsId: 31, parked: true });
+    const count = bindTab.mock.calls.length;
+    unbind();
+    frame.style.opacity = "1";
+    expect(await reportGuestParking({ browserTabs: { bindTab } } as unknown as AveApi, guest, "browser:visible", false)).toBe(false);
+    expect(bindTab).toHaveBeenCalledTimes(count);
+    frame.remove();
+  });
+
   it("shares data-only favicon metadata for every bound guest and clears it on main-frame navigation", () => {
     const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
     const unbind = bindGuestToTab({ browserTabs: { bindTab: vi.fn().mockResolvedValue({ ok: true }) } } as unknown as AveApi, guest, "browser:icon", undefined);
@@ -77,7 +111,7 @@ describe("guest binding", () => {
       guest.dispatchEvent(new Event("dom-ready"));
       await Promise.resolve();
       expect(bindTab).toHaveBeenCalledTimes(2);
-      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 31, requestId: "browser-op-early" });
+      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 31, parked: true, requestId: "browser-op-early" });
       guest.dispatchEvent(new Event("dom-ready"));
       await Promise.resolve();
       expect(bindTab).toHaveBeenCalledTimes(2);
@@ -102,7 +136,7 @@ describe("guest binding", () => {
       await Promise.resolve();
       guest.dispatchEvent(new Event("dom-ready"));
       expect(bindTab).toHaveBeenCalledTimes(2);
-      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 32, requestId: "browser-op-early" });
+      expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:early", webContentsId: 32, parked: true, requestId: "browser-op-early" });
     } finally {
       unbind();
     }
@@ -155,8 +189,8 @@ describe("routeBrowserTabOp", () => {
   it("opens beside the exact named conversation, owned by it, and refuses a new tab that names none", () => {
     const first = host("s1", []);
     const second = host("s2", []);
-    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s2", active: false }, [first, second]);
-    routeBrowserTabOp({ requestId: "r2", op: "new", url: "https://b.example/", sessionId: "other", active: true }, [first, second]);
+    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s2", ownerSessionId: "s2", active: false }, [first, second]);
+    routeBrowserTabOp({ requestId: "r2", op: "new", url: "https://b.example/", sessionId: "other", ownerSessionId: "other", active: true }, [first, second]);
     // No guessing at an owner: the first view's chat is not the agent's.
     expect(() => routeBrowserTabOp({ requestId: "r3", op: "new", url: "https://c.example/", active: true }, [first, second]))
       .toThrow("browser-tab-op-unowned");
@@ -168,7 +202,7 @@ describe("routeBrowserTabOp", () => {
     const { openAgentTab: _unused, ...mainArea } = host(null, ["browser:7"]);
     const panels = mainArea as BrowserTabHost & { calls: string[] };
     const chat = host("s1", []);
-    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s1", active: false }, [panels, chat]);
+    routeBrowserTabOp({ requestId: "r1", op: "new", url: "https://a.example/", sessionId: "s1", ownerSessionId: "s1", active: false }, [panels, chat]);
     routeBrowserTabOp({ requestId: "r2", op: "select", tabId: "browser:7" }, [panels, chat]);
     expect(chat.calls).toEqual(["new https://a.example/ r1 false s1"]);
     expect(panels.calls).toEqual(["select browser:7"]);
@@ -178,13 +212,13 @@ describe("routeBrowserTabOp", () => {
     const loads: string[] = [];
     const panels = { ...host(null, ["browser:pane"]), loadAgentTab: (tabId: string, url: string, requestId: string) => { loads.push(`${tabId} ${url} ${requestId}`); return true; } };
     const chat = host("pane-chat", []);
-    expect(routeBrowserTabOp({ requestId: "r1", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:pane", active: false }, [chat, panels]))
+    expect(routeBrowserTabOp({ requestId: "r1", op: "new", url: "about:blank", sessionId: "pane-chat", ownerSessionId: "pane-chat", inTabId: "browser:pane", active: false }, [chat, panels]))
       .toBeUndefined();
     // A page that is gone, or one that will not take the load, is refused for main to answer at once.
-    expect(routeBrowserTabOp({ requestId: "r2", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:gone", active: false }, [chat, panels]))
+    expect(routeBrowserTabOp({ requestId: "r2", op: "new", url: "about:blank", sessionId: "pane-chat", ownerSessionId: "pane-chat", inTabId: "browser:gone", active: false }, [chat, panels]))
       .toBe("refused");
     const full = { ...host(null, ["browser:full"]), loadAgentTab: () => false };
-    expect(routeBrowserTabOp({ requestId: "r3", op: "new", url: "about:blank", sessionId: "pane-chat", inTabId: "browser:full", active: false }, [chat, full]))
+    expect(routeBrowserTabOp({ requestId: "r3", op: "new", url: "about:blank", sessionId: "pane-chat", ownerSessionId: "pane-chat", inTabId: "browser:full", active: false }, [chat, full]))
       .toBe("refused");
     expect(loads).toEqual(["browser:pane about:blank r1"]);
     expect(chat.calls).toEqual([]);
@@ -219,4 +253,42 @@ describe("agentDrivesBrowserTab", () => {
     expect(agentDrivesBrowserTab({ ...between!, lease: null, owner: null }, "fixture-session")).toBe(false);
     expect(agentDrivesBrowserTab(paused!, "fixture-session")).toBe(false);
   });
+});
+
+
+it("acknowledges scoped focus capture and restores its exact composer", async () => {
+  const composer = document.createElement("textarea");
+  const guest = document.createElement("webview"); guest.tabIndex = 0;
+  document.body.append(composer, guest);
+  vi.spyOn(composer, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100 } as DOMRect);
+  setWebSurfaceElement("borrower", guest);
+  let receive: (request: import("../../../../shared/browser-surface.js").BrowserTabOpRequest) => void = () => {};
+  const completeFocus = vi.fn(async () => ({ ok: true }));
+  const api = { browserTabs: { onTabOp: (listener: typeof receive) => { receive = listener; return () => {}; },
+    onControl: () => () => {}, getState: async () => ({ revision: 0, tabs: [] }), completeFocus } } as unknown as AveApi;
+  const unregister = registerBrowserTabHost(api, host("conversation", ["borrower"]));
+  try {
+    composer.focus();
+    receive({ requestId: "capture", op: "capture-focus", tabId: "borrower" });
+    expect(completeFocus).toHaveBeenLastCalledWith("capture", true);
+    guest.focus();
+    receive({ requestId: "restore", op: "restore-focus", tabId: "borrower", receiptId: "capture" });
+    expect(completeFocus).toHaveBeenLastCalledWith("restore", true);
+    expect(document.activeElement).toBe(composer);
+    const focus = vi.spyOn(composer, "focus");
+    const frameFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
+    receive({ requestId: "parked-return", op: "restore-focus", tabId: "borrower" });
+    expect(completeFocus).toHaveBeenLastCalledWith("parked-return", true);
+    expect(focus).not.toHaveBeenCalled();
+    expect(frameFocus).toHaveBeenCalledOnce();
+    frameFocus.mockRestore();
+    guest.focus();
+    setWebSurfaceSlot("borrower", guest);
+    vi.spyOn(guest, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100, left: 0, top: 0, right: 100, bottom: 100 } as DOMRect);
+    receive({ requestId: "shown-before-return", op: "restore-focus", tabId: "borrower" });
+    expect(document.activeElement).toBe(guest);
+    clearWebSurfaceSlot("borrower", guest);
+    receive({ requestId: "replay", op: "restore-focus", tabId: "borrower", receiptId: "capture" });
+    expect(completeFocus).toHaveBeenLastCalledWith("replay", false);
+  } finally { clearWebSurfaceSlot("borrower", guest); unregister(); setWebSurfaceElement("borrower", null); composer.remove(); guest.remove(); }
 });

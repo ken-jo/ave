@@ -1,4 +1,3 @@
-import { isIssuedUserOwnedBrowserScope } from "../../permissions/user-owned-browser-scope.js";
 /** Remembered approval shares finalized-input identity with recorded requests; one-shot choices never persist.
  * Target-wide changes retain risk checks except an explicitly granted external tool whose scope covers every argument. */
 import { matchesMcpToolApprovalMemory } from "../../shared/mcp-tool-approval.js";
@@ -111,7 +110,7 @@ export async function tryUserApprovalMemorySkip(
   const identity = approvalCacheKeyIdentity(approvalCacheKey, context.approvalMemory);
   // User-owned surfaces use only their session choice, never generic remembered grants.
   if (context.approvalMemory?.kind === "key" && context.approvalMemory.scope.kind === "terminal-command" && context.approvalMemory.scope.lane === "manual") return null;
-  if (context.approvalMemory?.kind === "key" && isIssuedUserOwnedBrowserScope(context.approvalMemory.scope)) return null;
+  if (context.approvalMemory?.kind === "key" && (context.approvalMemory.scope.kind === "browser-origin" || context.approvalMemory.scope.kind === "browser-agent-tabs")) return null;
   const approval = await lookupApproval(
     toolName,
     canonicalArgs,

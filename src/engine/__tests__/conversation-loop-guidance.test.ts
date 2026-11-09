@@ -14,16 +14,21 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { wrapChildReportForParentJudgment } from "../a2a-subagent-message-codec.js";
+import { resolveConversationTitle } from "../../shared/conversation-title.js";
+import { t } from "../../i18n/runtime.js";
 
 class FakeProvider implements LLMProvider {
   readonly vendor = "openai" as const;
   private index = 0;
+  readonly requests: GenericMessage[][] = [];
   // Queue after the controller is set, before the first stream event.
   beforeNextTurn?: () => void;
 
   constructor(private readonly turns: StreamEvent[][]) {}
 
-  async *streamTurn(): AsyncIterable<StreamEvent> {
+  async *streamTurn(params: Parameters<LLMProvider["streamTurn"]>[0]): AsyncIterable<StreamEvent> {
+    this.requests.push(params.messages.map((message) => ({ ...message })));
     this.beforeNextTurn?.();
     this.beforeNextTurn = undefined;
     yield* this.turns[this.index++] ?? [];
@@ -87,6 +92,53 @@ class DeferredGate<T> {
 }
 
 describe("ConversationLoop guidance queue + boundary inject", () => {
+  it.each([false, true])("keeps host reports out of user steering with concurrent user input: %s", async (mixed) => {
+    const provider = new FakeProvider([
+      [{ type: "tool_call", id: "t1", name: "noop_tool", input: {} },
+        { type: "message_complete", stopReason: "tool_use" }],
+      ...endTurnScript("reviewed"),
+    ]);
+    const loop = makeLoop(provider);
+    const injected = vi.fn();
+    const report = "[Sub-Agent: worker]\nThe page is ready";
+    provider.beforeNextTurn = () => {
+      loop.queueGuidanceWithDisposition(wrapChildReportForParentJudgment(report), {
+        source: { kind: "sub-agent" }, displayText: report,
+      });
+      if (mixed) loop.queueUserGuidance("Use a short summary");
+    };
+    await loop.runTurn("Inspect both sites", { onGuidanceInjected: injected }, undefined, userKeyboardTurn());
+    expect(injected).toHaveBeenCalledWith(report, {
+      messageId: expect.any(String), source: { kind: "sub-agent" },
+    });
+    expect(injected).toHaveBeenCalledTimes(mixed ? 2 : 1);
+    if (mixed) expect(injected).toHaveBeenCalledWith("Use a short summary", { messageId: expect.any(String) });
+    const rows = provider.requests[1] ?? [];
+    const reportRow = rows.find((row) => row.meta?.subAgentReport);
+    expect(reportRow).toMatchObject({ role: "user", content: wrapChildReportForParentJudgment(report),
+      meta: { displayText: report, subAgentReport: {}, hostInjectionId: expect.any(String) } });
+    expect(resolveConversationTitle({ sessionId: "parent", messages: rows }, t)).toBe("Inspect both sites");
+  });
+
+  it.each([false, true])("projects consumed mailbox reports with host provenance on a new turn: %s", async (initial) => {
+    const provider = new FakeProvider(endTurnScript("reviewed"));
+    const loop = makeLoop(provider);
+    const injected = vi.fn();
+    const report = "[Sub-Agent: worker]\nDone";
+    await loop.runTurn(initial ? "Inspect both sites" : wrapChildReportForParentJudgment(report),
+      { onGuidanceInjected: injected }, undefined, {
+        ...(initial ? userKeyboardTurn() : { inputOrigin: "agent-message" as const, displayText: report }),
+        subAgentReport: { title: "worker" },
+        ...(initial ? { initialGuidance: wrapChildReportForParentJudgment(report), initialGuidanceDisplayText: report } : {}),
+      });
+    expect(injected).toHaveBeenCalledWith(report, {
+      messageId: expect.any(String), source: { kind: "sub-agent", title: "worker" },
+    });
+    expect(provider.requests[0]?.find((row) => row.meta?.subAgentReport)).toMatchObject({
+      role: "user", content: wrapChildReportForParentJudgment(report), meta: { displayText: report },
+    });
+  });
+
   it("queues guide text and injects it at the next round boundary (between tool rounds)", async () => {
     const provider = new FakeProvider([
       [

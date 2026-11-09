@@ -1,17 +1,27 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
+import { detectBrowserChallenge } from "./browser-challenge.js";
+import type { BrowserChallenge } from "../../shared/browser-challenge.js";
+import { browserControlLifecycle } from "./browser-control-lifecycle.js";
+import { subscribeBrowserGuestDestroyed, type BrowserLifecycleGuest } from "./browser-guest-lifecycle.js";
+import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
+import { browserLayoutReady } from "./browser-layout-probe.js";
+import { createBrowserTabActivity } from "./browser-tab-activity.js";
+import { gateBrowserSiteNavigation, type BrowserSiteNavigationGate } from "./browser-site-navigation.js";
 import { stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadResult, type BrowserUploadSelection } from "./browser-upload.js";
 import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
 import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared/agent-observation.js";
 import { validateExternalUrl } from "../../shared/external-url.js";
-import { browserOrigin } from "../../shared/browser-tools.js";
-import { BrowserDocumentChangedError, type TouchDeliveryReport } from "./browser-tab-registry.js";
+import { browserOrigin, type BrowserPageReadiness, type BrowserPageSnapshot } from "../../shared/browser-tools.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
 import {
-  BrowserActionError, frameTree, ownPageSession, releasePageSession, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession,
+  BrowserActionError, frameTree, mainDocumentContainsNode, ownPageSession, releasePageSession, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession,
 } from "./browser-action-guard.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
+import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "./browser-select-script.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
   browserRefs,
@@ -22,25 +32,40 @@ import {
   type BrowserRefTable,
 } from "./browser-snapshot.js";
 
-const attached = new WeakMap<WebContents, Promise<CdpSession>>();
+interface PageSession extends CdpSession {
+  assertCurrent(): void;
+}
+
+const attached = new WeakMap<WebContents, Promise<PageSession>>();
 const sessionGenerations = new WeakMap<WebContents, object>();
 
 // Cache only the current debugger connection; a detached connection cannot own later page input.
-async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
+async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<PageSession> {
   throwIfAborted(signal);
   const existing = attached.get(guest);
-  if (existing) return existing;
+  if (existing) {
+    const session = await existing;
+    session.assertCurrent();
+    return session;
+  }
   const generation = {};
   sessionGenerations.set(guest, generation);
   const debuggerApi = guest.debugger;
+  const eventSubscriptions = new Set<() => void>();
+  let unsubscribeDestroyed = () => {};
   const invalidate = (): void => {
     if (sessionGenerations.get(guest) === generation) {
       sessionGenerations.delete(guest);
       attached.delete(guest);
       releasePageSession(guest);
+      for (const unsubscribe of eventSubscriptions) unsubscribe();
+      siteGates.get(guest)?.();
+      siteGates.delete(guest);
+      actionNavigations.get(guest)?.stop();
+      actionNavigations.delete(guest);
     }
     debuggerApi.removeListener("detach", invalidate);
-    guest.removeListener("destroyed", invalidate);
+    unsubscribeDestroyed();
   };
   const assertCurrent = (): void => {
     if (sessionGenerations.get(guest) !== generation || guest.isDestroyed()) {
@@ -48,10 +73,10 @@ async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted
     }
   };
   debuggerApi.once("detach", invalidate);
-  guest.once("destroyed", invalidate);
+  unsubscribeDestroyed = subscribeBrowserGuestDestroyed(guest, invalidate);
   const pending = Promise.resolve().then(() => {
     assertCurrent();
-    return attachCdp(guest, signal, onTrackingStarted, assertCurrent);
+    return attachCdp(guest, signal, onTrackingStarted, assertCurrent, eventSubscriptions);
   });
   attached.set(guest, pending);
   try {
@@ -65,24 +90,36 @@ async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted
   }
 }
 
-async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void, assertCurrent: () => void): Promise<CdpSession> {
+async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void, assertCurrent: () => void, eventSubscriptions: Set<() => void>): Promise<PageSession> {
+  let pageDebugger: WebContents["debugger"];
   try {
-    if (!guest.debugger.isAttached()) guest.debugger.attach("1.3");
+    pageDebugger = guest.debugger;
+    if (!pageDebugger.isAttached()) pageDebugger.attach("1.3");
   } catch (err) {
     throw new BrowserActionError(
       "debugger-unavailable",
       `cannot control this tab (${(err as Error).message}); close its developer tools and try again`,
     );
   }
-  const session: CdpSession = {
-    send: (method, params) => {
+  // The guest's native property becomes unreadable at destruction; its session still owns listener cleanup.
+  const session: PageSession = {
+    assertCurrent,
+    send: async (method, params) => {
       assertCurrent();
-      return guest.debugger.sendCommand(method, params ?? {}) as Promise<unknown>;
+      const result = await pageDebugger.sendCommand(method, params ?? {}) as unknown;
+      assertCurrent();
+      return result;
     },
     onEvent: (listener) => {
+      assertCurrent();
       const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => listener(method, params);
-      guest.debugger.on("message", onMessage);
-      return () => { guest.debugger.removeListener("message", onMessage); };
+      pageDebugger.on("message", onMessage);
+      const unsubscribe = () => {
+        pageDebugger.removeListener("message", onMessage);
+        eventSubscriptions.delete(unsubscribe);
+      };
+      eventSubscriptions.add(unsubscribe);
+      return unsubscribe;
     },
   };
   await session.send("DOM.enable");
@@ -106,7 +143,7 @@ export async function snapshot(
   target: ActionTarget,
   options: { interactive?: boolean; delta?: boolean },
   refs: BrowserRefTable = browserRefs,
-): Promise<{ url: string; title: string; text: string; truncated: boolean; refCount: number; delta: boolean }> {
+): Promise<BrowserPageSnapshot> {
   throwIfAborted(target.signal);
   const nodes = await fullTree(target.cdp);
   throwIfAborted(target.signal);
@@ -115,7 +152,7 @@ export async function snapshot(
     const described = await target.cdp.send("DOM.describeNode", { backendNodeId: node.backendDOMNodeId, depth: -1 }) as { node?: SelectNode };
     throwIfAborted(target.signal);
     if (described.node?.nodeName === "SELECT") {
-      try { nativeSelectOptions.set(node.backendDOMNodeId!, nativeOptions(described.node).map(({ value, label, disabled }) => ({ value: value.slice(0, 1000), label: label.slice(0, 200), disabled }))); }
+      try { nativeSelectOptions.set(node.backendDOMNodeId!, nativeOptions(described.node).map(({ value, label, disabled }) => ({ value, label: label.slice(0, 200), disabled }))); }
       catch (err) { if (!(err instanceof BrowserActionError) || !["not-native-select", "ambiguous-select"].includes(err.code)) throw err; }
     }
   }
@@ -358,10 +395,11 @@ const RELEASE_MAX_MS = 1_000;
 async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Promise<T> {
   const hadFocus = await pageHasFocus(target.cdp);
   try {
+    await target.preparePageFocus?.();
     return await act();
   } finally {
+    await target.releaseFocus(!hadFocus);
     if (!hadFocus) {
-      target.releaseFocus();
       // Not the action's signal: a cancelled action still hands focus back.
       await pollUntil(new AbortController().signal, RELEASE_MAX_MS, async () =>
         (await pageHasFocus(target.cdp)) ? undefined : true).catch(() => undefined);
@@ -668,7 +706,7 @@ function nativeOptions(node: SelectNode | undefined): { id: number; value: strin
   return options;
 }
 
-// Keyboard-only selection with a final live option/value and AX check.
+// Select the exact native option without borrowing the window's keyboard focus.
 export async function select(target: ActionTarget, ref: string, value: string, refs: BrowserRefTable = browserRefs): Promise<void> {
   return withGuardedAction(target, async (target) => {
     const id = await resolveRef(target, ref, refs);
@@ -680,20 +718,16 @@ export async function select(target: ActionTarget, ref: string, value: string, r
     if (index < 0) throw new BrowserActionError("bad-select", "the requested enabled option is not present");
     const desired = enabled[index]!;
     await centerOf(target.cdp, id);
-    await target.injectInput(() => withPageFocus(target, async () => {
-      await target.focusPage();
-      await target.cdp.send("DOM.focus", { backendNodeId: id });
-      if (!(await pollUntil(target.signal, FOCUS_MAX_MS, async () => (await pageHasFocus(target.cdp)) || undefined))) {
-        throw new BrowserActionError("no-focus", "the page did not take keyboard focus; nothing was selected");
-      }
-      // No activating input is marked complete: a navigation during any key must remain a failure rather than being accepted as final selection.
-      await dispatchKey(target.cdp, "Home");
-      if (process.platform === "darwin") {
-        // Arrows open a system-owned popup outside the renderer input route. Type ahead in the closed control instead.
-        for (const text of desired.label) await target.cdp.send("Input.dispatchKeyEvent", { type: "char", key: text, text });
-      } else {
-        for (let step = 0; step < index; step++) await dispatchKey(target.cdp, "ArrowDown");
-        await dispatchKey(target.cdp, "Enter");
+    await target.injectInput(async () => {
+      const main = await frameTree(target.cdp);
+      const context = await target.cdp.send("Page.createIsolatedWorld", { frameId: main.frame.id, worldName: BROWSER_ACTION_WORLD }) as { executionContextId: number };
+      const resolved = await target.cdp.send("DOM.resolveNode", { backendNodeId: id, executionContextId: context.executionContextId }) as { object: { objectId: string } };
+      try {
+        const result = await target.cdp.send("Runtime.callFunctionOn", { objectId: resolved.object.objectId,
+          functionDeclaration: SELECT_NATIVE_OPTION, arguments: [{ value }], returnByValue: true }) as { result?: { value?: unknown }; exceptionDetails?: unknown };
+        if (result.exceptionDetails || result.result?.value !== true) throw new BrowserActionError("select-changed", "the native select no longer has that enabled option");
+      } finally {
+        await target.cdp.send("Runtime.releaseObject", { objectId: resolved.object.objectId }).catch(() => {});
       }
       const current = await readOptions();
       if (JSON.stringify(current) !== JSON.stringify(options)) throw new BrowserActionError("select-changed", "the options changed while selecting; take a new snapshot");
@@ -702,7 +736,7 @@ export async function select(target: ActionTarget, ref: string, value: string, r
       const selected = option?.properties?.some((property) => property.name === "selected" && property.value.value === true);
       const currentValue = await fieldValue(target.cdp, id);
       if (!selected || currentValue !== desired.label) throw new BrowserActionError("select-unverified", "the requested option did not become the final selected value");
-    }));
+    });
   });
 }
 
@@ -762,7 +796,10 @@ export async function upload(
 export interface NavigableGuest {
   loadURL(url: string): Promise<void>;
   getURL(): string;
+  isLoading(): boolean;
+  on(event: "dom-ready" | "did-navigate" | "did-navigate-in-page", listener: (...args: unknown[]) => void): unknown;
   on(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
+  removeListener(event: "dom-ready" | "did-navigate" | "did-navigate-in-page", listener: (...args: unknown[]) => void): unknown;
   removeListener(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
   stop(): void;
 }
@@ -775,13 +812,15 @@ export async function navigate(
   approvedOrigin: string,
   signal: AbortSignal,
   originOf: (url: string) => string | null,
-): Promise<{ url: string }> {
+  siteGateInstalled = false,
+  gate?: BrowserSiteNavigationGate,
+): Promise<BrowserPageReadiness> {
   throwIfAborted(signal);
   if (originOf(url) !== approvedOrigin) throw new BrowserActionError("unapproved-origin", "the requested URL does not match the approved origin");
   let refusedRedirect: string | null = null;
   const onRedirect = (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => {
     if (!details.isMainFrame) return;
-    if (originOf(details.url) !== approvedOrigin) {
+    if (originOf(details.url) === null || !siteGateInstalled && originOf(details.url) !== approvedOrigin) {
       refusedRedirect = details.url;
       details.preventDefault();
       guest.stop();
@@ -792,12 +831,47 @@ export async function navigate(
   guest.on("will-navigate", onRedirect);
   guest.on("will-frame-navigate", onRedirect);
   signal.addEventListener("abort", onAbort, { once: true });
-  let loadError: Error | null = null;
+  const initialUrl = guest.getURL();
+  const sameDocumentExpected = initialUrl !== url && initialUrl.split("#")[0] === url.split("#")[0];
+  const load: { error?: Error } = {};
+  let committed = false;
+  let documentReady = false;
+  let completed = false;
+  const onCommit = () => { committed = browserOrigin(guest.getURL()) !== null; documentReady = false; };
+  const onDocumentReady = () => { if (committed) documentReady = true; };
+  const onSameDocument = (_event: unknown, _url: unknown, mainFrame: unknown) => {
+    if (sameDocumentExpected && mainFrame === true && guest.getURL() === url) { onCommit(); documentReady = true; }
+  };
+  guest.on("did-navigate", onCommit);
+  guest.on("dom-ready", onDocumentReady);
+  guest.on("did-navigate-in-page", onSameDocument);
+  const started = Date.now();
+  const pausedBefore = gate?.pausedMs() ?? 0;
   try {
-    await guest.loadURL(url);
-  } catch (err) {
-    loadError = err as Error;
+    // Consume the full-load promise even when readiness wins; late subresource failures remain page data.
+    try {
+      void guest.loadURL(url).then(() => { completed = true; }, error => { load.error = error instanceof Error ? error : new Error(String(error)); });
+    } catch (error) { load.error = error instanceof Error ? error : new Error(String(error)); }
+    for (;;) {
+      throwIfAborted(signal);
+      gate?.assertAllowed();
+      const waiting = gate?.waiting() ?? false;
+      if (!waiting && (refusedRedirect !== null || load.error || completed && browserOrigin(guest.getURL()) !== null || committed && documentReady)) break;
+      const elapsed = Date.now() - started - ((gate?.pausedMs() ?? 0) - pausedBefore);
+      if (!waiting && elapsed >= TOOL_TIMEOUT_POLICY.browserNavigationReadyMs) {
+        if (committed) break;
+        guest.stop();
+        throw new BrowserActionError("load-timeout", "the main browser document did not commit before the readiness deadline");
+      }
+      await sleep(SETTLE_POLL_MS, signal);
+    }
+  } catch (error) {
+    if (signal.aborted) throwIfAborted(signal);
+    throw error;
   } finally {
+    guest.removeListener("did-navigate", onCommit);
+    guest.removeListener("dom-ready", onDocumentReady);
+    guest.removeListener("did-navigate-in-page", onSameDocument);
     guest.removeListener("will-redirect", onRedirect);
     guest.removeListener("will-navigate", onRedirect);
     guest.removeListener("will-frame-navigate", onRedirect);
@@ -811,8 +885,8 @@ export async function navigate(
       `${approvedOrigin} redirected to ${redirectOrigin}; the redirect was not followed. Call browser_navigate with that URL to ask for it.`,
     );
   }
-  if (loadError) throw new BrowserActionError("load-failed", `the page did not load: ${loadError.message}`);
-  return { url: guest.getURL() };
+  if (load.error) throw new BrowserActionError("load-failed", `the page did not load: ${load.error.message}`);
+  return { url: guest.getURL(), loading: guest.isLoading() };
 }
 
 // What settling needs of a guest. Production passes Electron `WebContents`.
@@ -822,22 +896,22 @@ export interface LoadingGuest {
 }
 
 const SETTLE_POLL_MS = 100;
-const SETTLE_MAX_MS = 15_000;
+const SETTLE_MAX_MS = TOOL_TIMEOUT_POLICY.browserNavigationReadyMs;
 
-// Wait for a just-opened tab's first page: a URL committed and nothing loading. Bounded; a page still loading at the bound is returned as is.
-export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = SETTLE_MAX_MS): Promise<{ url: string }> {
+// Input navigation has already passed its commit watcher; do not wait for unrelated subresources.
+export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs: number = SETTLE_MAX_MS): Promise<BrowserPageReadiness> {
   const started = Date.now();
   for (;;) {
     throwIfAborted(signal);
     const url = guest.getURL();
-    if (url !== "" && url !== "about:blank" && !guest.isLoading()) return { url };
-    if (Date.now() - started >= maxMs) return { url };
+    if (browserOrigin(url) !== null) return { url, loading: guest.isLoading() };
+    if (Date.now() - started >= maxMs) throw new BrowserActionError("load-timeout", "the main browser document did not commit before the readiness deadline");
     await sleep(SETTLE_POLL_MS, signal);
   }
 }
 
 // What waiting for an action's navigation needs of a guest. Production passes Electron `WebContents`.
-export interface NavigationGuest extends LoadingGuest {
+export interface NavigationGuest extends LoadingGuest, BrowserLifecycleGuest {
   on(event: string, listener: (...args: unknown[]) => void): unknown;
   removeListener(event: string, listener: (...args: unknown[]) => void): unknown;
 }
@@ -848,7 +922,7 @@ export interface ActionNavigation {
   readonly requested: boolean;
   // Resolve once a requested navigation commits or ends without a new document; refuse a failed one, a closed tab, or one still pending at `maxMs`.
   // Resolves at once when nothing was requested.
-  outcome(signal: AbortSignal, maxMs: number): Promise<void>;
+  outcome(signal: AbortSignal, maxMs: number, gate?: BrowserSiteNavigationGate): Promise<void>;
   stop(): void;
 }
 
@@ -862,11 +936,9 @@ export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSess
   const mainFrameId = (await frameTree(cdp)).frame.id;
   let requested = false;
   let ended: NavigationEnd | undefined;
-  let notify: (() => void) | undefined;
   const end = (outcome: NavigationEnd) => {
     if (!requested || ended) return;
     ended = outcome;
-    notify?.();
   };
   const stopCdp = cdp.onEvent((method, params) => {
     if (method === "Page.frameRequestedNavigation" && params.frameId === mainFrameId && params.disposition === "currentTab") requested = true;
@@ -886,33 +958,30 @@ export async function watchActionNavigation(guest: NavigationGuest, cdp: CdpSess
       });
     }) as never],
     ["did-stop-loading", (() => end({ kind: "stopped" })) as never],
-    ["destroyed", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab was closed while its page was loading", true) })) as never],
     ["render-process-gone", (() => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab's page crashed while loading", true) })) as never],
   ];
   for (const [event, listener] of listeners) guest.on(event, listener);
+  const unsubscribe = subscribeBrowserGuestDestroyed(guest, () => end({ kind: "failed", error: new BrowserActionError("tab-gone", "the tab was closed while its page was loading", true) }));
   const stop = () => {
+    unsubscribe();
     stopCdp();
     for (const [event, listener] of listeners) guest.removeListener(event, listener);
   };
   return {
     get requested() { return requested; },
     stop,
-    outcome: async (signal, maxMs) => {
+    outcome: async (signal, maxMs, gate) => {
       throwIfAborted(signal);
-      if (!requested) return;
-      if (!ended) {
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(done, maxMs);
-          function done() {
-            clearTimeout(timer);
-            notify = undefined;
-            signal.removeEventListener("abort", done);
-            resolve();
-          }
-          notify = done;
-          signal.addEventListener("abort", done, { once: true });
-        });
+      let elapsed = 0;
+      while ((!ended && requested || gate?.waiting()) && elapsed < maxMs) {
+        gate?.assertAllowed();
+        const paused = gate?.waiting();
+        const before = Date.now();
+        await sleep(SETTLE_POLL_MS, signal);
+        if (!paused && !gate?.waiting()) elapsed += Date.now() - before;
       }
+      gate?.assertAllowed();
+      if (!requested) return;
       throwIfAborted(signal);
       if (!ended) {
         throw new BrowserActionError("navigation-incomplete",
@@ -928,8 +997,10 @@ const actionNavigations = new WeakMap<object, ActionNavigation>();
 
 // What the adapter needs of the tab registry.
 interface InputAttribution {
+  isParkedAgentGuest(guestId: number): boolean;
+  setAgentTabAwake(guestId: number, awake: boolean): boolean;
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
-  releaseFocus(guestId: number): void;
+  releaseFocus(guestId: number, leaseId?: string): void | Promise<void>;
   focusGuest(guestId: number): Promise<void>;
   documentChanged(guestId: number): void;
   // Record the touch input every guest of `guestId`'s window reports until `stop`.
@@ -969,12 +1040,15 @@ const wedgedWindows = new Map<number, symbol>();
 function markWedged(windowId: number, guest: WebContents, cancelled: Promise<unknown>): void {
   const mark = Symbol("wedged");
   wedgedWindows.set(windowId, mark);
-  const events = ["did-navigate", "destroyed", "render-process-gone"] as const;
+  const events = ["did-navigate", "render-process-gone"] as const;
+  let unsubscribe = () => {};
   const clear = () => {
     if (wedgedWindows.get(windowId) === mark) wedgedWindows.delete(windowId);
     for (const event of events) guest.removeListener(event as never, clear);
+    unsubscribe();
   };
   for (const event of events) guest.once(event as never, clear);
+  unsubscribe = subscribeBrowserGuestDestroyed(guest, clear);
   cancelled.then(clear, clear);
 }
 
@@ -1056,9 +1130,20 @@ async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTa
   }
 }
 
+// Protocol input stays in guest CSS pixels; native local receipts use zoomed float32 DIP coordinates.
+function nativeInputPoint(guest: WebContents, x: unknown, y: unknown) {
+  const zoom = guest.getZoomFactor();
+  if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)
+    || !Number.isFinite(zoom) || zoom <= 0) {
+    throw new BrowserActionError("no-pointer-position", "the page has no valid native pointer coordinates");
+  }
+  return { x: Math.fround(x * Math.fround(zoom)), y: Math.fround(y * Math.fround(zoom)), zoom };
+}
+
 // Pointer echoes prove the native page recipient before contact; both pointer and touch dispatch use viewport coordinates.
 function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostContentOrigin) {
   let positionKnown = false;
+  let positionZoom: number | undefined;
   type PointerEcho = { type?: string; x?: number; y?: number; globalX?: number; globalY?: number };
   return {
     // The exact page point and its native screen echo must be observed before a contact starts.
@@ -1066,14 +1151,14 @@ function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostCon
       if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
       // An echo that never comes must leave no earlier receipt behind for the press that follows.
       positionKnown = false;
-      const point = { x: params.x, y: params.y };
+      const point = nativeInputPoint(guest, params.x, params.y);
       let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
       let timer: ReturnType<typeof setTimeout>;
       const echo = new Promise<PointerEcho | null>((resolve) => {
         timer = setTimeout(() => resolve(null), POINTER_ECHO_MAX_MS);
         onInput = (_event, input) => {
-          if (input.type !== "mouseMove" || input.x !== point.x || input.y !== point.y) return;
-          if (typeof input.globalX !== "number" || typeof input.globalY !== "number") return;
+          if (input.type !== "mouseMove" || input.x !== point.x || input.y !== point.y || guest.isDestroyed() || guest.getZoomFactor() !== point.zoom) return;
+          if (!Number.isFinite(input.globalX) || !Number.isFinite(input.globalY)) return;
           clearTimeout(timer);
           resolve(input);
         };
@@ -1089,8 +1174,9 @@ function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostCon
           try {
             const seen = await echo;
             const host = hostContentOrigin(guest);
-            if (!seen || !host) throw new BrowserActionError("no-pointer-position", "the page did not report the pointer move in its window");
+            if (!seen || !host || guest.getZoomFactor() !== point.zoom) throw new BrowserActionError("no-pointer-position", "the page did not report the pointer move in its window");
             positionKnown = true;
+            positionZoom = point.zoom;
           } finally { stop(); }
         },
       };
@@ -1100,7 +1186,7 @@ function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostCon
       if (method !== "Input.dispatchTouchEvent") return params;
       const points = (params?.touchPoints as Array<{ x: number; y: number }> | undefined) ?? [];
       if (points.length === 0) return params;
-      if (!positionKnown) {
+      if (!positionKnown || guest.getZoomFactor() !== positionZoom) {
         throw new BrowserActionError("no-pointer-position", "could not tell where the page sits in its window, so nothing was pressed; try again");
       }
       return params;
@@ -1111,10 +1197,12 @@ function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostCon
 // One live registry tab and the signal that cancels its action.
 type LiveTab = BrowserActionTab<WebContents>;
 
-async function targetFor(live: LiveTab, attribution: InputAttribution, hostContentOrigin: HostContentOrigin, input = false): Promise<ActionTarget> {
+async function targetFor(live: LiveTab, attribution: InputAttribution, hostContentOrigin: HostContentOrigin, input = false, pageSession?: PageSession): Promise<ActionTarget> {
   const guest = live.tab.guest;
   if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
   const approval = live.approval;
+  let emulatedFocus = false;
+  let emulatedFocusNode: number | undefined;
   const assertGuest = () => {
     throwIfAborted(live.signal);
     if (guest.isDestroyed() || live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was closed or replaced");
@@ -1127,12 +1215,14 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       || approval.documentId !== live.tab.documentId || approval.controlGeneration !== live.tab.controlGeneration)) {
       throw new BrowserActionError("document-changed", "this tab or document is no longer the approved target; nothing more was done");
     }
-    if (keyboard && guest.focusedFrame !== guest.mainFrame) {
+    if (keyboard && guest.focusedFrame !== guest.mainFrame
+      && !(emulatedFocus && guest.focusedFrame === null && emulatedFocusNode !== undefined)) {
       throw new BrowserActionError("wrong-input-target", "keyboard focus belongs to another frame; nothing more was done");
     }
   };
   assertCurrent(false);
-  const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+  const session = pageSession ?? await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+  session.assertCurrent();
   assertCurrent(false);
   const touch = createTouchPositionGuard(guest, hostContentOrigin);
   // A touch start went out and its sequence is not ended yet.
@@ -1149,10 +1239,41 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   } | undefined;
   // While a press holds the window: when its budget runs out.
   let pressDeadline: number | null = null;
+  const returnNativeRouting = async () => {
+    await attribution.releaseFocus(guest.id, live.leaseId);
+    if (guest.isDestroyed() || !attribution.isParkedAgentGuest(guest.id)) return;
+    const host = guest.hostWebContents;
+    if (!host) throw new BrowserActionError("no-focus", "the parked page has no owning keyboard surface");
+    if (!host.isFocused()) return;
+    const restored = await pollUntil(new AbortController().signal, RELEASE_MAX_MS, async () => {
+      if (guest.isDestroyed() || !host.isFocused()) return true;
+      const focused = host.focusedFrame;
+      return focused === null || !guest.mainFrame.framesInSubtree.includes(focused) ? true : undefined;
+    });
+    if (!restored) throw new BrowserActionError("no-focus", "the parked page did not return native keyboard routing to the visible surface");
+  };
+  const preparePageFocus = async () => {
+    if (emulatedFocus || !attribution.isParkedAgentGuest(guest.id)) return;
+    assertCurrent(false);
+    await attribution.focusGuest(guest.id);
+    assertCurrent(false);
+    emulatedFocus = true;
+    await session.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    assertCurrent(false);
+  };
   const cdp: CdpSession = {
     onEvent: (listener) => session.onEvent(listener),
     send: async (method, params) => {
       assertCurrent(method === "Input.dispatchKeyEvent" || method === "Input.insertText");
+      if (method === "DOM.focus" && emulatedFocus) {
+        const document = await session.send("DOM.getDocument", { depth: -1, pierce: true }) as { root?: Parameters<typeof mainDocumentContainsNode>[0] };
+        const nodeId = params?.backendNodeId;
+        if (typeof nodeId !== "number" || !mainDocumentContainsNode(document.root, nodeId)) {
+          throw new BrowserActionError("wrong-input-target", "the focus target is outside the main document; nothing more was done");
+        }
+        assertCurrent(false);
+        emulatedFocusNode = nodeId;
+      }
       if (method === "Input.setInterceptDrags") {
         if (!nativeDrag || typeof params?.enabled !== "boolean") throw new BrowserActionError("drag-unavailable", "no native drag sequence owns interception");
         if (params.enabled) { nativeDrag.enabled = true; nativeDrag.disabled = false; }
@@ -1169,7 +1290,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       if (phase === "touchStart") touchOpen = true;
       if (phase === "touchMove") touchMoved = true;
       if (method === "Input.dispatchMouseEvent" && (params?.type === "mousePressed" || params?.type === "mouseReleased")) {
-        attribution.armMouse(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: params.x as number, y: params.y as number, button: "left", clickCount: 1 });
+        const point = nativeInputPoint(guest, params.x, params.y);
+        attribution.armMouse(guest.id, { type: params.type === "mousePressed" ? "mouseDown" : "mouseUp", x: point.x, y: point.y, button: "left", clickCount: 1 });
       }
       if (method === "Input.dispatchMouseEvent" && params?.type === "mousePressed") mouseOpen = true;
       if (method === "Input.dispatchMouseEvent" && params?.type === "mouseMoved" && params.buttons === 1 && nativeDrag) nativeDrag.awaitingPayload = true;
@@ -1193,6 +1315,11 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         }
         if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") mouseOpen = false;
         await echo?.settle();
+        if (emulatedFocus && (phase === "touchStart" || method === "DOM.focus"
+          || method === "Input.dispatchMouseEvent" && params?.type === "mousePressed")) {
+          // Keep native keyboard routing with chrome while page-local focus remains emulated.
+          await returnNativeRouting();
+        }
         // The action guard owns input completion: its last input may navigate.
         if (method.startsWith("Input.")) assertGuest();
         else assertCurrent(false);
@@ -1357,9 +1484,20 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         }
       });
     },
-    releaseFocus: () => attribution.releaseFocus(guest.id),
+    releaseFocus: async (restoreNativeFocus = true) => {
+      const releaseReceipt = restoreNativeFocus || emulatedFocus;
+      try {
+        if (emulatedFocus) {
+          emulatedFocus = false;
+          await session.send("Emulation.setFocusEmulationEnabled", { enabled: false });
+        }
+      } finally {
+        if (releaseReceipt) await returnNativeRouting();
+      }
+    },
     focusPage: async () => {
       assertCurrent(false);
+      if (attribution.isParkedAgentGuest(guest.id)) { await preparePageFocus(); return; }
       try { await attribution.focusGuest(guest.id); }
       catch { assertCurrent(false); throw new BrowserActionError("no-focus", "the approved page did not take native keyboard focus"); }
       assertCurrent(false);
@@ -1368,7 +1506,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
       });
       if (!focused) throw new BrowserActionError("no-focus", "the approved main frame did not take native keyboard focus");
     },
-    onDestroyed: (listener) => { guest.once("destroyed", listener); return () => { guest.removeListener("destroyed", listener); }; },
+    preparePageFocus,
+    onDestroyed: (listener) => subscribeBrowserGuestDestroyed(guest, listener),
     signal: live.signal,
     documentId: () => live.tab.documentId,
     navigationOutcome: () => !live.callerSignal?.aborted && live.tab.controlMode !== "human-paused" && live.tab.guest === guest && !guest.isDestroyed() && live.tab.lease?.id === live.leaseId,
@@ -1379,41 +1518,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   };
 }
 
-// The approved load may change documents; caller and control cancellation still stop it.
-function navigationLifecycle(live: LiveTab, guest: WebContents): { signal: AbortSignal; stop(): void } {
-  throwIfAborted(live.signal);
-  const controller = new AbortController();
-  let stopped = false;
-  let unwatch = () => {};
-  const valid = () => !guest.isDestroyed() && live.tab.guest === guest && live.tab.controlMode !== "human-paused"
-    && live.leaseId !== undefined && live.tab.lease?.id === live.leaseId;
-  if (!valid() || (live.approval && (live.approval.tabId !== live.tab.handle || live.approval.documentId !== live.tab.documentId
-    || live.approval.controlGeneration !== live.tab.controlGeneration))) {
-    throw new BrowserActionError("document-changed", "the navigation target or control lease changed before loading");
-  }
-  const cancelCaller = () => controller.abort(live.callerSignal?.reason ?? new Error("navigation cancelled"));
-  const destroyed = () => controller.abort(new Error("the browser tab was closed"));
-  const watch = (signal: AbortSignal) => {
-    if (stopped || controller.signal.aborted) return;
-    unwatch();
-    const changed = () => {
-      if (signal.reason instanceof BrowserDocumentChangedError && !live.callerSignal?.aborted && valid()) {
-        // The registry installs the new document controller after aborting the previous one. Observe that controller at the next microtask boundary.
-        queueMicrotask(() => { if (!stopped) { if (valid()) watch(live.tab.actions.signal); else destroyed(); } });
-      } else controller.abort(signal.reason);
-    };
-    signal.addEventListener("abort", changed, { once: true });
-    unwatch = () => { signal.removeEventListener("abort", changed); };
-    if (signal.aborted) changed();
-  };
-  live.callerSignal?.addEventListener("abort", cancelCaller, { once: true });
-  if (live.callerSignal?.aborted) cancelCaller();
-  guest.once("destroyed", destroyed);
-  watch(live.signal);
-  return { signal: controller.signal, stop: () => {
-    stopped = true; unwatch(); live.callerSignal?.removeEventListener("abort", cancelCaller); guest.removeListener("destroyed", destroyed);
-  } };
-}
+// Fresh adapters share page interception and its native destruction cleanup.
+const siteGates = new WeakMap<WebContents, BrowserSiteNavigationGate>();
 
 // The page actions over real guests, as browser-tools.ts calls them. `origin` is the tools' own origin rule, passed in so both sides use one definition.
 export function createBrowserPageActions(
@@ -1422,26 +1528,70 @@ export function createBrowserPageActions(
   hostContentOrigin: HostContentOrigin,
   previewHost: AgentPreviewHost,
 ): BrowserPageActions<WebContents> {
+  const withActivity = createBrowserTabActivity((guestId, awake) => attribution.setAgentTabAwake(guestId, awake));
+  const awake = async <T>(live: LiveTab, act: () => Promise<T>): Promise<T> => {
+    const guest = live.tab.guest;
+    if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+    if (live.tab.opener !== "agent" || live.tab.owner === null || live.tab.targetKind !== "embedded") return act();
+    const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+    return withActivity(guest, live.signal, () => browserLayoutReady(session), act);
+  };
+  const installSiteGate = async (live: LiveTab, guest: WebContents, session: PageSession, signal: AbortSignal) => {
+    session.assertCurrent();
+    if (!live.authorizeSite) return;
+    setBrowserPopupNavigation(live);
+    siteGates.get(guest)?.();
+    const frameId = (await frameTree(session)).frame.id;
+    const stop = await gateBrowserSiteNavigation(session, frameId, {
+      userControlled: () => live.tab.opener === "user" || live.tab.controlMode === "human-paused",
+      active: () => !guest.isDestroyed() && live.tab.guest === guest && live.tab.controlMode !== "human-paused" && live.tab.lease?.id === live.leaseId && !live.callerSignal?.aborted,
+      authorize: live.authorizeSite,
+      signal,
+    });
+    try { session.assertCurrent(); }
+    catch (error) { stop(); throw error; }
+    let unsubscribe = () => {};
+    const dispose = () => { stop(); unsubscribe(); };
+    siteGates.set(guest, Object.assign(dispose, { waiting: stop.waiting, pausedMs: stop.pausedMs, assertAllowed: stop.assertAllowed }));
+    unsubscribe = subscribeBrowserGuestDestroyed(guest, dispose);
+  };
+  const observeChallenge = async (live: LiveTab, guest: WebContents, session: CdpSession, signal: AbortSignal): Promise<BrowserChallenge | undefined> => {
+    const documentId = live.tab.documentId;
+    let challenge: BrowserChallenge | undefined;
+    try { challenge = await detectBrowserChallenge(session, guest.getTitle(), signal); }
+    catch { throwIfAborted(signal); } // Optional observation must not fail an otherwise usable page on unsupported reads.
+    throwIfAborted(signal);
+    if (guest.isDestroyed() || live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was closed or replaced");
+    return live.tab.documentId === documentId ? challenge : undefined;
+  };
   // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
   // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
-  const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => {
+  const tracked = async (live: LiveTab, act: (session: PageSession) => Promise<void>): Promise<void> => awake(live, async () => {
     const guest = live.tab.guest;
     if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+    const lifecycle = browserControlLifecycle(live, guest, listener => subscribeBrowserGuestDestroyed(guest, listener));
     actionNavigations.get(guest)?.stop();
     actionNavigations.delete(guest);
     const navigation = await watchActionNavigation(guest as unknown as NavigationGuest, session);
     try {
-      await act();
+      await installSiteGate(live, guest, session, lifecycle.signal);
+      session.assertCurrent();
+      await act(session);
       try { await session.send("Page.enable"); } catch (err) {
         throw new BrowserActionError("tab-gone", `the action was sent, but the tab stopped answering: ${(err as Error).message.slice(0, 200)}`, true);
       }
     } catch (err) {
       navigation.stop();
+      lifecycle.cancel();
       throw err;
     }
-    actionNavigations.set(guest, navigation);
-  };
+    actionNavigations.set(guest, {
+      get requested() { return navigation.requested; },
+      outcome: (_signal, maxMs) => navigation.outcome(lifecycle.signal, maxMs, siteGates.get(guest)),
+      stop: () => { navigation.stop(); lifecycle.cancel(); },
+    });
+  });
   return {
     prepare: async (live) => {
       const guest = live.tab.guest;
@@ -1450,41 +1600,64 @@ export function createBrowserPageActions(
       throwIfAborted(live.signal);
       if (live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was replaced");
     },
-    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
-      snapshot(await targetFor(live, attribution, hostContentOrigin), options),
-    screenshot: async (live: LiveTab, options) => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options),
-    capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),
-    hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
-    drag: async (live, sourceRef, targetRef) => tracked(live, async () => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef)),
-    select: async (live, ref, value) => tracked(live, async () => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value)),
-    scroll: async (live, ref, direction, pixels) => tracked(live, async () => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels)),
-    upload: async (live, ref, options) => {
-      if (!live.approval) throw new BrowserActionError("upload-unapproved", "upload requires approval for the current document");
-      return upload(await targetFor(live, attribution, hostContentOrigin, true), ref, { ...options, ...live.approval, ref, signal: live.signal });
-    },
-    waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
-      waitFor(await targetFor(live, attribution, hostContentOrigin), options),
-    click: async (live: LiveTab, ref: string) =>
-      tracked(live, async () => click(await targetFor(live, attribution, hostContentOrigin, true), ref, browserRefs, live.onObservationTarget)),
-    type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
-      tracked(live, async () => type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options, browserRefs, live.onObservationTarget)),
-    pressKey: async (live: LiveTab, key: string, ref?: string) =>
-      tracked(live, async () => pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref)),
-    navigate: async (live: LiveTab, url: string, approvedOrigin: string) => {
+    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) => awake(live, async () => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-      const lifecycle = navigationLifecycle(live, guest);
-      try { return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf); }
-      finally { lifecycle.stop(); }
-    },
+      const target = await targetFor(live, attribution, hostContentOrigin);
+      const shot = await snapshot(target, options);
+      const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+      const challenge = await observeChallenge(live, guest, session, live.signal);
+      target.assertCurrent?.(false);
+      return { ...shot, ...(challenge ? { challenge } : {}) };
+    }),
+    screenshot: async (live: LiveTab, options) => awake(live, async () => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options)),
+    capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),
+    hover: async (live, ref) => tracked(live, async (session) => hover(await targetFor(live, attribution, hostContentOrigin, true, session), ref)),
+    drag: async (live, sourceRef, targetRef) => tracked(live, async (session) => drag(await targetFor(live, attribution, hostContentOrigin, true, session), sourceRef, targetRef)),
+    select: async (live, ref, value) => tracked(live, async (session) => select(await targetFor(live, attribution, hostContentOrigin, true, session), ref, value)),
+    scroll: async (live, ref, direction, pixels) => tracked(live, async (session) => scroll(await targetFor(live, attribution, hostContentOrigin, true, session), ref, direction, pixels)),
+    upload: async (live, ref, options) => awake(live, async () => {
+      if (!live.approval) throw new BrowserActionError("upload-unapproved", "upload requires approval for the current document");
+      return upload(await targetFor(live, attribution, hostContentOrigin, true), ref, { ...options, ...live.approval, ref, signal: live.signal });
+    }),
+    waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
+      awake(live, async () => waitFor(await targetFor(live, attribution, hostContentOrigin), options)),
+    click: async (live: LiveTab, ref: string) =>
+      tracked(live, async (session) => click(await targetFor(live, attribution, hostContentOrigin, true, session), ref, browserRefs, live.onObservationTarget)),
+    type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
+      tracked(live, async (session) => type(await targetFor(live, attribution, hostContentOrigin, true, session), ref, text, options, browserRefs, live.onObservationTarget)),
+    pressKey: async (live: LiveTab, key: string, ref?: string) =>
+      tracked(live, async (session) => pressKey(await targetFor(live, attribution, hostContentOrigin, true, session), key, ref)),
+    navigate: async (live: LiveTab, url: string, approvedOrigin: string) => awake(live, async () => {
+      const guest = live.tab.guest;
+      if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+      const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+      const lifecycle = browserControlLifecycle(live, guest, listener => subscribeBrowserGuestDestroyed(guest, listener));
+      try {
+        await installSiteGate(live, guest, session, lifecycle.signal);
+        session.assertCurrent();
+        const loaded = await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined, siteGates.get(guest));
+        const documentId = live.tab.documentId;
+        const challenge = await observeChallenge(live, guest, session, lifecycle.signal);
+        const gate = siteGates.get(guest);
+        while (gate?.waiting()) { gate.assertAllowed(); await sleep(SETTLE_POLL_MS, lifecycle.signal); }
+        gate?.assertAllowed();
+        throwIfAborted(lifecycle.signal);
+        session.assertCurrent();
+        return { ...loaded, url: guest.getURL(), loading: guest.isLoading(), ...(challenge && live.tab.documentId === documentId ? { challenge } : {}) };
+      }
+      finally { lifecycle.cancel(); }
+    }),
     settle: async (live: LiveTab) => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
       const navigation = actionNavigations.get(guest);
       actionNavigations.delete(guest);
       const started = Date.now();
+      const gate = siteGates.get(guest);
+      const pausedBefore = gate?.pausedMs() ?? 0;
       try { await navigation?.outcome(live.signal, SETTLE_MAX_MS); } finally { navigation?.stop(); }
-      return settle(guest, live.signal, Math.max(0, SETTLE_MAX_MS - (Date.now() - started)));
+      return settle(guest, live.signal, Math.max(0, SETTLE_MAX_MS - (Date.now() - started - ((gate?.pausedMs() ?? 0) - pausedBefore))));
     },
   };
 }

@@ -56,6 +56,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
   });
 
   browserTabRegistry.setRendererLink({
+    isWindowFocused: (windowId) => getMainWindows().some(window => window.id === windowId && !window.isDestroyed() && window.isFocused()),
     isWindowVisible: (windowId) => {
       const window = getMainWindows().find((candidate) => candidate.id === windowId);
       return window !== undefined && !window.isDestroyed() && window.isVisible() && !window.isMinimized();
@@ -81,7 +82,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       return { ok: false, error: "unauthorized-frame" };
     }
     const win = mainWindowForContents(e.sender);
-    const record = (payload ?? {}) as { tabId?: unknown; webContentsId?: unknown; requestId?: unknown };
+    const record = (payload ?? {}) as { tabId?: unknown; webContentsId?: unknown; requestId?: unknown; parked?: unknown };
     const tabId = asTabId(record.tabId);
     const webContentsId = record.webContentsId;
     if (
@@ -90,6 +91,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       || typeof webContentsId !== "number"
       || !Number.isInteger(webContentsId)
       || (record.requestId !== undefined && typeof record.requestId !== "string")
+      || (record.parked !== undefined && typeof record.parked !== "boolean")
     ) {
       return { ok: false, error: "bad-request" };
     }
@@ -97,7 +99,19 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       tabId,
       webContentsId,
       ...(typeof record.requestId === "string" ? { requestId: record.requestId } : {}),
+      ...(typeof record.parked === "boolean" ? { parked: record.parked } : {}),
     });
+  });
+
+  ipcMain.handle(CHANNELS.browser.completeFocus, (e, payload: unknown): { ok: boolean } => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.browser.completeFocus, e);
+      return { ok: false };
+    }
+    const win = mainWindowForContents(e.sender);
+    const record = payload as { requestId?: unknown; restored?: unknown } | null;
+    if (!win || typeof record?.requestId !== "string" || typeof record.restored !== "boolean") return { ok: false };
+    return { ok: browserTabRegistry.completeFocus(win.id, record.requestId, record.restored) };
   });
 
   ipcMain.handle(CHANNELS.browser.refuseTabOp, (e, payload: unknown): { ok: boolean } => {

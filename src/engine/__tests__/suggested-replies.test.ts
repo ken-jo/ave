@@ -6,6 +6,14 @@ import {
 } from "../suggested-replies.js";
 
 describe("parseSuggestedReply", () => {
+  it.each(["{text}", "{…}", "<text>", "...", "…", "  "])("drops placeholder-only candidates: %s", (candidate) => {
+    expect(parseSuggestedReply(`<suggested_replies>\n- ${candidate}\n</suggested_replies>`)).toBeNull();
+    expect(parseSuggestedReply(`<suggested_replies>\n- ${candidate}\n- Continue the review\n</suggested_replies>`)).toBe("Continue the review");
+  });
+
+  it("keeps real replies containing template-like text", () => {
+    expect(parseSuggestedReply("<suggested_replies>\n- Explain {text} in this example\n</suggested_replies>")).toBe("Explain {text} in this example");
+  });
   it("returns null when no block is present", () => {
     expect(parseSuggestedReply("plain text response")).toBeNull();
   });

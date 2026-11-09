@@ -11,6 +11,7 @@ import {
 export function buildBrowserTabsApiSurface(): BrowserTabsApi {
   return {
     bindTab: (request) => ipcRenderer.invoke(CHANNELS.browser.bindTab, request),
+    completeFocus: (requestId, restored) => ipcRenderer.invoke(CHANNELS.browser.completeFocus, { requestId, restored }),
     refuseTabOp: (requestId) => ipcRenderer.invoke(CHANNELS.browser.refuseTabOp, { requestId }),
     getState: async () => {
       const state = parseBrowserTabControlState(await ipcRenderer.invoke(CHANNELS.browser.getState));

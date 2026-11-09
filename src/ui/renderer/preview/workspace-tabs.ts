@@ -1,3 +1,4 @@
+import type { BrowserSessionActor } from "../../../shared/browser-surface.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeBrowserNavigationUrl } from "./url-safety.js";
 import { publishLiveWebTabs, withdrawLiveWebTabs } from "./web-surfaces.js";
@@ -38,13 +39,26 @@ export interface WorkspaceTab {
   /** Set on a browser tab opened for the agent's `browser_tab_new`: main's request id, echoed on the tab's bind so main can
    * tell the agent opened it. */
   agentRequestId?: string;
-  /** The chat whose agent opened this tab; only that chat lists it. */
+  /** The session whose agent opened this tab; its ancestor conversations can also list it. */
   agentSessionId?: string;
 }
 
 /** Whether a chat's panel lists this tab: another chat's agent tab stays mounted but unlisted. */
-export function tabVisibleTo(tab: WorkspaceTab, sessionId: string | null | undefined): boolean {
-  return tab.agentSessionId === undefined || tab.agentSessionId === sessionId;
+export function tabVisibleTo(tab: WorkspaceTab, sessionId: string | null | undefined, owners?: ReadonlySet<string>): boolean {
+  return tab.agentSessionId === undefined || tab.agentSessionId === sessionId || owners?.has(tab.agentSessionId) === true;
+}
+
+export function browserTabOwners(sessionId: string | null | undefined, actors: readonly (BrowserSessionActor | null)[]): ReadonlySet<string> {
+  const owners = new Set<string>(sessionId ? [sessionId] : []);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const actor of actors) if (actor?.directParentSessionId && owners.has(actor.directParentSessionId) && !owners.has(actor.sessionId)) {
+      owners.add(actor.sessionId);
+      changed = true;
+    }
+  }
+  return owners;
 }
 
 export interface WorkspaceTabsStore {

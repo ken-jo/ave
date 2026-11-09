@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { parse } from "yaml";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -26,6 +27,13 @@ beforeEach(() => {
   writeFileSync(curl, `#!/usr/bin/env bash
 set -eu
 printf 'fetch\\n' >> "$FIXTURE_ROOT/fetches"
+printf '%s\\n' "$@" >> "$FIXTURE_ROOT/curl-args"
+if [ "\${FIXTURE_HASH_STDIN:-}" = true ]; then
+  sha256sum >> "$FIXTURE_ROOT/curl-stdin"
+else
+  cat >> "$FIXTURE_ROOT/curl-stdin"
+fi
+if [ "\${FIXTURE_CURL_EXIT:-0}" != 0 ]; then exit "$FIXTURE_CURL_EXIT"; fi
 while [ "$1" != --output ]; do shift; done
 cp "$FIXTURE_ROOT/source/$(basename "$3")" "$2"
 `);
@@ -35,12 +43,101 @@ cp "$FIXTURE_ROOT/source/$(basename "$3")" "$2"
   writeFileSync(versionFile, "1.4.4\n");
   env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, FIXTURE_ROOT: root,
     RUNNER_TEMP: root, RUNNER_OS: "Windows", RUNNER_ARCH: "X64", BUN_VERSION_FILE: versionFile,
-    GITHUB_OUTPUT: outputs, VERSION: "1.4.4", ASSET: asset, PINNED: pinned, CACHE_HIT: "false" };
+    GITHUB_OUTPUT: outputs, VERSION: "1.4.4", ASSET: asset, PINNED: pinned, CACHE_HIT: "false",
+    GITHUB_TOKEN: "", GH_TOKEN: "" };
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 const run = (mode: string) => spawnSync("bash", [script, mode], { env, encoding: "utf8" });
 
 describe("runtime archive cache", () => {
+  it.each([0, 22])("keeps credentials out of xtrace and logs when curl exits %s", (exitCode) => {
+    const token = "trace-private-token";
+    const unusedToken = "trace-unused-private-token";
+    env.GITHUB_TOKEN = token;
+    env.GH_TOKEN = unusedToken;
+    env.FIXTURE_HASH_STDIN = "true";
+    env.FIXTURE_CURL_EXIT = String(exitCode);
+    const result = spawnSync("bash", ["-x", script, "verify"], { env, encoding: "utf8" });
+    expect(result.status).toBe(exitCode);
+    expect(result.stderr).toContain(exitCode === 0 ? "+ sha256sum" : "+ exit 22");
+    writeFileSync(join(root, "stdout.log"), result.stdout);
+    writeFileSync(join(root, "stderr.log"), result.stderr);
+    for (const file of ["stdout.log", "stderr.log", "curl-args", "curl-stdin", "fetches"]) {
+      const logged = readFileSync(join(root, file), "utf8");
+      expect(logged).not.toContain(token);
+      expect(logged).not.toContain(unusedToken);
+    }
+    const requests = exitCode === 0 ? 2 : 1;
+    const digest = createHash("sha256").update(`Authorization: Bearer ${token}\n`).digest("hex");
+    expect(readFileSync(join(root, "curl-stdin"), "utf8")).toBe(`${digest}  -\n`.repeat(requests));
+    const args = readFileSync(join(root, "curl-args"), "utf8").trim().split("\n");
+    expect(args.filter((arg) => arg === "--header")).toHaveLength(requests);
+    expect(args.filter((arg) => arg === "@-")).toHaveLength(requests);
+  });
+
+  it.each([
+    ["primary-token", "secondary-token", "primary-token"],
+    ["", "secondary-token", "secondary-token"],
+    ["", "", ""],
+  ])("authenticates release requests with the available token (%s, %s)", (primary, secondary, expected) => {
+    env.GITHUB_TOKEN = primary;
+    env.GH_TOKEN = secondary;
+    const result = run("verify");
+    expect(result.status, result.stderr).toBe(0);
+    const args = readFileSync(join(root, "curl-args"), "utf8").trim().split("\n");
+    const stdin = readFileSync(join(root, "curl-stdin"), "utf8");
+    expect(args.filter((arg) => arg === "--header")).toHaveLength(expected ? 2 : 0);
+    expect(args.filter((arg) => arg === "@-")).toHaveLength(expected ? 2 : 0);
+    expect(stdin).toBe((expected ? `Authorization: Bearer ${expected}\n` : "\n").repeat(2));
+    for (const token of [primary, secondary].filter(Boolean)) expect(args.join("\n")).not.toContain(token);
+    expect(args.join("\n")).not.toContain("Authorization:");
+    expect(args.filter((arg) => arg.startsWith("https://"))).toEqual([
+      `https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/${asset}.zip`,
+      "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/SHASUMS256.txt",
+    ]);
+    if (expected) expect(result.stdout + result.stderr).not.toContain(expected);
+  });
+
+  it("removes authorization when the download redirects to another host", async () => {
+    env.GITHUB_TOKEN = "redirect-token";
+    expect(run("verify").status).toBe(0);
+    const args = readFileSync(join(root, "curl-args"), "utf8").trim().split("\n");
+    expect(args).toContain("--location");
+    expect(args).not.toContain("--location-trusted");
+    expect(args[args.indexOf("--header") + 1]).toBe("@-");
+    const header = readFileSync(join(root, "curl-stdin"), "utf8").split("\n")[0];
+    const received: (string | undefined)[] = [];
+    const server = createServer((request, response) => {
+      received.push(request.headers.authorization);
+      if (request.url === "/release") {
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("missing server port");
+        response.writeHead(302, { Location: `http://localhost:${address.port}/asset` });
+      }
+      response.end("archive");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing server port");
+      const result = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
+        const child = spawn("curl", ["--fail", "--silent", "--show-error", "--location", "--noproxy", "*",
+          "--resolve", `localhost:${address.port}:127.0.0.1`, "--max-time", "10", "--header", "@-",
+          `http://127.0.0.1:${address.port}/release`], { env: process.env });
+        expect(child.spawnargs.join("\n")).not.toContain("redirect-token");
+        let stderr = "";
+        child.stderr.on("data", (chunk) => { stderr += chunk; });
+        child.on("error", reject);
+        child.on("close", (code) => resolve({ code, stderr }));
+        child.stdin.end(`${header}\n`);
+      });
+      expect(result.code, result.stderr).toBe(0);
+      expect(received).toEqual(["Bearer redirect-token", undefined]);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
   it.each([
     ["Linux", "X64", "bun-linux-x64"],
     ["Linux", "ARM64", "bun-linux-aarch64"],

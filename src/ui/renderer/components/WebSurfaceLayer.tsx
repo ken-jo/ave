@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
-import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
+import { bindGuestToTab, reportGuestParking } from "../preview/agent-browser-bridge.js";
 import type { AveApi } from "../types.js";
 import {
   getWebSurfaceOccluders,
@@ -19,6 +19,7 @@ import {
   setWebSurfaceElement,
   forgetWebSurfaceLocation,
   noteWebSurfaceLocation,
+  noteWebSurfaceTitle,
   setWebSurfaceSlot,
   clearWebSurfaceSlot,
   setWebSurfaceUrl,
@@ -34,6 +35,7 @@ const WEB_SURFACE_LAYER_Z = 40;
 const SETTLE_FRAMES = 24;
 /** Low-rate safety pass while a guest is visible: catches moves nothing reported. */
 const IDLE_CHECK_MS = 1000;
+let lastContentSize = { width: "1024px", height: "768px" };
 
 interface Box {
   left: number;
@@ -132,13 +134,29 @@ interface Placed {
   frame: HTMLElement;
   guest: HTMLElement;
   key: string;
+  parked?: boolean;
+  reporting?: boolean;
+  reportParking: (parked: boolean) => Promise<boolean>;
 }
 
 const placed = new Map<string, Placed>();
 
-/** Measure every guest's slot and write the frames that moved. Exported for the budget probe. */
 let dragApplied = false;
 
+function reportPlacementParking(tabId: string, entry: Placed, parked: boolean): void {
+  if (entry.parked !== parked && !entry.reporting && typeof (entry.guest as HTMLElement & { getWebContentsId?: unknown }).getWebContentsId === "function") {
+    entry.reporting = true;
+    entry.parked = undefined;
+    void entry.reportParking(parked).then((accepted) => {
+      entry.reporting = false;
+      if (placed.get(tabId) !== entry || !accepted) return;
+      entry.parked = parked;
+      requestWebSurfaceLayout();
+    });
+  }
+}
+
+/** Measure every guest's slot and write the frames that moved. Exported for the budget probe. */
 export function placeWebSurfaces(): { visible: number; moved: number } {
   const drag = isSurfaceDragActive();
   dragApplied = drag;
@@ -149,6 +167,10 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
   for (const [tabId, entry] of placed) {
     const slot = getWebSurfaceSlot(tabId);
     const boxes = slot ? visibleBox(slot) : null;
+    const parked = boxes === null;
+    if (parked) reportPlacementParking(tabId, entry, true);
+    if (parked && entry.parked !== true && entry.key !== "" && entry.key !== "hidden" && entry.key !== "observed-hidden"
+      && typeof (entry.guest as HTMLElement & { getWebContentsId?: unknown }).getWebContentsId === "function") continue;
     let key: string;
     if (!boxes) {
       key = isHiddenWebSurfaceObserved(tabId) ? "observed-hidden" : "hidden";
@@ -177,6 +199,7 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
         guestStyle.top = `${s.top - v.top}px`;
         guestStyle.width = `${s.right - s.left}px`;
         guestStyle.height = `${s.bottom - s.top}px`;
+        lastContentSize = { width: guestStyle.width, height: guestStyle.height };
       }
     }
     if (key !== entry.key) moved += 1;
@@ -190,7 +213,21 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
       if (observed) entry.frame.setAttribute("aria-hidden", "true");
       else entry.frame.removeAttribute("aria-hidden");
       entry.frame.style.pointerEvents = "none";
+      if (observed) {
+        const width = entry.guest.style.width || lastContentSize.width;
+        const height = entry.guest.style.height || lastContentSize.height;
+        entry.frame.style.left = "0px";
+        entry.frame.style.top = "0px";
+        entry.frame.style.width = width;
+        entry.frame.style.height = height;
+        entry.frame.style.clipPath = "";
+        entry.guest.style.left = "0px";
+        entry.guest.style.top = "0px";
+        entry.guest.style.width = width;
+        entry.guest.style.height = height;
+      }
     }
+    if (!parked) reportPlacementParking(tabId, entry, false);
     entry.key = key;
   }
   return { visible: visibleCount, moved };
@@ -240,13 +277,19 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
       }
     };
     const onAttach = () => forgetWebSurfaceLocation(surface.tabId);
+    const onTitle = (event: Event) => {
+      const title = (event as Event & { title?: string }).title;
+      if (typeof title === "string") noteWebSurfaceTitle(surface.tabId, title);
+    };
     guest.addEventListener("did-attach", onAttach);
     guest.addEventListener("did-navigate", onNavigate);
     guest.addEventListener("did-navigate-in-page", onNavigate);
+    guest.addEventListener("page-title-updated", onTitle);
     return () => {
       guest.removeEventListener("did-attach", onAttach);
       guest.removeEventListener("did-navigate", onNavigate);
       guest.removeEventListener("did-navigate-in-page", onNavigate);
+      guest.removeEventListener("page-title-updated", onTitle);
     };
   }, [surface.tabId]);
 
@@ -262,12 +305,12 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
     const frame = frameRef.current;
     const guest = guestRef.current;
     if (!frame || !guest) return undefined;
-    placed.set(surface.tabId, { frame, guest, key: "" });
+    placed.set(surface.tabId, { frame, guest, key: "", reportParking: (parked) => reportGuestParking(api, guest, surface.tabId, parked) });
     requestWebSurfaceLayout();
     return () => {
       placed.delete(surface.tabId);
     };
-  }, [surface.tabId]);
+  }, [api, surface.tabId]);
 
   return (
     <div

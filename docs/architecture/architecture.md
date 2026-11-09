@@ -132,6 +132,10 @@ renderer-supplied session metadata cannot create agent provenance. A live
 sub-agent routes delivery through its nearest hosted ancestor while events
 retain the actual acting session. That validated host binding survives the end
 of the child run; session end or loss of window/frame ownership releases it.
+Browser live targets end with their acting model turn, even when the conversation
+continues. Each new turn retires the prior browser target and its download
+listeners before publishing a new target. Turn ownership is tracked independently
+of renderer view subscriptions, so releasing a view cannot skip control cleanup.
 The existing native input correlation limit still applies: a human click
 indistinguishable from an armed agent click cannot
 be separately identified. Observation does not strengthen that source proof.
@@ -158,16 +162,17 @@ downloads arriving after the command are excluded. Only state transitions are
 retained: started, completed, cancelled or interrupted.
 Filenames, destination paths and file contents are omitted. The original
 admitted item may complete after the command. Completion listeners end with
-the item, session, owning frame/window or observation runtime. Listener-capacity
+the item, acting model turn, session, owning frame/window or observation runtime. Listener-capacity
 overload emits resynchronization without interrupting the native download or
 throwing through its Save callback. Observation adds no download approval or
 automatic open behavior.
 
-A live preview shows the agent's hidden main browser pane in the owning
+A live preview shows the agent's retained hidden browser surface in the owning
 conversation's notices row above the composer: an activity strip beside a
 128x80 thumbnail button with a live badge. Clicking focuses the still-assigned
-original pane; moved or closed tabs do nothing. Only panes hidden by the group
-layout qualify, not merely unfocused panes or side-panel tabs. It is bound
+original surface; moved or closed tabs do nothing. Browser panes hidden by the
+group layout and conversation tabs in a closed panel or behind another panel
+tab qualify; merely unfocused visible panes do not. It is bound
 to the exact main-issued tab handle and observation target of the latest agent
 action for that renderer tab, and never falls back to another tab. Main admits
 only a tab that the acting session leases or owns, or whose owner's direct
@@ -176,10 +181,10 @@ grandparent or sibling session is refused), that is not paused by the user, and
 on which that session ran a command within the last 30 seconds. Recognized user
 input, address-bar navigation and Stop pause an agent-owned tab; the agent's own
 cross-origin navigation does not. User takeover, user navigation, idleness,
-session end and window or frame loss stop it. It reuses the guest's existing in-
+model-turn completion/interruption/error, session end and window or frame loss stop it. It reuses the guest's existing in-
 process debugger session through Chromium's screencast: it never attaches a
 debugger and opens no remote debugging port. Frames are JPEG, at most 640x400,
-every third compositor frame, and at most four forwarded per second with one
+including the first compositor frame of a static page, and at most four forwarded per second with one
 unrendered frame in flight. Main acknowledges every Chromium frame on receipt,
 independently of renderer delivery. The screencast is re-armed on each main-
 frame commit and after two seconds without a frame while Chromium reports the
@@ -1482,6 +1487,21 @@ through the tool releases its association and reports that the page was retained
 User chrome close destroys the actual tab; window/app shutdown releases its
 resources.
 
+At model-turn end, the host clears that turn's live browser presentation and
+returns its idle owned tabs to human control without clearing creator identity,
+opener provenance or the retained guest. Human-paused tabs keep their explicit
+Resume requirement. Exact-turn held leases retire publicly at once, while a
+private settlement fence excludes new actions until the old handler releases;
+late release cannot reactivate control. Newer-turn and non-model leases remain
+untouched. Subsequent actions still pass the same owner and permission gates.
+
+Agent new-window callbacks queue site admission and tab opening under the
+originating command's exact guest and lease. The command awaits that outcome
+before releasing control and reports popup errors. Document transitions preserve
+that lease lifetime; command failure, takeover, cancellation or lease loss aborts
+pending admission before a late grant can be recorded. Adapter cancellation and
+the command lifetime both constrain intercepted navigation consent.
+
 Native popups enter the registry only through the validated child-window
 callback. They keep the owning window, guarded session, opener relationship,
 and sandbox; they can have a tool handle without a renderer tab slot. Popups
@@ -1497,9 +1517,52 @@ Focusing an embedded page uses a main-owned `focus` operation addressed only by 
 renderer ID. It requires a visible owning window, that window's active embedded
 tab, and unchanged guest, document, control generation, and lease across awaits.
 Trusted renderer chrome focuses only the connected visible webview. Completion
-requires actual native guest focus; keyboard actions independently require
-`focusedFrame === mainFrame`. A renderer acknowledgement alone is insufficient.
+requires actual native guest focus for visible pages; keyboard actions independently require
+`focusedFrame === mainFrame`. Parked agent guests never borrow native focus. Their
+renderer-reported display state is distinct from the last-selected surface hint. Before hiding a visible guest, the renderer waits for main to acknowledge parking; main installs keyboard blocking and removes native guest focus before replying. A failed acknowledgement leaves the guest visible. Showing paints the surface before clearing parking. The host
+blocks unmarked native keyboard events to parked guests and returns accidental focus to
+visible chrome. Page-local focus emulation during an action does not route OS input
+to that page, and is released with its action receipt. A null native focused frame
+is accepted only after the exact focused node was proved part of the main document;
+an actual different focused frame remains refused. A renderer acknowledgement alone is insufficient.
 Popups require their registered native focus callback and observed native focus.
+
+Parked input records its exact control lease without capturing a renderer focus
+receipt. A protocol touch or field focus can change the native keyboard frame
+without changing the embedder active element. Parked input therefore reasserts
+the current host frame after those dispatches and awaits renderer acknowledgement
+before continuing, while keeping page-local focus emulation. Parked restoration
+never calls DOM blur or refocus on an active editor; remembered controls are used only when the body
+or no element is active. The native owning window and renderer document must
+both hold foreground focus before a handoff, so another app remains foreground.
+Main then verifies that native keyboard routing has left that guest while the
+window is focused. An embedded child
+view can report its root view as focused; keyboard ownership is measured through
+the owning host's focused frame, not that shared view bit. Visible embedded input captures
+that receipt before borrowing focus. If a previous host control disappears or can
+no longer accept focus, restoration tries usable remembered host controls; it
+still refuses a replaced or hidden previous guest and preserves deliberate user
+focus movement. Painting activity belongs to the physical guest across action
+adapter instances. Only its final participant may start the idle grace or restore
+the guest's original throttling state.
+
+Managed guest owners share one native destruction subscription. The dispatcher
+indexes guest IDs with physical identity guards; each owner has an independent
+registration and the last unsubscribe removes the native subscription. Destruction
+retires the record before notifying a snapshot of owners, so reentrancy, one
+owner's cleanup failure, or an old guest's late cleanup cannot skip another owner
+or affect a replacement. Already-destroyed registrations notify immediately;
+preview startup releases its returned close disposer before issuing commands or
+arming timers if that notification closes it during registration.
+
+Pointer input uses guest-local viewport coordinates. Native node hit testing adds
+the measured document scroll offset to that point; host placement is never added.
+The exact main-frame subtree and live document lease remain checked before input.
+App zoom preserves each guest's independent per-site zoom. Protocol input remains
+in guest CSS pixels; native local pointer receipts use guest-zoomed DIP coordinates,
+with float32 precision for both the factor and product. Only receipt expectations
+are converted, without host zoom or device scale. Zoom must remain unchanged across
+pointer confirmation and touch contact; a destroyed guest cannot provide a receipt.
 
 ### Typed page actions and browser chrome
 
@@ -1508,6 +1571,10 @@ key operations plus hover, drag, native single-select, targeted scroll, and
 picker-only upload. Schemas and execution both validate operands. Page effects
 recheck the live document, target reference, recipient, and control generation.
 There is no model-facing arbitrary script or generic protocol dispatcher.
+Every browser tool result, including host validation and action errors, remains
+inside the untrusted browser-content envelope. Diagnostics can interpolate page
+titles, accessible names and navigation URLs; a host error is not a trusted-text
+exception. String bounds and fence neutralization apply inside that same boundary.
 HTML5 interception uses only fixed internal `Input.setInterceptDrags`,
 `Input.cancelDragging`, and `Input.dispatchDragEvent` operations. Browser-originated payloads remain untrusted;
 only bounded approved text MIME data is accepted, with no files or host-path
@@ -1523,6 +1590,12 @@ the embedded renderer can return a correctly sized image with repeated viewport
 content, and popup full-page output has not been independently proved. Requests
 fail explicitly before capture rather than reporting such an image as complete.
 Selection verifies the final native value and rejects unsupported controls.
+Native single-select uses a fixed function in an isolated action world on one
+host-resolved main-document object, with only the requested option value as data.
+It dispatches input/change events without native focus or keyboard input. The action
+guard seals the world, resolved object and function, rechecks the document lease,
+and verifies the unchanged option set and final accessibility selection. It exposes
+no script or object identifier to model callers.
 
 The host distinguishes a document transition from cancellation. A page-input
 action can finish through navigation only after a confirmed final input effect
@@ -2043,6 +2116,12 @@ never reaches `round-cap`.
 The [owner-approved permission decision tree](permission-decision-tree.md) is the sole source of decision order and the action-by-mode matrix. This document specifies evidence, execution boundaries and approval delivery; it does not define a second decision sequence.
 
 All builtin, plugin and MCP tools enter the same normalized decision pipeline. Callers supply evidence and execute the returned outcome; they do not own additional mode matrices. Argument rewriting finishes before authorization, and user script PreToolUse blocks before any target approval. The source affects display/audit, not authority. Remote user equivalence additionally requires a current owner-identity match; the [decision tree](permission-decision-tree.md) owns pairing, existing-binding revalidation and live identity admission.
+
+Builtin approval cards describe the requested action and its subject through one
+presentation mapping, checked against actual core and workflow tool registration.
+Missing registered descriptors fail coverage; builtin source never reaches the
+generic external-tool execution title. Site and egress card precedence and all
+approval choices, rules and requirements remain unchanged.
 
 New installs use Default (`strict`). Persisted `default` remains Allow writes; stored IDs do not change. Eligible checkpoint-backed project writes pass in Allow writes/auto/Allow, while Default asks. Ordinary reads remain allowed. Secret reads use mode/rules; secret writes follow file rules. Host credential stores and the process ownership lock remain admission-denied. Exact lexical/canonical identity, all-target checks and checkpoint recovery remain required. Ordinary outside writes use one folder/invocation card. See [Project file writes](permission-policy-design.md#project-file-writes) for eligibility and recovery.
 
