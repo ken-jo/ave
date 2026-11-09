@@ -149,3 +149,28 @@ isolatedTest("native capture has one in-flight owner and discards its image afte
     expect(result).toEqual({ secondError: "capture-busy", firstError: "stale-document", hiddenError: "window-hidden", hidden: true });
   } finally { await close(app); }
 });
+
+test("shared workspace reset clears persisted permission rules and queued writes", async ({ sharedApp: app }, testInfo) => {
+  const pid = app.process().pid;
+  await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.savePermissionRules());
+  const dirty = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.permissionState());
+  expect(dirty.disk).toMatchObject({ sitePermissions: expect.arrayContaining([
+    expect.objectContaining({ permission: "camera", decision: "allow" }),
+    expect.objectContaining({ permission: "microphone", decision: "block" }),
+  ]) });
+  expect(dirty.reloaded.sitePermissions).toEqual(dirty.live.sitePermissions);
+  const dirtyAssertion = await app.evaluate(async () => {
+    try { await (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.assertClean(); return null; }
+    catch (error) { return error instanceof Error ? error.message : String(error); }
+  });
+  const pending = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.resetWithPendingPermissionWrites());
+  expect(pending.pendingBeforeReset).toBe(2);
+  expect(app.process().pid).toBe(pid);
+  const clean = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.permissionState());
+  await fs.writeFile(testInfo.outputPath("workspace-permission-reset.json"), JSON.stringify({ pid, afterPid: app.process().pid, pending, dirty, dirtyAssertion, clean }, null, 2));
+  expect(clean.disk).toEqual({ version: 1, bookmarks: [], history: [], sitePermissions: [] });
+  expect(clean.live).toEqual({ storageStatus: "ready", bookmarks: [], history: [], sitePermissions: [] });
+  expect(clean.reloaded).toEqual(clean.live);
+  expect(dirtyAssertion).toContain("persisted workspace");
+  await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.assertClean());
+});

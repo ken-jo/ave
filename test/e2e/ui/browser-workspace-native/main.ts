@@ -1,4 +1,7 @@
 import { assertNativeBrowserState, clearNativeBrowserStorage } from "../native-browser-state.js";
+import { isDeepStrictEqual } from "node:util";
+import { openFeatureNamespace } from "../../../../src/main/storage/feature-namespace.js";
+import { BrowserWorkspaceStore } from "../../../../src/main/browser/browser-workspace-store.js";
 import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 import { app, BrowserWindow, nativeImage, type WebContents, type WebPreferences } from "electron";
 import { createServer } from "node:http";
@@ -13,7 +16,9 @@ import { AVE_SIDE_BROWSER_PARTITION } from "../../../../src/shared/side-browser.
 import type { BrowserPreview } from "../../../../src/shared/browser-workspace.js";
 
 const runtime = process.env.AVE_WORKSPACE_FIXTURE_RUNTIME;
-if (!runtime || !process.env.AVE_HOME) throw new Error("Isolated workspace fixture paths are required");
+const aveHome = process.env.AVE_HOME;
+if (!runtime || !aveHome) throw new Error("Isolated workspace fixture paths are required");
+const workspacePath = join(aveHome, "browser-workspace", "workspace.json");
 app.setPath("userData", join(runtime, "profile"));
 const rendererTabId = "workspace-native-page";
 const actor = { sessionId: "workspace-native-conversation" };
@@ -22,6 +27,7 @@ let guest: WebContents;
 let mainHandle = "";
 let requestId = "";
 const nativeEvents: Record<string, unknown>[] = [];
+const WORKSPACE_BASELINE = Object.freeze({ bookmarks: [], history: [], sitePermissions: [] });
 
 function fatal(error: unknown): void {
   console.error("[workspace-native:fatal]", error instanceof Error ? error.stack : error);
@@ -54,6 +60,9 @@ export interface WorkspaceNativeFixture {
   find(forward: boolean, findNext: boolean): Promise<{ matches: number; activeMatchOrdinal: number }>;
   preview(): Promise<{ preview: BrowserPreview; bytes: number; decodedWidth: number; decodedHeight: number; focusPreserved: boolean }>;
   hiddenPreviewRace(): Promise<{ secondError: string; firstError: string; hiddenError: string; hidden: boolean }>;
+  savePermissionRules(): Promise<void>;
+  permissionState(): Promise<{ disk: unknown; live: Awaited<ReturnType<BrowserWorkspaceStore["snapshot"]>>; reloaded: Awaited<ReturnType<BrowserWorkspaceStore["snapshot"]>> }>;
+  resetWithPendingPermissionWrites(): Promise<{ pendingBeforeReset: number }>;
   reset(): Promise<void>;
   assertClean(): Promise<void>;
   close(): Promise<void>;
@@ -151,6 +160,40 @@ async function hiddenPreviewRace() {
   return { secondError, firstError, hiddenError, hidden: !owner.isVisible() };
 }
 
+async function savePermissionRules(): Promise<void> {
+  const service = getBrowserWorkspaceService();
+  const origin = new URL(guest.getURL()).origin;
+  await Promise.all([
+    service.setSitePermission(owner.id, { ...target(), origin, permission: "camera", decision: "allow" }),
+    service.setSitePermission(owner.id, { ...target(), origin, permission: "microphone", decision: "block" }),
+  ]);
+}
+
+async function permissionState() {
+  return {
+    live: await getBrowserWorkspaceService().store.snapshot(),
+    disk: JSON.parse(await fs.readFile(workspacePath, "utf8")) as unknown,
+    reloaded: await new BrowserWorkspaceStore().snapshot(),
+  };
+}
+
+async function resetWithPendingPermissionWrites(): Promise<{ pendingBeforeReset: number }> {
+  const service = getBrowserWorkspaceService();
+  const origin = new URL(guest.getURL()).origin;
+  let settled = 0;
+  const writes = [
+    service.setSitePermission(owner.id, { ...target(), origin, permission: "camera", decision: "block" }),
+    service.setSitePermission(owner.id, { ...target(), origin, permission: "microphone", decision: "allow" }),
+  ].map((write) => write.finally(() => { settled++; }));
+  // Admit both requests to the serialized tail and begin the first real filesystem write.
+  await Promise.resolve();
+  await Promise.resolve();
+  const pendingBeforeReset = writes.length - settled;
+  await reset();
+  await Promise.all(writes);
+  return { pendingBeforeReset };
+}
+
 const foreground = process.env.AVE_NATIVE_FIXTURE_MODE === "foreground";
 configureE2eWindowPolicy();
 // Window replacement between tests keeps this worker-owned process alive.
@@ -160,11 +203,14 @@ let origin = "";
 
 async function reset(): Promise<void> {
   if (guest && !guest.isDestroyed()) guest.setZoomFactor(1);
+  const previousWorkspace = getBrowserWorkspaceService();
   disposeBrowserWorkspaceService();
   for (const window of BrowserWindow.getAllWindows()) {
     browserTabRegistry.releaseWindow(window.id);
     if (!window.isDestroyed()) window.destroy();
   }
+  await previousWorkspace.store.snapshot();
+  await openFeatureNamespace("browser-workspace").writeJson("workspace.json", { version: 1, ...WORKSPACE_BASELINE });
   await clearNativeBrowserStorage(AVE_SIDE_BROWSER_PARTITION);
   nativeEvents.length = 0;
   requestId = "";
@@ -215,10 +261,21 @@ async function reset(): Promise<void> {
   if (!outcome.ok) throw new Error(`Workspace fixture open failed: ${outcome.error}`);
   mainHandle = outcome.tabId;
   await guest.loadURL(`${origin}/page`);
+  await getBrowserWorkspaceService().store.clearHistory();
   browserTabRegistry.setActiveSurface(owner.id, { kind: "browser", tabId: rendererTabId });
   guest.setZoomFactor(1);
   owner.webContents.setZoomFactor(1);
   if (foreground) { app.focus({ steal: true }); owner.focus(); }
+}
+
+async function assertClean(): Promise<void> {
+  await assertNativeBrowserState(owner, guest, rendererTabId);
+  const state = await permissionState();
+  const expected = { ...WORKSPACE_BASELINE, storageStatus: "ready" };
+  if (!isDeepStrictEqual(state.disk, { version: 1, ...WORKSPACE_BASELINE })
+    || !isDeepStrictEqual(state.live, expected) || !isDeepStrictEqual(state.reloaded, expected)) {
+    throw new Error("Native fixture retained dirty persisted workspace state");
+  }
 }
 
 void app.whenReady().then(async () => {
@@ -230,7 +287,7 @@ void app.whenReady().then(async () => {
   installSideBrowserPartitionPolicy();
   await reset();
   const fixture: WorkspaceNativeFixture = {
-    ready: true, read, find, preview, hiddenPreviewRace, reset, assertClean: async () => assertNativeBrowserState(owner, guest, rendererTabId),
+    ready: true, read, find, preview, hiddenPreviewRace, savePermissionRules, permissionState, resetWithPendingPermissionWrites, reset, assertClean,
     openPopup: () => guest.executeJavaScript('document.getElementById("popup").click()', true),
     closePopup: () => {
       if (owner.isDestroyed() || !getMainWindows().includes(owner)) throw new Error("Popup owner is not a registered main window");
@@ -248,7 +305,9 @@ void app.whenReady().then(async () => {
     holdPopup: () => { browserTabRegistry.acquireControl(popupRecord(), actor); return read(); },
     resumePopup: () => browserTabRegistry.resumePopup(owner.id, popupRecord().handle),
     close: async () => {
+      const workspace = getBrowserWorkspaceService();
       disposeBrowserWorkspaceService();
+      await workspace.store.snapshot();
       if (!owner.isDestroyed()) owner.destroy();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
