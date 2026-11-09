@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { parse } from "yaml";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-const script = resolve(".github/actions/setup-bun/windows-archive.sh");
+const script = resolve(".github/actions/setup-bun/bun-archive.sh");
 const asset = "bun-windows-x64";
 const payload = "archive fixture";
 const pinned = createHash("sha256").update(payload).digest("hex");
@@ -33,18 +34,27 @@ cp "$FIXTURE_ROOT/source/$(basename "$3")" "$2"
   outputs = join(root, "outputs");
   writeFileSync(versionFile, "1.4.4\n");
   env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, FIXTURE_ROOT: root,
-    RUNNER_TEMP: root, RUNNER_ARCH: "X64", BUN_VERSION_FILE: versionFile,
+    RUNNER_TEMP: root, RUNNER_OS: "Windows", RUNNER_ARCH: "X64", BUN_VERSION_FILE: versionFile,
     GITHUB_OUTPUT: outputs, VERSION: "1.4.4", ASSET: asset, PINNED: pinned, CACHE_HIT: "false" };
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 const run = (mode: string) => spawnSync("bash", [script, mode], { env, encoding: "utf8" });
 
 describe("runtime archive cache", () => {
-  it.each(["X64", "ARM64"])("keys %s by version, asset and reviewed digest", (arch) => {
+  it.each([
+    ["Linux", "X64", "bun-linux-x64"],
+    ["Linux", "ARM64", "bun-linux-aarch64"],
+    ["macOS", "X64", "bun-darwin-x64"],
+    ["macOS", "ARM64", "bun-darwin-aarch64"],
+    ["Windows", "X64", "bun-windows-x64"],
+    ["Windows", "ARM64", "bun-windows-aarch64"],
+  ])("keys %s %s by version, asset and reviewed digest", (os, arch, expected) => {
+    env.RUNNER_OS = os;
     env.RUNNER_ARCH = arch;
-    expect(run("metadata").status).toBe(0);
+    const result = run("metadata");
+    expect(result.status, result.stderr).toBe(0);
     const written = Object.fromEntries(readFileSync(outputs, "utf8").trim().split("\n").map((s) => s.split("=")));
-    expect(written.asset).toBe(arch === "X64" ? asset : "bun-windows-aarch64");
+    expect(written.asset).toBe(expected);
     expect(written.pinned).toMatch(/^[0-9a-f]{64}$/);
     expect(written.key).toBe(`bun-archive-v1-1.4.4-${written.asset}-${written.pinned}`);
   });
@@ -54,6 +64,10 @@ describe("runtime archive cache", () => {
   });
   it("refuses an unsupported architecture", () => {
     env.RUNNER_ARCH = "unknown";
+    expect(run("metadata").status).not.toBe(0);
+  });
+  it("refuses an unsupported OS", () => {
+    env.RUNNER_OS = "unknown";
     expect(run("metadata").status).not.toBe(0);
   });
   it("fetches both files on a miss and rechecks a hit with no fetches", () => {
@@ -84,5 +98,56 @@ describe("runtime archive cache", () => {
   it("fails when a reported hit lacks its archive instead of fetching", () => {
     env.CACHE_HIT = "true";
     expect(run("verify").status).not.toBe(0);
+  });
+});
+
+describe("POSIX install step", () => {
+  const steps: { name?: string; run?: string }[] = parse(readFileSync(resolve(".github/actions/setup-bun/action.yml"), "utf8")).runs.steps;
+  const install = steps.find((step) => step.name === "Install the pinned bun release");
+  if (!install?.run) throw new Error("action.yml has no POSIX install step");
+  const installRun = install.run;
+  const posixAsset = "bun-linux-x64";
+  const fixtureBun = "#!/bin/sh\necho fixture-bun\n";
+
+  it.each(["false", "true"])("installs only a verified archive into the job-local home on cache-hit=%s", (hit) => {
+    mkdirSync(join(root, "zip", posixAsset), { recursive: true });
+    writeFileSync(join(root, "zip", posixAsset, "bun"), fixtureBun);
+    const archive = join(root, "source", `${posixAsset}.zip`);
+    // The real unzip in the step reads this archive; python's zipfile only builds it.
+    const zipped = spawnSync("python3", ["-m", "zipfile", "-c", archive, posixAsset], { cwd: join(root, "zip"), encoding: "utf8" });
+    expect(zipped.status, zipped.stderr).toBe(0);
+    const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
+    writeFileSync(join(root, "source", "SHASUMS256.txt"), `${digest}  ${posixAsset}.zip\n`);
+    Object.assign(env, { ASSET: posixAsset, PINNED: digest, ACTION_PATH: resolve(".github/actions/setup-bun"),
+      GITHUB_PATH: join(root, "github-path") });
+    if (hit === "true") {
+      mkdirSync(join(root, "bun-download"));
+      for (const file of [`${posixAsset}.zip`, "SHASUMS256.txt"]) {
+        writeFileSync(join(root, "bun-download", file), readFileSync(join(root, "source", file)));
+      }
+      env.CACHE_HIT = "true";
+    }
+    const result = spawnSync("bash", ["-c", installRun], { env, encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const bin = join(root, "bun-home", ".bun", "bin");
+    expect(readFileSync(join(root, "github-path"), "utf8")).toBe(`${bin}\n`);
+    for (const tool of ["bun", "bunx"]) {
+      expect(readFileSync(join(bin, tool), "utf8")).toBe(fixtureBun);
+      expect(statSync(join(bin, tool)).mode & 0o777).toBe(0o755);
+    }
+    expect(existsSync(join(root, "fetches"))).toBe(hit !== "true");
+  });
+
+  it("installs nothing when a restored archive fails the pin", () => {
+    mkdirSync(join(root, "bun-download"));
+    writeFileSync(join(root, "bun-download", `${posixAsset}.zip`), "corrupt");
+    writeFileSync(join(root, "bun-download", "SHASUMS256.txt"), `${pinned}  ${posixAsset}.zip\n`);
+    Object.assign(env, { ASSET: posixAsset, CACHE_HIT: "true", ACTION_PATH: resolve(".github/actions/setup-bun"),
+      GITHUB_PATH: join(root, "github-path") });
+    const result = spawnSync("bash", ["-c", installRun], { env, encoding: "utf8" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("does not match the pinned");
+    expect(existsSync(join(root, "bun-home"))).toBe(false);
+    expect(existsSync(join(root, "github-path"))).toBe(false);
   });
 });

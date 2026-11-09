@@ -1199,22 +1199,15 @@ describe("installer smoke and packaging discipline", () => {
       ).not.toContain("oven-sh/setup-bun");
     }
 
-    // setup-bun v2.2.0 symlinks bunx.exe to bun.exe before anything else, and
-    // a runner service account on Windows lacks the symlink privilege (EPERM).
-    // The action keeps setup-bun off Windows and installs the release there
-    // only after its SHA-256 matches the release's SHASUMS256.txt.
+    // oven-sh/setup-bun checks no digest on a download or a cache hit, and on
+    // Windows it symlinks bunx.exe to bun.exe, which a runner service account
+    // lacks the privilege for (EPERM). The action installs the release
+    // archive itself on every OS, only after its SHA-256 matches the pin and
+    // the release's SHASUMS256.txt.
     const setupBun = readRepoFile(".github/actions/setup-bun/action.yml");
-    expect(setupBun).toContain(
-      "    - if: runner.os != 'Windows'\n"
-        + "      uses: oven-sh/setup-bun@",
-    );
-    expect(setupBun).toContain(
-      "      env:\n"
-        + "        HOME: ${{ runner.temp }}/bun-home\n"
-        + "        USERPROFILE: ${{ runner.temp }}/bun-home\n",
-    );
+    expect(setupBun).not.toContain("oven-sh/setup-bun");
     expect(setupBun).toContain("    - if: runner.os == 'Windows'\n");
-    const archiveScript = readRepoFile(".github/actions/setup-bun/windows-archive.sh");
+    const archiveScript = readRepoFile(".github/actions/setup-bun/bun-archive.sh");
     expect(archiveScript).toContain('base="https://github.com/oven-sh/bun/releases/download/bun-v${VERSION}"');
     expect(archiveScript).toContain('for file in "$ASSET.zip" SHASUMS256.txt; do');
     // Each Windows step on its own: a string the Verify step also holds (its
@@ -1244,7 +1237,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(archiveScript).toContain('if [ "${CACHE_HIT:-}" != true ]; then');
     expect(archiveScript).toContain('[ "$actual" != "$PINNED" ]');
     expect(archiveScript).toContain('[ "$actual" != "$expected" ]');
-    const verify = bunStep.indexOf('bash "$ACTION_PATH/windows-archive.sh" verify');
+    const verify = bunStep.indexOf('bash "$ACTION_PATH/bun-archive.sh" verify');
     expect(verify).toBeGreaterThan(-1);
     for (const install of ["Expand-Archive", 'cp "$work/out/$ASSET/bun.exe"', '>> "$GITHUB_PATH"']) {
       expect(bunStep.indexOf(install), install).toBeGreaterThan(verify);
@@ -1256,7 +1249,6 @@ describe("installer smoke and packaging discipline", () => {
     expect(archiveCache.with["restore-keys"]).toBeUndefined();
     expect(bunStep).toContain('rm -rf "$work/out"');
     expect(bunStep).not.toContain('rm -rf "$work"');
-    expect(setupBun).toContain("no-cache: false");
     const pythonCompare = pythonStep.indexOf(
       '        if [ "$actual" != "$PYTHON_NUPKG_SHA256" ]; then\n'
         + "          echo \"python.$PYTHON_VERSION.nupkg SHA-256 '$actual' does not match the pinned $PYTHON_NUPKG_SHA256\" >&2\n"

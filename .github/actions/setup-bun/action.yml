@@ -1,9 +1,10 @@
 name: Set up the pinned bun in the runner temp
 description: >-
   Installs the bun release named by a .bun-version file under
-  RUNNER_TEMP/bun-home/.bun/bin, puts it on the job PATH, and proves the bun
-  on PATH is that build. On a self-hosted runner the user's home is the
-  owner's own, so bun never lands in, or replaces, the owner's ~/.bun.
+  RUNNER_TEMP/bun-home/.bun/bin from its pinned, checksum-verified release
+  archive, puts it on the job PATH, and proves the bun on PATH is that build.
+  On a self-hosted runner the user's home is the owner's own, so bun never
+  lands in, or replaces, the owner's ~/.bun.
 
 inputs:
   bun-version-file:
@@ -13,37 +14,50 @@ inputs:
 runs:
   using: composite
   steps:
-    # setup-bun has no install-directory input: it installs into
-    # os.homedir()/.bun/bin. os.homedir() reads HOME (POSIX) and USERPROFILE
-    # (Windows), so this step alone sees a home under RUNNER_TEMP, which the
-    # runner empties at the start and end of every job.
-    - if: runner.os != 'Windows'
-      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-      with:
-        bun-version-file: ${{ inputs.bun-version-file }}
-        no-cache: false
-      env:
-        HOME: ${{ runner.temp }}/bun-home
-        USERPROFILE: ${{ runner.temp }}/bun-home
-
-    # Cache only the source archive; every restore passes both digest checks
-    # before extraction. Executables stay under the job's temporary home.
-    - if: runner.os == 'Windows'
-      name: Resolve the pinned archive
+    # The upstream setup-bun action checks no digest on a download or on a
+    # cache hit (a hit compares only `bun --revision`), so every OS takes the
+    # release archive itself. Only the source zip is cached, and every
+    # restore passes the pin and SHASUMS256.txt checks before extraction.
+    # Executables land under RUNNER_TEMP/bun-home, which the runner empties
+    # at the start and end of every job, never in the user's ~/.bun.
+    - name: Resolve the pinned archive
       id: bun-archive
       shell: bash
       env:
         BUN_VERSION_FILE: ${{ inputs.bun-version-file }}
+        RUNNER_OS: ${{ runner.os }}
         RUNNER_ARCH: ${{ runner.arch }}
         ACTION_PATH: ${{ github.action_path }}
-      run: bash "$ACTION_PATH/windows-archive.sh" metadata
+      run: bash "$ACTION_PATH/bun-archive.sh" metadata
 
-    - if: runner.os == 'Windows'
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       id: bun-archive-cache
       with:
         path: ${{ runner.temp }}/bun-download
         key: ${{ steps.bun-archive.outputs.key }}
+
+    - if: runner.os != 'Windows'
+      name: Install the pinned bun release
+      shell: bash
+      env:
+        VERSION: ${{ steps.bun-archive.outputs.version }}
+        ASSET: ${{ steps.bun-archive.outputs.asset }}
+        PINNED: ${{ steps.bun-archive.outputs.pinned }}
+        CACHE_HIT: ${{ steps.bun-archive-cache.outputs.cache-hit }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        bash "$ACTION_PATH/bun-archive.sh" verify
+        work="$RUNNER_TEMP/bun-download"
+        bin="$RUNNER_TEMP/bun-home/.bun/bin"
+        mkdir -p "$bin"
+        rm -rf "$work/out"
+        unzip -q "$work/$ASSET.zip" -d "$work/out"
+        cp "$work/out/$ASSET/bun" "$bin/bun"
+        cp "$work/out/$ASSET/bun" "$bin/bunx"
+        chmod 755 "$bin/bun" "$bin/bunx"
+        rm -rf "$work/out"
+        echo "$bin" >> "$GITHUB_PATH"
 
     - if: runner.os == 'Windows'
       name: Install the pinned bun release (Windows)
@@ -56,7 +70,7 @@ runs:
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        bash "$ACTION_PATH/windows-archive.sh" verify
+        bash "$ACTION_PATH/bun-archive.sh" verify
         work="$RUNNER_TEMP/bun-download"
         bin="$RUNNER_TEMP/bun-home/.bun/bin"
         mkdir -p "$bin"
