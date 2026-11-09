@@ -40,6 +40,9 @@ export interface BrowserPageReadiness {
 }
 
 export interface BrowserPageSnapshot {
+  readonly offset?: number;
+  readonly nextOffset?: number;
+  readonly totalLines?: number;
   readonly url: string;
   readonly title: string;
   readonly text: string;

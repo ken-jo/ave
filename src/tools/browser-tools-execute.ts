@@ -404,6 +404,8 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     },
 
     [BROWSER_TOOL.snapshot]: async (input, ctx) => {
+      if (input.offset !== undefined && (!Number.isSafeInteger(input.offset) || (input.offset as number) < 0)) return failure("offset must be a non-negative safe integer");
+      if (input.delta === true && input.offset !== undefined) return failure("continuation requires delta: false");
       for (const flag of ["interactive", "delta"] as const) {
         if (input[flag] !== undefined && typeof input[flag] !== "boolean") return failure(`${flag} must be a boolean`);
       }
@@ -418,7 +420,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (changed) return changed;
         const shot = await actions.snapshot(
           pageTarget(ctx, fresh),
-          { interactive: input.interactive === true, delta: input.delta === true },
+          { interactive: input.interactive === true, delta: input.delta === true, ...(typeof input.offset === "number" ? { offset: input.offset } : {}) },
         );
         const browserPreview = await previewOf(actions, pageTarget(ctx, fresh));
         return withPreview(fenced({
@@ -426,8 +428,11 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           url: shot.url,
           title: shot.title,
           refs: shot.refCount,
+          ...(shot.offset === undefined ? {} : { offset: shot.offset }),
+          ...(shot.nextOffset === undefined ? {} : { nextOffset: shot.nextOffset }),
+          ...(shot.totalLines === undefined ? {} : { totalLines: shot.totalLines }),
           ...(shot.challenge ? { challenge: shot.challenge } : {}),
-          ...(shot.delta ? { delta: true } : {}),
+          delta: shot.delta,
           ...(shot.truncated ? { truncated: true } : {}),
         }, shot.text), browserPreview);
       }), ctx.abortSignal);
@@ -595,7 +600,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   };
   const allowed: Record<BrowserToolName, readonly string[]> = {
     [BROWSER_TOOL.tabs]: ["select", "scope", "includeDirectChildren"],
-    [BROWSER_TOOL.snapshot]: ["tabId", "interactive", "delta"],
+    [BROWSER_TOOL.snapshot]: ["tabId", "interactive", "delta", "offset"],
     [BROWSER_TOOL.screenshot]: ["tabId", "fullPage"],
     [BROWSER_TOOL.wait]: ["tabId", "text", "timeMs"],
     [BROWSER_TOOL.navigate]: ["tabId", "url"],

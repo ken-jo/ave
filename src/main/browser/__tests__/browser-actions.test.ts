@@ -229,8 +229,9 @@ describe("browser snapshot refs", () => {
       ax(`l${index}`, "link", `Result number ${index} with a fairly long accessible name to fill the page`, { backendDOMNodeId: 100 + index })));
     const shot = await snapshot(target(cdp), {}, refs);
     expect(shot.truncated).toBe(true);
-    expect(shot.text.length).toBeLessThanOrEqual(SNAPSHOT_MAX_CHARS + 200);
-    expect(shot.text).toMatch(/\[truncated: \d+ more lines over the 50000-character limit/);
+    expect(shot.text.length).toBeLessThanOrEqual(SNAPSHOT_MAX_CHARS);
+    expect(shot.nextOffset).toBeGreaterThan(0);
+    expect(shot.totalLines).toBe(2_001);
   });
 });
 

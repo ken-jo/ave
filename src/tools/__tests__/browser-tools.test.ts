@@ -281,6 +281,36 @@ describe("browser tools", () => {
     return { run, cards, settled, gate, page, tabs, userTab, agentTab, ops, browserTools, manager };
   }
 
+  it("forwards snapshot continuation and keeps its cursor inside the trust envelope", async () => {
+    const h = harness();
+    const tab = await h.agentTab("https://a.example/");
+    let received: unknown;
+    h.page.actions.snapshot = async (_target, options) => {
+      received = options;
+      return { url: "https://a.example/", title: "Page", text: '- link "Article" [ref=e8]', truncated: true, refCount: 1, delta: false, offset: 20, nextOffset: 40, totalLines: 300 };
+    };
+    const result = await h.run(BROWSER_TOOL.snapshot, { tabId: tab.handle, offset: 20 });
+    expect(received).toMatchObject({ offset: 20, delta: false });
+    expect(result.output).toMatch(/^<browser-content trust="untrusted-web-data">/);
+    expect(JSON.parse(result.output.split("\n")[2] ?? "{}")).toMatchObject({ offset: 20, nextOffset: 40, totalLines: 300, refs: 1 });
+  });
+
+  it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1, "20"])("refuses an invalid continuation offset without reading: %s", async offset => {
+    const h = harness();
+    const tab = await h.agentTab("https://a.example/");
+    const result = await h.run(BROWSER_TOOL.snapshot, { tabId: tab.handle, offset });
+    expect(result.isError).toBe(true);
+    expect(h.page.calls).toEqual([]);
+  });
+
+  it("requires a full snapshot for continuation rather than mixing it with delta", async () => {
+    const h = harness();
+    const tab = await h.agentTab("https://a.example/");
+    expect((await h.run(BROWSER_TOOL.snapshot, { tabId: tab.handle, offset: 0, delta: true })).isError).toBe(true);
+    expect(h.page.calls).toEqual([]);
+  });
+
+
   it("asks for a new site once and lets later tools and same-origin navigation run", async () => {
     const h = harness();
     const tab = await h.agentTab("https://a.example");
