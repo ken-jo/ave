@@ -2,6 +2,7 @@ import { deferred } from "../../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 import { tmpdir } from "node:os";
 import {
   BrowserActionError,
@@ -18,6 +19,7 @@ import {
   screenshot,
   sensitiveFieldReason,
   settle,
+  settlePageContent,
   snapshot,
   type ActionTarget,
   type CdpSession,
@@ -506,7 +508,7 @@ describe("navigate", () => {
     });
     const controller = new AbortController();
     await expect(navigate(guest, "https://a.example/", "https://a.example:443", controller.signal, browserOrigin))
-      .resolves.toEqual({ url: guest.url, loading: true });
+      .resolves.toEqual({ url: guest.url });
     expect(guest.listenerCount("dom-ready")).toBe(0);
     expect(guest.listenerCount("will-redirect")).toBe(0);
     controller.abort();
@@ -535,7 +537,7 @@ describe("navigate", () => {
       await Promise.resolve();
       expect(finished).toBe(false);
       await vi.advanceTimersByTimeAsync(200);
-      if (committed) expect(await result).toEqual({ value: { url: "https://a.example/new", loading: true } });
+      if (committed) expect(await result).toEqual({ value: { url: "https://a.example/new" } });
       else { expect(await result).toMatchObject({ error: { code: "load-timeout" } }); expect(guest.stopped).toBe(true); }
       expect(guest.listenerCount("dom-ready")).toBe(0);
     } finally { vi.useRealTimers(); }
@@ -565,14 +567,14 @@ describe("navigate", () => {
       expect(finished).toBe(false);
       paused = Date.now() - began; approval.pending = false;
       await vi.advanceTimersByTimeAsync(100);
-      expect(await result).toEqual({ url: "https://a.example/", loading: true });
+      expect(await result).toEqual({ url: "https://a.example/" });
     } finally { vi.useRealTimers(); }
   });
 
   it("follows a same-origin redirect", async () => {
     const guest = new FakeNavGuest(["https://a.example/login"], "https://a.example/login");
     await expect(navigate(guest, "https://a.example/", "https://a.example:443", new AbortController().signal, browserOrigin))
-      .resolves.toEqual({ url: "https://a.example/login", loading: false });
+      .resolves.toEqual({ url: "https://a.example/login" });
   });
 
   it("guards a page-initiated navigation before the first request can escape", async () => {
@@ -642,13 +644,54 @@ describe("navigate", () => {
 });
 
 describe("settle", () => {
+  it("waits for named content without waiting for subresources", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn().mockResolvedValueOnce({ nodes: [{ nodeId: "root", role: { value: "RootWebArea" }, name: { value: "News" } }] })
+        .mockResolvedValue({ nodes: [{ nodeId: "headline", role: { value: "heading" }, name: { value: "Today's news" } }] });
+      const allowed = vi.fn();
+      const pending = settlePageContent({ send }, new AbortController().signal, allowed);
+      await vi.advanceTimersByTimeAsync(100);
+      await pending;
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(allowed).toHaveBeenCalledTimes(5);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("bounds an empty tree and checks cancellation after a tree read", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn().mockResolvedValue({ nodes: [] });
+      const pending = settlePageContent({ send }, new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.browserContentSettleMs);
+      await pending;
+      const controller = new AbortController();
+      send.mockImplementationOnce(async () => { controller.abort(); return { nodes: [] }; });
+      await expect(settlePageContent({ send }, controller.signal)).rejects.toMatchObject({ code: "cancelled" });
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("bounds a stalled protocol read and refuses revoked site authority", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn(() => new Promise(() => {}));
+      const pending = settlePageContent({ send }, new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.browserContentSettleMs);
+      await pending;
+      expect(send).toHaveBeenCalledOnce();
+      let allowed = true;
+      const revoked = settlePageContent({ send: async () => { allowed = false; return { nodes: [] }; } }, new AbortController().signal,
+        () => { if (!allowed) throw new Error("Site authority revoked"); });
+      await expect(revoked).rejects.toThrow("Site authority revoked");
+    } finally { vi.useRealTimers(); }
+  });
   it("returns a committed URL while subresources are still loading", async () => {
     let polls = 0;
     const guest = {
       getURL: () => (polls++ >= 2 ? "http://127.0.0.1:8775/index.html" : ""),
       isLoading: () => polls < 5,
     };
-    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "http://127.0.0.1:8775/index.html", loading: true });
+    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "http://127.0.0.1:8775/index.html" });
     expect(polls).toBe(3);
   });
 
@@ -683,7 +726,7 @@ describe("action navigation", () => {
     await navigation.outcome(new AbortController().signal, 5_000);
     navigation.stop();
     // Without the wait, settle reads the old page at once: it is committed and not loading.
-    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "https://a.example/next", loading: false });
+    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "https://a.example/next" });
   });
 
   it.each([
@@ -1678,7 +1721,7 @@ it.each(["allow", "deny", "takeover", "destroy"])("holds the original action lea
       navigate("https://a.example/next");
       guest.emit("did-navigate", {}, "https://a.example/next", 200, "OK");
       await vi.advanceTimersByTimeAsync(200);
-      expect(await result).toEqual({ value: { url: "https://a.example/next", loading: false } });
+      expect(await result).toEqual({ value: { url: "https://a.example/next" } });
     } else {
       expect(await result).toHaveProperty("error");
       expect(cdp.calls.some(call => call.method === "Fetch.continueRequest")).toBe(false);
@@ -2478,7 +2521,7 @@ describe("approved navigation lifetime", () => {
   it("allows the approved load's own document transition without cancelling it", async () => {
     const value = await fixture();
     Object.assign(value.guest, { loadURL: async (url: string) => { value.navigate(url); await Promise.resolve(); } });
-    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).resolves.toEqual({ url: "https://a.example/next", loading: false });
+    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).resolves.toEqual({ url: "https://a.example/next" });
     expect(value.stop).not.toHaveBeenCalled();
   });
 

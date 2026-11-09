@@ -367,7 +367,6 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         tabId: target.resolved.tab.handle,
         done: name,
         url: outcome.url,
-        loading: outcome.loading,
         origin: browserOrigin(outcome.url),
         title: target.resolved.tab.guest?.getTitle() ?? "",
       });

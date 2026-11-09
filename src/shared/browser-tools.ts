@@ -26,7 +26,6 @@ export const BROWSER_OUTPUT_MAX_CHARS = 50_000;
 
 export interface BrowserPageReadiness {
   readonly url: string;
-  readonly loading: boolean;
   readonly challenge?: BrowserChallenge;
 }
 
