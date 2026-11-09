@@ -44,9 +44,17 @@ case "${1:-}" in
       rm -rf "$work"
       mkdir -p "$work"
       base="https://github.com/oven-sh/bun/releases/download/bun-v${VERSION}"
+      curl_args=(--fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 6 --retry-delay 5 --retry-max-time 180)
+      case "$base" in
+        https://github.com/*|https://api.github.com/*)
+          token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+          if [ -n "$token" ]; then
+            curl_args+=(--header "Authorization: Bearer $token")
+          fi
+          ;;
+      esac
       for file in "$ASSET.zip" SHASUMS256.txt; do
-        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 6 --retry-delay 5 --retry-max-time 180 \
-          --output "$work/$file" "$base/$file"
+        curl "${curl_args[@]}" --output "$work/$file" "$base/$file"
       done
     fi
     # Hash stdin so backslashes in a path cannot escape the digest output.
