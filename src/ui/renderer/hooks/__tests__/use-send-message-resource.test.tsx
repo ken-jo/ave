@@ -199,6 +199,16 @@ function setup(options?: {
 }
 
 describe("handleAsk — a turn carrying an attached resource", () => {
+  it("passes the queue reservation correlation through the send options", async () => {
+    const { result, chatSend } = setup({ attachments: [] });
+    await act(async () => {
+      await result.current.handleAsk("queued", "default", undefined, {
+        inputOrigin: "queue-auto", queueDelivery: { accepted: false, sendRequestId: "queued-request" },
+      });
+    });
+    expect(chatSend.mock.calls[0]?.[5]).toEqual({ sendRequestId: "queued-request" });
+  });
+
   it("uses the same location selector for the optimistic echo and refused-send removal", async () => {
     const attachments: Attachment[] = [{ id: "ref", n: 1, kind: "file", path: "src/app.ts", name: "app.ts",
       ext: "ts", bytes: 0, reference: true,
@@ -490,6 +500,41 @@ describe("handleAsk — the host refuses the send with a resolved value", () => 
     expect(setErrorWithThought).toHaveBeenCalledWith(expectedKey);
     const restore = setQuestion.mock.calls[setQuestion.mock.calls.length - 1]?.[0] as (current: string) => string;
     expect(restore("")).toBe("a question");
+  });
+
+  it("reports a refused queue-auto send without restoring queue-owned text into the composer", async () => {
+    const onAccepted = vi.fn();
+    const onRefused = vi.fn();
+    const chatSend = vi.fn(async () => ({ error: "streaming-active" }));
+    const { result, setQuestion, dropUserEntry } = setup({ chatSend, attachments: [] });
+
+    await act(async () => {
+      await result.current.handleAsk("queue-owned", "default", undefined, {
+        injectHint: "queue",
+        inputOrigin: "queue-auto",
+        onAccepted,
+        onRefused,
+      });
+    });
+
+    expect(onAccepted).not.toHaveBeenCalled();
+    expect(onRefused).toHaveBeenCalledOnce();
+    expect(dropUserEntry).toHaveBeenCalledWith("queue-owned");
+    expect(setQuestion).not.toHaveBeenCalled();
+  });
+
+  it("does not clear a live composer's attachments when queue-auto succeeds", async () => {
+    const { result, chatSend, setAttachments } = setup({ attachments: [RESOURCE] });
+
+    await act(async () => {
+      await result.current.handleAsk("queue-owned", "default", undefined, {
+        injectHint: "queue",
+        inputOrigin: "queue-auto",
+      });
+    });
+
+    expect(chatSend.mock.calls[0]?.[1]).toEqual([]);
+    expect(setAttachments).not.toHaveBeenCalled();
   });
 
   it("treats a turn result as success — it has no error and no ok flag", async () => {

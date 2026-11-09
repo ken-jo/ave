@@ -186,10 +186,11 @@ export function createConversationCommandPort(
   runtime: ConversationSurfaceRuntime,
 ): ConversationCommandPort {
   const context: ChatSendContext = {
-    createStreamEventSink: (streamId): PlatformConversationEventSink => (
+    createStreamEventSink: (streamId, sendRequestId): PlatformConversationEventSink => (
       createPlatformConversationEventSink(runtime.timeline, {
         conversationId: deps.conversationLoop.getSessionId(),
         turnId: createPlatformTurnId(streamId),
+        ...(sendRequestId === undefined ? {} : { sendRequestId }),
       })
     ),
     allocateStreamId: () => runtime.activity.allocateStreamId(),

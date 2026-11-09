@@ -1055,7 +1055,12 @@ export function ChatGroupSession({
             const envelope = formatAppMessageEnvelope(q, appSource);
             return handleAsk(envelope, "app-message", intent, {
               ...opts,
-              onRefused: () => setComposerDraft((current) => current.text ? current : { ...current, text: q, appSource }),
+              onRefused: () => {
+                opts?.onRefused?.();
+                if (opts?.queueDelivery === undefined && opts?.inputOrigin !== "queue-auto") {
+                  setComposerDraft((current) => current.text ? current : { ...current, text: q, appSource });
+                }
+              },
             });
           }
           return handleAsk(q, "default", intent, opts);

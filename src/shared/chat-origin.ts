@@ -168,8 +168,16 @@ export type ChatSendInputOrigin =
   >;
 export type TrustOriginWithUnknown = ChatInputOrigin | "unknown";
 
+const MAX_SEND_REQUEST_ID_LENGTH = 256;
+
+export function isChatSendRequestId(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= MAX_SEND_REQUEST_ID_LENGTH;
+}
+
 export interface ChatSendPayload {
   input: string;
+  /** Correlates the owner's send with its accepted prelude. */
+  sendRequestId?: string;
   attachments?: unknown;
   inputOrigin: ChatSendInputOrigin;
   userActivation?: boolean;
