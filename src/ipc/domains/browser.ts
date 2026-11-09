@@ -56,6 +56,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
   });
 
   browserTabRegistry.setRendererLink({
+    isWindowFocused: (windowId) => getMainWindows().some(window => window.id === windowId && !window.isDestroyed() && window.isFocused()),
     isWindowVisible: (windowId) => {
       const window = getMainWindows().find((candidate) => candidate.id === windowId);
       return window !== undefined && !window.isDestroyed() && window.isVisible() && !window.isMinimized();

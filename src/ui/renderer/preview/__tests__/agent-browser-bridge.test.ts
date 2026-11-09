@@ -276,9 +276,12 @@ it("acknowledges scoped focus capture and restores its exact composer", async ()
     expect(completeFocus).toHaveBeenLastCalledWith("restore", true);
     expect(document.activeElement).toBe(composer);
     const focus = vi.spyOn(composer, "focus");
+    const frameFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
     receive({ requestId: "parked-return", op: "restore-focus", tabId: "borrower" });
     expect(completeFocus).toHaveBeenLastCalledWith("parked-return", true);
-    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(focus).not.toHaveBeenCalled();
+    expect(frameFocus).toHaveBeenCalledOnce();
+    frameFocus.mockRestore();
     guest.focus();
     setWebSurfaceSlot("borrower", guest);
     vi.spyOn(guest, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100, left: 0, top: 0, right: 100, bottom: 100 } as DOMRect);

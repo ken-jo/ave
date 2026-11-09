@@ -1238,7 +1238,7 @@ function adapterFixture(options: {
   cdp.events.on("message", (method: string, params: Record<string, unknown>) => debuggerEvents.emit("message", {}, method, params));
   const mainFrame = { framesInSubtree: [] };
   const hostMainFrame = {};
-  const hostWebContents = { mainFrame: hostMainFrame, focusedFrame: hostMainFrame };
+  const hostWebContents = { mainFrame: hostMainFrame, focusedFrame: hostMainFrame, isFocused: () => true };
   let url = "https://a.example/form";
   const touches: string[] = [];
   const guest = Object.assign(guestEvents, {
@@ -2383,4 +2383,20 @@ it("refuses to continue a parked touch when an acknowledgement leaves native foc
   });
   await expect(onFakeClock(() => actions.click(live, ref))).rejects.toThrow("did not return native keyboard routing");
   expect(cdp.calls).toContainEqual({ method: "Input.dispatchTouchEvent", params: { type: "touchCancel", touchPoints: [] } });
+});
+
+it("does not demand a native handoff after the user switches away from the host window", async () => {
+  const { cdp, guest, registry, actions, approve } = adapterFixture({ agent: true });
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  Object.assign(guest.mainFrame, { framesInSubtree: [guest.mainFrame] });
+  guest.hostWebContents.isFocused = () => false;
+  const live = await approve("browser_click");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+  if (!ref) throw new Error("Missing link ref");
+  const release = registry.releaseFocus.bind(registry);
+  vi.spyOn(registry, "releaseFocus").mockImplementation(async (id, leaseId) => {
+    await release(id, leaseId);
+    guest.hostWebContents.focusedFrame = guest.mainFrame;
+  });
+  await expect(onFakeClock(() => actions.click(live, ref))).resolves.toBeUndefined();
 });

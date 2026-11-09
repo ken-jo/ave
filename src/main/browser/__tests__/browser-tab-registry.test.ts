@@ -1148,6 +1148,22 @@ describe("scoped browser control", () => {
     expect(settled).toBe(true);
   });
 
+  it("does not restore focus or send a renderer operation while another window is frontmost", async () => {
+    const { registry, tab, guest } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    registry.setAgentTabAwake(71, true);
+    await registry.focusGuest(71);
+    const send = vi.fn(() => true);
+    registry.setRendererLink({ isWindowVisible: () => true, isWindowFocused: () => false, sendControl: () => {}, sendTabOp: send });
+    guest.focus();
+    const blur = vi.spyOn(guest, "blur");
+    await registry.releaseFocus(guest.id, lease.id);
+    registry.restoreParkedGuestFocus(guest.id);
+    expect(send).not.toHaveBeenCalled();
+    expect(blur).not.toHaveBeenCalled();
+    expect(guest.isFocused()).toBe(true);
+  });
+
   it("blocks only real parked keyboard input and restores even after takeover", async () => {
     const { registry, guest, tab, ops } = await owned();
     const lease = registry.acquireControl(tab, ACTOR);

@@ -63,6 +63,7 @@ function isWebview(element: Element): boolean {
 export class HostFocusMemory {
   /** Most recent last. Several, because the latest (an approval card's button) is often gone by the time focus comes back. */
   private recent: HTMLElement[] = [];
+  private focusRevision = 0;
   private readonly receipts = new Map<string, { guest: HTMLElement; previous: HTMLElement; previousGuestId?: number; moved: boolean; borrowed: boolean }>();
 
   private visible(element: HTMLElement): boolean {
@@ -114,6 +115,7 @@ export class HostFocusMemory {
   constructor(private readonly doc: Document) {}
 
   readonly onFocusIn = (event: FocusEvent): void => {
+    this.focusRevision++;
     const target = event.target;
     for (const receipt of this.receipts.values()) {
       if (target === receipt.guest && !receipt.borrowed) receipt.borrowed = true;
@@ -130,16 +132,23 @@ export class HostFocusMemory {
 
   restore(parkedGuest?: HTMLElement | null): void {
     const active = this.doc.activeElement;
-    if (parkedGuest !== undefined && active instanceof HTMLElement && active !== parkedGuest && active !== this.doc.body) {
-      // Reassert the current surface even when the embedder's active element did not change.
-      if (isWebview(active)) {
-        const frame = active.shadowRoot?.querySelector("iframe");
-        frame?.blur();
-        frame?.focus({ preventScroll: true });
-      } else if (this.visible(active)) {
-        active.blur();
-        active.focus({ preventScroll: true });
+    if (parkedGuest !== undefined) {
+      if (!this.doc.hasFocus()) return;
+      if (active === this.doc.body || active === null) {
+        for (const back of [...this.recent].reverse()) {
+          if (!this.visible(back)) continue;
+          const revision = this.focusRevision;
+          back.focus({ preventScroll: true });
+          if (this.focusRevision !== revision || this.doc.activeElement !== active) break;
+        }
       }
+      if (!this.doc.hasFocus()) return;
+      const current = this.doc.activeElement;
+      let frame: Window | null = this.doc.defaultView;
+      if (current !== parkedGuest && current instanceof HTMLIFrameElement) frame = current.contentWindow;
+      else if (current !== parkedGuest && current instanceof HTMLElement && isWebview(current)) frame = current.shadowRoot?.querySelector("iframe")?.contentWindow ?? null;
+      // Change the frame's native routing without running an editor's DOM blur handlers.
+      frame?.focus();
       return;
     }
     if (!(active instanceof HTMLElement) || !isWebview(active) && active !== this.doc.body) return;
@@ -178,7 +187,7 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
   }
   if (request.op === "restore-focus") {
     if (request.receiptId !== undefined) {
-      return hostFocus?.restoreReceipt(request.receiptId, getWebSurfaceElement(request.tabId), request.preserveFocus) ? undefined : "refused";
+      return hostFocus?.restoreReceipt(request.receiptId, getWebSurfaceElement(request.tabId), request.preserveFocus || !document.hasFocus()) ? undefined : "refused";
     }
     const guest = getWebSurfaceElement(request.tabId);
     const slot = getWebSurfaceSlot(request.tabId);

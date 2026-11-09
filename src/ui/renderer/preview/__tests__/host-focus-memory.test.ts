@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** The agent holds a page's keyboard focus only while it acts: the renderer remembers where focus was in the app and gives
  * it back when main says the action is done, unless the user has already moved focus somewhere else. */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserTabRegistry } from "../../../../main/browser/browser-tab-registry.js";
 import { HostFocusMemory } from "../agent-browser-bridge.js";
 
@@ -17,11 +17,15 @@ function setup() {
     vi.spyOn(element, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100 } as DOMRect);
     return element;
   };
-  return { memory, detach, composer: get("composer"), other: get("other"), page: get("page") };
+  return { memory, detach, composer: get("composer") as HTMLTextAreaElement, other: get("other"), page: get("page") };
 }
 
+beforeEach(() => { vi.spyOn(window, "focus").mockImplementation(() => {}); });
+
 afterEach(() => {
+  vi.restoreAllMocks();
   document.body.innerHTML = "";
+  document.body.removeAttribute("tabindex");
 });
 
 describe("HostFocusMemory", () => {
@@ -206,33 +210,141 @@ it("retires a disconnected borrowing guest receipt before the next action", () =
   detach();
 });
 
-it("reasserts the current host control after a parked touch changes native frame focus without a DOM focus event", () => {
+it.each(["rename", "queued-editor"])("keeps the active %s draft without DOM blur or refocus", kind => {
+  const { memory, detach, composer, page } = setup();
+  composer.value = "unfinished draft";
+  composer.focus();
+  const onBlur = vi.fn(() => { if (kind === "rename") composer.remove(); });
+  composer.addEventListener("blur", onBlur);
+  const focus = vi.spyOn(composer, "focus");
+  memory.restore(page);
+  expect(onBlur).not.toHaveBeenCalled();
+  expect(focus).not.toHaveBeenCalled();
+  expect(composer.value).toBe("unfinished draft");
+  expect(document.activeElement).toBe(composer);
+  detach();
+});
+
+it("does not invoke an editor blur handler that would move focus", () => {
+  const { memory, detach, composer, other, page } = setup();
+  composer.focus();
+  const onBlur = vi.fn(() => other.focus());
+  composer.addEventListener("blur", onBlur);
+  memory.restore(page);
+  expect(onBlur).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(composer);
+  detach();
+});
+
+it("keeps focus moved synchronously during the frame handoff", () => {
+  const { memory, detach, composer, other, page } = setup();
+  composer.focus();
+  vi.mocked(window.focus).mockImplementation(() => other.focus());
+  memory.restore(page);
+  expect(document.activeElement).toBe(other);
+  detach();
+});
+
+it("leaves focus untouched when the host window has lost foreground focus", () => {
   const { memory, detach, composer, page } = setup();
   composer.focus();
+  vi.spyOn(document, "hasFocus").mockReturnValue(false);
   const blur = vi.spyOn(composer, "blur");
   const focus = vi.spyOn(composer, "focus");
-  // The embedder still names the composer while the native focused frame belongs to its guest.
   memory.restore(page);
-  expect(blur).toHaveBeenCalledOnce();
+  expect(window.focus).not.toHaveBeenCalled();
+  expect(blur).not.toHaveBeenCalled();
+  expect(focus).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(composer);
+  detach();
+});
+
+it("returns to the selected visible guest through its frame without blurring its DOM element", () => {
+  const { memory, detach, page } = setup();
+  const visibleGuest = document.createElement("webview");
+  visibleGuest.tabIndex = 0;
+  const frame = document.createElement("iframe");
+  document.body.append(frame, visibleGuest);
+  const root = document.createElement("div").attachShadow({ mode: "open" });
+  vi.spyOn(root, "querySelector").mockReturnValue(frame);
+  vi.spyOn(visibleGuest, "shadowRoot", "get").mockReturnValue(root);
+  visibleGuest.focus();
+  if (!frame.contentWindow) throw new Error("Missing frame window");
+  const nativeFocus = vi.spyOn(frame.contentWindow, "focus").mockImplementation(() => {});
+  const blur = vi.spyOn(visibleGuest, "blur");
+  const focus = vi.spyOn(visibleGuest, "focus");
+  memory.restore(page);
+  expect(nativeFocus).toHaveBeenCalledOnce();
+  expect(blur).not.toHaveBeenCalled();
+  expect(focus).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(visibleGuest);
+  detach();
+});
+
+it("uses remembered controls only when no editor is active", () => {
+  const { memory, detach, composer, page } = setup();
+  composer.focus();
+  composer.blur();
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  const focus = vi.spyOn(composer, "focus");
+  memory.restore(page);
+  expect(focus).toHaveBeenCalledOnce();
   expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   expect(document.activeElement).toBe(composer);
   detach();
 });
 
-it("preserves the selected visible guest when a parked guest returns native routing", () => {
-  const { memory, detach, page } = setup();
-  const visibleGuest = document.createElement("webview");
-  visibleGuest.tabIndex = 0;
-  const frame = document.createElement("iframe");
-  const root = document.createElement("div").attachShadow({ mode: "open" });
-  root.append(frame);
-  vi.spyOn(visibleGuest, "shadowRoot", "get").mockReturnValue(root);
-  document.body.append(visibleGuest);
-  visibleGuest.focus();
-  const focus = vi.spyOn(frame, "focus").mockImplementation(() => {});
+it("does not activate the native frame if a fallback callback yields foreground focus", () => {
+  const { memory, detach, composer, page } = setup();
+  composer.focus();
+  composer.blur();
+  const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  composer.addEventListener("focus", () => { focused.mockReturnValue(false); });
   memory.restore(page);
-  expect(focus).toHaveBeenCalledWith({ preventScroll: true });
-  expect(document.activeElement).toBe(visibleGuest);
-  visibleGuest.remove();
+  expect(document.activeElement).toBe(composer);
+  expect(window.focus).not.toHaveBeenCalled();
+  detach();
+});
+
+it("preserves editing in the current child frame without focusing its DOM element", () => {
+  const { memory, detach, page } = setup();
+  const editorFrame = document.createElement("iframe");
+  document.body.append(editorFrame);
+  editorFrame.focus();
+  if (!editorFrame.contentWindow) throw new Error("Missing editor frame");
+  const nativeFocus = vi.spyOn(editorFrame.contentWindow, "focus").mockImplementation(() => {});
+  const domFocus = vi.spyOn(editorFrame, "focus");
+  const blur = vi.spyOn(editorFrame, "blur");
+  memory.restore(page);
+  expect(nativeFocus).toHaveBeenCalledOnce();
+  expect(domFocus).not.toHaveBeenCalled();
+  expect(blur).not.toHaveBeenCalled();
+  expect(document.activeElement).toBe(editorFrame);
+  detach();
+});
+
+it("returns a parked page to the host frame without blurring its DOM element", () => {
+  const { memory, detach, page } = setup();
+  page.focus();
+  const blur = vi.spyOn(page, "blur");
+  const focus = vi.spyOn(page, "focus");
+  memory.restore(page);
+  expect(window.focus).toHaveBeenCalledOnce();
+  expect(blur).not.toHaveBeenCalled();
+  expect(focus).not.toHaveBeenCalled();
+  detach();
+});
+
+it("keeps a fallback callback that deliberately returns focus to the body", () => {
+  const { memory, detach, composer, other, page } = setup();
+  document.body.tabIndex = -1;
+  other.focus();
+  composer.focus();
+  composer.blur();
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  composer.addEventListener("focus", () => document.body.focus());
+  memory.restore(page);
+  expect(document.activeElement).toBe(document.body);
+  document.body.removeAttribute("tabindex");
   detach();
 });

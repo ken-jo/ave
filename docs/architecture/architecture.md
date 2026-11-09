@@ -1528,9 +1528,13 @@ Popups require their registered native focus callback and observed native focus.
 Parked input records its exact control lease without capturing a renderer focus
 receipt. A protocol touch or field focus can change the native keyboard frame
 without changing the embedder active element. Parked input therefore reasserts
-the current host control after those dispatches and awaits renderer acknowledgement
-before continuing, while keeping page-local focus emulation. Main then verifies
-that native keyboard routing has left that guest. An embedded child
+the current host frame after those dispatches and awaits renderer acknowledgement
+before continuing, while keeping page-local focus emulation. Parked restoration
+never calls DOM blur or refocus on an active editor; remembered controls are used only when the body
+or no element is active. The native owning window and renderer document must
+both hold foreground focus before a handoff, so another app remains foreground.
+Main then verifies that native keyboard routing has left that guest while the
+window is focused. An embedded child
 view can report its root view as focused; keyboard ownership is measured through
 the owning host's focused frame, not that shared view bit. Visible embedded input captures
 that receipt before borrowing focus. If a previous host control disappears or can

@@ -175,6 +175,7 @@ export interface BrowserTabRendererLink {
   sendSessionBindings?(windowId: number, state: SessionTabBindingsState): void;
   // Native window visibility proof, required before any explicit focus request.
   isWindowVisible?(windowId: number): boolean;
+  isWindowFocused?(windowId: number): boolean;
 }
 
 // The tab a conversation's browser tools act on when none is named — or why there is none.
@@ -921,6 +922,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   private focusOperation(windowId: number, request: BrowserTabOpRequest): Promise<boolean> {
+    if (request.op === "restore-focus" && this.link?.isWindowFocused?.(windowId) === false) {
+      if (request.receiptId === undefined) return Promise.resolve(true);
+      request = { ...request, preserveFocus: true };
+    }
     return new Promise(resolve => {
       const settle = (restored: boolean) => { clearTimeout(timer); this.pendingFocus.delete(request.requestId); resolve(restored); };
       const timer = setTimeout(() => settle(false), FOCUS_RECEIPT_MAX_MS);
@@ -970,7 +975,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   restoreParkedGuestFocus(guestId: number): void {
     if (!this.isParkedAgentGuest(guestId)) return;
     const tab = [...this.tabs.values()].find(candidate => candidate.guest?.id === guestId);
-    if (!tab?.guest || tab.guest.isDestroyed()) return;
+    if (!tab?.guest || tab.guest.isDestroyed() || this.link?.isWindowFocused?.(tab.windowId) === false) return;
     tab.guest.blur?.();
     const receipt = this.focusReceipts.get(guestId);
     if (receipt) {

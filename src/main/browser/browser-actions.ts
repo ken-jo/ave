@@ -1187,8 +1187,9 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     if (guest.isDestroyed() || !attribution.isParkedAgentGuest(guest.id)) return;
     const host = guest.hostWebContents;
     if (!host) throw new BrowserActionError("no-focus", "the parked page has no owning keyboard surface");
+    if (!host.isFocused()) return;
     const restored = await pollUntil(new AbortController().signal, RELEASE_MAX_MS, async () => {
-      if (guest.isDestroyed()) return true;
+      if (guest.isDestroyed() || !host.isFocused()) return true;
       const focused = host.focusedFrame;
       return focused === null || !guest.mainFrame.framesInSubtree.includes(focused) ? true : undefined;
     });
