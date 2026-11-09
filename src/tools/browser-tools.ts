@@ -23,6 +23,7 @@ import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import type { BrowserUploadPickerRequest, BrowserUploadResult } from "../main/browser/browser-upload.js";
 import { t } from "../i18n/index.js";
 import { issueUserOwnedBrowserScope } from "../permissions/user-owned-browser-scope.js";
+import type { ApprovalRequestInput } from "../permissions/approval-gate.js";
 
 /** What the tools need of the main-side tab registry. */
 interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
@@ -107,6 +108,12 @@ export function userOwnedBrowserScopeOf(tool: Tool, memory: import("../shared/pe
 
 export function isCanonicalBrowserTool(tool: unknown): boolean {
   return typeof tool === "object" && tool !== null && canonicalBrowserTools.has(tool);
+}
+
+export function browserApprovalCardFacts(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): Pick<ApprovalRequestInput, "allowedChoices" | "durableApprovalRecordAllowed"> {
+  return canonicalBrowserTools.has(tool) && memory?.kind === "key" && (memory.scope.kind === "browser-origin" || memory.scope.kind === "browser-agent-tabs")
+    ? { allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false }
+    : {};
 }
 
 export function agentBrowserScopeOf(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): true | undefined {
