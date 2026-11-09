@@ -8,8 +8,4 @@ export function faviconSource(value: unknown): string | null {
   return null;
 }
 
-/** Guest pages may supply only image data admitted by the renderer's img-src policy. */
-export function guestFaviconSource(value: unknown): string | null {
-  if (typeof value !== "string" || value.length === 0 || value.trim() !== value) return null;
-  return /^data:image\/[a-z\d.+-]+(?:;[^,]*)?,/i.test(value) ? value : null;
-}
+export { guestFaviconSource } from "../../../shared/browser-favicon.js";

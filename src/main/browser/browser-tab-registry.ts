@@ -401,8 +401,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   private bindingState(windowId: number): SessionTabBindingsState {
     const bindings = new Map<string, { sessionId: string; browserTabIds: string[]; terminalTabIds: string[] }>();
+    const nativeBrowserTabIds: string[] = [];
     for (const binding of this.workspaceBindings.values()) {
       if (binding.windowId !== windowId || binding.closed) continue;
+      if (binding.owner !== null && binding.surface.kind === "browser") nativeBrowserTabIds.push(binding.surface.tabId);
       for (const sessionId of new Set([binding.owner?.sessionId, binding.owner?.directParentSessionId, binding.paneSessionId])) {
         if (!sessionId) continue;
         let entry = bindings.get(sessionId);
@@ -410,7 +412,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         entry[binding.surface.kind === "browser" ? "browserTabIds" : "terminalTabIds"].push(binding.surface.tabId);
       }
     }
-    return { revision: this.bindingRevisions.get(windowId) ?? 0, bindings: [...bindings.values()] };
+    return { revision: this.bindingRevisions.get(windowId) ?? 0, bindings: [...bindings.values()], nativeBrowserTabIds };
   }
 
   private publishBindings(windowId: number): void {

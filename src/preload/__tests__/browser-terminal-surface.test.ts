@@ -39,7 +39,7 @@ describe("private browser and terminal preload boundaries", () => {
 
   it("queries and subscribes to the same validated session binding shape", async () => {
     const api = buildBrowserTabsApiSurface();
-    const state = { revision: 3, bindings: [{ sessionId: "main-session", browserTabIds: ["browser:one"], terminalTabIds: [] }] };
+    const state = { revision: 3, nativeBrowserTabIds: ["browser:one"], bindings: [{ sessionId: "main-session", browserTabIds: ["browser:one"], terminalTabIds: [] }] };
     invoke.mockResolvedValueOnce(state).mockResolvedValueOnce({ ...state, revision: -1 });
     await expect(api.getSessionBindings()).resolves.toEqual(state);
     expect(invoke).toHaveBeenCalledWith(CHANNELS.browser.getSessionBindings);
@@ -68,6 +68,25 @@ describe("private browser and terminal preload boundaries", () => {
     expect(receive).toHaveBeenCalledOnce();
     off();
     expect(listeners.has(CHANNELS.browser.control)).toBe(false);
+  });
+
+  it("validates native surface replies and events without accepting page-authored authority", async () => {
+    const api = buildBrowserTabsApiSurface();
+    const surface = { tabId: "browser:one", webContentsId: 21, epoch: 1, revision: 1,
+      url: "about:blank", title: "", favicon: null, loading: false, canGoBack: false, canGoForward: false, visible: false };
+    const request = { action: "create" as const, tabId: surface.tabId, requestId: "browser-op-1" };
+    invoke.mockResolvedValueOnce({ ok: true, surface }).mockResolvedValueOnce({ ok: true, surface: { ...surface, epoch: -1 } });
+    await expect(api.nativeSurface(request)).resolves.toEqual({ ok: true, surface });
+    expect(invoke).toHaveBeenCalledWith(CHANNELS.browser.nativeSurface, request);
+    await expect(api.nativeSurface(request)).rejects.toThrow("invalid-native-browser-surface");
+    const receive = vi.fn();
+    const off = api.onNativeSurfaceChanged(receive);
+    const listener = listeners.get(CHANNELS.browser.nativeSurfaceChanged)!;
+    listener(undefined, { tabId: surface.tabId, surface });
+    expect(receive).toHaveBeenCalledWith({ tabId: surface.tabId, surface });
+    expect(() => listener(undefined, { tabId: "browser:other", surface })).toThrow("invalid-native-browser-surface");
+    off();
+    expect(listeners.has(CHANNELS.browser.nativeSurfaceChanged)).toBe(false);
   });
 
   it("addresses renderer tab controls and validates tab operations", async () => {

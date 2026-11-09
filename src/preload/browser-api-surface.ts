@@ -1,5 +1,6 @@
 import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
+import { parseBrowserNativeSurfaceChanged, parseBrowserNativeSurfaceResult } from "../shared/browser-native-surface.js";
 import {
   parseBrowserTabControlState,
   parseBrowserTabOpRequest,
@@ -10,6 +11,20 @@ import {
 /** Private browser capabilities are unavailable to remote guests. */
 export function buildBrowserTabsApiSurface(): BrowserTabsApi {
   return {
+    nativeSurface: async (request) => {
+      const result = parseBrowserNativeSurfaceResult(await ipcRenderer.invoke(CHANNELS.browser.nativeSurface, request));
+      if (!result) throw new Error("invalid-native-browser-surface");
+      return result;
+    },
+    onNativeSurfaceChanged: (handler) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const state = parseBrowserNativeSurfaceChanged(payload);
+        if (!state) throw new Error("invalid-native-browser-surface");
+        handler(state);
+      };
+      ipcRenderer.on(CHANNELS.browser.nativeSurfaceChanged, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browser.nativeSurfaceChanged, listener);
+    },
     bindTab: (request) => ipcRenderer.invoke(CHANNELS.browser.bindTab, request),
     completeFocus: (requestId, restored) => ipcRenderer.invoke(CHANNELS.browser.completeFocus, { requestId, restored }),
     refuseTabOp: (requestId) => ipcRenderer.invoke(CHANNELS.browser.refuseTabOp, { requestId }),
