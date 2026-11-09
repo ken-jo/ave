@@ -16,6 +16,7 @@ import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
 import { resolveE2eExecutable } from "./background-electron.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const electronProcesses = new WeakMap<ElectronApplication, ReturnType<ElectronApplication["process"]>>();
 export const REPO_ROOT = resolve(HERE, "../../..");
 export const MAIN_ENTRY = resolve(REPO_ROOT, "dist/src/main/main.js");
 
@@ -61,19 +62,22 @@ export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" })
 
 /** The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.ts keeps it that way): Playwright's launch with {@link
  * E2E_CHROMIUM_SWITCHES} in front and {@link E2E_RUNTIME_ENV} over the spec's env (Playwright's default env is `process.env`, so a spec that passes none keeps it), through {@link launchBaseEnv}. */
-export function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
+export async function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
   const baseEnv = launchBaseEnv(options?.env ?? process.env);
   const executablePath = resolveE2eExecutable(options);
   // A custom runtime path bypasses automatic loader injection; preserve startup coordination and background rendering switches.
   const runtimeArgs = executablePath && !options?.executablePath
     ? ["-r", resolve(dirname(createRequire(import.meta.url).resolve("playwright-core/package.json")), "lib/server/electron/loader.js")]
     : [];
-  return electron.launch({
+  const app = await electron.launch({
     ...options,
     executablePath,
     args: [...E2E_CHROMIUM_SWITCHES, ...runtimeArgs, ...(options?.args ?? [])],
     env: { ...baseEnv, ...E2E_RUNTIME_ENV },
   });
+  // The automation object releases its native implementation on close; retain the process before a spec closes or restarts it.
+  electronProcesses.set(app, app.process());
+  return app;
 }
 
 /** The allow-listed parent env plus `overrides`; an `undefined` override removes the key. A Windows USERPROFILE override also gets its own
@@ -305,7 +309,8 @@ export async function launchSeededElectron(opts: {
 
 /** Keep the inspector connected through native cleanup, then release it so the process can exit. */
 export async function quitElectron(app: ElectronApplication): Promise<void> {
-  const child = app.process();
+  const child = electronProcesses.get(app);
+  if (!child) throw new Error("The native process was not registered at launch");
   const isRunning = child.exitCode === null && child.signalCode === null;
   const exited = isRunning ? once(child, "exit").then(() => {}) : Promise.resolve();
   if (isRunning) {
