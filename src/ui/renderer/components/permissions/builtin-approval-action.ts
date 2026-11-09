@@ -58,6 +58,7 @@ export const BUILTIN_APPROVAL_ACTIONS = {
   terminal_read: { title: "toolApprovalDialog.readTerminalActionTitle", kind: "fields", fields: ["terminalSessionId","tabId","blockId"], context: "toolApprovalDialog.actionContext_conversation" },
   browser_tabs: { title: "toolApprovalDialog.tabsActionTitle", kind: "fields", fields: ["select","scope"], context: "toolApprovalDialog.actionContext_browser" },
   browser_snapshot: { title: "toolApprovalDialog.snapshotActionTitle", kind: "fields", fields: ["tabId"], context: "toolApprovalDialog.actionContext_browser" },
+  browser_read_text: { title: "toolApprovalDialog.snapshotActionTitle", kind: "fields", fields: ["tabId"], context: "toolApprovalDialog.actionContext_browser" },
   browser_screenshot: { title: "toolApprovalDialog.screenshotActionTitle", kind: "fields", fields: ["tabId"], context: "toolApprovalDialog.actionContext_browser" },
   browser_wait: { title: "toolApprovalDialog.waitPageActionTitle", kind: "fields", fields: ["tabId","text","timeMs"], context: "toolApprovalDialog.actionContext_browser" },
   browser_navigate: { title: "toolApprovalDialog.navigateActionTitle", kind: "fields", fields: ["url","tabId"], context: "toolApprovalDialog.actionContext_browser" },

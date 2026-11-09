@@ -4,6 +4,7 @@ import type { BrowserChallenge } from "./browser-challenge.js";
 export const BROWSER_TOOL = {
   tabs: "browser_tabs",
   snapshot: "browser_snapshot",
+  readText: "browser_read_text",
   screenshot: "browser_screenshot",
   wait: "browser_wait",
   navigate: "browser_navigate",
@@ -26,7 +27,6 @@ export const BROWSER_OUTPUT_MAX_CHARS = 50_000;
 
 export interface BrowserPageReadiness {
   readonly url: string;
-  readonly loading: boolean;
   readonly challenge?: BrowserChallenge;
 }
 
@@ -39,6 +39,8 @@ export interface BrowserPageSnapshot {
   readonly delta: boolean;
   readonly challenge?: BrowserChallenge;
 }
+
+export type BrowserPageText = Pick<BrowserPageSnapshot, "url" | "title" | "text" | "truncated" | "challenge">;
 
 const BROWSER_TOOL_NAMES: ReadonlySet<string> = new Set(Object.values(BROWSER_TOOL));
 

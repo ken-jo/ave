@@ -26,6 +26,8 @@ import type { BrowserSessionActor } from "../shared/browser-surface.js";
 import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import { t } from "../i18n/index.js";
 import { parseBrowserScreenshotOptions } from "../shared/browser-capture.js";
+import { estimateTokens } from "../shared/token-estimate.js";
+import { MAX_TOOL_RESULT_TOKENS } from "../shared/tool-result-trim.js";
 
 const MAX_TYPED_CHARS = 10_000;
 const MAX_WAIT_MS = 30_000;
@@ -103,6 +105,28 @@ export function fenceBrowserContent(header: unknown, body?: string): string {
 
 function fenced(header: unknown, body?: string): ToolExecutionResult {
   return { output: fenceBrowserContent(header, body), isError: false };
+}
+
+// Bound both the host's raw result and its escaped transport form with shared estimation and headroom.
+export function fenceBrowserReadContent(header: Record<string, unknown>, body: string): string {
+  const budget = Math.floor(MAX_TOOL_RESULT_TOKENS * 0.8);
+  const fits = (output: string) => estimateTokens(output) <= budget && estimateTokens(JSON.stringify(output)) <= budget;
+  const render = (length: number) => {
+    const truncated = length < body.length;
+    let end = length;
+    if (end > 0 && /[\uD800-\uDBFF]/.test(body[end - 1] as string)) end--;
+    return fenceBrowserContent({ ...header, ...(truncated ? { truncated: true } : {}) },
+      body.slice(0, end) + (truncated ? "\n[truncated]" : ""));
+  };
+  const full = render(body.length);
+  if (fits(full)) return full;
+  let low = 0, high = Math.min(body.length, BROWSER_OUTPUT_MAX_CHARS);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(render(middle))) low = middle;
+    else high = middle - 1;
+  }
+  return render(low);
 }
 
 async function previewOf<G extends BrowserGuest>(actions: BrowserPageActions<G>, target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined> {
@@ -367,7 +391,6 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         tabId: target.resolved.tab.handle,
         done: name,
         url: outcome.url,
-        loading: outcome.loading,
         origin: browserOrigin(outcome.url),
         title: target.resolved.tab.guest?.getTitle() ?? "",
       });
@@ -405,6 +428,9 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     },
 
     [BROWSER_TOOL.snapshot]: async (input, ctx) => {
+      if (input.maxChars !== undefined && (!Number.isInteger(input.maxChars) || (input.maxChars as number) < 500 || (input.maxChars as number) > BROWSER_OUTPUT_MAX_CHARS)) {
+        return failure("maxChars must be an integer from 500 through 50000");
+      }
       for (const flag of ["interactive", "delta"] as const) {
         if (input[flag] !== undefined && typeof input[flag] !== "boolean") return failure(`${flag} must be a boolean`);
       }
@@ -419,10 +445,11 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (changed) return changed;
         const shot = await actions.snapshot(
           pageTarget(ctx, fresh),
-          { interactive: input.interactive === true, delta: input.delta === true },
+          { interactive: input.interactive === true, delta: input.delta === true, ...(input.maxChars === undefined ? {} : { maxChars: input.maxChars as number }) },
         );
         const browserPreview = await previewOf(actions, pageTarget(ctx, fresh));
-        return withPreview(fenced({
+        const render = input.maxChars === undefined ? fenceBrowserReadContent : fenceBrowserContent;
+        return withPreview({ output: render({
           tabId: target.resolved.tab.handle,
           url: shot.url,
           title: shot.title,
@@ -430,7 +457,23 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           ...(shot.challenge ? { challenge: shot.challenge } : {}),
           ...(shot.delta ? { delta: true } : {}),
           ...(shot.truncated ? { truncated: true } : {}),
-        }, shot.text), browserPreview);
+        }, shot.text), isError: false }, browserPreview);
+      }), ctx.abortSignal);
+    },
+
+    [BROWSER_TOOL.readText]: async (input, ctx) => {
+      const target = live(input, ctx);
+      if (!target.ok) return target.result;
+      const changed = unchangedSinceApproval(ctx, target.resolved);
+      if (changed) return changed;
+      return observeAgentBrowserCommand(target.resolved.tab, "snapshot", () => run(async (actions) => {
+        const fresh = recheck(input, ctx, target);
+        if (!fresh.ok) return fresh.result;
+        const changed = unchangedSinceApproval(ctx, fresh.resolved);
+        if (changed) return changed;
+        const page = await actions.readText(pageTarget(ctx, fresh));
+        return { output: fenceBrowserReadContent({ tabId: fresh.resolved.tab.handle, url: page.url, title: page.title,
+          ...(page.truncated ? { truncated: true } : {}), ...(page.challenge ? { challenge: page.challenge } : {}) }, page.text), isError: false };
       }), ctx.abortSignal);
     },
 
@@ -602,7 +645,8 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   };
   const allowed: Record<BrowserToolName, readonly string[]> = {
     [BROWSER_TOOL.tabs]: ["select", "scope", "includeDirectChildren"],
-    [BROWSER_TOOL.snapshot]: ["tabId", "interactive", "delta"],
+    [BROWSER_TOOL.snapshot]: ["tabId", "interactive", "delta", "maxChars"],
+    [BROWSER_TOOL.readText]: ["tabId"],
     [BROWSER_TOOL.screenshot]: ["tabId", "fullPage", "ref", "clip"],
     [BROWSER_TOOL.wait]: ["tabId", "text", "timeMs"],
     [BROWSER_TOOL.navigate]: ["tabId", "url"],
