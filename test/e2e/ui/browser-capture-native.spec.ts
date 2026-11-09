@@ -167,6 +167,13 @@ test("native parked agent tab captures its viewport and returns to sleep", async
       if (!guest) throw new Error("Capture fixture guest is unavailable");
       return guest.getBackgroundThrottling();
     });
+    // Exercise restoration from a throttled baseline; background test guests start unthrottled.
+    await app.evaluate(({ webContents }) => {
+      const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+      if (!guest) throw new Error("Capture fixture guest is unavailable");
+      guest.setBackgroundThrottling(true);
+    });
+    expect(await backgroundThrottled()).toBe(true);
     const host = await app.firstWindow();
     await host.locator("#slot").evaluate((element) => { element.style.display = "none"; });
     const frame = host.getByTestId("web-surface-frame");
