@@ -11,7 +11,8 @@ import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
 import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared/agent-observation.js";
 import { validateExternalUrl } from "../../shared/external-url.js";
-import { browserOrigin } from "../../shared/browser-tools.js";
+import { browserOrigin, type BrowserPageReadiness } from "../../shared/browser-tools.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
 import { BrowserActionError, frameTree, mainDocumentContainsNode, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
@@ -737,6 +738,9 @@ export async function upload(
 export interface NavigableGuest {
   loadURL(url: string): Promise<void>;
   getURL(): string;
+  isLoading(): boolean;
+  on(event: "dom-ready" | "did-navigate" | "did-navigate-in-page", listener: (...args: unknown[]) => void): unknown;
+  removeListener(event: "dom-ready" | "did-navigate" | "did-navigate-in-page", listener: (...args: unknown[]) => void): unknown;
   on(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
   removeListener(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
   stop(): void;
@@ -751,7 +755,8 @@ export async function navigate(
   signal: AbortSignal,
   originOf: (url: string) => string | null,
   siteGateInstalled = false,
-): Promise<{ url: string }> {
+  gate?: BrowserSiteNavigationGate,
+): Promise<BrowserPageReadiness> {
   throwIfAborted(signal);
   if (originOf(url) !== approvedOrigin) throw new BrowserActionError("unapproved-origin", "the requested URL does not match the approved origin");
   let refusedRedirect: string | null = null;
@@ -768,12 +773,47 @@ export async function navigate(
   guest.on("will-navigate", onRedirect);
   guest.on("will-frame-navigate", onRedirect);
   signal.addEventListener("abort", onAbort, { once: true });
-  let loadError: Error | null = null;
+  const initialUrl = guest.getURL();
+  const sameDocumentExpected = initialUrl !== url && initialUrl.split("#")[0] === url.split("#")[0];
+  const load: { error?: Error } = {};
+  let committed = false;
+  let documentReady = false;
+  let completed = false;
+  const onCommit = () => { committed = browserOrigin(guest.getURL()) !== null; documentReady = false; };
+  const onDocumentReady = () => { if (committed) documentReady = true; };
+  const onSameDocument = (_event: unknown, _url: unknown, mainFrame: unknown) => {
+    if (sameDocumentExpected && mainFrame === true && guest.getURL() === url) { onCommit(); documentReady = true; }
+  };
+  guest.on("did-navigate", onCommit);
+  guest.on("dom-ready", onDocumentReady);
+  guest.on("did-navigate-in-page", onSameDocument);
+  const started = Date.now();
+  const pausedBefore = gate?.pausedMs() ?? 0;
   try {
-    await guest.loadURL(url);
-  } catch (err) {
-    loadError = err as Error;
+    // Consume the full-load promise even when readiness wins; late subresource failures remain page data.
+    try {
+      void guest.loadURL(url).then(() => { completed = true; }, error => { load.error = error instanceof Error ? error : new Error(String(error)); });
+    } catch (error) { load.error = error instanceof Error ? error : new Error(String(error)); }
+    for (;;) {
+      throwIfAborted(signal);
+      gate?.assertAllowed();
+      const waiting = gate?.waiting() ?? false;
+      if (!waiting && (refusedRedirect !== null || load.error || completed && browserOrigin(guest.getURL()) !== null || committed && documentReady)) break;
+      const elapsed = Date.now() - started - ((gate?.pausedMs() ?? 0) - pausedBefore);
+      if (!waiting && elapsed >= TOOL_TIMEOUT_POLICY.browserNavigationReadyMs) {
+        if (committed) break;
+        guest.stop();
+        throw new BrowserActionError("load-timeout", "the main browser document did not commit before the readiness deadline");
+      }
+      await sleep(SETTLE_POLL_MS, signal);
+    }
+  } catch (error) {
+    if (signal.aborted) throwIfAborted(signal);
+    throw error;
   } finally {
+    guest.removeListener("did-navigate", onCommit);
+    guest.removeListener("dom-ready", onDocumentReady);
+    guest.removeListener("did-navigate-in-page", onSameDocument);
     guest.removeListener("will-redirect", onRedirect);
     guest.removeListener("will-navigate", onRedirect);
     guest.removeListener("will-frame-navigate", onRedirect);
@@ -787,8 +827,8 @@ export async function navigate(
       `${approvedOrigin} redirected to ${redirectOrigin}; the redirect was not followed. Call browser_navigate with that URL to ask for it.`,
     );
   }
-  if (loadError) throw new BrowserActionError("load-failed", `the page did not load: ${loadError.message}`);
-  return { url: guest.getURL() };
+  if (load.error) throw new BrowserActionError("load-failed", `the page did not load: ${load.error.message}`);
+  return { url: guest.getURL(), loading: guest.isLoading() };
 }
 
 // What settling needs of a guest. Production passes Electron `WebContents`.
@@ -798,16 +838,16 @@ export interface LoadingGuest {
 }
 
 const SETTLE_POLL_MS = 100;
-const SETTLE_MAX_MS = 15_000;
+const SETTLE_MAX_MS = TOOL_TIMEOUT_POLICY.browserNavigationReadyMs;
 
-// Wait for a just-opened tab's first page: a URL committed and nothing loading. Bounded; a page still loading at the bound is returned as is.
-export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = SETTLE_MAX_MS): Promise<{ url: string }> {
+// Input navigation has already passed its commit watcher; do not wait for unrelated subresources.
+export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs: number = SETTLE_MAX_MS): Promise<BrowserPageReadiness> {
   const started = Date.now();
   for (;;) {
     throwIfAborted(signal);
     const url = guest.getURL();
-    if (url !== "" && url !== "about:blank" && !guest.isLoading()) return { url };
-    if (Date.now() - started >= maxMs) return { url };
+    if (browserOrigin(url) !== null) return { url, loading: guest.isLoading() };
+    if (Date.now() - started >= maxMs) throw new BrowserActionError("load-timeout", "the main browser document did not commit before the readiness deadline");
     await sleep(SETTLE_POLL_MS, signal);
   }
 }
@@ -1496,7 +1536,7 @@ export function createBrowserPageActions(
       const lifecycle = browserControlLifecycle(live, guest, listener => subscribeBrowserGuestDestroyed(guest, listener));
       try {
         await installSiteGate(live, guest, session, lifecycle.signal);
-        return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined);
+        return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined, siteGates.get(guest));
       }
       finally { lifecycle.cancel(); }
     }),

@@ -337,7 +337,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           },
           ...(ctx.abortSignal ? { callerSignal: ctx.abortSignal } : {}) }, url.url, url.origin);
         if (guest) await awaitBrowserPopupNavigation(guest, lease.id);
-        return fenced({ tabId: outcome.tabId, url: loaded.url, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
+        return fenced({ tabId: outcome.tabId, ...loaded, title: tab.guest?.getTitle() ?? "", openedBy: "agent" });
       }), ctx.abortSignal, url.url); } finally { lifecycle?.cancel(); deps.tabs.releaseControl(tab.handle, lease.id); }
   };
 
@@ -366,6 +366,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         tabId: target.resolved.tab.handle,
         done: name,
         url: outcome.url,
+        loading: outcome.loading,
         origin: browserOrigin(outcome.url),
         title: target.resolved.tab.guest?.getTitle() ?? "",
       });
@@ -510,7 +511,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           if (changed) return changed;
         }
         const loaded = await actions.navigate(pageTarget(ctx, fresh, leaseSignal), url.url, url.origin);
-        return fenced({ tabId: target.resolved.tab.handle, url: loaded.url, title: target.resolved.tab.guest?.getTitle() ?? "" });
+        return fenced({ tabId: target.resolved.tab.handle, ...loaded, title: target.resolved.tab.guest?.getTitle() ?? "" });
       }, url.url);
     },
 

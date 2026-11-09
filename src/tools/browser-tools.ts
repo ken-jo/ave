@@ -4,7 +4,7 @@
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
-import { BROWSER_TOOL, browserOrigin, type BrowserToolName } from "../shared/browser-tools.js";
+import { BROWSER_TOOL, browserOrigin, type BrowserToolName, type BrowserPageReadiness } from "../shared/browser-tools.js";
 export { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import type { ApprovalMemoryScope, BrowserTabOpener } from "../shared/permissions-events.js";
@@ -83,9 +83,9 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   }): Promise<BrowserUploadResult>;
   type(target: BrowserActionTab<G>, ref: string, text: string, options: { submit?: boolean }): Promise<void>;
   pressKey(target: BrowserActionTab<G>, key: string, ref?: string): Promise<void>;
-  navigate(target: BrowserActionTab<G>, url: string, approvedOrigin: string): Promise<{ url: string }>;
-  /** Wait (bounded) for a newly opened tab's first page to finish loading. */
-  settle(target: BrowserActionTab<G>): Promise<{ url: string }>;
+  navigate(target: BrowserActionTab<G>, url: string, approvedOrigin: string): Promise<BrowserPageReadiness>;
+  /** Wait for a committed main document; subresources may still be loading. */
+  settle(target: BrowserActionTab<G>): Promise<BrowserPageReadiness>;
 }
 
 export interface BrowserToolDeps<G extends BrowserGuest = BrowserGuest> extends SessionWindowScopeDeps {

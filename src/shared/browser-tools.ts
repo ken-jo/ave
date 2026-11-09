@@ -22,6 +22,11 @@ export type BrowserToolName = (typeof BROWSER_TOOL)[keyof typeof BROWSER_TOOL];
 export const BROWSER_PAGE_STRING_MAX_CHARS = 200;
 export const BROWSER_OUTPUT_MAX_CHARS = 50_000;
 
+export interface BrowserPageReadiness {
+  readonly url: string;
+  readonly loading: boolean;
+}
+
 const BROWSER_TOOL_NAMES: ReadonlySet<string> = new Set(Object.values(BROWSER_TOOL));
 
 const BROWSER_URL_TOOL_NAMES: ReadonlySet<string> = new Set([BROWSER_TOOL.navigate, BROWSER_TOOL.tabNew]);

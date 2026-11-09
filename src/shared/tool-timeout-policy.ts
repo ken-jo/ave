@@ -18,6 +18,8 @@ export const TOOL_TIMEOUT_POLICY = {
   globalCeilingMs: 120_000,
   browserLayoutWakeMs: 3_000,
   browserLayoutIdleGraceMs: 1_500,
+  // Main-document readiness excludes time spent awaiting site admission, not subresource completion.
+  browserNavigationReadyMs: 10_000,
   // A fresh local identity probe bounds synchronous remote authority checks.
   tailnetIdentityProbeMs: 5_000,
   // Cold native startup includes module loading, compilation and account-provider initialization before READY.

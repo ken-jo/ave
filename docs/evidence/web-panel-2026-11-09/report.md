@@ -1,5 +1,13 @@
 # Side-panel browser repair report
 
+## Main-document navigation readiness
+
+Navigation results now report `loading` and return at the new main document's DOM readiness, while subresources continue loading. A ten-second network budget permits a committed web document as a fallback; no new commit produces a clear timeout instead of returning the old page. Site admission remains in its existing order, and approval wait time is excluded from that budget. Input-action settling uses its existing main-frame commit watcher without waiting for every resource. Native abort/readiness listeners are removed before normal lifecycle cleanup; the full-load promise remains observed for late errors.
+
+The native fixture in `test/e2e/ui/browser-navigation-readiness.spec.ts` holds an image response open for six seconds. On the original implementation, tab creation took **6,406 ms** and explicit navigation **6,062 ms**, with neither result exposing loading state; the new assertions failed. With main-document readiness, the same real executor/parked guest path took **497 ms** and **156 ms**, returned `loading: true`, and a subsequent snapshot read the ready control while the guest still reported loading. Native regression: **1 passed**. This is a controlled subresource comparison, not a timing claim about any production site.
+
+Focused wrapper validation: `AVE_TEST_TMP_ROOT=/private/tmp/webfix-readiness/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-actions.test.ts` — **181 passed**; tool-result and source consumer tests — **125 passed in two files**. Boundary coverage includes no-commit timeout, old-document readiness/history events, committed fallback, admission held beyond twenty seconds, cancellation and post-return native load rejection. Final broad and native matrix results are recorded with the completed three-item validation below.
+
 ## Current browser-result trust and lifecycle correction after 5b8c1d308
 
 ### Universal browser-result envelope

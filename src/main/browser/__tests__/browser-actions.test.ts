@@ -465,6 +465,8 @@ describe("navigate", () => {
   class FakeNavGuest extends EventEmitter implements NavigableGuest {
     url = "about:blank";
     stopped = false;
+    loading = false;
+    isLoading(): boolean { return this.loading; }
     constructor(private readonly redirects: string[], private readonly final: string) {
       super();
     }
@@ -485,10 +487,86 @@ describe("navigate", () => {
     }
   }
 
+  it("returns DOM-ready while a subresource keeps the full-load promise pending", async () => {
+    const guest = new FakeNavGuest([], "https://a.example/");
+    let rejectLoad!: (error: Error) => void;
+    const completed = new Promise<void>((_resolve, reject) => { rejectLoad = reject; });
+    vi.spyOn(guest, "loadURL").mockImplementation(() => {
+      guest.url = "https://a.example/";
+      guest.loading = true;
+      guest.emit("did-navigate");
+      guest.emit("dom-ready");
+      return completed;
+    });
+    const controller = new AbortController();
+    await expect(navigate(guest, "https://a.example/", "https://a.example:443", controller.signal, browserOrigin))
+      .resolves.toEqual({ url: guest.url, loading: true });
+    expect(guest.listenerCount("dom-ready")).toBe(0);
+    expect(guest.listenerCount("will-redirect")).toBe(0);
+    controller.abort();
+    expect(guest.stopped).toBe(false);
+    rejectLoad(new Error("late subresource failure"));
+    await Promise.resolve();
+  });
+
+  it.each([false, true])("bounds a pending load without accepting the old page: committed=%s", async committed => {
+    vi.useFakeTimers();
+    try {
+      const guest = new FakeNavGuest([], "https://a.example/new");
+      guest.url = "https://a.example/old";
+      guest.loading = true;
+      vi.spyOn(guest, "loadURL").mockImplementation(() => {
+        guest.emit("dom-ready"); // Readiness of the previous document cannot complete this request.
+        guest.emit("did-navigate-in-page", {}, guest.url, true);
+        if (committed) { guest.url = "https://a.example/new"; guest.emit("did-navigate"); }
+        return new Promise(() => {});
+      });
+      const result = navigate(guest, "https://a.example/new", "https://a.example:443", new AbortController().signal, browserOrigin)
+        .then(value => ({ value }), error => ({ error }));
+      await vi.advanceTimersByTimeAsync(9_900);
+      let finished = false;
+      void result.then(() => { finished = true; });
+      await Promise.resolve();
+      expect(finished).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      if (committed) expect(await result).toEqual({ value: { url: "https://a.example/new", loading: true } });
+      else { expect(await result).toMatchObject({ error: { code: "load-timeout" } }); expect(guest.stopped).toBe(true); }
+      expect(guest.listenerCount("dom-ready")).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("excludes pending admission from readiness and cannot return before the live recheck", async () => {
+    vi.useFakeTimers();
+    try {
+      const guest = new FakeNavGuest([], "https://a.example/");
+      const approval = { pending: true, denied: false };
+      const began = Date.now();
+      let paused = 0;
+      const gate = Object.assign(() => {}, {
+        waiting: () => approval.pending,
+        pausedMs: () => approval.pending ? Date.now() - began : paused,
+        assertAllowed: () => { if (approval.denied) throw new Error("Site approval denied"); },
+      });
+      vi.spyOn(guest, "loadURL").mockImplementation(() => {
+        guest.url = "https://a.example/"; guest.loading = true;
+        guest.emit("did-navigate"); guest.emit("dom-ready");
+        return new Promise(() => {});
+      });
+      let finished = false;
+      const result = navigate(guest, "https://a.example/", "https://a.example:443", new AbortController().signal, browserOrigin, true, gate)
+        .finally(() => { finished = true; });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(finished).toBe(false);
+      paused = Date.now() - began; approval.pending = false;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await result).toEqual({ url: "https://a.example/", loading: true });
+    } finally { vi.useRealTimers(); }
+  });
+
   it("follows a same-origin redirect", async () => {
     const guest = new FakeNavGuest(["https://a.example/login"], "https://a.example/login");
     await expect(navigate(guest, "https://a.example/", "https://a.example:443", new AbortController().signal, browserOrigin))
-      .resolves.toEqual({ url: "https://a.example/login" });
+      .resolves.toEqual({ url: "https://a.example/login", loading: false });
   });
 
   it("guards a page-initiated navigation before the first request can escape", async () => {
@@ -558,19 +636,19 @@ describe("navigate", () => {
 });
 
 describe("settle", () => {
-  it("waits for a committed URL and the load to finish", async () => {
+  it("returns a committed URL while subresources are still loading", async () => {
     let polls = 0;
     const guest = {
       getURL: () => (polls++ >= 2 ? "http://127.0.0.1:8775/index.html" : ""),
       isLoading: () => polls < 5,
     };
-    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "http://127.0.0.1:8775/index.html" });
-    expect(polls).toBeGreaterThanOrEqual(5);
+    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "http://127.0.0.1:8775/index.html", loading: true });
+    expect(polls).toBe(3);
   });
 
   it("gives up at its bound and stops on cancel", async () => {
     const guest = { getURL: () => "", isLoading: () => true };
-    await expect(settle(guest, new AbortController().signal, 150)).resolves.toEqual({ url: "" });
+    await expect(settle(guest, new AbortController().signal, 150)).rejects.toMatchObject({ code: "load-timeout" });
     const controller = new AbortController();
     controller.abort(new Error("the user took over this tab"));
     await expect(settle(guest, controller.signal)).rejects.toMatchObject({ code: "cancelled" });
@@ -599,7 +677,7 @@ describe("action navigation", () => {
     await navigation.outcome(new AbortController().signal, 5_000);
     navigation.stop();
     // Without the wait, settle reads the old page at once: it is committed and not loading.
-    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "https://a.example/next" });
+    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "https://a.example/next", loading: false });
   });
 
   it.each([
@@ -1293,7 +1371,7 @@ it.each(["allow", "deny", "takeover", "destroy"])("holds the original action lea
       navigate("https://a.example/next");
       guest.emit("did-navigate", {}, "https://a.example/next", 200, "OK");
       await vi.advanceTimersByTimeAsync(200);
-      expect(await result).toEqual({ value: { url: "https://a.example/next" } });
+      expect(await result).toEqual({ value: { url: "https://a.example/next", loading: false } });
     } else {
       expect(await result).toHaveProperty("error");
       expect(cdp.calls.some(call => call.method === "Fetch.continueRequest")).toBe(false);
@@ -1992,7 +2070,7 @@ describe("approved navigation lifetime", () => {
   it("allows the approved load's own document transition without cancelling it", async () => {
     const value = await fixture();
     Object.assign(value.guest, { loadURL: async (url: string) => { value.navigate(url); await Promise.resolve(); } });
-    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).resolves.toEqual({ url: "https://a.example/next" });
+    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).resolves.toEqual({ url: "https://a.example/next", loading: false });
     expect(value.stop).not.toHaveBeenCalled();
   });
 
