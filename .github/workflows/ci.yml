@@ -780,6 +780,44 @@ jobs:
         working-directory: ave
         run: >
           bun run test --
+          src/shared/__tests__/tool-result-trim.test.ts
+          src/engine/__tests__/conversation-history-trim.test.ts
+          src/engine/__tests__/conversation-loop-rounds.test.ts
+          src/engine/turn/__tests__/directory-instructions.test.ts
+          src/engine/__tests__/subagent-runner.test.ts
+          src/permissions/__tests__/approval-gate.test.ts
+          src/tools/__tests__/tool-result-chunk.test.ts
+          src/tools/__tests__/browser-tools.test.ts
+          src/tools/__tests__/executor-approval-memory-skip-integration.test.ts
+          src/permissions/__tests__/session-scope-end.test.ts
+          src/main/__tests__/browser-observation-preview.test.ts
+          test/renderer/main-panels.test.tsx
+          src/tools/__tests__/agent-spawn-background.test.ts
+          src/engine/__tests__/subagent-approval-provenance.test.ts
+          src/ui/renderer/preview/__tests__/browser-observation-bridge.test.tsx
+          src/ui/renderer/preview/__tests__/agent-browser-bridge.test.ts
+          src/permissions/__tests__/browser-site-permissions.test.ts
+          src/permissions/__tests__/browser-site-card.test.ts
+          src/engine/__tests__/suggested-replies.test.ts
+          src/main/browser/__tests__/browser-site-navigation.test.ts
+          src/main/browser/__tests__/browser-popup-navigation.test.ts
+          src/main/browser/__tests__/browser-tab-registry.test.ts
+          src/main/browser/__tests__/browser-actions.test.ts
+          src/main/browser/__tests__/browser-select-script.test.ts
+          src/ui/renderer/preview/__tests__/host-focus-memory.test.ts
+          src/main/browser/__tests__/browser-tab-activity.test.ts
+          src/tools/__tests__/agent-browser-observation.test.ts
+          src/ui/renderer/__tests__/ChatView.test.tsx
+          src/ui/renderer/__tests__/ChatView-columns.test.tsx
+          test/renderer/chat-columns.test.tsx
+          src/ui/renderer/components/__tests__/ChatSidePanel.test.tsx
+          src/main/browser/__tests__/browser-guest-tracking.test.ts
+          src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx
+          src/main/browser/__tests__/browser-tools-source.test.ts
+          src/ui/renderer/components/__tests__/ToolApprovalContent-session-scope.test.tsx
+          src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx
+          src/boot/__tests__/builtin-approval-actions.test.ts
+          src/ui/renderer/__tests__/ApprovalDock.test.tsx
           src/permissions/__tests__/allowed-directories-nfd-root.test.ts
           src/permissions/__tests__/mxc-extension-admission.test.ts
           src/permissions/__tests__/mxc-sdk-packaging.test.ts

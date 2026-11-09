@@ -17,6 +17,20 @@ const turnContext = new AsyncLocalStorage<ObservationTurn>();
 const invocationContext = new AsyncLocalStorage<ObservationInvocation | undefined>();
 let observationSink: AgentObservationSink | undefined;
 const homeReaders = new Map<string, { identity: ObservationIdentity; finish(): Promise<void> }>();
+const turnEndListeners = new Set<(sessionId: string, turnId: string) => void>();
+const turnStartListeners = new Set<(sessionId: string, turnId: string) => void>();
+
+/** A host turn's identity exists before its first observed tool or renderer view. */
+export function onAgentObservationTurnStart(listener: (sessionId: string, turnId: string) => void): () => void {
+  turnStartListeners.add(listener);
+  return () => { turnStartListeners.delete(listener); };
+}
+
+/** Desktop resource owners end live presentation without changing a conversation's session or permissions. */
+export function onAgentObservationTurnEnd(listener: (sessionId: string, turnId: string) => void): () => void {
+  turnEndListeners.add(listener);
+  return () => { turnEndListeners.delete(listener); };
+}
 
 /** Desktop installs an observer. Its absence never changes tool authorization. */
 export function setAgentObservationSink(sink: AgentObservationSink | undefined): void {
@@ -27,12 +41,16 @@ export function setAgentObservationSink(sink: AgentObservationSink | undefined):
 export async function runWithAgentObservationTurn<T>(identity: { sessionId: string; turnId: string }, run: () => Promise<T>): Promise<T> {
   const turn: ObservationTurn = { ...identity, active: true, revocations: new Set() };
   return turnContext.run(turn, async () => {
-    try { return await run(); }
+    try {
+      for (const listener of turnStartListeners) listener(identity.sessionId, identity.turnId);
+      return await run();
+    }
     finally {
       turn.active = false;
       for (const revoke of turn.revocations) revoke();
       turn.revocations.clear();
-      observationSink?.finishTurn(identity.sessionId, identity.turnId);
+      try { observationSink?.finishTurn(identity.sessionId, identity.turnId); }
+      finally { for (const listener of turnEndListeners) listener(identity.sessionId, identity.turnId); }
     }
   });
 }

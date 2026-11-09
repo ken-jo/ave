@@ -36,6 +36,24 @@ function childContext() {
 
 
 describe("agent_spawn background routing", () => {
+  it("delivers both concurrent child page results and an explicit failure to the parent", async () => {
+    const deliverToParent = vi.fn(async () => ({ ok: true as const, disposition: "queued" }));
+    const spawn = vi.fn(async (input: { title: string }, callbacks: { onLinked?: (value: { childSessionId: string }) => void }) => {
+      const childSessionId = `sub-${input.title}`;
+      callbacks.onLinked?.({ childSessionId });
+      return { ok: input.title !== "failed", summary: input.title === "failed" ? "" : `${input.title} https://example.test/${input.title}`,
+        error: input.title === "failed" ? "browser control stopped by human takeover" : undefined,
+        toolCallCount: 1, turnCount: 1, childSessionId, entries: [] };
+    });
+    const tool = createAgentSpawnTool({ getRunner: () => ({ spawn, deliverToParent }) as never, emit: () => undefined });
+    await Promise.all(["first", "second", "failed"].map((title) => tool.execute({ title, instructions: "read the title", background: true }, parentContext())));
+    await vi.waitFor(() => expect(deliverToParent).toHaveBeenCalledTimes(3));
+    const delivered = JSON.stringify(deliverToParent.mock.calls);
+    expect(delivered).toContain("first https://example.test/first");
+    expect(delivered).toContain("second https://example.test/second");
+    expect(delivered).toContain("browser control stopped by human takeover");
+    expect(delivered).toContain(A2ATaskState.FAILED);
+  });
   it("passes the host background mode to both fresh spawn and resume", async () => {
     const spawnPending = new Promise<never>(() => undefined);
     const resumePending = new Promise<never>(() => undefined);

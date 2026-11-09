@@ -2,8 +2,6 @@
 
 import { estimateTokens } from "./token-estimate.js";
 
-export const MAX_TOOL_RESULT_LINES = 100;
-
 export const MAX_TOOL_RESULT_TOKENS = 2_000;
 
 /** Skip exact scans above the byte ceiling so adversarial payloads cannot monopolize the event loop. */
@@ -31,25 +29,12 @@ export function trimOversizedToolResult(content: string): TrimmedToolResult {
       },
     };
   }
-  const originalLines = countLines(content);
-  if (originalLines <= MAX_TOOL_RESULT_LINES) {
-    const originalTokens = estimateTokens(content);
-    if (originalTokens <= MAX_TOOL_RESULT_TOKENS) {
-      return {};
-    }
-    return {
-      truncated: {
-        originalLines,
-        originalTokens,
-        originalBytes: content.length,
-        trimmedAt: new Date().toISOString(),
-      },
-    };
-  }
+  const originalTokens = estimateTokens(content);
+  if (originalTokens <= MAX_TOOL_RESULT_TOKENS) return {};
   return {
     truncated: {
-      originalLines,
-      originalTokens: estimateTokens(content),
+      originalLines: countLines(content),
+      originalTokens,
       originalBytes: content.length,
       trimmedAt: new Date().toISOString(),
     },

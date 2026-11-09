@@ -32,8 +32,8 @@ const START_PARAMS = Object.freeze({
   quality: OBSERVATION_LIMITS.previewJpegQuality,
   maxWidth: OBSERVATION_LIMITS.previewMaxWidth,
   maxHeight: OBSERVATION_LIMITS.previewMaxHeight,
-  // Chromium itself skips compositor frames; forwarding is then capped again at four per second.
-  everyNthFrame: 3,
+  // A static page may paint only once; admit that first frame and cap forwarding separately.
+  everyNthFrame: 1,
 });
 
 /**
@@ -67,6 +67,10 @@ export class BrowserScreencast {
     this.armed = true;
     this.stopEvents = this.transport.onEvent((method, params) => this.onEvent(method, params));
     this.stopCloseListener = this.transport.onClose((reason) => this.close(reason));
+    if (this.finished) {
+      this.releaseClose();
+      return;
+    }
     this.track(this.command("Page.startScreencast", START_PARAMS));
     this.watch();
   }

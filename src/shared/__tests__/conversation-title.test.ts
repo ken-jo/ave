@@ -6,6 +6,23 @@ import { formatStagedEnvelope, stagedOriginFor } from "../staged-origins.js";
 import { t } from "../../i18n/runtime.js";
 
 describe("resolveConversationTitle", () => {
+  it.each([
+    { hostInjectionId: "report-delivery" },
+    { subAgentReport: { title: "worker" } },
+  ])("ignores host report metadata %j when naming a conversation", (meta) => {
+    const report = { role: "user", content: "Host report instruction", meta };
+    expect(resolveConversationTitle({ sessionId: "conversation-1", messages: [
+      { role: "user", content: "Inspect both sites" }, report,
+    ] }, t)).toBe("Inspect both sites");
+    expect(resolveConversationTitle({ sessionId: "conversation-1", messages: [report] }, t))
+      .toBe(t("be_memoryManager.sessionTitleShort", { id: "conversa" }));
+  });
+
+  it("does not infer host origin from user-authored report labels", () => {
+    expect(resolveConversationTitle({ sessionId: "conversation-1", messages: [
+      { role: "user", content: "[Sub-Agent: worker] inspect this example" },
+    ] }, t)).toBe("[Sub-Agent: worker] inspect this example");
+  });
   it("names an untitled conversation from its user message using the list rule", () => {
     expect(resolveConversationTitle({
       sessionId: "conversation-1",

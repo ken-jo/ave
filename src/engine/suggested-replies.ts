@@ -34,7 +34,7 @@ export function parseSuggestedReply(raw: string): string | null {
   const first = match[1]
     .split("\n")
     .map((line) => line.replace(/^[\s\-•*]+/, "").trim())
-    .find((line) => line.length > 0 && line.length <= 80);
+    .find((line) => line.length > 0 && line.length <= 80 && !/^(?:\{[^{}]*\}|<[^<>]*>|\.{3}|…)$/u.test(line));
   return first ?? null;
 }
 

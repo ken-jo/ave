@@ -15,6 +15,17 @@ function setup() {
 }
 
 describe("useChatState — remote-origin turn rendering", () => {
+  it.each([{}, { title: "worker" }])("renders host report provenance %j separately from user steering", (subAgentReport) => {
+    const { result, dispatch } = setup();
+    dispatch({ type: "guidance_injected", text: "Page inspected", messageId: "report-row", subAgentReport });
+    dispatch({ type: "guidance_injected", text: "Summarize briefly", messageId: "user-guide" });
+    expect(result.current.entries).toMatchObject([
+      { kind: "user", injectHint: "sub-agent", text: "Page inspected", messageId: "report-row" },
+      { kind: "user", injectHint: "queue", text: "Summarize briefly", messageId: "user-guide" },
+    ]);
+    if ("title" in subAgentReport) expect(result.current.entries[0]).toHaveProperty("subAgentTitle", "worker");
+  });
+
   it("renders a bridge turn as user bubble + live assistant stream, like a local turn", () => {
     const { result, dispatch } = setup();
 

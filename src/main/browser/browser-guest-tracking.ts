@@ -1,6 +1,7 @@
 // Only key presses, clicks, and wheel input pause agent actions; hover and pointer movement do not.
 import type { WebContents } from "electron";
 import { browserTabRegistry, isUserActionInputType } from "./browser-tab-registry.js";
+import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 
 const trackedGuests = new Map<WebContents, number>();
 const siteZoomFactors = new WeakMap<object, Map<string, number>>();
@@ -44,7 +45,14 @@ export function trackBrowserGuest(contents: WebContents, windowId: number): void
   contents.on("did-finish-load", restoreZoom);
   const guestId = contents.id;
   browserTabRegistry.guestAttached(contents, windowId);
-  contents.on("before-input-event", (_event, input) => {
+  contents.on("focus", () => browserTabRegistry.restoreParkedGuestFocus(guestId));
+  contents.on("before-input-event", (event, input) => {
+    if (browserTabRegistry.isParkedKeyboardInput(guestId, input)) {
+      event.preventDefault();
+      if (isUserActionInputType(input.type)) browserTabRegistry.userInput(guestId, input);
+      browserTabRegistry.restoreParkedGuestFocus(guestId);
+      return;
+    }
     if (isUserActionInputType(input.type)) browserTabRegistry.userInput(guestId, input);
   });
   contents.on("input-event", (_event, input) => {
@@ -54,11 +62,16 @@ export function trackBrowserGuest(contents: WebContents, windowId: number): void
   contents.debugger.on("message", (_event, method) => {
     if (method === "DOM.documentUpdated") browserTabRegistry.documentChanged(guestId);
   });
-  contents.once("destroyed", () => {
+  subscribeBrowserGuestDestroyed(contents, () => {
     trackedGuests.delete(contents);
     browserTabRegistry.guestDestroyed(guestId);
   });
   contents.on("did-start-navigation", (_event, url, inPlace, isMainFrame) => {
     if (isMainFrame && !inPlace) browserTabRegistry.navigationStarted(guestId, url);
   });
+  contents.on("did-navigate", () => browserTabRegistry.metadataChanged(guestId));
+  contents.on("did-navigate-in-page", (_event, _url, isMainFrame) => {
+    if (isMainFrame) browserTabRegistry.metadataChanged(guestId);
+  });
+  contents.on("page-title-updated", () => browserTabRegistry.metadataChanged(guestId));
 }

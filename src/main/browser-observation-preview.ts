@@ -1,5 +1,6 @@
 import type { WebContents } from "electron";
 import { BrowserScreencast, type ScreencastCallbacks, type ScreencastTransport } from "../observation/browser-screencast.js";
+import { subscribeBrowserGuestDestroyed } from "./browser/browser-guest-lifecycle.js";
 
 /** The parts of an agent guest a preview uses: its already attached page session and main-frame commits. */
 export type PreviewGuest = Pick<WebContents, "id" | "isDestroyed" | "debugger" | "on" | "removeListener" | "once">;
@@ -15,19 +16,20 @@ export interface BrowserPreviewHandle {
  */
 export function startBrowserPreview(guest: PreviewGuest, callbacks: ScreencastCallbacks): BrowserPreviewHandle {
   if (guest.isDestroyed() || !guest.debugger.isAttached()) throw new Error("Browser preview requires the agent's page session.");
+  const pageDebugger = guest.debugger;
   const transport: ScreencastTransport = {
-    send: (method, params) => guest.debugger.sendCommand(method, params ?? {}) as Promise<unknown>,
+    send: async (method, params) => pageDebugger.sendCommand(method, params ?? {}) as Promise<unknown>,
     onEvent: (listener) => {
       const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => listener(method, params);
-      guest.debugger.on("message", onMessage);
-      return () => { guest.debugger.removeListener("message", onMessage); };
+      pageDebugger.on("message", onMessage);
+      return () => { pageDebugger.removeListener("message", onMessage); };
     },
     onClose: (listener) => {
       const detached = (_event: unknown, reason: string) => listener(reason || "detached");
       const destroyed = () => listener("target-destroyed");
-      guest.debugger.on("detach", detached);
-      guest.once("destroyed", destroyed);
-      return () => { guest.debugger.removeListener("detach", detached); guest.removeListener("destroyed", destroyed); };
+      pageDebugger.on("detach", detached);
+      const unsubscribe = subscribeBrowserGuestDestroyed(guest, destroyed);
+      return () => { pageDebugger.removeListener("detach", detached); unsubscribe(); };
     },
   };
   // `did-navigate` is main-frame only and fires at commit; same-document navigation keeps its screencast client.

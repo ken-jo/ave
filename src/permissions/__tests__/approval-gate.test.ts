@@ -2177,3 +2177,24 @@ describe("host-owned ordinary card cancellation", () => {
     expect(gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: sent.nonce, hmac: sent.hmac }, wc as never)).toBeNull();
   });
 });
+
+describe("pending session approval summary", () => {
+  it("isolates sessions, masks the displayed target and clears a settled request", async () => {
+    const contents = makeMockWebContents();
+    const gate = new ApprovalGate(contents as never);
+    const secret = `sk-${"a".repeat(48)}`;
+    const pending = gate.requestAndWait(makeRequest({ sessionId: "child-session", toolName: "write_file", args: { path: `/project/${secret}.txt` } }));
+    try {
+      await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
+      const summary = gate.pendingSessionApproval("child-session");
+      expect(summary).toMatchObject({ toolName: "write_file" });
+      expect(summary?.target).not.toContain(secret);
+      expect(summary?.target).toContain("/project/");
+      expect(gate.pendingSessionApproval("other-child")).toBeNull();
+      expect(gate.pendingSessionApproval("")).toBeNull();
+      gate.cancelPendingRequest("req-1", "child-session", "caller-abort");
+      await pending;
+      expect(gate.pendingSessionApproval("child-session")).toBeNull();
+    } finally { gate.disposeAll(); await pending; }
+  });
+});

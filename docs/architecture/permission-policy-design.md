@@ -1599,6 +1599,26 @@ from each other. Origin approval is not a complete browser network firewall.
 The [architecture](architecture.md#browser-and-terminal-workspace) owns state,
 tab lifetimes, and presentation; this section owns effect authorization.
 
+### Agent-opened site consent
+
+The [decision tree](permission-decision-tree.md) records the owner decision of
+2026-11-08: builtin browser tool use is allowed in agent-opened tabs, while
+loading a new origin requires this-site or any-site session consent. Site
+grants never persist or pass to children. The host checks each top-level
+document request before dispatch, including redirect and input-driven loads.
+The navigation admission module alone may enable document-request interception,
+continue an unchanged admitted request, or abort a refused request. It does not
+read response bodies or rewrite request headers, methods or bodies. Agent
+popups use the same site gate; body-bearing popups are refused rather than
+converted to another request. User takeover and lease loss invalidate pending
+loads. Popup admission and opening remain within the originating command's
+exact guest and control lease; the command awaits their outcome and reports
+opening failures. Document transitions under that same lease preserve consent,
+while command failure or authority loss aborts pending consent before grants
+can be recorded. An adapter signal cannot extend the command's lease lifetime.
+Sensitive input, irreversible-submit guards, explicit rules and human
+exfiltration consent remain in force.
+
 ### User-owned surface choices
 
 The [decision tree's resolved browser and host-terminal contracts](permission-decision-tree.md#resolved-conflicts-with-existing-invariants-lead-decision-2026-10-30-from-inventory-review) govern user-owned browser tabs and the user's host terminal. Being a user-owned surface does not itself create a forced one-shot floor. The first eligible agent action offers one shared card:
@@ -1654,12 +1674,19 @@ Once a drop is dispatched, a lost acknowledgement means its effect is unknown:
 the error must warn against automatic repetition. Cleanup cannot make that
 uncertainty a retry-safe failure or a proven success.
 
-Before keyboard effects, host-owned focus must resolve the same visible active
-embedded tab through its stored renderer ID and preserve the exact guest,
-document, generation, and lease across awaits. Trusted renderer focus is only a
-request; native guest focus and `focusedFrame === mainFrame` must be observed.
-Popups require native selection plus native focus. Missing, stale, hidden, or
-wrong-frame focus fails rather than sending input elsewhere.
+For visible keyboard effects, host-owned focus resolves the same active embedded
+tab through its stored renderer ID and preserves the exact guest, document,
+generation, and lease across awaits. Trusted renderer focus is only a request;
+native guest focus and `focusedFrame === mainFrame` must be observed. Parked
+agent guests never take native focus or receive real keyboard events. Their
+page-local focus emulation requires an exact main-document node; a null native
+focused frame is accepted only under that proof, and a different frame fails.
+Before hiding a visible guest, the renderer waits for main to block keyboard
+delivery and return native focus. Showing precedes clearing parking. Native
+select changes use a fixed isolated function on the exact enabled main-document
+control, with final option/value and accessibility checks. Popups retain native
+selection and focus checks. All guest, document, generation and lease guards
+remain authoritative.
 
 Acquiring a lease keeps the already-approved control generation stable. A
 page-input action can finish through navigation only after a confirmed final

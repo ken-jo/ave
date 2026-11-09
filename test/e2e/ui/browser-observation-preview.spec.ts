@@ -9,12 +9,18 @@ test.use({ trace: "on" });
 
 type PreviewCapture = { previewMessages: (BrowserObservationPreviewMessage & { receivedAt: number })[]; observed: AgentObservationEvent[] };
 
-test("streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit", async () => {
-  test.setTimeout(150_000);
+test("keeps a parked agent guest visible to its animation clock", () => exercisePreview("parked"));
+test("selects in a parked guest without taking native keyboard focus", () => exercisePreview("focus"));
+test("measures renderer evaluation after an agent closes its parked guest", () => exercisePreview("closure"));
+test("streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit", () => exercisePreview("navigation"));
+
+async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigation"): Promise<void> {
+  test.setTimeout(scope === "closure" ? 30_000 : 150_000);
   const model = "browser-preview-fixture";
   let stage = 0;
   let tabId = "";
   let clickRef = "";
+  let selectRef = "";
   let releaseNavigation: (() => void) | undefined;
   let releaseFinish: (() => void) | undefined;
   let firstUrl = "";
@@ -39,7 +45,7 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     if (request.method === "GET" && request.url?.startsWith("/page")) {
       const second = request.url.includes("second");
       response.writeHead(200, { "content-type": "text/html" });
-      response.end(`<!doctype html><html><head><title>Preview fixture</title></head><body style="font:16px system-ui;padding:32px;background:${second ? "#e8f0ff" : "#fff8e0"}"><h1>${second ? "Second site" : "First site"}</h1><button onclick="document.querySelector('output').textContent='Clicked'">Continue</button><output>Ready</output><p id="tick">0</p><script>let n=0;setInterval(()=>{document.getElementById('tick').textContent=String(++n)},100)</script></body></html>`);
+      response.end(`<!doctype html><html><head><title>Preview fixture</title></head><body style="font:16px system-ui;padding:32px;background:${second ? "#e8f0ff" : "#fff8e0"}"><h1>${second ? "Second site" : "First site"}</h1><button onclick="document.querySelector('output').textContent='Clicked'">Continue</button><output>Ready</output><select aria-label="Choice"><option value="a">A</option><option value="b">B</option></select><p id="tick">0</p><script>let n=0;setInterval(()=>{document.getElementById('tick').textContent=String(++n)},100)</script></body></html>`);
       return;
     }
     if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
@@ -59,10 +65,14 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     if (stage === 3) { tool(response, "browser_snapshot", { tabId, interactive: true }); return; }
     if (stage === 4) {
       clickRef = /button "Continue"[^\n]*\[ref=(e\d+)\]/.exec(text)?.[1] ?? "";
+      selectRef = /combobox "Choice"[^\n]*\[ref=(e\d+)\]/.exec(text)?.[1] ?? "";
       tool(response, "browser_click", { tabId, ref: clickRef }); return;
     }
     if (stage === 5) {
-      releaseNavigation = () => tool(response, "browser_navigate", { tabId, url: secondUrl });
+      releaseNavigation = () => scope === "closure"
+        ? tool(response, "browser_tab_close", { tabId })
+        : scope === "focus" ? tool(response, "browser_select", { tabId, ref: selectRef, value: "b" })
+        : tool(response, "browser_navigate", { tabId, url: secondUrl });
       response.flushHeaders(); return;
     }
     if (stage === 6) {
@@ -94,6 +104,9 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     const runtime = await ctx.app.evaluate(() => ({ aveHome: process.env.AVE_HOME, mockKeychain: process.argv.includes("--use-mock-keychain") }));
     expect(runtime.aveHome).toBe(ctx.aveHome);
     expect(runtime.mockKeychain).toBe(true);
+    if (scope === "closure") await ctx.app.evaluate(() => {
+      process.on("uncaughtExceptionMonitor", (error) => console.error("Native close exception", error.stack));
+    });
     await ctx.app.evaluate(({ app }) => {
       const state = globalThis as unknown as { previewCrashes: unknown[] };
       state.previewCrashes = [];
@@ -122,12 +135,14 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
       });
     });
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
-    const composer = page.locator('[data-composer-surface="main"] [data-testid="composer-textarea"]');
+    const composer = page.getByTestId("pane-cell:main").getByTestId("composer-textarea");
     await composer.fill("Browse the local preview fixture.");
     await composer.press("Enter");
     approvals = (async () => {
       const deadline = Date.now() + 100_000;
       while (approving && Date.now() < deadline) {
+        const site = page.getByTestId("browser-site-approval-card").getByRole("button", { name: /^(Allow this site|이 사이트만 허용)$/ }).first();
+        if (await site.isVisible()) await site.click();
         const button = page.getByTestId(TEST_IDS.approvalDock).getByTestId(TEST_IDS.approveButton).first();
         if (await button.isVisible()) await button.click();
         await page.waitForTimeout(100);
@@ -157,6 +172,27 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     }, rendererTabId);
     const guestFrame = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${rendererTabId}"]`);
     await expect(guestFrame).toHaveCSS("visibility", "visible");
+    // Measure inside the real parked guest; a visible shell rect alone cannot prove its animation clock is running.
+    const app = ctx.app;
+    const measureLiveness = () => app.evaluate(async ({ webContents }, url) => {
+      const guest = webContents.getAllWebContents().find((contents) => contents.getURL() === url);
+      if (!guest) throw new Error("Parked preview guest unavailable");
+      return await guest.executeJavaScript(`new Promise(resolve => {
+        let frames = 0;
+        let done = false;
+        let frameId = 0;
+        const started = performance.now();
+        const tick = () => { if (!done) { frames += 1; frameId = requestAnimationFrame(tick); } };
+        frameId = requestAnimationFrame(tick);
+        setTimeout(() => {
+          done = true;
+          cancelAnimationFrame(frameId);
+          resolve({ visibilityState: document.visibilityState, frames, elapsedMs: performance.now() - started,
+            width: innerWidth, height: innerHeight });
+        }, 750);
+      })`) as { visibilityState: string; frames: number; elapsedMs: number; width: number; height: number };
+    }, firstUrl);
+    const activeLiveness = await measureLiveness();
     const hiddenAt = Date.now();
     await page.getByTestId("pane-cell:main").getByTestId("pane-maximize").click();
     const thumbnailRow = page.getByTestId("conversation-browser-observation");
@@ -169,6 +205,84 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
     await expect(guestFrame).toHaveAttribute("inert", "");
     expect(await guestFrame.evaluate((element) => element.contains(document.activeElement))).toBe(false);
     expect(await page.locator(`webview[data-tab-id="${rendererTabId}"]`).count()).toBe(1);
+    const liveness = await measureLiveness();
+    console.log("Guest liveness", { active: activeLiveness, parked: liveness });
+    await test.info().attach("parked-guest-liveness.json", { body: JSON.stringify({ active: activeLiveness, parked: liveness }, null, 2), contentType: "application/json" });
+    expect(liveness.visibilityState).toBe("visible");
+    expect(liveness.width).toBeGreaterThan(0);
+    expect(liveness.height).toBeGreaterThan(0);
+    expect(liveness.frames).toBeGreaterThanOrEqual(10);
+    expect(liveness.frames / liveness.elapsedMs).toBeGreaterThanOrEqual(activeLiveness.frames / activeLiveness.elapsedMs / 2);
+    if (scope === "parked") return;
+    if (scope === "focus") {
+      await ctx.app.evaluate(({ webContents }, url) => {
+        const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
+        if (!guest) throw new Error("Parked focus guest unavailable");
+        const state = globalThis as unknown as { parkedFocusEvents: number };
+        state.parkedFocusEvents = 0;
+        guest.on("focus", () => { state.parkedFocusEvents += 1; });
+      }, firstUrl);
+      releaseNavigation?.();
+      await expect.poll(() => releaseFinish !== undefined, { timeout: 10_000 }).toBe(true);
+      expect(failures).toEqual([]);
+      const selected = await ctx.app.evaluate(async ({ webContents }, url) => {
+        const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
+        if (!guest) throw new Error("Parked focus guest unavailable");
+        return { focused: guest.isFocused(), focusEvents: (globalThis as unknown as { parkedFocusEvents: number }).parkedFocusEvents,
+          value: await guest.executeJavaScript("document.querySelector('select').value") };
+      }, firstUrl);
+      expect(selected).toEqual({ focused: false, focusEvents: 0, value: "b" });
+      await ctx.app.evaluate(async ({ webContents }, url) => {
+        const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
+        if (!guest) throw new Error("Parked focus guest unavailable");
+        await guest.executeJavaScript("window.parkedKeys = []; window.addEventListener('keydown', event => window.parkedKeys.push(event.key))");
+        guest.focus();
+        guest.sendInputEvent({ type: "keyDown", keyCode: "X" });
+        guest.sendInputEvent({ type: "keyUp", keyCode: "X" });
+      }, firstUrl);
+      await expect.poll(() => app.evaluate(({ webContents }, url) => webContents.getAllWebContents()
+        .find(contents => contents.getURL() === url)?.isFocused(), firstUrl)).toBe(false);
+      const keys = await app.evaluate(async ({ webContents }, url) => {
+        const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
+        if (!guest) throw new Error("Parked focus guest unavailable");
+        return await guest.executeJavaScript("window.parkedKeys");
+      }, firstUrl);
+      expect(keys).toEqual([]);
+      await composer.click();
+      await page.keyboard.type("VISIBLE");
+      await expect(composer).toHaveValue("VISIBLE");
+      releaseFinish?.();
+      await test.info().attach("parked-focus.json", { body: JSON.stringify(selected), contentType: "application/json" });
+      return;
+    }
+    if (scope === "closure") {
+      const closedAt = Date.now();
+      releaseNavigation?.();
+      await expect.poll(() => releaseFinish !== undefined, { timeout: 10_000 }).toBe(true);
+      expect(failures).toEqual([]);
+      await expect(guestFrame).toHaveCount(0);
+      releaseFinish?.();
+      await expect(page.getByText("Preview task complete.", { exact: true })).toBeVisible();
+      const cdp = await page.context().newCDPSession(page);
+      const evaluationMs: number[] = [];
+      try {
+        for (let index = 0; index < 5; index += 1) {
+          const started = performance.now();
+          const result = await cdp.send("Runtime.evaluate", { expression: "document.readyState", returnByValue: true });
+          evaluationMs.push(performance.now() - started);
+          expect(result.result.value).toBe("complete");
+          await page.waitForTimeout(100);
+        }
+      } finally {
+        await cdp.detach();
+      }
+      const measurement = { evaluationMs,
+        previewCount: await page.getByTestId("browser-observation-preview").count(),
+        framesAfterClose: (await readCapture()).messages.filter((message) => message.kind === "frame" && message.receivedAt > closedAt + 100).length };
+      console.log("Renderer after agent tab close", measurement);
+      await test.info().attach("renderer-after-close.json", { body: JSON.stringify(measurement, null, 2), contentType: "application/json" });
+      return;
+    }
     const decoded: { src: string; ts: number }[] = [];
     const deadline = Date.now() + 3_200;
     while (Date.now() < deadline) {
@@ -299,4 +413,4 @@ test("streams a bounded live preview of the agent's tab and re-arms it across a 
       }
     }
   }
-});
+}

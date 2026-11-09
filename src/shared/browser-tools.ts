@@ -1,3 +1,5 @@
+import type { BrowserChallenge } from "./browser-challenge.js";
+
 /** Share registration and risk-classification names so renamed tools cannot escape their rules. */
 export const BROWSER_TOOL = {
   tabs: "browser_tabs",
@@ -21,6 +23,22 @@ export type BrowserToolName = (typeof BROWSER_TOOL)[keyof typeof BROWSER_TOOL];
 
 export const BROWSER_PAGE_STRING_MAX_CHARS = 200;
 export const BROWSER_OUTPUT_MAX_CHARS = 50_000;
+
+export interface BrowserPageReadiness {
+  readonly url: string;
+  readonly loading: boolean;
+  readonly challenge?: BrowserChallenge;
+}
+
+export interface BrowserPageSnapshot {
+  readonly url: string;
+  readonly title: string;
+  readonly text: string;
+  readonly truncated: boolean;
+  readonly refCount: number;
+  readonly delta: boolean;
+  readonly challenge?: BrowserChallenge;
+}
 
 const BROWSER_TOOL_NAMES: ReadonlySet<string> = new Set(Object.values(BROWSER_TOOL));
 

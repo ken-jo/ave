@@ -6,6 +6,7 @@ import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
 import { getMainWindows } from "../app-state.js";
 import { observeAgentBrowserDownload } from "../browser-observation.js";
 import { trackBrowserGuest } from "./browser-guest-tracking.js";
+import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 import { browserTabRegistry } from "./browser-tab-registry.js";
 import { createBrowserWorkspaceService, type BrowserWorkspaceService } from "./browser-workspace.js";
 
@@ -88,13 +89,14 @@ export function observeBrowserWorkspaceGuest(contents: WebContents, owner: Brows
     owner.once("closed", dispose);
   }
   const stopObserving = getBrowserWorkspaceService().observeGuest(windowId, contents);
+  let unsubscribe = () => {};
   const dispose = () => {
-    contents.removeListener("destroyed", dispose);
+    unsubscribe();
     stopObserving();
     guests.delete(guestId);
   };
   guests.set(guestId, { contents, owner, dispose });
-  contents.once("destroyed", dispose);
+  unsubscribe = subscribeBrowserGuestDestroyed(contents, dispose);
 }
 
 // Called only after the existing native Save/rate policy admits the download.
@@ -112,12 +114,16 @@ function focusPopup(window: BrowserWindow): Promise<boolean> {
   if (contents.isDestroyed()) return Promise.resolve(false);
   return new Promise((resolve) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let unsubscribe = () => {};
+    let settled = false;
     const settle = (focused: boolean) => {
+      if (settled) return;
+      settled = true;
       if (timer !== undefined) clearTimeout(timer);
       window.removeListener("focus", inspect);
       window.removeListener("closed", closed);
       contents.removeListener("focus", inspect);
-      contents.removeListener("destroyed", closed);
+      unsubscribe();
       resolve(focused);
     };
     const inspect = () => {
@@ -127,8 +133,8 @@ function focusPopup(window: BrowserWindow): Promise<boolean> {
     window.on("focus", inspect);
     window.once("closed", closed);
     contents.on("focus", inspect);
-    contents.once("destroyed", closed);
     timer = setTimeout(() => settle(false), FOCUS_TIMEOUT_MS);
+    unsubscribe = subscribeBrowserGuestDestroyed(contents, closed);
     try {
       if (window.isMinimized()) window.restore();
       window.show();

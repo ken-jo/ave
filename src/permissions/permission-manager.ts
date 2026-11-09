@@ -1,3 +1,4 @@
+import { BrowserSitePermissions } from "./browser-site-permissions.js";
 import { inspectShellPermissionPaths } from "./rules/literal-shell-inspection.js";
 import { isReadOnlyCommand } from "./reviewer/host-risk-inspector.js";
 import { wrapperCommand } from "./rules/shell-prefix-policy.js";
@@ -203,6 +204,7 @@ export interface PermissionCheckResult {
 }
 
 export interface PermissionCheckContext {
+  agentBrowser?: true;
   rationaleAvailable?: boolean;
   userOwnedBrowser?: UserOwnedBrowserScope;
   hostTerminalTurn?: HostTerminalCommandScope;
@@ -247,7 +249,7 @@ export interface PermissionCheckContext {
   permissionStoreError?: string;
 }
 
-type HostTerminalPermissionContext = Pick<PermissionCheckContext, "hostTerminalTurn" | "userOwnedBrowser" | "trustOrigin" | "sessionId" | "remoteControllerAuthority" | "headless" | "approvalSurface">;
+type HostTerminalPermissionContext = Pick<PermissionCheckContext, "agentBrowser" | "hostTerminalTurn" | "userOwnedBrowser" | "trustOrigin" | "sessionId" | "remoteControllerAuthority" | "headless" | "approvalSurface">;
 
 // Permission policy input bundle for reviewer-agent dispatch. Set when the caller wants the headless lane to consult the Layer 5 classifier (rather than the temporary "reviewer → ask" mapping).
 export interface ReviewerDispatchInput {
@@ -572,9 +574,9 @@ export class PermissionManager {
   private mode: ExecutionMode = "strict";
   // "Allow always" grants keyed by pattern → highest granted {@link GrantTier}. Was a flat `Set<string>` (category-blind). The Map structurally enforces the "1 grant, highest tier" invariant so a re-grant can only widen coverage (monotone), never desynchronize.
   private readonly alwaysAllowed = new Map<string, GrantTier>();
-  // "This session" allow rules (`addSessionRule`), by root conversation. Held in memory only: they end with the conversation (`endSession`) or the app.
+  // "This session" allow rules (`addSessionRule`), by requesting session. Held in memory only: they end with the session (`endSession`) or the app.
   private readonly sessionRules = new Map<string, PermissionRule[]>();
-  // Root conversations holding the sandbox-unavailable floor's "This session" grant (`addFloorSessionGrant`), kept apart from the rules: it
+  // Sessions holding the sandbox-unavailable floor's "This session" grant (`addFloorSessionGrant`), kept apart from the rules: it
   // answers only that floor, and no rule answers the floor. Memory only, like the session rules.
   private readonly floorSessionGrants = new Set<string>();
 
@@ -584,6 +586,7 @@ export class PermissionManager {
   // Reviewer evidence services, wired at boot.
   private reviewerClassifier: TracingRiskClassifier | null = null;
   private surfaceReviewer: RiskClassifier["reviewUserOwnedSurface"];
+  readonly browserSites = new BrowserSitePermissions();
   private readonly userOwnedSurfaceChoices = new UserOwnedSurfaceStore();
   private reviewerDisabled = false;
   private reviewerModel: string | undefined;
@@ -980,15 +983,14 @@ export class PermissionManager {
     if (spec?.kind !== "bash" && spec?.kind !== "powershell" && spec?.kind !== "network") {
       throw new Error(`A session rule must be a Bash(...), PowerShell(...) or Network(...) rule; got ${validated.pattern}`);
     }
-    // Keyed like a session approval: the root conversation and the sub-agents it spawned share it.
-    const root = approvalConversationRoot(sessionId);
-    const rules = this.sessionRules.get(root) ?? [];
+    // Command choices belong to the exact acting session.
+    const rules = this.sessionRules.get(sessionId) ?? [];
     if (!rules.some((rule) => rule.pattern === validated.pattern && isCurrentShellRule(rule))) {
       const previous = rules.findIndex((rule) => rule.pattern === validated.pattern);
       if (previous >= 0) rules.splice(previous, 1);
       rules.push(validated);
     }
-    this.sessionRules.set(root, rules);
+    this.sessionRules.set(sessionId, rules);
     this.policyGeneration += 1;
     this.broadcastConfigChanged?.();
   }
@@ -997,15 +999,15 @@ export class PermissionManager {
   // the conversation's session allows (permission tree, delegated work), and the decision order is unchanged.
   private sessionRulesInScope(sessionId: string | undefined): readonly PermissionRule[] {
     if (sessionId === undefined) return [];
-    const rules = this.sessionRules.get(approvalConversationRoot(sessionId)) ?? [];
+    const rules = this.sessionRules.get(sessionId) ?? [];
     return sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId)) ? rules.filter((rule) => rule.action !== "allow") : rules;
   }
 
-  // Record the floor card's "This session" answer for one root conversation (host-derived from the pending card).
+  // Record the floor card's "This session" answer for its own session (host-derived from the pending card).
   addFloorSessionGrant(sessionId: string, grant: FloorSessionGrant): void {
     if (sessionId.length === 0) throw new Error("A floor session grant requires its conversation session");
     if (grant.code !== "sandbox-unavailable") throw new Error("A floor session grant answers only the sandbox-unavailable floor");
-    this.floorSessionGrants.add(approvalConversationRoot(sessionId));
+    this.floorSessionGrants.add(sessionId);
     this.policyGeneration += 1;
     this.broadcastConfigChanged?.();
   }
@@ -1013,7 +1015,7 @@ export class PermissionManager {
   // A scheduled wake turn inherits no floor session grant, like the other session allows.
   private holdsFloorSessionGrant(sessionId: string | undefined): boolean {
     if (sessionId === undefined || sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId))) return false;
-    return this.floorSessionGrants.has(approvalConversationRoot(sessionId));
+    return this.floorSessionGrants.has(sessionId);
   }
 
   // The "This session" rules a conversation holds.
@@ -1030,23 +1032,24 @@ export class PermissionManager {
   }
 
   listSessionRules(sessionId: string): readonly string[] {
-    return (this.sessionRules.get(approvalConversationRoot(sessionId)) ?? []).map((rule) => rule.pattern);
+    return (this.sessionRules.get(sessionId) ?? []).map((rule) => rule.pattern);
   }
 
-  // Forget the session shell rules of a root conversation that ended. Rules are held under the root (its sub-agents share them), so only a root id is accepted: a sub-agent's end must not drop its parent's rules. Returns whether it held any.
-  endSession(rootSessionId: string): boolean {
-    if (approvalConversationRoot(rootSessionId) !== rootSessionId) {
-      throw new Error("Session shell rules end only with their root conversation");
-    }
-    this.judgeBreaker.forget(this.resolveJudgeRootSession(rootSessionId));
-    const droppedRules = this.sessionRules.delete(rootSessionId);
-    const dropped = this.floorSessionGrants.delete(rootSessionId) || droppedRules;
-    const clearedSurfaces = this.userOwnedSurfaceChoices.clearMatching(sessionId => approvalConversationRoot(sessionId) === rootSessionId);
+  // A root closes its whole tree; a child closes only its own session choices.
+  endSession(sessionId: string): boolean {
+    const root = approvalConversationRoot(sessionId);
+    const ended = (held: string) => held === sessionId || (root === sessionId && approvalConversationRoot(held) === root);
+    if (root === sessionId) this.judgeBreaker.forget(this.resolveJudgeRootSession(root));
+    let dropped = false;
+    for (const held of this.sessionRules.keys()) if (ended(held)) dropped = this.sessionRules.delete(held) || dropped;
+    for (const held of this.floorSessionGrants) if (ended(held)) dropped = this.floorSessionGrants.delete(held) || dropped;
+    const clearedSites = this.browserSites.clearMatching(ended);
+    const clearedSurfaces = this.userOwnedSurfaceChoices.clearMatching(ended);
     if (dropped) {
       this.policyGeneration += 1;
       this.broadcastConfigChanged?.();
     }
-    return dropped || clearedSurfaces;
+    return dropped || clearedSurfaces || clearedSites;
   }
 
   // remove a rules-language rule from the user-global or a project scope.
@@ -1368,7 +1371,8 @@ export class PermissionManager {
   }
 
   private pipelineResult(evidence: PermissionDecisionRequest, context?: HostTerminalPermissionContext): PermissionCheckResult {
-    const hostTerminalContext = context?.hostTerminalTurn || context?.userOwnedBrowser || context?.remoteControllerAuthority ? Object.freeze({
+    const hostTerminalContext = context?.agentBrowser || context?.hostTerminalTurn || context?.userOwnedBrowser || context?.remoteControllerAuthority ? Object.freeze({
+      agentBrowser: context.agentBrowser,
       ...(context.hostTerminalTurn ? { hostTerminalTurn: Object.freeze({ ...context.hostTerminalTurn }) } : {}), userOwnedBrowser: context.userOwnedBrowser,
       trustOrigin: context.trustOrigin, sessionId: context.sessionId,
       remoteControllerAuthority: context.remoteControllerAuthority, headless: context.headless, approvalSurface: context.approvalSurface,
@@ -1384,6 +1388,7 @@ export class PermissionManager {
     const { automationPause: _previousPause, ...currentEvidence } = evidence;
     const pause = this.getAutomatedApprovalPauseReason(evidence.sessionId);
     const request: PermissionDecisionRequest = Object.freeze({ ...currentEvidence,
+      ...(hostTerminalContext?.agentBrowser ? { agentBrowser: true as const } : {}),
       ...(surface ? { userOwnedSurface: Object.freeze({ kind: surface,
         // A scheduled wake turn does not inherit the conversation's shared choice; it asks, the default.
         choice: sessionAuthorityWithheld(evidence.sessionId, evidence.sessionId === undefined ? undefined : approvalConversationRoot(evidence.sessionId))
@@ -1407,7 +1412,7 @@ export class PermissionManager {
       reasonCode: decision.reasonCode,
       pipelineRequest: request,
       ...(decision.requiresCodeCheckpoint ? { requiresCodeCheckpoint: true as const } : {}),
-      ...(decision.outcome === "ask-forced" || request.manualRerun && decision.outcome === "ask" ? { forceModal: true } : {}),
+      ...(decision.outcome === "ask-forced" || (request.manualRerun || request.agentBrowser && request.exfiltration !== undefined) && decision.outcome === "ask" ? { forceModal: true } : {}),
       ...(decision.reviewRequired ? { reviewer: { route: request.headless ? "headless" as const : "foreground-auto" as const } } : {}),
     };
     this.pipelineRequests.set(result, { request, policyEpoch: this.getPolicyEpoch(), ...(hostTerminalContext ? { hostTerminalContext } : {}) });

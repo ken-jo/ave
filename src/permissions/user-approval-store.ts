@@ -171,7 +171,7 @@ function memoryEntryKey(
   })), workingDirectoryIdentity);
 }
 
-// Maps a session to the root conversation that owns its session approvals. A session allow belongs to the root conversation: every agent in that tree (the conversation and the sub-agents it spawned, at any depth) shares it, and separate root conversations never do. This covers every session approval, not only shell ones. Boot registers the one root-session resolver (`createRootSessionResolver`, shared with the judge). Without a runner no session is a child, so each session is its own root; the identity resolver is that exact answer.
+// The root resolver identifies a session tree for lifecycle cleanup; it grants no session authority.
 type ApprovalConversationRootResolver = (sessionId: string) => string;
 const identityConversationRoot: ApprovalConversationRootResolver = (sessionId) => sessionId;
 let resolveConversationRoot: ApprovalConversationRootResolver = identityConversationRoot;
@@ -180,7 +180,7 @@ export function setApprovalConversationRootResolver(resolver: ApprovalConversati
   resolveConversationRoot = resolver;
 }
 
-// The root conversation a session approval (and a session shell rule) is keyed and listed under.
+// The root conversation whose lifecycle owns this session.
 export function approvalConversationRoot(sessionId: string): string {
   if (!sessionId.trim()) throw new Error("Approval session identity must be non-empty");
   const root = resolveConversationRoot(sessionId);
@@ -194,8 +194,8 @@ function globalEntryKey(unscopedKey: string): string {
   return sha256Hex(canonicalStringify({ version: "global/v1", key: unscopedKey }));
 }
 
-function conversationEntryKey(key: string, rootSessionId: string): string {
-  return sha256Hex(canonicalStringify({ version: "conversation/v1", key, sessionId: rootSessionId }));
+function conversationEntryKey(key: string, sessionId: string): string {
+  return sha256Hex(canonicalStringify({ version: "conversation/v1", key, sessionId }));
 }
 
 function entryKey(
@@ -314,12 +314,13 @@ export async function recordApproval(
     : entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey, entry.workingDirectoryIdentity);
   if (entry.scope === "global" && entry.projectCwd !== undefined) throw new Error("A global approval names no project");
   if (entry.sessionId !== undefined && entry.scope !== "session") throw new Error("Conversation identity requires session scope");
-  // A session approval always belongs to a root conversation (owner decision 2026-10-23); an unscoped one would authorize every conversation.
+  // A session approval requires an exact session identity.
   if (entry.scope === "session" && entry.sessionId === undefined) throw new Error("A session approval requires its conversation session");
-  const rootSessionId = entry.sessionId === undefined ? undefined : approvalConversationRoot(entry.sessionId);
-  const key = rootSessionId === undefined ? baseKey : conversationEntryKey(baseKey, rootSessionId);
+  if (entry.sessionId !== undefined) approvalConversationRoot(entry.sessionId);
+  const approvalSessionId = entry.sessionId;
+  const key = approvalSessionId === undefined ? baseKey : conversationEntryKey(baseKey, approvalSessionId);
   const full: UserApprovalEntry = {
-    ...(rootSessionId === undefined ? {} : { sessionId: rootSessionId }),
+    ...(approvalSessionId === undefined ? {} : { sessionId: approvalSessionId }),
     ...(entry.projectCwd === undefined ? {} : { projectCwd: entry.projectCwd }),
     decision: entry.decision ?? "allow",
     approvedAt: entry.approvedAt ?? new Date().toISOString(),
@@ -383,9 +384,9 @@ export async function lookupUserDecision(
       if (workingDirectoryIdentity !== undefined) {
         const legacyProjectKey = memoryEntryKey(toolName, source, trustOrigin, legacyMemoryKey, workingDirectoryIdentity);
         denyOnlyKeys.add(legacyProjectKey);
-        if (sessionId !== undefined) denyOnlyKeys.add(conversationEntryKey(legacyProjectKey, approvalConversationRoot(sessionId)));
+        if (sessionId !== undefined) denyOnlyKeys.add(conversationEntryKey(legacyProjectKey, sessionId));
       } else if (sessionId !== undefined) {
-        denyOnlyKeys.add(conversationEntryKey(legacyUnscopedKey, approvalConversationRoot(sessionId)));
+        denyOnlyKeys.add(conversationEntryKey(legacyUnscopedKey, sessionId));
       }
     }
     // Server tools had no policy key before per-tool scopes. Keep those exact
@@ -399,13 +400,13 @@ export async function lookupUserDecision(
       if (workingDirectoryIdentity !== undefined) {
         const legacyArgsProjectKey = argsEntryKey(toolName, args, source, trustOrigin, policyKey, workingDirectoryIdentity);
         denyOnlyKeys.add(legacyArgsProjectKey);
-        if (sessionId !== undefined) denyOnlyKeys.add(conversationEntryKey(legacyArgsProjectKey, approvalConversationRoot(sessionId)));
+        if (sessionId !== undefined) denyOnlyKeys.add(conversationEntryKey(legacyArgsProjectKey, sessionId));
       } else if (sessionId !== undefined) {
-        denyOnlyKeys.add(conversationEntryKey(legacyArgsUnscopedKey, approvalConversationRoot(sessionId)));
+        denyOnlyKeys.add(conversationEntryKey(legacyArgsUnscopedKey, sessionId));
       }
     }
   }
-  const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, approvalConversationRoot(sessionId));
+  const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(key, sessionId);
   const globalKey = globalEntryKey(unscopedKey);
   const keys = [...denyOnlyKeys, key, globalKey];
   const file = keys.some((candidate) => !sessionStore.has(candidate)) ? await readApprovalsFile() : undefined;
@@ -529,15 +530,13 @@ function projectApprovalForList(key: string, entry: UserApprovalEntry): UserAppr
 }
 
 // Forget the "This session" approvals of a conversation that ended (owner 2026-10-25: session scope dies with the session). Returns how many were dropped.
-// Session approvals are held under the root conversation, so only a root id is accepted: a sub-agent's end must not drop its parent's approvals.
-export function dropSessionApprovals(rootSessionId: string): number {
-  if (approvalConversationRoot(rootSessionId) !== rootSessionId) {
-    throw new Error("Session approvals end only with their root conversation");
-  }
-  const root = rootSessionId;
+// A child ends only its own rows; a root ends the whole tree.
+export function dropSessionApprovals(sessionId: string): number {
+  const root = approvalConversationRoot(sessionId);
   let dropped = 0;
   for (const [key, entry] of sessionStore) {
-    if (entry.scope === "session" && entry.sessionId === root) {
+    if (entry.scope === "session" && entry.sessionId !== undefined && (entry.sessionId === sessionId
+      || (root === sessionId && approvalConversationRoot(entry.sessionId) === root))) {
       sessionStore.delete(key);
       dropped += 1;
     }

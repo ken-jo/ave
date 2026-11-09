@@ -1,3 +1,4 @@
+import { handleAgentBrowserPopup } from "./browser/browser-popup-navigation.js";
 import {
   session,
   type BrowserWindow,
@@ -170,7 +171,8 @@ function sideBrowserPopupOptions(owner: BrowserWindow): BrowserWindowConstructor
 export function attachSideBrowserWebview(contents: WebContents, owner: BrowserWindow): void {
   markAsLinkOwned(contents);
   observeBrowserWorkspaceGuest(contents, owner);
-  contents.setWindowOpenHandler(({ url }) => {
+  contents.setWindowOpenHandler(({ url, postBody }) => {
+    if (handleAgentBrowserPopup(contents, url, postBody !== undefined)) return { action: "deny" };
     if (!isSideBrowserPopupUrlAllowed(url)) return { action: "deny" };
     if (owner.isDestroyed()) return { action: "deny" };
     return { action: "allow", overrideBrowserWindowOptions: sideBrowserPopupOptions(owner) };

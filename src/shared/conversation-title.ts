@@ -15,7 +15,10 @@ export function resolveConversationTitle(
     if (message === null || typeof message !== "object") continue;
     const { role, content, meta } = message as Record<string, unknown>;
     if (typeof content !== "string" || !content.trim()) continue;
-    if (meta !== null && typeof meta === "object" && (meta as Record<string, unknown>).resumesInterruptedTurn === true) continue;
+    if (meta !== null && typeof meta === "object") {
+      const metadata = meta as Record<string, unknown>;
+      if (metadata.resumesInterruptedTurn === true || metadata.hostInjectionId !== undefined || metadata.subAgentReport !== undefined) continue;
+    }
     lastContent = unwrapStagedText(content, translate).replace(/\s+/g, " ").trim();
     if (role === "user") lastUser = lastContent;
   }

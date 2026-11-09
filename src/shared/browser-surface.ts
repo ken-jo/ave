@@ -14,6 +14,8 @@ export interface BrowserTabBindRequest {
   readonly tabId: string;
   readonly webContentsId: number;
   readonly requestId?: string;
+  /** A hidden guest cannot take native focus; this display hint grants no control authority. */
+  readonly parked?: boolean;
 }
 
 export type BrowserTabBindResult =
@@ -33,25 +35,30 @@ export type BrowserTabOpRequest =
   /**
    * `sessionId` names the conversation the tab is opened for (a sub-agent's
    * parent), so a window with several chats opens it beside that one.
+   * `ownerSessionId` identifies the actual caller independently of that display host.
    */
   /** `inTabId` loads the page into that existing, still empty renderer tab (a pane chat's own page) instead of a new one. */
-  | { readonly requestId: string; readonly op: "new"; readonly url: string; readonly active: boolean; readonly sessionId?: string; readonly inTabId?: string }
+  | { readonly requestId: string; readonly op: "new"; readonly url: string; readonly active: boolean; readonly sessionId?: string; readonly ownerSessionId?: string; readonly inTabId?: string }
   | { readonly requestId: string; readonly op: "select"; readonly tabId: string }
   | { readonly requestId: string; readonly op: "close"; readonly tabId: string }
+  | { readonly requestId: string; readonly op: "wake" | "sleep"; readonly tabId: string }
   /** Focus this existing renderer slot without selecting or moving another surface. */
   | { readonly requestId: string; readonly op: "focus"; readonly tabId: string }
-  /** Restore the window’s prior keyboard focus after tool actions without awaiting a renderer acknowledgement. */
-  | { readonly requestId: string; readonly op: "restore-focus"; readonly tabId: string };
+  | { readonly requestId: string; readonly op: "capture-focus"; readonly tabId: string }
+  /** Restore the prior keyboard focus; scoped receipts require a renderer acknowledgement. */
+  | { readonly requestId: string; readonly op: "restore-focus"; readonly tabId: string; readonly receiptId?: string; readonly preserveFocus?: boolean };
 
 export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | null {
   if (!isRecord(value)) return null;
   const record = value as { requestId?: unknown; op?: unknown; url?: unknown; active?: unknown; tabId?: unknown };
   if (typeof record.requestId !== "string" || record.requestId.length === 0) return null;
   if (record.op === "new") {
-    if (!hasOnlyKeys(value, ["requestId", "op", "url", "active", "sessionId", "inTabId"])) return null;
+    if (!hasOnlyKeys(value, ["requestId", "op", "url", "active", "sessionId", "ownerSessionId", "inTabId"])) return null;
     if (typeof record.url !== "string" || typeof record.active !== "boolean") return null;
     const sessionId = (value as { sessionId?: unknown }).sessionId;
     if (sessionId !== undefined && (typeof sessionId !== "string" || sessionId.length === 0)) return null;
+    const ownerSessionId = (value as { ownerSessionId?: unknown }).ownerSessionId;
+    if (ownerSessionId !== undefined && (typeof ownerSessionId !== "string" || ownerSessionId.length === 0)) return null;
     const inTabId = (value as { inTabId?: unknown }).inTabId;
     if (inTabId !== undefined && (typeof inTabId !== "string" || inTabId.length === 0)) return null;
     return {
@@ -60,10 +67,18 @@ export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | 
       url: record.url,
       active: record.active,
       ...(typeof sessionId === "string" ? { sessionId } : {}),
+      ...(typeof ownerSessionId === "string" ? { ownerSessionId } : {}),
       ...(typeof inTabId === "string" ? { inTabId } : {}),
     };
   }
-  if ((record.op === "select" || record.op === "close" || record.op === "focus" || record.op === "restore-focus") && typeof record.tabId === "string") {
+  if (record.op === "restore-focus") {
+    const receiptId = (value as { receiptId?: unknown }).receiptId;
+    const preserveFocus = (value as { preserveFocus?: unknown }).preserveFocus;
+    if (preserveFocus !== undefined && (typeof preserveFocus !== "boolean" || receiptId === undefined)) return null;
+    if (typeof record.tabId !== "string" || record.tabId.length === 0 || !hasOnlyKeys(value, ["requestId", "op", "tabId", "receiptId", "preserveFocus"]) || (receiptId !== undefined && (typeof receiptId !== "string" || receiptId.length === 0))) return null;
+    return { requestId: record.requestId, op: "restore-focus", tabId: record.tabId, ...(typeof receiptId === "string" ? { receiptId } : {}), ...(typeof preserveFocus === "boolean" ? { preserveFocus } : {}) };
+  }
+  if ((record.op === "select" || record.op === "close" || record.op === "wake" || record.op === "sleep" || record.op === "focus" || record.op === "capture-focus") && typeof record.tabId === "string") {
     if (record.tabId.length === 0 || !hasOnlyKeys(value, ["requestId", "op", "tabId"])) return null;
     return { requestId: record.requestId, op: record.op, tabId: record.tabId };
   }
@@ -147,6 +162,7 @@ export interface BrowserTabControlState {
 /** Trusted window chrome only; page content never receives this API. */
 export interface BrowserTabsApi {
   bindTab(request: BrowserTabBindRequest): Promise<BrowserTabBindResult>;
+  completeFocus(requestId: string, restored: boolean): Promise<{ ok: boolean }>;
   /** Report that a `new` op naming `inTabId` could not be loaded into that page, so main answers the agent at once. */
   refuseTabOp(requestId: string): Promise<{ ok: boolean }>;
   getState(): Promise<BrowserTabControlState>;
@@ -201,8 +217,7 @@ export function parseBrowserTabControlState(value: unknown): BrowserTabControlSt
       const actor = parseBrowserSessionActor(item.lease.actor);
       if (actor === null || (item.lease.lifetime === "owned") !== (owner !== null)
         || item.mode === "human"
-        || (owner !== null && owner.sessionId !== actor.sessionId
-          && owner.directParentSessionId !== actor.sessionId && actor.directParentSessionId !== owner.sessionId)) return null;
+        || (owner !== null && owner.sessionId !== actor.sessionId)) return null;
       lease = { id: item.lease.id, actor, lifetime: item.lease.lifetime };
     }
     handles.add(item.tabId);

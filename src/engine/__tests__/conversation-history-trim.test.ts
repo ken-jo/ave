@@ -1,12 +1,11 @@
 // Append and restore both enforce the tool-result size cap.
 import { describe, expect, it } from "vitest";
 import { ConversationHistory } from "../conversation-history.js";
-import { MAX_TOOL_RESULT_LINES } from "../../shared/tool-result-trim.js";
 import { MAX_SKILL_READ_RESULT_CHARS } from "../../main/skill-overlay.js";
 import type { GenericMessage } from "../llm/types.js";
 
 const SMALL_CONTENT = "ok\nfine";
-const OVERSIZE_CONTENT = Array.from({ length: MAX_TOOL_RESULT_LINES + 50 }, (_, i) => `row ${i}`).join("\n");
+const OVERSIZE_CONTENT = Array.from({ length: 150 }, (_, i) => `row ${i}: ${"x".repeat(60)}`).join("\n");
 
 describe("ConversationHistory — Issue #902 tool_result cap", () => {
   it("marks meta.truncated on append for oversized tool_result", () => {
@@ -19,12 +18,12 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
     });
     const msg = h.getMessages()[0] as Extract<GenericMessage, { role: "tool_result" }>;
     expect(msg.meta?.truncated).toBeDefined();
-    expect(msg.meta!.truncated!.originalLines).toBe(MAX_TOOL_RESULT_LINES + 50);
+    expect(msg.meta!.truncated!.originalLines).toBe(150);
     // Keep content raw in memory for inspection; stub it only for sending or saving.
     expect(msg.content).toBe(OVERSIZE_CONTENT);
   });
 
-  it("keeps a bounded skill read whole even past the line cap", () => {
+  it("keeps a bounded skill read whole even past the token cap", () => {
     const h = new ConversationHistory();
     const skillRead = `<ave-skill name="long-skill">\n${OVERSIZE_CONTENT}\n</ave-skill>`;
     expect(skillRead.length).toBeLessThanOrEqual(MAX_SKILL_READ_RESULT_CHARS);
@@ -84,7 +83,7 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
       .getMessages()
       .find((m) => m.role === "tool_result") as Extract<GenericMessage, { role: "tool_result" }>;
     expect(tr.meta?.truncated).toBeDefined();
-    expect(tr.meta!.truncated!.originalLines).toBe(MAX_TOOL_RESULT_LINES + 50);
+    expect(tr.meta!.truncated!.originalLines).toBe(150);
   });
 
   it("restore strips forged meta.serializedStub and re-derives from content (jsonl tamper defense)", () => {
@@ -139,7 +138,7 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
     const tr = h
       .getMessages()
       .find((m) => m.role === "tool_result") as Extract<GenericMessage, { role: "tool_result" }>;
-    expect(tr.meta!.truncated!.originalLines).toBe(MAX_TOOL_RESULT_LINES + 50);
+    expect(tr.meta!.truncated!.originalLines).toBe(150);
     expect(tr.meta!.truncated!.trimmedAt).not.toBe("1999-01-01T00:00:00.000Z");
   });
 

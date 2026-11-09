@@ -384,7 +384,8 @@ describe("file native tools", () => {
   });
 
   it("read_file returns the lines that fit and the offset to continue from", async () => {
-    const lines = Array.from({ length: 400 }, (_, index) => `line ${index + 1}`);
+    const lines = Array.from({ length: 400 }, (_, index) => `line ${index + 1} ${"content ".repeat(12)}`);
+    expect(trimOversizedToolResult(lines.join("\n")).truncated).toBeDefined();
     writeFileSync(join(workDir, "long.txt"), `${lines.join("\n")}\n`);
     const result = await new ReadFileTool().execute({ path: "long.txt", offset: 10 }, ctx());
 
@@ -403,6 +404,19 @@ describe("file native tools", () => {
     const next = await new ReadFileTool().execute({ path: "long.txt", offset: 10 + shown }, ctx());
     expect(next.isError).toBe(false);
     expect(next.output).toContain(`\tline ${11 + shown}`);
+  });
+
+  it("read_file keeps every line in a window that fits the result budget", async () => {
+    const lines = Array.from({ length: 400 }, (_, index) => `line ${index + 1}`);
+    writeFileSync(join(workDir, "long.txt"), `${lines.join("\n")}\n`);
+    const result = await new ReadFileTool().execute({ path: "long.txt", offset: 10 }, ctx());
+
+    expect(result.isError, result.output).toBe(false);
+    expect(trimOversizedToolResult(result.output).truncated).toBeUndefined();
+    expect(result.metadata).toMatchObject({ lineCount: 390, totalLines: 400, truncated: false });
+    expect(result.output).toContain("(lines 11-400 of 400)");
+    expect(result.output).toContain("   400\tline 400");
+    expect(result.output).not.toContain("Stopped at the result size limit");
   });
 
   it("read_file cuts a very long line, says how to read the rest, and admits edits", async () => {

@@ -3,6 +3,8 @@ import { SUGGESTED_REPLIES_OPEN, SUGGESTED_REPLIES_CLOSE } from "../../engine/su
 import { SystemPromptBuilder } from "../system-prompt-builder.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { makePromptMemorySource } from "./test-helpers.js";
+import { en } from "../../i18n/messages/en.js";
+import { ko } from "../../i18n/messages/ko.js";
 
 function buildMinimalPrompt(): string {
   const builder = new SystemPromptBuilder({
@@ -39,10 +41,14 @@ describe("system prompt — suggested replies contract", () => {
     expect(prompt).toContain("완결 답변");
     expect(prompt).toContain("/clear 포함");
     expect(prompt).toContain("단일 토큰 command 도 금지");
-    const example = prompt.slice(
-      prompt.indexOf(SUGGESTED_REPLIES_OPEN),
-      prompt.indexOf(SUGGESTED_REPLIES_CLOSE),
-    );
-    expect(example.match(/^- \{text\}$/gm)).toHaveLength(1);
+  });
+
+  it.each([["en", en], ["ko", ko]] as const)("describes the %s reply line without a copyable placeholder", (_locale, catalog) => {
+    const instruction = catalog["be_systemPromptBuilder.suggestedRepliesInstruction"];
+    expect(instruction).toContain(SUGGESTED_REPLIES_OPEN);
+    expect(instruction).toContain(SUGGESTED_REPLIES_CLOSE);
+    expect(instruction).toContain("'- '");
+    expect(instruction).not.toContain("{text}");
+    expect(instruction).not.toMatch(/<suggested_replies>\s*\n- /);
   });
 });

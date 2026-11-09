@@ -20,6 +20,14 @@ const liveSources = new Map<symbol, ReadonlySet<string>>();
 const occluders = new Set<HTMLElement>();
 let dragActive = false;
 const observedHiddenTabs = new Set<string>();
+const awakeTabs = new Set<string>();
+
+export function setWebSurfaceAwake(tabId: string, awake: boolean): void {
+  if (awakeTabs.has(tabId) === awake) return;
+  if (awake) awakeTabs.add(tabId);
+  else awakeTabs.delete(tabId);
+  requestWebSurfaceLayout();
+}
 
 /** Only a shown conversation preview may keep its hidden guest painting. */
 export function setHiddenWebSurfaceObserved(tabId: string, observed: boolean): void {
@@ -29,7 +37,7 @@ export function setHiddenWebSurfaceObserved(tabId: string, observed: boolean): v
   requestWebSurfaceLayout();
 }
 
-export function isHiddenWebSurfaceObserved(tabId: string): boolean { return observedHiddenTabs.has(tabId); }
+export function isHiddenWebSurfaceObserved(tabId: string): boolean { return observedHiddenTabs.has(tabId) || awakeTabs.has(tabId); }
 
 /** React-facing listeners: the entry list and the element map changed. */
 const listeners = new Set<() => void>();
@@ -80,8 +88,17 @@ export function setWebSurfaceUrl(tabId: string, url: string, bindRequestId?: str
 // Where each guest's page actually is — a link, redirect or in-page route moves it without the host setting a url. What a
 // saved layout records.
 const locations = new Map<string, string>();
+const titles = new Map<string, string>();
 const favicons = new Map<string, string>();
 const locationListeners = new Set<() => void>();
+
+export function webSurfaceTitle(tabId: string): string | null { return titles.get(tabId) ?? null; }
+
+export function noteWebSurfaceTitle(tabId: string, title: string): void {
+  if (titles.get(tabId) === title) return;
+  titles.set(tabId, title);
+  for (const listener of [...locationListeners]) listener();
+}
 
 /** The guest's latest site icon, retained while its tab is alive. */
 export function webSurfaceFavicon(tabId: string): string | null {
@@ -99,11 +116,13 @@ export function noteWebSurfaceFavicon(tabId: string, favicon: string | null): vo
 export function noteWebSurfaceLocation(tabId: string, url: string): void {
   if (locations.get(tabId) === url) return;
   locations.set(tabId, url);
+  titles.delete(tabId);
   for (const listener of [...locationListeners]) listener();
 }
 
 /** The guest attached again (a new page process): what it committed before is not this page's address any more. */
 export function forgetWebSurfaceLocation(tabId: string): void {
+  titles.delete(tabId);
   noteWebSurfaceFavicon(tabId, null);
   if (!locations.delete(tabId)) return;
   for (const listener of [...locationListeners]) listener();
@@ -187,7 +206,10 @@ function scheduleReconcile(): void {
     if (next.length === surfaces.length) return;
     for (const surface of surfaces) if (!live.has(surface.tabId)) {
       locations.delete(surface.tabId);
+      titles.delete(surface.tabId);
       favicons.delete(surface.tabId);
+      awakeTabs.delete(surface.tabId);
+      observedHiddenTabs.delete(surface.tabId);
     }
     surfaces = next;
     emit();

@@ -1005,7 +1005,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
             inputOrigin: "agent-message",
             abortSignal,
             approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
-            // Preserve report input as the user-row display text for reload.
+            displayText: mailboxTurn.displayText,
             subAgentReport: mailboxTurn.childTitle === undefined
               ? {}
               : { title: mailboxTurn.childTitle },

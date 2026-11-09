@@ -20,6 +20,7 @@ import {
   GUIDE_JOINED_MAX_CHARS,
   GUIDE_MAX_CHARS,
 } from "./turn/guidance-limits.js";
+import { createReadToolResultChunkTool } from "../tools/tool-result-chunk.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { type MemoryManager } from "../memory/memory-manager.js";
 import { isValidSessionId } from "../shared/session-id.js";
@@ -28,6 +29,7 @@ import type {
   ApprovalGate,
   ApprovalDecision,
   ApprovalRequestInput,
+  PendingApprovalSummary,
 } from "../permissions/approval-gate.js";
 import {
   isModelComplexityLevel,
@@ -126,7 +128,7 @@ function maskSubAgentText(text: string): string {
 }
 
 /** Tool scopes are explicit: parent-all minus the blocklist, nonempty exactly minus the blocklist, or deny-all.
- * agent_send is granted separately; resume uses only the frozen persisted scope and never expands from the current parent registry. */
+ * Recovery reads remain scoped to the child history. agent_send is granted separately; resume never expands source authority from the current parent registry. */
 export type SubAgentToolScope =
   | { readonly kind: "parent-all" }
   | { readonly kind: "exactly"; readonly names: readonly string[] }
@@ -473,6 +475,7 @@ export interface SubAgentRunSnapshot {
   title: string;
   status: SubAgentRunStatus;
   taskState: A2AProjectedTaskState;
+  pendingApproval?: PendingApprovalSummary;
   startedAt: string;
   updatedAt: string;
   toolCallCount: number;
@@ -2061,12 +2064,16 @@ export class SubAgentRunner {
   }
 
   private snapshotRun(run: TrackedSubAgentRun): SubAgentRunSnapshot {
+    const pendingApproval = run.status === "running"
+      ? this.deps.parentDeps.approvalGate?.pendingSessionApproval?.(run.childSessionId)
+      : null;
     return {
       ...(run.spawnId ? { spawnId: run.spawnId } : {}),
       childSessionId: run.childSessionId,
       title: run.title,
-      status: run.status,
-      taskState: run.taskState,
+      status: pendingApproval ? "waiting" : run.status,
+      taskState: pendingApproval ? A2ATaskState.INPUT_REQUIRED : run.taskState,
+      ...(pendingApproval ? { pendingApproval } : {}),
       startedAt: run.startedAt,
       updatedAt: run.updatedAt,
       toolCallCount: run.toolCallCount,
@@ -2298,6 +2305,8 @@ export class SubAgentRunner {
           .filter((name) =>
             !SUB_AGENT_TOOL_BLOCKLIST.has(name) && name !== "agent_send");
     const scopedRegistry = this.deps.toolRegistry.createScopedView(baseToolNames);
+    const recoveryTool = createReadToolResultChunkTool();
+    if (scopedRegistry.listAll().length > 0 && !scopedRegistry.findByName(recoveryTool.name)) scopedRegistry.register(recoveryTool);
     if (exposeAgentSend) {
       const agentSend = this.deps.toolRegistry.findByName("agent_send");
       if (agentSend) scopedRegistry.register({ ...agentSend, modelVisible: true });

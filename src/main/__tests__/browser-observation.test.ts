@@ -7,7 +7,9 @@ import { ObservationDaemon } from "../../observation/daemon.js";
 import { OBSERVATION_LIMITS, type BrowserObservationEvent } from "../../shared/agent-observation.js";
 import { observeAgentBrowserCommand, endAgentBrowserObservationSessions } from "../../tools/agent-browser-observation.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../tools/agent-observation-context.js";
-import type { BrowserGuest, BrowserTabRecord } from "../browser/browser-tab-registry.js";
+import { openAgentObservationTurn } from "../../__tests__/support/agent-observation-admission.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { browserTabRegistry, type BrowserGuest, type BrowserTabRecord } from "../browser/browser-tab-registry.js";
 
 const state = vi.hoisted(() => ({ defaultSession: {}, holder: null as unknown, registered: true, childLive: true }));
 vi.mock("electron", () => ({ session: { defaultSession: state.defaultSession } }));
@@ -26,7 +28,12 @@ let daemon: ObservationDaemon;
 let tab: BrowserTabRecord<BrowserGuest>;
 let url: string;
 let title: string;
-function admitted<T>(run: () => Promise<T>, sessionId = identity.sessionId) { return runWithAgentObservationTurn({ ...identity, sessionId }, () => runWithAgentObservationInvocation({ ...identity, sessionId }, run)); }
+const turns = new Map<string, ReturnType<typeof openAgentObservationTurn>>();
+function admitted<T>(run: () => Promise<T>, sessionId = identity.sessionId) {
+  let turn = turns.get(sessionId);
+  if (!turn) { turn = openAgentObservationTurn({ ...identity, sessionId }); turns.set(sessionId, turn); }
+  return turn.run(identity, run);
+}
 function events(): BrowserObservationEvent[] { return sender.send.mock.calls.filter(([channel]) => channel === CHANNELS.preview.observationEvents).flatMap(([, batch]) => batch as BrowserObservationEvent[]); }
 async function flush() { await vi.advanceTimersByTimeAsync(1); }
 function download(chain = ["https://example.test/file.zip"]) {
@@ -44,9 +51,71 @@ beforeEach(() => {
     lease: { id: "lease", actor: { sessionId: identity.sessionId }, lifetime: "owned" }, actions: new AbortController() };
   daemon = new ObservationDaemon(); runtime = new BrowserObservationRuntime(deps, daemon);
 });
-afterEach(() => { runtime.dispose(); daemon.dispose(); vi.useRealTimers(); });
+afterEach(async () => {
+  await Promise.all([...turns.values()].map((turn) => turn.finish()));
+  turns.clear();
+  runtime.dispose(); browserTabRegistry.__reset(); daemon.dispose(); vi.useRealTimers();
+});
 
 describe("browser observation desktop boundary", () => {
+  it.each(["main", "child"].flatMap((kind) => ["completed", "interrupted", "errored"].flatMap((outcome) => ["live", "released", "unobserved"].map((presentation) => [kind, outcome, presentation] as const))))("retires a %s session's control when its turn is %s with %s presentation", async (kind, outcome, presentation) => {
+    const actor = kind === "main" ? { sessionId: identity.sessionId } : { sessionId: "browser-child", directParentSessionId: identity.sessionId };
+    const turnIdentity = { ...identity, sessionId: actor.sessionId };
+    runtime.dispose();
+    daemon.dispose();
+    daemon = new ObservationDaemon();
+    const stop = vi.fn(async () => {});
+    runtime = new BrowserObservationRuntime(deps, daemon, {
+      lookupTab: (handle, windowId) => browserTabRegistry.liveTabInWindow(handle, windowId),
+      start: () => ({ rendered: () => {}, stop }),
+      isBlank: () => false,
+    });
+    let guestUrl = "about:blank";
+    const guest = Object.assign(new EventEmitter(), { id: 43, isDestroyed: () => false,
+      getURL: () => guestUrl, getTitle: () => "Page" });
+    browserTabRegistry.setRendererLink({
+      sendTabOp: (_windowId, request) => {
+        if (request.op === "new") {
+          browserTabRegistry.guestAttached(guest as unknown as WebContents, 1);
+          browserTabRegistry.bindTab(1, { tabId: "main-agent-page", webContentsId: guest.id, requestId: request.requestId });
+        }
+        return true;
+      },
+      sendControl: () => {},
+    });
+    const opened = await browserTabRegistry.requestTabOp(1, { op: "new", url: "https://example.test/page", actor });
+    if (!opened.ok) throw new Error("Missing owned tab");
+    guestUrl = "https://example.test/page";
+    const owned = browserTabRegistry.liveTab(opened.tabId);
+    if (!owned) throw new Error("Missing live tab");
+    await runWithAgentObservationTurn(turnIdentity, async () => {
+      const lease = browserTabRegistry.acquireControl(owned, actor);
+      if (presentation !== "unobserved") await runWithAgentObservationInvocation(turnIdentity, () => observeAgentBrowserCommand(owned, "snapshot", async () => 1));
+      browserTabRegistry.releaseControl(owned.handle, lease.id);
+      await flush();
+      if (presentation !== "unobserved") {
+        const action = events().at(-1);
+        if (!action) throw new Error("Missing real observation event");
+        expect(runtime.previewRequest(event, { action: "start", targetId: action.target.id,
+          sessionId: actor.sessionId, tabId: owned.handle, frame: 0 })).toEqual({ ok: true });
+        if (presentation === "released") expect(runtime.acknowledge(event, { action: "release", targetId: action.target.id,
+          sessionId: actor.sessionId, seq: action.seq })).toEqual({ ok: true });
+      }
+      expect(owned.controlMode).toBe("agent-active");
+      if (outcome === "interrupted") { const controller = new AbortController(); controller.abort(); controller.signal.throwIfAborted(); }
+      if (outcome === "errored") throw new Error(outcome);
+    }).catch((error) => { if (outcome === "completed") throw error; });
+    await flush();
+    if (presentation === "live") expect(events().at(-1)).toMatchObject({ kind: "status", after: { code: "session-cleared" } });
+    expect(stop).toHaveBeenCalledTimes(presentation === "unobserved" ? 0 : 1);
+    expect(browserTabRegistry.controlState(1).tabs).toMatchObject([{ mode: "human", owner: actor }]);
+    expect(browserTabRegistry.liveTab(owned.handle)).toBe(owned);
+    expect(owned.guest).toBe(guest);
+    expect(owned.opener).toBe("agent");
+    const next = browserTabRegistry.acquireControl(owned, actor);
+    expect(owned.controlMode).toBe("agent-active");
+    browserTabRegistry.releaseControl(owned.handle, next.id);
+  });
   it("delivers final navigation URL/title through the existing private channel and validates ACK owner", async () => {
     await admitted(() => observeAgentBrowserCommand(tab, "navigate", async () => { url = "https://example.test/done?secret=hidden#token"; title = "Done"; }));
     await flush();
@@ -57,6 +126,78 @@ describe("browser observation desktop boundary", () => {
     expect(runtime.acknowledge({ ...event, senderFrame: { ...frame } } as never, ack)).toEqual({ ok: false, error: "unauthorized" });
     expect(runtime.acknowledge(event, ack)).toEqual({ ok: true });
     expect(() => runtime.acknowledge(event, { ...ack, seq: 99 })).toThrow("acknowledgement");
+  });
+  it("does not clear a newer turn when an older turn's cleanup arrives late", async () => {
+    const older = openAgentObservationTurn({ ...identity, turnId: "older" });
+    let newer: ReturnType<typeof openAgentObservationTurn> | undefined;
+    try {
+      await older.run(identity, () => observeAgentBrowserCommand(tab, "snapshot", async () => 1));
+      await flush();
+      newer = openAgentObservationTurn({ ...identity, turnId: "newer" });
+      await newer.run(identity, () => observeAgentBrowserCommand(tab, "snapshot", async () => 1));
+      await flush();
+      const cleared = events().filter((entry) => entry.kind === "status").length;
+      await older.finish();
+      expect(events().filter((entry) => entry.kind === "status")).toHaveLength(cleared);
+      await newer.finish();
+      expect(events().at(-1)).toMatchObject({ kind: "status", after: { code: "session-cleared" } });
+    } finally { await older.finish(); await newer?.finish(); }
+  });
+  it("does not carry an older turn's download listener into a newer browser target", async () => {
+    const older = openAgentObservationTurn({ ...identity, turnId: "older-download" });
+    let newer: ReturnType<typeof openAgentObservationTurn> | undefined;
+    const item = download();
+    try {
+      await older.run(identity, () => observeAgentBrowserCommand(tab, "click", async () => {
+        runtime.observeDownload(tab.guest as WebContents, item);
+      }, undefined, "https://example.test/file.zip"));
+      await flush();
+      const original = events().at(-1)?.target.id;
+      expect(item.listenerCount("done")).toBe(1);
+      newer = openAgentObservationTurn({ ...identity, turnId: "newer-download" });
+      await newer.run(identity, () => observeAgentBrowserCommand(tab, "snapshot", async () => 1));
+      await flush();
+      expect(events().at(-1)?.target.id).not.toBe(original);
+      await older.finish();
+      const count = events().length;
+      expect(item.listenerCount("done")).toBe(0);
+      item.emit("done", {}, "completed");
+      await flush();
+      expect(events()).toHaveLength(count);
+    } finally { await older.finish(); await newer?.finish(); }
+  });
+  it("retires an older held lease across a newer same-session turn before delayed settlement", async () => {
+    let requestId = "";
+    browserTabRegistry.setRendererLink({ sendTabOp: (_window, request) => { requestId = request.requestId; return true; }, sendControl: () => {} });
+    const opening = browserTabRegistry.requestTabOp(1, { op: "new", url: "https://example.test/", actor: { sessionId: identity.sessionId } });
+    const guest = { id: 44, isDestroyed: () => false, getURL: () => "about:blank", getTitle: () => "Page" } as unknown as WebContents;
+    browserTabRegistry.guestAttached(guest, 1);
+    browserTabRegistry.bindTab(1, { tabId: "overlapping-turns", webContentsId: guest.id, requestId });
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing owned tab");
+    const owned = browserTabRegistry.liveTab(opened.tabId);
+    if (!owned) throw new Error("Missing live tab");
+    const settlement = deferred<void>();
+    const older = openAgentObservationTurn({ ...identity, turnId: "older-held" });
+    let newer: ReturnType<typeof openAgentObservationTurn> | undefined;
+    let pending: Promise<void> | undefined;
+    try {
+      pending = older.run(identity, async () => {
+        const lease = browserTabRegistry.acquireControl(owned, { sessionId: identity.sessionId });
+        try { await settlement.promise; }
+        finally { browserTabRegistry.releaseControl(owned.handle, lease.id); }
+      });
+      newer = openAgentObservationTurn({ ...identity, turnId: "newer-no-browser" });
+      await older.finish();
+      await newer.finish();
+      expect(owned.controlMode).toBe("human");
+      expect(owned.lease).toBeNull();
+      expect(() => browserTabRegistry.acquireControl(owned, { sessionId: identity.sessionId })).toThrow("settling");
+      settlement.resolve();
+      await pending;
+      expect(owned.controlMode).toBe("human");
+      expect(owned.lease).toBeNull();
+    } finally { settlement.resolve(); await pending; await older.finish(); await newer?.finish(); }
   });
   it("never observes user-only navigation, typing, title changes or passive page downloads", async () => {
     const guest = tab.guest as unknown as EventEmitter;
@@ -140,7 +281,7 @@ describe("browser observation desktop boundary", () => {
     await expect(admitted(() => observeAgentBrowserCommand(tab, "click", async () => 1))).rejects.toThrow("identity");
     expect(events()).toEqual([]);
   });
-  it("keeps a child session target and admitted download alive between agent runs", async () => {
+  it("keeps a child target and admitted download alive between commands in its active turn", async () => {
     tab.owner = { sessionId: "browser-child", directParentSessionId: identity.sessionId };
     tab.lease = { ...tab.lease!, actor: tab.owner };
     const item = download();

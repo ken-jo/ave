@@ -13,6 +13,7 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
+import { createReadToolResultChunkTool } from "../../tools/tool-result-chunk.js";
 import { makeSubagentLoopDeps as buildLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
 import {
   SubAgentRunner,
@@ -29,7 +30,7 @@ import {
 import { MODEL_COMPLEXITY_MAP } from "../../shared/model-complexity-map.js";
 import { llmVendorModelOptions } from "../../shared/llm-vendor-defaults.js";
 import { AGENT_MODE_MAP } from "../../shared/agent-mode-map.js";
-import type { LLMProvider, StreamEvent, StreamTurnParams,
+import type { GenericMessage, LLMProvider, StreamEvent, StreamTurnParams,
 } from "../llm/types.js";
 import { createAgentSpawnTool, createAgentStatusTool } from "../../tools/agent-spawn.js";
 import type { AgentSpawnEvent } from "../../shared/subagent-events.js";
@@ -73,12 +74,14 @@ class ScriptedProvider implements LLMProvider {
   public turnsServed = 0;
   public observedToolNames: string[][] = [];
   public observedSystemPrompts: string[] = [];
+  public observedMessages: GenericMessage[][] = [];
 
   constructor(private readonly turns: StreamEvent[][]) {}
 
   async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
     this.observedToolNames.push((params.tools ?? []).map((tool) => tool.name));
     this.observedSystemPrompts.push(params.systemPrompt);
+    this.observedMessages.push(params.messages);
     const idx = this.turnsServed++;
     yield* this.turns[idx] ?? this.turns[this.turns.length - 1] ?? [
       { type: "text_delta", text: "(out-of-script)" },
@@ -132,6 +135,55 @@ describe("SubAgentRunner approval-owner setup", () => {
     } finally {
       initialize.mockRestore();
       if (temporarySessionId) updateApprovalSurface({ kind: "release", sessionId: temporarySessionId });
+    }
+  });
+});
+
+
+describe("SubAgentRunner pending approval status", () => {
+  it.each(["allow", "deny", "cancel"] as const)("reports a child's user approval until %s settles it", async (answer) => {
+    const contents = makeMockWebContents();
+    const gate = new ApprovalGate(contents as never);
+    const registry = new ToolRegistry();
+    const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry, { approvalGate: gate }), toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager() });
+    const parentId = "approval-parent";
+    let childId = "";
+    let resumed = false;
+    let finish!: () => void;
+    const finishing = new Promise<void>((resolve) => { finish = resolve; });
+    const hasProvider = vi.spyOn(ConversationLoop.prototype, "hasProvider").mockReturnValue(true);
+    const refresh = vi.spyOn(ConversationLoop.prototype, "refreshProvider").mockResolvedValue(undefined);
+    const turn = vi.spyOn(ConversationLoop.prototype, "runTurn").mockImplementation(async function (this: ConversationLoop) {
+      childId = this.sessionId;
+      await gate.requestAndWait({ id: "pending-site", createdAt: Date.now(), toolName: "browser_tab_new", args: { url: "https://a.example/path" }, browserSite: "https://a.example:443", forceExplicit: true, durableApprovalRecordAllowed: false, category: "tool", source: "builtin", sessionId: childId, reason: "Open requested page" });
+      resumed = true;
+      await finishing;
+      return { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" };
+    });
+    const running = runner.spawn({ title: "page reader", instructions: "Read the requested page", originSessionId: parentId, toolScope: DENY_ALL_TOOL_SCOPE });
+    try {
+      await vi.waitFor(() => expect(gate.pendingCount).toBe(1));
+      const expected = { status: "waiting", taskState: A2ATaskState.INPUT_REQUIRED, pendingApproval: { toolName: "browser_tab_new", target: "https://a.example:443" } };
+      expect(runner.getRunStatus(childId, parentId)).toMatchObject(expected);
+      expect(runner.listRunStatuses(parentId)).toEqual([expect.objectContaining(expected)]);
+      expect(runner.getRunStatus(childId, "another-parent")).toBeNull();
+      const statusTool = createAgentStatusTool({ getRunner: () => runner });
+      const result = await statusTool.execute({ id: childId }, { cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId: parentId } });
+      expect(JSON.parse(result.output)).toMatchObject({ run: expected });
+      const card = contents.send.mock.calls.find(([channel]) => channel === IPC_APPROVAL_REQUEST);
+      expect(card).toBeDefined();
+      const request = card?.[1] as ApprovalRequest;
+      if (answer === "cancel") gate.cancelPendingRequest(request.id, childId, "caller-abort");
+      else gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: answer === "allow" ? "allow-once" : "deny-once", nonce: request.nonce, hmac: request.hmac, ...(answer === "allow" ? { browserSiteChoice: "this-site" as const } : {}) }, contents as never);
+      await vi.waitFor(() => expect(resumed).toBe(true));
+      expect(gate.pendingCount).toBe(0);
+      expect(runner.getRunStatus(childId, parentId)).toMatchObject({ status: "running" });
+      expect(runner.getRunStatus(childId, parentId)).not.toHaveProperty("pendingApproval");
+    } finally {
+      gate.disposeAll();
+      finish();
+      await running;
+      turn.mockRestore(); refresh.mockRestore(); hasProvider.mockRestore();
     }
   });
 });
@@ -1349,6 +1401,7 @@ describe("SubAgentToolScope — one meaning per value", () => {
 describe("SubAgentRunner — what each tool scope grants", () => {
   function scopeProbeRegistry(): ToolRegistry {
     const toolRegistry = new ToolRegistry();
+    toolRegistry.register(createReadToolResultChunkTool());
     for (const [name, category] of [
       ["read_file", "read"],
       ["run_shell", "shell"],
@@ -1405,11 +1458,41 @@ describe("SubAgentRunner — what each tool scope grants", () => {
     const advertised = await advertisedToolNames(PARENT_ALL_TOOL_SCOPE);
     expect(advertised).toEqual(expect.arrayContaining(["read_file", "run_shell"]));
     expect(advertised).not.toContain("agent_spawn");
+    expect(advertised.filter((name) => name === "read_tool_result_chunk")).toHaveLength(1);
   });
 
-  it("grants exactly the named tools for `exactly`", async () => {
+  it("grants named tools and session recovery for `exactly`", async () => {
     const advertised = await advertisedToolNames(exactToolScope(["read_file"]));
-    expect(advertised).toEqual(["read_file"]);
+    expect(advertised).toEqual(["read_file", "read_tool_result_chunk"]);
+  });
+
+
+  it("recovers only results retained in the receiving child history", async () => {
+    const registry = new ToolRegistry();
+    registry.register(createDynamicTool({
+      name: "read_outline", description: "Read outline", source: "builtin", category: "read",
+      isReadOnly: () => true, jsonSchema: { type: "object", properties: {} },
+      execute: async () => ({ output: "retained outline ".repeat(900), isError: false }),
+    }));
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "child-result", name: "read_outline", input: {} }, { type: "message_complete", stopReason: "tool_use" }],
+      [{ type: "tool_call", id: "own-read", name: "read_tool_result_chunk", input: { toolUseId: "child-result", maxChars: 500 } }, { type: "message_complete", stopReason: "tool_use" }],
+      [{ type: "tool_call", id: "foreign-read", name: "read_tool_result_chunk", input: { toolUseId: "parent-or-sibling-result" } }, { type: "message_complete", stopReason: "tool_use" }],
+      [{ type: "text_delta", text: "done" }, { type: "message_complete", stopReason: "end_turn" }],
+    ]);
+    const restore = patchLoopProvider(provider);
+    try {
+      const permissionDirectory = mkdtempSync(join(tmpdir(), "ave-outline-read-"));
+      const permissionManager = new PermissionManager(join(permissionDirectory, "permissions.json"));
+      const runner = new SubAgentRunner({ parentDeps: buildLoopDeps(registry, { permissionManager }), toolRegistry: registry, subAgentMemoryManager: fakeSubAgentMemoryManager() });
+      try { await runner.spawn({ title: "outline", instructions: "read", toolScope: exactToolScope(["read_outline"]) }); }
+      finally { await cleanupTmpDir(permissionDirectory); }
+      const messages = provider.observedMessages.at(-1) ?? [];
+      const own = messages.find((m) => m.role === "tool_result" && m.toolUseId === "own-read");
+      const foreign = messages.find((m) => m.role === "tool_result" && m.toolUseId === "foreign-read");
+      expect(JSON.parse(String(own?.content))).toMatchObject({ toolUseId: "child-result", chunk: "retained outline ".repeat(900).slice(0, 500) });
+      expect(JSON.parse(String(foreign?.content))).toMatchObject({ error: "toolUseId was not found in the current in-memory session" });
+    } finally { restore.hasProviderSpy.mockRestore(); restore.refreshProviderSpy.mockRestore(); }
   });
 
   it("grants no source tool at all for `deny-all`", async () => {
@@ -1519,7 +1602,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
         maxRounds: 2,
       });
 
-      expect(provider.observedToolNames[0]).toEqual([scheduleToolName]);
+      expect(provider.observedToolNames[0]).toEqual([scheduleToolName, "read_tool_result_chunk"]);
       expect(provider.observedToolNames[0]).not.toContain("other_plugin_tool");
       expect(execSpy).toHaveBeenCalledOnce();
       expect(requestAndWait).toHaveBeenCalledOnce();
@@ -1584,7 +1667,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       });
 
       const childPrompt = provider.observedSystemPrompts[0] ?? "";
-      expect(provider.observedToolNames[0]).toEqual([CARD_FIXTURE_IN_SCOPE_TOOL]);
+      expect(provider.observedToolNames[0]).toEqual([CARD_FIXTURE_IN_SCOPE_TOOL, "read_tool_result_chunk"]);
       expect(childPrompt).not.toContain(CARD_FIXTURE_OUT_OF_SCOPE_PLUGIN);
       for (const name of CARD_FIXTURE_OUT_OF_SCOPE_TOOLS) {
         expect(childPrompt).not.toContain(name);
@@ -1631,7 +1714,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
         maxRounds: 1,
       });
 
-      expect(provider.observedToolNames[0]).toEqual(["noop"]);
+      expect(provider.observedToolNames[0]).toEqual(["noop", "read_tool_result_chunk"]);
     } finally {
       hasProviderSpy.mockRestore();
       refreshProviderSpy.mockRestore();
@@ -2226,7 +2309,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       );
       expect(meta).not.toBeNull();
       expect(meta?.sessionKind).toBe("subagent");
-      expect(meta?.sourceTools).toEqual(["noop"]);
+      expect(meta?.sourceTools).toEqual(["noop", "read_tool_result_chunk"]);
       expect(meta?.profileModel).toBe("high");
       expect(meta?.profileMode).toBe("execute");
       expect(meta?.resumeCount).toBe(0);
@@ -2270,7 +2353,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       expect(meta?.budgetResumeCount).toBe(0);
       expect(meta?.questionAnswerCount).toBe(0);
       expect(meta?.cumulativeRounds).toBe(result.turnCount);
-      expect(meta?.sourceTools).toEqual(["noop"]);
+      expect(meta?.sourceTools).toEqual(["noop", "read_tool_result_chunk"]);
     } finally {
       restore();
     }
