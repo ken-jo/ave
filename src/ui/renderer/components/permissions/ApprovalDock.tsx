@@ -323,6 +323,7 @@ export function ApprovalDock({
           language. */}
       <ToolApprovalContent
         key={request.id}
+        actionTitleVisible={false}
         open
         request={request}
         conversationLabel={conversationLabel}
@@ -389,6 +390,7 @@ export function ApprovalLaneCard({
       </header>
       <ToolApprovalContent
         key={request.id}
+        actionTitleVisible={false}
         narrowLaneScroll
         open
         request={request}
