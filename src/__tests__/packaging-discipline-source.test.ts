@@ -1181,6 +1181,8 @@ describe("installer smoke and packaging discipline", () => {
     // bun, and its last step proves the job-local pinned bun is on PATH.
     expect(installers).toContain(
       "      - uses: ./.github/actions/setup-bun\n"
+        + "        env:\n"
+        + `          GITHUB_TOKEN: ${githubExpression("github.token")}\n`
         + "        with:\n"
         + "          bun-version-file: .bun-version\n",
     );
