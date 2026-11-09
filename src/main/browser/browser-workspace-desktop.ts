@@ -1,4 +1,4 @@
-import { isBackgroundE2eRuntime } from "../e2e-window-presentation.js";
+import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
 import { dialog, Menu, session, type BrowserWindow, type DownloadItem, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
@@ -113,7 +113,7 @@ function focusPopup(window: BrowserWindow): Promise<boolean> {
   if (contents.isDestroyed()) return Promise.resolve(false);
   if (isBackgroundE2eRuntime()) {
     window.showInactive();
-    return contents.executeJavaScript("document.hasFocus()") as Promise<boolean>;
+    return whenFocusEmulated(contents);
   }
   return new Promise((resolve) => {
     let timer: ReturnType<typeof setTimeout> | undefined;

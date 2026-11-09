@@ -1,5 +1,5 @@
 import { app } from "electron";
-import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
+import { isBackgroundE2eRuntime, markFocusEmulated } from "./e2e-window-presentation.js";
 
 /** Install once before readiness in each test app entrypoint. Foreground fixtures use their own window presentation. */
 export function configureE2eWindowPolicy(): void {
@@ -13,7 +13,7 @@ export function configureE2eWindowPolicy(): void {
     contents.on("dom-ready", () => {
       contents.setBackgroundThrottling(false);
       if (!contents.debugger.isAttached()) contents.debugger.attach("1.3");
-      void contents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true }).catch((error: unknown) => {
+      void contents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true }).then(() => { markFocusEmulated(contents); }).catch((error: unknown) => {
         if (contents.isDestroyed()) return;
         console.error("Test page focus emulation failed", error);
         app.exit(1);

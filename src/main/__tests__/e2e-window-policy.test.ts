@@ -6,7 +6,7 @@ import { setIsPackaged, _resetForTest } from "../../boot/dev-flags.js";
 const runtime = vi.hoisted(() => ({ isPackaged: false, setActivationPolicy: vi.fn(), on: vi.fn(), exit: vi.fn() }));
 vi.mock("electron", () => ({ app: runtime }));
 import { configureE2eWindowPolicy } from "../e2e-window-policy.js";
-import { showWindowForRuntime } from "../e2e-window-presentation.js";
+import { showWindowForRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
 
 const originalPlatform = process.platform;
 afterEach(() => {
@@ -53,13 +53,23 @@ describe("background test windows", () => {
     vi.stubEnv("NODE_ENV", "test");
     configureE2eWindowPolicy();
     const debuggerApi = { isAttached: vi.fn(() => false), attach: vi.fn(), sendCommand: vi.fn(async () => undefined) };
-    const contents = Object.assign(new EventEmitter(), { getType: () => kind, debugger: debuggerApi, setBackgroundThrottling: vi.fn() });
+    const contents = Object.assign(new EventEmitter(), {
+      getType: () => kind, debugger: debuggerApi, setBackgroundThrottling: vi.fn(), isDestroyed: () => false,
+    });
     const listener = runtime.on.mock.calls.find(([event]) => event === "web-contents-created")?.[1];
     if (!listener) throw new Error("Page policy listener is missing");
     listener({}, contents);
     expect(contents.setBackgroundThrottling).not.toHaveBeenCalled();
+    let emulated: boolean | undefined;
+    void whenFocusEmulated(contents as never).then((value) => { emulated = value; });
+    await Promise.resolve();
+    expect(emulated).toBeUndefined();
     contents.emit("dom-ready");
     await Promise.resolve();
+    await Promise.resolve();
+    expect(emulated).toBe(true);
+    expect(contents.listenerCount("destroyed")).toBe(0);
+    await expect(whenFocusEmulated(contents as never)).resolves.toBe(true);
     expect(contents.setBackgroundThrottling).toHaveBeenCalledWith(false);
     expect(debuggerApi.attach).toHaveBeenCalledWith("1.3");
     expect(debuggerApi.sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", { enabled: true });
@@ -68,5 +78,12 @@ describe("background test windows", () => {
     await Promise.resolve();
     expect(contents.setBackgroundThrottling).toHaveBeenCalledTimes(2);
     expect(debuggerApi.attach).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a page destroyed before focus emulation as unfocused", async () => {
+    const contents = Object.assign(new EventEmitter(), { isDestroyed: () => false });
+    const pending = whenFocusEmulated(contents as never);
+    contents.emit("destroyed");
+    await expect(pending).resolves.toBe(false);
   });
 });
