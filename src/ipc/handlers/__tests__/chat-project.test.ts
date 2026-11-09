@@ -309,7 +309,7 @@ describe("handleChatSessions legacy default-root metadata scrub", () => {
 
 describe("handleChatSessions federated families", () => {
   const main = {
-    id: "session-main",
+    id: "aaaaaaaa-1111-4111-8111-111111111111",
     modifiedAt: new Date("2026-09-03T10:00:00Z"),
     title: "main chat",
     preview: "Main reply",
@@ -332,7 +332,7 @@ describe("handleChatSessions federated families", () => {
       title: "환경 변수 확인",
       preview: "Side reply",
       sessionKind: "main",
-      originSessionId: "session-main",
+      originSessionId: "aaaaaaaa-1111-4111-8111-111111111111",
     },
   ];
   const runs = [
@@ -350,10 +350,10 @@ describe("handleChatSessions federated families", () => {
     const listSessionsPage = vi.fn(() => [main, routine]);
     const listSideChatSessionsPage = vi.fn(() => sideChats);
     const deps = {
-      conversationLoop: { getSessionId: () => "session-main" },
+      conversationLoop: { getSessionId: () => "aaaaaaaa-1111-4111-8111-111111111111" },
       memoryManager: { sessions: { listSessionsPage } },
       sideChatMemoryManager: { sessions: { listSessionsPage: listSideChatSessionsPage } },
-      getSubAgentRunner: () => ({ listWorkBoardRunSessions, listSubAgentSessions: () => [{ ...runs[3], originSessionId: "session-main", running: true }] }),
+      getSubAgentRunner: () => ({ listWorkBoardRunSessions, listSubAgentSessions: () => [{ ...runs[3], originSessionId: "aaaaaaaa-1111-4111-8111-111111111111", running: true }] }),
       workBoardStore: { get },
     } as unknown as IpcDeps;
     return { deps, listWorkBoardRunSessions, listSessionsPage, listSideChatSessionsPage, get };
@@ -362,7 +362,7 @@ describe("handleChatSessions federated families", () => {
   it("carries the persisted child origin and live state through the list contract", async () => {
     const { deps } = makeDeps();
     const { sessions } = await handleChatSessions(deps, { families: ["subagent"] });
-    expect(sessions).toEqual([expect.objectContaining({ id: "sub-plain", family: "subagent", originSessionId: "session-main", running: true })]);
+    expect(sessions).toEqual([expect.objectContaining({ id: "sub-plain", family: "subagent", originSessionId: "aaaaaaaa-1111-4111-8111-111111111111", running: true })]);
     expect(sessions[0]).not.toHaveProperty("parentSessionId");
   });
 
@@ -374,7 +374,7 @@ describe("handleChatSessions federated families", () => {
     expect(sessions.map((s) => [s.id, s.family])).toEqual([
       ["sub-a1", "work-board"],
       ["side-1", "side-chat"],
-      ["session-main", "main"],
+      ["aaaaaaaa-1111-4111-8111-111111111111", "main"],
       ["session-routine", "routine"],
     ]);
   });
@@ -413,7 +413,7 @@ describe("handleChatSessions federated families", () => {
     expect(sessions.find((s) => s.id === "side-1")).toMatchObject({
       family: "side-chat",
       title: "환경 변수 확인",
-      originSessionId: "session-main",
+      originSessionId: "aaaaaaaa-1111-4111-8111-111111111111",
     });
   });
 
@@ -421,7 +421,7 @@ describe("handleChatSessions federated families", () => {
     const { deps, listWorkBoardRunSessions, listSideChatSessionsPage, listSessionsPage } = makeDeps();
     const { sessions } = await handleChatSessions(deps, { kind: "main" });
     expect(listSessionsPage).toHaveBeenCalledWith(expect.objectContaining({ kind: "main" }));
-    expect(sessions.map((s) => s.id)).toEqual(["session-main", "session-routine"]);
+    expect(sessions.map((s) => s.id)).toEqual(["aaaaaaaa-1111-4111-8111-111111111111", "session-routine"]);
     expect(listWorkBoardRunSessions).not.toHaveBeenCalled();
     expect(listSideChatSessionsPage).not.toHaveBeenCalled();
   });
@@ -429,18 +429,18 @@ describe("handleChatSessions federated families", () => {
   it("reads only the stores whose family was asked for", async () => {
     const { deps, listWorkBoardRunSessions, listSideChatSessionsPage } = makeDeps();
     const { sessions } = await handleChatSessions(deps, { families: ["main"] });
-    expect(sessions.map((s) => s.id)).toEqual(["session-main"]);
+    expect(sessions.map((s) => s.id)).toEqual(["aaaaaaaa-1111-4111-8111-111111111111"]);
     expect(listWorkBoardRunSessions).not.toHaveBeenCalled();
     expect(listSideChatSessionsPage).not.toHaveBeenCalled();
   });
 
   it("lists nothing extra when the runner, the board or the side-chat store is not wired", async () => {
     const deps = {
-      conversationLoop: { getSessionId: () => "session-main" },
+      conversationLoop: { getSessionId: () => "aaaaaaaa-1111-4111-8111-111111111111" },
       memoryManager: { sessions: { listSessionsPage: vi.fn(() => [main]) } },
     } as unknown as IpcDeps;
     const { sessions } = await handleChatSessions(deps, { families: [...ALL_FAMILIES] });
-    expect(sessions.map((s) => s.id)).toEqual(["session-main"]);
+    expect(sessions.map((s) => s.id)).toEqual(["aaaaaaaa-1111-4111-8111-111111111111"]);
   });
 });
 
@@ -451,10 +451,12 @@ describe("sidebar root pages", () => {
     const parent = { id: parentId, title: "Parent", modifiedAt: new Date("2020-01-01"), sessionKind: "main" as const };
     const recent = { ...parent, id: recentId, title: "Recent root", modifiedAt: new Date("2026-11-01") };
     const children = Array.from({ length: 100 }, (_, index) => ({
-      id: `sub-child-${index}`, title: `Child ${index}`, modifiedAt: new Date("2026-11-02"),
+      id: `sub-aaaaaaaa-${index.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`, title: `Child ${index}`, modifiedAt: new Date("2026-11-02"),
       sessionKind: "subagent" as const, originSessionId: parentId,
     }));
-    const grandchild = { ...children[0], id: "sub-grandchild", title: "Grandchild", originSessionId: "sub-child-0", modifiedAt: new Date("2000-01-01"), sessionKind: "subagent" as const };
+    const firstChild = children.at(0);
+    if (!firstChild) throw new Error("missing-child-fixture");
+    const grandchild = { ...firstChild, id: "sub-aaaaaaaa-ffffffff-1111-4111-8111-111111111111", title: "Grandchild", originSessionId: firstChild.id, modifiedAt: new Date("2000-01-01"), sessionKind: "subagent" as const };
     const page = (rows: typeof parent[] | typeof children, options: { limit?: number; before?: Date; beforeId?: string; after?: Date }) => rows
       .filter((row) => (!options.before || row.modifiedAt < options.before || row.modifiedAt.getTime() === options.before.getTime() && row.id < (options.beforeId ?? "")) && (!options.after || row.modifiedAt >= options.after))
       .sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime() || b.id.localeCompare(a.id))

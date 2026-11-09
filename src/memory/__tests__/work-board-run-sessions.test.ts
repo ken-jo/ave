@@ -78,8 +78,8 @@ describe("listSessions with workBoardRuns", () => {
     expect(runs[0]?.sessionKind).toBe("subagent");
   });
 
-  it("excludes item runs before limiting ordinary child conversations", () => {
-    expect(mm.sessions.listSessions({ kind: "subagent", workBoardRuns: false }).map((entry) => entry.id).sort()).toEqual([BRIEFING, CHAT_CHILD].sort());
+  it("excludes item runs and briefings before limiting ordinary child conversations", () => {
+    expect(mm.sessions.listSessions({ kind: "subagent", workBoardRuns: false }).map((entry) => entry.id).sort()).toEqual([CHAT_CHILD]);
   });
 
   it("pages the same way as the other listings", () => {
@@ -112,7 +112,12 @@ describe("sessionFamilyOf", () => {
   });
 
   it("lists an ordinary spawned conversation in its own family", () => {
-    expect(sessionFamilyOf("subagent", { sessionKind: "subagent" })).toBe("subagent");
+    expect(sessionFamilyOf("subagent", { sessionKind: "subagent", originSessionId: MAIN })).toBe("subagent");
+  });
+
+  it("does not assign the ordinary child family to a briefing origin", () => {
+    const briefing = { sessionKind: "subagent" as const, originSessionId: "work-board-briefing:daily" };
+    expect(sessionFamilyOf("subagent", briefing)).toBeNull();
   });
 
   it("has no family for a kind the main store should not be holding", () => {

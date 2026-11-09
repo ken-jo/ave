@@ -157,11 +157,11 @@ export type SessionNamespace = "main" | "side-chat" | "subagent";
 // Classify spawned conversations from their host-written origin.
 export function sessionFamilyOf(
   namespace: SessionNamespace,
-  session: Pick<SessionListEntry, "sessionKind" | "workBoardItemId">,
+  session: Pick<SessionListEntry, "sessionKind" | "workBoardItemId" | "originSessionId">,
 ): SessionFamily | null {
   if (namespace === "side-chat") return "side-chat";
   if (namespace === "subagent") {
-    return session.workBoardItemId !== undefined ? "work-board" : "subagent";
+    return session.workBoardItemId !== undefined ? "work-board" : isValidSessionId(session.originSessionId) ? "subagent" : null;
   }
   if (session.sessionKind === "main") return "main";
   if (session.sessionKind === "routine") return "routine";
@@ -214,7 +214,7 @@ export interface RestoredSubAgentSession {
 
 export interface ListSessionsOptions {
   kind?: SessionKind | "all";
-  // Work-board filtering applies only to child sessions whose host-written origin names an item.
+  // True selects item runs; false selects children with a conversation origin.
   workBoardRuns?: boolean;
   routineId?: string;
   projectRoot?: string;
@@ -573,7 +573,8 @@ function matchesSessionScope(
     options.workBoardRuns === true &&
     (sessionKind !== "subagent" || parseWorkBoardOriginSessionId(metadata?.originSessionId) === null)
   ) return false;
-  if (options.workBoardRuns === false && parseWorkBoardOriginSessionId(metadata?.originSessionId) !== null) return false;
+  // Ordinary child rows need a conversation origin; board and unattributed sessions stay internal.
+  if (options.workBoardRuns === false && !isValidSessionId(metadata?.originSessionId)) return false;
   if (options.routineId !== undefined && metadata?.routineId !== options.routineId) return false;
   if (
     options.projectRoot !== undefined &&
