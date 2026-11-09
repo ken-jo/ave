@@ -1,4 +1,4 @@
-export type NativeAction = "hover" | "drag" | "slider" | "select" | "scroll" | "screenshot" | "upload" | "cancel-upload" | "submit" | "navigate" | "select-navigation" | "resume" | "hold-control" | "edit-original";
+export type NativeAction = "hover" | "drag" | "slider" | "select" | "scroll" | "screenshot" | "upload" | "cancel-upload" | "submit" | "navigate" | "select-navigation" | "resume" | "hold-control" | "edit-original" | "read-content";
 
 export interface NativeOracle {
   readonly hover: number;

@@ -75,6 +75,12 @@ const server = createServer(async (request, response) => {
     return;
   }
   response.setHeader("content-type", "text/html");
+  if (request.url === "/pending-resource") { response.write("pending"); return; }
+  if (request.url === "/readable") {
+    const page = await fs.readFile(join(fixtureDir, "page.html"), "utf8");
+    response.end(`${page}<main><h1>Fixture news headline</h1><p>Readable story text.</p><p hidden>Hidden story text.</p></main><img src="/pending-resource">`);
+    return;
+  }
   response.end(await fs.readFile(join(fixtureDir, "page.html"), "utf8"));
 });
 
@@ -142,6 +148,18 @@ async function run(action: NativeAction): Promise<NativeActionResult> {
       };
       let value: unknown;
       switch (action) {
+        case "read-content": {
+          const destination = new URL("/readable", guest.getURL()).href;
+          const destinationOrigin = browserOrigin(destination);
+          if (!destinationOrigin) throw new Error("Fixture origin is unavailable");
+          const readiness = await actions.navigate({ tab, signal: tab.actions.signal, leaseId: lease.id }, destination, destinationOrigin);
+          const current = { tab: record(), signal: record().actions.signal, leaseId: lease.id };
+          const text = await actions.readText(current);
+          value = { readiness, text, loading: guest.isLoading() };
+          // The independent DOM oracle waits for full load; release only after recording tool readiness and text.
+          guest.stop();
+          break;
+        }
         case "hover": await actions.hover(live, ref("Hover target")); break;
         case "drag": await actions.drag(live, ref("Drag source"), ref("Drop target")); break;
         case "slider": await actions.drag(live, ref("Native slider"), ref("Slider end")); break;
@@ -192,6 +210,7 @@ async function reset(): Promise<void> {
     browserTabRegistry.releaseWindow(window.id);
     window.destroy();
   }
+  server.closeAllConnections();
   await clearNativeBrowserStorage(NATIVE_BROWSER_PARTITION);
   received = null;
   nativeEvents.length = 0;
@@ -263,6 +282,7 @@ void app.whenReady().then(async () => {
   await reset();
   const fixture: NativeBrowserFixture = { ready: true, run, reset, assertClean: async () => assertNativeBrowserState(win, guest, rendererTabId), read: () => read(), close: async () => {
     guest.stop(); await disposeBrowserUploads(); win.destroy();
+    server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   } };
   (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture = fixture;

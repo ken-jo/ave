@@ -1595,6 +1595,15 @@ Every browser tool result, including host validation and action errors, remains
 inside the untrusted browser-content envelope. Diagnostics can interpolate page
 titles, accessible names and navigation URLs; a host error is not a trusted-text
 exception. String bounds and fence neutralization apply inside that same boundary.
+Navigation returns after exposed accessibility content appears or a short bounded
+settle, without a loading flag. Snapshot and `browser_read_text` results reserve
+20% of the host's inline token budget for transport overhead; their truncation
+flag reports omitted content. Text reads prefer exposed main or article content,
+exclude child frames and ignored nodes, and use the same page permission gates
+as snapshots. They expose no script input.
+An explicit snapshot `maxChars` request (500–50,000) retains the full bounded
+outline for existing host chunk recovery. Rereading without `delta` recovers
+elements omitted from the default inline outline.
 HTML5 interception uses only fixed internal `Input.setInterceptDrags`,
 `Input.cancelDragging`, and `Input.dispatchDragEvent` operations. Browser-originated payloads remain untrusted;
 only bounded approved text MIME data is accepted, with no files or host-path

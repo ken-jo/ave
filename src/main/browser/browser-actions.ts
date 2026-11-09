@@ -19,12 +19,14 @@ import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared
 import { validateExternalUrl } from "../../shared/external-url.js";
 import { browserOrigin, type BrowserPageReadiness, type BrowserPageSnapshot } from "../../shared/browser-tools.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { runWithCeiling } from "../../tools/executor-ceiling.js";
 import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
 import {
   BrowserActionError, frameTree, mainDocumentContainsNode, ownPageSession, releasePageSession, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession,
 } from "./browser-action-guard.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
+import { readablePageText } from "./browser-page-text.js";
 import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "./browser-select-script.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
 import {
@@ -150,9 +152,28 @@ async function fullTree(cdp: CdpSession): Promise<AXNode[]> {
   return result.nodes ?? [];
 }
 
+/** A named content node is sufficient; a document title or empty layout is not. */
+export async function settlePageContent(cdp: CdpSession, signal: AbortSignal, assertAllowed: () => void = () => {}): Promise<void> {
+  const outcome = await runWithCeiling(async boundedSignal => {
+    for (;;) {
+      throwIfAborted(boundedSignal);
+      assertAllowed();
+      const nodes = await fullTree(cdp);
+      throwIfAborted(boundedSignal);
+      assertAllowed();
+      if (nodes.some(node => !node.ignored && ["heading", "link", "button", "StaticText", "textbox"].includes(String(node.role?.value))
+        && typeof node.name?.value === "string" && node.name.value.trim().length > 0)) return;
+      await sleep(SETTLE_POLL_MS, boundedSignal);
+    }
+  }, TOOL_TIMEOUT_POLICY.browserContentSettleMs, signal, "browser content readiness");
+  throwIfAborted(signal);
+  assertAllowed();
+  if (!outcome.ok && outcome.reason !== "ceiling") throw outcome.error;
+}
+
 export async function snapshot(
   target: ActionTarget,
-  options: { interactive?: boolean; delta?: boolean },
+  options: { interactive?: boolean; delta?: boolean; maxChars?: number },
   refs: BrowserRefTable = browserRefs,
 ): Promise<BrowserPageSnapshot> {
   throwIfAborted(target.signal);
@@ -909,7 +930,7 @@ export async function navigate(
     );
   }
   if (load.error) throw new BrowserActionError("load-failed", `the page did not load: ${load.error.message}`);
-  return { url: guest.getURL(), loading: guest.isLoading() };
+  return { url: guest.getURL() };
 }
 
 // What settling needs of a guest. Production passes Electron `WebContents`.
@@ -927,7 +948,7 @@ export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs: nu
   for (;;) {
     throwIfAborted(signal);
     const url = guest.getURL();
-    if (browserOrigin(url) !== null) return { url, loading: guest.isLoading() };
+    if (browserOrigin(url) !== null) return { url };
     if (Date.now() - started >= maxMs) throw new BrowserActionError("load-timeout", "the main browser document did not commit before the readiness deadline");
     await sleep(SETTLE_POLL_MS, signal);
   }
@@ -1633,7 +1654,7 @@ export function createBrowserPageActions(
       throwIfAborted(live.signal);
       if (live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was replaced");
     },
-    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) => awake(live, async () => {
+    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean; maxChars?: number }) => awake(live, async () => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
       const target = await targetFor(live, attribution, hostContentOrigin);
@@ -1642,6 +1663,17 @@ export function createBrowserPageActions(
       const challenge = await observeChallenge(live, guest, session, live.signal);
       target.assertCurrent?.(false);
       return { ...shot, ...(challenge ? { challenge } : {}) };
+    }),
+    readText: async (live: LiveTab) => awake(live, async () => {
+      const guest = live.tab.guest;
+      if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+      const target = await targetFor(live, attribution, hostContentOrigin);
+      const nodes = await fullTree(target.cdp);
+      throwIfAborted(target.signal);
+      const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+      const challenge = await observeChallenge(live, guest, session, live.signal);
+      target.assertCurrent?.(false);
+      return { url: target.url(), title: target.title(), ...readablePageText(nodes), ...(challenge ? { challenge } : {}) };
     }),
     screenshot: async (live: LiveTab, options) => {
       return runBrowserCapture(live.signal, TOOL_TIMEOUT_POLICY.browserCaptureMs, async (operation) => {
@@ -1685,6 +1717,7 @@ export function createBrowserPageActions(
         await installSiteGate(live, guest, session, lifecycle.signal);
         session.assertCurrent();
         const loaded = await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined, siteGates.get(guest));
+        await settlePageContent(session, lifecycle.signal, () => siteGates.get(guest)?.assertAllowed());
         const documentId = live.tab.documentId;
         const challenge = await observeChallenge(live, guest, session, lifecycle.signal);
         const gate = siteGates.get(guest);
@@ -1692,7 +1725,7 @@ export function createBrowserPageActions(
         gate?.assertAllowed();
         throwIfAborted(lifecycle.signal);
         session.assertCurrent();
-        return { ...loaded, url: guest.getURL(), loading: guest.isLoading(), ...(challenge && live.tab.documentId === documentId ? { challenge } : {}) };
+        return { ...loaded, url: guest.getURL(), ...(challenge && live.tab.documentId === documentId ? { challenge } : {}) };
       }
       finally { lifecycle.cancel(); }
     }),

@@ -23,6 +23,7 @@ describe("browser tool rule verdicts", () => {
     [BROWSER_TOOL.pressKey, "write" as const, { tabId: "tab-1", key: "Enter" }],
     [BROWSER_TOOL.tabClose, "write" as const, { tabId: "tab-1" }],
     [BROWSER_TOOL.snapshot, "network" as const, { tabId: "tab-1" }],
+    [BROWSER_TOOL.readText, "network" as const, { tabId: "tab-1" }],
   ])("grades %s MEDIUM", (tool, category, input) => {
     expect(verdictFor(tool, category, input)).toMatchObject({ level: "medium", reason: "browser page action" });
   });

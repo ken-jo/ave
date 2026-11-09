@@ -115,6 +115,14 @@ async function close(app: ElectronApplication): Promise<void> {
     (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture.close()));
 }
 
+test("@cdp navigation reads main text while a subresource remains open", async ({ sharedApp: app }) => {
+  const result = await run(app, "read-content");
+  expect(result.ok, resultMessage(result)).toBe(true);
+  expect(result.value).toMatchObject({ readiness: { url: expect.stringContaining("/readable") },
+    text: { text: "Fixture news headline\nReadable story text.", truncated: false }, loading: true });
+  expect((result.value as { readiness: unknown }).readiness).not.toHaveProperty("loading");
+});
+
 test("@cdp hover reaches the guest element", async ({ sharedApp: app }) => {
   const before = await read(app);
   const result = await run(app, "hover");
