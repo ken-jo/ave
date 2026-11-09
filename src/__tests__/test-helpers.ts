@@ -207,11 +207,6 @@ export function readRepoFile(path: string): string {
   return readFileSync(resolve(REPO_ROOT, path), "utf8");
 }
 
-/** GitHub Actions expression text, e.g. githubExpression("runner.temp") is "${{ runner.temp }}". */
-export function githubExpression(body: string): string {
-  return `\${{ ${body} }}`;
-}
-
 /** Register scratch cleanup with the shared tracker so all suites use the same lock-retry policy. */
 export function useTempDirs(prefix: string): (ownPrefix?: string) => string {
   const tracker = createTmpDirTracker();

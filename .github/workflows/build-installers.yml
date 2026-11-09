@@ -125,12 +125,10 @@ jobs:
         shell: bash
     env:
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
-      electron_config_cache: ${{ github.workspace }}/.cache/electron
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/electron-builder
       # Bun's package cache defaults to .bun/install/cache in the runner user's
       # home; keep it in the workspace, where the cache step below saves it.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
-      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -170,7 +168,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-installers-${{ hashFiles('bun.lock') }}-
             ${{ runner.os }}-installers-
-      - uses: ./.github/actions/cache-runtime-tools
+      # Cache fetched uv runtime (downloaded by scripts/fetch-uv.mjs during postinstall).
+      # Key is pinned to uv-targets.mjs so version bumps invalidate the cache. Saves
+      # ~30s per matrix job on cold runners and avoids re-downloading from GitHub releases.
+      - name: Restore uv runtime cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: resources/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('scripts/uv-targets.mjs', 'scripts/fetch-uv.mjs') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
       # electron-builder >= 26.14 extracts its icon-conversion helper
       # (icons@x.y.z/icon-tool.js — CommonJS, uses `require`) under
       # ELECTRON_BUILDER_CACHE, which this workflow places INSIDE the
@@ -304,10 +311,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.target }}" = "linux" ]; then
-            dbus-run-session -- bash -euo pipefail -c "
-              eval \"\$(printf %s packaged-smoke | gnome-keyring-daemon --unlock --components=secrets)\"
+            dbus-run-session -- bash -euo pipefail -c '
+              eval "$(printf %s packaged-smoke | gnome-keyring-daemon --unlock --components=secrets)"
               xvfb-run -a node scripts/smoke-packaged-app.mjs --target linux
-            "
+            '
           else
             node scripts/smoke-packaged-app.mjs --target "${{ matrix.target }}"
           fi
@@ -323,10 +330,10 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ matrix.target }}" = "linux" ]; then
-            dbus-run-session -- bash -euo pipefail -c "
-              eval \"\$(printf %s packaged-escape-gate | gnome-keyring-daemon --unlock --components=secrets)\"
+            dbus-run-session -- bash -euo pipefail -c '
+              eval "$(printf %s packaged-escape-gate | gnome-keyring-daemon --unlock --components=secrets)"
               xvfb-run -a node scripts/packaged-escape-gate.mjs --target linux
-            "
+            '
           else
             node scripts/packaged-escape-gate.mjs --target "${{ matrix.target }}"
           fi
