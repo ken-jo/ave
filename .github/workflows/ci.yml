@@ -572,6 +572,21 @@ jobs:
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
+      - name: Ensure uv toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs
+      - name: Resolve the native interpreter archive key
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        id: python-archive
+        working-directory: ave
+        run: node .github/scripts/python-archive-cache.mjs
+      - name: Restore native interpreter archives
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/python-archives
+          key: ${{ steps.python-archive.outputs.key }}
       - name: Cache Windows packaging runtime archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -679,6 +694,8 @@ jobs:
           src/memory/__tests__/session-turn-journal.test.ts
           src/engine/__tests__/conversation-loop-resume.test.ts
       - name: Run Windows permission regressions
+        env:
+          UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: >
