@@ -1,3 +1,4 @@
+import { quitElectron } from './seeded-electron.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -153,6 +154,6 @@ test.describe('git marketplace automatic updates', () => {
       await expect(sheet.getByTestId('git-marketplace:done')).toBeVisible({ timeout: 60_000 });
       await sheet.getByTestId('git-marketplace:sheet:close').click();
       await closeInlineSettings(app, settings);
-    } finally { await app.close(); }
+    } finally { await quitElectron(app); }
   });
 });

@@ -1,3 +1,4 @@
+import { quitElectron } from './seeded-electron.js';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -119,7 +120,7 @@ const test = base.extend<{ admitted: { app: ElectronApplication; mainWindow: Pag
   },
   admitted: async ({ app, mainWindow, aveHome, userDataDir, tempHome, launchEnv, devFlag }, use) => {
     const admitted = await admitFixturePlugins({ app, mainWindow, aveHome, userDataDir, tempHome }, launchEnv, devFlag);
-    try { await use(admitted); } finally { await admitted.app.close(); }
+    try { await use(admitted); } finally { await quitElectron(admitted.app); }
   },
 });
 

@@ -1,3 +1,4 @@
+import { quitElectron } from "./seeded-electron.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ElectronApplication, Page } from "playwright";
@@ -115,5 +116,5 @@ test("Settings loads and revokes a project rule through the real host bridge", a
     await row.getByRole("button").click();
     await expect(row).toHaveCount(0);
     expect(JSON.parse(readFileSync(file, "utf8")).rules).toEqual([]);
-  } finally { await app.close(); }
+  } finally { await quitElectron(app); }
 });

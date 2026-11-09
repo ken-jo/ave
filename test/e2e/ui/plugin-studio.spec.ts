@@ -1,3 +1,4 @@
+import { quitElectron } from "./seeded-electron.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "./fixtures.js";
@@ -58,7 +59,7 @@ test("form to review to local package install", async ({ app: seededApp, mainWin
     expect(manifest.extensions["ai.agent-connector.ave"].mcpAuth).toEqual({ "sample-connector": { auth: "api-key", apiKeyEnv: "STUDIO_KEY" } });
     expect(JSON.stringify(manifest)).not.toContain("stored-key-value");
     await closeInlineSettings(app, page);
-  } finally { await app.close(); }
+  } finally { await quitElectron(app); }
 });
 
 test("imported hooks appear as review-only needs-input items", async ({ app, mainWindow, userDataDir, t }) => {
