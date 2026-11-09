@@ -355,7 +355,7 @@ describe("handleChatSessions federated families", () => {
     const listSideChatSessionsPage = vi.fn(() => sideChats);
     const deps = {
       conversationLoop: { getSessionId: () => "aaaaaaaa-1111-4111-8111-111111111111" },
-      memoryManager: { sessions: { listSessionsPage } },
+      memoryManager: { sessions: { listSessionsPage, getSessionListEntry: (id: string) => [main, routine].find((row) => row.id === id) ?? null } },
       sideChatMemoryManager: { sessions: { listSessionsPage: listSideChatSessionsPage } },
       getSubAgentRunner: () => ({ listWorkBoardRunSessions, listSubAgentSessions: () => [{ ...runs[3], originSessionId: "aaaaaaaa-1111-4111-8111-111111111111", running: true }] }),
       workBoardStore: { get },
@@ -457,7 +457,7 @@ describe("sidebar row pages", () => {
     const readPage = <T extends { id: string; modifiedAt: Date }>(rows: T[], options: { limit: number; before?: Date; beforeId?: string }) => rows.filter((row) => !options.before || row.modifiedAt < options.before || row.modifiedAt.getTime() === options.before.getTime() && row.id < (options.beforeId ?? "")).slice(0, options.limit);
     const deps = {
       conversationLoop: { getSessionId: () => parent.id },
-      memoryManager: { sessions: { listSessionsPage: (options: Parameters<typeof readPage>[1]) => readPage([parent, middle, older], options) } },
+      memoryManager: { sessions: { listSessionsPage: (options: Parameters<typeof readPage>[1]) => readPage([parent, middle, older], options), getSessionListEntry: (id: string) => [parent, middle, older].find((row) => row.id === id) ?? null } },
       getSubAgentRunner: () => ({ listSubAgentSessions: (options: Parameters<typeof readPage>[1]) => readPage([child], options) }),
     } as unknown as IpcDeps;
     const seen: string[] = [];
@@ -477,8 +477,8 @@ describe("sidebar row pages", () => {
     try {
       const memoryManager = new MemoryManager({ aveDir: dir });
       for (let index = 0; index < 5000; index += 1) {
-        const id = index.toString(16).padStart(8, "0") + "-1111-4111-8111-111111111111";
-        writeFileSync(join(dir, "sessions", id + ".jsonl"), JSON.stringify({ role: "user", content: "History " + index }) + "\n");
+        const id = `${index.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`;
+        writeFileSync(join(dir, "sessions", `${id}.jsonl`), `${JSON.stringify({ role: "user", content: `History ${index}` })}\n`);
       }
       const summaries = vi.spyOn(memoryManager.sessions as unknown as { readSessionSummary: (id: string) => { title: string; preview: string } }, "readSessionSummary");
       const deps = { memoryManager, conversationLoop: { getSessionId: () => "aaaaaaaa-1111-4111-8111-111111111111" } } as unknown as IpcDeps;
@@ -488,7 +488,31 @@ describe("sidebar row pages", () => {
       summaries.mockClear();
       await handleChatSessions(deps, { families: ["main", "subagent"], limit: 100 });
       expect(summaries).toHaveBeenCalledTimes(mainCalls);
+      summaries.mockClear();
+      const query = { id: "00000000-1111-4111-8111-111111111111", families: ["main", "subagent"] };
+      const point = await handleChatSessions(deps, query);
+      expect(point.sessions.map((row) => row.id)).toEqual([query.id]);
+      expect(summaries).toHaveBeenCalledTimes(1);
       summaries.mockRestore();
     } finally { await cleanupTmpDir(dir); }
+  });
+});
+
+describe("sidebar parent recovery", () => {
+  it("looks up an off-page parent once and keeps it outside the primary cursor rows", async () => {
+    const parent = { id: "aaaaaaaa-1111-4111-8111-111111111111", title: "Parent", sessionKind: "main" as const, modifiedAt: new Date("2026-11-01") };
+    const children = ["bbbbbbbb", "cccccccc"].map((part, index) => ({ ...parent, projectRoot: index === 1 ? "/other-project" : undefined, id: `sub-aaaaaaaa-${part}-1111-4111-8111-111111111111`, sessionKind: "subagent" as const, originSessionId: parent.id, modifiedAt: new Date("2026-11-09"), running: true }));
+    const readParent = vi.fn((id: string) => id === parent.id ? parent : null);
+    const listMain = vi.fn(() => []);
+    const deps = {
+      conversationLoop: { getSessionId: () => parent.id },
+      memoryManager: { sessions: { listSessionsPage: listMain, getSessionListEntry: readParent } },
+      getSubAgentRunner: () => ({ listSubAgentSessions: () => children }),
+    } as unknown as IpcDeps;
+    const result = await handleChatSessions(deps, { families: ["main", "subagent"], limit: 2 });
+    expect(result.sessions.map((row) => row.id)).toEqual([...children].sort((a, b) => b.id.localeCompare(a.id)).map((row) => row.id));
+    expect(result).toMatchObject({ parents: [{ id: parent.id, family: "main", modifiedAt: parent.modifiedAt.toISOString() }] });
+    expect(readParent).toHaveBeenCalledExactlyOnceWith(parent.id);
+    expect(listMain).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ limit: 2 }));
   });
 });

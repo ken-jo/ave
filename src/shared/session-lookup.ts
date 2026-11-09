@@ -100,3 +100,23 @@ const SESSION_ID_DISPLAY_LENGTH = 8;
 export function shortSessionId(sessionId: string): string {
   return sessionId.slice(0, SESSION_ID_DISPLAY_LENGTH);
 }
+
+/** One primary row page, with related parents kept outside its continuation cursor. */
+export interface SessionListResult {
+  current: string;
+  sessions: SessionListRow[];
+  parents?: SessionListRow[];
+}
+
+export interface SessionListQuery {
+  kind?: SessionListKindFilter;
+  families?: SessionFamily[];
+  routineId?: string;
+  projectRoot?: string;
+  limit?: number;
+  before?: string;
+  beforeId?: string;
+  after?: string;
+  /** Read a single row directly, without enumerating a page. */
+  id?: string;
+}

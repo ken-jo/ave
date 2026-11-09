@@ -1821,41 +1821,51 @@ export class SessionRepository {
       .map((session) => ({ ...session, metadata: this.loadSessionMetadata(session.id) }))
       .filter((session) => matchesSessionScope(session.metadata, options))
       .slice(0, Number.isFinite(limit) ? limit : undefined)
-      .map((session) => {
-        const metadata = session.metadata;
-        const sessionKind = metadata?.sessionKind ?? normalizeSessionKind(undefined);
-        const workBoardItemId = sessionKind === "subagent"
-          ? parseWorkBoardOriginSessionId(metadata?.originSessionId)
-          : null;
-        const summary = session.size > MAX_SESSION_FILE_BYTES
-          ? {
-              title: metadata?.routineTitle
-                ? t("be_memoryManager.sessionTitleWithRoutine", { routineTitle: metadata.routineTitle })
-                : t("be_memoryManager.sessionTitleShort", { id: session.id.slice(0, 8) }),
-              preview: t("be_memoryManager.sessionPreviewTooLarge"),
-            }
-          : this.readSessionSummary(session.id);
-        return {
-          id: session.id,
-          modifiedAt: session.modifiedAt,
-          sessionKind,
-          title: resolveConversationTitle({ sessionId: session.id, title: metadata?.title || metadata?.subAgentTitle || summary.title, routineTitle: metadata?.routineTitle }, t),
-          preview: summary.preview,
-          routineId: metadata?.routineId,
-          routineTitle: metadata?.routineTitle,
-          routineFiredAt: metadata?.routineFiredAt,
-          ...(metadata?.projectRoot ? { projectRoot: metadata.projectRoot } : {}),
-          ...(metadata?.projectName ? { projectName: metadata.projectName } : {}),
-          ...(workBoardItemId !== null ? { workBoardItemId } : {}),
-          ...(isValidSessionId(metadata?.originSessionId) ? { originSessionId: metadata.originSessionId } : {}),
-          ...(metadata?.paneTabId ? { paneTabId: metadata.paneTabId } : {}),
-          ...(metadata?.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
-          ...(metadata?.branchedFromCompactNum !== undefined ? { branchedFromCompactNum: metadata.branchedFromCompactNum } : {}),
-          ...(metadata?.branchedAt ? { branchedAt: metadata.branchedAt } : {}),
-          ...(metadata?.archivedAt ? { archivedAt: metadata.archivedAt } : {}),
-          ...(metadata?.unreadSince ? { unreadSince: metadata.unreadSince } : {}),
-        };
-      });
+      .map((session) => this.toSessionListEntry(session));
+  }
+
+  /** Read one row without enumerating unrelated histories. */
+  getSessionListEntry(sessionId: string): SessionListEntry | null {
+    if (!isValidSessionId(sessionId)) return null;
+    const stat = statPathIfPresent(join(this.sessionsDir, `${sessionId}.jsonl`));
+    if (!stat) return null;
+    return this.toSessionListEntry({ id: sessionId, modifiedAt: stat.mtime, size: stat.size, metadata: this.loadSessionMetadata(sessionId) });
+  }
+
+  private toSessionListEntry(session: { id: string; modifiedAt: Date; size: number; metadata: SessionMetadata | null }): SessionListEntry {
+    const metadata = session.metadata;
+    const sessionKind = metadata?.sessionKind ?? normalizeSessionKind(undefined);
+    const workBoardItemId = sessionKind === "subagent"
+      ? parseWorkBoardOriginSessionId(metadata?.originSessionId)
+      : null;
+    const summary = session.size > MAX_SESSION_FILE_BYTES
+      ? {
+          title: metadata?.routineTitle
+            ? t("be_memoryManager.sessionTitleWithRoutine", { routineTitle: metadata.routineTitle })
+            : t("be_memoryManager.sessionTitleShort", { id: session.id.slice(0, 8) }),
+          preview: t("be_memoryManager.sessionPreviewTooLarge"),
+        }
+      : this.readSessionSummary(session.id);
+    return {
+      id: session.id,
+      modifiedAt: session.modifiedAt,
+      sessionKind,
+      title: resolveConversationTitle({ sessionId: session.id, title: metadata?.title || metadata?.subAgentTitle || summary.title, routineTitle: metadata?.routineTitle }, t),
+      preview: summary.preview,
+      routineId: metadata?.routineId,
+      routineTitle: metadata?.routineTitle,
+      routineFiredAt: metadata?.routineFiredAt,
+      ...(metadata?.projectRoot ? { projectRoot: metadata.projectRoot } : {}),
+      ...(metadata?.projectName ? { projectName: metadata.projectName } : {}),
+      ...(workBoardItemId !== null ? { workBoardItemId } : {}),
+      ...(isValidSessionId(metadata?.originSessionId) ? { originSessionId: metadata.originSessionId } : {}),
+      ...(metadata?.paneTabId ? { paneTabId: metadata.paneTabId } : {}),
+      ...(metadata?.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
+      ...(metadata?.branchedFromCompactNum !== undefined ? { branchedFromCompactNum: metadata.branchedFromCompactNum } : {}),
+      ...(metadata?.branchedAt ? { branchedAt: metadata.branchedAt } : {}),
+      ...(metadata?.archivedAt ? { archivedAt: metadata.archivedAt } : {}),
+      ...(metadata?.unreadSince ? { unreadSince: metadata.unreadSince } : {}),
+    };
   }
 
   listSessionsByRoutine(routineId: string, limit = Number.POSITIVE_INFINITY): SessionListEntry[] {

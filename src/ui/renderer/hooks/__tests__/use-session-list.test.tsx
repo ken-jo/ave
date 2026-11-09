@@ -51,3 +51,17 @@ it("ignores every activity frame for a child outside the current root page until
   expect(result.current.sessions).toEqual([child]);
   expect(chatSessions).toHaveBeenCalledTimes(2);
 });
+
+it("merges recovered parents and later primary rows by id across row pages", async () => {
+  const parent = sessionRow({ id: "parent", title: "Parent", modifiedAt: "2026-11-01T00:00:00Z" });
+  const child = sessionRow({ id: "child", title: "Child", modifiedAt: "2026-11-09T00:00:00Z", family: "subagent", sessionKind: "subagent", originSessionId: parent.id });
+  const chatSessions = vi.fn().mockResolvedValueOnce({ sessions: [child], parents: [parent] }).mockResolvedValueOnce({ sessions: [{ ...parent, title: "Updated parent" }], parents: [] });
+  const { result } = renderHook(() => useSessionList({ chatSessions } as unknown as AveApi));
+  await act(() => result.current.refreshSessions());
+  expect(result.current.sessions.map((row) => row.id)).toEqual([parent.id, child.id]);
+  const cursor = { before: child.modifiedAt, beforeId: child.id };
+  await act(() => result.current.loadSessionsPage(cursor));
+  expect(chatSessions).toHaveBeenLastCalledWith(expect.objectContaining(cursor));
+  expect(result.current.sessions).toHaveLength(2);
+  expect(result.current.sessions.find((row) => row.id === parent.id)?.title).toBe("Updated parent");
+});

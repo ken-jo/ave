@@ -50,19 +50,26 @@ function sessionProjectFromHistory(
  * one hook meant every tile would have refetched the list, and the sidebar
  * would have had to pick one tile's copy of it to render.
  */
+function mergeSessionRows(current: readonly SessionSummary[], incoming: readonly SessionSummary[]): SessionSummary[] {
+  return [...new Map([...current, ...incoming].map((row) => [row.id, row])).values()];
+}
+
 export function useSessionList(api: AveApi) {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
 
-  const refreshSessions = useCallback(async () => {
+  const loadSessionsPage = useCallback(async (cursor?: { before: string; beforeId: string }) => {
     try {
       // Request all session families with the widest allowed page so routine and side-chat rows do not crowd out conversations.
       const r = await api.chatSessions({
         families: [...SESSION_FAMILIES],
         limit: SESSION_LIST_MAX_LIMIT,
+        ...cursor,
       });
-      setSessions(r.sessions);
+      setSessions((current) => mergeSessionRows(cursor ? current : [], [...(r.parents ?? []), ...r.sessions]));
     } catch { /* ignore */ }
   }, [api]);
+
+  const refreshSessions = useCallback(() => loadSessionsPage(), [loadSessionsPage]);
 
   useEffect(() => api.onAgentSpawnEvent?.((event) => {
     if (!event.childSessionId) return;
@@ -73,7 +80,7 @@ export function useSessionList(api: AveApi) {
       : current);
   }), [api, refreshSessions]);
 
-  return { sessions, refreshSessions };
+  return { sessions, refreshSessions, loadSessionsPage };
 }
 
 export interface CurrentSessionDeps {

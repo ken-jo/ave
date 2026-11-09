@@ -22,7 +22,7 @@ import type {
   ActiveWorkspaceSurface,
 } from "../../shared/browser-surface.js";
 import type { AppBootstrapStatus } from "../../shared/bootstrap-status.js";
-import type { SessionFamily, SessionListKindFilter, SessionListRow } from "../../shared/session-lookup.js";
+import type { SessionListQuery, SessionListResult } from "../../shared/session-lookup.js";
 import type { McpAuthErrorCode, McpAuthenticationResult, McpConfigMutationResult, McpResourceSummary, McpResourceTemplateSummary, McpServerConfig, McpServerConfigDto, McpServerState, McpUiResourceBundle, McpUiToolCallOutcome } from "../../mcp/types.js";
 import type { McpUiMessageOutcome } from "../../mcp/mcp-ui-message.js";
 import type { McpUiDownloadOutcome } from "../../mcp/mcp-app-download.js";
@@ -674,7 +674,7 @@ export type AvePreloadApi = {
   chatNew: (opts?: { projectRoot?: string; projectName?: string }) => Promise<
     { ok: true } | { ok: false; error: string }
   >;
-  chatSessions: (opts?: { kind?: SessionListKindFilter; families?: SessionFamily[]; routineId?: string; projectRoot?: string; limit?: number; before?: string; beforeId?: string; after?: string }) => Promise<{ current: string; sessions: SessionListRow[] }>;
+  chatSessions: (opts?: SessionListQuery) => Promise<SessionListResult>;
   onChatStream: (h: (e: ChatStreamEvent) => void) => () => void;
   /**
    * One tiled chat group's view of the per-conversation channels.

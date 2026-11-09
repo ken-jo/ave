@@ -24,11 +24,12 @@ import {
   SESSION_LIST_MAX_LIMIT,
   type SessionFamily,
   type SessionListRow,
+  type SessionListResult,
 } from "../../shared/session-lookup.js";
 import type { IpcDeps } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
 import { isValidSessionId } from "../../shared/session-id.js";
-import { MAX_PROJECT_NAME_CHARS, MAX_PROJECT_ROOT_CHARS, sessionFamilyOf, toSessionListRow } from "../../memory/session-repository.js";
+import { MAX_PROJECT_NAME_CHARS, MAX_PROJECT_ROOT_CHARS, sessionFamilyOf, toSessionListRow, type SessionListEntry } from "../../memory/session-repository.js";
 import { type SessionKind } from "../../shared/session-lookup.js";
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
@@ -551,8 +552,8 @@ function requestedSessionFamilies(raw: unknown): ReadonlySet<SessionFamily> | un
 // Federate requested conversation families across their owning stores with one shared pagination contract.
 export async function handleChatSessions(
   deps: IpcDeps,
-  opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown; families?: unknown },
-) {
+  opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown; families?: unknown; id?: unknown },
+): Promise<SessionListResult> {
   const { conversationLoop, memoryManager } = deps;
   const limit = typeof opts?.limit === "number" && Number.isFinite(opts.limit)
     ? Math.max(1, Math.min(SESSION_LIST_MAX_LIMIT, Math.floor(opts.limit)))
@@ -575,6 +576,15 @@ export async function handleChatSessions(
       : "__ave_unauthorized_project_root__"
     : undefined;
   const includeUnscoped = resolvedProject?.authorized === true && resolvedProject.project?.isDefault === true;
+  if (opts?.id !== undefined) {
+    const row = isValidSessionId(opts.id) ? await sessionRowById(deps, opts.id) : null;
+    const familyAllowed = row && (families ? families.has(row.family) : row.family === "main" || row.family === "routine");
+    const kindAllowed = families !== undefined || kind === "all" || row?.sessionKind === kind;
+    const inProject = row && (projectRoot === undefined || projectRootEquals(row.projectRoot, projectRoot) || includeUnscoped && row.projectRoot === undefined);
+    const matchesRoutine = routineId === undefined || row?.routineId === routineId;
+    const page = row && familyAllowed && kindAllowed && inProject && matchesRoutine ? [row] : [];
+    return { current: conversationLoop.getSessionId(), sessions: page, parents: await sessionPageParents(deps, page) };
+  }
   const sessions = memoryManager.sessions
     .listSessionsPage({ kind: families ? "all" : kind, ...(routineId ? { routineId } : {}), ...(projectRoot ? { projectRoot } : {}), ...(includeUnscoped ? { includeUnscoped: true } : {}), limit, ...(before ? { before } : {}), ...(beforeId ? { beforeId } : {}), ...(after ? { after } : {}) })
     .flatMap((s): SessionListRow[] => {
@@ -603,7 +613,44 @@ export async function handleChatSessions(
       return delta !== 0 ? delta : b.id.localeCompare(a.id);
     })
     .slice(0, limit);
-  return { current: conversationLoop.getSessionId(), sessions: federated };
+  return { current: conversationLoop.getSessionId(), sessions: federated, parents: await sessionPageParents(deps, federated) };
+}
+
+/** Supplemental rows never change the primary page's last-row cursor. */
+async function sessionPageParents(deps: IpcDeps, page: readonly SessionListRow[]): Promise<SessionListRow[]> {
+  const present = new Set(page.map((row) => row.id));
+  const lookedUp = new Map<string, SessionListRow | null>();
+  const parents: SessionListRow[] = [];
+  for (const child of page) {
+    const id = child.family === "subagent" ? child.originSessionId : undefined;
+    if (!id || present.has(id)) continue;
+    if (!lookedUp.has(id)) lookedUp.set(id, await sessionRowById(deps, id));
+    const parent = lookedUp.get(id);
+    if (parent && (parent.projectRoot === undefined && child.projectRoot === undefined || projectRootEquals(parent.projectRoot, child.projectRoot))) {
+      parents.push(parent);
+      present.add(parent.id);
+    }
+  }
+  return parents;
+}
+
+async function sessionRowById(deps: IpcDeps, id: string): Promise<SessionListRow | null> {
+  const main = deps.memoryManager.sessions.getSessionListEntry(id);
+  if (main) {
+    const legacyDefault = main.projectRoot !== undefined && isDefaultWorkspaceRoot(main.projectRoot);
+    const row = toSessionListRow("main", legacyDefault ? { ...main, projectRoot: undefined, projectName: undefined } : main);
+    if (row) return row;
+  }
+  const side = deps.sideChatMemoryManager?.sessions.getSessionListEntry(id);
+  if (side) return toSessionListRow("side-chat", side);
+  const child = deps.getSubAgentRunner?.()?.getSessionListEntry(id);
+  if (!child) return null;
+  if (child.workBoardItemId !== undefined) {
+    const rows = await workBoardRunRows(deps, { limit: 1, includeUnscoped: false }, [child]);
+    return rows.at(0) ?? null;
+  }
+  const row = toSessionListRow("subagent", child);
+  return row ? { ...row, running: child.running } : null;
 }
 
 function subAgentRows(
@@ -628,11 +675,12 @@ async function workBoardRunRows(
     projectRoot?: string;
     includeUnscoped: boolean;
   },
+  listedRuns?: readonly SessionListEntry[],
 ): Promise<SessionListRow[]> {
   const runner = deps.getSubAgentRunner?.();
   const store = deps.workBoardStore;
   if (!runner || !store) return [];
-  const runs = runner.listWorkBoardRunSessions({
+  const runs = listedRuns ?? runner.listWorkBoardRunSessions({
     limit: window.limit,
     ...(window.before ? { before: window.before } : {}),
     ...(window.beforeId ? { beforeId: window.beforeId } : {}),

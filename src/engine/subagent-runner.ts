@@ -1997,6 +1997,13 @@ export class SubAgentRunner {
     }));
   }
 
+  /** Read one child row directly from its owning store. */
+  getSessionListEntry(sessionId: string): (SessionListEntry & { running: boolean }) | null {
+    const session = this.deps.subAgentMemoryManager.sessions.getSessionListEntry(sessionId);
+    if (session?.sessionKind !== "subagent") return null;
+    return { ...session, running: this.activeChildren.get(sessionId)?.loop.hasActiveTurn() ?? false };
+  }
+
   /** Whether `childSessionId` is a sub-agent this exact parent spawned. Answers ownership from the record the HOST wrote at spawn time rather than from the parent's transcript, which compaction may have stripped
    * the linking tool_result out of. Both ids must be well-formed and the child must actually be a sub-agent session: a main session id must never satisfy this, or it would become a way to read another conversation. */
   isPersistedSpawnOfOrigin(originSessionId: string, childSessionId: string): boolean {

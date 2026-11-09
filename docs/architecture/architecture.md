@@ -1358,7 +1358,11 @@ which is what every caller but the sidebar wants.
 
 Each store receives the same bounded row limit and time cursor. The federated
 rows are sorted by modification time and id, then limited again. The last row
-in `sessions` remains the continuation cursor.
+in `sessions` remains the continuation cursor. For each page child whose parent
+is absent, a bounded direct id lookup returns a same-project parent in the
+separate `parents` collection. Parent rows do not affect the page cursor. The
+renderer merges primary and parent rows by id across pages. A single-row `id`
+query uses the same row serializer and reads only the addressed transcript.
 
 | Family | Store | Row | Opens |
 | --- | --- | --- | --- |
