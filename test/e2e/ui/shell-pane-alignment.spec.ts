@@ -6,6 +6,19 @@ import {
   setWindowSize,
   teardownSeededElectron,
 } from "./seeded-electron.js";
+import {
+  BAND_EDGE_PAD,
+  BAND_LEAD_PAD_DARWIN,
+  BAND_LEAD_PAD_LINUX,
+  RAIL_BAND_LEAD,
+} from "../../../src/shared/shell-geometry.js";
+
+/** The band never pads under the platform's own window buttons (CustomTitleBar); elsewhere the path sits on the title line. */
+function bandLeadFor(titleLeft: number): number {
+  if (process.platform === "darwin") return Math.max(BAND_LEAD_PAD_DARWIN, titleLeft);
+  if (process.platform === "linux") return Math.max(BAND_LEAD_PAD_LINUX, titleLeft);
+  return Math.max(BAND_EDGE_PAD, titleLeft);
+}
 
 async function measureShell(page: Page, testInfo: TestInfo, name: string) {
   await expect.poll(() => page.evaluate(() => document.getAnimations().every(
@@ -23,6 +36,7 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
         return target === element || (target !== null && element.contains(target));
       });
     };
+    const band = document.querySelector('[data-testid^="custom-titlebar"]');
     const card = document.querySelector('[data-testid="sidebar-card"]');
     const rail = document.querySelector('[data-testid="sidebar-rail"]');
     const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
@@ -30,11 +44,16 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
       .filter((pane) => pane.getBoundingClientRect().width > 0);
     return {
       viewport: { width: innerWidth, height: innerHeight },
+      // Where the band's path row starts: its content edge, past the padding CustomTitleBar computes.
+      bandLead: band ? band.getBoundingClientRect().left + parseFloat(getComputedStyle(band).paddingLeft) : null,
       card: card ? box(card) : null,
       rail: rail ? box(rail) : null,
       handle: handle ? { ...box(handle), hit: hit(handle) } : null,
       panes: panes.map((pane) => ({
         ...box(pane),
+        // The header row's leading edge: its glyph, then the h2 (DESIGN.md, header band). The band path starts on this line.
+        titleLeft: pane.querySelector('[data-testid="pane-header"] > :first-child')?.getBoundingClientRect().left ?? null,
+        h2Left: pane.querySelector('[data-testid="pane-header"] h2')?.getBoundingClientRect().left ?? null,
         buttons: [...pane.querySelectorAll('[data-testid="pane-header"] button')]
           .filter((button) => button.getBoundingClientRect().width > 0)
           .map((button) => ({ id: button.getAttribute("data-testid"), hit: hit(button) })),
@@ -96,6 +115,14 @@ for (const width of [1243, 360]) {
         expect(geometry.panes).toHaveLength(1);
         const pane = geometry.panes[0];
         expect(Math.abs(pane.top - 40)).toBeLessThanOrEqual(0.5);
+        if (geometry.bandLead === null || pane.titleLeft === null) throw new Error("Expected band and pane header title");
+        if (state === "expanded" && !geometry.overlay) {
+          expect(Math.abs(geometry.bandLead - pane.titleLeft)).toBeLessThanOrEqual(1);
+        } else if (state !== "hidden") {
+          // Rail and overlay: the title sits on the rail's line, and the path follows it unless window buttons own that space.
+          expect(Math.abs(pane.titleLeft - RAIL_BAND_LEAD)).toBeLessThanOrEqual(1);
+          expect(Math.abs(geometry.bandLead - bandLeadFor(pane.titleLeft))).toBeLessThanOrEqual(1);
+        }
         const sidebar = geometry.card ?? geometry.rail;
         if (sidebar) expect(Math.abs(sidebar.top - pane.top)).toBeLessThanOrEqual(0.5);
         if (sidebar && !geometry.overlay) expect(Math.abs(pane.left - sidebar.right - 4)).toBeLessThanOrEqual(0.5);
@@ -126,6 +153,8 @@ for (const width of [1243, 360]) {
           expect(resized.handle.width).toBe(8);
           expect(resized.handle.right).toBe(resized.card.right);
           expect(resized.handle.hit).toBe(true);
+          if (resized.bandLead === null || resized.panes[0].titleLeft === null) throw new Error("Expected band and pane header title");
+          expect(Math.abs(resized.bandLead - resized.panes[0].titleLeft)).toBeLessThanOrEqual(1);
           expect(resized.panes[0].buttons.every((button) => button.hit)).toBe(true);
         }
       } finally {
@@ -157,6 +186,8 @@ for (const axis of ["row", "column"] as const) {
       } else {
         expect(Math.abs(second.top - first.bottom - 8)).toBeLessThanOrEqual(0.5);
       }
+      if (geometry.bandLead === null || first.titleLeft === null || second.titleLeft === null) throw new Error("Expected band and pane header titles");
+      expect(Math.abs(geometry.bandLead - first.titleLeft)).toBeLessThanOrEqual(1);
       expect(geometry.handle.hit).toBe(true);
       expect(geometry.panes.every((pane) => pane.buttons.length > 0 && pane.buttons.every((button) => button.hit))).toBe(true);
     } finally {

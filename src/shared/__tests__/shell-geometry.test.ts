@@ -42,10 +42,12 @@ describe("shell geometry: collapsed rail reserve", () => {
     expect(COLLAPSED_RAIL_RESERVE - SHELL_GUTTER * 2).toBe(52);
   });
 
-  it("starts the rail-only band on the content title's line, past the darwin traffic lights", () => {
-    expect(RAIL_BAND_LEAD).toBe(COLLAPSED_RAIL_RESERVE + CONTENT_TITLE_INSET);
-    expect(RAIL_BAND_LEAD).toBeGreaterThanOrEqual(BAND_LEAD_PAD_DARWIN);
+  it("starts the rail-only band on the content title's line past the rail", () => {
+    expect(CONTENT_TITLE_INSET).toBe(CHROME_GAP_TIGHT + SHELL_GUTTER);
+    expect(RAIL_BAND_LEAD).toBe(72);
     expect(RAIL_BAND_LEAD).toBeGreaterThan(BAND_EDGE_PAD);
+    // The traffic lights end past the title line; CustomTitleBar's darwin floor keeps the path clear of them.
+    expect(BAND_LEAD_PAD_DARWIN).toBeGreaterThan(RAIL_BAND_LEAD);
   });
 
   it("leaves the rail card room for its widest control at the largest font scale", () => {

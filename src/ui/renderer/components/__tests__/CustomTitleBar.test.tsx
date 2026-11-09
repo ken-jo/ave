@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.ts";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, fireEvent } from "@testing-library/react";
 import { CustomTitleBar } from "../CustomTitleBar.js";
+import { BAND_LEAD_PAD_DARWIN, RAIL_BAND_LEAD } from "../../../../shared/shell-geometry.js";
 
 const mockMinimize = vi.fn().mockResolvedValue(undefined);
 const mockToggleMaximize = vi.fn().mockResolvedValue(undefined);
@@ -58,6 +59,13 @@ describe("CustomTitleBar", () => {
       expect(queryByTestId("titlebar-minimize")).toBeNull();
       expect(queryByTestId("titlebar-maximize")).toBeNull();
       expect(queryByTestId("titlebar-close")).toBeNull();
+    });
+
+    it("never starts content under the traffic lights, and follows a lead past them", () => {
+      const { getByTestId, rerender } = render(<CustomTitleBar leadClearance={RAIL_BAND_LEAD} />);
+      expect(getByTestId("custom-titlebar-darwin").style.paddingLeft).toBe(`${BAND_LEAD_PAD_DARWIN}px`);
+      rerender(<CustomTitleBar leadClearance={312} />);
+      expect(getByTestId("custom-titlebar-darwin").style.paddingLeft).toBe("312px");
     });
   });
 

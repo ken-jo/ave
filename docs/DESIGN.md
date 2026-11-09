@@ -182,12 +182,21 @@ name one location while several panes are open. A path floated to the *trailing*
 read as window furniture and lose the association — that is the placement the rule forbids, and
 it is not this one.
 
+The title line is where the pane header's content starts (its glyph, then the title): the navigation
+card's trailing edge plus `CONTENT_TITLE_INSET` (12px), the pane cell's 4px half-gutter and the pane
+header's 8px inline padding. The pane card's 1px border puts the glyph 1px further in. With the list showing, that is 312px
+at the default width; with the sidebar collapsed or overlaid, it is the rail's line (72px).
+
 The one exception is Linux, where the window buttons lead the band (close, minimize, maximize, as
 GNOME and macOS order them): the path can never start before `BAND_LEAD_PAD_LINUX` (136px).
-With the sidebar collapsed or overlaid, the path starts at 136px instead of on the rail's line (84px).
+With the sidebar collapsed or overlaid, the path starts at 136px instead of on the rail's line (72px).
 With the sidebar hidden, it starts at 136px instead of at the band edge (12px).
 In both cases it no longer lines up with the content title below; that is the cost of keeping the
 buttons where Linux users expect them.
+
+macOS has the same limit on a smaller scale. The traffic lights end at 76px, so the path never starts
+before `BAND_LEAD_PAD_DARWIN` (80px). With the sidebar collapsed or overlaid, it starts there, 8px past
+the rail's line, so the lights keep their gap. With the list showing, the path lines up with the title.
 
 What it names is the **focused pane's location**, since that is where the window is (see
 `docs/design/tiled-chat-groups.md`). Moving focus between panes therefore moves the path, with
