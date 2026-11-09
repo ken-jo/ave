@@ -1,4 +1,5 @@
 import type { ConversationLoop, SessionTransitionLease } from "../conversation-loop.js";
+import { posix, win32 } from "node:path";
 import { isValidSessionId } from "../../shared/session-id.js";
 import { type SessionKind } from "../../shared/session-lookup.js";
 import type { GenericMessage } from "../llm/types.js";
@@ -129,8 +130,19 @@ export function workspaceRootRemovalAffectsTurn(
   removedRoot: string,
 ): boolean {
   if (!self.hasActiveTurn()) return false;
+  if (self.sessionProjectRoot === null) {
+    if (self.sessionProjectName !== null || self.sessionProjectIsDefault) {
+      throw new Error("Active turn project binding is inconsistent");
+    }
+    return false;
+  }
   const projectRoot = normalizeProjectString(self.sessionProjectRoot);
-  if (!projectRoot) throw new Error("Active turn project root is missing");
+  if (!projectRoot || projectRoot.includes("\0") || (!posix.isAbsolute(projectRoot) && !win32.isAbsolute(projectRoot))) {
+    throw new Error("Active turn project root cannot be resolved");
+  }
+  if (self.sessionProjectIsDefault && self.deps.isDefaultProjectRoot?.(projectRoot) === false) {
+    throw new Error("Active turn project binding is inconsistent");
+  }
   const normalizedRoot = normalizeProjectString(removedRoot);
   if (!normalizedRoot) return false;
   return projectRootEquals(projectRoot, normalizedRoot);

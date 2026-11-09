@@ -392,7 +392,33 @@ describe("ConversationLoop project identity", () => {
     expect(loop.revokeWorkspaceRoot("/workspace/alpha").turnDirectoriesRemoved).toBe(1);
   });
 
-  it.each([null, "", "   "])("rejects an active turn with an unresolved project root %s before revoking scope", (projectRoot) => {
+  it.each(["main", "routine"] as const)("leaves a legitimately unbound %s turn running during project removal", async (kind) => {
+    const { loop } = makeProjectLoop("/workspace/default");
+    loop.initializeConversation(kind);
+    loop.provider = {
+      vendor: "openai",
+      async *streamTurn() {
+        expect(loop.sessionProjectRoot).toBeNull();
+        expect(loop.countTurnsAbortedByWorkspaceRootRemoval("/workspace/alpha")).toBe(0);
+        loop.revokeWorkspaceRoot("/workspace/alpha");
+        expect(loop.currentAbortController?.signal.aborted).toBe(false);
+        yield { type: "text_delta", text: "unbound work completed" };
+        yield { type: "message_complete", stopReason: "end_turn" };
+      },
+    };
+    expect(await loop.runTurn("work", undefined, undefined, userKeyboardTurn()))
+      .toMatchObject({ text: "unbound work completed", stopReason: "end_turn" });
+  });
+
+  it("rejects a project name without a root as an inconsistent binding", () => {
+    const { loop } = makeProjectLoop("/workspace/default");
+    loop.sessionProjectName = "alpha";
+    loop.currentAbortController = new AbortController();
+    expect(() => loop.countTurnsAbortedByWorkspaceRootRemoval("/workspace/alpha"))
+      .toThrow("Active turn project binding is inconsistent");
+  });
+
+  it.each(["", "   ", "relative", "/bad\0root"])("rejects an active turn with an unresolved project root %s before revoking scope", (projectRoot) => {
     const { loop } = makeProjectLoop("/workspace/default");
     loop.sessionProjectRoot = projectRoot;
     loop.addTurnAdditionalDirectory("/workspace/alpha/scratch");
@@ -400,9 +426,9 @@ describe("ConversationLoop project identity", () => {
     loop.currentAbortController = controller;
     const options = { globalScopeWasAuthorized: true };
     expect(() => loop.countTurnsAbortedByWorkspaceRootRemoval("/workspace/alpha", options))
-      .toThrow("Active turn project root is missing");
+      .toThrow("Active turn project root cannot be resolved");
     expect(() => loop.revokeWorkspaceRoot("/workspace/alpha", options))
-      .toThrow("Active turn project root is missing");
+      .toThrow("Active turn project root cannot be resolved");
     expect(controller.signal.aborted).toBe(false);
     expect(loop.getTurnAdditionalDirectories()).toContain("/workspace/alpha/scratch");
   });
