@@ -1356,13 +1356,9 @@ the rows are merged into a single list ordered by `modifiedAt`. A request that
 names no family is answered from the main store alone under its `kind` filter,
 which is what every caller but the sidebar wants.
 
-Lists requesting the `subagent` family page by top-level conversations. The
-limit and time cursor select roots; each selected root includes all listed
-same-project descendants, regardless of their timestamps. Missing-parent and
-cross-project children count as roots. Main and renderer share parent resolution
-so a page boundary cannot turn a child into an orphan. Activity frames update
-listed child state without fetching the list; omitted children wait for the next
-lifecycle event or explicit refresh.
+Each store receives the same bounded row limit and time cursor. The federated
+rows are sorted by modification time and id, then limited again. The last row
+in `sessions` remains the continuation cursor.
 
 | Family | Store | Row | Opens |
 | --- | --- | --- | --- |

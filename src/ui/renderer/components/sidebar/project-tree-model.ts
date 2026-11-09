@@ -1,4 +1,4 @@
-import { sessionListParents } from "../../../../shared/session-list-tree.js";
+import { projectRootEquals } from "../../../../shared/project-identity.js";
 import type { SessionSummary } from "../../hooks/use-sessions.js";
 import type { SidebarSurface } from "../../hooks/use-sidebar-items.js";
 
@@ -77,7 +77,22 @@ export function bucketEntries(
 
 /** Group only listed parents in the same project. Missing parents and invalid cycles remain reachable roots. */
 export function nestSessionEntries(entries: readonly TreeEntry[]): TreeEntry[] {
-  const parentOf = sessionListParents(entries.flatMap((entry) => entry.kind === "session" ? [entry.session] : []));
+  const sessions = new Map(entries.flatMap((entry) => entry.kind === "session" ? [[entry.session.id, entry] as const] : []));
+  const parentOf = new Map<string, string>();
+  for (const [id, entry] of sessions) {
+    const origin = entry.session.family === "subagent" ? entry.session.originSessionId : undefined;
+    const parent = origin ? sessions.get(origin) : undefined;
+    if (origin && parent && origin !== id && (entry.session.projectRoot === undefined && parent.session.projectRoot === undefined || projectRootEquals(entry.session.projectRoot, parent.session.projectRoot))) parentOf.set(id, origin);
+  }
+  for (const id of parentOf.keys()) {
+    const seen = new Set([id]);
+    let next = parentOf.get(id);
+    while (next !== undefined) {
+      if (seen.has(next)) { parentOf.delete(next); break; }
+      seen.add(next);
+      next = parentOf.get(next);
+    }
+  }
   const children = new Map<string, TreeEntry[]>();
   for (const entry of entries) {
     const parent = entry.kind === "session" ? parentOf.get(entry.session.id) : undefined;

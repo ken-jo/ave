@@ -1,5 +1,9 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { MemoryManager } from "../../../memory/memory-manager.js";
+import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { configureHostResources } from "../../../main/host-resources.js";
 
 beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
@@ -444,36 +448,47 @@ describe("handleChatSessions federated families", () => {
   });
 });
 
-describe("sidebar root pages", () => {
-  it("returns an older parent with all its children even when more than a page of children are newer", async () => {
-    const parentId = "aaaaaaaa-1111-4111-8111-111111111111";
-    const recentId = "bbbbbbbb-2222-4222-8222-222222222222";
-    const parent = { id: parentId, title: "Parent", modifiedAt: new Date("2020-01-01"), sessionKind: "main" as const };
-    const recent = { ...parent, id: recentId, title: "Recent root", modifiedAt: new Date("2026-11-01") };
-    const children = Array.from({ length: 100 }, (_, index) => ({
-      id: `sub-aaaaaaaa-${index.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`, title: `Child ${index}`, modifiedAt: new Date("2026-11-02"),
-      sessionKind: "subagent" as const, originSessionId: parentId,
-    }));
-    const firstChild = children.at(0);
-    if (!firstChild) throw new Error("missing-child-fixture");
-    const grandchild = { ...firstChild, id: "sub-aaaaaaaa-ffffffff-1111-4111-8111-111111111111", title: "Grandchild", originSessionId: firstChild.id, modifiedAt: new Date("2000-01-01"), sessionKind: "subagent" as const };
-    const page = (rows: typeof parent[] | typeof children, options: { limit?: number; before?: Date; beforeId?: string; after?: Date }) => rows
-      .filter((row) => (!options.before || row.modifiedAt < options.before || row.modifiedAt.getTime() === options.before.getTime() && row.id < (options.beforeId ?? "")) && (!options.after || row.modifiedAt >= options.after))
-      .sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime() || b.id.localeCompare(a.id))
-      .slice(0, options.limit);
+describe("sidebar row pages", () => {
+  it("continues limit-one cursors through mixed parent and child timestamps", async () => {
+    const parent = { id: "aaaaaaaa-1111-4111-8111-111111111111", title: "Parent", sessionKind: "main" as const, modifiedAt: new Date("2026-11-09") };
+    const middle = { ...parent, id: "bbbbbbbb-1111-4111-8111-111111111111", modifiedAt: new Date("2026-11-07") };
+    const older = { ...parent, id: "cccccccc-1111-4111-8111-111111111111", modifiedAt: new Date("2026-11-05") };
+    const child = { ...parent, id: "sub-aaaaaaaa-dddddddd-1111-4111-8111-111111111111", sessionKind: "subagent" as const, originSessionId: parent.id, modifiedAt: new Date("2026-11-01"), running: false };
+    const readPage = <T extends { id: string; modifiedAt: Date }>(rows: T[], options: { limit: number; before?: Date; beforeId?: string }) => rows.filter((row) => !options.before || row.modifiedAt < options.before || row.modifiedAt.getTime() === options.before.getTime() && row.id < (options.beforeId ?? "")).slice(0, options.limit);
     const deps = {
-      conversationLoop: { getSessionId: () => parentId },
-      memoryManager: { sessions: { listSessionsPage: (options: Parameters<typeof page>[1]) => page([parent, recent], options) } },
-      getSubAgentRunner: () => ({ listSubAgentSessions: (options: Parameters<typeof page>[1]) => page([...children, grandchild], options).map((row) => ({ ...row, running: false })) }),
+      conversationLoop: { getSessionId: () => parent.id },
+      memoryManager: { sessions: { listSessionsPage: (options: Parameters<typeof readPage>[1]) => readPage([parent, middle, older], options) } },
+      getSubAgentRunner: () => ({ listSubAgentSessions: (options: Parameters<typeof readPage>[1]) => readPage([child], options) }),
     } as unknown as IpcDeps;
-    const families = ["main", "subagent"];
-    const all = await handleChatSessions(deps, { families, limit: 100 });
-    expect(all.sessions).toHaveLength(103);
-    expect(all.sessions.find((row) => row.id === parentId)).toMatchObject({ family: "main" });
-    const first = await handleChatSessions(deps, { families, limit: 1 });
-    expect(first.sessions.map((row) => row.id)).toEqual([recentId]);
-    const second = await handleChatSessions(deps, { families, limit: 1, before: recent.modifiedAt.toISOString(), beforeId: recentId });
-    expect(second.sessions).toHaveLength(102);
-    expect(second.sessions.map((row) => row.id)).toEqual(expect.arrayContaining([parentId, ...children.map((row) => row.id), grandchild.id]));
+    const seen: string[] = [];
+    let cursor: { before?: string; beforeId?: string } = {};
+    for (let index = 0; index < 5; index += 1) {
+      const result = await handleChatSessions(deps, { families: ["main", "subagent"], limit: 1, ...cursor });
+      seen.push(...result.sessions.map((row) => row.id));
+      const last = result.sessions.at(-1);
+      if (!last) break;
+      cursor = { before: last.modifiedAt, beforeId: last.id };
+    }
+    expect(seen).toEqual([parent.id, middle.id, older.id, child.id]);
+  });
+
+  it("loads only the same 100 summaries as the main listing among 5000 histories", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-sidebar-summary-budget-"));
+    try {
+      const memoryManager = new MemoryManager({ aveDir: dir });
+      for (let index = 0; index < 5000; index += 1) {
+        const id = index.toString(16).padStart(8, "0") + "-1111-4111-8111-111111111111";
+        writeFileSync(join(dir, "sessions", id + ".jsonl"), JSON.stringify({ role: "user", content: "History " + index }) + "\n");
+      }
+      const summaries = vi.spyOn(memoryManager.sessions as unknown as { readSessionSummary: (id: string) => { title: string; preview: string } }, "readSessionSummary");
+      const deps = { memoryManager, conversationLoop: { getSessionId: () => "aaaaaaaa-1111-4111-8111-111111111111" } } as unknown as IpcDeps;
+      await handleChatSessions(deps, { limit: 100 });
+      const mainCalls = summaries.mock.calls.length;
+      expect(mainCalls).toBe(100);
+      summaries.mockClear();
+      await handleChatSessions(deps, { families: ["main", "subagent"], limit: 100 });
+      expect(summaries).toHaveBeenCalledTimes(mainCalls);
+      summaries.mockRestore();
+    } finally { await cleanupTmpDir(dir); }
   });
 });
