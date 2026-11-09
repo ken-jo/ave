@@ -114,6 +114,7 @@ height. Metadata reports `captureMethod: "scroll-and-stitch"` and
 
 | Tool | Operands |
 | --- | --- |
+| `browser_read_text` | Read bounded main-page text for headlines and summaries, without element refs. Hidden content and child frames are excluded. |
 | `browser_hover` | `ref` |
 | `browser_drag` | `sourceRef`, `targetRef` |
 | `browser_select` | `ref`, `value`; native single-select only |

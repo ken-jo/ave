@@ -5,7 +5,7 @@ import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js"
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
 import type { BrowserScreenshotOptions, BrowserScreenshot } from "../shared/browser-capture.js";
-import { BROWSER_TOOL, browserOrigin, type BrowserToolName, type BrowserPageReadiness, type BrowserPageSnapshot } from "../shared/browser-tools.js";
+import { BROWSER_TOOL, BROWSER_OUTPUT_MAX_CHARS, browserOrigin, type BrowserToolName, type BrowserPageReadiness, type BrowserPageSnapshot, type BrowserPageText } from "../shared/browser-tools.js";
 export { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import type { ApprovalMemoryScope, BrowserTabOpener } from "../shared/permissions-events.js";
@@ -62,7 +62,8 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
 export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   /** Establish document observation before approval captures its identity. */
   prepare(target: BrowserActionTab<G>): Promise<void>;
-  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<BrowserPageSnapshot>;
+  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean; maxChars?: number }): Promise<BrowserPageSnapshot>;
+  readText(target: BrowserActionTab<G>): Promise<BrowserPageText>;
   screenshot(target: BrowserActionTab<G>, options?: BrowserScreenshotOptions): Promise<BrowserScreenshot>;
   /** Best-effort display thumbnail of the tab (from `png` when given); never throws. */
   capturePreview?(target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined>;
@@ -291,8 +292,20 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
         tabId: tabIdProperty,
         interactive: { type: "boolean", description: t("be_browserTools.snapshotInteractiveDescription") },
         delta: { type: "boolean", description: t("be_browserTools.snapshotDeltaDescription") },
+        maxChars: { type: "integer", minimum: 500, maximum: BROWSER_OUTPUT_MAX_CHARS, description: t("be_browserTools.snapshotMaxCharsDescription") },
       }),
       execute: execute(BROWSER_TOOL.snapshot),
+    }),
+    createDynamicTool({
+      ...common,
+      name: BROWSER_TOOL.readText,
+      description: t("be_browserTools.readTextDescription"),
+      category: "network",
+      categoryForInput: readOnAgentTab,
+      isReadOnly: (raw) => readOnAgentTab(raw) === "read",
+      approvalMemoryScope: pageScope,
+      jsonSchema: object({ tabId: tabIdProperty }),
+      execute: execute(BROWSER_TOOL.readText),
     }),
     createDynamicTool({
       ...common,

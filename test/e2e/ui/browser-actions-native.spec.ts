@@ -85,6 +85,17 @@ async function close(app: ElectronApplication): Promise<void> {
   await quitElectron(app);
 }
 
+test("@cdp navigation reads main text while a subresource remains open", async ({ browserName: _browserName }, testInfo) => {
+  const app = await launch(testInfo, "cdp");
+  try {
+    const result = await run(app, "read-content");
+    expect(result.ok, resultMessage(result)).toBe(true);
+    expect(result.value).toMatchObject({ readiness: { url: expect.stringContaining("/readable") },
+      text: { text: "Fixture news headline\nReadable story text.", truncated: false }, loading: true });
+    expect((result.value as { readiness: unknown }).readiness).not.toHaveProperty("loading");
+  } finally { await close(app); }
+});
+
 test("@cdp hover reaches the guest element", async ({}, testInfo) => {
   const app = await launch(testInfo, "cdp");
   try {
