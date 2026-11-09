@@ -82,6 +82,28 @@ describe("preload — plugin webview asset URLs", () => {
     delete process.env.AVE_DEV_CONSOLE;
   });
 
+  it("registers history listeners before readiness and disables replay only after the last unsubscribe", async () => {
+    mockInvoke.mockResolvedValue({ ok: true });
+    const api = await loadAveApi() as unknown as AveApi;
+    const first = vi.fn();
+    const second = vi.fn();
+    const unsubscribeFirst = api.onNotificationToast?.(first);
+    const unsubscribeSecond = api.onNotificationToast?.(second);
+    if (!unsubscribeFirst || !unsubscribeSecond) throw new Error("Missing history subscription");
+    expect(mockOn.mock.calls.filter(([channel]) => channel === CHANNELS.notification.toast)).toHaveLength(2);
+    expect(mockInvoke).toHaveBeenCalledExactlyOnceWith(CHANNELS.notification.toast, { ready: true });
+    expect(mockOn.mock.invocationCallOrder[0]).toBeLessThan(mockInvoke.mock.invocationCallOrder[0]);
+    unsubscribeFirst();
+    unsubscribeFirst();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    unsubscribeSecond();
+    expect(mockRemoveListener).toHaveBeenCalledTimes(2);
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.notification.toast, { ready: false });
+    const unsubscribeAgain = api.onNotificationToast?.(first);
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.notification.toast, { ready: true });
+    unsubscribeAgain?.();
+  });
+
   it("reads fresh main-owned appearance synchronously on every preload start", async () => {
     const { readInitialAppearance } = await import("../preload/internal-surface.js");
     expect(readInitialAppearance()).toEqual({ appearance: DEFAULT_APPEARANCE, glass: "unsupported" });

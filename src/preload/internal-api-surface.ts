@@ -162,6 +162,10 @@ async function invokeRemoteA2AAction(
 }
 
 export function buildInternalApiSurface() {
+  let notificationHistorySubscribers = 0;
+  const setNotificationHistoryReady = (ready: boolean) => {
+    void ipcRenderer.invoke(CHANNELS.notification.toast, { ready }).catch(() => {});
+  };
   return {
   relaunchApp: () => ipcRenderer.invoke(CHANNELS.app.relaunch, { intent: ipcUserKeyboardIntent() }) as Promise<AppRelaunchResult>,
   ...appearanceApiSurface,
@@ -1204,12 +1208,18 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.skillLoad.event, listener);
   },
 
-  // Main process pushes in-app toast payloads when the window is focused; OS notifications fire when backgrounded/minimized. Renderer also signals
-  // back when an in-app toast / OS notification is clicked so main can focus the window and the renderer can scroll/navigate to the source surface.
+  // Install the listener before releasing boot history; subsequent subscriptions do not replay delivered records.
   onNotificationToast: (handler: (payload: NotificationToastPayload) => void) => {
     const listener = (_e: unknown, p: Parameters<typeof handler>[0]) => handler(p);
     ipcRenderer.on(CHANNELS.notification.toast, listener);
-    return () => ipcRenderer.removeListener(CHANNELS.notification.toast, listener);
+    if (++notificationHistorySubscribers === 1) setNotificationHistoryReady(true);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      ipcRenderer.removeListener(CHANNELS.notification.toast, listener);
+      if (--notificationHistorySubscribers === 0) setNotificationHistoryReady(false);
+    };
   },
   onNotificationClicked: (handler: (payload: NotificationClickPayload) => void) => {
     const listener = (_e: unknown, p: Parameters<typeof handler>[0]) => handler(p);

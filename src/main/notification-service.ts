@@ -60,6 +60,7 @@ export const IPC_NOTIFICATION_CLICKED = CHANNELS.notification.clicked;
 // Output cap — applied to BOTH body (toast / OS / audit) and title (audit). Body and title share the same 80-char limit; the constant name is retained
 // for API stability but is now a single output cap rather than a body-only cap.
 const BODY_MAX_CHARS = 80;
+const HISTORY_BUFFER_CAP = 50;
 const ELLIPSIS = "…";
 
 // Cooldowns reset on restart and bound bursts; zero-cooldown lifecycle kinds always fire.
@@ -160,6 +161,9 @@ export class NotificationService {
   private readonly isAnyWindowFocused: () => boolean;
   // Use monotonic time for cooldowns to survive wall-clock jumps; audit timestamps remain wall-clock time.
   private readonly lastFiredAt = new Map<NotificationKind, number>();
+  private readonly pendingHistory: ToastPayload[] = [];
+  private historySubscriber: WebContents | null = null;
+  private readonly observedHistoryContents = new WeakSet<WebContents>();
 
   constructor(opts: NotificationServiceOptions) {
     this.getMainWindow = opts.getMainWindow;
@@ -183,6 +187,46 @@ export class NotificationService {
         );
       }
     }
+  }
+
+  /** Only the current main renderer may release buffered history after installing its listener. */
+  setHistorySubscriber(target: WebContents, ready: boolean): boolean {
+    const win = this.getMainWindow();
+    if (!win || win.isDestroyed() || win.webContents !== target || target.isDestroyed()) return false;
+    if (!ready) {
+      if (this.historySubscriber === target) this.historySubscriber = null;
+      return true;
+    }
+    if (!this.observedHistoryContents.has(target)) {
+      this.observedHistoryContents.add(target);
+      target.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+        if (isMainFrame && !isInPlace && this.historySubscriber === target) this.historySubscriber = null;
+      });
+      target.on("render-process-gone", () => {
+        if (this.historySubscriber === target) this.historySubscriber = null;
+      });
+      target.once("destroyed", () => {
+        if (this.historySubscriber === target) this.historySubscriber = null;
+      });
+    }
+    this.historySubscriber = target;
+    while (this.pendingHistory.length > 0) {
+      const payload = this.pendingHistory[0];
+      try {
+        target.send(IPC_NOTIFICATION_TOAST, payload);
+        this.pendingHistory.shift();
+      } catch (err) {
+        this.historySubscriber = null;
+        log.warn("notification history replay failed: %s", errorMessage(err));
+        break;
+      }
+    }
+    return true;
+  }
+
+  private bufferHistory(payload: ToastPayload): void {
+    this.pendingHistory.push(payload);
+    if (this.pendingHistory.length > HISTORY_BUFFER_CAP) this.pendingHistory.shift();
   }
 
   // Never let dependency, window, or delivery failures escape fire(); passive cues must not interrupt host lifecycle. Returns the window that received
@@ -245,9 +289,9 @@ export class NotificationService {
       return true;
     }
 
-    // A minimized or unfocused window still receives history. Card requests never enter that passive history.
+    // Records wait for the real history subscriber rather than disappearing into the bootstrap splash.
     let recorded = false;
-    if (opts.kind !== "approval" && opts.kind !== "ask-user" && win && !win.isDestroyed()) {
+    if (opts.kind !== "approval" && opts.kind !== "ask-user") {
       const payload: ToastPayload = {
         kind: opts.kind,
         title: cleanTitle,
@@ -255,12 +299,19 @@ export class NotificationService {
         contextRef: opts.contextRef,
         ...(opts.sticky === true ? { sticky: true as const } : {}),
       };
-      try {
-        win.webContents.send(IPC_NOTIFICATION_TOAST, payload);
+      if (!win || win.isDestroyed() || this.historySubscriber !== win.webContents) {
+        this.bufferHistory(payload);
         recorded = true;
-        onToast(win.webContents);
-      } catch (err) {
-        log.warn("notification history send failed: %s", (err as Error).message);
+      } else {
+        try {
+          win.webContents.send(IPC_NOTIFICATION_TOAST, payload);
+          recorded = true;
+          onToast(win.webContents);
+        } catch (err) {
+          this.historySubscriber = null;
+          this.bufferHistory(payload);
+          log.warn("notification history send failed: %s", errorMessage(err));
+        }
       }
     }
 

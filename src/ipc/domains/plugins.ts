@@ -1400,6 +1400,21 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     return { ok: true };
   });
 
+  ipcMain.handle(CHANNELS.notification.toast, (e, payload: unknown) => {
+    const win = getMainWindow();
+    if (!validateHostRendererSender(e) || !win || win.isDestroyed()
+      || e.sender !== win.webContents || e.senderFrame !== e.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.notification.toast, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)
+      || Object.keys(payload).length !== 1 || !("ready" in payload) || typeof payload.ready !== "boolean") {
+      return { ok: false, error: "invalid-payload" };
+    }
+    const accepted = deps.notificationService?.setHistorySubscriber(e.sender, payload.ready) ?? false;
+    return accepted ? { ok: true } : { ok: false, error: "notification-service-unavailable" };
+  });
+
   ipcMain.handle(CHANNELS.notification.clicked, (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.notification.clicked, e);
