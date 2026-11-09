@@ -45,6 +45,15 @@ conversation ownership and privacy rules below.
 The browser sandbox and context isolation remain enabled in all three states.
 Mode changes transfer agent authority; they do not change that browser baseline.
 
+Agent-created pages start in independent native hosts. Your own newly opened
+pages retain the embedded webview host. Both use the same browser session,
+control states, site permissions, downloads and browser controls. The agent's
+independent page can keep working while its panel is hidden, without borrowing
+native keyboard focus from your current control. Showing it attaches the same
+live page; hiding it retains its document and viewport. Agent actions also use
+page-local focus while that page is visible. Entering the visible page yourself
+pauses agent mutation under the takeover rules above.
+
 Native mouse events have one attribution limit: a human click that exactly
 matches an armed agent click's position, button, and phase at the same time
 cannot be distinguished. Other observed input mismatches interrupt the agent.
@@ -87,6 +96,14 @@ controls it. It remains open after the turn for you to inspect or continue.
 An authorized explicit agent close can destroy an owned tab. When the agent
 borrows one of your tabs, its close request releases the association and reports
 that the tab was retained. Your browser-chrome close always closes the real tab.
+
+Moving an independent page, remounting its panel, or hiding its owning window
+preserves the live page. Panel cleanup parks it; closing the actual tab or its
+owning window releases it. A restored agent-created tab keeps the independent
+host when its creator binding is restored. Bookmarks, find, zoom, capture and
+tab previews address either host through the same workspace controls. The
+[browser lifetime contract](../architecture/architecture.md#browser-control-and-tab-lifetime)
+owns the distinction between presentation and page lifetime.
 
 Conversation-scoped `browser_tabs` can include the caller's direct child agents'
 tabs. That relation is the actual direct parent, not every descendant sharing a window.
