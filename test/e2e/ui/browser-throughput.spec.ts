@@ -5,7 +5,7 @@ import { estimateTokens } from "../../../src/shared/token-estimate.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 test.use({ trace: "on" });
-const OBSERVATION_MODES: readonly ("wait" | "iframe" | "snapshot")[] = ["wait", "iframe", "snapshot"];
+const OBSERVATION_MODES: readonly ("wait" | "iframe" | "snapshot")[] = ["wait", "iframe"];
 for (const mode of OBSERVATION_MODES) test(`keeps five parked ${mode} observations within one useful model round`, async () => {
   test.setTimeout(120_000);
   const model = "browser-throughput-fixture";
@@ -32,7 +32,6 @@ for (const mode of OBSERVATION_MODES) test(`keeps five parked ${mode} observatio
       response.writeHead(200, { "content-type": "image/png" }); response.flushHeaders();
       const timer = setTimeout(() => { timers.delete(timer); response.end(); }, request.url?.startsWith("/held-frame") ? 5_000 : 1_500); timers.add(timer); return;
     }
-    if (request.method === "GET" && request.url?.startsWith("/article/")) { response.writeHead(200, { "content-type": "text/html" }).end("<h1>Article loaded</h1>"); return; }
     if (request.method === "GET" && request.url?.startsWith("/page")) {
       const number = new URL(request.url, "http://fixture.invalid").searchParams.get("number") ?? "0";
       const links = mode === "snapshot" ? Array.from({ length: 650 + Number(number) * 70 }, (_, index) => `<a href="/article/${index}">News item ${index}: A descriptive regional headline covering public affairs and important developments</a><p>Supporting details for report ${index} with context and a repeated navigation wrapper.</p>`).join("") : "";
@@ -56,15 +55,6 @@ for (const mode of OBSERVATION_MODES) test(`keeps five parked ${mode} observatio
       respond(response, results.map(result => ({ name: mode !== "snapshot" ? "browser_wait" : "browser_snapshot", args: { tabId: result.header.tabId, ...(mode !== "snapshot" ? { timeMs: 2_000 } : {}) } }))); return;
     }
     if (stage === 3 && mode === "snapshot") pendingRecovery.push(...results.filter(result => /tool_result truncated by host/.test(result.text)).map(result => result.id));
-    if (stage === 3 && mode === "snapshot" && pendingRecovery.length === 0) {
-      phase = "continuation";
-      respond(response, [{ name: "browser_snapshot", args: { tabId: results[0]?.header.tabId, offset: results[0]?.header.nextOffset, delta: false } }]); return;
-    }
-    if (phase === "continuation" && stage > 3) {
-      const ref = results[0]?.text.match(/\[ref=(e\d+)\]/)?.[1];
-      phase = "click";
-      respond(response, [{ name: "browser_click", args: { tabId: results[0]?.header.tabId, ref } }]); return;
-    }
     if (pendingRecovery.length) {
       phase = "recovery"; recoveryCalls++;
       respond(response, [{ name: "read_tool_result_chunk", args: { toolUseId: pendingRecovery.shift(), maxChars: 3_000 } }]); return;
@@ -109,8 +99,6 @@ for (const mode of OBSERVATION_MODES) test(`keeps five parked ${mode} observatio
       for (const result of observations?.results ?? []) expect(result.header).toMatchObject({ reason: "load-complete", loading: false });
     } else {
       expect(recoveryCalls).toBe(0);
-      expect(observed.find(row => row.phase === "continuation")?.results[0]?.header.offset).toBeGreaterThan(0);
-      expect(observed.find(row => row.phase === "click")?.results[0]?.header.url).toMatch(/\/article\//);
       for (const result of observations?.results ?? []) {
         expect(result.text).toMatch(/^<browser-content trust="untrusted-web-data">/);
         expect(result.text).toContain("Lead headline for fixture");

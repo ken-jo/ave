@@ -64,7 +64,7 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
 export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   /** Establish document observation before approval captures its identity. */
   prepare(target: BrowserActionTab<G>): Promise<void>;
-  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean; offset?: number }): Promise<BrowserPageSnapshot>;
+  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<BrowserPageSnapshot>;
   screenshot(target: BrowserActionTab<G>, options?: { fullPage?: boolean }): Promise<{ data: string; mimeType: string; bytes: number }>;
   /** Best-effort display thumbnail of the tab (from `png` when given); never throws. */
   capturePreview?(target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined>;
@@ -317,7 +317,6 @@ export function createBrowserTools<G extends BrowserGuest>(deps: BrowserToolDeps
       approvalMemoryScope: pageScope,
       jsonSchema: object({
         tabId: tabIdProperty,
-        offset: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, description: t("be_browserTools.snapshotOffsetDescription") },
         interactive: { type: "boolean", description: t("be_browserTools.snapshotInteractiveDescription") },
         delta: { type: "boolean", description: t("be_browserTools.snapshotDeltaDescription") },
       }),

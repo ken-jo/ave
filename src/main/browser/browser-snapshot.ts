@@ -1,7 +1,7 @@
 // Refs persist for the same DOM node and bind to a tab, fragment-free URL, role, and accessible name. The fingerprint allows re-render recovery while
 // detecting stale or repurposed nodes.
 
-import { BROWSER_PAGE_STRING_MAX_CHARS } from "../../shared/browser-tools.js";
+import { BROWSER_OUTPUT_MAX_CHARS, BROWSER_PAGE_STRING_MAX_CHARS } from "../../shared/browser-tools.js";
 
 interface AXValue {
   readonly type?: string;
@@ -70,10 +70,8 @@ const SHOWN_PROPERTIES: ReadonlySet<string> = new Set([
   "invalid",
 ]);
 
-// Leave room for the untrusted-content fence and bounded page header under the inline result limit.
-export const SNAPSHOT_MAX_CHARS = 3_000;
-const SNAPSHOT_LINE_MAX_CHARS = SNAPSHOT_MAX_CHARS;
-const SELECT_OPTIONS_MAX_CHARS = 600;
+// Snapshot character ceiling, shared with the result fence.
+export const SNAPSHOT_MAX_CHARS = BROWSER_OUTPUT_MAX_CHARS;
 
 export interface RefTarget {
   readonly ref: string;
@@ -89,19 +87,13 @@ export interface RefTarget {
 
 export interface BrowserSelectOption { readonly value: string; readonly label: string; readonly disabled: boolean }
 
-interface SnapshotLine {
-  readonly text: string;
-  readonly priority: number;
-  readonly ref?: string;
-}
-
 interface TabRefState {
   pageUrl: string;
   loaderId?: string;
   documentId?: number;
   readonly byNode: Map<number, string>;
   // The last snapshot's lines per mode, for `delta`.
-  readonly lastLines: Map<"full" | "interactive", readonly SnapshotLine[]>;
+  readonly lastLines: Map<"full" | "interactive", readonly string[]>;
 }
 
 export function pageKey(url: string): string {
@@ -116,12 +108,8 @@ function text(value: AXValue | undefined): string {
   return "";
 }
 
-function pageText(value: string): string {
-  return value.length > BROWSER_PAGE_STRING_MAX_CHARS ? `${value.slice(0, BROWSER_PAGE_STRING_MAX_CHARS - 1)}…` : value;
-}
-
 function quote(value: string): string {
-  return JSON.stringify(pageText(value));
+  return JSON.stringify(value.length > BROWSER_PAGE_STRING_MAX_CHARS ? `${value.slice(0, BROWSER_PAGE_STRING_MAX_CHARS - 1)}…` : value);
 }
 
 // The refs of every tab: minted here, resolved by the action tools. One instance per process (see {@link browserRefs}); tests make their own.
@@ -155,20 +143,18 @@ export class BrowserRefTable {
   }
 
   // Render a snapshot of `nodes` (one tab, one page). `interactive` keeps only the elements a person acts on, as a flat list. `delta` returns only the
-  // lines added or removed in the first bounded view since its previous snapshot in the same mode, or the full bounded view if the delta would overflow.
-  // Continuation offsets address the current DOM, not a cached document.
+  // lines added or removed since this tab's previous snapshot in the same mode.
   render(
     tabId: string,
     pageUrl: string,
     nodes: readonly AXNode[],
-    options: { interactive?: boolean; delta?: boolean; offset?: number; maxChars?: number; iframeOrigins?: readonly string[]; loaderId?: string; documentId?: number; nativeSelectOptions?: ReadonlyMap<number, readonly BrowserSelectOption[]> } = {},
-  ): { text: string; truncated: boolean; refCount: number; delta: boolean; offset: number; nextOffset?: number; totalLines: number } {
+    options: { interactive?: boolean; delta?: boolean; maxChars?: number; iframeOrigins?: readonly string[]; loaderId?: string; documentId?: number; nativeSelectOptions?: ReadonlyMap<number, readonly BrowserSelectOption[]> } = {},
+  ): { text: string; truncated: boolean; refCount: number; delta: boolean } {
     const state = this.tabState(tabId, pageKey(pageUrl), options.loaderId, options.documentId);
     const byId = new Map(nodes.map((node) => [node.nodeId, node]));
     const root = nodes.find((node) => node.parentId === undefined || !byId.has(node.parentId));
-    const lines: SnapshotLine[] = [];
-    const maxChars = Math.max(0, Math.floor(options.maxChars ?? SNAPSHOT_MAX_CHARS));
-    const lineBudget = Math.max(0, Math.min(SNAPSHOT_LINE_MAX_CHARS, maxChars - 2));
+    const lines: string[] = [];
+    const seenRefs = new Set<string>();
     const interactive = options.interactive === true;
     const visit = (node: AXNode, depth: number, visited: Set<string>): void => {
       if (visited.has(node.nodeId)) return;
@@ -184,18 +170,8 @@ export class BrowserRefTable {
         const acts = INTERACTIVE_ROLES.has(role);
         if (!interactive || acts) {
           const ref = acts ? this.refFor(state, tabId, node, role, name) : undefined;
-          const formatted = formatLine(interactive ? 0 : depth, role, name, node, ref);
-          const baseLine = fitLine(formatted, role, ref, lineBudget);
-          const nativeOptions = node.backendDOMNodeId === undefined ? undefined : options.nativeSelectOptions?.get(node.backendDOMNodeId);
-          const selection = nativeOptions ? formatOptions(nativeOptions, Math.min(SELECT_OPTIONS_MAX_CHARS, Math.max(0, lineBudget - baseLine.length - 1))) : undefined;
-          const line = selection?.text ? `${baseLine} ${selection.text}` : baseLine;
-          lines.push({ text: line, priority: role === "heading" ? 0 : acts ? 1 : 2, ...(ref && line.includes(`[ref=${ref}]`) ? { ref } : {}) });
-          if (nativeOptions && selection && ref) {
-            for (const option of nativeOptions.slice(selection.keptCount)) {
-              const detail = formatOptionLine(option, ref, lineBudget);
-              lines.push({ text: detail, priority: 2, ...(detail.includes(`[parent-ref=${ref}]`) ? { ref } : {}) });
-            }
-          }
+          if (ref) seenRefs.add(ref);
+          lines.push(formatLine(interactive ? 0 : depth, role, name, node, ref, node.backendDOMNodeId === undefined ? undefined : options.nativeSelectOptions?.get(node.backendDOMNodeId)));
           childDepth = interactive ? depth : depth + 1;
         }
       }
@@ -205,41 +181,25 @@ export class BrowserRefTable {
       }
     };
     if (root) visit(root, 0, new Set());
-    for (const origin of options.iframeOrigins ?? []) lines.push({ text: fitLine(`- iframe ${quote(origin)} [contents omitted; no refs]`, "iframe", undefined, lineBudget), priority: 2 });
+    for (const origin of options.iframeOrigins ?? []) lines.push(`- iframe ${quote(origin)} [contents omitted; no refs]`);
 
-    const ordered = prioritizeLines(lines, maxChars);
-    const offset = Math.min(options.offset ?? 0, ordered.length);
-    const page = capLines(ordered, maxChars, offset);
     const mode = interactive ? "interactive" : "full";
     const previous = state.lastLines.get(mode);
-    // Paging does not replace the delta baseline, and only the bounded first view is retained.
-    if (offset === 0) state.lastLines.set(mode, page.lines);
-    let body = page.lines;
+    state.lastLines.set(mode, lines);
+    let body = lines;
     let isDelta = false;
-    const truncated = page.nextOffset !== undefined;
     if (options.delta === true && previous !== undefined) {
       isDelta = true;
-      const before = new Set(previous.map((line) => line.text));
-      const after = new Set(page.lines.map((line) => line.text));
+      const before = new Set(previous);
+      const after = new Set(lines);
       body = [
-        ...previous.filter((line) => !after.has(line.text)).map((line) => ({ ...line, text: `- ${line.text.trimStart()}` })),
-        ...page.lines.filter((line) => !before.has(line.text)).map((line) => ({ ...line, text: `+ ${line.text.trimStart()}` })),
+        ...previous.filter((line) => !after.has(line)).map((line) => `- ${line.trimStart()}`),
+        ...lines.filter((line) => !before.has(line)).map((line) => `+ ${line.trimStart()}`),
       ];
-      if (body.length === 0) body = [{ text: "(no changes since the previous snapshot)", priority: 2 }];
-      const deltaPage = capLines(body, maxChars, 0);
-      if (deltaPage.nextOffset !== undefined) {
-        // A partial delta cannot advance its baseline safely. Return the current bounded view instead.
-        body = page.lines;
-        isDelta = false;
-      } else {
-        body = deltaPage.lines;
-      }
+      if (body.length === 0) body = ["(no changes since the previous snapshot)"];
     }
-    const returnedRefs = new Set(body.flatMap((line) => line.ref ? [line.ref] : []));
-    return {
-      text: body.map((line) => line.text).join("\n"), truncated, refCount: returnedRefs.size, delta: isDelta,
-      offset, ...(page.nextOffset === undefined ? {} : { nextOffset: page.nextOffset }), totalLines: ordered.length,
-    };
+    const capped = capLines(body, options.maxChars ?? SNAPSHOT_MAX_CHARS);
+    return { text: capped.text, truncated: capped.truncated, refCount: seenRefs.size, delta: isDelta };
   }
 
   get(ref: string): RefTarget | undefined {
@@ -265,97 +225,35 @@ export class BrowserRefTable {
   }
 }
 
-function formatLine(depth: number, role: string, name: string, node: AXNode, ref: string | undefined): string {
-  const parts = [`${"  ".repeat(Math.min(depth, 12))}- ${role.slice(0, BROWSER_PAGE_STRING_MAX_CHARS)}`];
+function formatLine(depth: number, role: string, name: string, node: AXNode, ref: string | undefined, options?: readonly BrowserSelectOption[]): string {
+  const parts = [`${"  ".repeat(depth)}- ${role}`];
   if (name) parts.push(quote(name));
-  const shown = new Set<string>();
   for (const property of node.properties ?? []) {
-    if (!SHOWN_PROPERTIES.has(property.name) || shown.has(property.name)) continue;
-    shown.add(property.name);
+    if (!SHOWN_PROPERTIES.has(property.name)) continue;
     const value = property.value?.value;
     if (value === false || value === undefined || value === null || value === "false") continue;
-    parts.push(value === true || value === "true" ? `[${property.name}]` : `[${property.name}=${String(value).replace(/\s+/g, " ").slice(0, BROWSER_PAGE_STRING_MAX_CHARS)}]`);
+    parts.push(value === true || value === "true" ? `[${property.name}]` : `[${property.name}=${String(value)}]`);
   }
   if (ref) parts.push(`[ref=${ref}]`);
+  if (options) parts.push(`options=${JSON.stringify(options)}`);
   const value = text(node.value);
   return value && value !== name ? `${parts.join(" ")}: ${quote(value)}` : parts.join(" ");
 }
 
-function encodedOption(option: BrowserSelectOption, budget: number): string | undefined {
-  // Machine values are passed back to selection unchanged; a shortened value would name a different option.
-  if (option.value.length > budget) return undefined;
-  const encoded = JSON.stringify({ value: option.value, label: pageText(option.label), disabled: option.disabled }).replace(/</g, "\\u003c");
-  return encoded.length <= budget ? encoded : undefined;
-}
-
-function formatOptions(options: readonly BrowserSelectOption[], budget: number): { text: string; keptCount: number } {
+// Cut at a line boundary under `maxChars`, saying how much was left out.
+function capLines(lines: readonly string[], maxChars: number): { text: string; truncated: boolean } {
   const kept: string[] = [];
-  let used = "options=[]".length;
-  for (const option of options) {
-    const encoded = encodedOption(option, budget);
-    const remaining = options.length - kept.length - 1;
-    const suffix = remaining > 0 ? ` [${remaining} more options]` : "";
-    if (!encoded || used + encoded.length + (kept.length > 0 ? 1 : 0) + suffix.length > budget) break;
-    kept.push(encoded);
-    used += encoded.length + (kept.length > 1 ? 1 : 0);
-  }
-  const suffix = kept.length < options.length ? ` [${options.length - kept.length} more options]` : "";
-  const text = `options=[${kept.join(",")}]${suffix}`;
-  return { text: text.length <= budget ? text : "", keptCount: kept.length };
-}
-
-function formatOptionLine(option: BrowserSelectOption, ref: string, budget: number): string {
-  const prefix = `- option [parent-ref=${ref}] `;
-  const encoded = encodedOption(option, Math.max(0, budget - prefix.length));
-  if (encoded !== undefined) return `${prefix}${encoded}`;
-  const omitted = `${prefix}[value omitted: exceeds line budget]`;
-  if (omitted.length <= budget) return omitted;
-  const minimal = `[parent-ref=${ref}] [value omitted]`;
-  if (minimal.length <= budget) return minimal;
-  const marker = `[parent-ref=${ref}]`;
-  return marker.length <= budget ? marker : "";
-}
-
-// Pathological fields or indentation cannot block the next offset; keep any actionable ref whole.
-function fitLine(line: string, role: string, ref: string | undefined, maxChars: number): string {
-  if (line.length <= maxChars) return line;
-  const compact = `- ${role.slice(0, 30)}${ref ? ` [ref=${ref}]` : ""} [details omitted]`;
-  if (compact.length <= maxChars) return compact;
-  const minimal = ref ? `[ref=${ref}]` : "…";
-  return minimal.length <= maxChars ? minimal : "";
-}
-
-// Keep small outlines in document order. Large outlines start with headings, reserving room for an actionable ref before the remaining headings.
-function prioritizeLines(lines: readonly SnapshotLine[], maxChars: number): readonly SnapshotLine[] {
-  if (lines.reduce((size, line) => size + line.text.length + 1, -1) <= maxChars) return lines;
-  const ordered = [...lines].sort((left, right) => left.priority - right.priority);
-  const actionIndex = ordered.findIndex((line) => line.ref !== undefined);
-  if (actionIndex < 1) return ordered;
-  const action = ordered[actionIndex];
-  if (!action || action.text.length > maxChars) return ordered;
-  let used = action.text.length;
-  let prefixLength = 0;
-  for (const line of ordered) {
-    if (prefixLength === actionIndex || used + line.text.length + 1 > maxChars) break;
-    used += line.text.length + 1;
-    prefixLength++;
-  }
-  if (prefixLength === actionIndex) return ordered;
-  return [...ordered.slice(0, prefixLength), action, ...ordered.slice(prefixLength, actionIndex), ...ordered.slice(actionIndex + 1)];
-}
-
-// Whole-line pages have no marker line: continuation lives in the result metadata.
-function capLines(lines: readonly SnapshotLine[], maxChars: number, offset: number): { lines: SnapshotLine[]; nextOffset?: number } {
-  const kept: SnapshotLine[] = [];
   let used = 0;
-  for (let index = offset; index < lines.length; index++) {
+  for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
-    const needed = line.text.length + (kept.length === 0 ? 0 : 1);
-    if (used + needed > maxChars) return { lines: kept, nextOffset: index };
+    if (used + line.length + 1 > maxChars) {
+      kept.push(`[truncated: ${lines.length - index} more lines over the ${maxChars}-character limit; use interactive:true or delta:true]`);
+      return { text: kept.join("\n"), truncated: true };
+    }
     kept.push(line);
-    used += needed;
+    used += line.length + 1;
   }
-  return { lines: kept };
+  return { text: kept.join("\n"), truncated: false };
 }
 
 // Find the single node with this role and name (the re-render fingerprint), else undefined.
