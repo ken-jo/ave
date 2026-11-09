@@ -8,6 +8,8 @@ const RENDERER_DIR = resolve(fileURLToPath(import.meta.url), "../..");
 
 /** Files that may position a box against the viewport, and why. */
 const FIXED_POSITIONING_ALLOWED: Record<string, string> = {
+  "preview/AgentBrowserPipLayer.tsx":
+    "one window-owned layer for hidden agent tabs, measured against pane bodies and clamped above input and decision controls",
   "components/SpotlightTour.tsx":
     "first-boot tour: a backdrop over the whole window, and the anchorless fallback card that centres itself in it; the ring and the anchored card are both placed by the shared popover against the anchor",
   "components/McpAppFullscreenPanel.tsx":

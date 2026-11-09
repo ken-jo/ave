@@ -49,7 +49,9 @@ describe("e2e Electron launches", () => {
     expect(harness).toContain(
       'export const E2E_CHROMIUM_SWITCHES: readonly string[] = process.platform === "darwin" ? ["--use-mock-keychain"] : [];',
     );
-    expect(harness).toMatch(/args: \[\.\.\.E2E_CHROMIUM_SWITCHES, \.\.\.\(options\?\.args \?\? \[\]\)\]/);
+    expect(harness).toMatch(/args: \[\.\.\.E2E_CHROMIUM_SWITCHES, \.\.\.runtimeArgs, \.\.\.\(options\?\.args \?\? \[\]\)\]/);
+    expect(harness).toContain('executablePath && !options?.executablePath');
+    expect(harness).toContain('"lib/server/electron/loader.js"');
   });
 
   it("gives every launch the explicit E2E runtime env, over the spec's own env", () => {

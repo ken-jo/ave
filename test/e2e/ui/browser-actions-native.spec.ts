@@ -6,14 +6,14 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIsolatedElectronEnv, launchElectron, setWindowSize, withNativeFocusDiagnostics } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, quitElectron, setWindowSize, withNativeFocusDiagnostics } from "./seeded-electron.js";
 import type { NativeAction, NativeActionResult, NativeBrowserFixture } from "./browser-actions-native/contract.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(HERE, "browser-actions-native");
 const execFileAsync = promisify(execFile);
 // Run this desktop fixture serially through the shared validation budget.
-// Select @cdp without an unlocked desktop; @foreground retains actual OS focus proof.
+// Select @cdp without an unlocked desktop; @os-focus retains actual OS focus proof.
 type FixtureMode = "cdp" | "foreground";
 let mainOut: string;
 let preloadOut: string;
@@ -47,12 +47,19 @@ async function launch(testInfo: TestInfo, mode: FixtureMode): Promise<ElectronAp
   await fs.mkdir(runtime, { recursive: true });
   const app = await launchElectron({
     args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
-    env: buildIsolatedElectronEnv({ AVE_HOME: join(runtime, "ave-home"), AVE_NATIVE_FIXTURE_DIR: FIXTURE_DIR, AVE_NATIVE_FIXTURE_PRELOAD: preloadOut, AVE_NATIVE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
+    env: buildIsolatedElectronEnv({ HOME: process.env.HOME, USERPROFILE: process.env.HOME, AVE_HOME: join(runtime, "ave-home"), AVE_NATIVE_FIXTURE_DIR: FIXTURE_DIR, AVE_NATIVE_FIXTURE_PRELOAD: preloadOut, AVE_NATIVE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
   });
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[native-browser:stderr] ${data}`));
   try {
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { nativeBrowserFixture?: NativeBrowserFixture }).nativeBrowserFixture?.ready === true), { timeout: 30_000 }).toBe(true);
-    if (mode === "cdp") return app;
+    await setWindowSize(app, 1180, 820);
+    if (mode === "cdp") {
+      await expect.poll(() => app.evaluate(async ({ webContents }) => {
+        const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+        return guest ? guest.executeJavaScript("document.hasFocus()") : false;
+      })).toBe(true);
+      return app;
+    }
     await (await app.firstWindow()).bringToFront();
     if (process.platform === "darwin") {
       const pid = app.process().pid;
@@ -75,7 +82,7 @@ async function launch(testInfo: TestInfo, mode: FixtureMode): Promise<ElectronAp
 
 async function close(app: ElectronApplication): Promise<void> {
   await app.evaluate(async () => (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture.close()).catch(() => {});
-  await app.close().catch(() => {});
+  await quitElectron(app);
 }
 
 test("@cdp hover reaches the guest element", async ({}, testInfo) => {
@@ -108,7 +115,7 @@ test("@cdp pointer drag changes a native range value", async ({}, testInfo) => {
   } finally { await close(app); }
 });
 
-test("@foreground native single select proves the final requested value", async ({}, testInfo) => {
+test("@os-focus native single select proves the final requested value", async ({}, testInfo) => {
   const app = await launch(testInfo, "foreground");
   try {
     const result = await run(app, "select");
@@ -172,13 +179,13 @@ test("@cdp non-agent click pauses the guest until explicit main-process resume",
   try {
     const held = await run(app, "hold-control");
     expect(held.mode).toBe("agent-active");
-    const page = await app.firstWindow();
-    const origin = await page.locator("webview").evaluate((element) => {
-      const box = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return { x: box.x + parseFloat(style.borderLeftWidth), y: box.y + parseFloat(style.borderTopWidth) };
-    });
-    await page.mouse.click(origin.x + held.oracle.humanPoint.x, origin.y + held.oracle.humanPoint.y);
+    // Deliver unmarked input to the guest target; background host windows do not route OS pointer focus into embedded guests.
+    await app.evaluate(async ({ webContents }, point) => {
+      const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+      if (!guest) throw new Error("Native guest is unavailable");
+      await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+      await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+    }, held.oracle.humanPoint);
     await expect.poll(async () => (await read(app)).mode).toBe("human-paused");
     await expect.poll(async () => (await read(app)).oracle.humanClicks).toBeGreaterThan(held.oracle.humanClicks);
     const blocked = await run(app, "hover");
@@ -201,7 +208,7 @@ test("@cdp final activating click navigation completes", async ({}, testInfo) =>
   } finally { await close(app); }
 });
 
-test("@foreground intermediate select navigation fails", async ({}, testInfo) => {
+test("@os-focus intermediate select navigation fails", async ({}, testInfo) => {
   const app = await launch(testInfo, "foreground");
   try {
     const changed = await run(app, "select-navigation");

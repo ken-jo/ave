@@ -15,6 +15,14 @@ export interface CdpSession {
   onEvent(listener: (method: string, params: Record<string, unknown>) => void): () => void;
 }
 
+// Guests whose debugger session the agent's page actions opened and still own. A debugger attached by anything else (DevTools
+// clients, the e2e focus-emulation policy) is not evidence that the agent drove the guest.
+const ownedPageSessions = new WeakSet<object>();
+
+export function ownPageSession(guest: object): void { ownedPageSessions.add(guest); }
+export function releasePageSession(guest: object): void { ownedPageSessions.delete(guest); }
+export function ownsPageSession(guest: object): boolean { return ownedPageSessions.has(guest); }
+
 export class BrowserActionError extends Error {
   constructor(readonly code: string, message: string, readonly effectCommitted = false) {
     super(message);

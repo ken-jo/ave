@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApprovalRequestInput } from "../../permissions/approval-gate.js";
 import { release } from "node:os";
 import { resolve } from "node:path";
+import { setIsPackaged, _resetForTest } from "../../boot/dev-flags.js";
 
 type Listener = (...args: unknown[]) => void;
 
@@ -19,6 +20,7 @@ const electronMock = vi.hoisted(() => {
     visible = true;
     readonly hide = vi.fn(() => { this.visible = false; });
     readonly show = vi.fn(() => { this.visible = true; });
+    readonly showInactive = vi.fn(() => { this.visible = true; });
     readonly focus = vi.fn();
     readonly moveTop = vi.fn();
     readonly restore = vi.fn();
@@ -53,7 +55,8 @@ const electronMock = vi.hoisted(() => {
       for (const fn of this.listeners.get(name) ?? []) fn(...args);
     }
     isDestroyed() { return this.destroyed; }
-    isMinimized() { return false; }
+    minimized = false;
+    isMinimized() { return this.minimized; }
     isVisible() { return this.visible; }
     isAlwaysOnTop() { return false; }
     // What Electron does when nothing prevented `close`.
@@ -67,7 +70,7 @@ const electronMock = vi.hoisted(() => {
     }
   }
   const nativeTheme = { prefersReducedTransparency: false, shouldUseDarkColors: false, themeSource: "system", on: vi.fn() };
-  return { ipcListeners: new Map<string, Listener>(), savedAppearance: undefined as unknown, FakeBrowserWindow, nativeTheme, app: { name: "Ave", getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
+  return { ipcListeners: new Map<string, Listener>(), savedAppearance: undefined as unknown, FakeBrowserWindow, nativeTheme, app: { name: "Ave", isPackaged: false, getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
 });
 
 vi.mock("electron", () => ({
@@ -109,7 +112,7 @@ const terminalOwners = new Map<string, number | null>();
 const appState = await import("../app-state.js");
 const approvalSurfaces = await import("../../permissions/approval-surface-registry.js");
 const { BOOTSTRAP_SPLASH_URL } = await import("../bootstrap-splash.js");
-const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl } = await import("../main-window.js");
+const { createWindow, getAppWindows, loadMainInterface, rendererIndexUrl, showMainWindow } = await import("../main-window.js");
 const { openNewMainWindow, showOrCreatePrimaryMainWindow } = await import("../app-tray.js");
 const { promptSurfaceResolver } = await import("../../boot/host-runtime.js");
 const { applyAppZoomLevel } = await import("../app-zoom.js");
@@ -130,6 +133,35 @@ function readAppearance(win: FakeWindow, frameUrl = rendererIndexUrl(), subframe
 }
 
 describe("main windows", () => {
+  it("shows the test renderer without raising or activating its window", () => {
+    setIsPackaged(false);
+    vi.stubEnv("AVE_E2E", "1");
+    vi.stubEnv("NODE_ENV", "test");
+    const win = open();
+    try {
+      expect(win.options).toMatchObject({ show: false });
+      showMainWindow(win as never);
+      expect(win.showInactive).toHaveBeenCalledOnce();
+      expect(win.focus).not.toHaveBeenCalled();
+      expect(win.show).not.toHaveBeenCalled();
+      expect(win.moveTop).not.toHaveBeenCalled();
+      expect(win.restore).not.toHaveBeenCalled();
+      win.minimized = true;
+      showMainWindow(win as never);
+      expect(win.restore).toHaveBeenCalledOnce();
+      expect(win.showInactive).toHaveBeenCalledTimes(2);
+      expect(win.focus).not.toHaveBeenCalled();
+      expect(win.show).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); _resetForTest(); }
+  });
+  it.each([{ packaged: false, flag: "" }, { packaged: true, flag: "1" }])("preserves initial visibility outside the unpackaged test runtime (%s)", ({ packaged, flag }) => {
+    electronMock.app.isPackaged = packaged;
+    setIsPackaged(packaged);
+    vi.stubEnv("AVE_E2E", flag);
+    vi.stubEnv("NODE_ENV", "test");
+    try { expect(open().options).toMatchObject({ show: true }); }
+    finally { electronMock.app.isPackaged = false; vi.unstubAllEnvs(); _resetForTest(); }
+  });
   beforeEach(() => {
     appState.resetMainWindowsForTests();
     appState.setTray({ setContextMenu: vi.fn() } as never);

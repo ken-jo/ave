@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import type { WebContents } from "electron";
 import sharp from "sharp";
 import { BrowserWorkspaceCapture } from "../browser-workspace-capture.js";
+import { ownsPageSession } from "../browser-action-guard.js";
+import { startBrowserPreview } from "../../browser-observation-preview.js";
 import { deferred } from "../../../__tests__/support/deferred.js";
 
 const { writeImage, display } = vi.hoisted(() => ({ writeImage: vi.fn(async () => {}), display: { scaleFactor: 1 } }));
@@ -37,6 +39,21 @@ function fixture() {
 }
 
 describe("user browser capture boundary", () => {
+  it("does not turn a user capture's attached debugger into an agent preview session", async () => {
+    const { capture, guest, sendCommand, capturePage, attach, detach } = fixture();
+    expect(guest.debugger.isAttached()).toBe(true);
+    expect(ownsPageSession(guest)).toBe(false);
+    await expect(capture.capture(1, TARGET)).resolves.toMatchObject({ ...TARGET, width: 800, height: 600 });
+    expect(capturePage).toHaveBeenCalledOnce();
+    expect(writeImage).toHaveBeenCalledOnce();
+    expect(ownsPageSession(guest)).toBe(false);
+    expect(() => startBrowserPreview(guest, { frame: vi.fn(), updating: vi.fn(), ended: vi.fn(), isBlank: () => false }))
+      .toThrow("agent's page session");
+    expect(sendCommand.mock.calls.every(([method]) => method === "Page.getLayoutMetrics")).toBe(true);
+    expect(attach).not.toHaveBeenCalled();
+    expect(detach).not.toHaveBeenCalled();
+  });
+
   it("maps a user area to device-scaled bitmap rows without trusting the 1x image tag", async () => {
     const { capture, capturePage } = fixture();
     display.scaleFactor = 2;

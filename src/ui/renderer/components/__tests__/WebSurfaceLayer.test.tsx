@@ -371,6 +371,43 @@ describe("WebSurfaceLayer", () => {
     } finally { setHiddenWebSurfaceObserved("browser:1", false); }
   });
 
+  it.each(["capture", "preview"])("retains hidden painting until both capture and preview release it (%s ends first)", (first) => {
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    render(<Harness where="pane" />);
+    Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+    stubBox(screen.getByTestId("pane"), { left: 0, top: 0, width: 1200, height: 800 });
+    const slot = screen.getByTestId("web-surface-slot");
+    stubBox(slot, { left: 10, top: 20, width: 300, height: 200 });
+    slot.style.visibility = "hidden";
+    try {
+      setHiddenWebSurfaceObserved("browser:1", true);
+      setWebSurfaceAwake("browser:1", true);
+      act(() => { placeWebSurfaces(); });
+      const guest = guests()[0];
+      if (!guest) throw new Error("Hidden capture guest is unavailable");
+      const assertPainting = () => {
+        expect(guests()[0]).toBe(guest);
+        expect(frame("browser:1").style).toMatchObject({ visibility: "visible", opacity: "0", pointerEvents: "none" });
+        expect(frame("browser:1").hasAttribute("inert")).toBe(true);
+        expect(frame("browser:1").getAttribute("aria-hidden")).toBe("true");
+        expect(document.activeElement).not.toBe(guest);
+      };
+      assertPainting();
+      if (first === "capture") setWebSurfaceAwake("browser:1", false);
+      else setHiddenWebSurfaceObserved("browser:1", false);
+      act(() => { placeWebSurfaces(); });
+      assertPainting();
+      setHiddenWebSurfaceObserved("browser:1", false);
+      setWebSurfaceAwake("browser:1", false);
+      act(() => { placeWebSurfaces(); });
+      expect(frame("browser:1").style.visibility).toBe("hidden");
+    } finally {
+      setHiddenWebSurfaceObserved("browser:1", false);
+      setWebSurfaceAwake("browser:1", false);
+    }
+  });
+
   it("places the guest over the visible part of its slot and cuts occluding cards out of it", () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
     function Clipped() {

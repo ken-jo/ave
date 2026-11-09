@@ -24,7 +24,6 @@ async function main(): Promise<void> {
   // Clipboard writes also require focus; wait for it before interpreting denial.
   await probe("clipboardWrite", async () => {
     if (!navigator.clipboard?.writeText) throw new Error("no navigator.clipboard.writeText");
-    window.focus();
     for (let i = 0; i < 40 && !document.hasFocus(); i++) {
       await new Promise((r) => setTimeout(r, 50));
     }

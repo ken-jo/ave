@@ -19,12 +19,12 @@ test.beforeAll(async ({}, testInfo) => {
   });
 });
 
-async function launch(testInfo: TestInfo) {
+async function launch(testInfo: TestInfo, mode: "cdp" | "foreground" = "cdp") {
   const runtime = testInfo.outputPath("runtime");
   await fs.mkdir(runtime, { recursive: true });
   const app = await launchElectron({
     args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
-    env: buildIsolatedElectronEnv({ AVE_HOME: join(runtime, "ave-home"), AVE_WORKSPACE_FIXTURE_RUNTIME: runtime }),
+    env: buildIsolatedElectronEnv({ AVE_HOME: join(runtime, "ave-home"), AVE_WORKSPACE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
   });
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[workspace-native:stderr] ${data}`));
   try {
@@ -70,12 +70,15 @@ test("CDP native popup preserves registration, hardening, opener, session and cl
   } finally { await close(app); }
 });
 
-test("foreground native popup verifies focus, human pause, trusted title and explicit resume", async ({}, testInfo) => {
-  const app = await launch(testInfo);
+test("@os-focus native popup verifies focus, human pause, trusted title and explicit resume", async ({}, testInfo) => {
+  const app = await launch(testInfo, "foreground");
   try {
     const registered = await openRegisteredPopup(app);
     const selected = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.selectPopup());
     expect(selected).toMatchObject({ ok: true, tabId: registered.popup!.handle });
+    expect((await read(app)).popup).toMatchObject({ windowFocused: true, guestFocused: true });
+    const preview = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.preview());
+    expect(preview.focusPreserved).toBe(true);
     expect((await read(app)).popup).toMatchObject({ windowFocused: true, guestFocused: true });
     await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.holdPopup());
     const popup = await nativePopupPage(app);

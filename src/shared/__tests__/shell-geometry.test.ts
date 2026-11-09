@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FONT_SIZE_SCALE_VALUES } from "../appearance-font.js";
 import {
+  MAIN_WINDOW_MIN_HEIGHT,
+  MAIN_WINDOW_MIN_WIDTH,
   BAND_EDGE_PAD,
   BAND_LEAD_PAD_DARWIN,
   BAND_LEAD_PAD_LINUX,
@@ -26,6 +28,9 @@ import {
 import { SIDE_PANEL_MIN_RESERVE } from "../side-panel.js";
 
 describe("responsive shell thresholds", () => {
+  it("supports native windows at 360px width and 600px height", () => {
+    expect(MAIN_WINDOW_MIN_WIDTH).toBe(360); expect(MAIN_WINDOW_MIN_HEIGHT).toBe(600);
+  });
   it("leaves room for both surface floors, a 60px tile return band and a 24px dock return band", () => {
     expect(SINGLE_TILE_ENTER_WIDTH).toBe(2 * PANE_MIN_WIDTH + SHELL_GUTTER);
     expect(DOCK_ENTER_WIDTH).toBe(SIDE_PANEL_MIN_RESERVE + MIN_DOCKED_TRANSCRIPT_WIDTH);

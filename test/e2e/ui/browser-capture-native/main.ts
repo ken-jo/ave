@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, nativeImage, type WebContents } from "electron";
+import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
@@ -11,6 +12,8 @@ import type { BrowserScreenshotOptions } from "../../../../src/shared/browser-ca
 import type { BrowserTabBindRequest } from "../../../../src/shared/browser-surface.js";
 import type { BrowserActionTab } from "../../../../src/tools/browser-tools.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./contract.js";
+
+configureE2eWindowPolicy();
 
 function requiredPath(name: string): string {
   const path = process.env[name];

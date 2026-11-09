@@ -21,7 +21,9 @@ import { browserOrigin, type BrowserPageReadiness, type BrowserPageSnapshot } fr
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
-import { BrowserActionError, frameTree, mainDocumentContainsNode, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
+import {
+  BrowserActionError, frameTree, mainDocumentContainsNode, ownPageSession, releasePageSession, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession,
+} from "./browser-action-guard.js";
 import { browserDragData, type BrowserDragData } from "./browser-drag-data.js";
 import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "./browser-select-script.js";
 export { BrowserActionError, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
@@ -34,24 +36,65 @@ import {
   type BrowserRefTable,
 } from "./browser-snapshot.js";
 
-const attached = new WeakMap<WebContents, Promise<CdpSession>>();
+interface PageSession extends CdpSession {
+  assertCurrent(): void;
+}
 
-// The guest's CDP session, attached on first use and kept for the guest's life.
-async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
+const attached = new WeakMap<WebContents, Promise<PageSession>>();
+const sessionGenerations = new WeakMap<WebContents, object>();
+
+// Cache only the current debugger connection; a detached connection cannot own later page input.
+async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<PageSession> {
   throwIfAborted(signal);
   const existing = attached.get(guest);
-  if (existing) return existing;
-  const pending = attachCdp(guest, signal, onTrackingStarted);
+  if (existing) {
+    const session = await existing;
+    session.assertCurrent();
+    return session;
+  }
+  const generation = {};
+  sessionGenerations.set(guest, generation);
+  const debuggerApi = guest.debugger;
+  const eventSubscriptions = new Set<() => void>();
+  let unsubscribeDestroyed = () => {};
+  const invalidate = (): void => {
+    if (sessionGenerations.get(guest) === generation) {
+      sessionGenerations.delete(guest);
+      attached.delete(guest);
+      releasePageSession(guest);
+      for (const unsubscribe of eventSubscriptions) unsubscribe();
+      siteGates.get(guest)?.();
+      siteGates.delete(guest);
+      actionNavigations.get(guest)?.stop();
+      actionNavigations.delete(guest);
+    }
+    debuggerApi.removeListener("detach", invalidate);
+    unsubscribeDestroyed();
+  };
+  const assertCurrent = (): void => {
+    if (sessionGenerations.get(guest) !== generation || guest.isDestroyed()) {
+      throw new BrowserActionError("debugger-unavailable", "the page debugger session ended; try again");
+    }
+  };
+  debuggerApi.once("detach", invalidate);
+  unsubscribeDestroyed = subscribeBrowserGuestDestroyed(guest, invalidate);
+  const pending = Promise.resolve().then(() => {
+    assertCurrent();
+    return attachCdp(guest, signal, onTrackingStarted, assertCurrent, eventSubscriptions);
+  });
   attached.set(guest, pending);
   try {
-    return await pending;
+    const session = await pending;
+    assertCurrent();
+    ownPageSession(guest);
+    return session;
   } catch (err) {
-    attached.delete(guest);
+    invalidate();
     throw err;
   }
 }
 
-async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
+async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void, assertCurrent: () => void, eventSubscriptions: Set<() => void>): Promise<PageSession> {
   let pageDebugger: WebContents["debugger"];
   try {
     pageDebugger = guest.debugger;
@@ -63,16 +106,31 @@ async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStar
     );
   }
   // The guest's native property becomes unreadable at destruction; its session still owns listener cleanup.
-  const session: CdpSession = {
+  const session: PageSession = {
+    assertCurrent,
     captureKey: guest,
     clearDeviceMetrics: async () => {
-      if (!guest.isDestroyed()) await pageDebugger.sendCommand("Emulation.clearDeviceMetricsOverride");
+      if (guest.isDestroyed()) return;
+      assertCurrent();
+      await pageDebugger.sendCommand("Emulation.clearDeviceMetricsOverride");
+      assertCurrent();
     },
-    send: async (method, params) => pageDebugger.sendCommand(method, params ?? {}) as Promise<unknown>,
+    send: async (method, params) => {
+      assertCurrent();
+      const result = await pageDebugger.sendCommand(method, params ?? {}) as unknown;
+      assertCurrent();
+      return result;
+    },
     onEvent: (listener) => {
+      assertCurrent();
       const onMessage = (_event: unknown, method: string, params: Record<string, unknown>) => listener(method, params);
       pageDebugger.on("message", onMessage);
-      return () => { pageDebugger.removeListener("message", onMessage); };
+      const unsubscribe = () => {
+        pageDebugger.removeListener("message", onMessage);
+        eventSubscriptions.delete(unsubscribe);
+      };
+      eventSubscriptions.add(unsubscribe);
+      return unsubscribe;
     },
   };
   await session.send("DOM.enable");
@@ -81,6 +139,7 @@ async function attachCdp(guest: WebContents, signal: AbortSignal, onTrackingStar
   throwIfAborted(signal);
   await session.send("Page.enable");
   throwIfAborted(signal);
+  assertCurrent();
   // Establish this epoch before approval seals its document identity.
   onTrackingStarted();
   return session;
@@ -1161,7 +1220,7 @@ function createTouchPositionGuard(guest: WebContents, hostContentOrigin: HostCon
 // One live registry tab and the signal that cancels its action.
 type LiveTab = BrowserActionTab<WebContents>;
 
-async function targetFor(live: LiveTab, attribution: InputAttribution, hostContentOrigin: HostContentOrigin, input = false): Promise<ActionTarget> {
+async function targetFor(live: LiveTab, attribution: InputAttribution, hostContentOrigin: HostContentOrigin, input = false, pageSession?: PageSession): Promise<ActionTarget> {
   const guest = live.tab.guest;
   if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
   const approval = live.approval;
@@ -1185,7 +1244,8 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     }
   };
   assertCurrent(false);
-  const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+  const session = pageSession ?? await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+  session.assertCurrent();
   assertCurrent(false);
   const touch = createTouchPositionGuard(guest, hostContentOrigin);
   // A touch start went out and its sequence is not ended yet.
@@ -1441,6 +1501,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
             if (!clean || (state.dropSent && !state.dropped)) {
               // An unproved cleanup or drop outcome cannot own later input.
               attached.delete(guest);
+              releasePageSession(guest);
               try { guest.debugger.detach(); } catch { /* guest destruction also ends its session */ }
               markWedged(host.windowId, guest, new Promise(() => {}));
             }
@@ -1485,7 +1546,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     iframeOrigins: () => guest.mainFrame.framesInSubtree
       .filter((frame) => frame !== guest.mainFrame)
       .map((frame) => browserOrigin(frame.url) ?? "opaque origin"),
-    assertCurrent,
+    assertCurrent: (keyboard) => { session.assertCurrent(); assertCurrent(keyboard); },
   };
 }
 
@@ -1508,7 +1569,8 @@ export function createBrowserPageActions(
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
     return withActivity(guest, live.signal, () => browserLayoutReady(session), act);
   };
-  const installSiteGate = async (live: LiveTab, guest: WebContents, session: CdpSession, signal: AbortSignal) => {
+  const installSiteGate = async (live: LiveTab, guest: WebContents, session: PageSession, signal: AbortSignal) => {
+    session.assertCurrent();
     if (!live.authorizeSite) return;
     setBrowserPopupNavigation(live);
     siteGates.get(guest)?.();
@@ -1519,6 +1581,8 @@ export function createBrowserPageActions(
       authorize: live.authorizeSite,
       signal,
     });
+    try { session.assertCurrent(); }
+    catch (error) { stop(); throw error; }
     let unsubscribe = () => {};
     const dispose = () => { stop(); unsubscribe(); };
     siteGates.set(guest, Object.assign(dispose, { waiting: stop.waiting, pausedMs: stop.pausedMs, assertAllowed: stop.assertAllowed }));
@@ -1535,7 +1599,7 @@ export function createBrowserPageActions(
   };
   // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
   // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
-  const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => awake(live, async () => {
+  const tracked = async (live: LiveTab, act: (session: PageSession) => Promise<void>): Promise<void> => awake(live, async () => {
     const guest = live.tab.guest;
     if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
@@ -1545,7 +1609,8 @@ export function createBrowserPageActions(
     const navigation = await watchActionNavigation(guest as unknown as NavigationGuest, session);
     try {
       await installSiteGate(live, guest, session, lifecycle.signal);
-      await act();
+      session.assertCurrent();
+      await act(session);
       try { await session.send("Page.enable"); } catch (err) {
         throw new BrowserActionError("tab-gone", `the action was sent, but the tab stopped answering: ${(err as Error).message.slice(0, 200)}`, true);
       }
@@ -1595,10 +1660,10 @@ export function createBrowserPageActions(
       });
     },
     capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),
-    hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
-    drag: async (live, sourceRef, targetRef) => tracked(live, async () => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef)),
-    select: async (live, ref, value) => tracked(live, async () => select(await targetFor(live, attribution, hostContentOrigin, true), ref, value)),
-    scroll: async (live, ref, direction, pixels) => tracked(live, async () => scroll(await targetFor(live, attribution, hostContentOrigin, true), ref, direction, pixels)),
+    hover: async (live, ref) => tracked(live, async (session) => hover(await targetFor(live, attribution, hostContentOrigin, true, session), ref)),
+    drag: async (live, sourceRef, targetRef) => tracked(live, async (session) => drag(await targetFor(live, attribution, hostContentOrigin, true, session), sourceRef, targetRef)),
+    select: async (live, ref, value) => tracked(live, async (session) => select(await targetFor(live, attribution, hostContentOrigin, true, session), ref, value)),
+    scroll: async (live, ref, direction, pixels) => tracked(live, async (session) => scroll(await targetFor(live, attribution, hostContentOrigin, true, session), ref, direction, pixels)),
     upload: async (live, ref, options) => awake(live, async () => {
       if (!live.approval) throw new BrowserActionError("upload-unapproved", "upload requires approval for the current document");
       return upload(await targetFor(live, attribution, hostContentOrigin, true), ref, { ...options, ...live.approval, ref, signal: live.signal });
@@ -1606,11 +1671,11 @@ export function createBrowserPageActions(
     waitFor: async (live: LiveTab, options: { text?: string; timeMs?: number }) =>
       awake(live, async () => waitFor(await targetFor(live, attribution, hostContentOrigin), options)),
     click: async (live: LiveTab, ref: string) =>
-      tracked(live, async () => click(await targetFor(live, attribution, hostContentOrigin, true), ref, browserRefs, live.onObservationTarget)),
+      tracked(live, async (session) => click(await targetFor(live, attribution, hostContentOrigin, true, session), ref, browserRefs, live.onObservationTarget)),
     type: async (live: LiveTab, ref: string, text: string, options: { submit?: boolean }) =>
-      tracked(live, async () => type(await targetFor(live, attribution, hostContentOrigin, true), ref, text, options, browserRefs, live.onObservationTarget)),
+      tracked(live, async (session) => type(await targetFor(live, attribution, hostContentOrigin, true, session), ref, text, options, browserRefs, live.onObservationTarget)),
     pressKey: async (live: LiveTab, key: string, ref?: string) =>
-      tracked(live, async () => pressKey(await targetFor(live, attribution, hostContentOrigin, true), key, ref)),
+      tracked(live, async (session) => pressKey(await targetFor(live, attribution, hostContentOrigin, true, session), key, ref)),
     navigate: async (live: LiveTab, url: string, approvedOrigin: string) => awake(live, async () => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
@@ -1618,6 +1683,7 @@ export function createBrowserPageActions(
       const lifecycle = browserControlLifecycle(live, guest, listener => subscribeBrowserGuestDestroyed(guest, listener));
       try {
         await installSiteGate(live, guest, session, lifecycle.signal);
+        session.assertCurrent();
         const loaded = await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined, siteGates.get(guest));
         const documentId = live.tab.documentId;
         const challenge = await observeChallenge(live, guest, session, lifecycle.signal);
@@ -1625,6 +1691,7 @@ export function createBrowserPageActions(
         while (gate?.waiting()) { gate.assertAllowed(); await sleep(SETTLE_POLL_MS, lifecycle.signal); }
         gate?.assertAllowed();
         throwIfAborted(lifecycle.signal);
+        session.assertCurrent();
         return { ...loaded, url: guest.getURL(), loading: guest.isLoading(), ...(challenge && live.tab.documentId === documentId ? { challenge } : {}) };
       }
       finally { lifecycle.cancel(); }

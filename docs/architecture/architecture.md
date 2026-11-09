@@ -167,10 +167,26 @@ overload emits resynchronization without interrupting the native download or
 throwing through its Save callback. Observation adds no download approval or
 automatic open behavior.
 
-A live preview shows the agent's retained hidden browser surface in the owning
-conversation's notices row above the composer: an activity strip beside a
-128x80 thumbnail button with a live badge. Clicking focuses the still-assigned
-original surface; moved or closed tabs do nothing. Browser panes hidden by the
+A single window-level layer shows one floating card for each agent-used hidden
+browser tab, with its title, child title when available, and activity strip.
+The picture uses a fixed 16:9 thumbnail box, about 240×135px, and crops the frame
+to its top-left with object-fit cover. Its live badge sits inside the picture.
+Below 480px window width the card becomes a favicon/title chip. The padded,
+inset bottom-right stack occupies no layout space, reserves visible composer,
+approval and question surfaces, and sits below decisions in the canvas stacking
+context. Its bounds come from the visible pane body below the actual pane
+header and end above measured composer, approval and question rectangles; no
+header-height estimate is used. Dragging stays in those measured bounds. The
+stack never scrolls: newest tabs retain full pictures, older tabs collapse into
+chips, and a +N chip opens the first hidden tab if individual chips cannot fit.
+Only full pictures subscribe to live frames.
+Click or Enter opens the
+original tab through workspace routing, including a retained surface without
+an assigned pane; a closed tab does nothing. Delete or × dismisses the card
+for its host-issued acting-turn observation binding. Same-turn actions keep it
+hidden; actual tab activation or a subsequent turn's first use re-arms it.
+Position and dismissal are memory-only; the composer has no browser preview row.
+Browser panes hidden by the
 group layout and conversation tabs in a closed panel or behind another panel
 tab qualify; merely unfocused visible panes do not. It is bound
 to the exact main-issued tab handle and observation target of the latest agent
@@ -197,9 +213,11 @@ stop in progress, at once with a closed error. A transient empty URL during a
 cross-site commit is not a close. Frames use a separate private push channel
 beside the observation stream and never enter the daemon, its queues, event
 history, transcripts or files. The renderer keeps only the newest frame for a
-preview element while that element is shown. A mounted panel that is hidden, has
+preview element while that element is shown, intersecting both the window and
+its clipping ancestors. Losing that visibility stops the screencast, drops its
+frame and releases hidden-guest painting. A mounted panel that is hidden, has
 no size, is outside the viewport or sits in a hidden document stops the preview
-and drops its frame. Only while an agent-driven conversation thumbnail is shown,
+and drops its frame. Only while an agent-driven picture is shown,
 its hidden guest keeps painting with zero opacity, clipping, no pointer events,
 and aria-hidden and inert attributes. Otherwise hidden guests use visibility
 hidden. Revealing the pane or ending observation restores the normal

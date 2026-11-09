@@ -2,7 +2,7 @@ import { test, expect } from './fixtures.js';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
 
 // Verify saved rate corrections reach the settings service used by the next usage aggregation.
-test('a price correction round-trips through the real settings service', async ({ app, mainWindow }) => {
+test('a price correction round-trips through the real settings service', async ({ app, mainWindow }, testInfo) => {
   const settingsPage = await openInlineSettings(app, mainWindow, 'llm');
 
   const readOverrides = () =>
@@ -25,6 +25,17 @@ test('a price correction round-trips through the real settings service', async (
   await expect(settingsPage.getByTestId('llm-pricing-overrides-empty')).toBeVisible();
 
   const save = settingsPage.getByTestId('llm-pricing-override-save');
+  const broadcastUnrelatedSettings = (interval: number) => settingsPage.evaluate(async (value) => {
+    const changed = new Promise<void>((resolve) => {
+      const unsubscribe = window.aveApi.onSettingsUpdated((settings) => {
+        if (settings.marketplace.updateCheckIntervalMs !== value) return;
+        unsubscribe();
+        resolve();
+      });
+    });
+    await window.aveApi.updateSettings({ marketplace: { updateCheckIntervalMs: value } });
+    await changed;
+  }, interval);
   await settingsPage.getByTestId('llm-pricing-override-add').click();
   // Incomplete rows cannot be saved because the store would silently drop them.
   await expect(save).toBeDisabled();
@@ -35,6 +46,12 @@ test('a price correction round-trips through the real settings service', async (
   await settingsPage.getByTestId('llm-pricing-override-input-0').fill('2.5');
   await settingsPage.getByTestId('llm-pricing-override-output-0').fill('11');
   await expect(save).toBeEnabled();
+  await broadcastUnrelatedSettings(3_600_000);
+  await expect(settingsPage.getByTestId('llm-pricing-override-model-0')).toHaveValue('claude-sonnet-4-6');
+  await expect(settingsPage.getByTestId('llm-pricing-override-input-0')).toHaveValue('2.5');
+  await expect(settingsPage.getByTestId('llm-pricing-override-output-0')).toHaveValue('11');
+  await expect(save).toBeEnabled();
+  await testInfo.attach('pricing-draft-preserved', { body: await settingsPage.screenshot(), contentType: 'image/png' });
   await save.click();
 
   await expect.poll(readOverrides).toEqual([
@@ -46,6 +63,9 @@ test('a price correction round-trips through the real settings service', async (
 
   // Verify corrections can be removed as well as added.
   await settingsPage.getByTestId('llm-pricing-override-remove-0').click();
+  await broadcastUnrelatedSettings(7_200_000);
+  await expect(settingsPage.getByTestId('llm-pricing-override-model-0')).toHaveCount(0);
+  await expect(save).toBeEnabled();
   await save.click();
   await expect.poll(readOverrides).toEqual([]);
   await expect.poll(readResolvedOverrides).toEqual([]);

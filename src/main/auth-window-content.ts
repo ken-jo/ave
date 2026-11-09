@@ -1,3 +1,4 @@
+import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { BrowserWindow, WebContentsView, nativeTheme, type Session, type WebContents } from "electron";
@@ -282,9 +283,11 @@ export function attachAuthWindowContent(input: {
             throw new Error("Invalid auth popup session");
           }
           const child = new BrowserWindow({
+            show: !isBackgroundE2eRuntime(),
             parent: window, x, y, width, height, autoHideMenuBar: true, ...authWindowChromeOptions(),
             webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false },
           });
+          if (isBackgroundE2eRuntime()) child.showInactive();
           wireAuthWindowTheme(child);
           guardShell(child);
           const guest = new WebContentsView({ webContents });

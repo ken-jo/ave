@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
-import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron, withNativeFocusDiagnostics } from "./seeded-electron.js";
+import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from "./seeded-electron.js";
 
 const SESSION_ID = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
 
@@ -20,12 +20,8 @@ test("user area capture stays in host chrome and attaches actual page pixels to 
     ctx = await launchSeededElectron({ settings: buildLlmSettings("openai", "gpt-4.1"), seedApiKey: true, sessionId: SESSION_ID,
       historyRows: [{ role: "user", content: "Browser capture fixture", createdAt: Date.now() }], sessionTitle: "Browser capture fixture" });
     await setWindowSize(ctx.app, 1280, 820);
-    await ctx.page.bringToFront();
-    await ctx.app.evaluate(({ app, BrowserWindow }) => {
-      app.focus({ steal: true });
-      BrowserWindow.getAllWindows().find((window) => window.isVisible())?.focus();
-    });
-    await withNativeFocusDiagnostics(ctx.app, testInfo, () => expect.poll(() => ctx?.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((window) => window.isVisible())?.isFocused())).toBe(true));
+    await expect.poll(() => ctx?.page.evaluate(() => document.hasFocus())).toBe(true);
+    expect(await ctx.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(window => window.isFocused()))).toBe(false);
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
     await ctx.page.getByTestId("chat-side-panel-add-tab").click();
     await ctx.page.getByTestId("chat-side-panel-launcher-menu-browser").click();

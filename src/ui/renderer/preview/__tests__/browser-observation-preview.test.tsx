@@ -16,7 +16,7 @@ function action(seq: number, rendererTabId = "browser:1", tabId = "tab-1"): Brow
     ts: 1_700_000_000_000 + seq, kind: "action", before: null,
     after: { action: "click", tabId, rendererTabId, url: "https://example.test/", title: "Example" } };
 }
-function frame(number: number, binding = BINDING): BrowserObservationPreviewMessage {
+function frame(number: number, binding = BINDING): BrowserObservationPreviewMessage & { kind: "frame" } {
   return { ...binding, kind: "frame", frame: number, mimeType: "image/jpeg", data: `frame${number}`, width: 640, height: 400, ts: number };
 }
 
@@ -195,4 +195,76 @@ it("keeps hidden painting only while a shown preview is admitted and drops it on
   expect(isHiddenWebSurfaceObserved("browser:1")).toBe(true);
   view.unmount();
   expect(isHiddenWebSurfaceObserved("browser:1")).toBe(false);
+});
+
+it("crops a thumbnail at the top-left and keeps the live badge inside its fixed picture box", () => {
+  render(<div style={{ width: 240, height: 135 }}><BrowserObservationPreview tabId="browser:1" sessionId={SESSION} probe={probe} observeHidden thumbnail /></div>);
+  act(() => emitEvents([action(1)]));
+  act(() => emitPreview({ ...frame(1), width: 200, height: 400 }));
+  const picture = screen.getByTestId("browser-observation-preview");
+  expect(picture.style.aspectRatio).toBe("");
+  expect(screen.getByRole("img").className).toContain("object-cover");
+  expect(screen.getByRole("img").className).toContain("object-left-top");
+  expect(screen.getByRole("img").parentElement).toBe(picture);
+  expect(screen.getByText("실시간").parentElement).toBe(picture);
+});
+
+it.each(["overflow: hidden", "overflow-y: auto", "overflow-y: scroll", "overflow-y: clip"])(
+  "rejects a picture wholly clipped by an ancestor with %s while still inside the window", (style) => {
+    const scrollport = document.createElement("div"); scrollport.style.cssText = style;
+    const picture = document.createElement("div"); scrollport.append(picture); document.body.append(scrollport);
+    scrollport.getBoundingClientRect = () => new DOMRect(20, 250, 240, 300);
+    picture.getBoundingClientRect = () => new DOMRect(20, 100, 240, 140);
+    expect(isElementShown(picture)).toBe(false);
+    picture.getBoundingClientRect = () => new DOMRect(20, 240, 240, 140);
+    expect(isElementShown(picture)).toBe(true);
+    scrollport.remove();
+  },
+);
+
+it("lets a dragged fixed card escape its old stack's scroll clipping", () => {
+  const stack = document.createElement("div"); stack.style.cssText = "position: fixed; overflow: auto";
+  const card = document.createElement("div"); card.style.cssText = "position: fixed; overflow: hidden";
+  const picture = document.createElement("div"); card.append(picture); stack.append(card); document.body.append(stack);
+  stack.getBoundingClientRect = () => new DOMRect(700, 200, 240, 300);
+  card.getBoundingClientRect = picture.getBoundingClientRect = () => new DOMRect(20, 100, 240, 140);
+  expect(isElementShown(picture)).toBe(true);
+  stack.remove();
+});
+
+it("stops and drops the screencast and hidden painting when resizing clips the picture wholly outside its container", () => {
+  const scrollport = document.createElement("div"); scrollport.style.overflowY = "auto";
+  scrollport.getBoundingClientRect = () => new DOMRect(20, 250, 240, 300); document.body.append(scrollport);
+  const view = render(<BrowserObservationPreview tabId="browser:1" sessionId={SESSION} observeHidden />, { container: scrollport });
+  act(() => emitEvents([action(1)]));
+  const picture = screen.getByTestId("browser-observation-preview");
+  let y = 300;
+  picture.getBoundingClientRect = () => new DOMRect(20, y, 240, 140);
+  fireEvent.resize(window);
+  expect(actions()).toEqual(["start"]);
+  act(() => emitPreview(frame(1)));
+  expect(isHiddenWebSurfaceObserved("browser:1")).toBe(true);
+  y = 100;
+  fireEvent.resize(window);
+  expect(actions()).toEqual(["start", "stop"]);
+  expect(screen.queryByRole("img")).toBeNull();
+  expect(isHiddenWebSurfaceObserved("browser:1")).toBe(false);
+  y = 300;
+  fireEvent.resize(window);
+  expect(actions()).toEqual(["start", "stop", "start"]);
+  view.unmount(); scrollport.remove();
+});
+
+it.each(["new-action", "capture-restart"])("ignores an older failed capture start after a successful %s", async (scope) => {
+  const pending: Array<(result: { ok: boolean }) => void> = [];
+  const api = { requestObservationPreview: vi.fn((request: { action: string }) => request.action === "start"
+    ? new Promise<{ ok: boolean }>((resolve) => pending.push(resolve)) : Promise.resolve({ ok: true })), onObservationPreview: () => () => {} };
+  const store = new BrowserObservationPreviewStore(api as unknown as AvePreviewApi);
+  store.start(BINDING);
+  if (scope === "capture-restart") store.stop(BINDING);
+  store.start(BINDING);
+  pending[1]?.({ ok: true }); await Promise.resolve();
+  pending[0]?.({ ok: false }); await Promise.resolve();
+  expect(store.get(BINDING)?.status).toBe("live");
+  store.dispose();
 });

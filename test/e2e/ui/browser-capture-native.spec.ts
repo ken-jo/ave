@@ -4,7 +4,7 @@ import { build } from "esbuild";
 import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIsolatedElectronEnv, launchElectron, setWindowSize, withNativeFocusDiagnostics } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, quitElectron, setWindowSize } from "./seeded-electron.js";
 import type { BrowserScreenshotOptions } from "../../../src/shared/browser-capture.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./browser-capture-native/contract.js";
 
@@ -30,21 +30,17 @@ async function launch(testInfo: TestInfo): Promise<ElectronApplication> {
   await fs.mkdir(runtime, { recursive: true });
   const app = await launchElectron({
     args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
-    env: buildIsolatedElectronEnv({ AVE_HOME: join(runtime, "ave-home"), AVE_CAPTURE_FIXTURE_ASSETS: assets,
+    env: buildIsolatedElectronEnv({ HOME: process.env.HOME, USERPROFILE: process.env.HOME, AVE_HOME: join(runtime, "ave-home"), AVE_CAPTURE_FIXTURE_ASSETS: assets,
       AVE_CAPTURE_FIXTURE_RUNTIME: runtime, AVE_CAPTURE_FIXTURE_PAGE: join(HERE, "browser-actions-native/page.html") }),
   });
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[capture-native:stderr] ${data}`));
   try {
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { captureNativeFixture?: CaptureNativeFixture }).captureNativeFixture?.ready === true), { timeout: 30_000 }).toBe(true);
     await setWindowSize(app, 1180, 820);
-    await (await app.firstWindow()).bringToFront();
-    await app.evaluate(({ app: fixtureApp, BrowserWindow }) => {
-      fixtureApp.focus({ steal: true });
-      BrowserWindow.getAllWindows()[0]?.focus();
-    });
-    await withNativeFocusDiagnostics(app, testInfo, () => expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isFocused())).toBe(true));
+    await expect.poll(() => (app.firstWindow()).then(page => page.evaluate(() => document.hasFocus()))).toBe(true);
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(window => window.isFocused()))).toBe(false);
     return app;
-  } catch (error) { await app.close().catch(() => {}); throw error; }
+  } catch (error) { await quitElectron(app); throw error; }
 }
 
 async function capture(app: ElectronApplication, options: BrowserScreenshotOptions, zoom = 1): Promise<CaptureNativeResult> {
@@ -53,7 +49,7 @@ async function capture(app: ElectronApplication, options: BrowserScreenshotOptio
 
 async function close(app: ElectronApplication): Promise<void> {
   await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.close()).catch(() => {});
-  await app.close().catch(() => {});
+  await quitElectron(app);
 }
 
 async function attachImage(testInfo: TestInfo, name: string, result: CaptureNativeResult): Promise<void> {

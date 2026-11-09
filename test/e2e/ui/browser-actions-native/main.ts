@@ -1,3 +1,4 @@
+import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 import { app, BrowserWindow, nativeImage, type WebContents } from "electron";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
@@ -23,6 +24,7 @@ const runtimeDir = fixturePath("AVE_NATIVE_FIXTURE_RUNTIME");
 const preload = fixturePath("AVE_NATIVE_FIXTURE_PRELOAD");
 const fixtureMode = process.env.AVE_NATIVE_FIXTURE_MODE;
 if (fixtureMode !== "cdp" && fixtureMode !== "foreground") throw new Error("Native fixture mode is required");
+configureE2eWindowPolicy();
 if (fixtureMode === "foreground" && process.platform === "darwin") app.setActivationPolicy("regular");
 const actor = { sessionId: "native-fixture-conversation" };
 const rendererTabId = "native-fixture-browser";

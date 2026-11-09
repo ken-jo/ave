@@ -2,6 +2,7 @@ import { test, expect } from './fixtures.js';
 import { openInlineSettings } from './inline-settings.js';
 import { relativeLuminance } from '../../contrast-helpers.js';
 import { SCHEMES } from '../../../src/ui/renderer/theme/schemes/index.js';
+import { DEFAULT_APPEARANCE } from '../../../src/shared/appearance-settings.js';
 
 test('appearance mode and schemes update painted UI', async ({ app, mainWindow }) => {
   const page = await openInlineSettings(app, mainWindow, 'appearance');
@@ -33,16 +34,23 @@ test('appearance mode and schemes update painted UI', async ({ app, mainWindow }
   await expect(page.locator('[data-scheme-id]')).toHaveCount(12);
 });
 
-test('terminal font preview changes immediately and settings search jumps to its section', async ({ app, mainWindow }) => {
+test('terminal font preview changes immediately and settings search jumps to its section', async ({ app, mainWindow, t }) => {
   const page = await openInlineSettings(app, mainWindow, 'appearance');
   const section = page.locator('[data-settings-section="appearance-terminal"]');
-  const size = section.locator('input[inputmode="numeric"]').first();
-  await size.fill('18');
+  const size = section.getByRole('group', { name: t('appearanceTab.terminalSize'), exact: true });
+  const increase = size.getByRole('button', { name: `${t('appearanceTab.terminalSize')} +`, exact: true });
+  for (let value = DEFAULT_APPEARANCE.terminalFont.size + 1; value <= 18; value++) {
+    await increase.click();
+    await expect(page.getByTestId('terminal-font-preview')).toHaveCSS('font-size', `${value}px`);
+  }
   await expect(page.getByTestId('terminal-font-preview')).toHaveCSS('font-size', '18px');
+  await expect.poll(() => page.evaluate(async () => (await window.aveApi.getSettings()).appearance.terminalFont.size)).toBe(18);
   const search = page.locator('input[type="search"]');
-  await search.fill('terminal');
-  await expect(page.locator('[role="status"][aria-live="polite"][aria-atomic="true"]')).toHaveText(/1/);
-  await page.getByRole('listitem').first().getByRole('button').click();
+  await search.fill(t('appearanceTab.terminalTitle'));
+  await expect(search.locator('..').getByRole('status')).toHaveText(t('settingsContent.searchCount', { count: 1 }));
+  const results = page.getByRole('list', { name: t('settingsContent.search'), exact: true });
+  await expect(results.getByRole('listitem')).toHaveCount(1);
+  await results.getByRole('button').click();
   await expect(section).toBeInViewport();
 });
 

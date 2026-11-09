@@ -1,3 +1,4 @@
+import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // Host lifecycle events enter window notification history; unfocused events additionally use OS delivery. Requests use their cards in-app.
 // Audit metadata only, never body text; test mode and pre-ready calls have no side effects.
 import type { ActivationArguments, BrowserWindow, WebContents } from "electron";
@@ -370,8 +371,8 @@ export class NotificationService {
       const win = this.getMainWindow();
       if (!win || win.isDestroyed()) return;
       if (win.isMinimized()) win.restore();
-      win.show();
-      win.focus();
+      showWindowForRuntime(win);
+      if (!isBackgroundE2eRuntime()) win.focus();
       if (payload) {
         win.webContents.send(IPC_NOTIFICATION_CLICKED, payload);
       }

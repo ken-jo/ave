@@ -3,8 +3,7 @@ import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
-import { browserControlFixture } from "../../../__tests__/support/browser-control-fixture.js";
-import { deferred, emitAgentTabNew, submitChatMessage } from "../../../../test/renderer/helpers.js";
+import { deferred, submitChatMessage } from "../../../../test/renderer/helpers.js";
 import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import {
@@ -13,9 +12,6 @@ import {
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
-import type { BrowserTabsApi } from "../../../shared/browser-surface.js";
-import type { AgentObservationEvent } from "../../../shared/agent-observation.js";
-import type { AvePreviewApi } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
 import { formatFileMentionReference } from "../../../shared/file-mention-reference.js";
 
@@ -66,141 +62,6 @@ function installDeterministicScrollMetrics(initialScrollHeight = 2400, clientHei
 }
 
 describe("ChatView", () => {
-  it("shows two labelled child previews with the panel closed and preserves their guests on reveal", async () => {
-    const { container, api, emitAgentSpawnEvent } = await renderApp({ hasApiKey: true, browserTabs: true });
-    await submitChatMessage(container, "delegate browser work");
-    await waitFor(() => expect(api.chatSend.mock.calls.length).toBeGreaterThan(0));
-    const browserTabs = api.browserTabs as unknown as { emitBrowserTabOp(request: unknown): void };
-    const children = ["child-a", "child-b"];
-    for (const child of children) await act(async () => {
-      emitAgentSpawnEvent({ spawnId: child, childSessionId: child, type: "start", taskState: "TASK_STATE_SUBMITTED",
-        title: child, parentSessionId: MOCK_DEFAULT_SESSION_ID });
-      browserTabs.emitBrowserTabOp({ op: "new", requestId: child, url: "https://example.test/", active: false,
-        sessionId: MOCK_DEFAULT_SESSION_ID, ownerSessionId: child });
-    });
-    const guestsBefore = [...document.querySelectorAll<HTMLElement>("webview[data-tab-id]")];
-    expect(guestsBefore).toHaveLength(2);
-    const ids = guestsBefore.map((guest) => guest.dataset.tabId as string);
-    const control = browserControlFixture(ids, "agent-active", 100);
-    control.tabs.forEach((tab, index) => { Object.assign(tab, { owner: { sessionId: children[index], directParentSessionId: MOCK_DEFAULT_SESSION_ID },
-      lease: null }); });
-    const emitControl = vi.mocked((api.browserTabs as unknown as BrowserTabsApi).onControl).mock.calls.at(-1)?.[0];
-    const emit = vi.mocked(window.ave.preview.onAgentObservation).mock.calls[0]?.[0];
-    if (!emitControl || !emit) throw new Error("Browser subscriptions missing");
-    act(() => {
-      emitControl(control);
-      emit(ids.map((id, index): AgentObservationEvent => ({ source: "browser", actor: "agent", sessionId: children[index] as string,
-        target: { id: children[index] as string, path: "browser", hostSessionId: MOCK_DEFAULT_SESSION_ID }, seq: 1, ts: 1,
-        kind: "action", before: null, after: { action: "snapshot", tabId: `handle-${id}`, rendererTabId: id, url: "https://example.test/", title: "Example" } })));
-    });
-    await waitFor(() => expect(container.querySelectorAll('[data-testid="conversation-browser-observation"]')).toHaveLength(2));
-    const toggle = container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLElement;
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    const rows = [...container.querySelectorAll<HTMLElement>('[data-testid="conversation-browser-observation"]')];
-    rows.forEach((row, index) => { expect(row.textContent).toContain(children[index]);
-      expect(row.querySelector('[data-testid="browser-observation-preview"]')).not.toBeNull(); });
-    const guests = ids.map((id) => document.querySelector(`webview[data-tab-id="${id}"]`));
-    fireEvent.click(within(rows[0] as HTMLElement).getByRole("button"));
-    await waitFor(() => expect(toggle.getAttribute("aria-pressed")).toBe("true"));
-    ids.forEach((id, index) => { expect(document.querySelector(`webview[data-tab-id="${id}"]`)).toBe(guests[index]); });
-    expect(container.querySelectorAll('[data-testid="conversation-browser-observation"]')).toHaveLength(1);
-    await act(async () => emitAgentSpawnEvent({ spawnId: "child-a", childSessionId: "child-a", type: "done",
-      taskState: "TASK_STATE_COMPLETED", title: "child-a", parentSessionId: MOCK_DEFAULT_SESSION_ID, summary: "Example https://example.test/" }));
-    const finished = within(container).getByRole("tab", { name: /child-a/, hidden: true });
-    expect(finished.textContent).toContain(t("subAgentCard.statusDone"));
-    ids.forEach((id, index) => { expect(document.querySelector(`webview[data-tab-id="${id}"]`)).toBe(guests[index]); });
-  });
-  it.each(["snapshot", "wait", "scroll"] as const)("shows and focuses the preview of a never-shown side tab during %s", async (action) => {
-    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
-    await emitAgentTabNew(container, api, { requestId: "never-shown", url: "https://example.test/" });
-    const tabId = (container.querySelector<HTMLElement>('[data-testid="chat-side-panel-browser-tab-host"]') as HTMLElement).dataset.tabId as string;
-    const guest = document.querySelector(`webview[data-tab-id="${tabId}"]`);
-    const controls = api.browserTabs as unknown as { emitBrowserControl(ids: string[]): void };
-    const emit = vi.mocked(window.ave.preview.onAgentObservation).mock.calls[0]?.[0] as Parameters<AvePreviewApi["onAgentObservation"]>[0];
-    const event: AgentObservationEvent = { source: "browser", actor: "agent", sessionId: "fixture-session",
-      target: { id: "never-shown-target", path: "browser", hostSessionId: MOCK_DEFAULT_SESSION_ID }, seq: 1, ts: 1,
-      kind: "action", before: null, after: { action, tabId: `handle-${tabId}`, rendererTabId: tabId,
-        url: "https://example.test/", title: "Example" } };
-    act(() => { controls.emitBrowserControl([tabId]); emit([event]); });
-    const row = await waitFor(() => {
-      const found = container.querySelector<HTMLElement>('[data-testid="conversation-browser-observation"]');
-      expect(found).not.toBeNull();
-      return found as HTMLElement;
-    });
-    const toggle = container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLElement;
-    expect(toggle.getAttribute("aria-pressed")).toBe("false");
-    expect(row.querySelector('[data-testid="browser-observation-preview"]')).not.toBeNull();
-    fireEvent.click(within(row).getByRole("button"));
-    await waitFor(() => expect(toggle.getAttribute("aria-pressed")).toBe("true"));
-    await waitFor(() => expect(container.querySelector('[data-testid="conversation-browser-observation"]')).toBeNull());
-    expect(document.querySelector(`webview[data-tab-id="${tabId}"]`)).toBe(guest);
-  });
-  it.each(["close-race", "move-race", "session-switch"])("shows one hosted hidden-pane thumbnail, focuses it and clears it on %s", async (ending) => {
-    const tabId = "browser:abc12345-1";
-    const surface = { kind: "browser", tabId, ordinal: 1, url: "https://example.test/", cwd: null, projectRoot: process.cwd() };
-    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true,
-      sessions: [{ id: MOCK_DEFAULT_SESSION_ID, modifiedAt: new Date().toISOString(), title: "Observed conversation" },
-        { id: "other-session", modifiedAt: new Date().toISOString(), title: "Other conversation" }],
-      historyBySession: { "other-session": { messages: [] } }, workspaceRoots: [{ path: process.cwd(), isDefault: true }], settings: {
-      ...MOCK_DEFAULT_SETTINGS, system: { mainLayout: {
-        version: 2, tree: { kind: "split", axis: "row", sizes: [0.5, 0.5], children: [
-          { kind: "leaf", chatGroupId: "main" }, { kind: "leaf", chatGroupId: "group-2" } ] },
-        focusedId: "main", surfaces: { "group-2": surface }, openSurfaces: [surface], panelOpenIds: [], sideTabs: {},
-      } },
-    } });
-    const controls = api.browserTabs as unknown as { emitBrowserControl(ids: string[]): void; emitBrowserTabOp(request: unknown): void };
-    const preview = window.ave.preview;
-    const emit = vi.mocked(preview.onAgentObservation).mock.calls[0]![0] as Parameters<AvePreviewApi["onAgentObservation"]>[0];
-    const event: AgentObservationEvent = { source: "browser", actor: "agent", sessionId: "fixture-session",
-      target: { id: "hosted-target", path: "browser", hostSessionId: MOCK_DEFAULT_SESSION_ID }, seq: 1, ts: 1,
-      kind: "action", before: null, after: { action: "click", tabId: `handle-${tabId}`, rendererTabId: tabId,
-        url: "https://example.test/", title: "Example" } };
-    const row = () => container.querySelector('[data-testid="conversation-browser-observation"]');
-    act(() => { controls.emitBrowserControl([tabId]); emit([event]); });
-    expect(row()).toBeNull(); // Visible but unfocused is not hidden.
-    const owner = container.querySelector('[data-testid="pane-cell:main"]')!;
-    await waitFor(() => expect(owner.querySelector('[data-testid="pane-maximize"]')).not.toBeNull());
-    fireEvent.click(owner.querySelector('[data-testid="pane-maximize"]')!);
-    await waitFor(() => expect(row()).not.toBeNull());
-    expect(container.querySelectorAll('[data-testid="browser-observation-preview"]')).toHaveLength(1);
-    expect(row()!.querySelector('[data-testid="browser-observation-slot"]')).not.toBeNull();
-    act(() => controls.emitBrowserControl([]));
-    expect(row()).toBeNull();
-    act(() => controls.emitBrowserControl([tabId]));
-    await waitFor(() => expect(row()).not.toBeNull());
-    fireEvent.click(within(row() as HTMLElement).getByRole("button"));
-    await waitFor(() => expect(row()).toBeNull());
-    expect(container.querySelector('[data-testid="pane-cell:group-2"]')!.getAttribute("data-hidden")).toBeNull();
-    fireEvent.click(owner.querySelector('[data-testid="pane-maximize"]')!);
-    await waitFor(() => expect(row()).not.toBeNull());
-    act(() => emit([{ ...event, seq: 2, ts: 2, kind: "status", after: { code: "observation-error" } }]));
-    expect(row()).toBeNull();
-    act(() => emit([{ ...event, seq: 3, ts: 3 }]));
-    await waitFor(() => expect(row()).not.toBeNull());
-    if (ending === "session-switch") {
-      fireEvent.click(container.querySelector('[data-testid="sidebar-session-other-session"]')!);
-      await waitFor(() => expect(row()).toBeNull());
-      return;
-    }
-    if (ending === "move-race") {
-      fireEvent.click(owner.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!);
-      await waitFor(() => expect(owner.querySelector('[data-testid="chat-side-panel-tab-strip"]')).not.toBeNull());
-    }
-    const button = within(row() as HTMLElement).getByRole("button");
-    // Change placement after the button was drawn but before its focus handler runs.
-    button.addEventListener("click", () => {
-      if (ending === "move-race") {
-        const strip = owner.querySelector('[data-testid="chat-side-panel-tab-strip"]')!;
-        fireEvent.drop(strip, { dataTransfer: { files: [], types: ["application/x-ave-surface"], getData: () => JSON.stringify({
-          tabId, kind: "browser", from: { pane: "group-2" },
-        }) } });
-      } else controls.emitBrowserTabOp({ op: "close", tabId, requestId: "close-observed" });
-    }, { capture: true, once: true });
-    fireEvent.click(button);
-    await waitFor(() => expect(row()).toBeNull());
-    expect(container.querySelector('[data-testid="pane-cell:group-2"]')!.getAttribute("data-hidden")).toBe("true");
-  });
-
   it("mounts without crashing", async () => {
     const { container } = await renderApp();
     expect(container).toBeTruthy();
