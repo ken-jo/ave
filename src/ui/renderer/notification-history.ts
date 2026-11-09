@@ -31,6 +31,7 @@ export function createNotificationHistory() {
   let latest: NoticeRecord | null = null;
   let latestPolite: NoticeRecord | null = null;
   let latestError: NoticeRecord | null = null;
+  let pendingAnnouncements: NoticeRecord[] = [];
   let open = false;
   let sequence = 0;
   let arrival = 0;
@@ -45,8 +46,14 @@ export function createNotificationHistory() {
     };
     records = [record, ...records.filter((item) => item.id !== id)].slice(0, HISTORY_LIMIT);
     latest = record;
-    if (record.severity === "error") latestError = record;
-    else latestPolite = record;
+    pendingAnnouncements.push(record);
+    const errors = record.severity === "error";
+    const announcement = {
+      ...record,
+      message: pendingAnnouncements.filter((item) => (item.severity === "error") === errors).map((item) => item.message).join("\n"),
+    };
+    if (errors) latestError = announcement;
+    else latestPolite = announcement;
     emit();
     return id;
   };
@@ -55,6 +62,10 @@ export function createNotificationHistory() {
     getLatest: () => latest,
     getLatestPolite: () => latestPolite,
     getLatestError: () => latestError,
+    // Only committed text is acknowledged; later arrivals must remain in the next announcement batch.
+    acknowledgeAnnouncements: (through: number) => {
+      pendingAnnouncements = pendingAnnouncements.filter((item) => (item.announcementId ?? 0) > through);
+    },
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     push: (input: NoticeInput) => upsert(`notice:${++sequence}`, input),
     upsert,
