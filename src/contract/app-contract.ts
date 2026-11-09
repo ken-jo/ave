@@ -760,6 +760,7 @@ export const CHANNELS = {
     stopFind: "ave:browser-workspace:stop-find",
     zoom: "ave:browser-workspace:zoom",
     preview: "ave:browser-workspace:preview",
+    capture: "ave:browser-workspace:capture",
     changed: "ave:browser-workspace:changed",
   },
   // ── Active workspace surface (a hint for agent tools) ─────────────────────

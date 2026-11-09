@@ -511,6 +511,7 @@ function ContentTabView({
   targetById,
   manualUrl,
   onBrowserUrlChange,
+  composerGroupId,
 }: {
   api: AveApi;
   sessionId?: string;
@@ -519,6 +520,7 @@ function ContentTabView({
   targetById: Map<string, ChatPreviewTarget>;
   manualUrl: string | null;
   onBrowserUrlChange: (tabId: string, url: string) => void;
+  composerGroupId?: string | undefined;
 }) {
   const { t } = useTranslation();
   const content = tab.content;
@@ -550,7 +552,7 @@ function ContentTabView({
   if (browserTarget) {
     return (
       <div className="flex h-full min-h-0 flex-col">
-      <BrowserSurfaceTools api={api} tabId={tab.id} onOpenUrl={(url) => {
+      <BrowserSurfaceTools api={api} tabId={tab.id} composerGroupId={composerGroupId} onOpenUrl={(url) => {
         void navigateBrowserTabAsUser(api, tab.id, () => onBrowserUrlChange(tab.id, url));
       }} />
       <UrlDocumentViewer
@@ -1308,7 +1310,7 @@ export function ChatSidePanel({
             // Drawn below, where every browser page tab stays mounted.
             null
           ) : activeTab.content ? (
-            <ContentTabView api={api} sessionId={sessionId} visible={visible} tab={activeTab} targetById={targetById}
+            <ContentTabView api={api} sessionId={sessionId} visible={visible} tab={activeTab} targetById={targetById} composerGroupId={chatGroupId}
               manualUrl={browserUrlByTab[activeTab.id] ?? null} onBrowserUrlChange={setBrowserTabUrl} />
           ) : activeTab.kind === "file-browser" ? (
             <FileBrowserWorkspace
@@ -1328,6 +1330,7 @@ export function ChatSidePanel({
           ) : activeTab.kind === "browser" ? (
             <BrowserWorkspace
               api={api}
+              composerGroupId={chatGroupId}
               tabId={activeTab.id}
               targets={browserTargets}
               manualUrl={browserUrlByTab[activeTab.id] ?? null}
@@ -1377,7 +1380,7 @@ export function ChatSidePanel({
                 data-tab-id={tab.id}
               >
                 <div className="min-h-0 flex-1">
-                  <ContentTabView api={api} sessionId={sessionId} visible={visible} tab={tab} targetById={targetById}
+                  <ContentTabView api={api} sessionId={sessionId} visible={visible} tab={tab} targetById={targetById} composerGroupId={chatGroupId}
                     manualUrl={browserUrlByTab[tab.id] ?? null} onBrowserUrlChange={setBrowserTabUrl} />
                 </div>
               </div>

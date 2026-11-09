@@ -11,6 +11,7 @@ export interface ComposerTarget {
   kind: ComposerKind;
   /** Put `text` into the draft; false when it did not fit. */
   attach: (text: string) => boolean;
+  attachImage?: (base64: string) => Promise<boolean>;
   /** Whether the user can see this composer now. */
   available: () => boolean;
   /** The composer's dock: focus landing inside it is "the user used it". */
@@ -76,6 +77,14 @@ export function attachToComposer(text: string, from: { fromGroup: string } | { f
     ? usable(lastUsedByGroup.get(from.fromGroup)) ?? conversationOf(from.fromGroup)
     : usable(lastUsed) ?? conversationOf(from.focusedGroupId) ?? anyConversation();
   return target ? target.attach(text) : "no-composer";
+}
+
+/** Captures use the same visible composer slots as other content handed over by a host surface. */
+export async function attachImageToComposer(base64: string, groupId?: string): Promise<AttachTextResult> {
+  const target = groupId === undefined
+    ? usable(lastUsed) ?? anyConversation()
+    : usable(lastUsedByGroup.get(groupId)) ?? conversationOf(groupId);
+  return target?.attachImage ? target.attachImage(base64) : "no-composer";
 }
 
 /** Test-only. */

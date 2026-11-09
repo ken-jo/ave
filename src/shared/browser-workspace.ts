@@ -1,5 +1,6 @@
 import { validateExternalUrl } from "./external-url.js";
 import { isRecord } from "./is-record.js";
+import { BROWSER_CAPTURE_LIMITS, parseBrowserCaptureClip, type BrowserCaptureClip, type BrowserScreenshot } from "./browser-capture.js";
 
 export const BROWSER_WORKSPACE_LIMITS = {
   bookmarks: 500, history: 1000, sitePermissions: 500, downloads: 100,
@@ -33,6 +34,14 @@ export interface BrowserFindRequest extends BrowserWorkspaceTarget { readonly te
 export interface BrowserZoomRequest extends BrowserWorkspaceTarget { readonly factor: number }
 export interface BrowserPreviewImage { readonly dataUrl: string; readonly width: number; readonly height: number }
 export interface BrowserPreview extends BrowserWorkspaceTarget, BrowserPreviewImage {}
+/** User selection geometry is relative to the visible viewport, in page CSS pixels. */
+export interface BrowserCaptureRequest extends BrowserWorkspaceTarget {
+  readonly fullPage?: boolean;
+  readonly clip?: BrowserCaptureClip;
+}
+export interface BrowserCapture extends BrowserWorkspaceTarget, Omit<BrowserScreenshot, "data" | "mimeType"> {
+  readonly dataUrl: string;
+}
 export const BROWSER_WORKSPACE_ERRORS = ["bad-request", "unauthorized-frame", "no-such-tab", "stale-document", "origin-mismatch", "window-hidden", "capture-busy", "capture-throttled", "capture-unavailable", "storage-unavailable", "operation-failed"] as const;
 export type BrowserWorkspaceError = typeof BROWSER_WORKSPACE_ERRORS[number];
 export type BrowserWorkspaceResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: BrowserWorkspaceError };
@@ -45,11 +54,13 @@ export interface BrowserWorkspaceApi {
   stopFind(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
   zoom(request: BrowserZoomRequest): Promise<BrowserWorkspaceResult<{ readonly factor: number }>>;
   preview(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<BrowserPreview>>;
+  capture(request: BrowserCaptureRequest): Promise<BrowserWorkspaceResult<BrowserCapture>>;
   onChanged(handler: (state: BrowserWorkspaceState) => void): () => void;
 }
 export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
+  capture: BrowserCaptureRequest;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
 export const BROWSER_SITE_DECISIONS: readonly BrowserSiteDecision[] = ["ask", "allow", "block"];
@@ -82,7 +93,12 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
     return { ...record, url } as unknown as BrowserWorkspaceRequests[K];
   }
   if (!target(record)) return null;
-  if (operation === "setSitePermission") {
+  if (operation === "capture") {
+    if (Object.keys(record).some((key) => !["tabId", "documentGeneration", "fullPage", "clip"].includes(key))) return null;
+    if (Object.hasOwn(record, "fullPage") && typeof record.fullPage !== "boolean") return null;
+    if (Object.hasOwn(record, "clip") && !parseBrowserCaptureClip(record.clip)) return null;
+    if (record.fullPage === true && Object.hasOwn(record, "clip")) return null;
+  } else if (operation === "setSitePermission") {
     if (!keys(record, ["tabId", "documentGeneration", "origin", "permission", "decision"]) || !browserWorkspaceOrigin(record.origin)
       || !BROWSER_SITE_PERMISSIONS.includes(record.permission as BrowserSitePermission) || !BROWSER_SITE_DECISIONS.includes(record.decision as BrowserSiteDecision)) return null;
   } else if (operation === "find") {
@@ -125,6 +141,20 @@ export function parseBrowserWorkspacePreview(value: unknown): BrowserPreview | n
   const record = value;
   if (!isRecord(record) || !keys(record, ["tabId", "documentGeneration", "dataUrl", "width", "height"]) || !target(record)) return null;
   return validPreviewImage(record) ? record as unknown as BrowserPreview : null;
+}
+
+/** Capture bytes remain page-derived image data even when they originate in host browser chrome. */
+export function parseBrowserWorkspaceCapture(value: unknown): BrowserCapture | null {
+  if (!isRecord(value) || !keys(value, ["tabId", "documentGeneration", "dataUrl", "width", "height", "bytes", "originalWidth", "originalHeight", "scale", "truncated"]) || !target(value)) return null;
+  if (typeof value.dataUrl !== "string" || value.dataUrl.length > Math.ceil(BROWSER_CAPTURE_LIMITS.bytes * 4 / 3) + 22
+    || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value.dataUrl)) return null;
+  const dimensions = [value.width, value.height, value.originalWidth, value.originalHeight];
+  if (!dimensions.every((dimension) => Number.isSafeInteger(dimension) && Number(dimension) >= 1)
+    || Number(value.width) * Number(value.height) > BROWSER_CAPTURE_LIMITS.pixels
+    || !Number.isSafeInteger(value.bytes) || Number(value.bytes) < 1 || Number(value.bytes) > BROWSER_CAPTURE_LIMITS.bytes
+    || typeof value.scale !== "number" || !Number.isFinite(value.scale) || value.scale <= 0 || value.scale > 1
+    || value.truncated !== false) return null;
+  return value as unknown as BrowserCapture;
 }
 function validPreviewImage(record: Record<string, unknown>): boolean {
   if (typeof record.dataUrl !== "string" || record.dataUrl.length > Math.ceil(BROWSER_WORKSPACE_LIMITS.previewBytes * 4 / 3) + 23 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(record.dataUrl)) return false;

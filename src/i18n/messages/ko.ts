@@ -45,6 +45,14 @@ export const ko: Record<MessageCatalogKey, string> = {
   "agentBrowser.workspace": "브라우저 도구",
   "agentBrowser.controlMenu": "에이전트 제어",
 
+  // browserCapture
+  "browserCapture.capture": "캡처",
+  "browserCapture.viewport": "보이는 화면",
+  "browserCapture.fullPage": "전체 페이지",
+  "browserCapture.area": "영역 선택",
+  "browserCapture.areaHint": "드래그하여 캡처할 영역을 선택하세요 · Esc로 취소",
+  "browserCapture.failed": "캡처를 첨부하지 못했습니다. 대화에서 이미지를 첨부할 수 있는지 확인하세요.",
+
   // agentStatus
   "agentStatus.working": "작업 중",
   "agentStatus.blocked": "막힘",

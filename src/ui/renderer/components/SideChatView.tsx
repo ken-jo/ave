@@ -445,7 +445,7 @@ function SideChatSession({
     handleComposerSend(captureComposerKeyboardIntent());
   }, [handleComposerSend]);
 
-  const { handleAttach, handleDropFiles, attachPastedText } = useAttachmentPicker({
+  const { handleAttach, handleDropFiles, attachPastedText, attachImage } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion: setDraft,
@@ -462,6 +462,8 @@ function SideChatSession({
   const dockRef = useRef<HTMLDivElement | null>(null);
   const attachPastedTextRef = useRef(attachPastedText);
   attachPastedTextRef.current = attachPastedText;
+  const attachImageRef = useRef(attachImage);
+  attachImageRef.current = attachImage;
   // A stored side chat the sidebar asked this panel to show, or text another surface asked it to attach. Keyed on the
   // request's nonce so asking for the same stored chat twice loads it twice: a second click on a row still means "go there".
   const consumedOpenNonceRef = useRef<number | null>(null);
@@ -484,6 +486,7 @@ function SideChatSession({
       groupId: chatGroupId,
       kind: "side-chat",
       attach: (text) => attachPastedTextRef.current(text),
+      attachImage: (base64) => attachImageRef.current(base64),
       available: () => shownRef.current,
       element: () => dockRef.current,
     });

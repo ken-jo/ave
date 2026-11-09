@@ -767,7 +767,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   const emitDropRejected = useCallback((count: number) => {
     onAttachmentWarning?.(t("app.dropRejected", { count }));
   }, [onAttachmentWarning, t]);
-  const { handleAttach, handleDropFiles, attachPastedText } = useAttachmentPicker({
+  const { handleAttach, handleDropFiles, attachPastedText, attachImage } = useAttachmentPicker({
     attachmentNCounter,
     setAttachments,
     setQuestion,
@@ -784,6 +784,8 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
   // Register the composer once per group through refs.
   const attachPastedTextRef = useRef(attachPastedText);
   attachPastedTextRef.current = attachPastedText;
+  const attachImageRef = useRef(attachImage);
+  attachImageRef.current = attachImage;
   const conversationHiddenRef = useRef(hidden);
   conversationHiddenRef.current = hidden;
   useEffect(() => {
@@ -792,6 +794,7 @@ export function ChatView({ hiddenBrowserTabIds, onFocusObservedBrowser, api, app
       groupId: chatGroupId,
       kind: "conversation",
       attach: (text) => attachPastedTextRef.current(text),
+      attachImage: (base64) => attachImageRef.current(base64),
       available: () => !conversationHiddenRef.current,
       element: () => chatViewRootRef.current?.querySelector<HTMLElement>('[data-composer-surface="main"]') ?? null,
     });

@@ -3,6 +3,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import {
   BROWSER_WORKSPACE_ERRORS,
   parseBrowserWorkspacePreview,
+  parseBrowserWorkspaceCapture,
   parseBrowserWorkspaceState,
   type BrowserWorkspaceApi,
   type BrowserWorkspaceResult,
@@ -49,6 +50,8 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
     zoom: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.zoom, request), factor),
     preview: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.preview, request),
       (value): value is NonNullable<ReturnType<typeof parseBrowserWorkspacePreview>> => parseBrowserWorkspacePreview(value) !== null),
+    capture: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.capture, request),
+      (value): value is NonNullable<ReturnType<typeof parseBrowserWorkspaceCapture>> => parseBrowserWorkspaceCapture(value) !== null),
     onChanged: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {
         const parsed = parseBrowserWorkspaceState(payload);

@@ -43,6 +43,14 @@ export const en = {
   "agentBrowser.workspace": "Browser tools",
   "agentBrowser.controlMenu": "Agent control",
 
+  // browserCapture
+  "browserCapture.capture": "Capture",
+  "browserCapture.viewport": "Visible area",
+  "browserCapture.fullPage": "Full page",
+  "browserCapture.area": "Select area",
+  "browserCapture.areaHint": "Drag to capture an area · Esc to cancel",
+  "browserCapture.failed": "Could not attach the capture. Check that a conversation can accept images.",
+
   // agentStatus
   "agentStatus.working": "Working",
   "agentStatus.blocked": "Blocked",

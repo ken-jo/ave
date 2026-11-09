@@ -990,12 +990,14 @@ export function BrowserWorkspace({
   targets,
   manualUrl,
   onManualUrlChange,
+  composerGroupId,
 }: {
   api: AveApi;
   tabId: string;
   targets: ChatPreviewTarget[];
   manualUrl: string | null;
   onManualUrlChange: (tabId: string, url: string | null) => void;
+  composerGroupId?: string | undefined;
 }) {
   const { t } = useTranslation();
   const guest = useWebSurfaceGuest(tabId);
@@ -1161,7 +1163,7 @@ export function BrowserWorkspace({
           <TooltipContent>{t("chatPreviewRail.openUrl")}</TooltipContent>
         </Tooltip>
       </form>
-      <BrowserSurfaceTools api={api} tabId={tabId}
+      <BrowserSurfaceTools api={api} tabId={tabId} composerGroupId={composerGroupId}
         onOpenUrl={(url) => { void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, url)); }} />
       {addressError ? (
         <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-testid="chat-side-panel-browser-address-error">
