@@ -1,5 +1,148 @@
 # Side-panel browser repair report
 
+## Challenge observations and completed local validation
+
+Pages now return as soon as the main document is usable, report ongoing loading, and expose recognized verification interstitials so the model can request user help instead of retrying blindly.
+
+Tab creation, explicit navigation and snapshots return an optional `challenge: { vendor, hint }` observation for supported verification interstitial titles and dedicated DOM markers. The fixed hint tells the model that the user can solve it in the web panel. The observation remains inside the universal untrusted browser-content envelope. It confers no authority, changes no user-agent value and performs no challenge-solving action. A shared result shape keeps producers and consumers aligned; the supported runtime vendor discriminants are defined in [browser-challenge.ts](../../../src/shared/browser-challenge.ts).
+
+Detection uses at most four fixed read-only DOM searches under one **750 ms total budget**. Every returned search handle is discarded, including late results after timeout or cancellation. Caller cancellation and guest replacement remain errors; a changed document drops stale challenge metadata. Ordinary provider script inclusion, article mentions and verification widgets on ordinary pages have negative fixtures. This is conservative marker detection, not guaranteed coverage of every deployed challenge variant.
+
+The native challenge regression failed before the adapter/executor wiring because the tool result lacked `challenge`. After wiring, the real loopback-model executor and parked guest verify all three tool results for the normal page and four interstitial fixtures, including the Korean waiting title. All outputs retain the trust envelope. The HTML fixture declares UTF-8 and prevents external iframe loading; vendor DOM markers are inspected locally.
+
+### Changed files
+
+```text
+docs/evidence/web-panel-2026-11-09/report.md
+src/main/browser/__tests__/browser-actions.test.ts
+src/main/browser/__tests__/browser-challenge.test.ts
+src/main/browser/__tests__/browser-popup-navigation.test.ts
+src/main/browser/__tests__/browser-tab-registry.test.ts
+src/main/browser/browser-actions.ts
+src/main/browser/browser-challenge.ts
+src/main/browser/browser-popup-navigation.ts
+src/main/browser/browser-tab-registry.ts
+src/shared/browser-challenge.ts
+src/shared/browser-tools.ts
+src/shared/tool-timeout-policy.ts
+src/tools/__tests__/browser-tools.test.ts
+src/tools/browser-tools-execute.ts
+src/tools/browser-tools.ts
+test/e2e/ui/browser-navigation-readiness.spec.ts
+```
+
+### Commands and results
+
+All commands ran from `/private/tmp/webfix/ave`. The wrapper selection below names **78 arguments**, including the locale test directory, and collected **83 test files**. The final unsandboxed run passed **2,429 tests**, with **3 existing skips**, in 29.03 seconds. No skip/only or baseline expansion was added. An initial nested-sandbox run failed the document-observation assertion with `observation-error` and the native shell runtime probe with status 71. Outside that outer restriction, the two-file rerun passed **23 tests**, then the complete selection passed as recorded here. No product code or test expectation was changed to address those two failures.
+
+```sh
+AVE_TEST_TMP_ROOT=/private/tmp/webfix-readiness/test-tmp bun run test:vitest -- run \
+  src/__tests__/preload-shape.test.ts \
+  src/boot/__tests__/builtin-approval-actions.test.ts \
+  src/boot/steps/__tests__/workflow-stores-approval-gate.test.ts \
+  src/engine/__tests__/a2a-subagent-message-bus.test.ts \
+  src/engine/__tests__/conversation-history-trim.test.ts \
+  src/engine/__tests__/conversation-loop-guidance.test.ts \
+  src/engine/__tests__/conversation-loop-rounds.test.ts \
+  src/engine/__tests__/subagent-approval-provenance.test.ts \
+  src/engine/__tests__/subagent-resume.test.ts \
+  src/engine/__tests__/subagent-runner.test.ts \
+  src/engine/__tests__/suggested-replies.test.ts \
+  src/engine/turn/__tests__/directory-instructions.test.ts \
+  src/i18n/__tests__ \
+  src/ipc/__tests__/channel-inventory.test.ts \
+  src/ipc/domains/__tests__/browser.test.ts \
+  src/ipc/domains/__tests__/preview-document.test.ts \
+  src/ipc/handlers/__tests__/chat-subagent-mailbox.test.ts \
+  src/main/__tests__/app-menu-zoom.test.ts \
+  src/main/__tests__/app-zoom.test.ts \
+  src/main/__tests__/browser-observation-preview.test.ts \
+  src/main/__tests__/browser-observation.test.ts \
+  src/main/__tests__/browser-preview-guest.test.ts \
+  src/main/__tests__/document-observation.test.ts \
+  src/main/__tests__/document-open.test.ts \
+  src/main/__tests__/terminal-observation.test.ts \
+  src/main/browser/__tests__/browser-actions.test.ts \
+  src/main/browser/__tests__/browser-challenge.test.ts \
+  src/main/browser/__tests__/browser-guest-lifecycle.test.ts \
+  src/main/browser/__tests__/browser-guest-tracking.test.ts \
+  src/main/browser/__tests__/browser-popup-navigation.test.ts \
+  src/main/browser/__tests__/browser-select-script.test.ts \
+  src/main/browser/__tests__/browser-site-navigation.test.ts \
+  src/main/browser/__tests__/browser-tab-activity.test.ts \
+  src/main/browser/__tests__/browser-tab-registry.test.ts \
+  src/main/browser/__tests__/browser-tools-source.test.ts \
+  src/main/browser/__tests__/browser-workspace-desktop.test.ts \
+  src/main/browser/__tests__/browser-workspace.test.ts \
+  src/main/terminal/__tests__/pty-manager.test.ts \
+  src/observation/__tests__/browser-screencast.test.ts \
+  src/permissions/__tests__/approval-gate.test.ts \
+  src/permissions/__tests__/browser-site-card.test.ts \
+  src/permissions/__tests__/browser-site-permissions.test.ts \
+  src/permissions/__tests__/rules-store-and-decision.test.ts \
+  src/permissions/__tests__/sandbox-process-home.test.ts \
+  src/permissions/__tests__/session-scope-end.test.ts \
+  src/prompts/__tests__/suggested-replies-contract.test.ts \
+  src/shared/__tests__/app-zoom.test.ts \
+  src/shared/__tests__/appearance-settings.test.ts \
+  src/shared/__tests__/conversation-title.test.ts \
+  src/shared/__tests__/tool-result-trim.test.ts \
+  src/tools/__tests__/agent-browser-observation.test.ts \
+  src/tools/__tests__/agent-observation-context.test.ts \
+  src/tools/__tests__/agent-spawn-background.test.ts \
+  src/tools/__tests__/agent-terminal-observation.test.ts \
+  src/tools/__tests__/browser-tools.test.ts \
+  src/tools/__tests__/executor-approval-memory-skip-integration.test.ts \
+  src/tools/__tests__/memory-recall.test.ts \
+  src/tools/__tests__/shell-windows-mxc.test.ts \
+  src/tools/__tests__/shell-workload-broker.test.ts \
+  src/tools/__tests__/verified-shell-execution.test.ts \
+  src/tools/__tests__/xlsx-edit-sandbox.integration.test.ts \
+  src/ui/renderer/__tests__/ApprovalDock.test.tsx \
+  src/ui/renderer/__tests__/ChatView.test.tsx \
+  src/ui/renderer/__tests__/TranscriptRenderer.test.tsx \
+  src/ui/renderer/components/__tests__/BrowserWorkspacePanel.test.tsx \
+  src/ui/renderer/components/__tests__/ChatSidePanel.test.tsx \
+  src/ui/renderer/components/__tests__/ToolApprovalContent-agent-action.test.tsx \
+  src/ui/renderer/components/__tests__/ToolApprovalContent-allowed-choices.test.tsx \
+  src/ui/renderer/components/__tests__/ToolApprovalContent-identity-strip.test.tsx \
+  src/ui/renderer/components/__tests__/ToolApprovalContent-session-scope.test.tsx \
+  src/ui/renderer/components/__tests__/WebSurfaceLayer.test.tsx \
+  src/ui/renderer/hooks/__tests__/use-chat-state-remote-turn.test.tsx \
+  src/ui/renderer/preview/__tests__/agent-browser-bridge.test.ts \
+  src/ui/renderer/preview/__tests__/browser-observation-bridge.test.tsx \
+  src/ui/renderer/preview/__tests__/browser-observation-preview.test.tsx \
+  src/ui/renderer/preview/__tests__/host-focus-memory.test.ts \
+  test/renderer/chat-columns.test.tsx \
+  test/renderer/main-panels.test.tsx
+```
+
+| Command | Result |
+| --- | --- |
+| `bun run typecheck` | PASS, zero production type errors |
+| `bun run check:knip` | PASS; existing baseline 5 dev dependencies, 5 duplicates, 42 exports, 7 files, 140 types |
+| `bun run check:biome` | PASS; 13,456 accepted diagnostics / 2,851 entries, unchanged |
+| `bun run check:sot-shapes` | PASS; 6 checker tests; baseline held |
+| `bun run check:i18n-catalog` | PASS; 2 locales / 5,862 keys |
+| `bun run check:gate-core` | PASS; 55 checker tests and all constituent gates |
+| `bun run check:typecheck-tests` | PASS; existing 208-file / 921-error ceiling held; no new errors |
+| `bun run build:main` | PASS; main bundle budget held |
+| `bun run build:renderer` | PASS |
+
+Native command:
+
+`TMPDIR=/private/tmp bun run test:ui-e2e -- test/e2e/ui/main-session-browser-preview.spec.ts test/e2e/ui/browser-observation-preview.spec.ts test/e2e/ui/browser-navigation-readiness.spec.ts --output=/private/tmp/webfix-readiness/native-final-clean`
+
+**25 native tests passed** in 3.1 minutes: **16 parked ref-click cases** across app zoom 0.9, 1, 1.25 and 1.5, device scale 1 and 2, and independent page zoom; **4 observation/focus/navigation/closure flows**; **5 readiness/challenge fixtures**. Here “native” means the actual desktop application and embedded guest, with the panel closed for the parked cases and a local scripted model issuing real browser tool calls. All 16 click cases peaked at **4 guest destruction listeners**, below the limit of 7, with **zero listener warnings**. Cross-origin click navigation and final origin load passed.
+
+In the final normal-document fixture run, the six-second image remained pending while tab creation returned in **1,030 ms** (before: **6,406 ms**) and navigation in **206 ms** (before: **6,062 ms**), both with `loading: true`. A subsequent real guest snapshot exposed the ready control. These are individual controlled fixture timings, including tool/approval overhead; they do not estimate production-site latency. The earlier readiness-only measurement below isolates that item before optional challenge probing was integrated.
+
+An earlier combined native attempt completed eleven tests and then stalled while starting another isolated app, before the browser action path ran. Only that runner and its confirmed child app were terminated. The complete clean rerun above passed on the final main bundle; the separately running user app was preserved.
+
+`git -C /private/tmp/webfix/ave diff --check` and `PATH=/opt/homebrew/opt/grep/libexec/gnubin:$PATH bash .github/scripts/naming-gate.sh 9aff843c0 HEAD` complete the final handoff checks. Added-line review preserves runtime marker discriminants while adding no external-product explanatory prose. Independent bounded reviews found no remaining concrete permission/lifecycle defect after the popup rebinding correction.
+
+Evidence logs and native traces are under `/private/tmp/webfix-readiness/`; the exact test selection is `test-files.json`. Production news sites, real-provider challenge variants, non-macOS native execution, packaged installers and remote CI were not verified in this iteration. No push or merge was performed.
+
 ## Popup authority retirement
 
 Popup policies retain native denial for agent-origin pages, but queue work only under the exact live lease. Releasing a lease, ending a turn, cancellation, pause, replacement, destruction or window release drains pending entries and promptly rejects an active drain, even when its opener never settles. Retirement removes the caller listener and stored opener references. Document transitions within the same live lease retain the existing admitted-popup behavior.

@@ -4,7 +4,7 @@
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
-import { BROWSER_TOOL, browserOrigin, type BrowserToolName, type BrowserPageReadiness } from "../shared/browser-tools.js";
+import { BROWSER_TOOL, browserOrigin, type BrowserToolName, type BrowserPageReadiness, type BrowserPageSnapshot } from "../shared/browser-tools.js";
 export { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import type { ApprovalMemoryScope, BrowserTabOpener } from "../shared/permissions-events.js";
@@ -60,14 +60,7 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
 export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   /** Establish document observation before approval captures its identity. */
   prepare(target: BrowserActionTab<G>): Promise<void>;
-  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<{
-    url: string;
-    title: string;
-    text: string;
-    truncated: boolean;
-    refCount: number;
-    delta: boolean;
-  }>;
+  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<BrowserPageSnapshot>;
   screenshot(target: BrowserActionTab<G>, options?: { fullPage?: boolean }): Promise<{ data: string; mimeType: string; bytes: number }>;
   /** Best-effort display thumbnail of the tab (from `png` when given); never throws. */
   capturePreview?(target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined>;

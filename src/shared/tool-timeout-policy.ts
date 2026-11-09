@@ -17,6 +17,7 @@ export const TOOL_TIMEOUT_POLICY = {
   shellCeilingGraceMs: 31_000,
   globalCeilingMs: 120_000,
   browserLayoutWakeMs: 3_000,
+  browserChallengeProbeMs: 750,
   browserLayoutIdleGraceMs: 1_500,
   // Main-document readiness excludes time spent awaiting site admission, not subresource completion.
   browserNavigationReadyMs: 10_000,

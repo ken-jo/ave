@@ -1,5 +1,7 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
+import { detectBrowserChallenge } from "./browser-challenge.js";
+import type { BrowserChallenge } from "../../shared/browser-challenge.js";
 import { browserControlLifecycle } from "./browser-control-lifecycle.js";
 import { subscribeBrowserGuestDestroyed, type BrowserLifecycleGuest } from "./browser-guest-lifecycle.js";
 import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
@@ -11,7 +13,7 @@ import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
 import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared/agent-observation.js";
 import { validateExternalUrl } from "../../shared/external-url.js";
-import { browserOrigin, type BrowserPageReadiness } from "../../shared/browser-tools.js";
+import { browserOrigin, type BrowserPageReadiness, type BrowserPageSnapshot } from "../../shared/browser-tools.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
@@ -85,7 +87,7 @@ export async function snapshot(
   target: ActionTarget,
   options: { interactive?: boolean; delta?: boolean },
   refs: BrowserRefTable = browserRefs,
-): Promise<{ url: string; title: string; text: string; truncated: boolean; refCount: number; delta: boolean }> {
+): Promise<BrowserPageSnapshot> {
   throwIfAborted(target.signal);
   const nodes = await fullTree(target.cdp);
   throwIfAborted(target.signal);
@@ -740,8 +742,8 @@ export interface NavigableGuest {
   getURL(): string;
   isLoading(): boolean;
   on(event: "dom-ready" | "did-navigate" | "did-navigate-in-page", listener: (...args: unknown[]) => void): unknown;
-  removeListener(event: "dom-ready" | "did-navigate" | "did-navigate-in-page", listener: (...args: unknown[]) => void): unknown;
   on(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
+  removeListener(event: "dom-ready" | "did-navigate" | "did-navigate-in-page", listener: (...args: unknown[]) => void): unknown;
   removeListener(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
   stop(): void;
 }
@@ -1474,6 +1476,15 @@ export function createBrowserPageActions(
     siteGates.set(guest, Object.assign(dispose, { waiting: stop.waiting, pausedMs: stop.pausedMs, assertAllowed: stop.assertAllowed }));
     unsubscribe = subscribeBrowserGuestDestroyed(guest, dispose);
   };
+  const observeChallenge = async (live: LiveTab, guest: WebContents, session: CdpSession, signal: AbortSignal): Promise<BrowserChallenge | undefined> => {
+    const documentId = live.tab.documentId;
+    let challenge: BrowserChallenge | undefined;
+    try { challenge = await detectBrowserChallenge(session, guest.getTitle(), signal); }
+    catch { throwIfAborted(signal); } // Optional observation must not fail an otherwise usable page on unsupported reads.
+    throwIfAborted(signal);
+    if (guest.isDestroyed() || live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was closed or replaced");
+    return live.tab.documentId === documentId ? challenge : undefined;
+  };
   // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
   // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
   const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => awake(live, async () => {
@@ -1509,8 +1520,16 @@ export function createBrowserPageActions(
       throwIfAborted(live.signal);
       if (live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was replaced");
     },
-    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
-      awake(live, async () => snapshot(await targetFor(live, attribution, hostContentOrigin), options)),
+    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) => awake(live, async () => {
+      const guest = live.tab.guest;
+      if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+      const target = await targetFor(live, attribution, hostContentOrigin);
+      const shot = await snapshot(target, options);
+      const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+      const challenge = await observeChallenge(live, guest, session, live.signal);
+      target.assertCurrent?.(false);
+      return { ...shot, ...(challenge ? { challenge } : {}) };
+    }),
     screenshot: async (live: LiveTab, options) => awake(live, async () => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options)),
     capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),
     hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
@@ -1536,7 +1555,14 @@ export function createBrowserPageActions(
       const lifecycle = browserControlLifecycle(live, guest, listener => subscribeBrowserGuestDestroyed(guest, listener));
       try {
         await installSiteGate(live, guest, session, lifecycle.signal);
-        return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined, siteGates.get(guest));
+        const loaded = await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined, siteGates.get(guest));
+        const documentId = live.tab.documentId;
+        const challenge = await observeChallenge(live, guest, session, lifecycle.signal);
+        const gate = siteGates.get(guest);
+        while (gate?.waiting()) { gate.assertAllowed(); await sleep(SETTLE_POLL_MS, lifecycle.signal); }
+        gate?.assertAllowed();
+        throwIfAborted(lifecycle.signal);
+        return { ...loaded, url: guest.getURL(), loading: guest.isLoading(), ...(challenge && live.tab.documentId === documentId ? { challenge } : {}) };
       }
       finally { lifecycle.cancel(); }
     }),

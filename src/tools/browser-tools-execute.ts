@@ -426,6 +426,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           url: shot.url,
           title: shot.title,
           refs: shot.refCount,
+          ...(shot.challenge ? { challenge: shot.challenge } : {}),
           ...(shot.delta ? { delta: true } : {}),
           ...(shot.truncated ? { truncated: true } : {}),
         }, shot.text), browserPreview);

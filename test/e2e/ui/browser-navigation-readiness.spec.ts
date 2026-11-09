@@ -4,7 +4,15 @@ import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
 
 test.use({ trace: "on" });
-test("returns usable main documents while a subresource still holds the load event open", async () => {
+const DOCUMENT_FIXTURES = [
+  { name: "usable document", title: "Usable document", marker: "", vendor: undefined },
+  { name: "waiting interstitial", title: "잠시만 기다리십시오…", marker: "", vendor: "cloudflare" },
+  { name: "embedded verification", title: "Verification", marker: '<iframe src="https://geo.captcha-delivery.com/captcha/fixture"></iframe>', vendor: "datadome" },
+  { name: "verification dialog", title: "Verification", marker: '<div id="px-captcha" role="dialog"></div>', vendor: "perimeterx" },
+  { name: "security container", title: "Verification", marker: '<div id="sec-cpt-container"></div>', vendor: "akamai" },
+] as const;
+
+for (const fixture of DOCUMENT_FIXTURES) test(`returns main-document readiness and challenge metadata: ${fixture.name}`, async () => {
   test.setTimeout(75_000);
   const model = "document-readiness-fixture";
   const measurements: Array<{ tool: string; elapsedMs: number; header: Record<string, unknown>; output: string }> = [];
@@ -31,7 +39,7 @@ test("returns usable main documents while a subresource still holds the load eve
       timers.add(timer); return;
     }
     if (request.method === "GET" && request.url?.startsWith("/document")) {
-      response.writeHead(200, { "content-type": "text/html" }).end(`<!doctype html><title>Usable document</title><h1>Usable document</h1><button>Ready control</button><img src="/held-image?${encodeURIComponent(request.url)}">`); return;
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(`<!doctype html><meta http-equiv="Content-Security-Policy" content="frame-src 'none'"><title>${fixture.title}</title>${fixture.marker}<h1>Usable document</h1><button>Ready control</button><img src="/held-image?${encodeURIComponent(request.url)}">`); return;
     }
     if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
     const chunks: Buffer[] = [];
@@ -93,7 +101,13 @@ test("returns usable main documents while a subresource still holds the load eve
       expect(row.elapsedMs).toBeLessThan(5_500);
     }
     expect(measurements[2]?.output).toContain("Ready control");
-    expect(guest).toMatchObject({ url: `${baseUrl}/document?navigated`, loading: true, title: "Usable document" });
+    for (const row of measurements) {
+      expect(row.output).toMatch(/^<browser-content trust="untrusted-web-data">/);
+      expect(row.output).toMatch(/<\/browser-content>$/);
+      if (fixture.vendor) expect(row.header.challenge).toEqual({ vendor: fixture.vendor, hint: "The user can solve it in the web panel." });
+      else expect(row.header).not.toHaveProperty("challenge");
+    }
+    expect(guest).toMatchObject({ url: `${baseUrl}/document?navigated`, loading: true, title: fixture.title });
     await expect(page.getByTestId(TEST_IDS.panePanelToggle)).toHaveAttribute("aria-pressed", "false");
   } finally {
     approving = false;
