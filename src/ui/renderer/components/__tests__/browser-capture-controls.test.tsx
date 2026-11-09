@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWorkspaceApi } from "../../../../shared/browser-workspace.js";
 import { BrowserCaptureControls } from "../browser-capture-controls.js";
@@ -55,9 +55,21 @@ describe("browser user captures", () => {
   it("cancels area selection with Escape without capturing", async () => {
     const { capture } = mount();
     await choose("browser-capture-area");
-    fireEvent.keyDown(await screen.findByTestId("browser-capture-overlay"), { key: "Escape" });
+    const overlay = await screen.findByTestId("browser-capture-overlay");
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await waitFor(() => expect(overlay).toHaveFocus());
+    fireEvent.keyDown(overlay, { key: "Escape" });
     expect(screen.queryByTestId("browser-capture-overlay")).toBeNull();
     expect(capture).not.toHaveBeenCalled();
+  });
+
+  it("returns focus to the capture menu when area selection cannot start", async () => {
+    const { getState } = mount();
+    getState.mockResolvedValueOnce({ ok: false, error: "no-such-tab" } as never);
+    await choose("browser-capture-area");
+    await screen.findByRole("alert");
+    await waitFor(() => expect(screen.getByTestId("browser-capture-menu")).toHaveFocus());
+    expect(screen.queryByTestId("browser-capture-overlay")).toBeNull();
   });
 
   it("keeps a drag owned by its initiating pointer", async () => {
