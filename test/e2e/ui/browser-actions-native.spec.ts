@@ -61,8 +61,10 @@ async function read(app: ElectronApplication): Promise<NativeActionResult> {
 
 async function launch(testInfo: TestInfo | undefined, mode: FixtureMode): Promise<ElectronApplication> {
   const app = await launchNativeFixture("ave-browser-actions-", async ({ runtime, assets }) => {
+    const home = join(runtime, "home");
     const mainOut = join(assets, "main.mjs");
     const preloadOut = join(assets, "preload.cjs");
+    await fs.mkdir(home, { recursive: true });
     await build({ entryPoints: [join(FIXTURE_DIR, "preload.ts")], outfile: preloadOut, bundle: true, format: "cjs", platform: "node", external: ["electron"], logLevel: "silent" });
     await build({
       entryPoints: [join(FIXTURE_DIR, "main.ts")], outfile: mainOut,
@@ -71,7 +73,7 @@ async function launch(testInfo: TestInfo | undefined, mode: FixtureMode): Promis
     });
     return launchElectron({
       args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
-      env: buildIsolatedElectronEnv({ HOME: process.env.HOME, USERPROFILE: process.env.HOME, AVE_HOME: join(runtime, "ave-home"), AVE_NATIVE_FIXTURE_DIR: FIXTURE_DIR, AVE_NATIVE_FIXTURE_PRELOAD: preloadOut, AVE_NATIVE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
+      env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: join(runtime, "ave-home"), AVE_NATIVE_FIXTURE_DIR: FIXTURE_DIR, AVE_NATIVE_FIXTURE_PRELOAD: preloadOut, AVE_NATIVE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
     });
   });
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[native-browser:stderr] ${data}`));
@@ -114,6 +116,19 @@ async function close(app: ElectronApplication): Promise<void> {
   await closeNativeFixture(app, () => app.evaluate(() =>
     (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture.close()));
 }
+
+test("native action fixture isolates its home from the parent process", async ({ sharedApp: app }) => {
+  const runtime = nativeFixturePaths(app).runtime;
+  const expected = join(runtime, "home");
+  const child = await app.evaluate(() => {
+    const home = process.env.HOME;
+    return { home, userProfile: process.env.USERPROFILE, osHome: process.getBuiltinModule("node:os").homedir(),
+      aveHome: process.env.AVE_HOME, homeDirectory: home !== undefined && process.getBuiltinModule("node:fs").statSync(home).isDirectory() };
+  });
+  expect(child).toEqual({ home: expected, userProfile: expected, osHome: expected,
+    aveHome: join(runtime, "ave-home"), homeDirectory: true });
+  expect(child.home).not.toBe(process.env.HOME);
+});
 
 test("@cdp navigation reads main text while a subresource remains open", async ({ sharedApp: app }) => {
   const result = await run(app, "read-content");

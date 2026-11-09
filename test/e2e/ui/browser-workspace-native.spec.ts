@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSharedElectronTest, sharedElectronTest as isolatedTest } from "./shared-electron.js";
-import { closeNativeFixture, launchNativeFixture } from "./native-fixture-runtime.js";
+import { closeNativeFixture, launchNativeFixture, nativeFixturePaths } from "./native-fixture-runtime.js";
 import { BROWSER_WORKSPACE_LIMITS } from "../../../src/shared/browser-workspace.js";
 import { buildIsolatedElectronEnv, launchElectron, setWindowSize } from "./seeded-electron.js";
 import type { WorkspaceNativeFixture, WorkspaceNativeState } from "./browser-workspace-native/main.js";
@@ -34,7 +34,9 @@ const test = createSharedElectronTest<ElectronApplication>({
 
 async function launch(mode: "cdp" | "foreground" = "cdp") {
   const app = await launchNativeFixture("ave-browser-workspace-", async ({ runtime, assets }) => {
+    const home = join(runtime, "home");
     const mainOut = join(assets, "main.mjs");
+    await fs.mkdir(home, { recursive: true });
     await build({
       entryPoints: [join(HERE, "browser-workspace-native/main.ts")], outfile: mainOut,
       bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron", "@napi-rs/canvas"],
@@ -42,7 +44,7 @@ async function launch(mode: "cdp" | "foreground" = "cdp") {
     });
     return launchElectron({
       args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
-      env: buildIsolatedElectronEnv({ AVE_HOME: join(runtime, "ave-home"), AVE_WORKSPACE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
+      env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: join(runtime, "ave-home"), AVE_WORKSPACE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
     });
   });
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[workspace-native:stderr] ${data}`));
@@ -77,6 +79,19 @@ async function nativePopupPage(app: ElectronApplication) {
   if (!popup) throw new Error("Native popup page disappeared");
   return popup;
 }
+
+test("native workspace fixture isolates its home from the parent process", async ({ sharedApp: app }) => {
+  const runtime = nativeFixturePaths(app).runtime;
+  const expected = join(runtime, "home");
+  const child = await app.evaluate(() => {
+    const home = process.env.HOME;
+    return { home, userProfile: process.env.USERPROFILE, osHome: process.getBuiltinModule("node:os").homedir(),
+      aveHome: process.env.AVE_HOME, homeDirectory: home !== undefined && process.getBuiltinModule("node:fs").statSync(home).isDirectory() };
+  });
+  expect(child).toEqual({ home: expected, userProfile: expected, osHome: expected,
+    aveHome: join(runtime, "ave-home"), homeDirectory: true });
+  expect(child.home).not.toBe(process.env.HOME);
+});
 
 isolatedTest("CDP native popup preserves registration, hardening, opener, session and close lifecycle", { annotation: { type: "isolated-app", description: "Exercises native window lifecycle" } }, async () => {
   const app = await launch();

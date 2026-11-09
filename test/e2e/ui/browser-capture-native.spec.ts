@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSharedElectronTest } from "./shared-electron.js";
-import { closeNativeFixture, launchNativeFixture } from "./native-fixture-runtime.js";
+import { closeNativeFixture, launchNativeFixture, nativeFixturePaths } from "./native-fixture-runtime.js";
 import { buildIsolatedElectronEnv, launchElectron, setWindowSize } from "./seeded-electron.js";
 import type { BrowserScreenshotOptions } from "../../../src/shared/browser-capture.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./browser-capture-native/contract.js";
@@ -15,14 +15,16 @@ const FIXTURE = join(HERE, "browser-capture-native");
 const test = createSharedElectronTest<ElectronApplication>({
   launch: async () => {
     const app = await launchNativeFixture("ave-browser-capture-", async ({ runtime, assets }) => {
+      const home = join(runtime, "home");
       const mainOut = join(assets, "main.mjs");
+      await fs.mkdir(home, { recursive: true });
       await build({ entryPoints: [join(FIXTURE, "preload.ts")], outfile: join(assets, "preload.cjs"), bundle: true, format: "cjs", platform: "node", external: ["electron"], logLevel: "silent" });
       await build({ entryPoints: [join(FIXTURE, "renderer.tsx")], outfile: join(assets, "renderer.js"), bundle: true, format: "iife", platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"test"' }, logLevel: "silent" });
       await build({ entryPoints: [join(FIXTURE, "main.ts")], outfile: mainOut, bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron", "@napi-rs/canvas"],
         banner: { js: "import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);" }, logLevel: "silent" });
       return launchElectron({
         args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
-        env: buildIsolatedElectronEnv({ HOME: process.env.HOME, USERPROFILE: process.env.HOME, AVE_HOME: join(runtime, "ave-home"), AVE_CAPTURE_FIXTURE_ASSETS: assets,
+        env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: join(runtime, "ave-home"), AVE_CAPTURE_FIXTURE_ASSETS: assets,
           AVE_CAPTURE_FIXTURE_RUNTIME: runtime, AVE_CAPTURE_FIXTURE_PAGE: join(HERE, "browser-actions-native/page.html") }),
       });
     });
@@ -84,6 +86,19 @@ function expectFixtureBands(result: CaptureNativeResult): void {
   }
   for (const [channel, value] of [0, 166, 90].entries()) expect(Math.abs((result.bottomPixelRGB[channel] ?? -255) - value)).toBeLessThanOrEqual(2);
 }
+
+test("native capture fixture isolates its home from the parent process", async ({ sharedApp: app }) => {
+  const runtime = nativeFixturePaths(app).runtime;
+  const expected = join(runtime, "home");
+  const child = await app.evaluate(() => {
+    const home = process.env.HOME;
+    return { home, userProfile: process.env.USERPROFILE, osHome: process.getBuiltinModule("node:os").homedir(),
+      aveHome: process.env.AVE_HOME, homeDirectory: home !== undefined && process.getBuiltinModule("node:fs").statSync(home).isDirectory() };
+  });
+  expect(child).toEqual({ home: expected, userProfile: expected, osHome: expected,
+    aveHome: join(runtime, "ave-home"), homeDirectory: true });
+  expect(child.home).not.toBe(process.env.HOME);
+});
 
 async function layout(app: ElectronApplication) {
   const native = await app.evaluate(({ BrowserWindow, webContents }) => {
