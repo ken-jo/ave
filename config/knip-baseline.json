@@ -84,11 +84,6 @@
     },
     {
       "type": "exports",
-      "file": "src/boot/dev-flags.ts",
-      "name": "isConfigured"
-    },
-    {
-      "type": "exports",
       "file": "src/boot/steps/reviewer-wiring.ts",
       "name": "ReviewerProviderUnconfiguredError"
     },
