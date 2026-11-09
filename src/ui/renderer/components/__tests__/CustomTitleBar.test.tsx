@@ -173,11 +173,13 @@ describe("CustomTitleBar", () => {
     });
 
     it("keeps the sidebar reopen control available in fullscreen without native controls", async () => {
-      const { getByRole, queryByTestId } = render(
-        <CustomTitleBar keepVisibleInFullscreen><button>Show sidebar</button></CustomTitleBar>,
+      const { getByRole, getByTestId, queryByTestId } = render(
+        <CustomTitleBar keepVisibleInFullscreen leadClearance={312}><button>Show sidebar</button></CustomTitleBar>,
       );
       await act(async () => { fullscreenListener?.(true); });
       expect(getByRole("button", { name: "Show sidebar" })).toBeVisible();
+      // The fullscreen band keeps the path on the pane title's line, as the windowed band does.
+      expect(getByTestId("custom-titlebar-plain").style.paddingLeft).toBe("312px");
       expect(queryByTestId("titlebar-minimize")).toBeNull();
       expect(queryByTestId("titlebar-maximize")).toBeNull();
       expect(queryByTestId("titlebar-close")).toBeNull();

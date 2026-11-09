@@ -37,6 +37,7 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
       });
     };
     const band = document.querySelector('[data-testid^="custom-titlebar"]');
+    const strip = document.querySelector('[data-testid="window-notice-strip"]');
     const card = document.querySelector('[data-testid="sidebar-card"]');
     const rail = document.querySelector('[data-testid="sidebar-rail"]');
     const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
@@ -46,6 +47,7 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
       viewport: { width: innerWidth, height: innerHeight },
       // Where the band's path row starts: its content edge, past the padding CustomTitleBar computes.
       bandLead: band ? band.getBoundingClientRect().left + parseFloat(getComputedStyle(band).paddingLeft) : null,
+      strip: strip ? box(strip) : null,
       card: card ? box(card) : null,
       rail: rail ? box(rail) : null,
       handle: handle ? { ...box(handle), hit: hit(handle) } : null,
@@ -185,9 +187,12 @@ for (const axis of ["row", "column"] as const) {
         expect(Math.abs(second.left - first.right - 8)).toBeLessThanOrEqual(0.5);
       } else {
         expect(Math.abs(second.top - first.bottom - 8)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(second.left - first.left)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(second.right - first.right)).toBeLessThanOrEqual(0.5);
       }
       if (geometry.bandLead === null || first.titleLeft === null || second.titleLeft === null) throw new Error("Expected band and pane header titles");
       expect(Math.abs(geometry.bandLead - first.titleLeft)).toBeLessThanOrEqual(1);
+      if (axis === "column") expect(Math.abs(second.titleLeft - first.titleLeft)).toBeLessThanOrEqual(0.5);
       expect(geometry.handle.hit).toBe(true);
       expect(geometry.panes.every((pane) => pane.buttons.length > 0 && pane.buttons.every((button) => button.hit))).toBe(true);
     } finally {
@@ -195,6 +200,31 @@ for (const axis of ["row", "column"] as const) {
     }
   });
 }
+
+test("a visible banner moves the pane down by its lane while the sidebar card stays on the card line", async () => {
+  const testInfo = test.info();
+  const settings = buildLlmSettings();
+  // A retired provider id raises the persistent RetiredProviderNotice banner on launch.
+  const context = await launchSeededElectron({
+    historyRows: [],
+    settings: { ...settings, llm: { ...(settings.llm as Record<string, unknown>), provider: "copilot" } },
+  });
+  try {
+    await setWindowSize(context.app, 1243, 800);
+    await expect(context.page.getByTestId("retired-provider-notice")).toBeVisible();
+    const geometry = await measureShell(context.page, testInfo, "shell-visible-banner");
+    if (!geometry.card || !geometry.strip) throw new Error("Expected sidebar card and banner lane");
+    expect(geometry.strip.height).toBeGreaterThan(0);
+    expect(Math.abs(geometry.card.top - 40)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(geometry.panes[0].top - geometry.card.top - geometry.strip.height)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometry.panes[0].left - geometry.card.right - 4)).toBeLessThanOrEqual(0.5);
+  } finally {
+    await teardownSeededElectron(context, { terminate: true });
+  }
+});
+
+// Fullscreen is not driven here: entering it on macOS takes the Space and the focus, which the background e2e rule forbids.
+// The `keepVisibleInFullscreen` branch is covered by CustomTitleBar.test.tsx, which holds its lead on the same `leadClearance`.
 
 test("a toolbar wider than the window cannot widen the shell column past the pane", async () => {
   const testInfo = test.info();
