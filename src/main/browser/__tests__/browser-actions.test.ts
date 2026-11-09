@@ -1,4 +1,5 @@
 import { deferred } from "../../../__tests__/support/deferred.js";
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
@@ -1550,6 +1551,52 @@ describe("typed page actions", () => {
     expect(cdp.send).not.toHaveBeenCalled();
   });
 
+  it.each(["darwin", "linux", "win32"] as const)("verifies native selection through the keyboard route on %s", async (platform) => {
+    const originalPlatform = process.platform;
+    setProcessPlatform(platform);
+    try {
+      const cdp = new FakeCdp();
+      const selectedNodes = (selected: boolean) => page([
+        ax("select", "combobox", "Choice", { backendDOMNodeId: 11, value: { type: "string", value: selected ? "Beta choice" : "Alpha" } }),
+        ax("alpha", "option", "Alpha", { backendDOMNodeId: 21, properties: [{ name: "selected", value: { value: !selected } }] }),
+        ax("beta", "option", "Beta choice", { backendDOMNodeId: 22, properties: [{ name: "selected", value: { value: selected } }] }),
+      ]);
+      cdp.nodes = selectedNodes(false);
+      const refs = new BrowserRefTable();
+      await snapshot(target(cdp), {}, refs);
+      const send = cdp.send.bind(cdp);
+      const characters: string[] = [];
+      vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+        if (method === "DOM.describeNode") return { node: { nodeName: "SELECT", backendNodeId: 11, children: [
+          { nodeName: "OPTION", backendNodeId: 21, attributes: ["value", "a"], children: [{ nodeName: "#text", nodeValue: "Alpha" }] },
+          { nodeName: "OPTION", backendNodeId: 22, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "Beta choice" }] },
+        ] } };
+        const result = await send(method, params);
+        if (method === "Input.dispatchKeyEvent") {
+          if (params?.type === "char") characters.push(params.text as string);
+          if (characters.join("") === "Beta choice" || (platform !== "darwin" && params?.key === "Enter")) cdp.nodes = selectedNodes(true);
+        }
+        return result;
+      });
+      await expect(select(target(cdp), "e1", "b", refs)).resolves.toBeUndefined();
+      const keys = cdp.calls.filter((call) => call.method === "Input.dispatchKeyEvent").map((call) => call.params ?? {});
+      if (platform === "darwin") {
+        expect(characters.join("")).toBe("Beta choice");
+        expect(keys.map((key) => key.key)).not.toContain("ArrowDown");
+        expect(keys.map((key) => key.key)).not.toContain("Enter");
+      } else {
+        expect(characters).toEqual([]);
+        expect(keys.filter((key) => key.type !== "keyUp").map((key) => key.key)).toEqual(["Home", "ArrowDown", "Enter"]);
+      }
+      cdp.nodes = selectedNodes(false);
+      vi.mocked(cdp.send).mockImplementation(async (method, params) => method === "DOM.describeNode"
+        ? { node: { nodeName: "SELECT", backendNodeId: 11, children: [{ nodeName: "OPTION", backendNodeId: 22, attributes: ["value", "b"], children: [{ nodeName: "#text", nodeValue: "Beta choice" }] }] } }
+        : send(method, params));
+      await expect(select(target(cdp), "e1", "b", refs)).rejects.toMatchObject({ code: "select-unverified" });
+    } finally {
+      setProcessPlatform(originalPlatform);
+    }
+  });
   it("rejects custom select and intermediate navigation instead of declaring selection complete", async () => {
     const cdp = new FakeCdp();
     cdp.nodes = page([ax("select", "combobox", "Choice", { backendDOMNodeId: 11 })]);

@@ -40,6 +40,11 @@ Keep OS-focus runs serial. Their internal foreground fixture mode is selected
 by the tagged tests. It bypasses the background policy and presents its own
 windows; it does not use the app's background main-window presenter.
 
+The native select specs also run on an unlocked developer Mac. Selection uses
+the closed control's keyboard typeahead on macOS: arrow keys open a system-owned
+popup that the page input channel cannot drive. The action still verifies the
+requested option and final value, and rejects navigation during selection.
+
 When validating desktop non-interference on macOS, sample this command before,
 throughout, and after a default run, recording timestamps and read failures.
 Use a separate sampler at roughly 250 ms intervals; actual observations can

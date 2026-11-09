@@ -656,8 +656,13 @@ export async function select(target: ActionTarget, ref: string, value: string, r
       }
       // No activating input is marked complete: a navigation during any key must remain a failure rather than being accepted as final selection.
       await dispatchKey(target.cdp, "Home");
-      for (let step = 0; step < index; step++) await dispatchKey(target.cdp, "ArrowDown");
-      await dispatchKey(target.cdp, "Enter");
+      if (process.platform === "darwin") {
+        // Arrows open a system-owned popup outside the renderer input route. Type ahead in the closed control instead.
+        for (const text of desired.label) await target.cdp.send("Input.dispatchKeyEvent", { type: "char", key: text, text });
+      } else {
+        for (let step = 0; step < index; step++) await dispatchKey(target.cdp, "ArrowDown");
+        await dispatchKey(target.cdp, "Enter");
+      }
       const current = await readOptions();
       if (JSON.stringify(current) !== JSON.stringify(options)) throw new BrowserActionError("select-changed", "the options changed while selecting; take a new snapshot");
       const tree = await fullTree(target.cdp);
