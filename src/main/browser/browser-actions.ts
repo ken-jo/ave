@@ -1,5 +1,8 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
+import { captureBrowserPage, captureBrowserViewport } from "./browser-capture.js";
+import type { BrowserScreenshotOptions } from "../../shared/browser-capture.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { browserControlLifecycle } from "./browser-control-lifecycle.js";
 import { subscribeBrowserGuestDestroyed, type BrowserLifecycleGuest } from "./browser-guest-lifecycle.js";
 import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
@@ -113,43 +116,13 @@ export async function snapshot(
   }) };
 }
 
-// A tab that is not shown paints no frames, and Page.captureScreenshot then never answers (seen in the real app: a hidden side-panel tab hung until the
-// host's 120s ceiling). Bound it and say what to do instead.
-const SCREENSHOT_MAX_MS = 10_000;
-
 export async function screenshot(
   target: ActionTarget,
-  maxMs = SCREENSHOT_MAX_MS,
-  options: { fullPage?: boolean } = {},
-): Promise<{ data: string; mimeType: "image/png"; bytes: number }> {
-  throwIfAborted(target.signal);
-  if (options.fullPage) throw new BrowserActionError("screenshot-unavailable", "full page capture is unavailable for this browser surface; use a viewport screenshot");
-  const params: Record<string, unknown> = { format: "png" };
-  const timedOut = Symbol("timed-out");
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const result = await Promise.race([
-    target.cdp.send("Page.captureScreenshot", params) as Promise<{ data?: string }>,
-    new Promise<typeof timedOut>((resolve) => {
-      timer = setTimeout(() => resolve(timedOut), maxMs);
-    }),
-  ]).finally(() => clearTimeout(timer));
-  throwIfAborted(target.signal);
-  if (result === timedOut) {
-    throw new BrowserActionError(
-      "screenshot-timeout",
-      `the tab drew no image within ${maxMs / 1000}s; a tab that is not shown cannot be captured. Show it with browser_tabs {"select": "${target.tabId}"} or use browser_snapshot, which works on hidden tabs`,
-    );
-  }
-  if (typeof result.data !== "string" || result.data.length === 0) {
-    throw new BrowserActionError("screenshot-failed", "the tab returned no image; it may be hidden or still loading");
-  }
-  const bytes = Buffer.byteLength(result.data, "base64");
-  if (bytes > 10 * 1024 * 1024) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture byte limit; use a smaller viewport");
-  const header = Buffer.from(result.data.slice(0, 32), "base64");
-  if (header.length < 24 || header.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new BrowserActionError("screenshot-failed", "the tab returned an invalid image");
-  const width = header.readUInt32BE(16), height = header.readUInt32BE(20);
-  if (width < 1 || height < 1 || width * height > 32_000_000) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
-  return { data: result.data, mimeType: "image/png", bytes };
+  maxMs: number = TOOL_TIMEOUT_POLICY.browserCaptureMs,
+  options: BrowserScreenshotOptions = {},
+  pixelRatio = 1,
+) {
+  return captureBrowserPage(target.cdp, target.signal, options, pixelRatio, maxMs, target.captureViewport);
 }
 
 const WAIT_POLL_MS = 250;
@@ -1392,6 +1365,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     onDestroyed: (listener) => subscribeBrowserGuestDestroyed(guest, listener),
     signal: live.signal,
     documentId: () => live.tab.documentId,
+    captureViewport: () => captureBrowserViewport(guest, () => assertCurrent(false)),
     navigationOutcome: () => !live.callerSignal?.aborted && live.tab.controlMode !== "human-paused" && live.tab.guest === guest && !guest.isDestroyed() && live.tab.lease?.id === live.leaseId,
     iframeOrigins: () => guest.mainFrame.framesInSubtree
       .filter((frame) => frame !== guest.mainFrame)
@@ -1409,6 +1383,7 @@ export function createBrowserPageActions(
   originOf: (url: string) => string | null,
   hostContentOrigin: HostContentOrigin,
   previewHost: AgentPreviewHost,
+  capturePixelRatioForGuest: (guest: WebContents) => number,
 ): BrowserPageActions<WebContents> {
   const withActivity = createBrowserTabActivity((guestId, awake) => attribution.setAgentTabAwake(guestId, awake));
   const awake = async <T>(live: LiveTab, act: () => Promise<T>): Promise<T> => {
@@ -1471,7 +1446,15 @@ export function createBrowserPageActions(
     },
     snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
       awake(live, async () => snapshot(await targetFor(live, attribution, hostContentOrigin), options)),
-    screenshot: async (live: LiveTab, options) => awake(live, async () => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options)),
+    screenshot: async (live: LiveTab, options) => {
+      if (options?.fullPage && live.tab.targetKind === "embedded") throw new BrowserActionError("screenshot-unavailable", "full-page capture is unavailable for embedded browser surfaces");
+      return awake(live, async () => {
+        const target = await targetFor(live, attribution, hostContentOrigin);
+        const guest = live.tab.guest;
+        if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+        return screenshot(target, TOOL_TIMEOUT_POLICY.browserCaptureMs, options, capturePixelRatioForGuest(guest));
+      });
+    },
     capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),
     hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
     drag: async (live, sourceRef, targetRef) => tracked(live, async () => drag(await targetFor(live, attribution, hostContentOrigin, true), sourceRef, targetRef)),

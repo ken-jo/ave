@@ -37,6 +37,7 @@ export interface ActionTarget {
   // Host frame metadata also includes children outside the protocol target.
   iframeOrigins?(): readonly string[];
   documentId?(): number;
+  captureViewport?(): Promise<{ data: string }>;
   // Revalidate host identity in the same turn that dispatches the command.
   assertCurrent?(keyboard: boolean): void;
 }

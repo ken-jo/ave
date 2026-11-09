@@ -433,7 +433,6 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
 
     [BROWSER_TOOL.screenshot]: async (input, ctx) => {
       if (input.fullPage !== undefined && typeof input.fullPage !== "boolean") return failure("fullPage must be a boolean");
-      if (input.fullPage === true) return failure("screenshot-unavailable: full page capture is unavailable; use a viewport screenshot");
       const target = live(input, ctx);
       if (!target.ok) return target.result;
       const changed = unchangedSinceApproval(ctx, target.resolved);
@@ -446,7 +445,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         const image = await actions.screenshot(pageTarget(ctx, fresh), { fullPage: input.fullPage === true });
         const browserPreview = await previewOf(actions, pageTarget(ctx, fresh), image.data);
         return withPreview({
-          output: fenceBrowserContent({ tabId: target.resolved.tab.handle, url: target.resolved.tab.guest?.getURL() ?? "", fullPage: input.fullPage === true }),
+          output: fenceBrowserContent({ tabId: target.resolved.tab.handle, url: target.resolved.tab.guest?.getURL() ?? "", fullPage: input.fullPage === true, width: image.width, height: image.height, originalWidth: image.originalWidth, originalHeight: image.originalHeight, scale: image.scale, truncated: image.truncated }),
           isError: false,
           image: { data: image.data, mimeType: image.mimeType, bytes: image.bytes },
         }, browserPreview);

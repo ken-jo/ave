@@ -34,6 +34,7 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   pickFolders(pluginId: string, parent: () => BrowserWindow | null): Promise<{ canceled: boolean; folders: readonly string[] }>;
   pickBrowserUploadFiles(request: BrowserUploadPickerRequest): Promise<readonly string[] | null>;
   browserGuestContentOrigin(guest: WebContents): { x: number; y: number; windowId: number } | null;
+  browserCapturePixelRatio(guest: WebContents): number;
   /** Thumbnails of what the agent's browser tools captured: decoding and keeping them both need Electron. */
   browserAgentPreview: AgentPreviewHost;
   prepareRelease(input: ReleasePrepInput): ReleasePrepOutput;
