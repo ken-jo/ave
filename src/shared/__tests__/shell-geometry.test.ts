@@ -9,6 +9,7 @@ import {
   CHROME_GAP_TIGHT,
   WINDOW_CONTROL_BUTTON_WIDTH,
   windowControlsPlacement,
+  COLLAPSED_RAIL_EDGE,
   COLLAPSED_RAIL_RESERVE,
   CONTENT_TITLE_INSET,
   RAIL_CONTROL_REM,
@@ -41,10 +42,12 @@ describe("shell geometry: collapsed rail reserve", () => {
     expect(COLLAPSED_RAIL_RESERVE - SHELL_GUTTER * 2).toBe(52);
   });
 
-  it("starts the rail-only band on the content title's line, past the darwin traffic lights", () => {
-    expect(RAIL_BAND_LEAD).toBe(COLLAPSED_RAIL_RESERVE + CONTENT_TITLE_INSET);
-    expect(RAIL_BAND_LEAD).toBeGreaterThanOrEqual(BAND_LEAD_PAD_DARWIN);
+  it("starts the rail-only band on the content title's line past the rail", () => {
+    expect(CONTENT_TITLE_INSET).toBe(CHROME_GAP_TIGHT + SHELL_GUTTER);
+    expect(RAIL_BAND_LEAD).toBe(72);
     expect(RAIL_BAND_LEAD).toBeGreaterThan(BAND_EDGE_PAD);
+    // The traffic lights end past the title line; CustomTitleBar's darwin floor keeps the path clear of them.
+    expect(BAND_LEAD_PAD_DARWIN).toBeGreaterThan(RAIL_BAND_LEAD);
   });
 
   it("leaves the rail card room for its widest control at the largest font scale", () => {
@@ -55,6 +58,18 @@ describe("shell geometry: collapsed rail reserve", () => {
 });
 
 describe("window controls placement", () => {
+  it.each([
+    ["darwin", BAND_LEAD_PAD_DARWIN, 80],
+    ["linux", BAND_LEAD_PAD_LINUX, 136],
+    ["win32", BAND_EDGE_PAD, 72],
+  ] as const)("keeps %s band and rendered header starts on their pixel contracts", (_platform, bandFloor, railBandStart) => {
+    expect(Math.max(bandFloor, RAIL_BAND_LEAD)).toBe(railBandStart);
+    expect(COLLAPSED_RAIL_EDGE + CONTENT_TITLE_INSET + 1).toBe(73);
+    // The default expanded list is 232px wide; only its rendered content includes the card's 1px border.
+    expect(Math.max(bandFloor, COLLAPSED_RAIL_RESERVE + 232 + CONTENT_TITLE_INSET)).toBe(312);
+    expect(COLLAPSED_RAIL_RESERVE + 232 + CONTENT_TITLE_INSET + 1).toBe(313);
+  });
+
   it("leaves macOS its lights, trails on Windows and leads on Linux", () => {
     expect(windowControlsPlacement("darwin")).toBe("native");
     expect(windowControlsPlacement("win32")).toBe("trailing");
@@ -80,13 +95,31 @@ describe("shell card top (styles.css)", () => {
     const value = declared(name);
     const literal = /^(\d+(?:\.\d+)?)px$/.exec(value);
     if (literal) return Number(literal[1]);
-    const sum = /^calc\(\s*var\((--[\w-]+)\)\s*\+\s*var\((--[\w-]+)\)\s*\)$/.exec(value);
-    if (sum) return px(sum[1]) + px(sum[2]);
-    throw new Error(`${name}: unsupported value ${value}`);
+    const alias = /^var\((--[\w-]+)\)$/.exec(value);
+    if (alias) return px(alias[1]);
+    // calc() of var() terms joined by + or -, the only shape the shell tokens use.
+    const calculation = /^calc\((.*)\)$/.exec(value);
+    if (!calculation) throw new Error(`${name}: unsupported value ${value}`);
+    const terms = /^\s*var\((--[\w-]+)\)((?:\s*[+-]\s*var\(--[\w-]+\))*)\s*$/.exec(calculation[1]);
+    if (!terms) throw new Error(`${name}: unsupported calc ${value}`);
+    let total = px(terms[1]);
+    for (const [, sign, term] of terms[2].matchAll(/([+-])\s*var\((--[\w-]+)\)/g)) total += (sign === "+" ? 1 : -1) * px(term);
+    return total;
   }
 
   it("starts the sidebar card at or below the window band on every platform", () => {
     expect(px("--shell-card-top")).toBeGreaterThanOrEqual(px("--chrome-band-height"));
     expect(css).not.toMatch(/--shell-card-top-darwin/);
+  });
+
+  it("puts the rail-only content edge on the rail card's trailing edge", () => {
+    expect(px("--shell-collapsed-rail-edge")).toBe(px("--shell-card-inset") + px("--shell-collapsed-rail-width"));
+    expect(px("--shell-collapsed-rail-edge")).toBe(COLLAPSED_RAIL_EDGE);
+    expect(COLLAPSED_RAIL_EDGE).toBe(60);
+  });
+
+  it("derives the canvas origin from the shared card top and the cell half-gutter", () => {
+    expect(px("--shell-canvas-top") + px("--chrome-gap-tight")).toBe(px("--shell-card-top"));
+    expect(px("--shell-canvas-top")).toBeGreaterThanOrEqual(px("--chrome-band-height"));
   });
 });

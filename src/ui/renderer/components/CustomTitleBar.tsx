@@ -86,7 +86,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     return (
       <div
         data-testid="custom-titlebar-plain"
-        className="flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
+        className="flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_EDGE_PAD, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
@@ -103,7 +103,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     return (
       <div
         data-testid="custom-titlebar-darwin"
-        className="ave-glass-clear flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
+        className="ave-glass-clear flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_LEAD_PAD_DARWIN, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
@@ -166,7 +166,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     <div
       data-testid="custom-titlebar"
       data-window-controls={leading ? "leading" : "trailing"}
-      className={`ave-glass-clear ${leading ? "relative " : ""}flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none`}
+      className={`ave-glass-clear ${leading ? "relative " : ""}flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none`}
       style={{
         paddingLeft: `${Math.max(leading ? BAND_LEAD_PAD_LINUX : BAND_EDGE_PAD, leadClearance)}px`,
         paddingRight: leading ? `${BAND_EDGE_PAD}px` : undefined,

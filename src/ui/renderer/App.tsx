@@ -2346,7 +2346,7 @@ export function App() {
             {/* `relative` makes THIS full-height shell column the positioning
                 context for the floating-card Sidebar, which starts one band down
                 (`--shell-card-top`) on the tiles' top line. */}
-            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative flex h-screen min-w-0 flex-col overflow-hidden">
+            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative grid h-screen min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[var(--shell-canvas-top)_minmax(0,1fr)] overflow-hidden">
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it
                   renders IN the band (no separate toolbar row below it). */}
@@ -2504,7 +2504,7 @@ export function App() {
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
                   className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-[var(--motion-normal)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
-                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-reserve)" : ""
+                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-edge)" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
                   style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
@@ -2514,7 +2514,7 @@ export function App() {
                     className="shrink-0 px-(--chrome-gap)"
                     data-testid="window-notice-strip"
                   >
-                    <div className="flex flex-col gap-2 pt-2 empty:hidden [&>*]:m-0" data-testid="window-notice-banners">
+                    <div className="flex flex-col gap-2 pt-2 [&:not(:has(>*))]:hidden [&>*]:m-0" data-testid="window-notice-banners">
                       {documentEngineOnboardingOpen ? <DocumentEngineInstallContent onDismiss={dismissDocumentEngineOnboarding} /> : null}
                       <RetiredProviderNotice
                         retiredProvider={subscriptionRuntimeSelected ? null : retiredLlmProvider}
@@ -2658,7 +2658,7 @@ export function App() {
                                     than nested flex containers, so a tile's rectangle is
                                     one number that the layout, a drag hit-test, and a
                                     measurement in a test all read the same way. */}
-                                <div className="min-h-0 min-w-0 flex-1 pb-(--chrome-gap) pl-(--chrome-gap-tight) pr-(--chrome-gap) pt-0" data-testid="pane-row">
+                                <div className={`min-h-0 min-w-0 flex-1 pb-(--chrome-gap) pr-(--chrome-gap) pt-0 ${sidebarHidden ? "pl-(--chrome-gap-tight)" : "pl-0"}`} data-testid="pane-row">
                                 {/* The positioning context is INSIDE the padding: an
                                     absolutely-positioned child resolves against the padding
                                     box, so anchoring the tiles to the row itself would eat
