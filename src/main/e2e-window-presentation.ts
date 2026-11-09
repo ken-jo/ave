@@ -11,29 +11,59 @@ export function showWindowForRuntime(window: BrowserWindow): void {
   else window.show();
 }
 
-const focusEmulated = new WeakSet<WebContents>();
-const focusEmulationWaiters = new WeakMap<WebContents, Array<() => void>>();
+interface FocusEmulationState {
+  generation: number;
+  confirmed: boolean;
+  disconnected: boolean;
+  destroyed: boolean;
+  waiters: Set<(focused: boolean) => void>;
+}
+const focusEmulationStates = new WeakMap<WebContents, FocusEmulationState>();
 
-/** Recorded by the background test policy once the page has confirmed CDP focus emulation. */
-export function markFocusEmulated(contents: WebContents): void {
-  focusEmulated.add(contents);
-  const waiters = focusEmulationWaiters.get(contents) ?? [];
-  focusEmulationWaiters.delete(contents);
-  for (const waiter of waiters) waiter();
+function focusEmulationState(contents: WebContents): FocusEmulationState {
+  const existing = focusEmulationStates.get(contents);
+  if (existing) return existing;
+  const state: FocusEmulationState = { generation: 0, confirmed: false, disconnected: false, destroyed: contents.isDestroyed(), waiters: new Set() };
+  focusEmulationStates.set(contents, state);
+  if (state.destroyed) return state;
+  const invalidate = (): void => {
+    state.generation++;
+    state.confirmed = false;
+    state.disconnected = true;
+    for (const waiter of state.waiters) waiter(false);
+    state.waiters.clear();
+  };
+  const debuggerApi = contents.debugger;
+  debuggerApi.on("detach", invalidate);
+  contents.once("destroyed", () => {
+    state.destroyed = true;
+    invalidate();
+    debuggerApi.removeListener("detach", invalidate);
+  });
+  return state;
+}
+
+/** Capture the debugger generation before sending focus emulation; only its acknowledgement can confirm focus. */
+export function beginFocusEmulation(contents: WebContents): () => void {
+  const state = focusEmulationState(contents);
+  const generation = state.generation;
+  state.disconnected = false;
+  return () => {
+    if (state.destroyed || contents.isDestroyed() || state.generation !== generation) return;
+    state.confirmed = true;
+    for (const waiter of state.waiters) waiter(true);
+    state.waiters.clear();
+  };
 }
 
 /**
  * Background test windows never take OS focus; the page counts as focused once focus emulation is in force. Resolves false
- * when the page is destroyed first.
+ * when the debugger detaches or the page is destroyed first.
  */
 export function whenFocusEmulated(contents: WebContents): Promise<boolean> {
-  if (focusEmulated.has(contents)) return Promise.resolve(true);
   if (contents.isDestroyed()) return Promise.resolve(false);
-  return new Promise((resolve) => {
-    const destroyed = (): void => resolve(false);
-    contents.once("destroyed", destroyed);
-    const waiters = focusEmulationWaiters.get(contents) ?? [];
-    waiters.push(() => { contents.removeListener("destroyed", destroyed); resolve(true); });
-    focusEmulationWaiters.set(contents, waiters);
-  });
+  const state = focusEmulationState(contents);
+  if (state.destroyed || state.disconnected) return Promise.resolve(false);
+  if (state.confirmed) return Promise.resolve(true);
+  return new Promise((resolve) => { state.waiters.add(resolve); });
 }
