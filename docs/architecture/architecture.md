@@ -869,8 +869,11 @@ Workspace roots follow one host-owned lifecycle:
    registered descendant root is an exclusion boundary and retains its own
    grants and routine scope. Missing cleanup services or any persistence failure
    retain the settings entry (fail closed). After settings persistence, revoke
-   live scope and abort active turns that captured the removed root through the
-   pre-removal global allow-list so a snapshot tool batch cannot continue.
+   live scope in every session, but abort active turns only in the removed
+   project, including its side chats and sub-agents. Turns in other projects
+   continue even if they held directory grants for the removed root. The preview
+   and abort share the project selector; an active turn without a resolvable
+   project is an internal contract error.
 4. Preserve conversation transcripts during the mandatory pre-removal metadata
    detachment. Under a metadata lock, clear only `projectRoot` and `projectName`
    from matching sessions, retain every other metadata field and the JSONL

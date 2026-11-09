@@ -587,8 +587,8 @@ export class ConversationLoop {
   }
 
   /** Whether removing `root` now would stop a running turn here: the removal preview's count, by the removal's own test. */
-  wouldWorkspaceRootRemovalAbortTurn(root: string, options?: WorkspaceRootRevocationOptions): boolean {
-    return this.hasActiveTurn() && workspaceRootRemovalAffectsTurn(this, root, options);
+  wouldWorkspaceRootRemovalAbortTurn(root: string, _options?: WorkspaceRootRevocationOptions): boolean {
+    return workspaceRootRemovalAffectsTurn(this, root);
   }
 
   /** The removal preview's question to every live-scope owner: this loop's running turn, if removal would stop it. */
