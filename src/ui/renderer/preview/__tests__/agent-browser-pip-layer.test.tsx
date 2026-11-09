@@ -5,7 +5,7 @@ import { userEvent } from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
-import type { BrowserObservationEvent } from "../../../../shared/agent-observation.js";
+import type { BrowserObservationEvent, BrowserObservationPreviewMessage } from "../../../../shared/agent-observation.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
 import type { AveApi, AvePreviewApi } from "../../types.js";
 import { t } from "../../../../i18n/runtime.js";
@@ -20,6 +20,7 @@ const TAB = "browser:pip-1";
 const SECOND_TAB = "browser:pip-2";
 const source = Symbol("pip-tabs");
 let emit: (events: BrowserObservationEvent[]) => void;
+let emitFrame: (message: BrowserObservationPreviewMessage) => void;
 let control: (state: BrowserTabControlState) => void;
 let disconnect: () => void;
 let unregister: () => void;
@@ -61,7 +62,7 @@ beforeEach(async () => {
   await act(async () => {});
   disconnect = connectBrowserObservations({
     onAgentObservation: (handler: typeof emit) => { emit = handler; return () => {}; },
-    onObservationPreview: () => () => {}, acknowledgeObservation: async () => ({ ok: true }),
+    onObservationPreview: (handler: typeof emitFrame) => { emitFrame = handler; return () => {}; }, acknowledgeObservation: async () => ({ ok: true }),
     requestObservationPreview: async () => ({ ok: true }),
   } as unknown as AvePreviewApi);
 });
@@ -71,6 +72,21 @@ afterEach(async () => {
 });
 
 describe("window agent browser previews", () => {
+  it("sizes a portrait picture to its captured aspect and leaves stack padding for its shadow", () => {
+    show(); activate();
+    act(() => emitFrame({ kind: "frame", targetId: `target-${TAB}`, sessionId: "fixture-session", tabId: `handle-${TAB}`,
+      frame: 1, mimeType: "image/jpeg", data: "portrait", width: 200, height: 400, ts: 1 }));
+    const picture = screen.getByTestId("browser-observation-preview");
+    expect(Number.parseFloat(picture.style.aspectRatio)).toBe(0.5);
+    expect(cards()[0]?.style.width).toBe("240px");
+    expect(cards()[0]?.style.height).toBe("");
+    expect(picture.contains(screen.getByText(t("agentBrowser.live")))).toBe(true);
+    act(() => emitFrame({ kind: "state", targetId: `target-${TAB}`, sessionId: "fixture-session", tabId: `handle-${TAB}`, state: "stopped" }));
+    expect(Number.parseFloat(picture.style.aspectRatio)).toBe(0.5);
+    expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("p-8");
+    expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("pb-12");
+    expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("right-4");
+  });
   it("shows no card without tabs or observations, then hides only the tab actually visible in the panel", () => {
     show(); expect(cards()).toHaveLength(0);
     activate(); expect(cards()).toHaveLength(1);

@@ -39,13 +39,19 @@ function useElementShown(element: Element | null, probe: (element: Element) => b
  * handle and observation target of the latest agent action for this renderer tab, runs only while shown, and keeps
  * no frame after it stops. Without an agent binding it renders `children` unchanged.
  */
-export function BrowserObservationPreview({ tabId, sessionId, children, probe, active = true, observeHidden = false }: {
+export function BrowserObservationPreview({ tabId, sessionId, children, probe, active = true, observeHidden = false,
+  fitToFrame = false, frameAspectRatio = 4 / 3, onAspectRatioChange }: {
   tabId: string;
   sessionId?: string;
   /** The hosting panel's visibility. A hidden panel stops the preview even before its styles settle. */
   active?: boolean;
   /** Keeps the hidden guest painting at opacity 0 while this preview is live. */
   observeHidden?: boolean;
+  /** Give a floating picture the captured viewport's proportions instead of letterboxing it into a fixed slot. */
+  fitToFrame?: boolean;
+  /** The floating owner's last captured proportions, retained while a stopped preview drops its frame. */
+  frameAspectRatio?: number;
+  onAspectRatioChange?: (ratio: number) => void;
   children?: ReactNode;
   probe?: (element: Element) => boolean;
 }) {
@@ -63,6 +69,8 @@ export function BrowserObservationPreview({ tabId, sessionId, children, probe, a
   const painted = useElementShown(binding && store && active ? element : null, probe);
   const shown = active && painted;
   const state = useSyncExternalStore(store?.subscribe ?? noSubscription, () => store?.get(binding), () => undefined);
+  const ratio = state?.frame ? state.frame.width / state.frame.height : frameAspectRatio;
+  useEffect(() => { if (state?.frame) onAspectRatioChange?.(ratio); }, [state?.frame, ratio, onAspectRatioChange]);
   useEffect(() => {
     if (!observeHidden || !shown || !binding || state?.status !== "live") return undefined;
     setHiddenWebSurfaceObserved(tabId, true);
@@ -81,7 +89,8 @@ export function BrowserObservationPreview({ tabId, sessionId, children, probe, a
 
   if (!binding || !store) return <>{children}</>;
   const frame = state?.frame;
-  return <div ref={setElement} data-testid="browser-observation-preview" className="relative h-full min-h-0 w-full"
+  return <div ref={setElement} data-testid="browser-observation-preview" className={`relative min-h-0 w-full ${fitToFrame ? "" : "h-full"}`}
+    style={fitToFrame ? { aspectRatio: ratio } : undefined}
     data-preview-state={frame ? state?.updating ? "updating" : "live" : state?.status ?? "idle"}>
     {frame ? <img src={frame.src} alt={t("agentBrowser.observationPreview")} draggable={false}
       className="pointer-events-none h-full w-full select-none object-contain"

@@ -16,7 +16,10 @@ import { beginSurfaceDrag, endSurfaceDrag, getWebSurfaceSlot, subscribeWebSurfac
   subscribeWebSurfaces, getWebSurfaces, webSurfaceFavicon } from "./web-surfaces.js";
 import { useWebSurfaceOccluder } from "./use-web-surface-occluder.js";
 
-const EDGE = 12;
+const EDGE = 16;
+const STACK_PADDING = 32;
+const STACK_BOTTOM_PADDING = 48;
+const CARD_CHROME_HEIGHT = 68;
 const LAYOUT_POLL_MS = 250;
 interface PipArea { width: number; height: number }
 
@@ -43,6 +46,7 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
   const event = useBrowserObservation(tabId);
   const [dismissed, setDismissed] = useState<typeof event>();
   const [position, setPosition] = useState<BrowserPipPoint | null>(null);
+  const [aspectRatio, setAspectRatio] = useState(4 / 3);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ pointerId: number; start: BrowserPipPoint; origin: BrowserPipPoint; moved: boolean } | null>(null);
   const suppressClick = useRef(false);
@@ -65,23 +69,31 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
   useLayoutEffect(() => {
     const card = cardRef.current;
     if (!shown || !card || !position) return;
-    const clamped = clampBrowserPipPosition(position, card.getBoundingClientRect(), area);
-    if (clamped.x !== position.x || clamped.y !== position.y) setPosition(clamped);
+    const clamp = () => {
+      const clamped = clampBrowserPipPosition(position, card.getBoundingClientRect(), area);
+      if (clamped.x !== position.x || clamped.y !== position.y) setPosition(clamped);
+    };
+    clamp();
+    const observer = new ResizeObserver(clamp);
+    observer.observe(card);
+    return () => observer.disconnect();
   }, [area, position, shown]);
   const rendered = shown && area.height >= (compact ? 40 : 150);
   useEffect(() => { if (!rendered) finishDrag(); return finishDrag; }, [rendered, finishDrag]);
   if (!rendered) return null;
   const title = event.after.title || tab.title || event.after.url;
   const favicon = webSurfaceFavicon(tabId);
+  const width = Math.min(240, Math.max(0, area.width - (EDGE + STACK_PADDING) * 2),
+    compact ? 240 : Math.max(0, area.height - EDGE - STACK_PADDING - STACK_BOTTOM_PADDING - CARD_CHROME_HEIGHT) * aspectRatio);
   const hide = () => setDismissed(event);
   return <div ref={setCard}
     data-testid="agent-browser-pip-card" data-tab-id={tabId} data-compact={compact}
-    className="pointer-events-auto shrink-0 overflow-hidden rounded-lg border bg-card text-card-foreground shadow-(--elevation-floating)"
-    style={{ width: Math.min(240, Math.max(0, area.width - EDGE * 2)), height: compact ? 40 : 150,
+    className="pointer-events-auto relative shrink-0 overflow-hidden rounded-lg border bg-card text-card-foreground shadow-(--elevation-floating)"
+    style={{ width, height: compact ? 40 : undefined,
       ...(position ? { position: "fixed", left: position.x, top: position.y } : {}) }}>
-    <div className="flex h-full min-w-0">
+    <div className="min-w-0">
       <button type="button" aria-label={t("agentBrowser.openPreview", { title })}
-        className="flex min-w-0 flex-1 touch-none select-none flex-col text-left focus-visible:outline focus-visible:outline-ring"
+        className="flex w-full min-w-0 touch-none select-none flex-col text-left focus-visible:outline focus-visible:outline-ring"
         onKeyDown={(e) => { if (e.key === "Delete") { e.preventDefault(); hide(); } }}
         onClick={(e) => { if (e.detail === 0 || !suppressClick.current) onOpen(tabId); suppressClick.current = false; }}
         onPointerDown={(e) => {
@@ -106,18 +118,19 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
         onLostPointerCapture={finishDrag}
         onPointerUp={(e) => { finishDrag(); if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }}
         onPointerCancel={(e) => { suppressClick.current = false; finishDrag(); if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId); }}>
-        <span className="flex min-h-10 w-full items-center gap-2 px-2 text-xs">
+        <span className="flex h-10 w-full items-center gap-2 pl-2 pr-8 text-xs">
           {favicon ? <img src={favicon} alt="" draggable={false} className="size-4 shrink-0" /> : <Globe className="size-4 shrink-0" />}
           <span className="min-w-0 truncate">{child?.title ? `${child.title} · ${title}` : title}</span>
         </span>
-        {!compact ? <><div className="min-h-0 w-full flex-1">
-          <BrowserObservationPreview tabId={tabId} sessionId={event.sessionId} observeHidden>
+        {!compact ? <><div className="min-h-0 w-full">
+          <BrowserObservationPreview tabId={tabId} sessionId={event.sessionId} observeHidden fitToFrame
+            frameAspectRatio={aspectRatio} onAspectRatioChange={setAspectRatio}>
             <span className="flex h-full items-center justify-center text-xs text-muted-foreground">{t("agentBrowser.observationPreviewUpdating")}</span>
           </BrowserObservationPreview>
         </div><div className="w-full overflow-hidden"><BrowserObservationLiveStrip tabId={tabId} sessionId={event.sessionId} /></div></> : null}
       </button>
       <button type="button" aria-label={t("agentBrowser.hidePreview", { title })} onClick={hide}
-        className="flex size-7 shrink-0 items-center justify-center self-start rounded hover:bg-accent focus-visible:outline focus-visible:outline-ring">
+        className="absolute right-0 top-0 flex size-7 items-center justify-center rounded hover:bg-accent focus-visible:outline focus-visible:outline-ring">
         <X className="size-3.5" />
       </button>
     </div>
@@ -158,7 +171,7 @@ export function AgentBrowserPipLayer({ api, onOpen }: { api: AveApi; onOpen: (ta
     return () => { off(); observer.disconnect(); window.clearInterval(timer); window.removeEventListener("resize", check); };
   }, []);
   return createPortal(<div data-testid="agent-browser-pip-layer"
-    className="pointer-events-none fixed right-3 top-3 z-40 flex max-w-full flex-col-reverse items-end gap-2 overflow-y-auto"
+    className="pointer-events-none fixed right-4 top-4 z-40 flex max-w-full flex-col-reverse items-end gap-2 overflow-y-auto p-8 pb-12"
     style={{ height: Math.max(0, area.height - EDGE) }}>
     {!unavailable ? control.tabs.flatMap((tab) => {
       if (tab.kind !== "embedded" || tab.rendererTabId === null || !surfaces.some((surface) => surface.tabId === tab.rendererTabId)) return [];

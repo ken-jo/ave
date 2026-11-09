@@ -16,7 +16,7 @@ function action(seq: number, rendererTabId = "browser:1", tabId = "tab-1"): Brow
     ts: 1_700_000_000_000 + seq, kind: "action", before: null,
     after: { action: "click", tabId, rendererTabId, url: "https://example.test/", title: "Example" } };
 }
-function frame(number: number, binding = BINDING): BrowserObservationPreviewMessage {
+function frame(number: number, binding = BINDING): BrowserObservationPreviewMessage & { kind: "frame" } {
   return { ...binding, kind: "frame", frame: number, mimeType: "image/jpeg", data: `frame${number}`, width: 640, height: 400, ts: number };
 }
 
@@ -195,4 +195,16 @@ it("keeps hidden painting only while a shown preview is admitted and drops it on
   expect(isHiddenWebSurfaceObserved("browser:1")).toBe(true);
   view.unmount();
   expect(isHiddenWebSurfaceObserved("browser:1")).toBe(false);
+});
+
+it("matches the floating picture and its badge bounds to the actual captured aspect ratio", () => {
+  const changed = vi.fn();
+  render(<BrowserObservationPreview tabId="browser:1" sessionId={SESSION} probe={probe} observeHidden fitToFrame onAspectRatioChange={changed} />);
+  act(() => emitEvents([action(1)]));
+  act(() => emitPreview({ ...frame(1), width: 200, height: 400 }));
+  const picture = screen.getByTestId("browser-observation-preview");
+  expect(Number.parseFloat(picture.style.aspectRatio)).toBe(0.5);
+  expect(changed).toHaveBeenLastCalledWith(0.5);
+  expect(screen.getByRole("img").parentElement).toBe(picture);
+  expect(screen.getByText("실시간").parentElement).toBe(picture);
 });
