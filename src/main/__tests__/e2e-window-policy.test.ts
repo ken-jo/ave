@@ -32,7 +32,7 @@ describe("background test windows", () => {
     vi.stubEnv("NODE_ENV", env);
     vi.stubEnv("AVE_NATIVE_FIXTURE_MODE", foreground ? "foreground" : "cdp");
     configureE2eWindowPolicy();
-    expect(runtime.setActivationPolicy.mock.calls).toEqual(enabled ? [["accessory"]] : []);
+    expect(runtime.setActivationPolicy.mock.calls).toEqual(enabled ? [["prohibited"]] : []);
     const presentation = { show: vi.fn(), showInactive: vi.fn() };
     showWindowForRuntime(presentation as never);
     expect(presentation.showInactive).toHaveBeenCalledTimes(enabled ? 1 : 0);

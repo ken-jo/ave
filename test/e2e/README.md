@@ -9,6 +9,11 @@ windows and document focus emulation in unpackaged apps. Packaged apps ignore
 this policy. Each standalone test app installs the same policy before readiness.
 On macOS the launcher clones a temporary test-only runtime bundle with
 `LSUIElement=true`, preventing activation before the main entrypoint runs.
+The entrypoint then sets the `prohibited` activation policy. An accessory app
+is not enough: when another app quits or deactivates, macOS can hand
+activation to an accessory app whose window is ordered front, and the owner's
+keystrokes would then land in a test window. A prohibited app cannot be
+activated, while its windows still render and take page input.
 Each worker reuses its copy and removes it at exit. The installed runtime and
 packaged executables are untouched; foreground fixtures use the original runtime.
 Keyboard input goes through the page input channel; embedded guest pointer input
@@ -48,16 +53,19 @@ the closed control's keyboard typeahead on macOS: arrow keys open a system-owned
 popup that the page input channel cannot drive. The action still verifies the
 requested option and final value, and rejects navigation during selection.
 
-When validating desktop non-interference on macOS, sample this command before,
-throughout, and after a default run, recording timestamps and read failures.
-Use a separate sampler at roughly 250 ms intervals; actual observations can
-be farther apart because the query itself takes time:
+When validating desktop non-interference on macOS, sample the app that
+receives key events before, throughout, and after a default run, recording
+timestamps and read failures. Use a separate sampler at roughly 250 ms
+intervals; actual observations can be farther apart because the query itself
+takes time:
 
 ```sh
-osascript -e 'tell application "System Events" to get name of first process whose frontmost is true'
+osascript -l JavaScript -e 'ObjC.import("AppKit"); const f = $.NSWorkspace.sharedWorkspace.frontmostApplication; JSON.stringify({name: ObjC.unwrap(f.localizedName), pid: Number(f.processIdentifier), policy: Number(f.activationPolicy)})'
 ```
 
-No sample should name the test app. Sampling has gaps and is evidence of the
+Do not use System Events' `frontmost` process for this: it never reports an
+accessory app, even one that has been activated and is receiving the owner's
+keystrokes. No sample should name a test app process. Sampling has gaps and is evidence of the
 observed interval, not proof of every foreground transition. The background
 keyboard spec independently checks document focus, focus-visible, native window
 non-focus, rejection of synthetic key events and acceptance of page keyboard
