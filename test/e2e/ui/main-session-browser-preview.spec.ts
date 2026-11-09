@@ -5,6 +5,8 @@ import { TOOL_TIMEOUT_POLICY } from "../../../src/shared/tool-timeout-policy.js"
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron, setWindowSize } from "./seeded-electron.js";
 
+type PreviewLifecycleEntry = { kind: "start" | "stop" | "navigation-start" | "navigation-commit"; ts: number; url?: string; error?: string };
+
 // A static, never-revealed page must deliver its first picture through the real observation and screencast path.
 test.use({ trace: "on" });
 for (const deviceScale of [1, 2]) {
@@ -46,7 +48,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     }
     if (request.method === "GET" && request.url?.startsWith("/page")) {
       response.writeHead(200, { "content-type": "text/html" });
-      response.end(`<!doctype html><html><head><title>Static example</title></head><body style="font:20px system-ui;padding:40px;background:#fff8e0"><h1>${request.url.includes("second") ? "Example destination" : "Example source"}</h1>${request.url.includes("second") ? "" : Array.from({ length: 22 }, (_, index) => `<p>Documentation paragraph ${index + 1}. ${"A long static document keeps the destination link below the initial viewport. ".repeat(3)}</p>`).join("")}<a href="${secondUrl}">Learn more</a><p>A static page without animation.</p></body></html>`); return;
+      response.end(`<!doctype html><html><head><title>Static example</title></head><body style="font:20px system-ui;padding:40px;background:${request.url.includes("second") ? "#c8e8ff" : "#fff8e0"}"><h1>${request.url.includes("second") ? "Example destination" : "Example source"}</h1>${request.url.includes("second") ? "" : Array.from({ length: 22 }, (_, index) => `<p>Documentation paragraph ${index + 1}. ${"A long static document keeps the destination link below the initial viewport. ".repeat(3)}</p>`).join("")}<a href="${secondUrl}">Learn more</a><p>A static page without animation.</p></body></html>`); return;
     }
     if (request.method !== "POST" || request.url !== "/v1/chat/completions") { response.writeHead(404).end(); return; }
     const chunks: Buffer[] = [];
@@ -99,11 +101,12 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
   try {
     ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [], launchArgs: ["--use-mock-keychain", `--force-device-scale-factor=${deviceScale}`] });
     await ctx.app.evaluate(({ app }, delayHitMs) => {
-      const capture = globalThis as unknown as { clickMeasurements: unknown[]; pointerEchoes: unknown[]; destructionPeaks: Record<string, number>; listenerWarnings: string[] };
+      const capture = globalThis as unknown as { clickMeasurements: unknown[]; pointerEchoes: unknown[]; destructionPeaks: Record<string, number>; listenerWarnings: string[]; previewLifecycle: PreviewLifecycleEntry[] };
       capture.clickMeasurements = [];
       capture.pointerEchoes = [];
       capture.destructionPeaks = {};
       capture.listenerWarnings = [];
+      capture.previewLifecycle = [];
       process.on("warning", warning => { if (warning.name === "MaxListenersExceededWarning") capture.listenerWarnings.push(warning.message); });
       app.on("web-contents-created", (_event, contents) => {
         if (contents.getType() !== "webview") return;
@@ -115,6 +118,10 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
         contents.on("input-event", (_event, input) => {
           if (input.type === "mouseMove") capture.pointerEchoes.push({ input, guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor() });
         });
+        contents.on("did-start-navigation", (_event, url, inPlace, mainFrame) => {
+          if (mainFrame && !inPlace) capture.previewLifecycle.push({ kind: "navigation-start", ts: Date.now(), url });
+        });
+        contents.on("did-navigate", (_event, url) => capture.previewLifecycle.push({ kind: "navigation-commit", ts: Date.now(), url }));
         const protocol = contents.debugger;
         const send = protocol.sendCommand.bind(protocol);
         let nodeId: number | undefined;
@@ -122,6 +129,12 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
         let quads: number[][] | undefined;
         let chosenPoint: { x: number; y: number } | undefined;
         protocol.sendCommand = async (method, params = {}) => {
+          if (method === "Page.startScreencast" || method === "Page.stopScreencast") {
+            const entry: PreviewLifecycleEntry = { kind: method === "Page.startScreencast" ? "start" : "stop", ts: Date.now() };
+            capture.previewLifecycle.push(entry);
+            try { return await send(method, params); }
+            catch (error) { entry.error = String(error); throw error; }
+          }
           if (method === "DOM.getContentQuads" && typeof params.backendNodeId === "number") {
             nodeId = params.backendNodeId;
             const result = await send(method, params);
@@ -236,9 +249,28 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     if (previewShown) {
       await expect(preview.locator("img")).not.toHaveAttribute("src", firstPicture ?? "");
       await expect.poll(() => preview.locator("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+      await expect.poll(() => preview.locator("img").evaluate((element) => {
+        const image = element as HTMLImageElement;
+        const canvas = document.createElement("canvas"); canvas.width = 1; canvas.height = 1;
+        const context = canvas.getContext("2d"); if (!context) throw new Error("Image pixel reader unavailable");
+        context.drawImage(image, image.naturalWidth / 2, image.naturalHeight * 0.85, 1, 1, 0, 0, 1, 1);
+        const pixel = context.getImageData(0, 0, 1, 1).data;
+        return [200, 232, 255].every((channel, index) => Math.abs((pixel[index] ?? -255) - channel) <= 6);
+      })).toBe(true);
       await test.info().attach("static-cross-site-preview.png", { body: await page.screenshot(), contentType: "image/png" });
       await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
     }
+    const previewApp = ctx.app;
+    await test.step("keeps preview commands attached across cross-origin navigation", async () => {
+      const lifecycle = await previewApp.evaluate(() => (globalThis as unknown as { previewLifecycle: PreviewLifecycleEntry[] }).previewLifecycle);
+      await test.info().attach("preview-lifecycle.json", { body: JSON.stringify(lifecycle, null, 2), contentType: "application/json" });
+      expect(lifecycle).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "navigation-commit", url: secondUrl })]));
+      expect(lifecycle.filter((entry) => entry.error)).toEqual([]);
+      if (previewShown) {
+        const commit = lifecycle.findLastIndex((entry) => entry.kind === "navigation-commit" && entry.url === secondUrl);
+        expect(lifecycle.slice(commit + 1).some((entry) => entry.kind === "start")).toBe(true);
+      }
+    });
     const hits = await ctx.app.evaluate(() => (globalThis as unknown as { clickMeasurements: Array<{ hostZoom?: number; guestZoom: number }> }).clickMeasurements);
     expect(hits).toHaveLength(3);
     for (const hit of hits) {
@@ -283,6 +315,8 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
   } finally {
     try {
       if (ctx) {
+        const lifecycle = await ctx.app.evaluate(() => (globalThis as unknown as { previewLifecycle: PreviewLifecycleEntry[] }).previewLifecycle);
+        await test.info().attach("preview-lifecycle-final.json", { body: JSON.stringify(lifecycle, null, 2), contentType: "application/json" });
         console.log("Activity operations", JSON.stringify(await ctx.page.evaluate(() => (window as unknown as { activityOps: unknown[] }).activityOps)));
         const measurements = await ctx.app.evaluate(() => (globalThis as unknown as { clickMeasurements: unknown[] }).clickMeasurements);
         const echoes = await ctx.app.evaluate(() => (globalThis as unknown as { pointerEchoes: unknown[] }).pointerEchoes);
