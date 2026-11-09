@@ -173,7 +173,6 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   // Full chat authority: sending turns, reading transcripts, editing memory.
   ["chat", CHANNELS.chat.send, [{ input: "x" }]],
   ["chat", CHANNELS.chat.sessions, []],
-  ["chat", CHANNELS.agentSpawn.snapshot, []],
   ["chat", CHANNELS.chat.mainActiveState, []],
   ["chat", CHANNELS.chat.sessionHistory, ["s"]],
   ["chat", CHANNELS.chat.getTurnReview, ["s", "main"]],

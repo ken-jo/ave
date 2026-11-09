@@ -82,15 +82,6 @@ describe("preload — plugin webview asset URLs", () => {
     delete process.env.AVE_DEV_CONSOLE;
   });
 
-  it("reads the explicit sequenced activity snapshot without listing sessions", async () => {
-    const api = await loadAveApi() as unknown as AveApi;
-    const snapshot = { sequence: 3, sessions: [{ sessionId: "sub-aaaaaaaa-bbbbbbbb-1111-4111-8111-111111111111", sequence: 3, running: true, attention: false }] };
-    mockInvoke.mockClear();
-    mockInvoke.mockResolvedValueOnce(snapshot);
-    await expect(api.agentSpawnSnapshot()).resolves.toEqual(snapshot);
-    expect(mockInvoke).toHaveBeenCalledExactlyOnceWith(CHANNELS.agentSpawn.snapshot);
-  });
-
   it("registers history listeners before readiness and disables replay only after the last unsubscribe", async () => {
     mockInvoke.mockResolvedValue({ ok: true });
     const api = await loadAveApi() as unknown as AveApi;

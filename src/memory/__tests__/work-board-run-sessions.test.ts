@@ -1,6 +1,6 @@
 import { toSessionListRow } from "../session-repository.js";
 // Derive work-board item identity from host-written origin once so all session-list consumers agree.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -80,6 +80,19 @@ describe("listSessions with workBoardRuns", () => {
 
   it("excludes item runs and briefings before limiting ordinary child conversations", () => {
     expect(mm.sessions.listSessions({ kind: "subagent", workBoardRuns: false }).map((entry) => entry.id).sort()).toEqual([CHAT_CHILD]);
+  });
+
+  it("filters direct children before the page limit and discovers parents without reading summaries", async () => {
+    await mm.sessions.saveSessionMetadata(CHAT_CHILD, { sessionKind: "subagent", originSessionId: MAIN, projectRoot: "/project" });
+    const summaries = vi.spyOn(mm.sessions as unknown as { readSessionSummary: (id: string) => unknown }, "readSessionSummary");
+    expect(mm.sessions.listSubAgentSessionParents()).toEqual([{ originSessionId: MAIN, projectRoot: "/project" }]);
+    expect(summaries).not.toHaveBeenCalled();
+    expect(mm.sessions.listSessionsPage({ kind: "subagent", workBoardRuns: false, originSessionId: MAIN, limit: 1 }).map((row) => row.id)).toEqual([CHAT_CHILD]);
+    expect(summaries).toHaveBeenCalledExactlyOnceWith(CHAT_CHILD);
+    summaries.mockClear();
+    expect(mm.sessions.listSessionsPage({ kind: "subagent", workBoardRuns: false, originSessionId: CHAT_CHILD, limit: 1 })).toEqual([]);
+    expect(summaries).not.toHaveBeenCalled();
+    summaries.mockRestore();
   });
 
   it("pages the same way as the other listings", () => {

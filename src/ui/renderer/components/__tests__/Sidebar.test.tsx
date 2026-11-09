@@ -1436,20 +1436,30 @@ describe("Sidebar project tree paging", () => {
     }));
   }
 
-  it("shows a project's first twenty rows, counting its terminals and pages, and opens the rest from the last row", () => {
-    const conversations = manyConversations(22, "일반");
+  it("requests the next main-projected page with conversation roots and surfaces", async () => {
+    const conversations = manyConversations(22, "일반", inDefault.selectedProject);
     const mainSurfaces: MainSurface[] = [1, 2, 3].map((ordinal) => (
       { tabId: `terminal:0000000a-${ordinal}`, kind: "terminal", ordinal, url: null, projectRoot: DEFAULT_ROOT }
     ));
-    const { getByTestId, queryByTestId, container, restore } = renderSidebar({ ...inDefault, sessions: conversations, mainSurfaces, currentSessionId: "일반-0" });
+    const onSessionListOptionsChange = vi.fn();
+    const { getByTestId, queryByTestId, container, rerenderSidebar, restore } = renderSidebar({
+      ...inDefault, sessions: conversations.slice(0, 17), hiddenRoots: { [DEFAULT_ROOT]: 5 },
+      onSessionListOptionsChange, mainSurfaces, currentSessionId: "일반-0",
+    });
+    onSessionListOptionsChange.mockImplementationOnce(async () => {
+      await Promise.resolve();
+      rerenderSidebar({ sessions: conversations, hiddenRoots: {} });
+    });
     try {
       const rows = () => container.querySelectorAll('[role="treeitem"]:not([data-tree-key^="more:"])').length;
       expect(rows()).toBe(20);
+      expect(countRenderedRows(conversations, queryByTestId)).toBe(17);
       const more = getByTestId("sidebar-tree-more-project");
       expect(more.getAttribute("role")).toBe("treeitem");
       expect(more.textContent).toBe("이전 항목 5개 더 보기");
       fireEvent.click(more);
-      expect(rows()).toBe(25);
+      expect(onSessionListOptionsChange.mock.calls.at(-1)![0].rootLimits[DEFAULT_ROOT]).toBe(40);
+      await waitFor(() => expect(rows()).toBe(25));
       expect(countRenderedRows(conversations, queryByTestId)).toBe(22);
       expect(queryByTestId("sidebar-tree-more-project")).toBeNull();
     } finally {
@@ -1468,12 +1478,17 @@ describe("Sidebar project tree paging", () => {
     }
   });
 
-  it("pages the rows that survive the archive filter", () => {
-    const conversations = manyConversations(24, "보관");
+  it("pages the rows that survive the archive filter", async () => {
+    const conversations = manyConversations(24, "보관", inDefault.selectedProject);
     const archived = new Set(["보관-1", "보관-3", "보관-5"]);
-    const { getByTestId, queryByTestId, restore } = renderSidebar({
+    const visible = conversations.filter((session) => !archived.has(session.id));
+    const onSessionListOptionsChange = vi.fn();
+    const { getByTestId, queryByTestId, rerenderSidebar, restore } = renderSidebar({
       ...inDefault,
-      sessions: conversations,
+      sessions: visible.slice(0, 20),
+      hiddenRoots: { [DEFAULT_ROOT]: 1 },
+      hasArchived: true,
+      onSessionListOptionsChange,
       currentSessionId: "보관-0",
       conversationActions: {
         isArchived: (id: string) => archived.has(id),
@@ -1487,19 +1502,26 @@ describe("Sidebar project tree paging", () => {
         onDelete: vi.fn(),
       },
     });
+    onSessionListOptionsChange.mockImplementationOnce(async (options) => {
+      expect(options.showArchived).toBe(true);
+      await Promise.resolve();
+      rerenderSidebar({ sessions: conversations.slice(0, 20), hiddenRoots: { [DEFAULT_ROOT]: 4 } });
+    });
     try {
       // A page is a page of rows the reader can SEE: archived rows leave the list before it is paged.
       expect(countRenderedRows(conversations, queryByTestId)).toBe(20);
       expect(queryByTestId("sidebar-session-보관-1")).toBeNull();
       expect(getByTestId("sidebar-tree-more-project").textContent).toBe("이전 항목 1개 더 보기");
       fireEvent.click(getByTestId("sidebar-toggle-archived"));
+      await waitFor(() => expect(getByTestId("sidebar-session-보관-1")).toBeVisible());
+      expect(countRenderedRows(conversations, queryByTestId)).toBe(20);
       expect(getByTestId("sidebar-tree-more-project").textContent).toBe("이전 항목 4개 더 보기");
     } finally {
       restore();
     }
   });
 
-  it("gives each all-projects group its own page of six and a row that opens the rest", () => {
+  it("gives each all-projects group its own page of six and a row that opens the rest", async () => {
     const THIRD_ROOT = "C:\\Users\\example\\workspace\\ave-project\\third-app";
     const conversations = [
       ...manyConversations(9, "프로젝트", { projectRoot: OTHER_ROOT, projectName: "other-app" }),
@@ -1507,8 +1529,11 @@ describe("Sidebar project tree paging", () => {
     ];
     const otherRows = conversations.filter((session) => session.projectRoot === OTHER_ROOT);
     const thirdRows = conversations.filter((session) => session.projectRoot === THIRD_ROOT);
-    const { getByTestId, queryByTestId, restore } = renderSidebar({
-      sessions: conversations,
+    const onSessionListOptionsChange = vi.fn();
+    const { getByTestId, queryByTestId, rerenderSidebar, restore } = renderSidebar({
+      sessions: [...otherRows.slice(0, 6), ...thirdRows.slice(0, 6)],
+      hiddenRoots: { [OTHER_ROOT]: 3, [THIRD_ROOT]: 3 },
+      onSessionListOptionsChange,
       currentSessionId: "프로젝트-0",
       projects: [
         { projectRoot: DEFAULT_ROOT, projectName: "ave", isDefault: true },
@@ -1516,13 +1541,18 @@ describe("Sidebar project tree paging", () => {
         { projectRoot: THIRD_ROOT, projectName: "third-app" },
       ],
     });
+    onSessionListOptionsChange.mockImplementationOnce(async (options) => {
+      expect(options.rootLimits[OTHER_ROOT]).toBe(12);
+      await Promise.resolve();
+      rerenderSidebar({ sessions: [...otherRows, ...thirdRows.slice(0, 6)], hiddenRoots: { [THIRD_ROOT]: 3 } });
+    });
     const moreId = "sidebar-tree-more-C-Users-example-workspace-ave-project-other-app";
     try {
       expect(countRenderedRows(otherRows, queryByTestId)).toBe(6);
       expect(countRenderedRows(thirdRows, queryByTestId)).toBe(6);
       expect(getByTestId(moreId).textContent).toBe("이전 항목 3개 더 보기");
       fireEvent.click(getByTestId(moreId));
-      expect(countRenderedRows(otherRows, queryByTestId)).toBe(9);
+      await waitFor(() => expect(countRenderedRows(otherRows, queryByTestId)).toBe(9));
       expect(queryByTestId(moreId)).toBeNull();
       // One group opening says nothing about its neighbours.
       expect(countRenderedRows(thirdRows, queryByTestId)).toBe(6);
@@ -1865,7 +1895,16 @@ describe("Sidebar — every conversation family", () => {
       id: `paged-${index + 1}`, title: `대화 ${index + 1}`, projectRoot: root,
       modifiedAt: new Date(Date.now() - (index + 1) * 60 * 1000).toISOString(),
     }));
-    const { getByTestId, restore } = renderSidebar({ sessions: chats, projects: [{ projectRoot: root, projectName: "Paged" }] });
+    const onSessionListOptionsChange = vi.fn();
+    const { getByTestId, rerenderSidebar, restore } = renderSidebar({
+      sessions: chats.slice(0, 6), hiddenRoots: { [root]: 2 }, onSessionListOptionsChange,
+      projects: [{ projectRoot: root, projectName: "Paged" }],
+    });
+    onSessionListOptionsChange.mockImplementationOnce(async (options) => {
+      expect(options.rootLimits[root]).toBe(12);
+      await Promise.resolve();
+      rerenderSidebar({ sessions: chats, hiddenRoots: {} });
+    });
     const guidesOf = (row: Element) => [...row.querySelectorAll<HTMLElement>("[data-tree-guide]")].map((guide) => guide.dataset.treeGuide);
     const moreRow = () => document.querySelector(`[data-tree-key="more:group:${root}"]`);
     try {

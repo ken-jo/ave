@@ -290,7 +290,6 @@ describe("preload contextBridge world shape lock", () => {
           "acknowledgeRoutineResult": "function",
           "addRoutine": "function",
           "addWorkBoardItem": "function",
-          "agentSpawnSnapshot": "function",
           "alerts": [
             "cardClosed",
             "listKinds",

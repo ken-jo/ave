@@ -1358,15 +1358,23 @@ which is what every caller but the sidebar wants.
 
 Each store receives the same bounded row limit and time cursor. The federated
 rows are sorted by modification time and id, then limited again. The last row
-in `sessions` remains the continuation cursor. For each page child whose parent
-is absent, a bounded direct id lookup returns a same-project parent in the
-separate `parents` collection. The renderer merges primary and parent rows by id across pages. A single-row `id`
-query uses the same row serializer and reads only the addressed transcript.
-When activity first names an unknown child id, the renderer fetches that one row
-and its parent context. Concurrent reads for that id are deduplicated. Later
-activity updates the listed running state, and completed state takes precedence
-over an older in-flight response. Running child rows and their parent context
-survive a first-page refresh while their turn continues.
+in `sessions` remains the continuation cursor. Primary-page summary reads stay
+bounded by the requested page. A sidebar query also returns one complete projection of
+page rows, running or attention rows, and their full same-project ancestor
+chains. Ancestor recovery guards cycles and reports ancestry beyond 64 levels.
+Main slices conversation and open-surface roots per project while retaining branches with running,
+attention or selected descendants. Running and attention flags are read after
+the asynchronous structure reads and returned with the rows.
+
+Activity, start and completion events are re-query hints. Session hydration
+starts the first query; title and deletion handlers request the same refresh.
+The renderer coalesces them into at most one query in flight and one pending
+query. Only the newest requested response replaces its entire sidebar state
+for the requested slice and its required branches and ancestors.
+It applies no event deltas or separate activity snapshots. Expanding a parent
+adds its id to the next query, which loads direct children by parent id and
+returns the complete projection again. The same request ordering covers
+successive expansions of each parent.
 
 | Family | Store | Row | Opens |
 | --- | --- | --- | --- |

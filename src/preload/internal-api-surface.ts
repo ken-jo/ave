@@ -60,7 +60,7 @@ import type {
 import type { SessionTaskItem } from "../shared/session-tasks.js";
 import type { SessionGoal } from "../shared/session-goal.js";
 import type { ChatStreamEvent, ChatEntry } from "../lib/chat-stream-state.js";
-import type { AgentSpawnEvent, SessionActivitySnapshot } from "../shared/subagent-events.js";
+import type { AgentSpawnEvent } from "../shared/subagent-events.js";
 import type { SerializedHistoryMessage } from "../shared/chat-history.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
 import type { TurnResult } from "../engine/conversation-loop.js";
@@ -1186,7 +1186,6 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.sessionGoal.changed, listener);
   },
 
-  agentSpawnSnapshot: async () => ipcRenderer.invoke(CHANNELS.agentSpawn.snapshot) as Promise<SessionActivitySnapshot>,
 
   // agent_spawn; sub-agent lifecycle event stream
   onAgentSpawnEvent: (

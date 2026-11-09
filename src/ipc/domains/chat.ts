@@ -25,6 +25,7 @@ import { parseStagedEnvelope, isMissingStagedEnvelopeErrorMessage } from "../../
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { listCustomCommands } from "../../core/custom-commands.js";
 import { isValidSessionId } from "../../shared/session-id.js";
+import type { SessionListQuery } from "../../shared/session-lookup.js";
 import { MAX_SESSION_FILE_BYTES } from "../../memory/session-repository.js";
 import { sessionMemoryProject } from "../../memory/memory-consolidation-service.js";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -1167,14 +1168,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     });
     return mutation ?? { ok: false as const, error: STREAMING_ACTIVE };
   });
-  ipcMain.handle(CHANNELS.agentSpawn.snapshot, (e) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, CHANNELS.agentSpawn.snapshot, e);
-      return { sequence: 0, sessions: [] };
-    }
-    return deps.getSubAgentRunner?.()?.getSessionActivitySnapshot() ?? { sequence: 0, sessions: [] };
-  });
-  ipcMain.handle(CHANNELS.chat.sessions, (e, opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown }) => {
+  ipcMain.handle(CHANNELS.chat.sessions, (e, opts?: Partial<Record<keyof SessionListQuery, unknown>>) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.chat.sessions, e);
       return { current: conversationLoop.getSessionId(), sessions: [] };

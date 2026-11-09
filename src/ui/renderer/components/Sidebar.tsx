@@ -42,6 +42,7 @@ import { ProjectTree, type ConversationRowActions, type ProjectRowActions, type 
 import type { InlineViewKey } from "../../../shared/view-key.js";
 import type { PluginCardSummary, PluginUiExtension } from "../types.js";
 import type { SessionSummary } from "../hooks/use-sessions.js";
+import type { SessionListQuery } from "../../../shared/session-lookup.js";
 import type { ProjectIdentity, ProjectSelection } from "../../../shared/project-identity.js";
 import { projectRootEquals } from "../../../shared/project-identity.js";
 import {
@@ -146,6 +147,11 @@ export interface SidebarProps {
   onOpenUnifiedSearch: () => void;
   /** Recent main-chat sessions shown under the current project group. */
   sessions?: SessionSummary[];
+  hiddenRoots?: Record<string, number>;
+  hasArchived?: boolean;
+  visibleSurfaceIds?: string[];
+  pinnedSessionIds?: string[];
+  onSessionListOptionsChange?: (options: NonNullable<SessionListQuery["sidebar"]>) => void;
   /** Workspace projects from the App-level active project source of truth. */
   projects?: ProjectIdentity[];
   /** Active chat session id for project conversation selection state. */
@@ -761,6 +767,11 @@ export function Sidebar({
   onWidthCommit,
   onOpenUnifiedSearch,
   sessions = [],
+  hiddenRoots,
+  hasArchived,
+  visibleSurfaceIds,
+  pinnedSessionIds,
+  onSessionListOptionsChange,
   projects,
   currentSessionId,
   onLoadSession,
@@ -1322,6 +1333,11 @@ export function Sidebar({
                   onSetProjectExpanded={onSetProjectExpanded}
                   addFlow={addFlow}
                   sessions={sessions}
+                  hiddenRoots={hiddenRoots}
+                  hasArchived={hasArchived}
+                  visibleSurfaceIds={visibleSurfaceIds}
+                  pinnedSessionIds={pinnedSessionIds}
+                  onSessionListOptionsChange={onSessionListOptionsChange}
                   surfaces={surfaces}
                   bindingsLoaded={bindingsLoaded}
                   currentSessionId={currentSessionId}

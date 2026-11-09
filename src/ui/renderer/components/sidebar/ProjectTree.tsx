@@ -7,7 +7,7 @@ import {
   projectRootEquals,
   type ProjectIdentity,
 } from "../../../../shared/project-identity.js";
-import type { SessionFamily } from "../../../../shared/session-lookup.js";
+import type { SessionFamily, SessionListQuery } from "../../../../shared/session-lookup.js";
 import { isSuggestionsSession } from "../../../../shared/suggestions-session.js";
 import { resolveConversationTitle } from "../../../../shared/conversation-title.js";
 import type { useAddProjectFolder } from "../../hooks/use-add-project-folder.js";
@@ -450,6 +450,11 @@ export interface ProjectTreeProps {
   onSetProjectExpanded: (root: string, expanded: boolean) => void;
   addFlow: SidebarAddFlow;
   sessions: SessionSummary[];
+  hiddenRoots?: Record<string, number>;
+  hasArchived?: boolean;
+  visibleSurfaceIds?: string[];
+  pinnedSessionIds?: string[];
+  onSessionListOptionsChange?: (options: NonNullable<SessionListQuery["sidebar"]>) => void;
   surfaces: readonly SidebarSurface[];
   bindingsLoaded: boolean;
   currentSessionId?: string;
@@ -505,6 +510,11 @@ export function ProjectTree({
   onSetProjectExpanded,
   addFlow,
   sessions,
+  hiddenRoots = {},
+  hasArchived = false,
+  visibleSurfaceIds,
+  pinnedSessionIds = [],
+  onSessionListOptionsChange,
   surfaces,
   bindingsLoaded,
   currentSessionId,
@@ -559,7 +569,7 @@ export function ProjectTree({
   // unarchived pane chats not held by this window.
   const listableSessions = sessions.filter((session) => session.family !== "side-chat" || !session.paneTabId
     || (bindingsLoaded && (Boolean(session.archivedAt) || Boolean(paneSurfaceOf(session)))));
-  const hasArchivedSessions = listableSessions.some(isSessionArchived);
+  const hasArchivedSessions = hasArchived || listableSessions.some(isSessionArchived);
   const shownSessions = listableSessions.filter((session) => showArchived || !isSessionArchived(session));
   const paneSessionEntries = new Map<string, Extract<TreeEntry, { kind: "session" }>>();
   const sessionRoot = new Map(sessions.map((session) => [session.id, session.projectRoot]));
@@ -567,7 +577,7 @@ export function ProjectTree({
   const now = Date.now();
   const entriesOf = (project: ProjectIdentity): TreeEntry[] => nestSessionEntries(treeEntries({
     sessions: shownSessions.filter((session) => belongsToProject(session.projectRoot, project, projects)),
-    surfaces: surfaces.filter((surface) => belongsToProject(surfaceRoot(surface), project, projects)),
+    surfaces: surfaces.filter((surface) => belongsToProject(surfaceRoot(surface), project, projects) && (visibleSurfaceIds === undefined || visibleSurfaceIds.includes(surface.tabId))),
     isPinned: isSessionPinned,
     surfaceAt: (tabId) => surfaceUsedAt(tabId, now),
   })).filter((entry) => {
@@ -575,17 +585,31 @@ export function ProjectTree({
     paneSessionEntries.set(entry.session.id, entry);
     return false;
   });
-  const shownCount = (scope: string, page: number) => shownByScope[scope] ?? page;
   const showMore = (scope: string, page: number) =>
     setShownByScope((current) => ({ ...current, [scope]: (current[scope] ?? page) + page }));
 
   const selectedId = activeSubAgentSessionId ?? (conversationSurfaceVisible ? currentSessionId : undefined);
+  useEffect(() => {
+    const rootLimits = Object.fromEntries(Object.entries(shownByScope).map(([scope, count]) => [
+      scope === "project" ? selectedProject?.projectRoot ?? "" : scope.slice("group:".length), count,
+    ]));
+    onSessionListOptionsChange?.({
+      rootLimit: selectedProject ? TREE_PAGE_SIZE : GROUP_PAGE_SIZE,
+      rootLimits,
+      expandedParentIds: [...new Set([...Object.keys(expandedSessions).filter((id) => expandedSessions[id]), ...(selectedId ? [selectedId] : [])])],
+      selectedSessionId: selectedId,
+      pinnedSessionIds,
+      showArchived,
+      defaultProjectRoot: projects.find((project) => project.isDefault)?.projectRoot,
+      projectRoots: projects.map((project) => project.projectRoot),
+      surfaces: surfaces.map((surface) => ({ id: surface.tabId, projectRoot: surfaceRoot(surface), modifiedAt: new Date(surfaceUsedAt(surface.tabId, now)).toISOString(), boundSessionIds: [...surface.boundSessionIds] })),
+    });
+  }, [onSessionListOptionsChange, selectedProject, projects, selectedId, shownByScope, expandedSessions, pinnedSessionIds, showArchived, surfaces, sessions]);
   const branchExpanded = (entry: Extract<TreeEntry, { kind: "session" }>) => sessionBranchExpanded(entry, selectedId, (id) => Boolean(conversationActions?.isResponding(id) || pendingAnswerSessionIds?.has(id)), expandedSessions[entry.session.id]);
 
   // ── Lines, top to bottom.
   const lines: TreeLine[] = [];
-  const pushEntries = (scope: string, entries: TreeEntry[], page: number, level: number, withHeaders: boolean) => {
-    const shown = entries.slice(0, shownCount(scope, page));
+  const pushEntries = (scope: string, entries: TreeEntry[], level: number, withHeaders: boolean) => {
     const emit = (entry: TreeEntry, entryLevel = level) => {
       lines.push({ type: "entry", key: entry.key, entry, level: entryLevel });
       if (entry.kind === "session" && branchExpanded(entry)) {
@@ -602,18 +626,19 @@ export function ProjectTree({
       }
     };
     if (withHeaders) {
-      for (const { bucket, entries: rows } of bucketEntries(shown, now, isSessionPinned)) {
+      for (const { bucket, entries: rows } of bucketEntries(entries, now, isSessionPinned)) {
         lines.push({ type: "header", key: `header:${scope}:${bucket}`, bucket });
         rows.forEach((entry) => { emit(entry); });
       }
-    } else shown.forEach((entry) => { emit(entry); });
-    const hidden = entries.length - shown.length;
+    } else entries.forEach((entry) => { emit(entry); });
+    const root = scope === "project" ? selectedProject?.projectRoot ?? "" : scope.slice("group:".length);
+    const hidden = hiddenRoots[root] ?? 0;
     if (hidden > 0) lines.push({ type: "more", key: `more:${scope}`, scope, hidden, level });
   };
   if (selectedProject) {
     const entries = entriesOf(selectedProject);
     if (entries.length === 0) lines.push({ type: "empty", key: "empty:project", level: 1 });
-    else pushEntries("project", entries, TREE_PAGE_SIZE, 1, true);
+    else pushEntries("project", entries, 1, true);
   } else {
     const groups = orderedProjects(projects, isProjectPinned)
       .filter((project) => showArchived || !projectActions?.isArchived(project.projectRoot));
@@ -624,7 +649,7 @@ export function ProjectTree({
       if (!expanded) continue;
       const scope = `group:${project.projectRoot}`;
       if (entries.length === 0) lines.push({ type: "empty", key: `empty:${scope}`, level: 2 });
-      else pushEntries(scope, entries, GROUP_PAGE_SIZE, 2, false);
+      else pushEntries(scope, entries, 2, false);
     }
   }
   const rowKeys = lines.filter((line) => line.type !== "header" && line.type !== "empty").map((line) => line.key);
@@ -780,7 +805,7 @@ export function ProjectTree({
   const renderSessionRow = (entry: Extract<TreeEntry, { kind: "session" }>, key: string, level: number) => {
     const listed = entry.session;
     const expanded = branchExpanded(entry);
-    const branch = entry.children?.length ? { expanded, onToggleExpanded: () => setExpandedSessions((current) => ({ ...current, [listed.id]: !expanded })) } : {};
+    const branch = listed.hasChildren || entry.children?.length ? { expanded, onToggleExpanded: () => setExpandedSessions((current) => ({ ...current, [listed.id]: !expanded })) } : {};
     if (listed.family !== "main") return renderFamilyRow(listed, key, level, branch);
     // The dedicated Suggestions conversation is named from the catalog by its id and carries the number of suggestions
     // waiting in it.

@@ -632,7 +632,6 @@ export const CHANNELS = {
     changed: "ave:session-goal:changed",
   },
   agentSpawn: {
-    snapshot: "ave:agent-spawn:snapshot",
     event: "ave:agent-spawn:event",
   },
   skillLoad: {

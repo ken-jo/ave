@@ -74,6 +74,9 @@ export interface SessionListRow {
   archivedAt?: string;
   /** ISO time the user marked it unread. Absent = read. */
   unreadSince?: string;
+  running?: boolean;
+  attention?: boolean;
+  hasChildren?: boolean;
 }
 
 /** Request all kinds at the IPC ceiling; renderer lookup remains capped while engine lookup sees all sessions. */
@@ -105,6 +108,20 @@ export interface SessionListResult {
   sessions: SessionListRow[];
   /** Running rows and complete ancestor context, outside the primary cursor. */
   related?: SessionListRow[];
+  /** Complete main-owned sidebar projection, replaced as one response. */
+  sidebar?: { rows: SessionListRow[]; hiddenRoots: Record<string, number>; hasArchived?: boolean; visibleSurfaceIds?: string[] };
+}
+
+export interface SessionSidebarQuery {
+  rootLimit: number;
+  rootLimits?: Record<string, number>;
+  expandedParentIds: string[];
+  selectedSessionId?: string;
+  pinnedSessionIds?: string[];
+  showArchived?: boolean;
+  surfaces?: { id: string; projectRoot?: string; modifiedAt: string; boundSessionIds?: string[] }[];
+  defaultProjectRoot?: string;
+  projectRoots?: string[];
 }
 
 export interface SessionListQuery {
@@ -116,4 +133,5 @@ export interface SessionListQuery {
   before?: string;
   beforeId?: string;
   after?: string;
+  sidebar?: SessionSidebarQuery;
 }

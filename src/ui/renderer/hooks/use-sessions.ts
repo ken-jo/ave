@@ -1,4 +1,3 @@
-import type { SessionActivity } from "../../../shared/subagent-events.js";
 import type { RestoredSubAgentRow } from "./use-workflow-tools.js";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TileSession } from "../components/chat-group-session-registry.js";
@@ -10,6 +9,8 @@ import {
   SESSION_FAMILIES,
   SESSION_LIST_MAX_LIMIT,
   type SessionListRow,
+  type SessionListQuery,
+  type SessionListResult,
 } from "../../../shared/session-lookup.js";
 
 /**
@@ -50,58 +51,52 @@ function sessionProjectFromHistory(
  * which session a tile is holding is that tile's own business. Keeping them in
  * one hook meant every tile would have refetched the list, and the sidebar
  * would have had to pick one tile's copy of it to render.
+ * Session hydration starts the initial query. Callers refresh after title,
+ * deletion and other mutations; spawn and reconnect hints are subscribed here.
  */
 export function useSessionList(api: AveApi) {
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [activity, setActivity] = useState<ReadonlyMap<string, SessionActivity>>(new Map());
-  const listedIds = useRef(new Set<string>());
+  const [projection, setProjection] = useState<NonNullable<SessionListResult["sidebar"]>>({ rows: [], hiddenRoots: {} });
+  const options = useRef<NonNullable<SessionListQuery["sidebar"]>>({ rootLimit: 20, expandedParentIds: [] });
+  const sequence = useRef(0);
   const lifetime = useRef(0);
+  const subscribedApi = useRef(api);
   const refreshQueue = useRef<{ running: Promise<void> | null; pending: boolean }>({ running: null, pending: false });
 
   const refreshSessions = useCallback((): Promise<void> => {
+    sequence.current += 1;
     const queue = refreshQueue.current;
     if (queue.running) { queue.pending = true; return queue.running; }
     const epoch = lifetime.current;
     const request = (async () => {
-      do {
-        queue.pending = false;
-        try {
-          const result = await api.chatSessions({ families: [...SESSION_FAMILIES], limit: SESSION_LIST_MAX_LIMIT });
-          if (epoch !== lifetime.current) return;
-          const rows = [...new Map([...(result.related ?? []), ...result.sessions].map((row) => [row.id, row])).values()]
-            .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || b.id.localeCompare(a.id));
-          listedIds.current = new Set(rows.map((row) => row.id));
-          setSessions(rows);
-        } catch { /* A later refresh can retry. */ }
-      } while (queue.pending && epoch === lifetime.current);
+      try {
+        do {
+          queue.pending = false;
+          const issued = sequence.current;
+          try {
+            const result = await api.chatSessions({ families: [...SESSION_FAMILIES], limit: SESSION_LIST_MAX_LIMIT, sidebar: options.current });
+            if (epoch === lifetime.current && issued === sequence.current && result.sidebar) setProjection(result.sidebar);
+          } catch { /* A later refresh can retry. */ }
+        } while (queue.pending && epoch === lifetime.current);
+      } finally { queue.running = null; }
     })();
     queue.running = request;
-    void request.finally(() => { if (queue.running === request) queue.running = null; });
     return request;
   }, [api]);
 
+  const configureSessions = useCallback((next: NonNullable<SessionListQuery["sidebar"]>) => {
+    if (JSON.stringify(options.current) === JSON.stringify(next)) return;
+    options.current = next;
+    void refreshSessions();
+  }, [refreshSessions]);
+
   useEffect(() => {
-    const epoch = lifetime.current;
-    setActivity(new Map());
-    const apply = (rows: readonly SessionActivity[], watermark?: number) => {
-      if (epoch !== lifetime.current) return;
-      setActivity((current) => {
-        const next = new Map(current);
-        for (const row of rows) if (row.sequence > (next.get(row.sessionId)?.sequence ?? -1)) next.set(row.sessionId, row);
-        if (watermark !== undefined) {
-          const present = new Set(rows.map((row) => row.sessionId));
-          for (const [id, row] of next) if (!present.has(id) && watermark > row.sequence) next.set(id, { ...row, sequence: watermark, running: false, attention: false });
-        }
-        return next;
-      });
-    };
-    const unsubscribe = api.onAgentSpawnEvent?.((event) => {
-      if (event.activity) apply([event.activity]);
-      if (event.childSessionId && (event.type !== "activity" || !listedIds.current.has(event.childSessionId))) void refreshSessions();
-    });
-    const seed = () => { void api.agentSpawnSnapshot().then((snapshot) => apply(snapshot.sessions, snapshot.sequence)).catch(() => {}); };
-    const reconnect = () => { seed(); void refreshSessions(); };
-    seed();
+    if (subscribedApi.current !== api) {
+      subscribedApi.current = api;
+      setProjection({ rows: [], hiddenRoots: {} });
+      void refreshSessions();
+    }
+    const unsubscribe = api.onAgentSpawnEvent?.(() => { void refreshSessions(); });
+    const reconnect = () => { void refreshSessions(); };
     window.addEventListener("online", reconnect);
     return () => {
       lifetime.current += 1;
@@ -111,7 +106,7 @@ export function useSessionList(api: AveApi) {
     };
   }, [api, refreshSessions]);
 
-  return { sessions, activity, refreshSessions };
+  return { sessions: projection.rows, hiddenRoots: projection.hiddenRoots, hasArchived: projection.hasArchived, visibleSurfaceIds: projection.visibleSurfaceIds, refreshSessions, configureSessions };
 }
 
 export interface CurrentSessionDeps {

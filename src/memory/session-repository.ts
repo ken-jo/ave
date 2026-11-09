@@ -216,6 +216,7 @@ export interface ListSessionsOptions {
   kind?: SessionKind | "all";
   // True selects item runs; false selects children with a conversation origin.
   workBoardRuns?: boolean;
+  originSessionId?: string;
   routineId?: string;
   projectRoot?: string;
   includeUnscoped?: boolean;
@@ -564,7 +565,7 @@ function extractSearchableContent(messages: unknown[]): string {
 
 function matchesSessionScope(
   metadata: SessionMetadata | null,
-  options: Pick<ListSessionsOptions, "kind" | "workBoardRuns" | "routineId" | "projectRoot" | "includeUnscoped">,
+  options: Pick<ListSessionsOptions, "kind" | "workBoardRuns" | "originSessionId" | "routineId" | "projectRoot" | "includeUnscoped">,
 ): boolean {
   const kind = options.kind ?? "main";
   const sessionKind = metadata?.sessionKind ?? normalizeSessionKind(undefined);
@@ -575,6 +576,7 @@ function matchesSessionScope(
   ) return false;
   // Ordinary child rows need a conversation origin; board and unattributed sessions stay internal.
   if (options.workBoardRuns === false && !isValidSessionId(metadata?.originSessionId)) return false;
+  if (options.originSessionId !== undefined && metadata?.originSessionId !== options.originSessionId) return false;
   if (options.routineId !== undefined && metadata?.routineId !== options.routineId) return false;
   if (
     options.projectRoot !== undefined &&
@@ -1787,6 +1789,16 @@ export class SessionRepository {
         }];
       })
       .sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
+  }
+
+  /** Parent affordances require metadata only, without reading child summaries. */
+  listSubAgentSessionParents(): { originSessionId: string; projectRoot?: string }[] {
+    return readdirIfPresent(this.sessionsDir).flatMap((file) => {
+      if (!file.endsWith(".jsonl")) return [];
+      const metadata = this.loadSessionMetadata(file.slice(0, -".jsonl".length));
+      if (metadata?.sessionKind !== "subagent" || !isValidSessionId(metadata.originSessionId)) return [];
+      return [{ originSessionId: metadata.originSessionId, ...(metadata.projectRoot ? { projectRoot: metadata.projectRoot } : {}) }];
+    });
   }
 
   listSessionsPage(options: ListSessionsOptions = {}): SessionListEntry[] {

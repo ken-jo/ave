@@ -511,7 +511,6 @@ export type PersistedSubAgentTranscriptResult =
   | { ok: false; error: string };
 
 interface TrackedSubAgentRun {
-  sequence: number;
   spawnId?: string;
   childSessionId: string;
   originSessionId?: string;
@@ -1314,7 +1313,6 @@ export class SubAgentRunner {
    * the same session would each load the same pre-increment metadata, run, and last-writer-wins the counter (a lost update that defeats MAX_RESUMES). This in-memory map fail-closes the second concurrent resume of the same id. Single main-process, so a Map keyed on the session id is sufficient; no cross-process contention. */
   private readonly inFlight = new Map<string, InFlightResumeAttempt>();
   private readonly trackedRuns = new Map<string, TrackedSubAgentRun>();
-  private activitySequence = 0;
 
   private readonly activeChildren = new Map<string, ActiveSubAgentChild>();
 
@@ -1989,7 +1987,7 @@ export class SubAgentRunner {
 
   /** List ordinary child conversations from the same store that records their origin. */
   listSubAgentSessions(
-    options: Pick<ListSessionsOptions, "limit" | "before" | "beforeId" | "after" | "projectRoot" | "includeUnscoped"> = {},
+    options: Pick<ListSessionsOptions, "limit" | "before" | "beforeId" | "after" | "projectRoot" | "includeUnscoped" | "originSessionId"> = {},
   ): SessionListEntry[] {
     return this.deps.subAgentMemoryManager.sessions.listSessionsPage({ ...options, kind: "subagent", workBoardRuns: false });
   }
@@ -1999,18 +1997,21 @@ export class SubAgentRunner {
     return session?.sessionKind === "subagent" ? session : null;
   }
 
+  listSubAgentSessionParents(): { originSessionId: string; projectRoot?: string }[] {
+    return this.deps.subAgentMemoryManager.sessions.listSubAgentSessionParents();
+  }
+
   getSessionActivity(sessionId: string): SessionActivity | undefined {
     const run = this.trackedRuns.get(sessionId);
     if (!run) return undefined;
     const status = this.snapshotRun(run).status;
-    run.sequence = ++this.activitySequence;
-    return { sessionId, sequence: run.sequence, running: status === "running", attention: status === "waiting" };
+    return { sessionId, running: status === "running", attention: status === "waiting" };
   }
 
   getSessionActivitySnapshot(): SessionActivitySnapshot {
     const sessions = [...new Set([...this.uniqueTrackedRuns()].map((run) => run.childSessionId))].map((id) => this.getSessionActivity(id))
       .filter((row): row is SessionActivity => row !== undefined);
-    return { sequence: this.activitySequence, sessions };
+    return { sessions };
   }
 
   /** Whether `childSessionId` is a sub-agent this exact parent spawned. Answers ownership from the record the HOST wrote at spawn time rather than from the parent's transcript, which compaction may have stripped
@@ -2129,7 +2130,6 @@ export class SubAgentRunner {
     const now = new Date().toISOString();
     const taskState = args.initialTaskState ?? projectSubAgentRunState("submitted");
     const run: TrackedSubAgentRun = {
-      sequence: ++this.activitySequence,
       ...(args.spawnId ? { spawnId: args.spawnId } : {}),
       childSessionId: args.childSessionId,
       ...(args.originSessionId ? { originSessionId: args.originSessionId } : {}),
@@ -2179,7 +2179,7 @@ export class SubAgentRunner {
           ...patch,
           status: subAgentRunStatusFromTaskState(patch.taskState),
         };
-    Object.assign(run, normalizedPatch, { sequence: ++this.activitySequence, updatedAt: new Date().toISOString() });
+    Object.assign(run, normalizedPatch, { updatedAt: new Date().toISOString() });
   }
 
   private finalizeRun(

@@ -163,7 +163,7 @@ export function App() {
   const chatGroupSessions = useMemo(() => new ChatGroupSessionRegistry(), []);
 
   // The conversation list belongs to the window, independently of tile sessions.
-  const { sessions, activity: sessionActivity, refreshSessions } = useSessionList(api);
+  const { sessions, hiddenRoots, hasArchived, visibleSurfaceIds, refreshSessions, configureSessions } = useSessionList(api);
 
   // Window-scoped toasts subscribe before plugin auth can emit them.
   const {
@@ -899,7 +899,7 @@ export function App() {
     const tile = tileSessions.find((candidate) => candidate.sessionId === sessionId || candidate.sideChat?.sessionId === sessionId);
     return tile === undefined || tile.paneHidden || (tile.sideChat?.sessionId === sessionId && !tile.sideChat.shown);
   });
-  const workingSessions = useMemo(() => new Set([...selectWorkingSessionIds(tileSessions, sessions), ...[...sessionActivity.values()].filter((row) => row.running).map((row) => row.sessionId)]), [tileSessions, sessions, sessionActivity]);
+  const workingSessions = useMemo(() => new Set([...selectWorkingSessionIds(tileSessions, sessions), ...sessions.filter((row) => row.running).map((row) => row.id)]), [tileSessions, sessions]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   const suggestionsPendingCount = useMemo(
     () => overlayQueue.filter((card) => isSuggestionsSession(card.originSessionId)).length,
@@ -2430,6 +2430,11 @@ export function App() {
                 inactivePluginCards={inactivePluginCards}
                 pluginAuthStatuses={pluginAuthStatuses}
                 sessions={sessions}
+                hiddenRoots={hiddenRoots}
+                hasArchived={hasArchived}
+                visibleSurfaceIds={visibleSurfaceIds}
+                onSessionListOptionsChange={configureSessions}
+                pinnedSessionIds={starred.filter((item) => item.messageIndex === -1).map((item) => item.sessionId)}
                 currentSessionId={currentSessionId}
                 onLoadSession={async (sessionId) => {
                   const loaded = await handleLoadSessionAndRefresh(sessionId);
@@ -2442,7 +2447,7 @@ export function App() {
                 onOpenPaneChat={openPaneChat}
                 onOpenSideChat={(sideChatSessionId, originSessionId) =>
                   void openSideChat(sideChatSessionId, originSessionId)}
-                pendingAnswerSessionIds={new Set([...pendingAnswers.sessionIds, ...[...sessionActivity.values()].filter((row) => row.attention).map((row) => row.sessionId)])}
+                pendingAnswerSessionIds={new Set([...pendingAnswers.sessionIds, ...sessions.filter((row) => row.attention).map((row) => row.id)])}
                 suggestionsPendingCount={suggestionsPendingCount}
                 pluginRequestPending={pendingAnswers.unattributed.length > 0}
                 hasApiKey={effectiveLlmReady}
@@ -2793,7 +2798,7 @@ export function App() {
             </div>
 
             {/* App-level dialogs that remain available after removing setup flows. */}
-            {openSubAgentSession && <SubAgentConversationDialog api={api} session={openSubAgentSession} activity={sessionActivity.get(openSubAgentSession.id)} onClose={() => setOpenSubAgentSession(null)} />}
+            {openSubAgentSession && <SubAgentConversationDialog api={api} session={sessions.find((row) => row.id === openSubAgentSession.id) ?? openSubAgentSession} onClose={() => setOpenSubAgentSession(null)} />}
             <RecentlyDeniedDialog open={recentlyDeniedOpen} onOpenChange={setRecentlyDeniedOpen} />
             <SpotlightTour
               api={api}
