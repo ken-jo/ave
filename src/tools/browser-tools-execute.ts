@@ -26,6 +26,8 @@ import type { BrowserSessionActor } from "../shared/browser-surface.js";
 import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import { t } from "../i18n/index.js";
 import { parseBrowserScreenshotOptions } from "../shared/browser-capture.js";
+import { estimateTokens } from "../shared/token-estimate.js";
+import { MAX_TOOL_RESULT_TOKENS } from "../shared/tool-result-trim.js";
 
 const MAX_TYPED_CHARS = 10_000;
 const MAX_WAIT_MS = 30_000;
@@ -103,6 +105,27 @@ export function fenceBrowserContent(header: unknown, body?: string): string {
 
 function fenced(header: unknown, body?: string): ToolExecutionResult {
   return { output: fenceBrowserContent(header, body), isError: false };
+}
+
+// Include the fence, metadata and JSON escaping in the host's inline budget.
+export function fenceBrowserReadContent(header: Record<string, unknown>, body: string): string {
+  const budget = Math.floor(MAX_TOOL_RESULT_TOKENS * 0.8);
+  const render = (length: number) => {
+    const truncated = length < body.length;
+    let end = length;
+    if (end > 0 && /[\uD800-\uDBFF]/.test(body[end - 1]!)) end--;
+    return fenceBrowserContent({ ...header, ...(truncated ? { truncated: true } : {}) },
+      body.slice(0, end) + (truncated ? "\n[truncated]" : ""));
+  };
+  const full = render(body.length);
+  if (estimateTokens(JSON.stringify(full)) <= budget) return full;
+  let low = 0, high = Math.min(body.length, BROWSER_OUTPUT_MAX_CHARS);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (estimateTokens(JSON.stringify(render(middle))) <= budget) low = middle;
+    else high = middle - 1;
+  }
+  return render(low);
 }
 
 async function previewOf<G extends BrowserGuest>(actions: BrowserPageActions<G>, target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined> {
@@ -404,6 +427,9 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     },
 
     [BROWSER_TOOL.snapshot]: async (input, ctx) => {
+      if (input.maxChars !== undefined && (!Number.isInteger(input.maxChars) || (input.maxChars as number) < 500 || (input.maxChars as number) > BROWSER_OUTPUT_MAX_CHARS)) {
+        return failure("maxChars must be an integer from 500 through 50000");
+      }
       for (const flag of ["interactive", "delta"] as const) {
         if (input[flag] !== undefined && typeof input[flag] !== "boolean") return failure(`${flag} must be a boolean`);
       }
@@ -418,10 +444,11 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         if (changed) return changed;
         const shot = await actions.snapshot(
           pageTarget(ctx, fresh),
-          { interactive: input.interactive === true, delta: input.delta === true },
+          { interactive: input.interactive === true, delta: input.delta === true, ...(input.maxChars === undefined ? {} : { maxChars: input.maxChars as number }) },
         );
         const browserPreview = await previewOf(actions, pageTarget(ctx, fresh));
-        return withPreview(fenced({
+        const render = input.maxChars === undefined ? fenceBrowserReadContent : fenceBrowserContent;
+        return withPreview({ output: render({
           tabId: target.resolved.tab.handle,
           url: shot.url,
           title: shot.title,
@@ -429,7 +456,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           ...(shot.challenge ? { challenge: shot.challenge } : {}),
           ...(shot.delta ? { delta: true } : {}),
           ...(shot.truncated ? { truncated: true } : {}),
-        }, shot.text), browserPreview);
+        }, shot.text), isError: false }, browserPreview);
       }), ctx.abortSignal);
     },
 
@@ -601,7 +628,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
   };
   const allowed: Record<BrowserToolName, readonly string[]> = {
     [BROWSER_TOOL.tabs]: ["select", "scope", "includeDirectChildren"],
-    [BROWSER_TOOL.snapshot]: ["tabId", "interactive", "delta"],
+    [BROWSER_TOOL.snapshot]: ["tabId", "interactive", "delta", "maxChars"],
     [BROWSER_TOOL.screenshot]: ["tabId", "fullPage", "ref", "clip"],
     [BROWSER_TOOL.wait]: ["tabId", "text", "timeMs"],
     [BROWSER_TOOL.navigate]: ["tabId", "url"],

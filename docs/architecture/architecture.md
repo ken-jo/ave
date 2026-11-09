@@ -1593,6 +1593,10 @@ Every browser tool result, including host validation and action errors, remains
 inside the untrusted browser-content envelope. Diagnostics can interpolate page
 titles, accessible names and navigation URLs; a host error is not a trusted-text
 exception. String bounds and fence neutralization apply inside that same boundary.
+Snapshot results reserve 20% of the host inline token budget for transport
+overhead and report omitted content with a truncation flag. An explicit snapshot
+`maxChars` request (500–50,000) retains the full bounded outline for existing host
+chunk recovery. Rereading without `delta` recovers omitted elements.
 HTML5 interception uses only fixed internal `Input.setInterceptDrags`,
 `Input.cancelDragging`, and `Input.dispatchDragEvent` operations. Browser-originated payloads remain untrusted;
 only bounded approved text MIME data is accepted, with no files or host-path

@@ -172,7 +172,7 @@ export async function settlePageContent(cdp: CdpSession, signal: AbortSignal, as
 
 export async function snapshot(
   target: ActionTarget,
-  options: { interactive?: boolean; delta?: boolean },
+  options: { interactive?: boolean; delta?: boolean; maxChars?: number },
   refs: BrowserRefTable = browserRefs,
 ): Promise<BrowserPageSnapshot> {
   throwIfAborted(target.signal);
@@ -1653,7 +1653,7 @@ export function createBrowserPageActions(
       throwIfAborted(live.signal);
       if (live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was replaced");
     },
-    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) => awake(live, async () => {
+    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean; maxChars?: number }) => awake(live, async () => {
       const guest = live.tab.guest;
       if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
       const target = await targetFor(live, attribution, hostContentOrigin);

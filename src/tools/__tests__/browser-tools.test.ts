@@ -28,6 +28,9 @@ import { gateBrowserSiteNavigation } from "../../main/browser/browser-site-navig
 import type { CdpSession } from "../../main/browser/browser-action-guard.js";
 import { handleAgentBrowserPopup, setBrowserPopupNavigation } from "../../main/browser/browser-popup-navigation.js";
 import { fenceBrowserContent } from "../browser-tools-execute.js";
+import { BrowserRefTable } from "../../main/browser/browser-snapshot.js";
+import { trimOversizedToolResult } from "../../shared/tool-result-trim.js";
+import { createReadToolResultChunkTool, TOOL_RESULT_CHUNK_READER_METADATA_KEY } from "../tool-result-chunk.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 import { runWithAgentObservationTurn } from "../agent-observation-context.js";
 import { setAgentBrowserObservationSink } from "../agent-browser-observation.js";
@@ -1281,6 +1284,31 @@ describe("browser tools", () => {
     expectBrowserFence(direct);
     expect(() => browserHeader(direct)).not.toThrow();
     expect(direct).toContain('"truncated":true');
+  });
+
+  it("recovers omitted interactive elements through an explicit full snapshot and existing host chunks", async () => {
+    const { run, agentTab, page } = harness();
+    const agent = await agentTab("https://a.example/");
+    const refs = new BrowserRefTable();
+    const links = Array.from({ length: 300 }, (_, index) => ({ nodeId: `link-${index}`, role: { value: "link" },
+      name: { value: `Article ${index} with a long headline` }, backendDOMNodeId: index + 2 }));
+    page.actions.snapshot = async (target, options) => ({ url: target.tab.guest!.url, title: "News",
+      ...refs.render(target.tab.handle, target.tab.guest!.url, [{ nodeId: "root", role: { value: "RootWebArea" }, childIds: links.map(link => link.nodeId) }, ...links], options) });
+    const inline = await run(BROWSER_TOOL.snapshot, { tabId: agent.handle, interactive: true });
+    expect(inline.output).not.toContain("Article 299");
+    expect(browserHeader(inline.output).truncated).toBe(true);
+    const delta = await run(BROWSER_TOOL.snapshot, { tabId: agent.handle, interactive: true, delta: true });
+    expect(delta.output).toContain("no changes");
+    const full = await run(BROWSER_TOOL.snapshot, { tabId: agent.handle, interactive: true, maxChars: 50_000 });
+    expect(full.output).toContain('Article 299 with a long headline" [ref=e300]');
+    const meta = trimOversizedToolResult(full.output);
+    expect(meta.truncated).toBeDefined();
+    const chunk = await createReadToolResultChunkTool().execute({ toolUseId: "toolu_full", query: "Article 299" }, {
+      cwd: dir, extraAllowedDirectories: [], metadata: { [TOOL_RESULT_CHUNK_READER_METADATA_KEY]: () => ({ toolUseId: "toolu_full", toolName: BROWSER_TOOL.snapshot, content: full.output, meta }) },
+    });
+    expect(chunk.isError).toBe(false);
+    expect(chunk.output).toContain("Article 299");
+    for (const maxChars of [0, 499, 50_001, 1.5, "50000"]) expect((await run(BROWSER_TOOL.snapshot, { tabId: agent.handle, maxChars })).isError).toBe(true);
   });
 
   it("fences page content so a forged closing tag cannot escape it", async () => {
