@@ -43,6 +43,8 @@ describe("App notification history", () => {
     const { api, emitNotificationToast } = await renderApp();
 
     emitNotificationToast({
+      id: "main:1",
+      createdAt: Date.now(),
       kind: "routine",
       title: "완료",
       body: "작업이 완료되었습니다",

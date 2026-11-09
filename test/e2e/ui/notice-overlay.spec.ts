@@ -175,6 +175,63 @@ for (const width of [360, 1243]) {
   });
 }
 
+for (const width of [360, 1243]) {
+  test(`a main notification keeps its identity across renderer reloads at ${width}px`, async ({ app, mainWindow: page }, testInfo) => {
+    await setWindowSize(app, width, 640);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await clearHistory(page);
+    const previousNodeEnv = await app.evaluate(() => process.env.NODE_ENV);
+    try {
+      // The isolated UI fixture starts in test mode, which suppresses passive notifications.
+      await app.evaluate(({ BrowserWindow }) => {
+        process.env.NODE_ENV = "production";
+        const win = BrowserWindow.getAllWindows()[0];
+        if (!win) throw new Error("Missing main window");
+        win.show();
+        win.focus();
+      });
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isFocused())).toBe(true);
+      const result = await page.evaluate(() => window.ave.mcp.postUiMessage("e2e-history", "", {
+        content: [{ type: "text", text: "Reload history", _meta: {
+          "ai.agent-connector.ave/notification": { title: "Reload history", body: "Keep across reload" },
+        } }],
+      }));
+      expect(result).toEqual({ ok: true, disposition: "notified" });
+      await expect(page.getByTestId("notification-bell-count")).toHaveText("1");
+      await expect(page.getByTestId("status-toast")).toHaveCount(0);
+      await page.getByTestId("notification-bell").click();
+      const row = page.getByTestId("notification-history-row").filter({ hasText: "Keep across reload" });
+      await expect(row).toHaveCount(1);
+      await expect(row).toBeVisible();
+      const id = await row.getAttribute("data-notice-id");
+      const createdAt = await row.locator("time").getAttribute("datetime");
+      expect(id).toMatch(/^notification:main:/);
+      expect(createdAt).toBeTruthy();
+
+      for (const cleared of [false, true]) {
+        if (cleared) {
+          await row.getByTestId("notification-history-clear").click();
+          await expect(row).toHaveCount(0);
+        }
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await expect(page.getByTestId("main-toolbar")).toBeVisible();
+        await expect(page.getByTestId("composer-textarea").first()).toBeVisible();
+        await page.getByTestId("notification-bell").click();
+        await expect(row).toHaveCount(1);
+        await expect(row).toHaveAttribute("data-notice-id", id ?? "");
+        await expect(row.locator("time")).toHaveAttribute("datetime", createdAt ?? "");
+        await expect(page.getByTestId("notification-bell-count")).toHaveCount(0);
+      }
+      await captureWindow(app, testInfo.outputPath(`notification-bell-reloaded-${width}.png`), width);
+    } finally {
+      await app.evaluate((_main, previous) => {
+        if (previous === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = previous;
+      }, previousNodeEnv);
+    }
+  });
+}
+
 for (const [width, zoomLevel] of [[360, 0], [360, 2], [1243, 0]] as const) {
   test(`the bell and update controls hit-test at ${width}px and zoom ${zoomLevel}`, async ({ app, mainWindow: page }, testInfo) => {
     await setWindowSize(app, width, 640);

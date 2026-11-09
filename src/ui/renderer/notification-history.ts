@@ -1,3 +1,4 @@
+import { NOTIFICATION_HISTORY_LIMIT } from "../../shared/notification-types.js";
 import type { ToastItem } from "./hooks/status-bar/types.js";
 
 type NoticeSource = "window" | "banner" | NonNullable<ToastItem["notification"]>["kind"];
@@ -8,6 +9,7 @@ export interface NoticeAction {
   disabled?: boolean;
 }
 export interface NoticeInput {
+  createdAt?: number;
   severity: ToastItem["severity"];
   message: string;
   notification?: ToastItem["notification"];
@@ -23,8 +25,6 @@ export interface NoticeRecord extends ToastItem {
   actions?: NoticeAction[];
 }
 
-const HISTORY_LIMIT = 50;
-
 /** Window lifetime only: clearing a record never changes its producer's state. */
 export function createNotificationHistory() {
   let records: NoticeRecord[] = [];
@@ -32,6 +32,8 @@ export function createNotificationHistory() {
   let latestPolite: NoticeRecord | null = null;
   let latestError: NoticeRecord | null = null;
   let pendingAnnouncements: NoticeRecord[] = [];
+  // Local rows can evict a main row from the visible cap; that must not make its replay a new arrival.
+  const receivedIds = new Set<string>();
   let open = false;
   let sequence = 0;
   let arrival = 0;
@@ -39,12 +41,12 @@ export function createNotificationHistory() {
   const emit = () => { for (const listener of listeners) listener(); };
   const upsert = (id: string, input: NoticeInput): string => {
     if (input.notification?.kind === "approval" || input.notification?.kind === "ask-user") return id;
-    const createdAt = Date.now();
+    const createdAt = input.createdAt ?? Date.now();
     const record: NoticeRecord = {
       ...input, id, announcementId: ++arrival, createdAt, expiresAt: createdAt, read: open,
       source: input.source ?? input.notification?.kind ?? "window",
     };
-    records = [record, ...records.filter((item) => item.id !== id)].slice(0, HISTORY_LIMIT);
+    records = [record, ...records.filter((item) => item.id !== id)].slice(0, NOTIFICATION_HISTORY_LIMIT);
     latest = record;
     pendingAnnouncements.push(record);
     const errors = record.severity === "error";
@@ -69,6 +71,15 @@ export function createNotificationHistory() {
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
     push: (input: NoticeInput) => upsert(`notice:${++sequence}`, input),
     upsert,
+    receive: (id: string, input: NoticeInput) => {
+      if (receivedIds.has(id)) return id;
+      receivedIds.add(id);
+      if (receivedIds.size > NOTIFICATION_HISTORY_LIMIT) {
+        const oldest = receivedIds.values().next().value;
+        if (oldest !== undefined) receivedIds.delete(oldest);
+      }
+      return upsert(id, input);
+    },
     updateActions: (id: string, actions: NoticeAction[]) => {
       const current = records.find((item) => item.id === id);
       if (!current) return;

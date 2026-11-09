@@ -591,7 +591,11 @@ determine whether a tile can split or a panel can dock.
       below 768px of available toolbar width. The bell stays outside that menu, like the
       navigation arrows;
     - main-process system, routine, plugin, alert and turn-end records enter the same history,
-      including when the OS also shows a notification. Approval and ask-user requests never
+      including when the OS also shows a notification. A capped main-process ring retains these
+      records across renderer reloads with stable identity and arrival time. Replay preserves
+      existing rows without duplication; a reload can restore cleared rows because read/clear
+      state belongs to the renderer. The ring ends with the app session and never writes to disk.
+      Approval and ask-user requests never
       enter the in-app notification history: their cards own attention.
   - **Banner** for persistent conditions that need action. Retired-provider, deprecated-model,
     marketplace-announcement and document-engine-install banners stay in their current places

@@ -24,8 +24,8 @@ describe("useWindowNotices — notification producer", () => {
     const api = windowNoticeApi({ onNotificationToast: (handler) => { emit = handler; return unsubscribe; } });
     const { result, unmount } = renderHook(() => useWindowNotices(api));
     act(() => {
-      emit({ kind: "alert", title: "Meeting", body: "starting", sticky: true });
-      emit({ kind: "system", title: "Mail", body: "new" });
+      emit({ id: "main:1", createdAt: Date.now(), kind: "alert", title: "Meeting", body: "starting", sticky: true });
+      emit({ id: "main:2", createdAt: Date.now(), kind: "system", title: "Mail", body: "new" });
       vi.advanceTimersByTime(60_000);
     });
     expect(result.current.records.map((record) => record.message)).toEqual(["Mail: new", "Meeting: starting"]);
@@ -45,9 +45,20 @@ describe("useWindowNotices — notification producer", () => {
     let emit!: (payload: NotificationToastPayload) => void;
     const api = windowNoticeApi({ onNotificationToast: (handler) => { emit = handler; return () => {}; } });
     const { result } = renderHook(() => useWindowNotices(api));
-    act(() => emit({ kind, title: "Request", body: "Decide on its card" }));
+    act(() => emit({ id: "main:1", createdAt: Date.now(), kind, title: "Request", body: "Decide on its card" }));
     expect(result.current.records).toEqual([]);
     expect(result.current.latestNotice).toBeNull();
+  });
+
+  it("rejects history records without a stable identity or finite arrival time", () => {
+    let emit!: (payload: NotificationToastPayload) => void;
+    const api = windowNoticeApi({ onNotificationToast: (handler) => { emit = handler; return () => {}; } });
+    const { result } = renderHook(() => useWindowNotices(api));
+    act(() => {
+      emit({ kind: "system", title: "Invalid", body: "Missing identity" } as NotificationToastPayload);
+      emit({ id: "main:1", createdAt: Number.NaN, kind: "system", title: "Invalid", body: "Invalid time" });
+    });
+    expect(result.current.records).toEqual([]);
   });
 
   it("retains both announcement severities when arrivals share a render", () => {
@@ -64,7 +75,7 @@ describe("useWindowNotices — notification producer", () => {
     let emit!: (payload: NotificationToastPayload) => void;
     const api = windowNoticeApi({ onNotificationToast: (handler) => { emit = handler; return () => {}; } });
     const { result } = renderHook(() => useWindowNotices(api));
-    act(() => emit({ kind: "routine", title: "Re\x00port", body: "Re\nady", contextRef: { routineId: "routine-1" } }));
+    act(() => emit({ id: "main:1", createdAt: Date.now(), kind: "routine", title: "Re\x00port", body: "Re\nady", contextRef: { routineId: "routine-1" } }));
     expect(result.current.records[0]).toMatchObject({
       message: "Report: Ready", severity: "success", source: "routine", notification: { kind: "routine", contextRef: { routineId: "routine-1" } },
     });

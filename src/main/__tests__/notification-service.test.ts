@@ -202,7 +202,7 @@ describe("NotificationService — routing decision", () => {
       expect(svc.deliver({ kind, title: "Event", body: "Record body", contextRef, sticky: true }))
         .toEqual({ accepted: true, toast: win.webContents });
       expect(win.webContents.send).toHaveBeenCalledExactlyOnceWith(IPC_NOTIFICATION_TOAST, {
-        kind, title: "Event", body: "Record body", contextRef, sticky: true,
+        id: expect.any(String), createdAt: expect.any(Number), kind, title: "Event", body: "Record body", contextRef, sticky: true,
       });
       expect(factoryStub.calls).toHaveLength(osCount);
       if (osCount > 0) expect(factoryStub.calls[0].show).toHaveBeenCalledOnce();
@@ -1033,7 +1033,7 @@ describe("notification history subscriber readiness", () => {
     return { win, factory, auditLogger, service, target: win.webContents as unknown as Electron.WebContents };
   }
 
-  it("buffers only the newest fifty records before readiness and replays each once without new delivery effects", () => {
+  it("retains the newest fifty session records and restores stable identities without new delivery effects", () => {
     const { service, win, target, factory, auditLogger } = waitingService();
     for (let index = 0; index < 75; index++) service.fire({ kind: "system", title: "Boot", body: String(index) });
     service.fire({ kind: "approval", title: "Request", body: "Card" });
@@ -1043,11 +1043,12 @@ describe("notification history subscriber readiness", () => {
     expect(service.setHistorySubscriber(target, true)).toBe(true);
     expect(win.webContents.send.mock.calls.map(([, record]) => record.body)).toEqual(Array.from({ length: 50 }, (_, index) => String(index + 25)));
     service.setHistorySubscriber(target, true);
-    expect(win.webContents.send).toHaveBeenCalledTimes(50);
+    expect(win.webContents.send).toHaveBeenCalledTimes(100);
+    expect(win.webContents.send.mock.calls.slice(0, 50)).toEqual(win.webContents.send.mock.calls.slice(50));
     expect(vi.mocked(auditLogger.log)).toHaveBeenCalledTimes(audited);
     expect(factory.calls).toHaveLength(0);
     service.fire({ kind: "system", title: "Live", body: "Ready" });
-    expect(win.webContents.send).toHaveBeenCalledTimes(51);
+    expect(win.webContents.send).toHaveBeenCalledTimes(101);
   });
 
   it("retries only unsent history after a failed flush without repeating OS delivery or cooldown", () => {
@@ -1087,23 +1088,23 @@ describe("notification history subscriber readiness", () => {
     expect(service.setHistorySubscriber(other, true)).toBe(false);
     expect(win.webContents.send).toHaveBeenCalledTimes(2);
     service.setHistorySubscriber(target, true);
-    expect(win.webContents.send).toHaveBeenCalledTimes(3);
+    expect(win.webContents.send).toHaveBeenCalledTimes(5);
     service.setHistorySubscriber(target, false);
     service.fire({ kind: "system", title: "Unsubscribed", body: "Buffered" });
-    expect(win.webContents.send).toHaveBeenCalledTimes(3);
+    expect(win.webContents.send).toHaveBeenCalledTimes(5);
     service.setHistorySubscriber(target, true);
-    expect(win.webContents.send).toHaveBeenCalledTimes(4);
+    expect(win.webContents.send).toHaveBeenCalledTimes(9);
     const crashed = win.webContents.on.mock.calls.find(([event]) => event === "render-process-gone")?.[1];
     if (typeof crashed !== "function") throw new Error("Missing renderer crash listener");
     crashed();
     service.fire({ kind: "system", title: "Renderer gone", body: "Buffered" });
-    expect(win.webContents.send).toHaveBeenCalledTimes(4);
+    expect(win.webContents.send).toHaveBeenCalledTimes(9);
     service.setHistorySubscriber(target, true);
-    expect(win.webContents.send).toHaveBeenCalledTimes(5);
+    expect(win.webContents.send).toHaveBeenCalledTimes(14);
     const destroyed = win.webContents.once.mock.calls.find(([event]) => event === "destroyed")?.[1];
     if (typeof destroyed !== "function") throw new Error("Missing destruction listener");
     destroyed();
     service.fire({ kind: "system", title: "Recreated", body: "Buffered" });
-    expect(win.webContents.send).toHaveBeenCalledTimes(5);
+    expect(win.webContents.send).toHaveBeenCalledTimes(14);
   });
 });

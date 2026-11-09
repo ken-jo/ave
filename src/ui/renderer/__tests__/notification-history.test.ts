@@ -60,6 +60,21 @@ describe("notification history", () => {
     expect(createNotificationHistory().getSnapshot()).toEqual([]);
   });
 
+  it("deduplicates restored identities without changing read state, arrival or announcement", () => {
+    const history = createNotificationHistory();
+    history.receive("notification:main:1", { severity: "info", message: "Boot", createdAt: 1000 });
+    const announcement = history.getLatestPolite();
+    history.markRead();
+    const snapshot = history.getSnapshot();
+    history.receive("notification:main:1", { severity: "info", message: "Boot", createdAt: 1000 });
+    expect(history.getSnapshot()).toBe(snapshot);
+    expect(history.getSnapshot()[0]).toMatchObject({ read: true, createdAt: 1000 });
+    expect(history.getLatestPolite()).toBe(announcement);
+    history.clearAll();
+    history.receive("notification:main:1", { severity: "info", message: "Boot", createdAt: 1000 });
+    expect(history.getSnapshot()).toHaveLength(0);
+  });
+
   it.each(["approval", "ask-user"] as const)("refuses card requests of kind %s", (kind) => {
     const history = createNotificationHistory();
     history.push({ severity: "info", message: "Card", notification: { kind } });

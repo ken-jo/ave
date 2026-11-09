@@ -11,7 +11,7 @@ export function useWindowNotices(api: AveApi) {
   useEffect(() => {
     if (latestNotice?.announcementId !== undefined) history.acknowledgeAnnouncements(latestNotice.announcementId);
   }, [history, latestNotice]);
-  useStatusBarNotifications({ api, pushToast: history.push });
+  useStatusBarNotifications({ api, receiveToast: history.receive });
   useStatusBarInstall({ api, pushToast: history.push, upsertToast: history.upsert });
   return { history, records, latestNotice, latestPolite: history.getLatestPolite(), latestError: history.getLatestError(), pushToast: history.push, upsertToast: history.upsert };
 }

@@ -2272,7 +2272,7 @@ describe("notices with two tiles", () => {
   it("records a window notice once in the bell and in no pane or composer dock", async () => {
     const { container, emitNotificationToast } = await renderApp({ hasApiKey: true });
     await splitIntoTwoTiles(container);
-    await act(async () => { emitNotificationToast({ kind: "system", title: "완료", body: "창 전체에 한 번" }); });
+    await act(async () => { emitNotificationToast({ id: "main:1", createdAt: Date.now(), kind: "system", title: "완료", body: "창 전체에 한 번" }); });
     await waitFor(() => expect(screen.getByTestId("notification-bell-count")).toHaveTextContent("1"));
     expect(toasts(container)).toHaveLength(0);
     expect(container.querySelectorAll('[data-testid="composer-toast-dock"] [data-testid="status-toast"]')).toHaveLength(0);
@@ -2285,7 +2285,7 @@ describe("notices with two tiles", () => {
     const { container, emitNotificationToast } = await renderApp({ hasApiKey: true });
     const liveRegion = strip(container).querySelector('[data-testid="notice-live-polite"]');
     const bell = screen.getByTestId("notification-bell");
-    await act(async () => { emitNotificationToast({ kind: "system", title: "Ready", body: "Window notice", sticky: true }); });
+    await act(async () => { emitNotificationToast({ id: "main:1", createdAt: Date.now(), kind: "system", title: "Ready", body: "Window notice", sticky: true }); });
     await waitFor(() => expect(bell).toHaveAccessibleName(/1/));
     await clickSidebarNavRow("features", "toolbar-work-board");
     await waitFor(() => expect(container.querySelector('[data-testid="main-pane-shell"][data-view="work-board"]')).not.toBeNull());

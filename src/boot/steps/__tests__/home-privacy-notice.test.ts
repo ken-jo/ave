@@ -137,6 +137,7 @@ it("keeps boot repair and configuration records until the real renderer subscrib
     translate("ko", "homePrivacy.boundaryRepairedTitle"), translate("ko", "homePrivacy.configurationPreservedTitle"),
   ]);
   service.setHistorySubscriber(contents as unknown as Electron.WebContents, true);
-  expect(contents.send).toHaveBeenCalledTimes(2);
+  expect(contents.send).toHaveBeenCalledTimes(4);
+  expect(contents.send.mock.calls.slice(0, 2)).toEqual(contents.send.mock.calls.slice(2));
   expect(show).toHaveBeenCalledTimes(2);
 });

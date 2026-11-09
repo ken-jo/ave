@@ -6,16 +6,10 @@ import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
 import { stripMarkdown } from "../shared/strip-markdown.js";
 import { errorMessage } from "../shared/error-message.js";
+import { NOTIFICATION_HISTORY_LIMIT } from "../shared/notification-types.js";
+import type { NotificationKind, NotificationContextRef, NotificationToastPayload as ToastPayload } from "../shared/notification-types.js";
+export type { NotificationKind, NotificationContextRef } from "../shared/notification-types.js";
 const log = createLogger("ave");
-
-export type NotificationKind =
-  | "turn-end"
-  | "routine"
-  | "ask-user"
-  | "approval"
-  | "plugin"
-  | "alert"
-  | "system";
 
 // Closed enumeration of valid `NotificationKind` values. Exported so IPC handlers can validate untrusted renderer payloads without re-listing the kinds
 // inline. The `plugin` kind remains available to explicit plugin notification requests.
@@ -28,13 +22,6 @@ export const NOTIFICATION_KINDS: ReadonlySet<NotificationKind> = new Set([
   "alert",
   "system",
 ]);
-
-export interface NotificationContextRef {
-  sessionId?: string;
-  routineId?: string;
-  questionId?: string;
-  approvalId?: string;
-}
 
 export interface FireOptions {
   kind: NotificationKind;
@@ -60,7 +47,6 @@ export const IPC_NOTIFICATION_CLICKED = CHANNELS.notification.clicked;
 // Output cap — applied to BOTH body (toast / OS / audit) and title (audit). Body and title share the same 80-char limit; the constant name is retained
 // for API stability but is now a single output cap rather than a body-only cap.
 const BODY_MAX_CHARS = 80;
-const HISTORY_BUFFER_CAP = 50;
 const ELLIPSIS = "…";
 
 // Cooldowns reset on restart and bound bursts; zero-cooldown lifecycle kinds always fire.
@@ -82,15 +68,6 @@ const SIGNAL_OWNED_SOUND_KINDS: ReadonlySet<NotificationKind> = new Set(["turn-e
 const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f]/g;
 function stripControlChars(s: string): string {
   return s.replace(CONTROL_CHARS_RE, "");
-}
-
-interface ToastPayload {
-  kind: NotificationKind;
-  title: string;
-  body: string;
-  contextRef?: NotificationContextRef;
-  // Stays until the user dismisses it.
-  sticky?: true;
 }
 
 // Minimal Electron Notification surface used by the service. Exposed as an injectable factory so tests can stub it without spinning Electron.
@@ -161,7 +138,8 @@ export class NotificationService {
   private readonly isAnyWindowFocused: () => boolean;
   // Use monotonic time for cooldowns to survive wall-clock jumps; audit timestamps remain wall-clock time.
   private readonly lastFiredAt = new Map<NotificationKind, number>();
-  private readonly pendingHistory: ToastPayload[] = [];
+  private readonly historyRecords: ToastPayload[] = [];
+  private historySequence = 0;
   private historySubscriber: WebContents | null = null;
   private readonly observedHistoryContents = new WeakSet<WebContents>();
 
@@ -189,7 +167,7 @@ export class NotificationService {
     }
   }
 
-  /** Only the current main renderer may release buffered history after installing its listener. */
+  /** Only the current main renderer may restore session history after installing its listener. */
   setHistorySubscriber(target: WebContents, ready: boolean): boolean {
     const win = this.getMainWindow();
     if (!win || win.isDestroyed() || win.webContents !== target || target.isDestroyed()) return false;
@@ -210,11 +188,9 @@ export class NotificationService {
       });
     }
     this.historySubscriber = target;
-    while (this.pendingHistory.length > 0) {
-      const payload = this.pendingHistory[0];
+    for (const payload of this.historyRecords) {
       try {
         target.send(IPC_NOTIFICATION_TOAST, payload);
-        this.pendingHistory.shift();
       } catch (err) {
         this.historySubscriber = null;
         log.warn("notification history replay failed: %s", errorMessage(err));
@@ -224,9 +200,9 @@ export class NotificationService {
     return true;
   }
 
-  private bufferHistory(payload: ToastPayload): void {
-    this.pendingHistory.push(payload);
-    if (this.pendingHistory.length > HISTORY_BUFFER_CAP) this.pendingHistory.shift();
+  private retainHistory(payload: ToastPayload): void {
+    this.historyRecords.push(payload);
+    if (this.historyRecords.length > NOTIFICATION_HISTORY_LIMIT) this.historyRecords.shift();
   }
 
   // Never let dependency, window, or delivery failures escape fire(); passive cues must not interrupt host lifecycle. Returns the window that received
@@ -289,18 +265,20 @@ export class NotificationService {
       return true;
     }
 
-    // Records wait for the real history subscriber rather than disappearing into the bootstrap splash.
+    // The session ring survives renderer replacement; delivery does not remove records.
     let recorded = false;
     if (opts.kind !== "approval" && opts.kind !== "ask-user") {
       const payload: ToastPayload = {
+        id: `main:${++this.historySequence}`,
+        createdAt: Date.now(),
         kind: opts.kind,
         title: cleanTitle,
         body: truncatedBody,
         contextRef: opts.contextRef,
         ...(opts.sticky === true ? { sticky: true as const } : {}),
       };
+      this.retainHistory(payload);
       if (!win || win.isDestroyed() || this.historySubscriber !== win.webContents) {
-        this.bufferHistory(payload);
         recorded = true;
       } else {
         try {
@@ -309,7 +287,6 @@ export class NotificationService {
           onToast(win.webContents);
         } catch (err) {
           this.historySubscriber = null;
-          this.bufferHistory(payload);
           log.warn("notification history send failed: %s", errorMessage(err));
         }
       }

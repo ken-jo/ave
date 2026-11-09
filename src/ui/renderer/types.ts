@@ -1,3 +1,5 @@
+import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
+export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 import type { WindowControlsPlacement } from "../../shared/shell-geometry.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../../shared/memory-detail.js";
 import type { HOME_FOLDER_REFUSED } from "../../shared/permissions-events.js";
@@ -410,31 +412,6 @@ export type AskUserQuestionResponse = {
     freeText?: string;
   }>;
   dismissed?: boolean;
-};
-
-/** Which surface raised an in-app toast / OS notification. */
-type NotificationKind = "turn-end" | "routine" | "ask-user" | "approval" | "plugin" | "alert" | "system";
-
-/** What the notification points back at, so a click can land on its source. */
-type NotificationContextRef = {
-  sessionId?: string;
-  routineId?: string;
-  questionId?: string;
-  approvalId?: string;
-};
-
-export type NotificationToastPayload = {
-  kind: NotificationKind;
-  title: string;
-  body: string;
-  contextRef?: NotificationContextRef;
-  /** Stays until the user dismisses it (a `high` priority alert). */
-  sticky?: true;
-};
-
-export type NotificationClickPayload = {
-  kind: NotificationKind;
-  contextRef?: NotificationContextRef;
 };
 
 /** Everything preload assembles; the renderer sees it split between `window.aveApi` ({@link AveApi}) and `window.ave`. */
