@@ -1,5 +1,13 @@
 # Side-panel browser repair report
 
+## Popup authority retirement
+
+Popup policies retain native denial for agent-origin pages, but queue work only under the exact live lease. Releasing a lease, ending a turn, cancellation, pause, replacement, destruction or window release drains pending entries and promptly rejects an active drain, even when its opener never settles. Retirement removes the caller listener and stored opener references. Document transitions within the same live lease retain the existing admitted-popup behavior.
+
+Native denial follows the physical guest's current binding. Moving a guest between agent tabs or detaching it cannot fall through to unrestricted native popup creation; only an explicit matching user binding restores the established user-tab path. Old lease releases cannot retire new authority. No site-admission decision or approval order changed.
+
+Regression-first wrapper runs reproduced **20,000 retained post-lease entries**, a stuck cancellation drain and lost native denial on pause; added rebinding regressions also failed before their fixes. The final command `AVE_TEST_TMP_ROOT=/private/tmp/webfix-readiness/test-tmp bun run test:vitest -- run src/main/browser/__tests__/browser-popup-navigation.test.ts src/main/browser/__tests__/browser-tab-registry.test.ts` passed **130 tests in two files**. The post-lease stress assertion retains zero entries and never calls an opener across 20,000 attempts. Registry coverage exercises all authority endings, physical guest moves/replacement, explicit user provenance and exact lease identity.
+
 ## Main-document navigation readiness
 
 Navigation results now report `loading` and return at the new main document's DOM readiness, while subresources continue loading. A ten-second network budget permits a committed web document as a fallback; no new commit produces a clear timeout instead of returning the old page. Site admission remains in its existing order, and approval wait time is excluded from that budget. Input-action settling uses its existing main-frame commit watcher without waiting for every resource. Native abort/readiness listeners are removed before normal lifecycle cleanup; the full-load promise remains observed for late errors.

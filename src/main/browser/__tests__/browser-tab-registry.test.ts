@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserDocumentChangedError, BrowserTabRegistry, isUserActionInputType, type BrowserGuest } from "../browser-tab-registry.js";
 import { parseBrowserTabControlState, parseBrowserTabOpRequest, type BrowserTabControlState, type BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import { runWithAgentObservationInvocation, runWithAgentObservationTurn } from "../../../tools/agent-observation-context.js";
+import { _browserPopupNavigationStateForTest, awaitBrowserPopupNavigation, handleAgentBrowserPopup, setBrowserPopupNavigation } from "../browser-popup-navigation.js";
+import type { BrowserActionTab } from "../../../tools/browser-tools.js";
 
 const ACTOR = { sessionId: "conversation" };
 
@@ -59,6 +61,95 @@ afterEach(() => {
 });
 
 describe("BrowserTabRegistry", () => {
+
+  it.each(["release", "turn-end", "pause", "stop", "destroy", "replace", "window-close"] as const)("retires pending popup authority on %s without waiting for the popup opener", async (ending) => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "popup-owner", webContentsId: 88, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing owned tab");
+    const tab = registry.liveTab(opened.tabId);
+    if (!tab) throw new Error("Missing live owned tab");
+    const guest = tab.guest;
+    if (!guest) throw new Error("Missing owned guest");
+    const lease = await runWithAgentObservationTurn({ sessionId: ACTOR.sessionId, turnId: "popup-turn" }, () =>
+      runWithAgentObservationInvocation({ sessionId: ACTOR.sessionId, toolUseId: "popup-action" }, async () => registry.acquireControl(tab, ACTOR)));
+    const popup = deferred<void>();
+    setBrowserPopupNavigation({ tab, signal: tab.actions.signal, leaseId: lease.id, authorizeSite: async () => {}, openSitePopup: () => popup.promise } satisfies BrowserActionTab<FakeGuest>);
+    handleAgentBrowserPopup(guest, "https://other.example/", false);
+    const pending = awaitBrowserPopupNavigation(guest, lease.id);
+    const outcome = pending.then(() => "opened", () => "retired");
+    if (ending === "release") registry.releaseControl(tab.handle, lease.id);
+    if (ending === "turn-end") registry.endTurnControl(ACTOR.sessionId, "popup-turn");
+    if (ending === "pause") registry.pause(1, "popup-owner");
+    if (ending === "stop") registry.stop(1, "popup-owner");
+    if (ending === "destroy") registry.guestDestroyed(88);
+    if (ending === "replace") attachTab(registry, { tabId: "popup-owner", webContentsId: 89 }, 1, "about:blank");
+    if (ending === "window-close") registry.releaseWindow(1);
+    try {
+      await expect(Promise.race([outcome, new Promise(resolve => setTimeout(() => resolve("still pending"), 10))])).resolves.toBe("retired");
+      expect(_browserPopupNavigationStateForTest(guest).pending).toBe(0);
+      if (ending === "release" || ending === "turn-end" || ending === "pause" || ending === "replace") expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(true);
+      if (ending === "replace") {
+        registry.stop(1, "popup-owner");
+        expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(true);
+      }
+      if (ending === "stop") expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(false);
+    } finally { popup.resolve(); await outcome; }
+  });
+
+  it("keeps native popup denial with a physical guest moved between agent tabs", async () => {
+    const { registry, ops } = setup();
+    for (const [tabId, webContentsId] of [["source", 88], ["destination", 89]] as const) {
+      const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+      attachTab(registry, { tabId, webContentsId, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+      expect((await opening).ok).toBe(true);
+    }
+    const source = registry.liveRendererTab(1, "source");
+    const destination = registry.liveRendererTab(1, "destination");
+    if (!source || !destination) throw new Error("Missing live agent tabs");
+    const guest = source.guest;
+    if (!guest) throw new Error("Missing source guest");
+    const lease = registry.acquireControl(source, ACTOR);
+    const open = vi.fn(async () => {});
+    setBrowserPopupNavigation({ tab: source, signal: source.actions.signal, leaseId: lease.id, authorizeSite: async () => {}, openSitePopup: open } satisfies BrowserActionTab<FakeGuest>);
+    expect(registry.bindTab(1, { tabId: "destination", webContentsId: guest.id })).toEqual({ ok: true });
+    expect(source.guest).toBeNull();
+    expect(destination.guest).toBe(guest);
+    attachTab(registry, { tabId: "source", webContentsId: 91 }, 1, "about:blank");
+    registry.stop(1, "source");
+    expect(source.guest?.id).toBe(91);
+    expect(source.opener).toBe("user");
+    for (let index = 0; index < 20; index++) expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(true);
+    expect(_browserPopupNavigationStateForTest(guest).pending).toBe(0);
+    expect(open).not.toHaveBeenCalled();
+    attachTab(registry, { tabId: "user-destination", webContentsId: 90 }, 1, "about:blank");
+    expect(registry.bindTab(1, { tabId: "user-destination", webContentsId: guest.id })).toEqual({ ok: true });
+    expect(destination.guest).toBeNull();
+    expect(registry.liveRendererTab(1, "user-destination")?.opener).toBe("user");
+    expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(false);
+  });
+
+  it("keeps popup authorization alive through document changes within its exact lease", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    attachTab(registry, { tabId: "popup-navigation", webContentsId: 88, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing owned tab");
+    const tab = registry.liveTab(opened.tabId);
+    if (!tab) throw new Error("Missing live owned tab");
+    const guest = tab.guest;
+    if (!guest) throw new Error("Missing owned guest");
+    const lease = registry.acquireControl(tab, ACTOR);
+    const open = vi.fn(async () => {});
+    setBrowserPopupNavigation({ tab, signal: tab.actions.signal, leaseId: lease.id, authorizeSite: async () => {}, openSitePopup: open } satisfies BrowserActionTab<FakeGuest>);
+    registry.navigationStarted(88, "https://a.example/next");
+    registry.documentChanged(88);
+    expect(handleAgentBrowserPopup(guest, "https://other.example/", false)).toBe(true);
+    await expect(awaitBrowserPopupNavigation(guest, lease.id)).resolves.toBeUndefined();
+    expect(open).toHaveBeenCalledOnce();
+    registry.releaseControl(tab.handle, lease.id);
+  });
 
   it("ends only the finished actor's active control while preserving ownership and human pauses", async () => {
     const { registry, ops, control } = setup();
