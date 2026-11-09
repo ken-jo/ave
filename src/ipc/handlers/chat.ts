@@ -616,19 +616,35 @@ export async function handleChatSessions(
   return { current: conversationLoop.getSessionId(), sessions: federated, parents: await sessionPageParents(deps, federated) };
 }
 
+const SESSION_ANCESTOR_MAX_DEPTH = 64;
+
 /** Supplemental rows never change the primary page's last-row cursor. */
 async function sessionPageParents(deps: IpcDeps, page: readonly SessionListRow[]): Promise<SessionListRow[]> {
   const present = new Set(page.map((row) => row.id));
-  const lookedUp = new Map<string, SessionListRow | null>();
+  const lookedUp = new Map<string, SessionListRow | null>(page.map((row) => [row.id, row]));
   const parents: SessionListRow[] = [];
   for (const child of page) {
-    const id = child.family === "subagent" ? child.originSessionId : undefined;
-    if (!id || present.has(id)) continue;
-    if (!lookedUp.has(id)) lookedUp.set(id, await sessionRowById(deps, id));
-    const parent = lookedUp.get(id);
-    if (parent && (parent.projectRoot === undefined && child.projectRoot === undefined || projectRootEquals(parent.projectRoot, child.projectRoot))) {
-      parents.push(parent);
-      present.add(parent.id);
+    const seen = new Set([child.id]);
+    let current = child;
+    let depth = 0;
+    while (current.family === "subagent" && current.originSessionId) {
+      const id = current.originSessionId;
+      if (seen.has(id)) break;
+      if (depth === SESSION_ANCESTOR_MAX_DEPTH) {
+        log.error({ sessionId: child.id, ancestorId: id, maxDepth: SESSION_ANCESTOR_MAX_DEPTH },
+          "session-ancestor-depth-exceeded: session ancestry exceeds the depth contract");
+        break;
+      }
+      seen.add(id);
+      if (!lookedUp.has(id)) lookedUp.set(id, await sessionRowById(deps, id));
+      const parent = lookedUp.get(id);
+      if (!parent || !(parent.projectRoot === undefined && current.projectRoot === undefined || projectRootEquals(parent.projectRoot, current.projectRoot))) break;
+      if (!present.has(id)) {
+        parents.push(parent);
+        present.add(id);
+      }
+      current = parent;
+      depth += 1;
     }
   }
   return parents;

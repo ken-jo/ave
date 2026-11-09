@@ -516,3 +516,46 @@ describe("sidebar parent recovery", () => {
     expect(listMain).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ limit: 2 }));
   });
 });
+
+it.each([false, true])("recovers the full same-project ancestor chain for a grandchild (point read: %s)", async (pointRead) => {
+  const grandparent = { id: "aaaaaaaa-1111-4111-8111-111111111111", title: "Grandparent", sessionKind: "main" as const, projectRoot: "/project", modifiedAt: new Date("2026-11-01") };
+  const parent = { ...grandparent, id: "sub-aaaaaaaa-bbbbbbbb-1111-4111-8111-111111111111", title: "Parent", sessionKind: "subagent" as const, originSessionId: grandparent.id, running: false };
+  const grandchild = { ...parent, id: "sub-aaaaaaaa-cccccccc-1111-4111-8111-111111111111", title: "Grandchild", originSessionId: parent.id, modifiedAt: new Date("2026-11-09") };
+  const readMain = vi.fn((id: string) => id === grandparent.id ? grandparent : null);
+  const readChild = vi.fn((id: string) => [parent, grandchild].find((row) => row.id === id) ?? null);
+  const deps = {
+    conversationLoop: { getSessionId: () => grandparent.id },
+    memoryManager: { sessions: { listSessionsPage: () => [], getSessionListEntry: readMain } },
+    getSubAgentRunner: () => ({ listSubAgentSessions: () => [grandchild], getSessionListEntry: readChild }),
+  } as unknown as IpcDeps;
+  const result = await handleChatSessions(deps, { families: ["main", "subagent"], limit: 1, ...(pointRead ? { id: grandchild.id } : {}) });
+  expect(result.sessions.map((row) => row.id)).toEqual([grandchild.id]);
+  expect(result.parents?.map((row) => row.id)).toEqual([parent.id, grandparent.id]);
+  expect(readMain.mock.calls.filter(([id]) => id === grandparent.id)).toHaveLength(1);
+});
+
+it.each(["missing", "project-boundary", "cycle", "depth-cap"])("stops ancestor recovery at %s", async (stop) => {
+  const idAt = (index: number) => `sub-aaaaaaaa-${index.toString(16).padStart(8, "0")}-1111-4111-8111-111111111111`;
+  const rows = Array.from({ length: 67 }, (_, index) => ({ id: idAt(index), originSessionId: idAt(index + 1), sessionKind: "subagent" as const, projectRoot: "/project", modifiedAt: new Date("2026-11-09"), running: false }));
+  const [first, second] = rows;
+  if (!first || !second) throw new Error("missing-ancestor-fixture");
+  if (stop === "cycle") second.originSessionId = first.id;
+  if (stop === "project-boundary") second.projectRoot = "/other";
+  const read = vi.fn((id: string) => stop === "missing" ? null : rows.find((row) => row.id === id) ?? null);
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const deps = {
+      conversationLoop: { getSessionId: () => first.id },
+      memoryManager: { sessions: { listSessionsPage: () => [], getSessionListEntry: () => null } },
+      getSubAgentRunner: () => ({ listSubAgentSessions: () => [first], getSessionListEntry: read }),
+    } as unknown as IpcDeps;
+    const result = await handleChatSessions(deps, { families: ["subagent"], limit: 1 });
+    expect(result.parents).toHaveLength(stop === "depth-cap" ? 64 : stop === "cycle" ? 1 : 0);
+    expect(read).toHaveBeenCalledTimes(stop === "depth-cap" ? 64 : 1);
+    if (stop === "depth-cap") expect(error).toHaveBeenCalledExactlyOnceWith(
+      "[chat] session-ancestor-depth-exceeded: session ancestry exceeds the depth contract",
+      { sessionId: first.id, ancestorId: idAt(65), maxDepth: 64 },
+    );
+    else expect(error).not.toHaveBeenCalled();
+  } finally { error.mockRestore(); }
+});
