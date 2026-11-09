@@ -3,13 +3,18 @@ import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import { registerMainWindow, unregisterMainWindow } from "../../../../src/main/app-state.js";
 import { createBrowserPageActions } from "../../../../src/main/browser/browser-actions.js";
 import { browserCapturePixelRatio } from "../../../../src/main/browser/browser-capture-desktop.js";
+import { disposeBrowserWorkspaceService } from "../../../../src/main/browser/browser-workspace-desktop.js";
 import { browserTabRegistry } from "../../../../src/main/browser/browser-tab-registry.js";
 import { trackBrowserGuest } from "../../../../src/main/browser/browser-guest-tracking.js";
+import { BrowserNativeSurfaceHost } from "../../../../src/main/browser/browser-native-surfaces.js";
+import { attachSideBrowserWebview, installSideBrowserPartitionPolicy } from "../../../../src/main/side-browser-webview.js";
 import { browserOrigin } from "../../../../src/shared/browser-tools.js";
 import type { BrowserScreenshotOptions } from "../../../../src/shared/browser-capture.js";
 import type { BrowserTabBindRequest } from "../../../../src/shared/browser-surface.js";
+import { parseBrowserNativeSurfaceRequest } from "../../../../src/shared/browser-native-surface.js";
 import type { BrowserActionTab } from "../../../../src/tools/browser-tools.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./contract.js";
 
@@ -113,24 +118,52 @@ void app.whenReady().then(async () => {
   const origin = `http://127.0.0.1:${address.port}`;
   win = new BrowserWindow({ width: 1180, height: 860, show: false,
     webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(assets, "preload.cjs") } });
+  registerMainWindow(win, "primary");
+  const windowId = win.id;
+  win.once("closed", () => { browserTabRegistry.releaseWindow(windowId); unregisterMainWindow(win); });
   win.showInactive();
   win.webContents.on("console-message", (event) => { process.stderr.write(`[capture-host] ${event.message}\n`); });
-  win.webContents.on("will-attach-webview", (_event, preferences) => {
-    preferences.contextIsolation = true; preferences.sandbox = true; preferences.nodeIntegration = false; delete preferences.preload;
+  installSideBrowserPartitionPolicy();
+  const nativeSurfaces = new BrowserNativeSurfaceHost({
+    windowForId: id => id === win.id && !win.isDestroyed() ? win : undefined,
+    authorizeCreate: (windowId, tabId, requestId) => browserTabRegistry.authorizeNativeSurface(windowId, tabId, requestId),
+    attach: (contents, owner) => {
+      guest = contents;
+      trackBrowserGuest(contents, owner.id, { kind: "native-view" });
+      attachSideBrowserWebview(contents, owner);
+    },
+    bind: (windowId, request) => browserTabRegistry.bindTab(windowId, request),
+    changed: (_windowId, surface, tabId) => {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send("capture-fixture-native-state", { tabId, surface });
+    },
+    userFocus: (guestId, explicit) => browserTabRegistry.userFocus(guestId, explicit),
+    userNavigate: (windowId, tabId) => { browserTabRegistry.stop(windowId, tabId); },
   });
-  win.webContents.on("did-attach-webview", (_event, contents) => { guest = contents; trackBrowserGuest(guest, win.id); });
   ipcMain.handle("capture-fixture-bind", (event, request: BrowserTabBindRequest) => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Capture fixture sender is unauthorized");
     return browserTabRegistry.bindTab(win.id, request);
   });
+  ipcMain.handle("capture-fixture-native-surface", (event, payload: unknown) => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Capture fixture sender is unauthorized");
+    const request = parseBrowserNativeSurfaceRequest(payload);
+    return request ? nativeSurfaces.request(win.id, request) : { ok: false, error: "bad-request" };
+  });
+  ipcMain.handle("capture-fixture-session-bindings", (event) => {
+    if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Capture fixture sender is unauthorized");
+    return browserTabRegistry.sessionBindingsState(win.id);
+  });
   browserTabRegistry.setRendererLink({
     isWindowVisible: (windowId) => windowId === win.id && !win.isDestroyed() && win.isVisible(),
     sendTabOp: (_windowId, request) => {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) return false;
       if (request.op === "new") requestId = request.requestId;
       win.webContents.send("capture-fixture-tab-op", request);
       return true;
     },
     sendControl: () => {},
+    sendSessionBindings: (_windowId, state) => {
+      if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send("capture-fixture-session-bindings-changed", state);
+    },
   });
   const opening = browserTabRegistry.requestTabOp(win.id, { op: "new", url: `${origin}/page`, actor, active: true });
   await win.loadURL(`${origin}/host?requestId=${encodeURIComponent(requestId)}`);
@@ -142,9 +175,14 @@ void app.whenReady().then(async () => {
   const bootstrap = browserTabRegistry.acquireControl(record(), actor);
   try { await actions.navigate({ tab: record(), signal: record().actions.signal, leaseId: bootstrap.id }, `${origin}/page`, origin); }
   finally { browserTabRegistry.releaseControl(tabId, bootstrap.id); }
-  const fixture: CaptureNativeFixture = { ready: true, capture, close: async () => {
-    guest.stop(); win.destroy();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+  const fixture: CaptureNativeFixture = { ready: true, pageUrl: `${origin}/page`, targetId: guest.id, windowId: win.id, capture, close: async () => {
+    if (!guest.isDestroyed()) guest.stop();
+    nativeSurfaces.dispose();
+    disposeBrowserWorkspaceService();
+    if (!win.isDestroyed()) win.destroy();
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+    server.closeAllConnections();
+    await closed;
   } };
   (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture = fixture;
 }).catch((error) => { console.error(error); app.exit(1); });

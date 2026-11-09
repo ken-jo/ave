@@ -2,16 +2,19 @@ import { expect, test, type TestInfo } from "@playwright/test";
 import type { ElectronApplication } from "playwright";
 import { build } from "esbuild";
 import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildIsolatedElectronEnv, launchElectron, quitElectron, setWindowSize } from "./seeded-electron.js";
 import type { BrowserScreenshotOptions } from "../../../src/shared/browser-capture.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./browser-capture-native/contract.js";
+import { browserTargetId, inspectBrowserTarget } from "./browser-native-target.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, "browser-capture-native");
 let mainOut: string;
 let assets: string;
+const runtimes = new WeakMap<ElectronApplication, string>();
 
 test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
   assets = testInfo.outputPath("capture-native-assets");
@@ -26,13 +29,17 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
 });
 
 async function launch(testInfo: TestInfo): Promise<ElectronApplication> {
-  const runtime = testInfo.outputPath("runtime");
-  await fs.mkdir(runtime, { recursive: true });
+  const temporaryRoot = await fs.realpath(tmpdir());
+  if (temporaryRoot === "/private/tmp" || temporaryRoot.startsWith("/private/tmp/")) throw new Error("Capture fixture requires an external temporary directory");
+  const runtime = await fs.mkdtemp(join(temporaryRoot, `ave-capture-native-${testInfo.workerIndex}-`));
+  const tempHome = join(runtime, "home");
+  await fs.mkdir(tempHome, { recursive: true });
   const app = await launchElectron({
     args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
-    env: buildIsolatedElectronEnv({ HOME: process.env.HOME, USERPROFILE: process.env.HOME, AVE_HOME: join(runtime, "ave-home"), AVE_CAPTURE_FIXTURE_ASSETS: assets,
+    env: buildIsolatedElectronEnv({ HOME: tempHome, USERPROFILE: tempHome, AVE_HOME: join(tempHome, ".ave"), AVE_CAPTURE_FIXTURE_ASSETS: assets,
       AVE_CAPTURE_FIXTURE_RUNTIME: runtime, AVE_CAPTURE_FIXTURE_PAGE: join(HERE, "browser-actions-native/page.html") }),
-  });
+  }).catch(async error => { await fs.rm(runtime, { recursive: true, force: true }); throw error; });
+  runtimes.set(app, runtime);
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[capture-native:stderr] ${data}`));
   try {
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { captureNativeFixture?: CaptureNativeFixture }).captureNativeFixture?.ready === true), { timeout: 30_000 }).toBe(true);
@@ -40,7 +47,7 @@ async function launch(testInfo: TestInfo): Promise<ElectronApplication> {
     await expect.poll(() => (app.firstWindow()).then(page => page.evaluate(() => document.hasFocus()))).toBe(true);
     expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(window => window.isFocused()))).toBe(false);
     return app;
-  } catch (error) { await quitElectron(app); throw error; }
+  } catch (error) { await close(app); throw error; }
 }
 
 async function capture(app: ElectronApplication, options: BrowserScreenshotOptions, zoom = 1): Promise<CaptureNativeResult> {
@@ -48,8 +55,14 @@ async function capture(app: ElectronApplication, options: BrowserScreenshotOptio
 }
 
 async function close(app: ElectronApplication): Promise<void> {
-  await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.close()).catch(() => {});
-  await quitElectron(app);
+  try {
+    await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.close()).catch(() => {});
+    await quitElectron(app);
+  } finally {
+    const runtime = runtimes.get(app);
+    runtimes.delete(app);
+    if (runtime) await fs.rm(runtime, { recursive: true, force: true });
+  }
 }
 
 async function attachImage(testInfo: TestInfo, name: string, result: CaptureNativeResult): Promise<void> {
@@ -70,17 +83,23 @@ function expectFixtureBands(result: CaptureNativeResult): void {
 }
 
 async function layout(app: ElectronApplication) {
-  const native = await app.evaluate(({ BrowserWindow, webContents }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
-    if (!window || !guest) throw new Error("Capture fixture native layout is unavailable");
-    return { bounds: window.getContentBounds(), zoom: guest.getZoomFactor() };
+  const target = await app.evaluate(() => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    return { windowId: fixture.windowId, targetId: fixture.targetId, pageUrl: fixture.pageUrl };
   });
-  const guest = await app.evaluate(async ({ webContents }) => {
-    const contents = webContents.getAllWebContents().find((entry) => entry.getType() === "webview");
+  expect(await browserTargetId(app, target.pageUrl)).toBe(target.targetId);
+  const native = await app.evaluate(({ BrowserWindow, webContents }, target) => {
+    const window = BrowserWindow.fromId(target.windowId);
+    const guest = webContents.fromId(target.targetId);
+    if (!window || !guest) throw new Error("Capture fixture native layout is unavailable");
+    return { bounds: window.getContentBounds(), zoom: guest.getZoomFactor(), type: guest.getType(), embedded: Boolean(guest.hostWebContents) };
+  }, target);
+  expect(native).toMatchObject({ type: "window", embedded: false });
+  const guest = await app.evaluate(async ({ webContents }, id) => {
+    const contents = webContents.fromId(id);
     if (!contents) throw new Error("Capture fixture guest is unavailable");
     return contents.executeJavaScript("({width:visualViewport.width,height:visualViewport.height,x:scrollX,y:scrollY})");
-  });
+  }, target.targetId);
   return { native, guest, slot: await (await app.firstWindow()).locator("#slot").boundingBox() };
 }
 
@@ -90,7 +109,8 @@ for (const zoom of [1, 1.25]) {
     let before: Awaited<ReturnType<typeof layout>> | undefined;
     try {
       await app.evaluate(async ({ webContents }, zoom) => {
-        const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+        const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+        const guest = webContents.fromId(fixture.targetId);
         if (!guest) throw new Error("Capture fixture guest is unavailable");
         guest.setZoomFactor(zoom);
         await guest.executeJavaScript("scrollTo(0,123)");
@@ -122,7 +142,8 @@ for (const zoom of [1, 1.25]) {
     const app = await launch(testInfo);
     try {
       await app.evaluate(async ({ webContents }, zoom) => {
-        const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+        const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+        const guest = webContents.fromId(fixture.targetId);
         if (!guest) throw new Error("Capture fixture guest is unavailable");
         guest.setZoomFactor(zoom);
         await guest.executeJavaScript("scrollTo(0,20)");
@@ -146,15 +167,18 @@ test("native parked agent tab wakes for full-page capture without selecting its 
   const app = await launch(testInfo);
   try {
     const host = await app.firstWindow();
+    const target = await app.evaluate(() => {
+      const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+      return { windowId: fixture.windowId, targetId: fixture.targetId, pageUrl: fixture.pageUrl };
+    });
     await host.locator("#slot").evaluate((element) => { element.style.display = "none"; });
-    const frame = host.getByTestId("web-surface-frame");
-    await expect.poll(() => frame.evaluate((element) => getComputedStyle(element).visibility), { timeout: 15_000 }).toBe("hidden");
+    await expect.poll(async () => (await inspectBrowserTarget(app, target.windowId, target.pageUrl)).attached, { timeout: 15_000 }).toBe(false);
     const result = await capture(app, { fullPage: true });
     expect(result.dimensions.height).toBeGreaterThan(result.viewport.height * 2);
     expect(result.dimensions).toEqual({ width: result.viewport.width, height: result.content.height });
     expectFixtureBands(result);
     await expect(host.locator("#slot")).toBeHidden();
-    await expect(frame).toHaveAttribute("aria-hidden", "true");
+    expect(await inspectBrowserTarget(app, target.windowId, target.pageUrl)).toMatchObject({ id: target.targetId, attached: false });
     await attachImage(testInfo, "parked-full-page-capture", result);
   } finally { await close(app); }
 });
@@ -163,30 +187,34 @@ test("native parked agent tab captures its viewport and returns to sleep", async
   const app = await launch(testInfo);
   try {
     const backgroundThrottled = () => app.evaluate(({ webContents }) => {
-      const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+      const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+      const guest = webContents.fromId(fixture.targetId);
       if (!guest) throw new Error("Capture fixture guest is unavailable");
       return guest.getBackgroundThrottling();
     });
     // Exercise restoration from a throttled baseline; background test guests start unthrottled.
     await app.evaluate(({ webContents }) => {
-      const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+      const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+      const guest = webContents.fromId(fixture.targetId);
       if (!guest) throw new Error("Capture fixture guest is unavailable");
       guest.setBackgroundThrottling(true);
     });
     expect(await backgroundThrottled()).toBe(true);
     const host = await app.firstWindow();
+    const target = await app.evaluate(() => {
+      const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+      return { windowId: fixture.windowId, targetId: fixture.targetId, pageUrl: fixture.pageUrl };
+    });
     await host.locator("#slot").evaluate((element) => { element.style.display = "none"; });
-    const frame = host.getByTestId("web-surface-frame");
-    await expect.poll(() => frame.evaluate((element) => getComputedStyle(element).visibility), { timeout: 15_000 }).toBe("hidden");
+    await expect.poll(async () => (await inspectBrowserTarget(app, target.windowId, target.pageUrl)).attached, { timeout: 15_000 }).toBe(false);
     const result = await capture(app, {});
     expect(await backgroundThrottled()).toBe(false);
     expect(result.dimensions).toEqual(result.viewport);
     expect(result.truncated).toBe(false);
     await expect(host.locator("#slot")).toBeHidden();
-    await expect(frame).toHaveAttribute("aria-hidden", "true");
-    await expect(frame).toHaveAttribute("inert", "");
+    expect(await inspectBrowserTarget(app, target.windowId, target.pageUrl)).toMatchObject({ id: target.targetId, attached: false });
     await attachImage(testInfo, "parked-viewport-capture", result);
-    await expect.poll(() => frame.evaluate((element) => getComputedStyle(element).visibility), { timeout: 5_000 }).toBe("hidden");
+    await expect.poll(async () => (await inspectBrowserTarget(app, target.windowId, target.pageUrl)).attached, { timeout: 5_000 }).toBe(false);
     await expect.poll(backgroundThrottled, { timeout: 5_000 }).toBe(true);
   } finally { await close(app); }
 });

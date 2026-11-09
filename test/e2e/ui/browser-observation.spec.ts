@@ -171,7 +171,7 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
       });
       let previous = "";
       const measure = () => {
-        const guest = document.querySelector('[data-testid="chat-side-panel-browser-webview"]');
+        const guest = document.querySelector('[data-testid="web-surface-frame"]');
         if (guest) {
           const bounds = guest.getBoundingClientRect().toJSON();
           const state = { bounds, strip: document.querySelector('[data-testid="browser-preview-live-strip"]') !== null,
@@ -209,8 +209,11 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
     const strip = page.getByTestId("chat-side-panel-url-viewer").getByTestId("browser-preview-live-strip");
     await expect(strip).toContainText("에이전트 브라우징");
     await expect(strip).toContainText("클릭: ‘Continue’");
-    const guestId = await page.getByTestId("chat-side-panel-browser-webview").evaluate((element) =>
-      (element as unknown as { getWebContentsId(): number }).getWebContentsId());
+    const guestId = await ctx.app.evaluate(({ webContents }, url) => {
+      const targets = webContents.getAllWebContents().filter(contents => contents.getURL() === url);
+      if (targets.length !== 1) throw new Error(`Expected one observation target, found ${targets.length}`);
+      return targets[0]!.id;
+    }, pageUrl);
     try {
       await expect.poll(() => ctx!.app.evaluate(({ webContents }, id) => {
         const guest = webContents.fromId(id);
@@ -239,7 +242,7 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
         return { guestId: id, dom, windows, nativeInput: state.browserFixtureInput,
           console: state.browserFixtureConsole, crashes: state.browserFixtureCrashes };
       }, guestId);
-      const guestBounds = await page.getByTestId("chat-side-panel-browser-webview").boundingBox();
+      const guestBounds = await page.getByTestId("web-surface-frame").boundingBox();
       const geometry = await page.evaluate(() => (window as unknown as { browserGuestGeometry: BrowserGuestGeometry[] }).browserGuestGeometry);
       const control = await page.evaluate(() => (window as unknown as { browserControlTransitions: unknown[] }).browserControlTransitions);
       const proof = { ...diagnostic, guestBounds, geometry, control };

@@ -4,6 +4,7 @@ import { writeFileSync } from "node:fs";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import type { AgentObservationEvent, BrowserObservationPreviewMessage } from "../../../src/shared/agent-observation.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron, setWindowSize } from "./seeded-electron.js";
+import { browserHostIdentity, browserTargetId, inspectBrowserTarget } from "./browser-native-target.js";
 
 test.use({ trace: "on" });
 
@@ -115,6 +116,7 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
       });
     });
     const page = ctx.page;
+    const host = await browserHostIdentity(ctx.app, page);
     await setWindowSize(ctx.app, 1280, 800);
     const errors: string[] = [];
     page.on("crash", () => errors.push("Main renderer crashed"));
@@ -172,6 +174,10 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
     }, rendererTabId);
     const guestFrame = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${rendererTabId}"]`);
     await expect(guestFrame).toHaveCSS("visibility", "visible");
+    const nativePageId = await browserTargetId(ctx.app, firstUrl);
+    expect(await inspectBrowserTarget(ctx.app, host.windowId, firstUrl)).toMatchObject({
+      id: nativePageId, type: "window", embedded: false, attached: true,
+    });
     // Measure inside the real parked guest; a visible shell rect alone cannot prove its animation clock is running.
     const app = ctx.app;
     const measureLiveness = () => app.evaluate(async ({ webContents }, url) => {
@@ -199,12 +205,10 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
     const thumbnail = thumbnailRow.getByRole("button", { name: /^(Open browser tab:|브라우저 탭 열기:)/ });
     await expect(thumbnail).toBeVisible();
     await expect(thumbnailRow.getByTestId("browser-observation-slot")).toBeVisible();
-    await expect(guestFrame).toHaveCSS("opacity", "0");
-    await expect(guestFrame).toHaveCSS("pointer-events", "none");
-    await expect(guestFrame).toHaveAttribute("aria-hidden", "true");
-    await expect(guestFrame).toHaveAttribute("inert", "");
+    await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, firstUrl)).attached).toBe(false);
     expect(await guestFrame.evaluate((element) => element.contains(document.activeElement))).toBe(false);
-    expect(await page.locator(`webview[data-tab-id="${rendererTabId}"]`).count()).toBe(1);
+    expect(await page.locator(`webview[data-tab-id="${rendererTabId}"]`).count()).toBe(0);
+    expect(await browserTargetId(ctx.app, firstUrl)).toBe(nativePageId);
     const liveness = await measureLiveness();
     console.log("Guest liveness", { active: activeLiveness, parked: liveness });
     await test.info().attach("parked-guest-liveness.json", { body: JSON.stringify({ active: activeLiveness, parked: liveness }, null, 2), contentType: "application/json" });
@@ -215,12 +219,27 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
     expect(liveness.frames / liveness.elapsedMs).toBeGreaterThanOrEqual(activeLiveness.frames / activeLiveness.elapsedMs / 2);
     if (scope === "parked") return;
     if (scope === "focus") {
-      await ctx.app.evaluate(({ webContents }, url) => {
+      await composer.fill("unfinished selection draft");
+      await composer.evaluate((element: HTMLTextAreaElement) => {
+        element.focus();
+        const state = { element, blurs: 0 };
+        (window as unknown as { parkedSelectionEditor: typeof state }).parkedSelectionEditor = state;
+        element.addEventListener("blur", () => { state.blurs++; });
+      });
+      const readEditor = () => composer.evaluate((element: HTMLTextAreaElement) => {
+        const state = (window as unknown as { parkedSelectionEditor: { element: HTMLTextAreaElement; blurs: number } }).parkedSelectionEditor;
+        return { value: element.value, active: document.activeElement === element, sameElement: element === state.element, blurs: state.blurs };
+      });
+      const beforeHost = await inspectBrowserTarget(ctx.app, host.windowId, firstUrl);
+      expect(beforeHost).toMatchObject({ id: nativePageId, attached: false, ownerFocused: false, focusedHostFrame: beforeHost.hostFrame });
+      expect(await readEditor()).toEqual({ value: "unfinished selection draft", active: true, sameElement: true, blurs: 0 });
+      await ctx.app.evaluate(async ({ webContents }, url) => {
         const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
         if (!guest) throw new Error("Parked focus guest unavailable");
         const state = globalThis as unknown as { parkedFocusEvents: number };
         state.parkedFocusEvents = 0;
         guest.on("focus", () => { state.parkedFocusEvents += 1; });
+        await guest.executeJavaScript("window.parkedKeys = []; window.addEventListener('keydown', event => window.parkedKeys.push(event.key))");
       }, firstUrl);
       releaseNavigation?.();
       await expect.poll(() => releaseFinish !== undefined, { timeout: 10_000 }).toBe(true);
@@ -232,27 +251,21 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
           value: await guest.executeJavaScript("document.querySelector('select').value") };
       }, firstUrl);
       expect(selected).toEqual({ focused: false, focusEvents: 0, value: "b" });
-      await ctx.app.evaluate(async ({ webContents }, url) => {
-        const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
-        if (!guest) throw new Error("Parked focus guest unavailable");
-        await guest.executeJavaScript("window.parkedKeys = []; window.addEventListener('keydown', event => window.parkedKeys.push(event.key))");
-        guest.focus();
-        guest.sendInputEvent({ type: "keyDown", keyCode: "X" });
-        guest.sendInputEvent({ type: "keyUp", keyCode: "X" });
-      }, firstUrl);
-      await expect.poll(() => app.evaluate(({ webContents }, url) => webContents.getAllWebContents()
-        .find(contents => contents.getURL() === url)?.isFocused(), firstUrl)).toBe(false);
+      const afterHost = await inspectBrowserTarget(ctx.app, host.windowId, firstUrl);
+      expect(afterHost).toMatchObject({ id: nativePageId, attached: false, ownerFocused: false,
+        focusedHostFrame: beforeHost.focusedHostFrame, focusedContentsId: beforeHost.focusedContentsId });
+      expect(await readEditor()).toEqual({ value: "unfinished selection draft", active: true, sameElement: true, blurs: 0 });
+      await page.keyboard.type("VISIBLE");
+      await expect(composer).toHaveValue("unfinished selection draftVISIBLE");
       const keys = await app.evaluate(async ({ webContents }, url) => {
         const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
         if (!guest) throw new Error("Parked focus guest unavailable");
         return await guest.executeJavaScript("window.parkedKeys");
       }, firstUrl);
       expect(keys).toEqual([]);
-      await composer.click();
-      await page.keyboard.type("VISIBLE");
-      await expect(composer).toHaveValue("VISIBLE");
+      expect(await readEditor()).toEqual({ value: "unfinished selection draftVISIBLE", active: true, sameElement: true, blurs: 0 });
       releaseFinish?.();
-      await test.info().attach("parked-focus.json", { body: JSON.stringify(selected), contentType: "application/json" });
+      await test.info().attach("parked-focus.json", { body: JSON.stringify({ selected, beforeHost, afterHost, editor: await readEditor(), keys }), contentType: "application/json" });
       return;
     }
     if (scope === "closure") {
@@ -298,17 +311,27 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
     const hiddenFrames = (await readCapture()).messages.filter((message) => message.kind === "frame" && message.receivedAt >= hiddenAt);
     expect(hiddenFrames.length).toBeGreaterThanOrEqual(3);
     for (const frame of hiddenFrames) expect(frame).toMatchObject(binding);
+    const controlBeforeReveal = await page.evaluate(async id =>
+      (await window.aveApi.browserTabs!.getState()).tabs.find(tab => tab.tabId === id), tabId);
+    expect(controlBeforeReveal).toMatchObject({ mode: "agent-active" });
     await page.screenshot({ path: test.info().outputPath("conversation-browser-thumbnail.png") });
     await thumbnail.click();
     await expect(thumbnailRow).toHaveCount(0);
     await expect(page.getByTestId("browser-observation-preview")).toHaveCount(0);
-    await expect(guestFrame).toHaveCSS("opacity", "1");
+    await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, firstUrl)).attached).toBe(true);
+    expect(await browserTargetId(ctx.app, firstUrl)).toBe(nativePageId);
+    expect(await page.evaluate(async id =>
+      (await window.aveApi.browserTabs!.getState()).tabs.find(tab => tab.tabId === id), tabId))
+      .toMatchObject({ mode: "agent-active", generation: controlBeforeReveal!.generation, owner: controlBeforeReveal!.owner });
     // Narrow mode also reveals the original pane via the same focus path.
     await setWindowSize(ctx.app, 900, 700);
     await page.getByTestId(`sidebar-session-${click.target.hostSessionId}`).click();
     await expect(thumbnail).toBeVisible();
     await thumbnail.click();
     await expect(thumbnailRow).toHaveCount(0);
+    expect(await page.evaluate(async id =>
+      (await window.aveApi.browserTabs!.getState()).tabs.find(tab => tab.tabId === id), tabId))
+      .toMatchObject({ mode: "agent-active", generation: controlBeforeReveal!.generation, owner: controlBeforeReveal!.owner });
     await setWindowSize(ctx.app, 1280, 800);
     // Focusing the hidden pane carried the maximize to it; restore the split so the conversation and its approvals show again.
     await page.locator('[data-testid="pane-maximize"][aria-pressed="true"]:visible').click();
@@ -379,9 +402,7 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
 
     // Paused observation must not keep a hidden guest painting.
     await page.getByTestId("pane-cell:main").getByTestId("pane-maximize").click();
-    await expect(guestFrame).toHaveCSS("visibility", "hidden");
-    await expect(guestFrame).toHaveCSS("opacity", "1");
-    await expect(guestFrame).not.toHaveAttribute("inert", "");
+    await expect.poll(async () => (await inspectBrowserTarget(ctx!.app, host.windowId, secondUrl)).attached).toBe(false);
     await expect(thumbnailRow).toHaveCount(0);
     await page.getByTestId(`sidebar-surface-${rendererTabId}`).click();
     await page.getByTestId("pane").filter({ has: page.getByTestId("agent-browser-control-resume") }).getByTestId("pane-close").click();
