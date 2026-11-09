@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../contract/app-contract.js";
-import { createPlatformConversationTimeline } from "../../engine/conversation-platform-protocol.js";
+import { createPlatformConversationTimeline, createPlatformConversationEventSink } from "../../engine/conversation-platform-protocol.js";
 import { applyToolStart, applyTranscriptFrame, type ChatStreamEvent } from "../../lib/chat-stream-state.js";
 import {
   createPlatformConversationLegacyStreamAdapter,
@@ -9,6 +9,20 @@ import {
 } from "../platform-conversation-legacy-adapter.js";
 
 describe("platform conversation legacy adapter", () => {
+  it("preserves project work revocation in the terminal owner frame", () => {
+    const sink = vi.fn();
+    const send = createLegacyChatStreamEventSink(sink, { streamId: 7 });
+    send({ kind: "turn.completed", projectWorkRevoked: true });
+    expect(sink).toHaveBeenCalledWith(CHANNELS.chat.stream, { type: "done", streamId: 7, projectWorkRevoked: true });
+    const timeline = createPlatformConversationTimeline();
+    createPlatformConversationLegacyStreamAdapter(timeline).subscribe(sink);
+    timeline.publish({
+      conversationId: "removed-project-session",
+      turnId: createPlatformTurnId(8),
+      event: { kind: "turn.completed", projectWorkRevoked: true },
+    });
+    expect(sink).toHaveBeenLastCalledWith(CHANNELS.chat.stream, { type: "done", streamId: 8, projectWorkRevoked: true });
+  });
   it("fans one semantic timeline event out as the exact existing owner frame", () => {
     const timeline = createPlatformConversationTimeline();
     const electron = createPlatformConversationLegacyStreamAdapter(timeline);
@@ -119,6 +133,20 @@ describe("platform conversation legacy adapter", () => {
     });
   });
 
+  it("projects the accepted request id only onto its owner prelude", () => {
+    const timeline = createPlatformConversationTimeline();
+    const adapter = createPlatformConversationLegacyStreamAdapter(timeline);
+    const send = vi.fn();
+    adapter.subscribe(send);
+    const sink = createPlatformConversationEventSink(timeline, {
+      conversationId: "main-session", turnId: createPlatformTurnId(8), sendRequestId: "queued-request",
+    });
+    sink({ kind: "user.message", origin: "queue-auto", ownerDetail: { text: "queued", messageId: "row-queue" } });
+    sink({ kind: "assistant.text.delta", text: "answer" });
+    expect(send).toHaveBeenNthCalledWith(1, CHANNELS.chat.stream, expect.objectContaining({ type: "user_message", sendRequestId: "queued-request" }));
+    expect(send.mock.calls[1]?.[1]).not.toHaveProperty("sendRequestId");
+  });
+
   it("keeps a pre-turn redaction notice compatible without inventing a stream id", () => {
     const timeline = createPlatformConversationTimeline();
     const adapter = createPlatformConversationLegacyStreamAdapter(timeline);
@@ -150,7 +178,7 @@ describe("platform conversation legacy adapter", () => {
       streamChannel: CHANNELS.sidechat.stream,
       fallbackChannel: CHANNELS.sidechat.fallback,
     });
-    sink({ kind: "user.message", origin: "user-keyboard", ownerDetail: { text: "hello", messageId: "row-1" } });
+    sink({ kind: "user.message", origin: "user-keyboard", ownerDetail: { text: "hello", messageId: "row-1", sendRequestId: "semantic-request" } });
     sink({ kind: "assistant.text.delta", text: "answer" });
     sink({ kind: "model.fallback", from: "primary/model-a", to: "secondary/model-b" });
 

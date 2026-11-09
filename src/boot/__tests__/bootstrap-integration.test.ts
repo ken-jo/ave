@@ -131,6 +131,7 @@ vi.mock("../conversation.js", () => ({
     h.captured["mainConversationDeps"] = deps;
     return {
       getSessionId: vi.fn(() => "8e0967c0-7ae6-46b1-bac3-c6197562a52f"),
+      abortCurrentTurn: vi.fn(),
       getTurnAdditionalDirectories: vi.fn(() => []),
       onTurnSettled: vi.fn(() => () => {}),
     };
@@ -750,6 +751,7 @@ describe("bootstrap() integration lock", () => {
         "getPluginToolInvoker",
         "getSubAgentRunner",
         "idleScheduler",
+        "listChatGroupLoops",
         "listPluginAuthPartitionsService",
         "mcpAppModelContext",
         "mcpManager",
@@ -1005,6 +1007,10 @@ describe("bootstrap() headless launch opens no discretionary service connection"
     expect(headlessServices.resolveChatGroupLoop).toBeTypeOf("function");
     const groupLoop = headlessServices.resolveChatGroupLoop?.("authorization-group");
     expect(groupLoop).toBeDefined();
+    expect(headlessServices.listChatGroupLoops?.()).toContain(headlessServices.conversationLoop);
+    expect(headlessServices.listChatGroupLoops?.()).toContain(groupLoop);
+    headlessServices.releaseChatGroupLoop?.("authorization-group");
+    expect(headlessServices.listChatGroupLoops?.()).not.toContain(groupLoop);
     const conversationDepsCalls = h.captured["conversationDepsCalls"] as Record<
       string,
       unknown

@@ -161,20 +161,37 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
     return view;
   }
 
-  begin(identity: ObservationIdentity, tab: BrowserTabRecord<BrowserGuest>, _action: BrowserObservationDetail["action"],
-    isCurrent: () => boolean, detail: BrowserObservationDetail, downloadUrl?: string): AgentBrowserCommandReceipt {
+  async begin(identity: ObservationIdentity, tab: BrowserTabRecord<BrowserGuest>, action: BrowserObservationDetail["action"],
+    isCurrent: () => boolean, detail: BrowserObservationDetail, downloadUrl?: string): Promise<AgentBrowserCommandReceipt> {
     if (this.disposed || !isCurrent() || !tab.guest) throw new Error("Browser observation command is unavailable.");
-    const guestId = tab.guest.id;
+    const guest = tab.guest;
+    const guestId = guest.id;
     if (this.commands.has(guestId)) throw new Error("Browser observation command already active.");
     if (this.commands.size >= OBSERVATION_LIMITS.maxViews) throw new Error("Browser observation command limit exceeded.");
     const view = this.viewFor(identity, tab);
-    const command: ActiveCommand = { guest: tab.guest, view, detail: sanitizeBrowserObservationDetail(detail),
+    const command: ActiveCommand = { guest, view, detail: sanitizeBrowserObservationDetail(detail),
       expectedDownloadUrl: downloadUrl, isCurrent, downloads: new Set(), overflowed: false };
     this.commands.set(guestId, command);
-    const activity = this.activity.get(tab.handle);
-    const tracked: TabActivity = activity?.sessionId === identity.sessionId ? activity : { sessionId: identity.sessionId, active: 0, endedAt: 0 };
+    const previousActivity = this.activity.get(tab.handle);
+    const tracked: TabActivity = previousActivity?.sessionId === identity.sessionId
+      ? previousActivity : { sessionId: identity.sessionId, active: 0, endedAt: 0 };
     tracked.active += 1;
     this.activity.set(tab.handle, tracked);
+    try {
+      if (action === "tab-close") {
+        const active = this.previews.get(previewKey(view, tab.handle));
+        if (active?.tab === tab && active.guest === guest) await this.stopPreview(active, "stopped", true);
+        if (this.disposed || !isCurrent() || tab.guest !== guest || guest.isDestroyed()) {
+          throw new Error("Browser observation command is unavailable.");
+        }
+      }
+    } catch (error) {
+      if (this.commands.get(guestId) === command) this.commands.delete(guestId);
+      tracked.active -= 1;
+      if (previousActivity) this.activity.set(tab.handle, previousActivity);
+      else this.activity.delete(tab.handle);
+      throw error;
+    }
     let completed = false;
     let ended = false;
     return {
@@ -291,16 +308,30 @@ export class BrowserObservationRuntime implements AgentBrowserObservationSink {
     return activity.active > 0 || Date.now() - activity.endedAt < OBSERVATION_LIMITS.previewIdleMs;
   }
 
-  private stopPreview(preview: ActivePreview, notify?: "stopped"): void {
+  private async stopPreview(preview: ActivePreview, notify?: "stopped", failClosed = false): Promise<void> {
     const key = previewKey(preview.view, preview.tab.handle);
+    if (this.previews.get(key) !== preview) return;
+    if (!failClosed) {
+      this.previews.delete(key);
+      if (notify) this.sendPreview(preview.view, { targetId: preview.view.id, sessionId: preview.view.sessionId,
+        tabId: preview.tab.handle, kind: "state", state: notify });
+      preview.handle.stop().then(undefined, (error: unknown) => {
+        if (!(error instanceof ScreencastClosedError)) logger.error({ err: error }, "Browser preview stop failed.");
+      });
+      return;
+    }
+    try { await preview.handle.stop(); }
+    catch (error) {
+      // The page session closing while the stop was pending already ended the screencast.
+      if (!(error instanceof ScreencastClosedError)) {
+        logger.error({ err: error }, "Browser preview stop failed.");
+        throw error;
+      }
+    }
     if (this.previews.get(key) !== preview) return;
     this.previews.delete(key);
     if (notify) this.sendPreview(preview.view, { targetId: preview.view.id, sessionId: preview.view.sessionId,
       tabId: preview.tab.handle, kind: "state", state: notify });
-    preview.handle.stop().then(undefined, (error: unknown) => {
-      // The page session closing while the stop was pending already ended the screencast.
-      if (!(error instanceof ScreencastClosedError)) logger.error({ err: error }, "Browser preview stop failed.");
-    });
   }
 
   private sendPreview(view: BrowserView, message: BrowserObservationPreviewMessage): void {

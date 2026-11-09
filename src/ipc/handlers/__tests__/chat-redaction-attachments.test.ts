@@ -7,6 +7,7 @@ import {
 import { initDlpAudit } from "../../../audit/dlp-filter.js";
 import { turnOptions } from "./chat-test-helpers.js";
 import * as fileMentionContext from "../file-mention-context.js";
+import { createConversationActivityCoordinator } from "../../../engine/conversation-activity-coordinator.js";
 
 const completedTurn = {
   text: "done",
@@ -30,10 +31,12 @@ function makeFixture(piiRedactEnabled: boolean) {
     },
     auditLogger: { log: vi.fn() },
   } as unknown as IpcDeps;
+  const activity = createConversationActivityCoordinator();
   const context: ChatSendContext = {
     createStreamEventSink: () => sink,
     allocateStreamId: () => 43,
-    trackStreamTurn: (factory) => factory(),
+    trackStreamTurn: activity.trackTurn,
+    onTurnSettled: activity.onTurnSettled,
   };
   return { deps, context, runTurn, sink };
 }
@@ -50,6 +53,19 @@ afterEach(() => {
 });
 
 describe("chat send attachment PII redaction", () => {
+  it("publishes completion only after follow-up work can acquire admission", async () => {
+    const fixture = makeFixture(false);
+    const activity = createConversationActivityCoordinator();
+    fixture.context.trackStreamTurn = (factory) => activity.trackTurn(factory);
+    fixture.context.onTurnSettled = activity.onTurnSettled;
+    const busyAtCompletion: boolean[] = [];
+    fixture.context.createStreamEventSink = () => (event) => {
+      fixture.sink(event);
+      if (event.kind === "turn.completed") busyAtCompletion.push(activity.isBusy());
+    };
+    await handleChatSend(fixture.deps, { input: "queued", inputOrigin: "queue-auto" }, fixture.context);
+    expect(busyAtCompletion).toEqual([false]);
+  });
   it("redacts resolved file context and the independently persisted display text", async () => {
     const fixture = makeFixture(true);
     const expansion = vi.spyOn(fileMentionContext, "expandFileMentionContext").mockResolvedValueOnce({

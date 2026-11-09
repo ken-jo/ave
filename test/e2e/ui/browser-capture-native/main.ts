@@ -1,3 +1,4 @@
+import { assertNativeBrowserState, clearNativeBrowserStorage } from "../native-browser-state.js";
 import { app, BrowserWindow, ipcMain, nativeImage, type WebContents } from "electron";
 import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 import { createServer } from "node:http";
@@ -12,6 +13,7 @@ import { trackBrowserGuest } from "../../../../src/main/browser/browser-guest-tr
 import { BrowserNativeSurfaceHost } from "../../../../src/main/browser/browser-native-surfaces.js";
 import { attachSideBrowserWebview, installSideBrowserPartitionPolicy } from "../../../../src/main/side-browser-webview.js";
 import { browserOrigin } from "../../../../src/shared/browser-tools.js";
+import { AVE_SIDE_BROWSER_PARTITION } from "../../../../src/shared/side-browser.js";
 import type { BrowserScreenshotOptions } from "../../../../src/shared/browser-capture.js";
 import type { BrowserTabBindRequest } from "../../../../src/shared/browser-surface.js";
 import { parseBrowserNativeSurfaceRequest } from "../../../../src/shared/browser-native-surface.js";
@@ -19,6 +21,8 @@ import type { BrowserActionTab } from "../../../../src/tools/browser-tools.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./contract.js";
 
 configureE2eWindowPolicy();
+// Window replacement between tests keeps this worker-owned process alive.
+app.on("window-all-closed", () => {});
 
 function requiredPath(name: string): string {
   const path = process.env[name];
@@ -110,21 +114,32 @@ async function capture(options: BrowserScreenshotOptions, zoom = 1): Promise<Cap
   } finally { browserTabRegistry.releaseControl(tabId, lease.id); }
 }
 
-void app.whenReady().then(async () => {
-  app.setPath("userData", join(runtime, "profile"));
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Capture fixture server is unavailable");
-  const origin = `http://127.0.0.1:${address.port}`;
+let origin = "";
+let nativeSurfaces: BrowserNativeSurfaceHost | undefined;
+
+async function reset(): Promise<void> {
+  if (guest && !guest.isDestroyed()) guest.setZoomFactor(1);
+  nativeSurfaces?.dispose();
+  nativeSurfaces = undefined;
+  disposeBrowserWorkspaceService();
+  for (const window of BrowserWindow.getAllWindows()) {
+    browserTabRegistry.releaseWindow(window.id);
+    window.destroy();
+  }
+  await clearNativeBrowserStorage(AVE_SIDE_BROWSER_PARTITION);
+  for (const channel of ["capture-fixture-bind", "capture-fixture-native-surface", "capture-fixture-session-bindings"]) ipcMain.removeHandler(channel);
+  tabId = "";
+  requestId = "";
   win = new BrowserWindow({ width: 1180, height: 860, show: false,
     webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: true, preload: join(assets, "preload.cjs") } });
   registerMainWindow(win, "primary");
-  const windowId = win.id;
-  win.once("closed", () => { browserTabRegistry.releaseWindow(windowId); unregisterMainWindow(win); });
+  const owner = win;
+  const windowId = owner.id;
+  owner.once("closed", () => { browserTabRegistry.releaseWindow(windowId); unregisterMainWindow(owner); });
   win.showInactive();
   win.webContents.on("console-message", (event) => { process.stderr.write(`[capture-host] ${event.message}\n`); });
   installSideBrowserPartitionPolicy();
-  const nativeSurfaces = new BrowserNativeSurfaceHost({
+  const surfaces = new BrowserNativeSurfaceHost({
     windowForId: id => id === win.id && !win.isDestroyed() ? win : undefined,
     authorizeCreate: (windowId, tabId, requestId) => browserTabRegistry.authorizeNativeSurface(windowId, tabId, requestId),
     attach: (contents, owner) => {
@@ -139,6 +154,7 @@ void app.whenReady().then(async () => {
     userFocus: (guestId, explicit) => browserTabRegistry.userFocus(guestId, explicit),
     userNavigate: (windowId, tabId) => { browserTabRegistry.stop(windowId, tabId); },
   });
+  nativeSurfaces = surfaces;
   ipcMain.handle("capture-fixture-bind", (event, request: BrowserTabBindRequest) => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Capture fixture sender is unauthorized");
     return browserTabRegistry.bindTab(win.id, request);
@@ -146,7 +162,7 @@ void app.whenReady().then(async () => {
   ipcMain.handle("capture-fixture-native-surface", (event, payload: unknown) => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Capture fixture sender is unauthorized");
     const request = parseBrowserNativeSurfaceRequest(payload);
-    return request ? nativeSurfaces.request(win.id, request) : { ok: false, error: "bad-request" };
+    return request ? surfaces.request(win.id, request) : { ok: false, error: "bad-request" };
   });
   ipcMain.handle("capture-fixture-session-bindings", (event) => {
     if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error("Capture fixture sender is unauthorized");
@@ -175,14 +191,33 @@ void app.whenReady().then(async () => {
   const bootstrap = browserTabRegistry.acquireControl(record(), actor);
   try { await actions.navigate({ tab: record(), signal: record().actions.signal, leaseId: bootstrap.id }, `${origin}/page`, origin); }
   finally { browserTabRegistry.releaseControl(tabId, bootstrap.id); }
-  const fixture: CaptureNativeFixture = { ready: true, pageUrl: `${origin}/page`, targetId: guest.id, windowId: win.id, capture, close: async () => {
-    if (!guest.isDestroyed()) guest.stop();
-    nativeSurfaces.dispose();
-    disposeBrowserWorkspaceService();
-    if (!win.isDestroyed()) win.destroy();
-    const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-    server.closeAllConnections();
-    await closed;
-  } };
+  guest.setZoomFactor(1);
+  win.webContents.setZoomFactor(1);
+}
+
+void app.whenReady().then(async () => {
+  app.setPath("userData", join(runtime, "profile"));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Capture fixture server is unavailable");
+  origin = `http://127.0.0.1:${address.port}`;
+  await reset();
+  const fixture: CaptureNativeFixture = {
+    ready: true,
+    get pageUrl() { return `${origin}/page`; },
+    get targetId() { return guest.id; },
+    get windowId() { return win.id; },
+    capture, reset,
+    assertClean: async () => assertNativeBrowserState(win, guest, rendererTabId),
+    close: async () => {
+      if (!guest.isDestroyed()) guest.stop();
+      nativeSurfaces?.dispose();
+      disposeBrowserWorkspaceService();
+      if (!win.isDestroyed()) win.destroy();
+      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
+      server.closeAllConnections();
+      await closed;
+    },
+  };
   (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture = fixture;
 }).catch((error) => { console.error(error); app.exit(1); });

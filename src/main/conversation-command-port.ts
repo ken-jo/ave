@@ -186,14 +186,16 @@ export function createConversationCommandPort(
   runtime: ConversationSurfaceRuntime,
 ): ConversationCommandPort {
   const context: ChatSendContext = {
-    createStreamEventSink: (streamId): PlatformConversationEventSink => (
+    createStreamEventSink: (streamId, sendRequestId): PlatformConversationEventSink => (
       createPlatformConversationEventSink(runtime.timeline, {
         conversationId: deps.conversationLoop.getSessionId(),
         turnId: createPlatformTurnId(streamId),
+        ...(sendRequestId === undefined ? {} : { sendRequestId }),
       })
     ),
     allocateStreamId: () => runtime.activity.allocateStreamId(),
     trackStreamTurn: (factory) => runtime.activity.trackTurn(factory),
+    onTurnSettled: (listener) => runtime.activity.onTurnSettled(listener),
   };
   // `submit` already owns the activity lease. Re-entering `trackStreamTurn` from handleChatSend would reject its own reservation as streaming-active.
   const reservedContext = (signal: AbortSignal): ChatSendContext => ({

@@ -104,6 +104,8 @@ export interface AppServices {
   /** Each chat tile needs its own single-turn loop; create non-main loops lazily under a cap.
    * Fixtures without group support resolve only the main group. */
   resolveChatGroupLoop?: (chatGroupId: string) => ConversationLoop;
+  /** Every live main-chat tile, including the primary loop, without creating missing tiles. */
+  listChatGroupLoops?: () => ConversationLoop[];
   /** Forgets a group's loop once its tile is gone, so the ceiling counts live tiles only. */
   releaseChatGroupLoop?: (chatGroupId: string) => void;
   /** Look up the loop already holding a session; undefined is a mismatch and must never fall back to the primary loop. */

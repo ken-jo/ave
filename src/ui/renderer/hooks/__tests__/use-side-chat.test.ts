@@ -73,6 +73,72 @@ const REFUSAL_INTENT_CASES = Object.freeze((["new", "load"] as const).flatMap((f
 ));
 
 describe("useSideChat session identity", () => {
+  it("does not downgrade a prelude-accepted queue send when a replacement supersedes its invoke", async () => {
+    const { api, dispatch, spies } = makeApi();
+    const queuedReply = deferred<{ ok: true; result: unknown }>();
+    const replacementReply = deferred<{ ok: true; result: unknown }>();
+    spies.send.mockReturnValueOnce(queuedReply.promise).mockReturnValueOnce(replacementReply.promise);
+    const onAccepted = vi.fn();
+    const onRefused = vi.fn();
+    const { result } = renderHook(() => useSideChat(api));
+    let queued = Promise.resolve();
+    let replacement = Promise.resolve();
+    act(() => {
+      queued = result.current.send("queued", { inputOrigin: "queue-auto", onAccepted, onRefused });
+    });
+    await act(async () => {
+      dispatch({
+        type: "user_message",
+        origin: "queue-auto",
+        sessionId: "side-current",
+        streamId: 1,
+        sendRequestId: spies.send.mock.calls[0]?.[3],
+      });
+    });
+    expect(onAccepted).toHaveBeenCalledOnce();
+    expect(onRefused).not.toHaveBeenCalled();
+
+    act(() => { replacement = result.current.send("replacement"); });
+    await waitFor(() => expect(spies.send).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      queuedReply.resolve({ ok: true, result: {} });
+      await queued;
+    });
+    expect(onAccepted).toHaveBeenCalledOnce();
+    expect(onRefused).not.toHaveBeenCalled();
+
+    await act(async () => {
+      replacementReply.resolve({ ok: true, result: {} });
+      await replacement;
+    });
+  });
+
+  it("accepts an earlier pending request without rebinding the replacement transcript", async () => {
+    const { api, dispatch, spies } = makeApi();
+    let rejectQueued: (error: Error) => void = () => {};
+    const queuedReply = new Promise<never>((_resolve, reject) => { rejectQueued = reject; });
+    const replacementReply = deferred<{ ok: true; result: unknown }>();
+    spies.send.mockReturnValueOnce(queuedReply).mockReturnValueOnce(replacementReply.promise);
+    const accepted = vi.fn();
+    const refused = vi.fn();
+    const { result } = renderHook(() => useSideChat(api));
+    let queued = Promise.resolve();
+    let replacement = Promise.resolve();
+    act(() => { queued = result.current.send("queued", { inputOrigin: "queue-auto", onAccepted: accepted, onRefused: refused }); });
+    const earlierId = spies.send.mock.calls[0]?.[3];
+    act(() => { replacement = result.current.send("replacement"); });
+    await waitFor(() => expect(spies.send).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      dispatch({ type: "user_message", sessionId: "earlier-session", streamId: 1, sendRequestId: earlierId });
+      rejectQueued(new Error("post-admission bookkeeping failed"));
+      await queued;
+    });
+    expect(accepted).toHaveBeenCalledOnce();
+    expect(refused).not.toHaveBeenCalled();
+    expect(result.current.sessionId).toBeNull();
+    await act(async () => { replacementReply.resolve({ ok: true, result: {} }); await replacement; });
+  });
+
   it.each([
     { error: "provider connection failed", expected: "stream-error" },
     { error: "session-open-in-pane", expected: "operation-error" },

@@ -9,7 +9,7 @@ export interface AgentBrowserCommandReceipt {
 }
 export interface AgentBrowserObservationSink {
   begin(identity: ObservationIdentity, tab: BrowserTabRecord<BrowserGuest>, action: BrowserObservationAction,
-    isCurrent: () => boolean, detail: BrowserObservationDetail, downloadUrl?: string): AgentBrowserCommandReceipt;
+    isCurrent: () => boolean, detail: BrowserObservationDetail, downloadUrl?: string): Promise<AgentBrowserCommandReceipt>;
   endSessions(ended: (sessionId: string) => boolean): void;
 }
 let browserSink: AgentBrowserObservationSink | undefined;
@@ -50,9 +50,10 @@ export async function observeAgentBrowserCommand<T>(
     && tab.controlMode !== "human-paused" && (tab.guest === guest || (action === "tab-close" && tab.guest === null && guest.isDestroyed()))
     && (action === "tab-close" || !guest.isDestroyed())
     && (lease ? tab.lease?.id === lease.id && tab.lease.actor.sessionId === identity.sessionId : ownedOperation && agentDrivesTab(tab, identity.sessionId));
-  const receipt = sink.begin(identity, tab, action, isCurrent, { action, tabId: tab.handle,
+  const receipt = await sink.begin(identity, tab, action, isCurrent, { action, tabId: tab.handle,
     rendererTabId: tab.rendererTabId, url: guest.getURL(), title: guest.getTitle() }, expectedDownloadUrl);
   try {
+    if (!isCurrent()) throw new Error("Browser observation command expired.");
     const result = await run((element, downloadUrl) => receipt.target(element, downloadUrl));
     if (isCurrent() && !(result && typeof result === "object" && "isError" in result && result.isError === true)) receipt.complete();
     return result;

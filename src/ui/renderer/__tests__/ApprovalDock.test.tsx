@@ -77,6 +77,23 @@ describe("ApprovalDock", () => {
     expect(actions.classList.contains("@max-[14rem]:grid-cols-1")).toBe(true);
   });
 
+  it.each([
+    { frame: "dock", Frame: ApprovalDock, locale: "en" },
+    { frame: "dock", Frame: ApprovalDock, locale: "ko" },
+    { frame: "lane", Frame: ApprovalLaneCard, locale: "en" },
+    { frame: "lane", Frame: ApprovalLaneCard, locale: "ko" },
+  ] as const)("renders one action heading and primary evidence in the $frame frame ($locale)", ({ Frame, locale }) => {
+    const previous = getLocale();
+    setLocale(locale);
+    const request = makeRequest({ source: "builtin", toolName: "bash", toolCategory: "shell", args: { command: "printf ready" },
+      allowedChoices: ["allow-once", "deny-once"], exactRecordAllowed: false, persistentAllowAllowed: false });
+    const shown = render(<Frame conversationLabel="conversation" queue={[request]} onDecide={vi.fn()} />);
+    try {
+      expect(shown.getAllByRole("heading", { name: t("toolApprovalDialog.commandActionTitle") })).toHaveLength(1);
+      expect(shown.getByTestId("approval-action-primary")).toHaveTextContent("printf ready");
+    } finally { shown.unmount(); setLocale(previous); }
+  });
+
   it.each(["en", "ko"] as const)("renders attributed site cards without raw keys or repeated headings in %s", (locale) => {
     const previous = getLocale();
     setLocale(locale);

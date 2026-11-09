@@ -10,7 +10,7 @@ import {
   MAX_LOCAL_USER_CONTENT_TEXT_PARTS,
 } from "../../../main/subscription-attachment-input.js";
 import { MCP_RESOURCE_ATTACHMENTS_PER_TURN } from "../../../shared/mcp-resource-bounds.js";
-import { validateUserContentParts } from "../chat.js";
+import { parseChatSendPayload, validateUserContentParts } from "../chat.js";
 
 const VALID_PNG_BASE64 = "iVBORw0KGgo=";
 const VALID_PNG_DATA_URL = `data:image/png;base64,${VALID_PNG_BASE64}`;
@@ -186,5 +186,17 @@ describe("validateUserContentParts attachment IPC boundary", () => {
     };
 
     expect(validateUserContentParts([safe, accessorBacked])).toEqual([safe]);
+  });
+});
+
+
+describe("send request correlation boundary", () => {
+  it.each([undefined, "opaque-request", "x".repeat(256)])("preserves a bounded optional owner correlation id", (sendRequestId) => {
+    expect(parseChatSendPayload({ input: "queued", inputOrigin: "queue-auto", sendRequestId })).toMatchObject({
+      ok: true, payload: { input: "queued", ...(sendRequestId !== undefined ? { sendRequestId } : {}) },
+    });
+  });
+  it.each(["", " ", 42, null, "x".repeat(257)])("rejects an invalid owner correlation id", (sendRequestId) => {
+    expect(parseChatSendPayload({ input: "queued", inputOrigin: "queue-auto", sendRequestId })).toEqual({ ok: false, error: "invalid-input" });
   });
 });

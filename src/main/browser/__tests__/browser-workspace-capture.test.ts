@@ -23,6 +23,9 @@ function fixture() {
   let visible = true, live = true;
   const sendCommand = vi.fn(async (method: string, _params?: unknown): Promise<unknown> => {
     if (method === "Page.getLayoutMetrics") return { cssContentSize: { x: 0, y: 0, width: 800, height: 4000 }, cssVisualViewport: { pageX: 10, pageY: 500, clientWidth: 800, clientHeight: 600 } };
+    if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+    if (method === "Page.createIsolatedWorld") return { executionContextId: 73 };
+    if (method === "Runtime.callFunctionOn") return {};
     throw new Error(`Unexpected capture command: ${method}`);
   });
   const capturePage = vi.fn(async () => {
@@ -49,7 +52,9 @@ describe("user browser capture boundary", () => {
     expect(ownsPageSession(guest)).toBe(false);
     expect(() => startBrowserPreview(guest, { frame: vi.fn(), updating: vi.fn(), ended: vi.fn(), isBlank: () => false }))
       .toThrow("agent's page session");
-    expect(sendCommand.mock.calls.every(([method]) => method === "Page.getLayoutMetrics")).toBe(true);
+    expect(sendCommand.mock.calls.map(([method]) => method)).toEqual([
+      "Page.getLayoutMetrics", "Page.getFrameTree", "Page.createIsolatedWorld", "Runtime.callFunctionOn", "Page.getLayoutMetrics",
+    ]);
     expect(attach).not.toHaveBeenCalled();
     expect(detach).not.toHaveBeenCalled();
   });

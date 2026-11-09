@@ -161,6 +161,7 @@ export class ConversationLoop {
     updateApprovalSurface({ kind: "move", previousSessionId: this.approvalSessionId, sessionId });
     this.approvalSessionId = sessionId;
     this.sessionEpochValue += 1;
+    this.projectWorkRevoked = false;
   }
   sessionKind: SessionKind = "main";
   sessionRoutineId: string | null = null;
@@ -191,6 +192,7 @@ export class ConversationLoop {
   /** Local full-request projection corresponding to `lastContextInputTokens`. */
   lastContextInputProjectionTokens = 0;
   currentAbortController: AbortController | null = null;
+  private projectWorkRevoked = false;
   activeTurnJournal: import("./turn/turn-journal.js").TurnJournal | null = null;
 
   lastTurnScope: Set<string> | null = null;
@@ -266,6 +268,12 @@ export class ConversationLoop {
 
   abortCurrentTurn(reason: Error = new Error("user cancelled turn")): void {
     this.currentAbortController?.abort(reason);
+  }
+
+  /** Cancel admitted and running work, and fence later submissions until an explicit session transition. */
+  revokeProjectWork(): void {
+    this.projectWorkRevoked = true;
+    this.abortCurrentTurn(new Error("workspace-removal"));
   }
 
   /** Queue non-interrupting guidance only while a turn is active; reject overflow atomically.
@@ -587,8 +595,8 @@ export class ConversationLoop {
   }
 
   /** Whether removing `root` now would stop a running turn here: the removal preview's count, by the removal's own test. */
-  wouldWorkspaceRootRemovalAbortTurn(root: string, options?: WorkspaceRootRevocationOptions): boolean {
-    return this.hasActiveTurn() && workspaceRootRemovalAffectsTurn(this, root, options);
+  wouldWorkspaceRootRemovalAbortTurn(root: string, _options?: WorkspaceRootRevocationOptions): boolean {
+    return workspaceRootRemovalAffectsTurn(this, root);
   }
 
   /** The removal preview's question to every live-scope owner: this loop's running turn, if removal would stop it. */
@@ -859,7 +867,11 @@ export class ConversationLoop {
     if (this.activeSessionTransition !== null) {
       throw new Error("conversation-loop:session-transition-in-progress");
     }
-    return turnExtensionPolicyContext.run(
+    if (this.projectWorkRevoked) {
+      return { text: "", toolCalls: [], route: "general", stopReason: "interrupted", projectWorkRevoked: true };
+    }
+    const sessionEpoch = this.sessionEpoch;
+    const result = await turnExtensionPolicyContext.run(
       resolveTurnExtensionPolicy(options?.remoteControllerAuthority, this.deps.headless === true, {
         ownerUnattended: options?.unattendedAuthority !== undefined,
         approvalSurface: this.deps.approvalSurface,
@@ -871,6 +883,9 @@ export class ConversationLoop {
       }),
       () => runTurn(this, input, callbacks, abortSignal, options),
     );
+    return this.projectWorkRevoked && this.sessionEpoch === sessionEpoch
+      ? { ...result, projectWorkRevoked: true }
+      : result;
   }
 
   rebuildToolSchemas(scope: ToolScope): ToolSchema[] {

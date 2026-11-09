@@ -227,6 +227,8 @@ export interface TurnResult {
   usageByModel?: TokenUsageByModel[];
   subscriptionUsage?: SubscriptionUsageTelemetry[];
   stopReason?: TurnStopReason;
+  /** The session's project work was revoked; queued input must be discarded. */
+  projectWorkRevoked?: true;
   inputRequired?: TurnInputRequired;
   authorizationRequired?: AuthorizationRequiredState;
 }

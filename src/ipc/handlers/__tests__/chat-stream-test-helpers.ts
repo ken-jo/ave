@@ -1,15 +1,15 @@
 import { vi } from "vitest";
-import type { ConversationLoop } from "../../../engine/conversation-loop.js";
+import type { ConversationLoop, TurnResult } from "../../../engine/conversation-loop.js";
 
-const completedTurn = {
+const completedTurn: TurnResult = {
   text: "done",
   toolCalls: [],
   route: "default",
   stopReason: "end_turn",
-} as const;
+};
 
 export function makeLoop() {
-  const runTurn = vi.fn(async (..._args: unknown[]) => completedTurn);
+  const runTurn = vi.fn(async (..._args: unknown[]): Promise<TurnResult> => completedTurn);
   const loop = { runTurn } as unknown as ConversationLoop;
   return { loop, runTurn };
 }

@@ -11,6 +11,7 @@ const ACTOR = { sessionId: "conversation" };
 class FakeGuest implements BrowserGuest {
   destroyed = false;
   focused = false;
+  readonly close = vi.fn();
   constructor(readonly id: number, public url = "https://a.example/", public title = "A") {}
   isDestroyed(): boolean {
     return this.destroyed;
@@ -24,10 +25,6 @@ class FakeGuest implements BrowserGuest {
   isFocused(): boolean { return this.focused; }
   focus(): void { this.focused = true; }
   blur(): void { this.focused = false; }
-  close(options: { waitForBeforeUnload: boolean }): void {
-    expect(options.waitForBeforeUnload).toBe(false);
-    this.destroyed = true;
-  }
 }
 
 function setup() {
@@ -328,12 +325,14 @@ describe("BrowserTabRegistry", () => {
     registry.releaseControl(owned.handle, next.id);
   });
 
-  it("closes an owned guest without waiting for renderer work, unrelated timers or leases", async () => {
+  it("lets the renderer remove an owned embedded guest and waits for native destruction proof", async () => {
     vi.useFakeTimers();
     const { registry, ops } = setup();
     const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
     attachTab(registry, { tabId: "owned", webContentsId: 91, requestId: ops.at(-1)?.request.requestId }, 1, "about:blank");
     await opening;
+    const owned = registry.liveTab("tab-1")?.guest;
+    if (!owned) throw new Error("Owned guest missing");
     attachTab(registry, { tabId: "unrelated", webContentsId: 92 });
     const unrelated = registry.liveTab("tab-2");
     if (!unrelated) throw new Error("Unrelated tab missing");
@@ -343,10 +342,16 @@ describe("BrowserTabRegistry", () => {
     let outcome: unknown;
     void registry.requestTabOp(1, { op: "close", tabId: "tab-1", actor: ACTOR }).then((result) => { outcome = result; });
     await Promise.resolve();
-    expect(outcome).toEqual({ ok: true, tabId: "tab-1" });
-    expect(registry.liveTab("tab-1")).toBeUndefined();
+    expect(ops.at(-1)?.request).toMatchObject({ op: "close", tabId: "owned" });
+    expect(owned.close).not.toHaveBeenCalled();
+    expect(outcome).toBeUndefined();
+    expect(registry.liveTab("tab-1")).toBeDefined();
     expect(unrelated.lease).toEqual(lease);
     expect(timer).not.toHaveBeenCalled();
+    registry.guestDestroyed(91);
+    await Promise.resolve();
+    expect(outcome).toEqual({ ok: true, tabId: "tab-1" });
+    expect(registry.liveTab("tab-1")).toBeUndefined();
     clearTimeout(pendingTimer);
     registry.__reset();
   });

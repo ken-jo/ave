@@ -282,3 +282,37 @@ describe("setupWorkflowStores — web_fetch transport", () => {
     ctx.idleScheduler?.stop();
   });
 });
+
+describe("idle scheduler shutdown admission", () => {
+  it("stops native polling before asynchronous cleanup and rejects polling after the hook drain", async () => {
+    const { wireIdleScheduler } = await import("../../tools.js");
+    const { runShutdownHooks } = await import("../../../main/app-shutdown.js");
+    const powerMonitor = {
+      getSystemIdleTime: vi.fn(() => 0),
+      onBatteryPower: false,
+      on: vi.fn(), removeListener: vi.fn(), removeAllListeners: vi.fn(),
+    };
+    vi.useFakeTimers();
+    const scheduler = await wireIdleScheduler(powerMonitor);
+    if (!scheduler) throw new Error("Idle scheduler was not created");
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      const polls = powerMonitor.getSystemIdleTime.mock.calls.length;
+      expect(polls).toBeGreaterThan(0);
+      runShutdownHooks();
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(powerMonitor.getSystemIdleTime).toHaveBeenCalledTimes(polls);
+      expect(powerMonitor.removeListener).toHaveBeenCalled();
+
+      const lateScheduler = await wireIdleScheduler(powerMonitor);
+      if (!lateScheduler) throw new Error("Late idle scheduler was not created");
+      try {
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(powerMonitor.getSystemIdleTime).toHaveBeenCalledTimes(polls);
+      } finally { lateScheduler.stop(); }
+    } finally {
+      scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+});

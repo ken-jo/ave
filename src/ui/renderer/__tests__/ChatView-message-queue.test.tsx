@@ -52,6 +52,109 @@ describe("ChatView message queue (enqueue while streaming → drains after)", ()
     });
   });
 
+  it("retains a refused queue-auto row without restoring it into the composer or duplicating a pending drain", async () => {
+    const firstSend = deferred<{ ok: true }>();
+    const refusedDrain = deferred<{ error: string }>();
+    const { container, api, emitChatStream } = await renderApp({
+      hasApiKey: true,
+      aveEnv: { isDev: true, isE2E: true },
+    });
+    api.chatSend
+      .mockImplementationOnce(async () => firstSend.promise)
+      .mockImplementationOnce(async () => refusedDrain.promise);
+
+    await submitChatMessage(container, "first");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getQueueStore()).toBeDefined());
+    await submitChatMessage(container, "keep queued");
+    await waitFor(() => expect(getQueueStore()?.size()).toBe(1));
+
+    await act(async () => { emitChatStream({ type: "done" }); });
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
+    await act(async () => { emitChatStream({ type: "done" }); });
+    expect(api.chatSend).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      refusedDrain.resolve({ error: "streaming-active" });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(getQueueStore()?.getPending().map((item) => item.text)).toEqual(["keep queued"]));
+    const textarea = container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    expect(textarea.value).toBe("");
+    expect(api.chatSend).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      firstSend.resolve({ ok: true });
+      await Promise.resolve();
+    });
+  });
+
+  it("commits a queue row announced by the host even when the invoke later rejects", async () => {
+    const firstSend = deferred<{ ok: true }>();
+    let rejectDrain: (error: Error) => void = () => {};
+    const admittedDrain = new Promise<never>((_resolve, reject) => { rejectDrain = reject; });
+    const { container, api, emitChatStream } = await renderApp({
+      hasApiKey: true,
+      aveEnv: { isDev: true, isE2E: true },
+    });
+    api.chatSend
+      .mockImplementationOnce(async () => firstSend.promise)
+      .mockImplementationOnce(async () => admittedDrain);
+
+    await submitChatMessage(container, "first");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getQueueStore()).toBeDefined());
+    await submitChatMessage(container, "accepted queue row");
+    await waitFor(() => expect(getQueueStore()?.size()).toBe(1));
+    await act(async () => { emitChatStream({ type: "done" }); });
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      const options = api.chatSend.mock.calls[1]?.[5] as { sendRequestId?: string } | undefined;
+      expect(options?.sendRequestId).toEqual(expect.any(String));
+      emitChatStream({ type: "user_message", origin: "queue-auto", text: "accepted queue row", messageId: "queue-row", sendRequestId: options?.sendRequestId });
+    });
+    await waitFor(() => expect(getQueueStore()?.size()).toBe(0));
+    await act(async () => {
+      rejectDrain(new Error("post-entry bookkeeping failed"));
+      await admittedDrain.catch(() => undefined);
+    });
+    expect(getQueueStore()?.size()).toBe(0);
+    expect(container.textContent).toContain("accepted queue row");
+    await act(async () => { emitChatStream({ type: "done" }); });
+    expect(api.chatSend).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      firstSend.resolve({ ok: true });
+      await Promise.resolve();
+    });
+  });
+
+  it.each([undefined, "previous-request"])("retains queued rows when an unrelated prelude precedes a rejected invoke (%s)", async (sendRequestId) => {
+    const firstSend = deferred<{ ok: true }>();
+    let rejectDrain: (error: Error) => void = () => {};
+    const refusedDrain = new Promise<never>((_resolve, reject) => { rejectDrain = reject; });
+    const { container, api, emitChatStream } = await renderApp({
+      hasApiKey: true, aveEnv: { isDev: true, isE2E: true },
+    });
+    api.chatSend.mockImplementationOnce(async () => firstSend.promise).mockImplementationOnce(async () => refusedDrain);
+    await submitChatMessage(container, "first");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(getQueueStore()).toBeDefined());
+    await submitChatMessage(container, "keep queued after rejection");
+    await waitFor(() => expect(getQueueStore()?.size()).toBe(1));
+    await act(async () => { emitChatStream({ type: "done" }); });
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      emitChatStream({ type: "user_message", origin: "queue-auto", text: "previous request", messageId: "previous-row", sendRequestId });
+      rejectDrain(new Error("request refused before admission"));
+      await refusedDrain.catch(() => undefined);
+    });
+    await waitFor(() => expect(getQueueStore()?.getPending().map((row) => row.text)).toEqual(["keep queued after rejection"]));
+    expect(api.chatSend).toHaveBeenCalledTimes(2);
+    await act(async () => { firstSend.resolve({ ok: true }); await firstSend.promise; });
+  });
+
   it("does not enqueue when idle — an Enter submit sends immediately", async () => {
     const { container, api } = await renderApp({
       hasApiKey: true,

@@ -49,7 +49,8 @@ function projectPlatformConversationEventToLegacyChatFrame(
         origin: event.origin,
         messageId: event.ownerDetail.messageId,
         ...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
-        ...(options.sendRequestId !== undefined ? { sendRequestId: options.sendRequestId } : {}),
+        ...((options.sendRequestId ?? event.ownerDetail.sendRequestId) !== undefined
+          ? { sendRequestId: options.sendRequestId ?? event.ownerDetail.sendRequestId } : {}),
         ...(event.ownerDetail.hostSubmitted
           ? { hostSubmitted: event.ownerDetail.hostSubmitted }
           : {}),
@@ -164,6 +165,7 @@ function projectPlatformConversationEventToLegacyChatFrame(
     case "turn.completed":
       return streamFrame(streamChannel, withStreamId({
         type: "done",
+        ...(event.projectWorkRevoked ? { projectWorkRevoked: true } : {}),
         ...(event.route === "command" ? { route: "command" } : {}),
       }));
     case "privacy.redacted":

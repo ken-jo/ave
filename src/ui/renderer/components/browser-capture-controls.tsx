@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { Camera } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -14,13 +14,13 @@ interface AreaSelection {
 }
 interface Point { x: number; y: number }
 
-function CaptureAreaOverlay({ selection, onCancel, onSelect }: {
+function CaptureAreaOverlay({ selection, overlayRef, onCancel, onSelect }: {
   selection: AreaSelection;
+  overlayRef: RefObject<HTMLDivElement | null>;
   onCancel: () => void;
   onSelect: (clip: NonNullable<BrowserCaptureRequest["clip"]>) => void;
 }) {
   const { t } = useTranslation();
-  const overlayRef = useRef<HTMLDivElement>(null);
   const pointerIdRef = useRef<number | null>(null);
   const [start, setStart] = useState<Point | null>(null);
   const [end, setEnd] = useState<Point | null>(null);
@@ -45,7 +45,7 @@ function CaptureAreaOverlay({ selection, onCancel, onSelect }: {
       window.removeEventListener("resize", onCancel);
       window.removeEventListener("blur", onCancel);
     };
-  }, [onCancel]);
+  }, [onCancel, overlayRef]);
   const point = (event: PointerEvent): Point => ({
     x: Math.max(0, Math.min(selection.bounds.width, event.clientX - selection.bounds.x)),
     y: Math.max(0, Math.min(selection.bounds.height, event.clientY - selection.bounds.y)),
@@ -99,6 +99,7 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [selection, setSelection] = useState<AreaSelection | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
   const cancelSelection = useCallback(() => setSelection(null), []);
 
   const capture = async (tab: BrowserWorkspaceTab, options: Pick<BrowserCaptureRequest, "fullPage" | "clip">) => {
@@ -140,13 +141,19 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
         <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy}
           data-testid="browser-capture-menu"><Camera className="h-3.5 w-3.5" aria-hidden="true" />{t("browserCapture.capture")}</Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start">
+      <DropdownMenuContent align="start" onCloseAutoFocus={(event) => {
+        // Keep focus with the mounted area dialog when its menu closes.
+        const overlay = overlayRef.current;
+        if (!overlay) return;
+        event.preventDefault();
+        overlay.focus();
+      }}>
         <DropdownMenuItem data-testid="browser-capture-viewport" onSelect={() => void startCapture("viewport")}>{t("browserCapture.viewport")}</DropdownMenuItem>
         <DropdownMenuItem data-testid="browser-capture-full-page" onSelect={() => void startCapture("full-page")}>{t("browserCapture.fullPage")}</DropdownMenuItem>
         <DropdownMenuItem data-testid="browser-capture-area" onSelect={() => void startCapture("area")}>{t("browserCapture.area")}</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
     {failed ? <span role="alert" className="min-w-0 truncate text-dense text-destructive" title={t("browserCapture.failed")}>{t("browserCapture.failed")}</span> : null}
-    {selection ? <CaptureAreaOverlay selection={selection} onCancel={cancelSelection} onSelect={(clip) => void capture(selection.tab, { clip })} /> : null}
+    {selection ? <CaptureAreaOverlay selection={selection} overlayRef={overlayRef} onCancel={cancelSelection} onSelect={(clip) => void capture(selection.tab, { clip })} /> : null}
   </>;
 }

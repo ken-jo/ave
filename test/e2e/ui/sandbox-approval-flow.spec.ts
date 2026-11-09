@@ -75,7 +75,7 @@ test.describe("Sandbox approval flow", () => {
     }, buildApprovalRequest({ reviewerVerdict: { level: "high", reason: "shell destructive verb" } }));
 
     // Dialog should appear
-    const dialog = page.getByRole("region", { name: t("toolApprovalDialog.toolApprovalTitle"), exact: true });
+    const dialog = page.getByRole("region", { name: t("toolApprovalDialog.builtinActionTitle"), exact: true });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     // HIGH uses the host/reviewer reason and never asks the user to type in the approval surface.
@@ -101,7 +101,7 @@ test.describe("Sandbox approval flow", () => {
       reviewerVerdict: { level: "low", reason: "read inside allowed dirs" },
     }));
 
-    const dialog = page.getByRole("region", { name: t("toolApprovalDialog.toolApprovalTitle"), exact: true });
+    const dialog = page.getByRole("region", { name: t("toolApprovalDialog.builtinActionTitle"), exact: true });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     // No approval verdict renders a typeable field.
@@ -133,7 +133,7 @@ test.describe("Sandbox approval flow", () => {
       },
     }));
 
-    const dialog = page.getByRole("region", { name: t("toolApprovalDialog.toolApprovalTitle"), exact: true });
+    const dialog = page.getByRole("region", { name: t("toolApprovalDialog.builtinActionTitle"), exact: true });
     await expect(dialog).toBeVisible({ timeout: 5000 });
 
     // Sandbox row should show partial isolation label
@@ -158,7 +158,7 @@ test.describe("Sandbox approval flow", () => {
       allowedChoices: ["deny-once", "allow-once"],
     }));
 
-    const dock = page.getByRole("region", { name: t("toolApprovalDialog.toolApprovalTitle"), exact: true });
+    const dock = page.getByRole("region", { name: t("toolApprovalDialog.commandActionTitle"), exact: true });
     await expect(dock).toBeVisible();
     await expect(dock.getByTestId("tool-approval-host-execution")).toContainText(t("shellExecution.hostWarning"));
     await expect(dock.getByTestId("tool-approval-execution-cwd")).toContainText("/workspace/project");

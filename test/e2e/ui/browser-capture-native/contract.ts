@@ -18,5 +18,7 @@ export interface CaptureNativeFixture {
   readonly targetId: number;
   readonly windowId: number;
   capture(options: BrowserScreenshotOptions, zoom?: number): Promise<CaptureNativeResult>;
+  reset(): Promise<void>;
+  assertClean(): Promise<void>;
   close(): Promise<void>;
 }

@@ -7,6 +7,7 @@ import { NotificationService } from "../../main/notification-service.js";
 import { issueAuthorizationRequiredControl } from "../../shared/authorization-required.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 
 function makeHarness(notificationService?: NotificationService): { loop: ConversationLoop; toolRegistry: ToolRegistry } {
   const toolRegistry = new ToolRegistry();
@@ -24,6 +25,33 @@ function makeLoop(): ConversationLoop {
 }
 
 describe("ConversationLoop currentAbortController lifecycle", () => {
+  it("keeps a replacement session's controller when revoked admission settles late", async () => {
+    const loop = makeLoop();
+    loop.initializeConversation("main", { projectRoot: "/workspace/alpha" });
+    loop.provider = { vendor: "openai", streamTurn: vi.fn(async function* () {}) };
+    const ready = deferred<void>();
+    const pending = vi.spyOn(loop, "providerPending", "get").mockReturnValue(true);
+    const waiting = vi.spyOn(loop, "whenProviderReady").mockImplementation(() => ready.promise);
+    const oldTurn = loop.runTurn("old work", undefined, undefined, userKeyboardTurn());
+    loop.revokeWorkspaceRoot("/workspace/alpha");
+    loop.replaceSessionIdentity("4a23693e-9040-44d4-8c4e-e144eb98fe7d");
+    loop.sessionProjectRoot = "/workspace/beta";
+    const replacement = new AbortController();
+    loop.currentAbortController = replacement;
+    loop.addTurnAdditionalDirectory("/workspace/beta/scratch");
+    try {
+      ready.resolve();
+      await oldTurn;
+      expect(loop.currentAbortController).toBe(replacement);
+      expect(loop.getTurnAdditionalDirectories()).toContain("/workspace/beta/scratch");
+      expect(replacement.signal.aborted).toBe(false);
+    } finally {
+      ready.resolve();
+      await oldTurn;
+      pending.mockRestore();
+      waiting.mockRestore();
+    }
+  });
   it("clears currentAbortController and surfaces a stream error when provider iteration throws", async () => {
     const loop = makeLoop();
     // Mid-stream provider throws must emit stream_error rather than reject the IPC turn.

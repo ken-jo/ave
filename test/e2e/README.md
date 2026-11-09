@@ -45,18 +45,44 @@ The `Native OS focus` workflow runs this project on a hosted Linux virtual
 display nightly and on manual dispatch. It preserves native select/navigation
 and popup focus coverage separately from the default suite.
 
-On a shared host, set `NATIVE_E2E_LOCK` to the host-provided
-`native-e2e-lock.sh` path, then wrap **every** native e2e invocation, including
-background runs:
+## Shared application lifetime
 
-```sh
-"$NATIVE_E2E_LOCK" bun run test:ui-e2e
-"$NATIVE_E2E_LOCK" bun run test:ui-e2e:os-focus
-```
+The native browser action and capture specs and the workspace find/preview cases
+use [the worker fixture](ui/shared-electron.ts). Each adapter owns one process per
+worker and `launchKey`. A common worker pool retains separate apps for each
+adapter and key, so compatible specs share the worker's runtime bundle. Include
+every process-level option in that key when adding variants, including scale
+factor, fixture mode and environment overrides.
+The remaining specs retain their existing launch lifetime.
 
-Keep OS-focus runs serial. Their internal foreground fixture mode is selected
-by the tagged tests. It bypasses the background policy and presents its own
-windows; it does not use the app's background main-window presenter.
+Before reuse, the adapter destroys prior windows and guests, releases browser
+registrations and upload state, clears browser partition storage and cache, and
+recreates its fixture baseline. It verifies window and guest counts, visibility,
+focus, zoom, scroll, page state, cookies and web storage before handing the app to
+the test. These standalone apps have no application settings or conversation
+store. A full application adapter must restore both stores before opting in.
+
+A crashed process or failed reset triggers one fresh launch and a visible
+`app-relaunched` annotation with the failure reason. The replacement must pass
+the same clean-state assertion or the test fails before its body runs. Cleanup
+errors propagate. The worker closes owned processes serially on completion.
+
+Tests carrying `isolated-app` retain dedicated launches for process-wide
+instrumentation, native focus, window lifecycle or conversation/clipboard state.
+First-run, restart, crash, keychain and packaged-mode tests must retain dedicated
+launches when extending this fixture to another family.
+
+Check repeated execution and shuffled intra-file ordering with the converted
+specs and `--repeat-each=2 --fully-parallel --workers=1 --shuffle 534`. Confirm
+the `shared-app-pid` annotations show reuse within each worker. Keep the project
+`background` and the output directory inside the checkout.
+
+Background mode is the default, and background runs may execute in parallel.
+Keep every `--output` directory inside the checkout.
+
+Run `@os-focus` cases only with `AVE_E2E_OS_FOCUS=1`. Their tagged foreground
+fixtures present native windows. Rerun a focus-only failure alone before
+reporting it as a regression.
 
 The native select specs also run on an unlocked developer Mac. Selection uses
 the closed control's keyboard typeahead on macOS: arrow keys open a system-owned

@@ -95,6 +95,8 @@ export type PlatformConversationEvent =
       readonly text: string;
       // Announce the host-minted row ID with input so rendering binds to the persisted row.
       readonly messageId: string;
+      /** Owner send correlation carried only on its accepted input. */
+      readonly sendRequestId?: string;
       // Host-started turns need rendering everywhere; text origin does not identify who submitted them.
       readonly hostSubmitted?: true;
     };
@@ -169,6 +171,8 @@ export type PlatformConversationEvent =
   | {
     readonly kind: "turn.completed";
     readonly route?: "command";
+    /** Owner queues discard work from the revoked session scope. */
+    readonly projectWorkRevoked?: true;
     /** Owner-safe terminal state for a host with no approval surface. */
     readonly authorizationRequired?: AuthorizationRequiredState;
   }
@@ -301,14 +305,16 @@ export function createPlatformConversationTimeline(
 /** Bind host session and turn identity; display publication failures must not abort model execution. */
 export function createPlatformConversationEventSink(
   timeline: PlatformConversationTimeline,
-  context: { readonly conversationId: string; readonly turnId?: string },
+  context: { readonly conversationId: string; readonly turnId?: string; readonly sendRequestId?: string },
 ): PlatformConversationEventSink {
   return (event) => {
     try {
       timeline.publish({
         conversationId: context.conversationId,
         ...(context.turnId === undefined ? {} : { turnId: context.turnId }),
-        event,
+        event: event.kind === "user.message" && context.sendRequestId !== undefined
+          ? { ...event, ownerDetail: { ...event.ownerDetail, sendRequestId: context.sendRequestId } }
+          : event,
       });
     } catch {
       // Malformed owner detail must not block execution or other surfaces.

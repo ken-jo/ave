@@ -5,12 +5,15 @@ import { BrowserScreencast, ScreencastClosedError, type ScreencastCallbacks, typ
 class FakeSession implements ScreencastTransport {
   readonly sent: { method: string; params?: Record<string, unknown> }[] = [];
   readonly open = new Map<string, { resolve(value?: unknown): void; reject(error: Error): void }[]>();
+  readonly rejectOnce = new Map<string, Error>();
   private readonly listeners = new Set<(method: string, params: Record<string, unknown>) => void>();
   private readonly closers = new Set<(reason: string) => void>();
   /** Methods that never answer, like a session that went away without settling its commands. */
   readonly hang = new Set<string>();
   send(method: string, params?: Record<string, unknown>): Promise<unknown> {
     this.sent.push({ method, ...(params ? { params } : {}) });
+    const error = this.rejectOnce.get(method);
+    if (error) { this.rejectOnce.delete(method); return Promise.reject(error); }
     if (!this.hang.has(method)) return Promise.resolve({});
     return new Promise((resolve, reject) => {
       const entries = this.open.get(method) ?? [];
@@ -209,7 +212,9 @@ describe("agent browser screencast", () => {
     session.hang.add("Page.stopScreencast");
     screencast.start();
     let outcome: unknown = "pending";
-    screencast.stop().then(() => { outcome = "resolved"; }, (error: unknown) => { outcome = error; });
+    const stopping = screencast.stop();
+    stopping.then(() => { outcome = "resolved"; }, (error: unknown) => { outcome = error; });
+    expect(screencast.stop()).toBe(stopping);
     expect(session.open.get("Page.stopScreencast")).toHaveLength(1);
     session.close("target closed");
     await flush();
@@ -249,5 +254,17 @@ describe("agent browser screencast", () => {
     expect(vi.getTimerCount()).toBe(0);
     await screencast.stop();
     expect(session.count("Page.stopScreencast")).toBe(1);
+  });
+
+  it("retries the protocol stop after a failed stop instead of reporting false success", async () => {
+    const stopError = new Error("Page.stopScreencast failed");
+    session.rejectOnce.set("Page.stopScreencast", stopError);
+    screencast.start();
+    await expect(screencast.stop()).rejects.toBe(stopError);
+    expect(session.count("Page.stopScreencast")).toBe(1);
+    expect(session.closing).toBe(1);
+    await expect(screencast.stop()).resolves.toBeUndefined();
+    expect(session.count("Page.stopScreencast")).toBe(2);
+    expect(session.closing).toBe(0);
   });
 });

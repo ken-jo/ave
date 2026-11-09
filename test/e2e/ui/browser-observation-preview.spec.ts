@@ -10,10 +10,12 @@ test.use({ trace: "on" });
 
 type PreviewCapture = { previewMessages: (BrowserObservationPreviewMessage & { receivedAt: number })[]; observed: AgentObservationEvent[] };
 
-test("keeps a parked agent guest visible to its animation clock", () => exercisePreview("parked"));
-test("selects in a parked guest without taking native keyboard focus", () => exercisePreview("focus"));
-test("measures renderer evaluation after an agent closes its parked guest", () => exercisePreview("closure"));
-test("streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit", () => exercisePreview("navigation"));
+const ISOLATED_APP = { annotation: { type: "isolated-app", description: "Installs process-wide crash and guest lifecycle instrumentation" } };
+
+test("keeps a parked agent guest visible to its animation clock", ISOLATED_APP, () => exercisePreview("parked"));
+test("selects in a parked guest without taking native keyboard focus", ISOLATED_APP, () => exercisePreview("focus"));
+test("measures renderer evaluation after an agent closes its parked guest", ISOLATED_APP, () => exercisePreview("closure"));
+test("streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit", ISOLATED_APP, () => exercisePreview("navigation"));
 
 async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigation"): Promise<void> {
   test.setTimeout(scope === "closure" ? 30_000 : 150_000);
