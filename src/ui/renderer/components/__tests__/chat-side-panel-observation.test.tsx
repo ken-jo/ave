@@ -103,7 +103,7 @@ describe("retained panel document observation", () => {
     </ApprovalSurfaceProvider></TooltipProvider>);
     if (background === "side-chat") fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
     else fireEvent.click(screen.getByText("Open agent browser"));
-    const retained = background === "side-chat" ? screen.getByTestId("side-chat-view") : document.querySelector("webview");
+    const retained = background === "side-chat" ? screen.getByTestId("side-chat-view") : screen.getByTestId("chat-side-panel-browser-native");
     expect(retained).not.toBeNull();
     openPreview(route);
     await screen.findByText("Initial disk value");
