@@ -1,3 +1,4 @@
+import { quitElectron } from './seeded-electron.js';
 import { test, expect } from './fixtures.js';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
 import { admitFixturePlugins } from './admit-fixture-plugins.js';
@@ -71,7 +72,7 @@ test('the boot gate outcome reaches settings, and the notice matches it', async 
     }
     await mainWindow.screenshot({ path: test.info().outputPath('sandbox-chat-status.png') });
   } finally {
-    await app.close();
+    await quitElectron(app);
   }
 });
 
@@ -104,7 +105,7 @@ test.describe('persistent sandbox-off status', () => {
       await closeInlineSettings(app, settingsPage);
       await expect(chatStatus).toBeVisible();
     } finally {
-      await app.close();
+      await quitElectron(app);
     }
   });
 });

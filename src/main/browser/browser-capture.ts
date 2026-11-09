@@ -8,6 +8,26 @@ import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-captu
 
 const activeCaptures = new WeakSet<object>();
 const CAPTURE_VIEWPORT_FIELDS = ["pageX", "pageY", "clientWidth", "clientHeight", "zoom", "scale"] as const;
+const CAPTURE_PAINT = `function() {
+  if (document.visibilityState === "hidden") return;
+  return new Promise(resolve => {
+    let firstFrame = 0;
+    let secondFrame = 0;
+    const finish = () => {
+      cancelAnimationFrame(firstFrame);
+      cancelAnimationFrame(secondFrame);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      resolve();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") finish();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(finish);
+    });
+  });
+}`;
 export interface CaptureViewport {
   pageX: number; pageY: number; clientWidth: number; clientHeight: number;
   zoom?: number; scale?: number;
@@ -111,10 +131,23 @@ async function capturePage(
     if (tiled) {
       if (!captureViewport) throw new BrowserActionError("screenshot-unavailable", "the tab has no native viewport readback");
       result = await captureBrowserTiles(cdp, captureSignal, originalWidth, captureHeight, viewport, captureViewport, (position) => { scrollRestore = position; });
+    } else if (!options.fullPage && captureViewport) {
+      // Layout can advance before the native surface paints its new scroll or zoom.
+      const executionContextId = await captureScrollContext(cdp);
+      throwIfAborted(captureSignal);
+      const painted = await operation.wait(cdp.send("Runtime.callFunctionOn", {
+        executionContextId,
+        functionDeclaration: CAPTURE_PAINT,
+        returnByValue: true,
+        awaitPromise: true,
+      })) as { exceptionDetails?: unknown };
+      if (painted.exceptionDetails) throw new BrowserActionError("screenshot-unavailable", "the page could not paint for capture");
+      throwIfAborted(captureSignal);
+      result = await captureViewport();
     } else {
-      result = options.fullPage || !captureViewport ? await cdp.send("Page.captureScreenshot", {
+      result = await cdp.send("Page.captureScreenshot", {
         format: "png", captureBeyondViewport: false, fromSurface: true,
-      }) as { data?: string } : await captureViewport();
+      }) as { data?: string };
     }
     throwIfAborted(captureSignal);
     if (!options.fullPage) {

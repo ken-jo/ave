@@ -121,6 +121,7 @@ export function useMessageQueue({
 
   const queueAutoInflightRef = useRef(false);
   const queueDeliveryEpochRef = useRef(0);
+  const queueDeliveryInflightRef = useRef(new Map<string, () => void>());
   /** A guide hand-off is awaiting its result — do not send the same items again. */
   const guideFlushInflightRef = useRef<{ id: string; text: string; disposition?: "dropped" | "delivered" } | null>(null);
   /** The engine refused this turn's hand-off — stop retrying until the turn ends. */
@@ -169,6 +170,7 @@ export function useMessageQueue({
     messageQueueStore.clear();
     queueDeliveryEpochRef.current += 1;
     queueAutoInflightRef.current = false;
+    queueDeliveryInflightRef.current.clear();
     // The guide-flush refs are turn-scoped, and `done` is what normally clears
     // them. Switching sessions mid-turn means that `done` never arrives for
     // this hook, so a refusal from the old session would keep suppressing
@@ -186,39 +188,74 @@ export function useMessageQueue({
     composerItemId?: string;
   } = {}) {
     if (!intent && (queueAutoInflightRef.current || guideFlushInflightRef.current)) return;
-    const takeGroup = () => {
+    const reserveGroup = () => {
       const pending = messageQueueStore.getPending().filter((item) => itemIds === undefined || itemIds.has(item.id));
       const group = groupQueueItems(pending)[0];
-      return group ? messageQueueStore.takeAll(new Set(group.map((item) => item.id))) : [];
+      return group ? messageQueueStore.reservePending(new Set(group.map((item) => item.id))) : null;
     };
-    const firstGroup = takeGroup();
-    if (firstGroup.length === 0) return;
+    const firstReservation = reserveGroup();
+    if (!firstReservation) return;
     const deliveryEpoch = ++queueDeliveryEpochRef.current;
     queueAutoInflightRef.current = true;
     const send = async () => {
+      let lastDeliveryAccepted = false;
       try {
-        let group = firstGroup;
+        let reservation: ReturnType<MessageQueueStore["reservePending"]> = firstReservation;
         let first = true;
-        while (group.length > 0 && queueDeliveryEpochRef.current === deliveryEpoch) {
+        while (reservation && queueDeliveryEpochRef.current === deliveryEpoch) {
+          const group = reservation.items;
+          const reservationId = reservation.id;
           startQueueTurn();
           const appSource = queueAppSource(group);
           const composerItem = group.find((item) => item.id === composerItemId);
           const queued = group.filter((item) => item !== composerItem);
           const text = [formatQueueInject(queued), ...(composerItem ? [composerItem.text] : [])].filter(Boolean).join("\n");
           const interrupt = first && intent !== undefined;
-          const delivery = onAsk(text, interrupt ? intent : undefined, {
-            ...(interrupt ? { injectHint: "interrupt" as const } : { injectHint: "queue" as const, inputOrigin: "queue-auto" as const }),
-            ...(appSource === undefined ? {} : { appSource }),
-          });
-          if (delivery) await delivery;
+          const deliveryState: { disposition: "pending" | "accepted" | "refused"; accepted: boolean; sendRequestId: string } = {
+            disposition: "pending",
+            accepted: false,
+            sendRequestId: crypto.randomUUID(),
+          };
+          const accept = () => {
+            if (deliveryState.disposition !== "pending") return;
+            deliveryState.disposition = "accepted";
+            deliveryState.accepted = true;
+            messageQueueStore.commitReservation(reservationId);
+          };
+          const refuse = () => {
+            if (deliveryState.disposition !== "pending") return;
+            deliveryState.disposition = "refused";
+            messageQueueStore.releaseReservation(reservationId);
+          };
+          queueDeliveryInflightRef.current.set(deliveryState.sendRequestId, accept);
+          lastDeliveryAccepted = false;
+          try {
+            const delivery = onAsk(text, interrupt ? intent : undefined, {
+              ...(interrupt ? { injectHint: "interrupt" as const } : { injectHint: "queue" as const, inputOrigin: "queue-auto" as const }),
+              ...(appSource === undefined ? {} : { appSource }),
+              queueDelivery: deliveryState,
+              onAccepted: accept,
+              onRefused: refuse,
+            });
+            if (delivery) await delivery;
+          } catch (error) {
+            refuse();
+            console.warn("[message-queue] delivery failed; items kept:", errorMessage(error));
+          } finally {
+            queueDeliveryInflightRef.current.delete(deliveryState.sendRequestId);
+            // An adapter that returned without a disposition did not prove delivery.
+            refuse();
+          }
+          if (deliveryState.disposition !== "accepted") return;
+          lastDeliveryAccepted = true;
           first = false;
           if (queueDeliveryEpochRef.current !== deliveryEpoch) return;
-          group = takeGroup();
+          reservation = reserveGroup();
         }
       } finally {
         if (queueDeliveryEpochRef.current === deliveryEpoch) {
           queueAutoInflightRef.current = false;
-          if (intent && completedTurnEpochRef.current === turnEpochRef.current) drainPendingQueue();
+          if (intent && lastDeliveryAccepted && completedTurnEpochRef.current === turnEpochRef.current) drainPendingQueue();
         }
       }
     };
@@ -288,8 +325,9 @@ export function useMessageQueue({
 
   useEffect(() => {
     const unsub = subscribeStream((ev) => {
-      // A frame from a superseded turn drives nothing here: not the brake-point hand-off, not the delivery bookkeeping, and
-      // above all not the end-of-turn drain.
+      // Admission belongs to the request even when a newer request owns the visible turn.
+      if (ev.type === "user_message" && ev.sendRequestId !== undefined) queueDeliveryInflightRef.current.get(ev.sendRequestId)?.();
+      // Superseded frames cannot drive the visible turn or its queue drain.
       if (isCurrentTurnEvent && !isCurrentTurnEvent(ev)) return;
       if (ev.type === "done" && ev.projectWorkRevoked === true) {
         resetQueue();

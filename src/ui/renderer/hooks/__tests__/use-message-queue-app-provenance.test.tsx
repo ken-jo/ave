@@ -11,9 +11,14 @@ import { useMessageQueue, type UseMessageQueueParams } from "../use-message-queu
 const SOURCE = "app:fixture";
 const INTENT = { inputOrigin: "user-keyboard" as const, token: "gesture" };
 
+function expectedDelivery(options: { injectHint: "queue" | "interrupt"; inputOrigin?: "queue-auto"; appSource: string }, accepted = true) {
+  return { ...options, onAccepted: expect.any(Function), onRefused: expect.any(Function),
+    queueDelivery: { accepted, disposition: accepted ? "accepted" : "pending", sendRequestId: expect.any(String) } };
+}
+
 function setup({ streaming = false, guideAccepted = true } = {}) {
   let emit!: (event: ChatStreamEvent) => void;
-  const onAsk = vi.fn<UseMessageQueueParams["onAsk"]>();
+  const onAsk = vi.fn<UseMessageQueueParams["onAsk"]>((_text, _intent, options) => { options?.onAccepted?.(); });
   const inject = vi.fn(async (_text: string, _intent?: unknown, _source?: string) => guideAccepted
     ? { ok: true as const } : { ok: false as const, error: "no-active-turn" });
   const interceptSubmit = vi.fn(() => true);
@@ -53,8 +58,8 @@ describe("queued app provenance", () => {
     act(() => { store.toggleSelect(store.add("Selected app text", "app:other").id); });
     await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
     expect(s.onAsk.mock.calls).toEqual([
-      ["Selected app text", expect.anything(), { injectHint: "interrupt", appSource: "app:other" }],
-      ["App draft", undefined, { injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE }],
+      ["Selected app text", expect.anything(), expectedDelivery({ injectHint: "interrupt", appSource: "app:other" })],
+      ["App draft", undefined, expectedDelivery({ injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE })],
     ]);
     await act(async () => { guideReply.resolve({ ok: true }); await guideReply.promise; });
     expect(s.inject).toHaveBeenCalledExactlyOnceWith("Older guidance", undefined, "app:older");
@@ -89,24 +94,30 @@ describe("queued app provenance", () => {
   it("keeps a different-source composer draft queued until the selected app turn finishes", async () => {
     const s = setup({ streaming: true });
     const firstTurn = deferred<void>();
-    s.onAsk.mockImplementationOnce(() => firstTurn.promise);
+    s.onAsk.mockImplementationOnce(async (_text, _intent, options) => {
+      await firstTurn.promise;
+      options?.onAccepted?.();
+    });
     act(() => {
       const store = s.result.current.queue.messageQueueStore;
       store.toggleSelect(store.add("Selected app text", "app:other").id);
     });
     await act(async () => s.textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true })));
-    expect(s.onAsk).toHaveBeenCalledExactlyOnceWith("Selected app text", expect.anything(), { injectHint: "interrupt", appSource: "app:other" });
+    expect(s.onAsk).toHaveBeenCalledExactlyOnceWith("Selected app text", expect.anything(), expectedDelivery({ injectHint: "interrupt", appSource: "app:other" }, false));
     expect(s.result.current.queue.messageQueueStore.getPending()).toMatchObject([{ text: "App draft", appSource: SOURCE }]);
     await act(async () => { firstTurn.resolve(); await firstTurn.promise; });
     expect(s.onAsk.mock.calls[1]).toEqual(["App draft", undefined,
-      { injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE }]);
+      expectedDelivery({ injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE })]);
   });
 
   for (const delivery of ["auto", "selected", "interrupt"] as const) {
     it(`keeps later source groups queued while ${delivery} delivery awaits the first turn`, async () => {
       const s = setup({ streaming: true });
       const firstTurn = deferred<void>();
-      s.onAsk.mockImplementationOnce(() => firstTurn.promise);
+      s.onAsk.mockImplementationOnce(async (_text, _intent, options) => {
+        await firstTurn.promise;
+        options?.onAccepted?.();
+      });
       const store = s.result.current.queue.messageQueueStore;
       act(() => {
         s.result.current.setQuestion("");
@@ -133,7 +144,10 @@ describe("queued app provenance", () => {
   it("does not send a retained source group into a different conversation after an awaited turn", async () => {
     const s = setup({ streaming: true });
     const firstTurn = deferred<void>();
-    s.onAsk.mockImplementationOnce(() => firstTurn.promise);
+    s.onAsk.mockImplementationOnce(async (_text, _intent, options) => {
+      await firstTurn.promise;
+      options?.onAccepted?.();
+    });
     act(() => {
       const store = s.result.current.queue.messageQueueStore;
       store.add("A", "app:first");
@@ -161,7 +175,7 @@ describe("queued app provenance", () => {
     await act(async () => { reply.resolve({ ok: true }); await reply.promise; });
     expect(s.inject).toHaveBeenCalledExactlyOnceWith("First", undefined, "app:first");
     expect(s.onAsk).toHaveBeenCalledExactlyOnceWith("Second", undefined,
-      { injectHint: "queue", inputOrigin: "queue-auto", appSource: "app:second" });
+      expectedDelivery({ injectHint: "queue", inputOrigin: "queue-auto", appSource: "app:second" }));
   });
 
   for (const delivery of ["auto", "guide", "interrupt", "selected"] as const) {
@@ -211,7 +225,7 @@ describe("queued app provenance", () => {
     expect(s.result.current.queue.messageQueueStore.getPending()[0]).toMatchObject({ text: "App draft", appSource: SOURCE });
     await s.emit({ type: "done" });
     expect(s.onAsk).toHaveBeenCalledWith("App draft", undefined,
-      { injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE });
+      expectedDelivery({ injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE }));
   });
 
   it("passes an edited queued app item to guide flush with its source and no keyboard intent", async () => {
@@ -231,7 +245,7 @@ describe("queued app provenance", () => {
     await s.emit({ type: "tool_end", name: "read_file", result: "done" });
     await s.emit({ type: "done" });
     expect(s.onAsk).toHaveBeenCalledWith("App draft", undefined,
-      { injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE });
+      expectedDelivery({ injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE }));
   });
 
   it("marks a mixed user and app batch as app-authored on auto drain", async () => {
@@ -240,7 +254,7 @@ describe("queued app provenance", () => {
     s.send();
     await s.emit({ type: "done" });
     expect(s.onAsk).toHaveBeenCalledWith(expect.stringContaining("App draft"), undefined,
-      { injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE });
+      expectedDelivery({ injectHint: "queue", inputOrigin: "queue-auto", appSource: SOURCE }));
     expect(s.onAsk.mock.calls[0][0]).toContain("User text");
   });
 
@@ -248,7 +262,7 @@ describe("queued app provenance", () => {
     const s = setup({ streaming: true });
     s.send();
     act(() => s.result.current.queue.handleMessageQueueSendNow(s.result.current.queue.messageQueueStore.getPending()[0]));
-    expect(s.onAsk).toHaveBeenCalledWith("App draft", expect.anything(), { injectHint: "interrupt", appSource: SOURCE });
+    expect(s.onAsk).toHaveBeenCalledWith("App draft", expect.anything(), expectedDelivery({ injectHint: "interrupt", appSource: SOURCE }));
   });
 
   it("carries the composer snapshot through the guide shortcut", async () => {

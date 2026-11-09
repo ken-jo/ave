@@ -25,21 +25,41 @@ import {
 
 export type ConversationStreamEventSink = PlatformConversationEventSink;
 
-/** Hold completion until the owner releases admission, so queue follow-ups cannot overtake cleanup. */
-export function bufferTurnCompletion(publish: ConversationStreamEventSink): {
+/** Hold the terminal event while its caller finishes post-turn work that still owns the turn lease. */
+export function deferTurnCompletion(sink: ConversationStreamEventSink): {
   sink: ConversationStreamEventSink;
-  flush: () => void;
+  publish(): void;
+  publishAfterTurnSettles(onTurnSettled: (listener: () => void) => () => void): void;
 } {
   let completion: Extract<PlatformConversationEvent, { kind: "turn.completed" }> | undefined;
+  const publish = (): void => {
+    if (!completion) return;
+    const event = completion;
+    completion = undefined;
+    sink(event);
+  };
   return {
     sink: (event) => {
       if (event.kind === "turn.completed") completion = event;
-      else publish(event);
+      else sink(event);
     },
-    flush: () => {
-      const event = completion;
-      completion = undefined;
-      if (event) publish(event);
+    publish,
+    publishAfterTurnSettles: (onTurnSettled) => {
+      let settled = false;
+      let unsubscribe: (() => void) | undefined;
+      const handleSettled = (): void => {
+        if (settled) return;
+        settled = true;
+        unsubscribe?.();
+        unsubscribe = undefined;
+        publish();
+      };
+      unsubscribe = onTurnSettled(handleSettled);
+      // Preserve one-shot cleanup even if an alternate coordinator invokes the listener during registration.
+      if (settled) {
+        unsubscribe();
+        unsubscribe = undefined;
+      }
     },
   };
 }

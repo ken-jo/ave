@@ -16,6 +16,21 @@ import { installNativeChatWindow, nativeChatFrameEvent } from "../../../__tests_
 // What preload sends once it consumed the click's gesture token: main runs a replay as the user's turn only with it.
 const KEYBOARD_GESTURE = { inputOrigin: "user-keyboard", userActivation: true } as const;
 
+const turnReviewOverride = vi.hoisted(() => ({
+  run: undefined as undefined | ((...args: unknown[]) => Promise<unknown>),
+}));
+
+vi.mock("../../../memory/code-checkpoints.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../memory/code-checkpoints.js")>();
+  return {
+    ...actual,
+    getTurnChangeReview: (...args: Parameters<typeof actual.getTurnChangeReview>) =>
+      turnReviewOverride.run
+        ? turnReviewOverride.run(...args) as ReturnType<typeof actual.getTurnChangeReview>
+        : actual.getTurnChangeReview(...args),
+  };
+});
+
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 vi.mock("electron", () => ({
@@ -76,6 +91,7 @@ type FakeLoop = {
   runSessionTransition: ReturnType<typeof vi.fn>;
   isSessionTransitioning: () => boolean;
   getSessionId: () => string;
+  getSessionEpoch: () => number;
   getSessionKind: () => "main";
   getSessionRoutineId: () => null;
   getSessionRoutineTitle: () => null;
@@ -93,6 +109,7 @@ type FakeLoop = {
   };
   refreshProvider: () => Promise<void>;
   whenProviderReady: () => Promise<void>;
+  replaceSession: (sessionId: string) => void;
   resetAndResume: ReturnType<typeof vi.fn>;
   getSessionProjectContext: () => { projectRoot?: string };
 };
@@ -101,6 +118,7 @@ function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
   // Truncation must remove rows so cutting the wrong tile cannot pass.
   let messages = [...seed];
   let transitioning = false;
+  let sessionEpoch = 0;
   const loop: FakeLoop = {
     id,
     sessionId: sessionUuid(`session-of-${id}`),
@@ -119,6 +137,7 @@ function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
     }),
     isSessionTransitioning: vi.fn(() => transitioning),
     getSessionId: () => loop.sessionId,
+    getSessionEpoch: () => sessionEpoch,
     getSessionKind: () => "main",
     getSessionRoutineId: () => null,
     getSessionRoutineTitle: () => null,
@@ -137,8 +156,12 @@ function fakeLoop(id: string, seed: unknown[] = []): FakeLoop {
     refreshProvider: async () => {},
     whenProviderReady: async () => {},
     getSessionProjectContext: () => ({ projectRoot: `/projects/${id}` }),
-    resetAndResume: vi.fn(async (sessionId: string) => {
+    replaceSession: (sessionId: string) => {
       loop.sessionId = sessionId;
+      sessionEpoch += 1;
+    },
+    resetAndResume: vi.fn(async (sessionId: string) => {
+      loop.replaceSession(sessionId);
       return { ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 };
     }),
   };
@@ -236,6 +259,7 @@ describe("ave:chat:* with chat groups", () => {
     handlers.clear();
     unsubscribes.length = 0;
     runtimes.length = 0;
+    turnReviewOverride.run = undefined;
     vi.clearAllMocks();
     await installNativeChatWindow();
   });
@@ -385,6 +409,84 @@ describe("ave:chat:* with chat groups", () => {
       tile.getHistory().getMessages().push({ role: "user", content: "Queued follow-up", meta: { messageId: "injected-row", hostInjectionId: "guidance-batch" } });
       const result = await invoke("ave:chat:get-turn-review", tile.getSessionId(), "group-2");
       expect(result).toMatchObject({ ok: true, review: { turnId: "tile-q1", files: [{ path: "code.txt" }] } });
+    });
+
+    it("admits the next turn while a read-only review is still loading", async () => {
+      const { invoke, tile } = await setup();
+      let startReview!: () => void;
+      const reviewStarted = new Promise<void>((resolve) => { startReview = resolve; });
+      let finishReview!: () => void;
+      const reviewFinished = new Promise<void>((resolve) => { finishReview = resolve; });
+      turnReviewOverride.run = async () => {
+        startReview();
+        await reviewFinished;
+        return { ok: true, review: { sessionId: tile.getSessionId(), turnId: "tile-q1", files: [] } };
+      };
+      const reviewing = invoke(CHANNELS.chat.getTurnReview, tile.getSessionId(), "group-2") as Promise<unknown>;
+      await reviewStarted;
+      const runTurn = vi.fn(async (input: string) => {
+        tile.getHistory().getMessages().push({
+          role: "user",
+          content: input,
+          meta: { messageId: "queued-follow-up" },
+        });
+        return { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" };
+      });
+      Object.assign(tile, { runTurn });
+
+      const sending = invoke(CHANNELS.chat.send, {
+        input: "queued follow-up",
+        inputOrigin: "queue-auto",
+      }, "group-2");
+
+      await expect(sending).resolves.toMatchObject({ stopReason: "end_turn" });
+      expect(runTurn).toHaveBeenCalledTimes(1);
+      finishReview();
+      await expect(reviewing).resolves.toEqual({ ok: false, error: "turn-review-stale" });
+    });
+
+    it("discards a review that finishes after its session was replaced", async () => {
+      const { invoke, tile } = await setup();
+      let startReview!: () => void;
+      const reviewStarted = new Promise<void>((resolve) => { startReview = resolve; });
+      let finishReview!: () => void;
+      const reviewFinished = new Promise<void>((resolve) => { finishReview = resolve; });
+      turnReviewOverride.run = async () => {
+        startReview();
+        await reviewFinished;
+        return { ok: true, review: { sessionId: tile.getSessionId(), turnId: "tile-q1", files: [] } };
+      };
+      const originalSessionId = tile.getSessionId();
+      const reviewing = invoke(CHANNELS.chat.getTurnReview, originalSessionId, "group-2") as Promise<unknown>;
+      await reviewStarted;
+
+      tile.replaceSession(sessionUuid("replacement-session"));
+      finishReview();
+
+      await expect(reviewing).resolves.toEqual({ ok: false, error: "turn-review-stale" });
+    });
+
+    it("does not read through a changed workspace authorization context", async () => {
+      const { invoke, tile } = await setup();
+      let startReview!: () => void;
+      const reviewStarted = new Promise<void>((resolve) => { startReview = resolve; });
+      let finishReview!: () => void;
+      const reviewFinished = new Promise<void>((resolve) => { finishReview = resolve; });
+      turnReviewOverride.run = async (_sessionId, _turnId, context) => {
+        const readContext = context as () => { cwd: string; extraAllowedDirectories: readonly string[] };
+        expect(readContext()).toEqual({ cwd: root, extraAllowedDirectories: [] });
+        startReview();
+        await reviewFinished;
+        expect(readContext).toThrow("turn-review-context-changed");
+        return { ok: true, review: { sessionId: tile.getSessionId(), turnId: "tile-q1", files: [] } };
+      };
+      const reviewing = invoke(CHANNELS.chat.getTurnReview, tile.getSessionId(), "group-2") as Promise<unknown>;
+      await reviewStarted;
+
+      tile.getSessionExecutionCwd = () => join(root, "replacement-root");
+      finishReview();
+
+      await expect(reviewing).resolves.toEqual({ ok: false, error: "turn-review-stale" });
     });
 
     it("keeps recorded totals while the Files workspace details show subsequent current edits", async () => {

@@ -1,5 +1,5 @@
 import { test, expect, type ElectronFixtures } from './fixtures.js';
-import { buildLlmSettings } from './seeded-electron.js';
+import { buildLlmSettings, quitElectron } from './seeded-electron.js';
 import { admitFixturePlugins } from './admit-fixture-plugins.js';
 import type { ElectronApplication, Page } from 'playwright';
 import { createServer, type ServerResponse } from 'node:http';
@@ -220,7 +220,7 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
     expect(englishLanguage.title).toBe('MCP App');
     expect(koreanLanguage.title).toBe('MCP 앱');
     await dock.screenshot({ path: testInfo.outputPath('dock-ko.png') });
-  } finally { await app.close(); }
+  } finally { await quitElectron(app); }
 });
 
 test('sidebar app messages fill the composer without sending a turn', async ({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome }, testInfo) => {
@@ -256,7 +256,7 @@ test('sidebar app messages fill the composer without sending a turn', async ({ a
     await stageFromPanel(app);
     await page.getByRole('button', { name: 'Replace draft', exact: true }).click();
     await expect(composer).toHaveValue('Review the selected fixture item');
-  } finally { await app.close(); }
+  } finally { await quitElectron(app); }
 });
 
 test('an app draft queued during streaming starts its next turn with app provenance', async ({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome }, testInfo) => {
@@ -317,7 +317,7 @@ test('an app draft queued during streaming starts its next turn with app provena
     await testInfo.attach('host-resolved-origins', { path: evidencePath, contentType: 'application/json' });
     await page.screenshot({ path: testInfo.outputPath('app-emitted-turn.png') });
   } finally {
-    await app.close(); server.closeAllConnections();
+    await quitElectron(app); server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 });
@@ -346,5 +346,5 @@ test('a dock auth identity change remounts its app without app-tool auth denials
     const evidencePath = testInfo.outputPath('dock-auth-lifetime.json');
     writeFileSync(evidencePath, JSON.stringify({ before, after: await guestId(), messages, audit }, null, 2));
     await testInfo.attach('dock-auth-lifetime', { path: evidencePath, contentType: 'application/json' });
-  } finally { await app.close(); }
+  } finally { await quitElectron(app); }
 });

@@ -24,7 +24,7 @@ export interface ConversationActivityCoordinator {
   /** Fail admission before a command mutates state, without constructing a rejected promise. */
   tryTrackTurn<T>(factory: (signal: AbortSignal) => Promise<T>): Promise<T> | null;
   trackMutation<T>(factory: () => Promise<T>): Promise<T> | null;
-  /** Notify after the turn lease clears so listeners can safely start the next turn. */
+  /** Notify only after the turn and every overlapping admission or transition clear. These listeners run before background idle work. */
   onTurnSettled(listener: () => void): () => void;
   /** Subscribe before checking isBusy to avoid missing an idle transition.
    * Turns, mutations, admission release, and loop transitions can each produce idle. */
@@ -44,6 +44,7 @@ export function createConversationActivityCoordinator(
   const turnSettledListeners = new Set<() => void>();
   const idleListeners = new Set<() => void>();
   let unsubscribeSettled: (() => void) | null = null;
+  let turnSettlementPending = false;
 
   const notifyTurnSettled = (): void => {
     for (const listener of turnSettledListeners) listener();
@@ -58,6 +59,13 @@ export function createConversationActivityCoordinator(
 
   const notifyIfIdle = (): void => {
     if (isBusy()) return;
+    if (turnSettlementPending) {
+      turnSettlementPending = false;
+      // Turn completion may synchronously admit user work; background idle listeners must observe that new lease.
+      notifyTurnSettled();
+      // A turn-settled listener may synchronously acquire the next turn.
+      if (isBusy()) return;
+    }
     for (const listener of [...idleListeners]) listener();
   };
 
@@ -77,7 +85,7 @@ export function createConversationActivityCoordinator(
         activeTurn = null;
         activeTurnController = null;
       }
-      notifyTurnSettled();
+      turnSettlementPending = true;
       notifyIfIdle();
     });
     activeTurn = lease;

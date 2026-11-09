@@ -176,27 +176,39 @@ for (const width of [360, 1243]) {
 }
 
 for (const width of [360, 1243]) {
-  test(`a main notification keeps its identity across renderer reloads at ${width}px`, async ({ app, mainWindow: page }, testInfo) => {
+  test(`a main notification keeps its identity across renderer reloads at ${width}px`, {
+    annotation: { type: "isolated-app", description: "Intercepts process-wide OS notification presentation" },
+  }, async ({ app, mainWindow: page }, testInfo) => {
     await setWindowSize(app, width, 640);
     await page.emulateMedia({ reducedMotion: "reduce" });
     await clearHistory(page);
     const previousNodeEnv = await app.evaluate(() => process.env.NODE_ENV);
     try {
       // The isolated UI fixture starts in test mode, which suppresses passive notifications.
-      await app.evaluate(({ BrowserWindow }) => {
+      await app.evaluate(({ Notification }) => {
+        const state = globalThis as typeof globalThis & {
+          __aveE2eNotificationShow?: { original: typeof Notification.prototype.show; calls: number };
+        };
+        if (state.__aveE2eNotificationShow) throw new Error("Notification presentation is already intercepted");
+        state.__aveE2eNotificationShow = { original: Notification.prototype.show, calls: 0 };
+        Notification.prototype.show = () => {
+          const interceptor = state.__aveE2eNotificationShow;
+          if (!interceptor) throw new Error("Notification presentation interceptor is missing");
+          interceptor.calls += 1;
+        };
         process.env.NODE_ENV = "production";
-        const win = BrowserWindow.getAllWindows()[0];
-        if (!win) throw new Error("Missing main window");
-        win.show();
-        win.focus();
       });
-      await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isFocused())).toBe(true);
+      await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(true);
+      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isFocused()))).toBe(false);
       const result = await page.evaluate(() => window.ave.mcp.postUiMessage("e2e-history", "", {
         content: [{ type: "text", text: "Reload history", _meta: {
           "ai.agent-connector.ave/notification": { title: "Reload history", body: "Keep across reload" },
         } }],
       }));
       expect(result).toEqual({ ok: true, disposition: "notified" });
+      expect(await app.evaluate(() => (globalThis as typeof globalThis & {
+        __aveE2eNotificationShow?: { calls: number };
+      }).__aveE2eNotificationShow?.calls)).toBe(1);
       await expect(page.getByTestId("notification-bell-count")).toHaveText("1");
       await expect(page.getByTestId("status-toast")).toHaveCount(0);
       await page.getByTestId("notification-bell").click();
@@ -224,9 +236,15 @@ for (const width of [360, 1243]) {
       }
       await captureWindow(app, testInfo.outputPath(`notification-bell-reloaded-${width}.png`), width);
     } finally {
-      await app.evaluate((_main, previous) => {
+      await app.evaluate(({ Notification }, previous) => {
         if (previous === undefined) delete process.env.NODE_ENV;
         else process.env.NODE_ENV = previous;
+        const state = globalThis as typeof globalThis & {
+          __aveE2eNotificationShow?: { original: typeof Notification.prototype.show; calls: number };
+        };
+        if (!state.__aveE2eNotificationShow) throw new Error("Notification presentation interceptor is missing");
+        Notification.prototype.show = state.__aveE2eNotificationShow.original;
+        delete state.__aveE2eNotificationShow;
       }, previousNodeEnv);
     }
   });

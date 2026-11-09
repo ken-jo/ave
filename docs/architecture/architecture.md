@@ -912,7 +912,9 @@ owns capture boundaries, restore conflict refusal, storage limits and untracked
 effects. Its [latest-turn review contract](../design/code-rewind.md#latest-turn-change-review)
 defines recorded change summaries above the composer, a unified Files tree
 with responsive side-by-side detail, and existing file-mention references with
-host-authorized, bounded context and clickable file previews.
+host-authorized, bounded context and clickable file previews. Settled-turn review
+reads remain outside the conversation mutation boundary and discard results when
+the group, session epoch, authorized roots or latest initiating turn changes.
 
 Important rules:
 

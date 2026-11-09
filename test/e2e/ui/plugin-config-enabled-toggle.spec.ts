@@ -1,3 +1,4 @@
+import { quitElectron } from './seeded-electron.js';
 import { test, expect } from './fixtures.js';
 import { openInlineSettings, closeInlineSettings } from './inline-settings.js';
 import { admitFixturePlugins } from './admit-fixture-plugins.js';
@@ -38,6 +39,6 @@ test('plugin-config Switch toggles a loaded plugin active/inactive and back', as
     await expect(hiddenNote).toHaveCount(0);
   } finally {
     await closeInlineSettings(app, settings).catch(() => {});
-    await app.close();
+    await quitElectron(app);
   }
 });

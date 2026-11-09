@@ -1,3 +1,4 @@
+import { assertNativeBrowserState, clearNativeBrowserStorage } from "../native-browser-state.js";
 import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
 import { app, BrowserWindow, nativeImage, type WebContents } from "electron";
 import { createServer } from "node:http";
@@ -25,9 +26,12 @@ const preload = fixturePath("AVE_NATIVE_FIXTURE_PRELOAD");
 const fixtureMode = process.env.AVE_NATIVE_FIXTURE_MODE;
 if (fixtureMode !== "cdp" && fixtureMode !== "foreground") throw new Error("Native fixture mode is required");
 configureE2eWindowPolicy();
+// Window replacement between tests keeps this worker-owned process alive.
+app.on("window-all-closed", () => {});
 if (fixtureMode === "foreground" && process.platform === "darwin") app.setActivationPolicy("regular");
 const actor = { sessionId: "native-fixture-conversation" };
 const rendererTabId = "native-fixture-browser";
+const NATIVE_BROWSER_PARTITION = "native-browser-actions-fixture";
 const originalBytes = "immutable fixture bytes\n";
 let received: { bytes: string; name: string } | null = null;
 let guest: WebContents;
@@ -55,7 +59,7 @@ function recordNativeInput(event: NativeInputEventName, input: unknown): void {
 const server = createServer(async (request, response) => {
   if (request.url === "/host") {
     response.setHeader("content-type", "text/html");
-    response.end('<!doctype html><title>Native action host</title><style>body{margin:0;background:#e8edf2;font:16px sans-serif}aside{width:210px;padding:18px}webview{position:absolute;left:230px;top:70px;width:900px;height:720px;border:2px solid #345}</style><aside>Trusted fixture chrome<input id="composer" aria-label="Host composer" autofocus></aside><webview src="about:blank" partition="native-browser-actions-fixture" webpreferences="contextIsolation=yes,sandbox=yes,nodeIntegration=no"></webview><script>window.nativeFixtureChrome.onTabOp(request => { const view = document.querySelector("webview"); if (request.op === "focus" && request.tabId === "native-fixture-browser" && view.isConnected && document.visibilityState === "visible" && view.getBoundingClientRect().width > 0) view.focus(); if (request.op === "restore-focus") document.getElementById("composer").focus(); });</script>');
+    response.end(`<!doctype html><title>Native action host</title><style>body{margin:0;background:#e8edf2;font:16px sans-serif}aside{width:210px;padding:18px}webview{position:absolute;left:230px;top:70px;width:900px;height:720px;border:2px solid #345}</style><aside>Trusted fixture chrome<input id="composer" aria-label="Host composer" autofocus></aside><webview src="about:blank" partition="${NATIVE_BROWSER_PARTITION}" webpreferences="contextIsolation=yes,sandbox=yes,nodeIntegration=no"></webview><script>window.nativeFixtureChrome.onTabOp(request => { const view = document.querySelector("webview"); if (request.op === "focus" && request.tabId === "native-fixture-browser" && view.isConnected && document.visibilityState === "visible" && view.getBoundingClientRect().width > 0) view.focus(); if (request.op === "restore-focus") document.getElementById("composer").focus(); });</script>`);
     return;
   }
   if (request.url === "/upload" && request.method === "POST") {
@@ -198,68 +202,90 @@ async function run(action: NativeAction): Promise<NativeActionResult> {
   }
 }
 
-void app.whenReady().then(async () => {
-if (fixtureMode === "foreground" && process.platform === "darwin") {
-  const dock = app.dock;
-  if (!dock) throw new Error("Native fixture dock is unavailable");
-  await dock.show();
-}
-await fs.mkdir(runtimeDir, { recursive: true });
-await fs.writeFile(join(runtimeDir, "selected.txt"), originalBytes);
-await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-const address = server.address();
-if (!address || typeof address === "string") throw new Error("Native fixture server did not start");
-const origin = `http://127.0.0.1:${address.port}`;
-win = new BrowserWindow({ width: 1180, height: 860, x: 40, y: 40, show: false,
-  webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: true, preload } });
-if (fixtureMode === "foreground") win.show(); else win.showInactive();
-win.webContents.on("will-attach-webview", (_event, preferences) => {
-  preferences.contextIsolation = true; preferences.sandbox = true; preferences.nodeIntegration = false; delete preferences.preload;
-});
-browserTabRegistry.setRendererLink({
-  isWindowVisible: (windowId) => windowId === win.id && !win.isDestroyed() && win.isVisible(),
-  sendTabOp: (_windowId, request) => {
-    if (request.op === "new") requestId = request.requestId;
-    win.webContents.send("native-fixture-tab-op", request);
-    return true;
-  },
-  sendControl: () => {},
-});
-let attach!: () => void;
-const attached = new Promise<void>((resolve) => { attach = resolve; });
-win.webContents.once("did-attach-webview", (_event, contents) => {
-  guest = contents;
-  trackBrowserGuest(guest, win.id);
-  for (const event of ["before-input-event", "before-mouse-event", "input-event"] as const) {
-    // Subscribe through the inherited event emitter and validate native payloads before typed overload support.
-    EventEmitter.prototype.on.call(guest, event, (_event: unknown, input: unknown) => { recordNativeInput(event, input); });
-  }
-  const bind = () => {
-    const result = browserTabRegistry.bindTab(win.id, { tabId: rendererTabId, webContentsId: guest.id, requestId });
-    if (!result.ok) throw new Error(`Native fixture binding failed: ${result.error}`);
-    attach();
-  };
-  if (guest.getURL() === "about:blank" && !guest.isLoading()) bind(); else guest.once("did-finish-load", bind);
-});
-const opened = browserTabRegistry.requestTabOp(win.id, { op: "new", url: `${origin}/page`, actor, active: true });
-await win.loadURL(`${origin}/host`);
-await attached;
-const outcome = await opened;
-if (!outcome.ok) throw new Error(`Native fixture opening failed: ${outcome.error}`);
-tabId = outcome.tabId;
-browserTabRegistry.setActiveSurface(win.id, { kind: "browser", tabId: rendererTabId });
-await actions.prepare({ tab: record(), signal: new AbortController().signal });
-const bootstrapLease = browserTabRegistry.acquireControl(record(), actor);
-try { await actions.navigate({ tab: record(), signal: record().actions.signal, leaseId: bootstrapLease.id }, `${origin}/page`, browserOrigin(`${origin}/page`)!); }
-finally { browserTabRegistry.releaseControl(tabId, bootstrapLease.id); }
-if (fixtureMode === "foreground") { win.show(); app.focus({ steal: true }); win.focus(); }
+let origin = "";
 
-const fixture: NativeBrowserFixture = { ready: true, run, read: () => read(), close: async () => {
-  guest.stop(); await disposeBrowserUploads(); win.destroy();
+async function reset(): Promise<void> {
+  if (guest && !guest.isDestroyed()) guest.setZoomFactor(1);
+  for (const window of BrowserWindow.getAllWindows()) {
+    browserTabRegistry.releaseWindow(window.id);
+    window.destroy();
+  }
   server.closeAllConnections();
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-} };
-(globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture = fixture;
-process.stdout.write("NATIVE_BROWSER_FIXTURE_READY\n");
+  await clearNativeBrowserStorage(NATIVE_BROWSER_PARTITION);
+  received = null;
+  nativeEvents.length = 0;
+  requestId = "";
+  tabId = "";
+  await fs.writeFile(join(runtimeDir, "selected.txt"), originalBytes);
+  if (fixtureMode === "foreground" && process.platform === "darwin") {
+    const dock = app.dock;
+    if (!dock) throw new Error("Native fixture dock is unavailable");
+    await dock.show();
+  }
+  win = new BrowserWindow({ width: 1180, height: 860, x: 40, y: 40, show: false,
+    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: true, preload } });
+  if (fixtureMode === "foreground") win.show(); else win.showInactive();
+  const windowId = win.id;
+  win.once("closed", () => browserTabRegistry.releaseWindow(windowId));
+  win.webContents.on("will-attach-webview", (_event, preferences) => {
+    preferences.contextIsolation = true; preferences.sandbox = true; preferences.nodeIntegration = false; delete preferences.preload;
+  });
+  browserTabRegistry.setRendererLink({
+    isWindowVisible: (windowId) => windowId === win.id && !win.isDestroyed() && win.isVisible(),
+    sendTabOp: (_windowId, request) => {
+      if (request.op === "new") requestId = request.requestId;
+      win.webContents.send("native-fixture-tab-op", request);
+      return true;
+    },
+    sendControl: () => {},
+  });
+  let attach!: () => void;
+  const attached = new Promise<void>((resolve) => { attach = resolve; });
+  win.webContents.once("did-attach-webview", (_event, contents) => {
+    guest = contents;
+    guest.setZoomFactor(1);
+    trackBrowserGuest(guest, win.id);
+    for (const event of ["before-input-event", "before-mouse-event", "input-event"] as const) {
+      // Subscribe through the inherited event emitter and validate native payloads before typed overload support.
+      EventEmitter.prototype.on.call(guest, event, (_event: unknown, input: unknown) => { recordNativeInput(event, input); });
+    }
+    const bind = () => {
+      const result = browserTabRegistry.bindTab(win.id, { tabId: rendererTabId, webContentsId: guest.id, requestId });
+      if (!result.ok) throw new Error(`Native fixture binding failed: ${result.error}`);
+      attach();
+    };
+    if (guest.getURL() === "about:blank" && !guest.isLoading()) bind(); else guest.once("did-finish-load", bind);
+  });
+  const opened = browserTabRegistry.requestTabOp(win.id, { op: "new", url: `${origin}/page`, actor, active: true });
+  await win.loadURL(`${origin}/host`);
+  await attached;
+  const outcome = await opened;
+  if (!outcome.ok) throw new Error(`Native fixture opening failed: ${outcome.error}`);
+  tabId = outcome.tabId;
+  browserTabRegistry.setActiveSurface(win.id, { kind: "browser", tabId: rendererTabId });
+  await actions.prepare({ tab: record(), signal: new AbortController().signal });
+  const bootstrapLease = browserTabRegistry.acquireControl(record(), actor);
+  try { await actions.navigate({ tab: record(), signal: record().actions.signal, leaseId: bootstrapLease.id }, `${origin}/page`, browserOrigin(`${origin}/page`)!); }
+  finally { browserTabRegistry.releaseControl(tabId, bootstrapLease.id); }
+  guest.setZoomFactor(1);
+  win.webContents.setZoomFactor(1);
+  if (fixtureMode === "foreground") { win.show(); app.focus({ steal: true }); win.focus(); }
+
+}
+
+void app.whenReady().then(async () => {
+  await fs.mkdir(runtimeDir, { recursive: true });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Native fixture server did not start");
+  origin = `http://127.0.0.1:${address.port}`;
+  await reset();
+  const fixture: NativeBrowserFixture = { ready: true, run, reset, assertClean: async () => assertNativeBrowserState(win, guest, rendererTabId), read: () => read(), close: async () => {
+    guest.stop(); await disposeBrowserUploads(); win.destroy();
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  } };
+  (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture = fixture;
+  process.stdout.write("NATIVE_BROWSER_FIXTURE_READY\n");
 
 }).catch((error) => { console.error(error); app.exit(1); });

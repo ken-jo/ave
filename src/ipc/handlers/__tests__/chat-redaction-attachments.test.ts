@@ -31,10 +31,12 @@ function makeFixture(piiRedactEnabled: boolean) {
     },
     auditLogger: { log: vi.fn() },
   } as unknown as IpcDeps;
+  const activity = createConversationActivityCoordinator();
   const context: ChatSendContext = {
     createStreamEventSink: () => sink,
     allocateStreamId: () => 43,
-    trackStreamTurn: (factory) => factory(),
+    trackStreamTurn: activity.trackTurn,
+    onTurnSettled: activity.onTurnSettled,
   };
   return { deps, context, runTurn, sink };
 }
@@ -55,6 +57,7 @@ describe("chat send attachment PII redaction", () => {
     const fixture = makeFixture(false);
     const activity = createConversationActivityCoordinator();
     fixture.context.trackStreamTurn = (factory) => activity.trackTurn(factory);
+    fixture.context.onTurnSettled = activity.onTurnSettled;
     const busyAtCompletion: boolean[] = [];
     fixture.context.createStreamEventSink = () => (event) => {
       fixture.sink(event);

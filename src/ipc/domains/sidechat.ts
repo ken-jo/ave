@@ -17,18 +17,18 @@ import type { GenericMessage } from "../../engine/llm/types.js";
 import type { ConversationLoop, TurnResult } from "../../engine/conversation-loop.js";
 import { serializeHistoryMessage } from "../../shared/chat-history.js";
 import {
+  deferTurnCompletion,
   runStreamedTurn,
-  bufferTurnCompletion,
+  type ConversationStreamEventSink,
 } from "../handlers/chat-stream.js";
 import { isValidSessionId } from "../../shared/session-id.js";
 import type { SideChatOperationFailure } from "../../shared/side-chat-operation.js";
-import { mintUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
+import { isChatSendRequestId, mintUserKeyboardIntent, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 
 import { sanitizeOutgoingTurnContent, validateUserContentParts } from "../handlers/chat.js";
 import type { IpcDeps } from "../types.js";
 import type { SubAgentTranscriptResult } from "../../shared/subagent-transcript.js";
 
-const MAX_SEND_REQUEST_ID_LENGTH = 256;
 const MAX_PANE_TAB_ID_LENGTH = 256;
 const log = createLogger("sidechat");
 
@@ -259,11 +259,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const surface = p.surface === undefined ? null : parseActiveSurface(p.surface);
     if (surface === undefined) return { ok: false as const, error: "invalid-surface" };
     if (surface !== null && !senderWindow) return { ok: false as const, error: "invalid-surface" };
-    if (p.sendRequestId !== undefined && (
-      typeof p.sendRequestId !== "string"
-      || p.sendRequestId.trim().length === 0
-      || p.sendRequestId.length > MAX_SEND_REQUEST_ID_LENGTH
-    )) {
+    if (p.sendRequestId !== undefined && !isChatSendRequestId(p.sendRequestId)) {
       return { ok: false as const, error: "invalid-input" };
     }
     const attachments = validateUserContentParts(p.attachments);
@@ -319,7 +315,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     registerApprovalOwner(loop, senderWindow.webContents);
     if (pane === null) { setSideChatOwnerContents(e.sender); railShellOwnerId = e.sender.id; }
     const streamTarget = e.sender;
-    const { sink, flush } = bufferTurnCompletion(createLegacyChatStreamEventSink(
+    const sink: ConversationStreamEventSink = createLegacyChatStreamEventSink(
       buildSink(streamTarget),
       {
         streamId,
@@ -328,7 +324,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
         streamChannel: CHANNELS.sidechat.stream,
         fallbackChannel: CHANNELS.sidechat.fallback,
       },
-    ));
+    );
     // Apply the main-chat DLP boundary at this send site too.
     const sanitized = sanitizeOutgoingTurnContent(
       settingsService,
@@ -336,11 +332,12 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       p.input as string,
       attachments,
     );
+    const completion = deferTurnCompletion(sink);
     const turnPromise = (async () => {
       return runStreamedTurn(
         loop,
         sanitized.input,
-        sink,
+        completion.sink,
         {
           inputOrigin,
           ...(userKeyboardIntent ? { userKeyboardIntent } : {}),
@@ -350,31 +347,34 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
         },
       );
     })().finally(async () => {
-      if (turns.active === turnPromise) {
-        turns.active = null;
-        turns.sendRequestId = null;
-        turns.senderId = null;
-        turns.sessionId = null;
-      }
-      // Persist row facts after the turn creates a session file; no await may split admission from active-turn tracking.
-      const previousWrite = originWritesBySession.get(turnSideChatSessionId) ?? Promise.resolve();
-      const rowWrite = previousWrite.then(() => recordSideChatRow(
-        store,
-        turnSideChatSessionId,
-        p.originSessionId,
-        pane?.tabId,
-      ));
-      originWritesBySession.set(turnSideChatSessionId, rowWrite);
-      flush();
       try {
-        await rowWrite;
+        if (turns.active === turnPromise) {
+          turns.active = null;
+          turns.sendRequestId = null;
+          turns.senderId = null;
+          turns.sessionId = null;
+        }
+        // Persist row facts after the turn creates a session file; no await may split admission from active-turn tracking.
+        const previousWrite = originWritesBySession.get(turnSideChatSessionId) ?? Promise.resolve();
+        const rowWrite = previousWrite.then(() => recordSideChatRow(
+          store,
+          turnSideChatSessionId,
+          p.originSessionId,
+          pane?.tabId,
+        ));
+        originWritesBySession.set(turnSideChatSessionId, rowWrite);
+        try {
+          await rowWrite;
+        } finally {
+          if (originWritesBySession.get(turnSideChatSessionId) === rowWrite) originWritesBySession.delete(turnSideChatSessionId);
+        }
+        const ending = turns.endAfterTurn;
+        if (ending !== null) {
+          turns.endAfterTurn = null;
+          await closePaneChat(ending.windowId, ending.tabId);
+        }
       } finally {
-        if (originWritesBySession.get(turnSideChatSessionId) === rowWrite) originWritesBySession.delete(turnSideChatSessionId);
-      }
-      const ending = turns.endAfterTurn;
-      if (ending !== null) {
-        turns.endAfterTurn = null;
-        await closePaneChat(ending.windowId, ending.tabId);
+        completion.publish();
       }
     });
     turns.active = turnPromise;
@@ -519,7 +519,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const sendRequestId = payload && typeof payload === "object" && !Array.isArray(payload)
       ? (payload as Record<string, unknown>).sendRequestId
       : undefined;
-    if (typeof sendRequestId !== "string" || sendRequestId.trim().length === 0 || sendRequestId.length > MAX_SEND_REQUEST_ID_LENGTH) {
+    if (!isChatSendRequestId(sendRequestId)) {
       return { ok: false as const, error: "invalid-send-request-id" };
     }
     // Neither another renderer nor an unaccepted or finished request owns a turn.

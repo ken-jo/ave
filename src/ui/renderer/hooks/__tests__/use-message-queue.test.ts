@@ -50,8 +50,161 @@ describe("useMessageQueue location references", () => {
     expect(result.current.attachments).toEqual([replacement]);
   });
 
+  it("releases the exact reserved source group in place when queue-auto is refused", async () => {
+    let emit: (event: ChatStreamEvent) => void = () => {};
+    const subscribeStream = (handler: typeof emit) => { emit = handler; return () => {}; };
+    const delivery = deferred<void>();
+    let refuse: (() => void) | undefined;
+    const onAsk = vi.fn<UseMessageQueueParams["onAsk"]>((_text, _intent, opts) => {
+      refuse = opts?.onRefused;
+      return delivery.promise;
+    });
+    const { result } = renderHook(() => useMessageQueue({
+      surface: "main",
+      subscribeStream,
+      composerRef: { current: null },
+      currentSessionId: "session-1",
+      question: "",
+      attachments: [],
+      streaming: true,
+      setQuestion: vi.fn(),
+      setAttachments: vi.fn(),
+      onAsk,
+      onAbort: vi.fn(),
+    }));
+    act(() => {
+      result.current.messageQueueStore.add("first", "app:fixture");
+      result.current.messageQueueStore.add("second", "app:fixture");
+      result.current.messageQueueStore.add("third", "app:other");
+      emit({ type: "done" });
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(onAsk).toHaveBeenCalledOnce();
+    act(() => emit({ type: "done" }));
+    expect(onAsk).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      refuse?.();
+      delivery.resolve();
+      await delivery.promise;
+    });
+    expect(result.current.messageQueueStore.getPending().map(({ text, appSource }) => ({ text, appSource }))).toEqual([
+      { text: "first", appSource: "app:fixture" },
+      { text: "second", appSource: "app:fixture" },
+      { text: "third", appSource: "app:other" },
+    ]);
+    expect(onAsk).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, "previous-request"])("keeps a refused reservation after an unrelated same-origin prelude (%s)", async (sendRequestId) => {
+    let emit: (event: ChatStreamEvent) => void = () => {};
+    const delivery = deferred<void>();
+    let refuse: (() => void) | undefined;
+    let requestId: string | undefined;
+    const onAsk = vi.fn<UseMessageQueueParams["onAsk"]>((_text, _intent, opts) => {
+      refuse = opts?.onRefused;
+      requestId = opts?.queueDelivery?.sendRequestId;
+      return delivery.promise;
+    });
+    const { result } = renderHook(() => useMessageQueue({
+      surface: "main", subscribeStream: (handler) => { emit = handler; return () => {}; },
+      composerRef: { current: null }, currentSessionId: "session-1", question: "", attachments: [],
+      streaming: true, setQuestion: vi.fn(), setAttachments: vi.fn(), onAsk, onAbort: vi.fn(),
+    }));
+    act(() => {
+      result.current.messageQueueStore.add("keep queued", "app:fixture");
+      emit({ type: "done" });
+    });
+    await act(async () => { await Promise.resolve(); });
+    expect(requestId).toEqual(expect.any(String));
+    expect(requestId).not.toBe(sendRequestId);
+    act(() => emit({ type: "user_message", origin: "app-emitted", text: "previous", sendRequestId }));
+    expect(result.current.messageQueueStore.size()).toBe(1);
+    await act(async () => {
+      refuse?.();
+      delivery.resolve();
+      await delivery.promise;
+    });
+    expect(result.current.messageQueueStore.getPending().map((row) => row.text)).toEqual(["keep queued"]);
+    expect(onAsk).toHaveBeenCalledOnce();
+  });
+
+  it("correlates overlapping automatic and explicit queue admissions independently", async () => {
+    let emit: (event: ChatStreamEvent) => void = () => {};
+    const automatic = deferred<void>();
+    const explicit = deferred<void>();
+    const deliveries: NonNullable<Parameters<UseMessageQueueParams["onAsk"]>[2]>[] = [];
+    const onAsk = vi.fn<UseMessageQueueParams["onAsk"]>((_text, _intent, opts) => {
+      if (opts) deliveries.push(opts);
+      return deliveries.length === 1 ? automatic.promise : explicit.promise;
+    });
+    const { result } = renderHook(() => useMessageQueue({
+      surface: "main", subscribeStream: (handler) => { emit = handler; return () => {}; },
+      composerRef: { current: null }, currentSessionId: "session-1", question: "", attachments: [],
+      streaming: true, setQuestion: vi.fn(), setAttachments: vi.fn(), onAsk, onAbort: vi.fn(),
+    }));
+    act(() => {
+      result.current.messageQueueStore.add("automatic", "app:first");
+      emit({ type: "done" });
+    });
+    await act(async () => { await Promise.resolve(); });
+    act(() => {
+      const row = result.current.messageQueueStore.add("explicit", "app:second");
+      result.current.handleMessageQueueSendNow(row);
+    });
+    expect(onAsk).toHaveBeenCalledTimes(2);
+    const first = deliveries[0];
+    const second = deliveries[1];
+    if (!first?.queueDelivery || !second?.queueDelivery) throw new Error("Missing delivery correlation");
+    expect(first.queueDelivery.sendRequestId).not.toBe(second.queueDelivery.sendRequestId);
+    act(() => emit({ type: "user_message", origin: "app-emitted", text: "automatic", sendRequestId: first.queueDelivery?.sendRequestId }));
+    expect(result.current.messageQueueStore.getItems().map((row) => row.text)).toEqual(["explicit"]);
+    await act(async () => { first.onRefused?.(); automatic.resolve(); await automatic.promise; });
+    expect(first.queueDelivery.accepted).toBe(true);
+    expect(second.queueDelivery.accepted).toBe(false);
+    await act(async () => { second.onRefused?.(); explicit.resolve(); await explicit.promise; });
+    expect(result.current.messageQueueStore.getPending().map((row) => row.text)).toEqual(["explicit"]);
+  });
+
+  it("does not turn a refused send-now into queue-auto when done arrives during the request", async () => {
+    let emit: (event: ChatStreamEvent) => void = () => {};
+    const delivery = deferred<void>();
+    let refuse: (() => void) | undefined;
+    const onAsk = vi.fn<UseMessageQueueParams["onAsk"]>((_text, _intent, opts) => {
+      refuse = opts?.onRefused;
+      return delivery.promise;
+    });
+    const { result } = renderHook(() => useMessageQueue({
+      surface: "main",
+      subscribeStream: (handler) => { emit = handler; return () => {}; },
+      composerRef: { current: null },
+      currentSessionId: "session-1",
+      question: "",
+      attachments: [],
+      streaming: true,
+      setQuestion: vi.fn(),
+      setAttachments: vi.fn(),
+      onAsk,
+      onAbort: vi.fn(),
+    }));
+    act(() => {
+      const item = result.current.messageQueueStore.add("send now");
+      result.current.handleMessageQueueSendNow(item);
+      emit({ type: "done" });
+    });
+    expect(onAsk).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      refuse?.();
+      delivery.resolve();
+      await delivery.promise;
+    });
+    expect(result.current.messageQueueStore.getPending().map((queued) => queued.text)).toEqual(["send now"]);
+    expect(onAsk).toHaveBeenCalledOnce();
+  });
+
   it("preserves selectors through attachment clearing and refused guide delivery before queue-auto send", async () => {
-    const onAsk = vi.fn();
+    const onAsk = vi.fn<UseMessageQueueParams["onAsk"]>(async (_text, _intent, opts) => { opts?.onAccepted?.(); });
     const inject = vi.fn(async () => ({ ok: false as const, error: "streaming-active" }));
     const onError = vi.fn();
     let emit: (event: ChatStreamEvent) => void = () => {};
@@ -79,7 +232,7 @@ describe("useMessageQueue location references", () => {
     expect(onError).toHaveBeenCalledOnce();
     await act(async () => { emit({ type: "done" }); });
     expect(onAsk).toHaveBeenCalledWith(expect.stringContaining(text), undefined,
-      { injectHint: "queue", inputOrigin: "queue-auto" });
+      expect.objectContaining({ injectHint: "queue", inputOrigin: "queue-auto" }));
   });
 });
 
@@ -161,10 +314,16 @@ function useSideSurface(api: AveApi) {
     (
       text: string,
       _intent?: UserKeyboardIntentSnapshot,
-      opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
+      opts?: Parameters<UseMessageQueueParams["onAsk"]>[2],
     ) => {
       if (opts?.inputOrigin === "queue-auto") {
-        return send(text, { injectHint: opts.injectHint, inputOrigin: "queue-auto" });
+        return send(text, {
+          injectHint: opts.injectHint,
+          inputOrigin: "queue-auto",
+          onAccepted: opts.onAccepted,
+          onRefused: opts.onRefused,
+          sendRequestId: opts.queueDelivery?.sendRequestId,
+        });
       }
       return send(text, opts?.injectHint ? { injectHint: opts.injectHint } : {});
     },
@@ -372,7 +531,7 @@ function makeDeferredQueueGuide(surface: ComposerSurface = "main", isCurrentTurn
   const pending = { promise, resolve, reject };
   const inject = vi.fn((_text: string) => pending.promise);
   const guide = { inject, onError: vi.fn() };
-  const onAsk = vi.fn<UseMessageQueueParams["onAsk"]>();
+  const onAsk = vi.fn<UseMessageQueueParams["onAsk"]>((_text, _intent, opts) => { opts?.onAccepted?.(); });
   const subscribeStream = (handler: (event: ChatStreamEvent) => void) => {
     emit = handler;
     return () => {};
@@ -394,6 +553,28 @@ function makeDeferredQueueGuide(surface: ComposerSurface = "main", isCurrentTurn
 }
 
 describe("project work revocation", () => {
+  it.each(["accepted", "refused"] as const)("discards an in-flight send reservation despite a late %s disposition", async (disposition) => {
+    const f = makeDeferredQueueGuide();
+    const delivery = deferred<void>();
+    let settle: (() => void) | undefined;
+    f.onAsk.mockImplementation((_text, _intent, options) => {
+      settle = disposition === "accepted" ? options?.onAccepted : options?.onRefused;
+      return delivery.promise;
+    });
+    await act(async () => { f.emit({ type: "done" }); });
+    expect(f.onAsk).toHaveBeenCalledOnce();
+    expect(f.result.current.messageQueueStore.getItems()).toHaveLength(2);
+    f.emit({ type: "done", projectWorkRevoked: true });
+    expect(f.result.current.messageQueueStore.getItems()).toEqual([]);
+    await act(async () => {
+      if (!settle) throw new Error("Queue disposition was not registered");
+      settle();
+      delivery.resolve();
+      await delivery.promise;
+    });
+    expect(f.result.current.messageQueueStore.getItems()).toEqual([]);
+    expect(f.onAsk).toHaveBeenCalledOnce();
+  });
   it("does not discard another turn's queue for a stale removal frame", () => {
     const f = makeDeferredQueueGuide("main", (event) => event.streamId === 2);
     f.emit({ type: "done", streamId: 1, projectWorkRevoked: true });
@@ -565,7 +746,7 @@ describe("queue guide reply after turn completion", () => {
     });
     expect(f.onAsk).toHaveBeenCalledTimes(1);
     expect(f.onAsk.mock.calls[0][0]).toContain("- first\n- second");
-    expect(f.onAsk.mock.calls[0][2]).toEqual({ injectHint: "queue", inputOrigin: "queue-auto" });
+    expect(f.onAsk.mock.calls[0][2]).toEqual(expect.objectContaining({ injectHint: "queue", inputOrigin: "queue-auto" }));
     expect(store.getItems()).toEqual([]);
     await act(async () => { f.emit({ type: "done" }); });
     expect(f.onAsk).toHaveBeenCalledTimes(1);

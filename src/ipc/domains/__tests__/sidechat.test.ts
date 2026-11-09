@@ -760,12 +760,13 @@ describe("side-chat parentage", () => {
       second = send(ev("file:///index.html"), {
         input: "Second prompt", originSessionId: side.getSessionId(), sendRequestId: "second-request",
       });
-      await vi.waitFor(() => expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "done")).toHaveLength(2));
-      expect(side.runTurn).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(side.runTurn).toHaveBeenCalledTimes(2));
+      expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "done")).toHaveLength(0);
     } finally {
       completion.resolve(undefined);
       await Promise.all([first, second]);
     }
+    expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "done")).toHaveLength(2);
     expect(metadata).toMatchObject({ originSessionId: PARENT });
     expect(store.sessions.saveSessionMetadata).toHaveBeenCalledOnce();
   });

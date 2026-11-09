@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { captureBrowserPage, captureBrowserViewport } from "../browser-capture.js";
 import type { WebContents } from "electron";
 import type { CdpSession } from "../browser-action-guard.js";
+import { runInNewContext } from "node:vm";
 
 function image(width: number, height: number): string {
   const header = Buffer.alloc(24);
@@ -25,8 +26,8 @@ function fixture(width = 800, height = 2400) {
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
     if (method === "Page.createIsolatedWorld") return { executionContextId: 73 };
     if (method === "Runtime.callFunctionOn") {
-      const values = params?.arguments as Array<{ value: unknown }>;
-      viewport = { ...viewport, pageX: Number(values[0]?.value), pageY: Number(values[1]?.value) };
+      const values = params?.arguments as Array<{ value: unknown }> | undefined;
+      if (values) viewport = { ...viewport, pageX: Number(values[0]?.value), pageY: Number(values[1]?.value) };
       return {};
     }
     if (override?.deviceScaleFactor === 1) return { data: image(override.width, override.height) };
@@ -51,7 +52,9 @@ describe("browser capture", () => {
     for (let row = 0; row < size; row += 1) for (let column = 0; column < size; column += 1) pixels[(row * size + column) * 3 + (row < size / 2 ? 0 : 2)] = 255;
     const png = await sharp(pixels, { raw: { width: size, height: size, channels: 3 } }).png().toBuffer();
     const guest = { getZoomFactor: () => zoom, capturePage: async () => ({ getSize: () => ({ width: size, height: size }), isEmpty: () => false, toPNG: () => png }) } as unknown as Pick<WebContents, "capturePage" | "getZoomFactor">;
-    const cdp: CdpSession = { onEvent: () => () => {}, send: async () => ({ cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 4, clientHeight: 4 } }) };
+    const base = fixture();
+    const cdp: CdpSession = { ...base.cdp, send: async (method, params) => method === "Page.getLayoutMetrics"
+      ? { cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 4, clientHeight: 4 } } : base.cdp.send(method, params) };
     const result = await captureBrowserPage(cdp, new AbortController().signal, { clip: { x: 0, y: 3, width: 4, height: 1 } }, pixelRatio, 1000, () => captureBrowserViewport(guest, () => {}, pixelRatio));
     const decoded = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
     expect(result).toMatchObject({ width: 4, height: 1 });
@@ -60,7 +63,9 @@ describe("browser capture", () => {
 
   it.each(["pageX", "pageY", "clientWidth", "clientHeight", "zoom", "scale"])("rejects a region when %s changes during readback", async (field) => {
     const viewport = { pageX: 0, pageY: 0, clientWidth: 4, clientHeight: 4, zoom: 1, scale: 1 };
-    const cdp: CdpSession = { onEvent: () => () => {}, send: async () => ({ cssVisualViewport: { ...viewport } }) };
+    const base = fixture();
+    const cdp: CdpSession = { ...base.cdp, send: async (method, params) => method === "Page.getLayoutMetrics"
+      ? { cssVisualViewport: { ...viewport } } : base.cdp.send(method, params) };
     const { default: sharp } = await import("sharp");
     // These are the pixels at document rows 4-7 after a scroll, not the requested row 1.
     const data = (await sharp({ create: { width: 4, height: 4, channels: 3, background: "blue" } }).png().toBuffer()).toString("base64");
@@ -96,13 +101,94 @@ describe("browser capture", () => {
     expect(send).toHaveBeenCalledWith("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
     expect(send).toHaveBeenLastCalledWith("Page.getLayoutMetrics");
   });
-  it("uses native viewport readback without waiting for absent animation frames", async () => {
+  it("waits for viewport paint before native readback without changing scroll", async () => {
     const { cdp, send, signal } = fixture();
     const { default: sharp } = await import("sharp");
     const data = (await sharp({ create: { width: 800, height: 600, channels: 3, background: "#fff" } }).png().toBuffer()).toString("base64");
-    await captureBrowserPage(cdp, signal, {}, 1, 1000, async () => ({ data }));
-    expect(send.mock.calls.some(([method]) => method === "Runtime.evaluate")).toBe(false);
+    const readback = vi.fn(async () => {
+      expect(send).toHaveBeenLastCalledWith("Runtime.callFunctionOn", expect.objectContaining({
+        executionContextId: 73, awaitPromise: true, returnByValue: true,
+      }));
+      return { data };
+    });
+    await captureBrowserPage(cdp, signal, {}, 1, 1000, readback);
+    expect(readback).toHaveBeenCalledOnce();
+    const paint = send.mock.calls.find(([method]) => method === "Runtime.callFunctionOn")?.[1];
+    expect(paint).not.toHaveProperty("arguments");
+    expect(paint?.functionDeclaration).toContain("requestAnimationFrame");
+    expect(paint?.functionDeclaration).not.toContain("scrollTo");
     expect(send.mock.calls.some(([method]) => method === "Page.captureScreenshot")).toBe(false);
+  });
+  it.each(["painted", "hidden-during-paint", "already-hidden"])("admits native readback when the document is %s", async (state) => {
+    const { cdp, signal, send } = fixture();
+    const { default: sharp } = await import("sharp");
+    const data = (await sharp({ create: { width: 800, height: 600, channels: 3, background: "blue" } }).png().toBuffer()).toString("base64");
+    const frames = new Map<number, () => void>();
+    const listeners = new Set<() => void>();
+    let visibility = state === "already-hidden" ? "hidden" : "visible";
+    let frameId = 0;
+    let notifyStarted!: () => void;
+    const started = new Promise<void>(resolve => { notifyStarted = resolve; });
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
+    send.mockImplementation(async (method, params) => {
+      if (method !== "Runtime.callFunctionOn") return original(method, params);
+      const painted = runInNewContext(`(${params?.functionDeclaration})()`, {
+        document: {
+          get visibilityState() { return visibility; },
+          addEventListener: (_event: string, listener: () => void) => { listeners.add(listener); },
+          removeEventListener: (_event: string, listener: () => void) => { listeners.delete(listener); },
+        },
+        requestAnimationFrame: (callback: () => void) => { frames.set(++frameId, callback); return frameId; },
+        cancelAnimationFrame: (id: number) => { frames.delete(id); },
+      });
+      notifyStarted();
+      await painted;
+      return {};
+    });
+    const readback = vi.fn(async () => ({ data }));
+    const pending = captureBrowserPage(cdp, signal, {}, 1, 1000, readback);
+    await started;
+    if (state === "painted") {
+      expect(readback).not.toHaveBeenCalled();
+      const firstFrame = frames.get(1);
+      if (!firstFrame) throw new Error("Capture fixture did not request its first paint frame");
+      firstFrame();
+      expect(readback).not.toHaveBeenCalled();
+      const secondFrame = frames.get(2);
+      if (!secondFrame) throw new Error("Capture fixture did not request its second paint frame");
+      secondFrame();
+    } else if (state === "hidden-during-paint") {
+      visibility = "hidden";
+      for (const listener of listeners) listener();
+    }
+    expect(await pending).toMatchObject({ width: 800, height: 600 });
+    expect(readback).toHaveBeenCalledOnce();
+    expect(listeners.size).toBe(0);
+    expect(frames.size).toBe(0);
+  });
+  it("cancels paint admission before native readback", async () => {
+    const { cdp, send } = fixture();
+    const abort = new AbortController();
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
+    send.mockImplementation(async (method, params) => {
+      if (method !== "Runtime.callFunctionOn") return original(method, params);
+      abort.abort();
+      return new Promise(() => {});
+    });
+    const readback = vi.fn();
+    await expect(captureBrowserPage(cdp, abort.signal, {}, 1, 1000, readback)).rejects.toMatchObject({ code: "cancelled" });
+    expect(readback).not.toHaveBeenCalled();
+  });
+  it("bounds paint admission when visible frames stop", async () => {
+    const { cdp, send, signal } = fixture();
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
+    send.mockImplementation(async (method, params) => method === "Runtime.callFunctionOn" ? new Promise(() => {}) : original(method, params));
+    const readback = vi.fn();
+    await expect(captureBrowserPage(cdp, signal, {}, 1, 20, readback)).rejects.toMatchObject({ code: "screenshot-timeout" });
+    expect(readback).not.toHaveBeenCalled();
   });
   it("truncates oversized pages at the pixel limit and reports their real height", async () => {
     const { cdp, signal } = fixture(8000, 16000);
