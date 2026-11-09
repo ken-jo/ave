@@ -1042,6 +1042,7 @@ const actionNavigations = new WeakMap<object, ActionNavigation>();
 // What the adapter needs of the tab registry.
 interface InputAttribution {
   isParkedAgentGuest(guestId: number): boolean;
+  isIndependentGuest(guestId: number): boolean;
   setAgentTabAwake(guestId: number, awake: boolean): boolean;
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
   releaseFocus(guestId: number, leaseId?: string): void | Promise<void>;
@@ -1284,6 +1285,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   // While a press holds the window: when its budget runs out.
   let pressDeadline: number | null = null;
   const returnNativeRouting = async () => {
+    if (attribution.isIndependentGuest(guest.id)) return;
     await attribution.releaseFocus(guest.id, live.leaseId);
     if (guest.isDestroyed() || !attribution.isParkedAgentGuest(guest.id)) return;
     const host = guest.hostWebContents;
@@ -1297,7 +1299,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     if (!restored) throw new BrowserActionError("no-focus", "the parked page did not return native keyboard routing to the visible surface");
   };
   const preparePageFocus = async () => {
-    if (emulatedFocus || !attribution.isParkedAgentGuest(guest.id)) return;
+    if (emulatedFocus || !attribution.isParkedAgentGuest(guest.id) && !attribution.isIndependentGuest(guest.id)) return;
     assertCurrent(false);
     await attribution.focusGuest(guest.id);
     assertCurrent(false);
@@ -1550,7 +1552,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     },
     focusPage: async () => {
       assertCurrent(false);
-      if (attribution.isParkedAgentGuest(guest.id)) { await preparePageFocus(); return; }
+      if (attribution.isParkedAgentGuest(guest.id) || attribution.isIndependentGuest(guest.id)) { await preparePageFocus(); return; }
       try { await attribution.focusGuest(guest.id); }
       catch { assertCurrent(false); throw new BrowserActionError("no-focus", "the approved page did not take native keyboard focus"); }
       assertCurrent(false);
@@ -1586,7 +1588,7 @@ export function createBrowserPageActions(
   const awake = async <T>(live: LiveTab, act: () => Promise<T>): Promise<T> => {
     const guest = live.tab.guest;
     if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
-    if (live.tab.opener !== "agent" || live.tab.owner === null || live.tab.targetKind !== "embedded") return act();
+    if (!attribution.isIndependentGuest(guest.id) && live.tab.opener !== "agent" || live.tab.owner === null || live.tab.targetKind !== "embedded") return act();
     const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
     return withActivity(guest, live.signal, () => browserLayoutReady(session), act);
   };

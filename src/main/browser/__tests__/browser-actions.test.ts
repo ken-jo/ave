@@ -1371,6 +1371,7 @@ function modelFocusRelease(registry: BrowserTabRegistry<never>, guestId: number,
 
 function adapterFixture(options: {
   agent?: boolean;
+  independent?: boolean;
   focusRestored?: boolean;
   guestZoom?: number;
   hostKnown?: boolean;
@@ -1380,7 +1381,7 @@ function adapterFixture(options: {
   tabId?: string;
 } = {}) {
   const cdp = new FakeCdp();
-  let laidOut = false;
+  let laidOut = options.independent === true;
   const layoutOps: string[] = [];
   cdp.nodes = page([ax("f", "textbox", "Replacement", { backendDOMNodeId: 5 })]);
   cdp.nodes[0] = { ...cdp.nodes[0]!, properties: [{ name: "focused", value: { value: true } }] };
@@ -1431,7 +1432,7 @@ function adapterFixture(options: {
       registry.userInput(guest.id, input);
     },
   });
-  registry.guestAttached(guest as never, 1);
+  registry.guestAttached(guest as never, 1, options.independent ? { kind: "native-view" } : undefined);
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
   registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (_windowId, request) => {
     layoutOps.push(request.op);
@@ -2798,6 +2799,26 @@ describe("native intercepted drag lifetime", () => {
     expect(f.guest.debugger.detach).toHaveBeenCalledTimes(targetCancelFails ? 1 : 0);
     f.guest.emit("destroyed");
   });
+});
+
+it.each([false, true])("uses page-local focus for independent agent input when parked=%s", async (parked) => {
+  const { cdp, guest, registry, actions, approve, layoutOps } = adapterFixture({ agent: true, independent: true });
+  registry.bindTab(1, { tabId: "user", webContentsId: guest.id, parked });
+  const nativeFocus = vi.fn();
+  Object.assign(guest, { focus: nativeFocus, isFocused: () => false });
+  const release = vi.spyOn(registry, "releaseFocus");
+  const live = await approve("browser_click");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+  if (!ref) throw new Error("Missing input ref");
+  await actions.click(live, ref);
+  expect(cdp.calls.filter(call => call.method === "Emulation.setFocusEmulationEnabled")).toEqual([
+    { method: "Emulation.setFocusEmulationEnabled", params: { enabled: true } },
+    { method: "Emulation.setFocusEmulationEnabled", params: { enabled: false } },
+  ]);
+  expect(cdp.calls).toContainEqual(expect.objectContaining({ method: "Input.dispatchTouchEvent", params: expect.objectContaining({ type: "touchEnd" }) }));
+  expect(nativeFocus).not.toHaveBeenCalled();
+  expect(release).not.toHaveBeenCalled();
+  expect(layoutOps.filter(op => op === "capture-focus" || op === "restore-focus")).toEqual([]);
 });
 
 it("returns parked native frame focus before continuing a held touch", async () => {

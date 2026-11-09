@@ -44,7 +44,7 @@ export type BrowserNativeSurfaceRequest =
   | { readonly action: "back" | "forward" | "reload" | "focus" | "close" | "devtools"; readonly tabId: string; readonly webContentsId: number };
 
 export type BrowserNativeSurfaceResult =
-  | { readonly ok: true; readonly surface: BrowserNativeSurfaceState | null }
+  | { readonly ok: true; readonly surface: BrowserNativeSurfaceState | null; readonly initialNavigation?: boolean }
   | { readonly ok: false; readonly error: "bad-request" | "unauthorized-frame" | "native-surface-unavailable" | "stale-surface" };
 
 function isId(value: unknown): value is string {
@@ -117,9 +117,10 @@ export function parseBrowserNativeSurfaceChanged(value: unknown): BrowserNativeS
 
 export function parseBrowserNativeSurfaceResult(value: unknown): BrowserNativeSurfaceResult | null {
   if (!isRecord(value)) return null;
-  if (value.ok === true && hasOnlyKeys(value, ["ok", "surface"])) {
+  if (value.ok === true && hasOnlyKeys(value, ["ok", "surface", "initialNavigation"])) {
     const surface = value.surface === null ? null : parseBrowserNativeSurfaceState(value.surface);
-    return value.surface !== null && surface === null ? null : { ok: true, surface };
+    if (value.surface !== null && surface === null || value.initialNavigation !== undefined && (typeof value.initialNavigation !== "boolean" || surface === null)) return null;
+    return { ok: true, surface, ...(value.initialNavigation === undefined ? {} : { initialNavigation: value.initialNavigation as boolean }) };
   }
   if (value.ok === false && hasOnlyKeys(value, ["ok", "error"])
     && ["bad-request", "unauthorized-frame", "native-surface-unavailable", "stale-surface"].includes(String(value.error))) {

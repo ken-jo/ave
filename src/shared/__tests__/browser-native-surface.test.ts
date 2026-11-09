@@ -45,6 +45,9 @@ describe("native browser surface boundary", () => {
 
   it("accepts only typed operation results", () => {
     expect(parseBrowserNativeSurfaceResult({ ok: true, surface: SURFACE })).toEqual({ ok: true, surface: SURFACE });
+    expect(parseBrowserNativeSurfaceResult({ ok: true, surface: SURFACE, initialNavigation: false })).toEqual({ ok: true, surface: SURFACE, initialNavigation: false });
+    expect(parseBrowserNativeSurfaceResult({ ok: true, surface: SURFACE, initialNavigation: "true" })).toBeNull();
+    expect(parseBrowserNativeSurfaceResult({ ok: true, surface: null, initialNavigation: true })).toBeNull();
     expect(parseBrowserNativeSurfaceResult({ ok: false, error: "stale-surface" })).toEqual({ ok: false, error: "stale-surface" });
     expect(parseBrowserNativeSurfaceResult({ ok: true, surface: { ...SURFACE, epoch: -1 } })).toBeNull();
     expect(parseBrowserNativeSurfaceResult({ ok: false, error: "raw native error" })).toBeNull();

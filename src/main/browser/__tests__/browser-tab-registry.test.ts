@@ -62,6 +62,62 @@ afterEach(() => {
 
 describe("BrowserTabRegistry", () => {
 
+  it("authorizes independent creation from the matching pending actor and preserves its durable host identity", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    const requestId = ops.at(-1)!.request.requestId;
+    expect(registry.authorizeNativeSurface(1, "native-page", requestId)).toBe(true);
+    expect(registry.authorizeNativeSurface(2, "native-page", requestId)).toBe(false);
+    expect(registry.authorizeNativeSurface(1, "native-page", "other-request")).toBe(false);
+    expect(registry.authorizeNativeSurface(1, "native-page")).toBe(false);
+    const guest = new FakeGuest(501, "about:blank");
+    registry.guestAttached(guest, 1, { kind: "native-view" });
+    expect(registry.bindTab(1, { tabId: "native-page", webContentsId: guest.id, requestId, parked: true })).toEqual({ ok: true });
+    expect((await opening).ok).toBe(true);
+    expect(registry.sessionBindingsState(1).nativeBrowserTabIds).toEqual(["native-page"]);
+    expect(registry.authorizeNativeSurface(1, "native-page", requestId)).toBe(true);
+    expect(registry.authorizeNativeSurface(1, "native-page")).toBe(true);
+    expect(registry.guestWindowId(guest.id)).toBe(1);
+    expect(registry.isIndependentGuest(guest.id)).toBe(true);
+    registry.guestDestroyed(guest.id);
+    expect(registry.guestWindowId(guest.id)).toBeNull();
+    expect(registry.isIndependentGuest(guest.id)).toBe(false);
+  });
+
+  it("keeps native agent actions on page-local focus and preserves real user takeover during dispatch", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    const guest = new FakeGuest(502, "about:blank");
+    const nativeFocus = vi.spyOn(guest, "focus");
+    registry.guestAttached(guest, 1, { kind: "native-view" });
+    registry.bindTab(1, { tabId: "native-page", webContentsId: guest.id, requestId: ops.at(-1)!.request.requestId, parked: true });
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing independent page");
+    const tab = registry.liveTab(opened.tabId)!;
+    const lease = registry.acquireControl(tab, ACTOR);
+    const beforeOps = ops.length;
+    await registry.focusGuest(guest.id);
+    await registry.releaseFocus(guest.id, lease.id);
+    expect(nativeFocus).not.toHaveBeenCalled();
+    expect(ops).toHaveLength(beforeOps);
+    registry.userFocus(guest.id, true);
+    expect(tab.controlMode).toBe("agent-active");
+    registry.bindTab(1, { tabId: "native-page", webContentsId: guest.id, parked: false });
+    const generation = tab.controlGeneration;
+    await registry.withAgentInput(guest.id, async () => {
+      registry.userFocus(guest.id);
+      expect(tab.controlGeneration).toBe(generation);
+      registry.userInput(guest.id, { type: "mouseDown", _modifiers: 0 });
+    });
+    expect(tab.controlMode).toBe("human-paused");
+    expect(tab.controlGeneration).toBeGreaterThan(generation);
+    expect(tab.actions.signal.aborted).toBe(true);
+    expect(registry.resume(1, "native-page")).toBe(true);
+    registry.acquireControl(tab, ACTOR);
+    await registry.withAgentInput(guest.id, async () => registry.userFocus(guest.id, true));
+    expect(tab.controlMode).toBe("human-paused");
+  });
+
   it.each(["release", "turn-end", "pause", "stop", "destroy", "replace", "window-close"] as const)("retires pending popup authority on %s without waiting for the popup opener", async (ending) => {
     const { registry, ops } = setup();
     const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });

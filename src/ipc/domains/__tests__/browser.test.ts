@@ -52,7 +52,7 @@ afterEach(() => {
 
 describe("browser IPC", () => {
   it("refuses a non-host frame on every invoke", () => {
-    for (const channel of [CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.browser.pause, CHANNELS.browser.resume, CHANNELS.browser.getState,
+    for (const channel of [CHANNELS.browser.nativeSurface, CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.browser.pause, CHANNELS.browser.resume, CHANNELS.browser.getState,
       CHANNELS.browser.getSessionBindings, CHANNELS.surface.setActive]) {
       expect(invoke(channel, isolatedAppFrameEvent(), {})).toMatchObject({ ok: false, error: "unauthorized-frame" });
     }
@@ -63,6 +63,17 @@ describe("browser IPC", () => {
     invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "browser:1", webContentsId: 41 });
     expect(invoke(CHANNELS.browser.getState, fromWindow(), undefined)).toMatchObject({ tabs: [expect.objectContaining({ rendererTabId: "browser:1" })] });
     expect(invoke(CHANNELS.browser.getState, fromWindow(), {})).toEqual({ ok: false, error: "bad-request" });
+  });
+
+  it("rejects malformed native requests and renderer rebinding of an independent page", () => {
+    expect(invoke(CHANNELS.browser.nativeSurface, fromWindow(), { action: "create", tabId: "native", windowId: 8 }))
+      .toEqual({ ok: false, error: "bad-request" });
+    expect(invoke(CHANNELS.browser.nativeSurface, hostFrameEvent(), { action: "create", tabId: "native" }))
+      .toEqual({ ok: false, error: "bad-request" });
+    browserTabRegistry.guestAttached({ id: 43, isDestroyed: () => false, getURL: () => "about:blank", getTitle: () => "" } as never, 7, { kind: "native-view" });
+    expect(invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "native", webContentsId: 43, parked: false }))
+      .toEqual({ ok: false, error: "guest-not-hosted" });
+    expect(browserTabRegistry.listTabs(7)).toEqual([]);
   });
 
   it("queries only session bindings of the sender window", () => {

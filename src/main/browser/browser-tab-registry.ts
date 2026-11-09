@@ -230,7 +230,8 @@ export function isUserActionInputType(type: string): boolean {
 }
 
 export class BrowserTabRegistry<G extends BrowserGuest> {
-  private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number; parked?: boolean }>();
+  private readonly attached = new Map<number, { guest: G; windowId: number; sequence: number; parked?: boolean; kind?: "native-view" }>();
+  private readonly agentFocusScopes = new Map<number, number>();
   private readonly tabs = new Map<string, BrowserTabRecord<G>>();
   private readonly leaseTurns = new WeakMap<BrowserControlLease, string>();
   private readonly settlingLeases = new Map<string, BrowserControlLease>();
@@ -469,11 +470,47 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   // A browser guest attached to `windowId`. Call `guestDestroyed` when it goes.
-  guestAttached(guest: G, windowId: number): void {
-    this.attached.set(guest.id, { guest, windowId, sequence: ++this.nextAttachment });
+  guestAttached(guest: G, windowId: number, host?: { readonly kind: "native-view" }): void {
+    this.attached.set(guest.id, { guest, windowId, sequence: ++this.nextAttachment, ...(host ? { kind: host.kind, parked: true } : {}) });
+  }
+
+  guestWindowId(guestId: number): number | null {
+    const entry = this.attached.get(guestId);
+    return entry && !entry.guest.isDestroyed() ? entry.windowId : null;
+  }
+
+  isIndependentGuest(guestId: number): boolean {
+    return this.attached.get(guestId)?.kind === "native-view";
+  }
+
+  authorizeNativeSurface(windowId: number, rendererTabId: string, requestId?: string): boolean {
+    this.restoreBindings(windowId);
+    const key = windowTabKey(windowId, rendererTabId);
+    if (this.retiredWorkspaceTabs.has(key)) return false;
+    if (requestId !== undefined) {
+      const pending = this.pending.get(requestId);
+      const existingHandle = this.handleByWindowTab.get(key);
+      const existing = existingHandle === undefined ? undefined : this.tabs.get(existingHandle);
+      if (!pending && existing?.owner && existing.guest && this.isIndependentGuest(existing.guest.id)) return true;
+      if (!pending || pending.windowId !== windowId || pending.request.op !== "new" || pending.actor === undefined
+        || pending.request.inTabId !== undefined && pending.request.inTabId !== rendererTabId || this.userOwnedTabs.has(key)) return false;
+      const handle = this.handleByWindowTab.get(key);
+      const tab = handle === undefined ? undefined : this.tabs.get(handle);
+      return tab?.guest == null && tab?.owner == null && this.workspaceBindings.get(key)?.owner == null;
+    }
+    const binding = this.workspaceBindings.get(key);
+    return binding !== undefined && !binding.closed && binding.surface.kind === "browser" && binding.owner !== null;
+  }
+
+  userFocus(guestId: number, explicit = false): void {
+    const entry = this.attached.get(guestId);
+    if (!entry || entry.kind !== "native-view" || entry.parked !== false || entry.guest.isDestroyed()
+      || !explicit && (this.agentFocusScopes.get(guestId) ?? 0) > 0) return;
+    for (const tab of this.tabs.values()) if (tab.guest === entry.guest) this.pauseRecord(tab, false);
   }
 
   guestDestroyed(guestId: number): void {
+    this.agentFocusScopes.delete(guestId);
     this.awakeGuests.delete(guestId);
     const guest = this.attached.get(guestId)?.guest;
     this.attached.delete(guestId);
@@ -937,6 +974,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   releaseFocus(guestId: number, leaseId?: string): void | Promise<void> {
+    if (this.isIndependentGuest(guestId)) {
+      if (this.scopedFocusLeases.get(guestId) === leaseId) this.scopedFocusLeases.delete(guestId);
+      return;
+    }
     const receipt = this.focusReceipts.get(guestId);
     if (receipt) {
       if (leaseId !== receipt.leaseId) return;
@@ -965,7 +1006,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
 
   isParkedAgentGuest(guestId: number): boolean {
     return [...this.tabs.values()].some(tab => tab.guest?.id === guestId && tab.targetKind === "embedded"
-      && tab.opener === "agent" && tab.owner !== null
+      && (this.isIndependentGuest(guestId) || tab.opener === "agent" && tab.owner !== null)
       && (this.attached.get(guestId)?.parked ?? (this.activeBrowserTab(tab.windowId) !== tab.handle)));
   }
 
@@ -975,6 +1016,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   restoreParkedGuestFocus(guestId: number): void {
+    if (this.isIndependentGuest(guestId)) return;
     if (!this.isParkedAgentGuest(guestId)) return;
     const tab = [...this.tabs.values()].find(candidate => candidate.guest?.id === guestId);
     if (!tab?.guest || tab.guest.isDestroyed() || this.link?.isWindowFocused?.(tab.windowId) === false) return;
@@ -999,8 +1041,9 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const signal = tab.actions.signal;
     const documentId = tab.documentId;
     const generation = tab.controlGeneration;
-    const backgroundFocus = () => tab.targetKind === "embedded" && tab.opener === "agent" && tab.owner !== null
-      && tab.owner.sessionId === tab.lease?.actor.sessionId && this.awakeGuests.has(guestId);
+    const backgroundFocus = () => tab.targetKind === "embedded" && tab.owner !== null
+      && (this.isIndependentGuest(guestId) || tab.opener === "agent"
+        && tab.owner.sessionId === tab.lease?.actor.sessionId && this.awakeGuests.has(guestId));
     const assertCurrent = () => {
       if (signal.aborted) throw signal.reason;
       if (this.tabs.get(tab.handle) !== tab || tab.guest !== guest || guest.isDestroyed()
@@ -1013,6 +1056,9 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       }
     };
     assertCurrent();
+    if (this.isIndependentGuest(guestId)) {
+      return;
+    }
     if (isFocused() && !this.isParkedAgentGuest(guestId)) return;
     if (isFocused()) this.restoreParkedGuestFocus(guestId);
     if (tab.targetKind === "popup") {
@@ -1055,9 +1101,15 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     } catch (error) { await this.releaseFocus(guestId, leaseId); throw error; }
   }
 
-  // Group an operation; native event provenance owns its individual inputs.
-  async withAgentInput<T>(_guestId: number, inject: () => Promise<T>): Promise<T> {
-    return inject();
+  // Native event provenance owns individual inputs; this scope only distinguishes protocol focus notifications.
+  async withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T> {
+    this.agentFocusScopes.set(guestId, (this.agentFocusScopes.get(guestId) ?? 0) + 1);
+    try { return await inject(); }
+    finally {
+      const remaining = (this.agentFocusScopes.get(guestId) ?? 1) - 1;
+      if (remaining > 0) this.agentFocusScopes.set(guestId, remaining);
+      else this.agentFocusScopes.delete(guestId);
+    }
   }
 
   // Invalidate document authority before the next main-frame load commits.
@@ -1416,7 +1468,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   setAgentTabAwake(guestId: number, awake: boolean): boolean {
     const tab = [...this.tabs.values()].find((entry) => entry.guest?.id === guestId);
     if (!tab || tab.rendererTabId === null || !this.isLive(tab)
-      || awake && (tab.opener !== "agent" || tab.owner === null || tab.controlMode === "human-paused")) return false;
+      || awake && (!this.isIndependentGuest(guestId) && tab.opener !== "agent" || tab.owner === null || tab.controlMode === "human-paused")) return false;
     const sent = this.link?.sendTabOp(tab.windowId, {
       requestId: `browser-layout-${this.nextRequest++}`, op: awake ? "wake" : "sleep", tabId: tab.rendererTabId,
     }) === true;

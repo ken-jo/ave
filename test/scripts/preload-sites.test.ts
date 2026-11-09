@@ -1027,6 +1027,7 @@ describe("preload sites follow the preload table", () => {
       "src/main/auth-window-content.ts",
       "src/main/auth-window-content.ts",
       "src/main/auth-window-service.ts",
+      "src/main/browser/browser-native-surfaces.ts",
     ]);
   });
 
