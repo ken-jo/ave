@@ -460,6 +460,7 @@ export async function wireConversation(
     return groupLoop;
   };
   ctx.resolveChatGroupLoop = resolveChatGroupLoop;
+  ctx.listChatGroupLoops = () => [conversationLoop, ...groupLoops.values()];
   // Remove closed tile loops; reloads must create fresh loops rather than reuse stale state.
   ctx.releaseChatGroupLoop = (chatGroupId: string): void => {
     const loop = groupLoops.get(chatGroupId);

@@ -458,7 +458,7 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
    */
   function workspaceLiveScopeOwners(options: { withoutSubAgents?: boolean } = {}): unknown[] {
     const owners: unknown[] = [
-      deps.conversationLoop,
+      ...(deps.listChatGroupLoops?.() ?? [deps.conversationLoop]),
       deps.sideChatConversationLoop,
       ...(deps.paneChatLoops?.all() ?? []),
       deps.routineEngine,
