@@ -12,6 +12,10 @@ export default defineConfig({
   // Retries absorb residual render-timing variance in performance and scroll specs.
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? [['list'], ['github']] : 'list',
+  projects: [
+    { name: 'background', grepInvert: /@os-focus/ },
+    { name: 'os-focus', grep: /@os-focus/ },
+  ],
   use: {
     trace: 'retain-on-failure',
     video: 'retain-on-failure',

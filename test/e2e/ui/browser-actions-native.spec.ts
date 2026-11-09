@@ -13,7 +13,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(HERE, "browser-actions-native");
 const execFileAsync = promisify(execFile);
 // Run this desktop fixture serially through the shared validation budget.
-// Select @cdp without an unlocked desktop; @foreground retains actual OS focus proof.
+// Select @cdp without an unlocked desktop; @os-focus retains actual OS focus proof.
 type FixtureMode = "cdp" | "foreground";
 let mainOut: string;
 let preloadOut: string;
@@ -114,7 +114,7 @@ test("@cdp pointer drag changes a native range value", async ({}, testInfo) => {
   } finally { await close(app); }
 });
 
-test("@foreground native single select proves the final requested value", async ({}, testInfo) => {
+test("@os-focus native single select proves the final requested value", async ({}, testInfo) => {
   const app = await launch(testInfo, "foreground");
   try {
     const result = await run(app, "select");
@@ -207,7 +207,7 @@ test("@cdp final activating click navigation completes", async ({}, testInfo) =>
   } finally { await close(app); }
 });
 
-test("@foreground intermediate select navigation fails", async ({}, testInfo) => {
+test("@os-focus intermediate select navigation fails", async ({}, testInfo) => {
   const app = await launch(testInfo, "foreground");
   try {
     const changed = await run(app, "select-navigation");
