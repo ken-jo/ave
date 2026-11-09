@@ -43,6 +43,7 @@ import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } f
 import { forgetActiveSurface, showActiveSurface, subscribeSurfaceClosed, updateActiveSurface, useReportActiveSurface, type ActiveSurface } from "./preview/active-surface.js";
 import { registerBrowserTabHost } from "./preview/agent-browser-bridge.js";
 import { connectBrowserObservations } from "./preview/browser-observation-bridge.js";
+import { AgentBrowserPipLayer } from "./preview/AgentBrowserPipLayer.js";
 import { attachToComposer } from "./preview/composer-targets.js";
 import { FolderView } from "./components/folder-view/FolderView.js";
 import { useMainLayout } from "./hooks/use-main-layout.js";
@@ -658,7 +659,7 @@ export function App() {
     .map((surface) => surface.tabId)), [chatGroups, mainSurfaces]);
   const focusObservedBrowser = useCallback((tabId: string) => {
     const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
-    if (hiddenBrowserPaneOf(groups, surfaces, tabId)) openWorkspaceSurface(tabId);
+    if (!surfaces.get(tabId) || hiddenBrowserPaneOf(groups, surfaces, tabId)) openWorkspaceSurface(tabId);
   }, [openWorkspaceSurface]);
 
   /** 옆에 분할로 열기 (case 20) for a conversation: a new tile beside the focused one, or the tile already holding it. */
@@ -2858,6 +2859,7 @@ export function App() {
                 (see WebSurfaceLayer). Portaled to <body>: no ancestor here may
                 capture its fixed positioning or its stacking. */}
             <WebSurfaceLayer api={api} />
+            <AgentBrowserPipLayer api={api} onOpen={focusObservedBrowser} />
           </OverlayContextProvider>
           </ApprovalSurfaceProvider>
           </PaneChatNavigationProvider>

@@ -27,6 +27,8 @@ export const en = {
   "agentBrowser.observationError": "Browser observation failed. The page remains available.",
   "agentBrowser.observationResync": "Browser activity exceeded the live view limit. New activity will resume the strip.",
   "agentBrowser.focusObservedPane": "Focus browser pane",
+  "agentBrowser.openPreview": "Open browser tab: {title}",
+  "agentBrowser.hidePreview": "Hide browser preview: {title}",
   "agentBrowser.live": "Live",
   "agentBrowser.observationPreview": "Live view of the agent's tab",
   "agentBrowser.observationPreviewUpdating": "Updating…",
