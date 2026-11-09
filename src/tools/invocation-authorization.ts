@@ -1,5 +1,5 @@
 import { RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import { agentBrowserScopeOf, userOwnedBrowserScopeOf } from "./browser-tools.js";
+import { agentBrowserScopeOf, browserApprovalCardFacts, userOwnedBrowserScopeOf } from "./browser-tools.js";
 import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pipeline/user-owned-surface.js";
 import { isConfinedHostShellExecution, requiresUnsandboxedShellAsk } from "../permissions/host-shell-execution-plan.js";
 import { randomUUID } from "node:crypto";
@@ -915,6 +915,7 @@ export async function authorizeToolInvocation(
         const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
         const approvalRequest = {
           id: context.cardRequestId ?? randomUUID(),
+          ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
           ...(permissionResult.forceModal === true
             ? {
                 // Forced floors consume consent for this invocation only; the sandbox-unavailable floor may also allow later shells and hooks for the session.

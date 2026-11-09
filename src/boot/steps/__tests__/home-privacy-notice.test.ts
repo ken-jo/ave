@@ -10,6 +10,7 @@ vi.mock("../../../shared/ave-home.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../../shared/ave-home.js")>(), acknowledgeHomeBoundaryRepair: acknowledge,
 }));
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
+import { CHANNELS } from "../../../contract/app-contract.js";
 import { NotificationService } from "../../../main/notification-service.js";
 import { translate } from "../../../i18n/index.js";
 import { isModelFacingKey } from "../../../i18n/model-facing.js";
@@ -114,4 +115,29 @@ it("tells the user a reset runtime boundary will be rebuilt instead of asking th
   expect(translate("en", "homePrivacy.runtimeReset")).toContain("connect to the network and restart Ave".replace(/^c/, "C"));
   expect(translate("en", "be_pythonRuntime.errRebuildNeeded", { message: "" })).toContain("connect to the network and restart Ave");
   expect(translate("en", "homePrivacy.runtimeReset")).not.toContain("Sign out");
+});
+
+
+it("keeps boot repair and configuration records until the real renderer subscribes, without repeating OS cues", () => {
+  const contents = { send: vi.fn(), on: vi.fn(), once: vi.fn(), isDestroyed: () => false };
+  const win = { webContents: contents, isDestroyed: () => false, isMinimized: () => false };
+  const show = vi.fn();
+  const service = new NotificationService({ getMainWindow: () => win as unknown as Electron.BrowserWindow,
+    isReady: () => true, isTestEnv: () => false, notificationFactory: () => ({ show, on: vi.fn() }) });
+  const host = createBootHostFixture({ desktop: createDesktopHostFixture() });
+  notifyHomeBoundaryRepairs({ enforcement: "win32-dacl", home: "/fixture", sid: "fixture", repairs: ["/fixture/secrets"] },
+    { host, notificationService: service });
+  notifyHomeConfigurationPreserved(["Legacy configuration preserved at /fixture/policy.json"], { host, notificationService: service });
+  expect(show).toHaveBeenCalledTimes(2);
+  expect(contents.send).not.toHaveBeenCalled();
+  service.setHistorySubscriber(contents as unknown as Electron.WebContents, true);
+  expect(contents.send).toHaveBeenCalledTimes(2);
+  expect(contents.send.mock.calls.map(([channel]) => channel)).toEqual([CHANNELS.notification.toast, CHANNELS.notification.toast]);
+  expect(contents.send.mock.calls.map(([, payload]) => payload.title)).toEqual([
+    translate("ko", "homePrivacy.boundaryRepairedTitle"), translate("ko", "homePrivacy.configurationPreservedTitle"),
+  ]);
+  service.setHistorySubscriber(contents as unknown as Electron.WebContents, true);
+  expect(contents.send).toHaveBeenCalledTimes(4);
+  expect(contents.send.mock.calls.slice(0, 2)).toEqual(contents.send.mock.calls.slice(2));
+  expect(show).toHaveBeenCalledTimes(2);
 });

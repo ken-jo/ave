@@ -1,5 +1,7 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
+import { detectBrowserChallenge } from "./browser-challenge.js";
+import type { BrowserChallenge } from "../../shared/browser-challenge.js";
 import { browserControlLifecycle } from "./browser-control-lifecycle.js";
 import { subscribeBrowserGuestDestroyed, type BrowserLifecycleGuest } from "./browser-guest-lifecycle.js";
 import { setBrowserPopupNavigation } from "./browser-popup-navigation.js";
@@ -11,7 +13,8 @@ import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
 import { OBSERVATION_LIMITS, type BrowserObservationElement } from "../../shared/agent-observation.js";
 import { validateExternalUrl } from "../../shared/external-url.js";
-import { browserOrigin } from "../../shared/browser-tools.js";
+import { browserOrigin, type BrowserPageReadiness, type BrowserPageSnapshot } from "../../shared/browser-tools.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import type { TouchDeliveryReport } from "./browser-tab-registry.js";
 import { captureAgentPreview, type AgentPreviewHost } from "./browser-agent-preview.js";
 import { BrowserActionError, frameTree, mainDocumentContainsNode, throwIfAborted, withGuardedAction, type ActionTarget, type CdpSession } from "./browser-action-guard.js";
@@ -84,7 +87,7 @@ export async function snapshot(
   target: ActionTarget,
   options: { interactive?: boolean; delta?: boolean },
   refs: BrowserRefTable = browserRefs,
-): Promise<{ url: string; title: string; text: string; truncated: boolean; refCount: number; delta: boolean }> {
+): Promise<BrowserPageSnapshot> {
   throwIfAborted(target.signal);
   const nodes = await fullTree(target.cdp);
   throwIfAborted(target.signal);
@@ -93,7 +96,7 @@ export async function snapshot(
     const described = await target.cdp.send("DOM.describeNode", { backendNodeId: node.backendDOMNodeId, depth: -1 }) as { node?: SelectNode };
     throwIfAborted(target.signal);
     if (described.node?.nodeName === "SELECT") {
-      try { nativeSelectOptions.set(node.backendDOMNodeId!, nativeOptions(described.node).map(({ value, label, disabled }) => ({ value: value.slice(0, 1000), label: label.slice(0, 200), disabled }))); }
+      try { nativeSelectOptions.set(node.backendDOMNodeId!, nativeOptions(described.node).map(({ value, label, disabled }) => ({ value, label: label.slice(0, 200), disabled }))); }
       catch (err) { if (!(err instanceof BrowserActionError) || !["not-native-select", "ambiguous-select"].includes(err.code)) throw err; }
     }
   }
@@ -737,7 +740,10 @@ export async function upload(
 export interface NavigableGuest {
   loadURL(url: string): Promise<void>;
   getURL(): string;
+  isLoading(): boolean;
+  on(event: "dom-ready" | "did-navigate" | "did-navigate-in-page", listener: (...args: unknown[]) => void): unknown;
   on(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
+  removeListener(event: "dom-ready" | "did-navigate" | "did-navigate-in-page", listener: (...args: unknown[]) => void): unknown;
   removeListener(event: "will-redirect" | "will-navigate" | "will-frame-navigate", listener: (details: { url: string; isMainFrame: boolean; preventDefault: () => void }) => void): unknown;
   stop(): void;
 }
@@ -751,7 +757,8 @@ export async function navigate(
   signal: AbortSignal,
   originOf: (url: string) => string | null,
   siteGateInstalled = false,
-): Promise<{ url: string }> {
+  gate?: BrowserSiteNavigationGate,
+): Promise<BrowserPageReadiness> {
   throwIfAborted(signal);
   if (originOf(url) !== approvedOrigin) throw new BrowserActionError("unapproved-origin", "the requested URL does not match the approved origin");
   let refusedRedirect: string | null = null;
@@ -768,12 +775,47 @@ export async function navigate(
   guest.on("will-navigate", onRedirect);
   guest.on("will-frame-navigate", onRedirect);
   signal.addEventListener("abort", onAbort, { once: true });
-  let loadError: Error | null = null;
+  const initialUrl = guest.getURL();
+  const sameDocumentExpected = initialUrl !== url && initialUrl.split("#")[0] === url.split("#")[0];
+  const load: { error?: Error } = {};
+  let committed = false;
+  let documentReady = false;
+  let completed = false;
+  const onCommit = () => { committed = browserOrigin(guest.getURL()) !== null; documentReady = false; };
+  const onDocumentReady = () => { if (committed) documentReady = true; };
+  const onSameDocument = (_event: unknown, _url: unknown, mainFrame: unknown) => {
+    if (sameDocumentExpected && mainFrame === true && guest.getURL() === url) { onCommit(); documentReady = true; }
+  };
+  guest.on("did-navigate", onCommit);
+  guest.on("dom-ready", onDocumentReady);
+  guest.on("did-navigate-in-page", onSameDocument);
+  const started = Date.now();
+  const pausedBefore = gate?.pausedMs() ?? 0;
   try {
-    await guest.loadURL(url);
-  } catch (err) {
-    loadError = err as Error;
+    // Consume the full-load promise even when readiness wins; late subresource failures remain page data.
+    try {
+      void guest.loadURL(url).then(() => { completed = true; }, error => { load.error = error instanceof Error ? error : new Error(String(error)); });
+    } catch (error) { load.error = error instanceof Error ? error : new Error(String(error)); }
+    for (;;) {
+      throwIfAborted(signal);
+      gate?.assertAllowed();
+      const waiting = gate?.waiting() ?? false;
+      if (!waiting && (refusedRedirect !== null || load.error || completed && browserOrigin(guest.getURL()) !== null || committed && documentReady)) break;
+      const elapsed = Date.now() - started - ((gate?.pausedMs() ?? 0) - pausedBefore);
+      if (!waiting && elapsed >= TOOL_TIMEOUT_POLICY.browserNavigationReadyMs) {
+        if (committed) break;
+        guest.stop();
+        throw new BrowserActionError("load-timeout", "the main browser document did not commit before the readiness deadline");
+      }
+      await sleep(SETTLE_POLL_MS, signal);
+    }
+  } catch (error) {
+    if (signal.aborted) throwIfAborted(signal);
+    throw error;
   } finally {
+    guest.removeListener("did-navigate", onCommit);
+    guest.removeListener("dom-ready", onDocumentReady);
+    guest.removeListener("did-navigate-in-page", onSameDocument);
     guest.removeListener("will-redirect", onRedirect);
     guest.removeListener("will-navigate", onRedirect);
     guest.removeListener("will-frame-navigate", onRedirect);
@@ -787,8 +829,8 @@ export async function navigate(
       `${approvedOrigin} redirected to ${redirectOrigin}; the redirect was not followed. Call browser_navigate with that URL to ask for it.`,
     );
   }
-  if (loadError) throw new BrowserActionError("load-failed", `the page did not load: ${loadError.message}`);
-  return { url: guest.getURL() };
+  if (load.error) throw new BrowserActionError("load-failed", `the page did not load: ${load.error.message}`);
+  return { url: guest.getURL(), loading: guest.isLoading() };
 }
 
 // What settling needs of a guest. Production passes Electron `WebContents`.
@@ -798,16 +840,16 @@ export interface LoadingGuest {
 }
 
 const SETTLE_POLL_MS = 100;
-const SETTLE_MAX_MS = 15_000;
+const SETTLE_MAX_MS = TOOL_TIMEOUT_POLICY.browserNavigationReadyMs;
 
-// Wait for a just-opened tab's first page: a URL committed and nothing loading. Bounded; a page still loading at the bound is returned as is.
-export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = SETTLE_MAX_MS): Promise<{ url: string }> {
+// Input navigation has already passed its commit watcher; do not wait for unrelated subresources.
+export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs: number = SETTLE_MAX_MS): Promise<BrowserPageReadiness> {
   const started = Date.now();
   for (;;) {
     throwIfAborted(signal);
     const url = guest.getURL();
-    if (url !== "" && url !== "about:blank" && !guest.isLoading()) return { url };
-    if (Date.now() - started >= maxMs) return { url };
+    if (browserOrigin(url) !== null) return { url, loading: guest.isLoading() };
+    if (Date.now() - started >= maxMs) throw new BrowserActionError("load-timeout", "the main browser document did not commit before the readiness deadline");
     await sleep(SETTLE_POLL_MS, signal);
   }
 }
@@ -1140,6 +1182,19 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   } | undefined;
   // While a press holds the window: when its budget runs out.
   let pressDeadline: number | null = null;
+  const returnNativeRouting = async () => {
+    await attribution.releaseFocus(guest.id, live.leaseId);
+    if (guest.isDestroyed() || !attribution.isParkedAgentGuest(guest.id)) return;
+    const host = guest.hostWebContents;
+    if (!host) throw new BrowserActionError("no-focus", "the parked page has no owning keyboard surface");
+    if (!host.isFocused()) return;
+    const restored = await pollUntil(new AbortController().signal, RELEASE_MAX_MS, async () => {
+      if (guest.isDestroyed() || !host.isFocused()) return true;
+      const focused = host.focusedFrame;
+      return focused === null || !guest.mainFrame.framesInSubtree.includes(focused) ? true : undefined;
+    });
+    if (!restored) throw new BrowserActionError("no-focus", "the parked page did not return native keyboard routing to the visible surface");
+  };
   const preparePageFocus = async () => {
     if (emulatedFocus || !attribution.isParkedAgentGuest(guest.id)) return;
     assertCurrent(false);
@@ -1203,6 +1258,11 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         }
         if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") mouseOpen = false;
         await echo?.settle();
+        if (emulatedFocus && (phase === "touchStart" || method === "DOM.focus"
+          || method === "Input.dispatchMouseEvent" && params?.type === "mousePressed")) {
+          // Keep native keyboard routing with chrome while page-local focus remains emulated.
+          await returnNativeRouting();
+        }
         // The action guard owns input completion: its last input may navigate.
         if (method.startsWith("Input.")) assertGuest();
         else assertCurrent(false);
@@ -1374,7 +1434,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
           await session.send("Emulation.setFocusEmulationEnabled", { enabled: false });
         }
       } finally {
-        if (releaseReceipt) await attribution.releaseFocus(guest.id, live.leaseId);
+        if (releaseReceipt) await returnNativeRouting();
       }
     },
     focusPage: async () => {
@@ -1434,6 +1494,15 @@ export function createBrowserPageActions(
     siteGates.set(guest, Object.assign(dispose, { waiting: stop.waiting, pausedMs: stop.pausedMs, assertAllowed: stop.assertAllowed }));
     unsubscribe = subscribeBrowserGuestDestroyed(guest, dispose);
   };
+  const observeChallenge = async (live: LiveTab, guest: WebContents, session: CdpSession, signal: AbortSignal): Promise<BrowserChallenge | undefined> => {
+    const documentId = live.tab.documentId;
+    let challenge: BrowserChallenge | undefined;
+    try { challenge = await detectBrowserChallenge(session, guest.getTitle(), signal); }
+    catch { throwIfAborted(signal); } // Optional observation must not fail an otherwise usable page on unsupported reads.
+    throwIfAborted(signal);
+    if (guest.isDestroyed() || live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was closed or replaced");
+    return live.tab.documentId === documentId ? challenge : undefined;
+  };
   // Run one input action with its tab's main frame watched, so the settle after it waits for a navigation the input started. The closing Page.enable
   // is a renderer round trip: navigation requests the page made while handling the input arrive before its reply (the same epilogue Playwright uses).
   const tracked = async (live: LiveTab, act: () => Promise<void>): Promise<void> => awake(live, async () => {
@@ -1469,8 +1538,16 @@ export function createBrowserPageActions(
       throwIfAborted(live.signal);
       if (live.tab.guest !== guest) throw new BrowserActionError("tab-gone", "the tab was replaced");
     },
-    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) =>
-      awake(live, async () => snapshot(await targetFor(live, attribution, hostContentOrigin), options)),
+    snapshot: async (live: LiveTab, options: { interactive?: boolean; delta?: boolean }) => awake(live, async () => {
+      const guest = live.tab.guest;
+      if (!guest || guest.isDestroyed()) throw new BrowserActionError("tab-gone", "the tab was closed");
+      const target = await targetFor(live, attribution, hostContentOrigin);
+      const shot = await snapshot(target, options);
+      const session = await cdpFor(guest, live.signal, () => attribution.documentChanged(guest.id));
+      const challenge = await observeChallenge(live, guest, session, live.signal);
+      target.assertCurrent?.(false);
+      return { ...shot, ...(challenge ? { challenge } : {}) };
+    }),
     screenshot: async (live: LiveTab, options) => awake(live, async () => screenshot(await targetFor(live, attribution, hostContentOrigin), SCREENSHOT_MAX_MS, options)),
     capturePreview: (live: LiveTab, png) => captureAgentPreview(live.tab, png, previewHost, { signals: [live.signal, live.callerSignal] }),
     hover: async (live, ref) => tracked(live, async () => hover(await targetFor(live, attribution, hostContentOrigin, true), ref)),
@@ -1496,7 +1573,14 @@ export function createBrowserPageActions(
       const lifecycle = browserControlLifecycle(live, guest, listener => subscribeBrowserGuestDestroyed(guest, listener));
       try {
         await installSiteGate(live, guest, session, lifecycle.signal);
-        return await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined);
+        const loaded = await navigate(guest as unknown as NavigableGuest, url, approvedOrigin, lifecycle.signal, originOf, live.authorizeSite !== undefined, siteGates.get(guest));
+        const documentId = live.tab.documentId;
+        const challenge = await observeChallenge(live, guest, session, lifecycle.signal);
+        const gate = siteGates.get(guest);
+        while (gate?.waiting()) { gate.assertAllowed(); await sleep(SETTLE_POLL_MS, lifecycle.signal); }
+        gate?.assertAllowed();
+        throwIfAborted(lifecycle.signal);
+        return { ...loaded, url: guest.getURL(), loading: guest.isLoading(), ...(challenge && live.tab.documentId === documentId ? { challenge } : {}) };
       }
       finally { lifecycle.cancel(); }
     }),

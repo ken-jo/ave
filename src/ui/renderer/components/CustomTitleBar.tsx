@@ -33,7 +33,7 @@ export interface CustomTitleBarProps {
   children?: ReactNode;
   /** Use the larger of sidebar and native-control leading reserves, never stack both paddings. */
   leadClearance?: number;
-  /** Keep a plain control band when it holds the only way to reopen navigation. */
+  /** Keep a plain control band for navigation and window notices in fullscreen. */
   keepVisibleInFullscreen?: boolean;
 }
 
@@ -68,7 +68,9 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   const handleMinimize = useCallback(() => { void getWindowBridge().minimize(); }, []);
   const handleMaximize = useCallback(() => { void getWindowBridge().toggleMaximize(); }, []);
   const handleClose = useCallback(() => { void getWindowBridge().close(); }, []);
-  const handleDoubleClick = useCallback(() => { void getWindowBridge().toggleMaximize(); }, []);
+  const handleDoubleClick = useCallback(() => {
+    void getWindowBridge().toggleMaximize();
+  }, []);
 
   // Early returns (all AFTER hooks have been called):
   // - No preload bridge → non-Electron environment (jsdom / Storybook / SSR).
@@ -84,7 +86,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     return (
       <div
         data-testid="custom-titlebar-plain"
-        className="flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
+        className="flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_EDGE_PAD, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
@@ -101,7 +103,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     return (
       <div
         data-testid="custom-titlebar-darwin"
-        className="ave-glass-clear flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
+        className="ave-glass-clear flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_LEAD_PAD_DARWIN, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
@@ -151,7 +153,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   const controls = (
     <div
       data-testid="titlebar-controls"
-      className={`${leading ? "absolute top-0 left-0" : "ml-auto"} flex h-(--chrome-band-height) items-stretch`}
+      className={`${leading ? "absolute top-0 left-0" : "ml-auto"} flex h-(--chrome-band-height) shrink-0 items-stretch`}
       style={{
         // @ts-expect-error — Electron-specific CSS extension
         WebkitAppRegion: "no-drag",
@@ -164,7 +166,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     <div
       data-testid="custom-titlebar"
       data-window-controls={leading ? "leading" : "trailing"}
-      className={`ave-glass-clear ${leading ? "relative " : ""}flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none`}
+      className={`ave-glass-clear ${leading ? "relative " : ""}flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none`}
       style={{
         paddingLeft: `${Math.max(leading ? BAND_LEAD_PAD_LINUX : BAND_EDGE_PAD, leadClearance)}px`,
         paddingRight: leading ? `${BAND_EDGE_PAD}px` : undefined,

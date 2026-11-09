@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { readRepoFile } from "./test-helpers.js";
+import { githubExpression, readRepoFile } from "./test-helpers.js";
 import {
   TRUSTED_EVENTS,
   PULL_REQUEST_TARGET_WORKFLOWS,
@@ -1181,6 +1181,8 @@ describe("installer smoke and packaging discipline", () => {
     // bun, and its last step proves the job-local pinned bun is on PATH.
     expect(installers).toContain(
       "      - uses: ./.github/actions/setup-bun\n"
+        + "        env:\n"
+        + `          GITHUB_TOKEN: ${githubExpression("github.token")}\n`
         + "        with:\n"
         + "          bun-version-file: .bun-version\n",
     );
@@ -1199,24 +1201,18 @@ describe("installer smoke and packaging discipline", () => {
       ).not.toContain("oven-sh/setup-bun");
     }
 
-    // setup-bun v2.2.0 symlinks bunx.exe to bun.exe before anything else, and
-    // a runner service account on Windows lacks the symlink privilege (EPERM).
-    // The action keeps setup-bun off Windows and installs the release there
-    // only after its SHA-256 matches the release's SHASUMS256.txt.
+    // oven-sh/setup-bun checks no digest on a download or a cache hit, and on
+    // Windows it symlinks bunx.exe to bun.exe, which a runner service account
+    // lacks the privilege for (EPERM). The action installs the release
+    // archive itself on every OS, only after its SHA-256 matches the pin and
+    // the release's SHASUMS256.txt.
     const setupBun = readRepoFile(".github/actions/setup-bun/action.yml");
-    expect(setupBun).toContain(
-      "    - if: runner.os != 'Windows'\n"
-        + "      uses: oven-sh/setup-bun@",
-    );
-    expect(setupBun).toContain(
-      "      env:\n"
-        + "        HOME: ${{ runner.temp }}/bun-home\n"
-        + "        USERPROFILE: ${{ runner.temp }}/bun-home\n",
-    );
+    expect(setupBun).not.toContain("oven-sh/setup-bun");
     expect(setupBun).toContain("    - if: runner.os == 'Windows'\n");
-    expect(setupBun).toContain('base="https://github.com/oven-sh/bun/releases/download/bun-v${version}"');
-    expect(setupBun).toContain('"$base/SHASUMS256.txt"');
-    // Each Windows step on its own: a string the Verify step also holds (its
+    const archiveScript = readRepoFile(".github/actions/setup-bun/bun-archive.sh");
+    expect(archiveScript).toContain('base="https://github.com/oven-sh/bun/releases/download/bun-v${VERSION}"');
+    expect(archiveScript).toContain('for file in "$ASSET.zip" SHASUMS256.txt; do');
+    // Each install step on its own: a string the Verify step also holds (its
     // own version compare) must not satisfy a check meant for these.
     const stepBetween = (from: string, to: string): string => {
       const start = setupBun.indexOf(from);
@@ -1225,6 +1221,10 @@ describe("installer smoke and packaging discipline", () => {
       expect(end, `${to} does not follow ${from}`).toBeGreaterThan(start);
       return setupBun.slice(start, end);
     };
+    const posixStep = stepBetween(
+      "name: Install the pinned bun release\n",
+      "name: Install the pinned bun release (Windows)",
+    );
     const bunStep = stepBetween(
       "name: Install the pinned bun release (Windows)",
       "name: Provide Python for node-gyp (Windows)",
@@ -1233,38 +1233,77 @@ describe("installer smoke and packaging discipline", () => {
       "name: Provide Python for node-gyp (Windows)",
       "name: Verify bun is the job-local pinned build",
     );
-    for (const step of [bunStep, pythonStep]) {
+    for (const step of [posixStep, bunStep, pythonStep]) {
       expect(step).toMatch(/\n {6}run: \|\n {8}set -euo pipefail\n/u);
     }
-    // The zip is checked against a SHA-256 pinned in the action for the
-    // .bun-version release, then against that release's SHASUMS256.txt, and
-    // nothing is unpacked or installed before both pass. A .bun-version bump
-    // without a new pin row fails here, and the action refuses it too.
+    // Every .bun-version release asset has its own reviewed pin row, and any
+    // other version or asset falls through to a refusal. A .bun-version bump
+    // without new pin rows fails here, and the script refuses it too.
     const bunVersion = readRepoFile(".bun-version").trim();
-    expect(bunStep).toMatch(new RegExp(
-      `\\n {10}${bunVersion.replace(/\./gu, "\\.")}:bun-windows-x64\\) pinned=[0-9a-f]{64} ;;\\n`,
-      "u",
-    ));
-    expect(bunStep).toContain(
-      '          *) echo "no pinned SHA-256 for $asset.zip of bun v$version in this action" >&2; exit 1 ;;\n',
-    );
-    const pinCompare = bunStep.indexOf(
-      '        if [ "$actual" != "$pinned" ]; then\n'
-        + '          echo "$asset.zip SHA-256 $actual does not match the pinned $pinned" >&2\n'
-        + "          exit 1\n",
-    );
-    const sumsCompare = bunStep.indexOf(
-      '        if [ "$actual" != "$expected" ]; then\n'
-        + '          echo "$asset.zip SHA-256 $actual does not match the release\'s $expected" >&2\n'
-        + "          exit 1\n",
-    );
-    expect(pinCompare).toBeGreaterThan(-1);
-    expect(sumsCompare).toBeGreaterThan(-1);
-    for (const install of ["Expand-Archive", 'cp "$work/out/$asset/bun.exe"', '>> "$GITHUB_PATH"']) {
-      const at = bunStep.indexOf(install);
-      expect(at, `${install} is missing`).toBeGreaterThan(-1);
-      expect(Math.max(pinCompare, sumsCompare), `${install} runs before the zip is verified`).toBeLessThan(at);
+    for (const asset of ["linux-x64", "linux-aarch64", "darwin-x64", "darwin-aarch64", "windows-x64", "windows-aarch64"]) {
+      expect(archiveScript).toMatch(new RegExp(
+        `\\n {6}${bunVersion.replace(/\./gu, "\\.")}:bun-${asset}\\) pinned=[0-9a-f]{64} ;;\\n`,
+        "u",
+      ));
     }
+    expect(archiveScript).toContain(
+      '      *) echo "no pinned SHA-256 for $asset.zip of v$version" >&2; exit 1 ;;\n',
+    );
+    // Hit and miss share one verification: the miss-only block fetches and
+    // closes before the digest is taken, and the zip must then match both the
+    // pin and the release's SHASUMS256.txt. The script never extracts or
+    // exits early, so nothing reaches an install step unverified.
+    const fetchStart = archiveScript.indexOf(`    if [ "\${CACHE_HIT:-}" != true ]; then\n`);
+    const fetchEnd = archiveScript.indexOf("    fi\n", fetchStart);
+    const digest = archiveScript.indexOf('    actual="$(sha256sum < "$work/$ASSET.zip" | awk \'{ print $1 }\')"\n');
+    const pinCompare = archiveScript.indexOf(
+      '    if ! [[ "$PINNED" =~ ^[0-9a-f]{64}$ ]] || [ "$actual" != "$PINNED" ]; then\n'
+        + '      echo "$ASSET.zip SHA-256 $actual does not match the pinned $PINNED" >&2\n'
+        + "      exit 1\n",
+    );
+    const sumsCompare = archiveScript.indexOf(
+      '    if ! [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || [ "$actual" != "$expected" ]; then\n'
+        + '      echo "$ASSET.zip SHA-256 $actual does not match the release\'s $expected" >&2\n'
+        + "      exit 1\n",
+    );
+    expect(fetchStart).toBeGreaterThan(-1);
+    expect(fetchEnd).toBeGreaterThan(fetchStart);
+    expect(digest, "the digest is taken after the miss-only fetch").toBeGreaterThan(fetchEnd);
+    expect(pinCompare).toBeGreaterThan(digest);
+    expect(sumsCompare).toBeGreaterThan(pinCompare);
+    expect(archiveScript.slice(fetchStart, fetchEnd)).not.toMatch(/sha256sum|exit|unzip|Expand-Archive/u);
+    expect(archiveScript).not.toMatch(/\bunzip\b|Expand-Archive|\bcp |GITHUB_PATH|exit 0/u);
+    // Each install step verifies first, with the hit flag of the cache step,
+    // before it extracts, copies or puts anything on PATH.
+    const verifyFirst = '      run: |\n        set -euo pipefail\n        bash "$ACTION_PATH/bun-archive.sh" verify\n';
+    const cacheHitEnv = `        CACHE_HIT: ${githubExpression("steps.bun-archive-cache.outputs.cache-hit")}\n`;
+    for (const [step, installs] of [
+      [posixStep, ['unzip -q "$work/$ASSET.zip"', 'cp "$work/out/$ASSET/bun" "$bin/bun"', 'cp "$work/out/$ASSET/bun" "$bin/bunx"', 'echo "$bin" >> "$GITHUB_PATH"']],
+      [bunStep, ["Expand-Archive", 'cp "$work/out/$ASSET/bun.exe" "$bin/bun.exe"', 'cp "$work/out/$ASSET/bun.exe" "$bin/bunx.exe"', '>> "$GITHUB_PATH"']],
+    ] as const) {
+      expect(step).toContain(cacheHitEnv);
+      const verify = step.indexOf(verifyFirst);
+      expect(verify).toBeGreaterThan(-1);
+      for (const install of installs) {
+        const at = step.indexOf(install);
+        expect(at, `${install} is missing`).toBeGreaterThan(-1);
+        expect(at, `${install} runs before the zip is verified`).toBeGreaterThan(verify + verifyFirst.length);
+      }
+      expect(step).toContain('rm -rf "$work/out"');
+      expect(step).not.toContain('rm -rf "$work"\n');
+    }
+    expect(setupBun).toContain("    - if: runner.os != 'Windows'\n      name: Install the pinned bun release\n");
+    const setup = parseYaml(setupBun);
+    const setupSteps: Record<string, unknown>[] = setup.runs.steps;
+    const archiveCache = setupSteps.find((step) => step.id === "bun-archive-cache");
+    const archiveMetadata = setupSteps.find((step) => step.id === "bun-archive");
+    if (!archiveCache || !archiveMetadata) throw new Error("setup-bun lost its archive metadata or cache step");
+    // One archive path for every OS: neither step is conditional.
+    expect(archiveMetadata.if).toBeUndefined();
+    expect(archiveCache.if).toBeUndefined();
+    expect(archiveCache.uses).toBe("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9");
+    expect(archiveCache.with).toEqual({ path: `${githubExpression("runner.temp")}/bun-download`, key: githubExpression("steps.bun-archive.outputs.key") });
+    expect(setupSteps.indexOf(archiveCache)).toBeGreaterThan(setupSteps.indexOf(archiveMetadata));
     const pythonCompare = pythonStep.indexOf(
       '        if [ "$actual" != "$PYTHON_NUPKG_SHA256" ]; then\n'
         + "          echo \"python.$PYTHON_VERSION.nupkg SHA-256 '$actual' does not match the pinned $PYTHON_NUPKG_SHA256\" >&2\n"
@@ -1278,7 +1317,7 @@ describe("installer smoke and packaging discipline", () => {
     }
     // A Windows path holds backslashes, and sha256sum given one escapes its
     // output with a leading "\\": the digest is read from stdin instead.
-    expect(setupBun).toContain('actual="$(sha256sum < "$work/$asset.zip" | awk');
+    expect(archiveScript).toContain('actual="$(sha256sum < "$work/$ASSET.zip" | awk');
     expect(setupBun).not.toMatch(/sha256sum "/u);
 
     // node-gyp needs Python during bun install. On Windows the action unpacks
@@ -1299,14 +1338,14 @@ describe("installer smoke and packaging discipline", () => {
     expect(setupBun.indexOf("name: Provide Python for node-gyp (Windows)")).toBeLessThan(
       setupBun.indexOf("name: Verify bun is the job-local pinned build"),
     );
-    expect(setupBun).toContain('cp "$work/out/$asset/bun.exe" "$bin/bunx.exe"');
+    expect(setupBun).toContain('cp "$work/out/$ASSET/bun.exe" "$bin/bunx.exe"');
     expect(setupBun).not.toMatch(/\bln -s|ItemType SymbolicLink|mklink/u);
     expect(setupBun).toContain("    - name: Verify bun is the job-local pinned build\n");
     expect(setupBun).toContain("for tool in bun bunx; do");
 
     // Installer caches stay per OS.
     expect(installers).toContain("key: ${{ runner.os }}-installers-");
-    expect(installers).toContain("key: ${{ runner.os }}-uv-");
+    expect(installers).toContain("uses: ./.github/actions/cache-runtime-tools");
   });
 
   it("authorizes the destructive Windows release steps only on the hosted Windows installer job", () => {

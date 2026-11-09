@@ -4,7 +4,7 @@
 import { createDynamicTool, type Tool, type ToolPolicyContext } from "./base.js";
 import type { ToolExecutionContext, ToolExecutionResult } from "./types.js";
 import { resolveSessionWindow, type SessionWindowScopeDeps } from "./session-window-scope.js";
-import { BROWSER_TOOL, browserOrigin, type BrowserToolName } from "../shared/browser-tools.js";
+import { BROWSER_TOOL, browserOrigin, type BrowserToolName, type BrowserPageReadiness, type BrowserPageSnapshot } from "../shared/browser-tools.js";
 export { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import type { ApprovalMemoryScope, BrowserTabOpener } from "../shared/permissions-events.js";
@@ -23,6 +23,7 @@ import type { BrowserPreviewImage } from "../shared/browser-workspace.js";
 import type { BrowserUploadPickerRequest, BrowserUploadResult } from "../main/browser/browser-upload.js";
 import { t } from "../i18n/index.js";
 import { issueUserOwnedBrowserScope } from "../permissions/user-owned-browser-scope.js";
+import type { ApprovalRequestInput } from "../permissions/approval-gate.js";
 
 /** What the tools need of the main-side tab registry. */
 interface BrowserTabsAccess<G extends BrowserGuest = BrowserGuest> {
@@ -60,14 +61,7 @@ export interface BrowserActionTab<G extends BrowserGuest = BrowserGuest> {
 export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   /** Establish document observation before approval captures its identity. */
   prepare(target: BrowserActionTab<G>): Promise<void>;
-  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<{
-    url: string;
-    title: string;
-    text: string;
-    truncated: boolean;
-    refCount: number;
-    delta: boolean;
-  }>;
+  snapshot(target: BrowserActionTab<G>, options: { interactive?: boolean; delta?: boolean }): Promise<BrowserPageSnapshot>;
   screenshot(target: BrowserActionTab<G>, options?: { fullPage?: boolean }): Promise<{ data: string; mimeType: string; bytes: number }>;
   /** Best-effort display thumbnail of the tab (from `png` when given); never throws. */
   capturePreview?(target: BrowserActionTab<G>, png?: string): Promise<BrowserPreviewImage | undefined>;
@@ -83,9 +77,9 @@ export interface BrowserPageActions<G extends BrowserGuest = BrowserGuest> {
   }): Promise<BrowserUploadResult>;
   type(target: BrowserActionTab<G>, ref: string, text: string, options: { submit?: boolean }): Promise<void>;
   pressKey(target: BrowserActionTab<G>, key: string, ref?: string): Promise<void>;
-  navigate(target: BrowserActionTab<G>, url: string, approvedOrigin: string): Promise<{ url: string }>;
-  /** Wait (bounded) for a newly opened tab's first page to finish loading. */
-  settle(target: BrowserActionTab<G>): Promise<{ url: string }>;
+  navigate(target: BrowserActionTab<G>, url: string, approvedOrigin: string): Promise<BrowserPageReadiness>;
+  /** Wait for a committed main document; subresources may still be loading. */
+  settle(target: BrowserActionTab<G>): Promise<BrowserPageReadiness>;
 }
 
 export interface BrowserToolDeps<G extends BrowserGuest = BrowserGuest> extends SessionWindowScopeDeps {
@@ -114,6 +108,12 @@ export function userOwnedBrowserScopeOf(tool: Tool, memory: import("../shared/pe
 
 export function isCanonicalBrowserTool(tool: unknown): boolean {
   return typeof tool === "object" && tool !== null && canonicalBrowserTools.has(tool);
+}
+
+export function browserApprovalCardFacts(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): Pick<ApprovalRequestInput, "allowedChoices" | "durableApprovalRecordAllowed"> {
+  return canonicalBrowserTools.has(tool) && memory?.kind === "key" && (memory.scope.kind === "browser-origin" || memory.scope.kind === "browser-agent-tabs")
+    ? { allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false }
+    : {};
 }
 
 export function agentBrowserScopeOf(tool: Tool, memory: import("../shared/permissions-events.js").ApprovalMemory | undefined): true | undefined {

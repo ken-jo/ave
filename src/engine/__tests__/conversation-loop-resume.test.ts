@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync,
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ import {
 } from "./conversation-loop-test-helpers.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
+import { SessionRepository } from "../../memory/session-repository.js";
 
 const RESUME_SESSION_ID = "08001f8f-a6f5-4bb9-820d-df1e8366af93";
 const resumeMemory = (storedMessages: GenericMessage[] | null = null) =>
@@ -51,6 +52,40 @@ function createRememberCommandLoop(captureExplicit: CaptureExplicit) {
 }
 
 describe("ConversationLoop.resetAndResume", () => {
+  it("keeps listing order when switching away from an unchanged conversation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ave-session-order-"));
+    const sessions = new SessionRepository({ aveDir: dir });
+    const olderId = "aaaaaaaa-1111-2222-3333-444444444444";
+    const newerId = "bbbbbbbb-1111-2222-3333-444444444444";
+    const messages: GenericMessage[] = [{ role: "user", content: "Saved conversation", meta: { messageId: "row-first" } }];
+    try {
+      await sessions.saveSession(olderId, messages);
+      await sessions.saveSession(newerId, messages);
+      const olderPath = join(dir, "sessions", `${olderId}.jsonl`);
+      const newerPath = join(dir, "sessions", `${newerId}.jsonl`);
+      const olderTime = new Date("2020-01-01T00:00:00Z");
+      const newerTime = new Date("2020-01-02T00:00:00Z");
+      utimesSync(olderPath, olderTime, olderTime);
+      utimesSync(newerPath, newerTime, newerTime);
+      const before = sessions.listSessions().map(({ id }) => id);
+      expect(before).toEqual([newerId, olderId]);
+      const memoryManager = { ...resumeMemory(), sessions } as ConversationLoopDeps["memoryManager"];
+      const loop = new ConversationLoop(resumeDeps({ memoryManager }));
+      expect(await loop.loadSession(olderId)).toBe(true);
+      const save = vi.spyOn(sessions, "saveSession");
+
+      expect(await loop.loadSession(newerId)).toBe(true);
+      expect(save).toHaveBeenCalledWith(olderId, messages);
+      await Promise.all(save.mock.results.map(({ value }) => value));
+
+      expect(statSync(olderPath).mtimeMs).toBe(olderTime.getTime());
+      expect(sessions.listSessions().map(({ id }) => id)).toEqual(before);
+    } finally {
+      sessions.closeSearchIndex();
+      await cleanupTmpDir(dir);
+    }
+  });
+
   it("rebinds standalone step spans to the resumed session using the injected provider", async () => {
     const exporter = new InMemorySpanExporter();
     const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });

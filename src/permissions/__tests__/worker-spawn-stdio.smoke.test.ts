@@ -1,6 +1,6 @@
 // A real Node worker speaking worker stdio control v1 over its own stdin/stdout: no socket, no port. The unconfined cases run everywhere; the macOS case drives the same worker under real ASRT and proves its egress, write jail and state directory.
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { writeFileSync, mkdtempSync, statSync, existsSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, statSync, existsSync, readFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,6 +19,7 @@ import {
 import { WorkerControlError, type PluginWorkerExitInfo } from "../../plugins/public-contract.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { aveHome } from "../../shared/ave-home.js";
 
 // The worker, written verbatim to a temp file. Logs go to stderr: in this mode stdout carries frames only.
 const WORKER_SOURCE = String.raw`
@@ -55,6 +56,9 @@ function handle(frame) {
     case "state_dir": return send({ id, result: { dir: process.env.${WORKER_STATE_DIR_ENV} ?? null } });
     case "write_file":
       try { fs.writeFileSync(params.path, "x"); return send({ id, result: { wrote: true } }); }
+      catch (e) { return send({ id, result: { error: String((e && e.code) || e) } }); }
+    case "read_file":
+      try { return send({ id, result: { text: fs.readFileSync(params.path, "utf8") } }); }
       catch (e) { return send({ id, result: { error: String((e && e.code) || e) } }); }
     case "egress":
       return curlCode(params.url, (code) => send({ id, result: { httpCode: code } }));
@@ -111,7 +115,10 @@ function writeWorker(): string {
   const temporaryBase = process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp";
   tmpRoot = mkdtempSync(join(temporaryBase, "ave-stdio-"));
   vi.stubEnv("AVE_HOME", tmpRoot);
-  const workerFile = join(tmpRoot, "worker.cjs");
+  // Only the worker's plugin child can be re-opened beneath the home read boundary.
+  const pluginDir = join(tmpRoot, "plugins", "stdio-smoke-plugin");
+  mkdirSync(pluginDir, { recursive: true });
+  const workerFile = join(pluginDir, "worker.cjs");
   writeFileSync(workerFile, WORKER_SOURCE, "utf8");
   return workerFile;
 }
@@ -271,6 +278,8 @@ describe.runIf(process.platform === "darwin")("worker stdio control v1 under rea
       return test.skip("ASRT cannot initialize (sandbox dependencies missing)");
     }
     const workerFile = writeWorker();
+    const privateFile = join(aveHome(), "host-private.txt");
+    writeFileSync(privateFile, "host private", "utf8");
     // GENUINELY outside the write jail: a path in HOME is covered by no grant.
     const outsideJail = join(homedir(), `.stdio-smoke-denied-${process.pid}-${Date.now()}.txt`);
     await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true }, undefined);
@@ -278,6 +287,8 @@ describe.runIf(process.platform === "darwin")("worker stdio control v1 under rea
     const worker = await start(workerFile, "stdio-smoke", { allowWritePaths: [tmpRoot!] });
     worker.onStderr((chunk) => console.log(`[stdio-smoke][worker-stderr] ${chunk.trim()}`));
     await expect(worker.request("echo", { msg: "hello" })).resolves.toEqual({ msg: "hello" });
+    await expect(worker.request("read_file", { path: workerFile })).resolves.toEqual({ text: WORKER_SOURCE });
+    await expect(worker.request("read_file", { path: privateFile })).resolves.toEqual({ error: expect.stringMatching(/^(EACCES|EPERM)$/) });
 
     const { dir } = await worker.request("state_dir") as { dir: string };
     const inState = join(dir, "probe.txt");

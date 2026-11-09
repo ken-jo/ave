@@ -1045,7 +1045,6 @@ export class ApprovalGate {
     // Exact one-shot requests are never eligible for a durable user-approval record. Treat this as an invariant instead of a caller preference: a future emitter must not be able to widen a per-invocation decision by setting the host-only option to `true`.
     const durableApprovalRecordAllowed =
       userOwnedSurface === undefined && !forceExplicit &&
-      !(req.approvalMemory?.kind === "key" && (req.approvalMemory.scope.kind === "browser-origin" || req.approvalMemory.scope.kind === "browser-agent-tabs")) &&
       !hasOneShotApprovalChoiceContract &&
       requestedDurableApprovalRecordAllowed !== false;
     const hasOneShotHostShellApprovalContract =
@@ -1206,7 +1205,7 @@ export class ApprovalGate {
           }
         : {}),
       allowedChoices:
-        userOwnedSurface !== undefined || hostTerminal !== undefined || forceExplicit || req.approvalMemory?.kind === "key" && (req.approvalMemory.scope.kind === "browser-origin" || req.approvalMemory.scope.kind === "browser-agent-tabs")
+        userOwnedSurface !== undefined || hostTerminal !== undefined || forceExplicit
           ? ["allow-once", "deny-once"]
           : req.allowedChoices,
       persistentAllowAllowed,

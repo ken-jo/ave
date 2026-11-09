@@ -12,13 +12,14 @@ test.use({ trace: "on" });
 for (const deviceScale of [1, 2]) {
   for (const appZoom of [0.9, 1, 1.25, 1.5]) {
     for (const guestZoom of appZoom === 1 ? [1, 1.25] : [1, appZoom]) {
-      test(`clicks a parked ref across origins at app zoom ${appZoom} page zoom ${guestZoom} scale ${deviceScale}`, () => exerciseParkedClick(deviceScale, appZoom, guestZoom));
+      test(`clicks a parked ref across origins at app zoom ${appZoom} page zoom ${guestZoom} scale ${deviceScale}`, { tag: "@os-focus" }, () => exerciseParkedClick(deviceScale, appZoom, guestZoom));
     }
   }
 }
 
 async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZoom: number): Promise<void> {
   const previewShown = deviceScale === 1;
+  const editsAtHandoff = deviceScale === 1 && appZoom === 1.25 && guestZoom === 1;
   test.setTimeout(90_000);
   const model = "static-browser-preview-fixture";
   let stage = 0;
@@ -100,7 +101,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
   let approvals: Promise<void> | undefined;
   try {
     ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [], launchArgs: ["--use-mock-keychain", `--force-device-scale-factor=${deviceScale}`] });
-    await ctx.app.evaluate(({ app }, delayHitMs) => {
+    await ctx.app.evaluate(({ app, BrowserWindow }, { delayHitMs, edits }) => {
       const capture = globalThis as unknown as { clickMeasurements: unknown[]; pointerEchoes: unknown[]; destructionPeaks: Record<string, number>; listenerWarnings: string[]; previewLifecycle: PreviewLifecycleEntry[] };
       capture.clickMeasurements = [];
       capture.pointerEchoes = [];
@@ -126,6 +127,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
         const send = protocol.sendCommand.bind(protocol);
         let nodeId: number | undefined;
         let delayed = false;
+        let foregroundPrepared = false;
         let quads: number[][] | undefined;
         let chosenPoint: { x: number; y: number } | undefined;
         protocol.sendCommand = async (method, params = {}) => {
@@ -143,12 +145,45 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
             if (quad) chosenPoint = { x: Math.round(quad.filter((_value, index) => index % 2 === 0).reduce((sum, value) => sum + value, 0) / 4), y: Math.round(quad.filter((_value, index) => index % 2 !== 0).reduce((sum, value) => sum + value, 0) / 4) };
             return result;
           }
+          if (edits && method === "Input.dispatchTouchEvent" && params.type === "touchStart") {
+            const result = await send(method, params);
+            // A user can start editing after the press begins, before its completion handoff.
+            await contents.hostWebContents?.mainFrame.executeJavaScript(`(() => {
+              window.parkedEditProbe = { blurs: 0 };
+              const editor = document.createElement("input");
+              editor.dataset.testid = "parked-edit-probe";
+              editor.value = "Unfinished rename draft";
+              editor.style.cssText = "position:fixed;left:8px;top:8px;z-index:9999";
+              editor.addEventListener("blur", () => { window.parkedEditProbe.blurs++; editor.remove(); });
+              document.body.append(editor);
+              editor.focus();
+            })()`);
+            return result;
+          }
           if (method !== "DOM.getNodeForLocation") return send(method, params);
           if (!delayed && delayHitMs > 0) {
             delayed = true;
             await new Promise(resolve => setTimeout(resolve, delayHitMs));
           }
-          const geometry = async () => ({ ts: Date.now(), guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor(), focused: contents.isFocused(), throttled: contents.getBackgroundThrottling(),
+          // An inactive window cannot own native keyboard input; retain its frame state separately.
+          if (!foregroundPrepared) {
+            foregroundPrepared = true;
+            app.focus({ steal: true });
+            const owningWindow = BrowserWindow.fromWebContents(contents.hostWebContents ?? contents);
+            if (!owningWindow) throw new Error("Native foreground window unavailable");
+            owningWindow.focus();
+            const deadline = Date.now() + 1_000;
+            while (!owningWindow.isFocused() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+            if (!owningWindow.isFocused()) throw new Error("Native foreground precondition unavailable");
+          }
+          const geometry = async () => ({ ts: Date.now(), guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor(),
+            focused: !contents.hostWebContents || BrowserWindow.fromWebContents(contents.hostWebContents)?.isFocused() !== false
+              && contents.hostWebContents.focusedFrame !== contents.hostWebContents.mainFrame,
+            rootViewFocused: contents.isFocused(), hostViewFocused: contents.hostWebContents?.isFocused(),
+            windowFocused: BrowserWindow.fromWebContents(contents.hostWebContents ?? contents)?.isFocused(),
+            hostFrame: contents.hostWebContents?.focusedFrame?.frameTreeNodeId, hostMainFrame: contents.hostWebContents?.mainFrame.frameTreeNodeId,
+            throttled: contents.getBackgroundThrottling(),
+            editor: await contents.hostWebContents?.mainFrame.executeJavaScript("({ blurs: window.parkedEditProbe?.blurs, draft: document.querySelector('[data-testid=parked-edit-probe]')?.value })"),
             layout: await send("Page.getLayoutMetrics"),
             box: nodeId === undefined ? null : await send("DOM.getBoxModel", { backendNodeId: nodeId }),
             viewport: await send("Runtime.evaluate", { expression: "({ width: innerWidth, height: innerHeight, deviceScale: devicePixelRatio, scrollX, scrollY, visibility: document.visibilityState })", returnByValue: true }),
@@ -163,7 +198,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
           }
         };
       });
-    }, previewShown ? 0 : TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs + 250);
+    }, { delayHitMs: previewShown ? 0 : TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs + 250, edits: editsAtHandoff });
     await setWindowSize(ctx.app, 1200, 800);
     const hostFactor = await ctx.app.evaluate(({ BrowserWindow }, factor) => {
       const window = BrowserWindow.getAllWindows().find(candidate => candidate.isVisible());
@@ -274,10 +309,11 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     const hits = await ctx.app.evaluate(() => (globalThis as unknown as { clickMeasurements: Array<{ hostZoom?: number; guestZoom: number }> }).clickMeasurements);
     expect(hits).toHaveLength(3);
     for (const hit of hits) {
-      expect(hit).toMatchObject({ focused: false, throttled: false, result: { backendNodeId: expect.any(Number), frameId: expect.any(String) } });
+      expect(hit).toMatchObject({ windowFocused: true, focused: false, throttled: false, result: { backendNodeId: expect.any(Number), frameId: expect.any(String) } });
       expect(hit.hostZoom).toBeCloseTo(appZoom);
       expect(hit.guestZoom).toBeCloseTo(guestZoom);
     }
+    if (editsAtHandoff) expect(hits[2]).toMatchObject({ editor: { blurs: 0, draft: "Unfinished rename draft" } });
     const destruction = await ctx.app.evaluate(async () => {
       await new Promise<void>(resolve => setImmediate(resolve));
       const state = globalThis as unknown as { destructionPeaks: Record<string, number>; listenerWarnings: string[] };
@@ -311,6 +347,44 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     const retained = await ctx.app.evaluate(({ webContents }, url) => webContents.getAllWebContents().filter(contents => contents.getType() === "webview" && contents.getURL() === url).map(contents => ({ id: contents.id, url: contents.getURL(), destroyed: contents.isDestroyed() })), secondUrl);
     expect(retained).toHaveLength(1);
     expect(retained[0]).toMatchObject({ url: secondUrl, destroyed: false });
+    // The same native-frame measurement must detect a real user focus transfer.
+    const visibleBox = await retainedFrame.boundingBox();
+    if (!visibleBox) throw new Error("Visible browser focus control unavailable");
+    await page.mouse.click(visibleBox.x + 60, visibleBox.y + 60);
+    const running = ctx;
+    const keyboardTarget = () => running.app.evaluate(({ webContents }, url) => {
+      const guest = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL() === url);
+      const host = guest?.hostWebContents;
+      if (!guest || !host) throw new Error("Native keyboard target unavailable");
+      return { focused: host.focusedFrame !== host.mainFrame, guestFrame: host.focusedFrame === guest.mainFrame };
+    }, secondUrl);
+    await expect.poll(keyboardTarget).toEqual({ focused: true, guestFrame: true });
+    await page.getByTestId("chat-side-panel-close").click();
+    await expect.poll(keyboardTarget).toEqual({ focused: false, guestFrame: false });
+    // A parked binding must not change a background window's current focus or activate it.
+    const inactiveGuest = retained[0];
+    if (!inactiveGuest || !afterEnd?.rendererTabId) throw new Error("Retained guest binding unavailable");
+    await page.evaluate(() => {
+      const editor = document.createElement("input");
+      editor.dataset.testid = "background-edit-probe";
+      editor.value = "Background draft";
+      document.body.append(editor);
+      editor.focus();
+      const state = window as unknown as { backgroundEditBlurs: number };
+      state.backgroundEditBlurs = 0;
+      editor.addEventListener("blur", () => { state.backgroundEditBlurs++; });
+    });
+    await ctx.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.isVisible())?.blur());
+    const backgroundBefore = await page.evaluate(() => ({ blurs: (window as unknown as { backgroundEditBlurs: number }).backgroundEditBlurs,
+      active: document.activeElement?.getAttribute("data-testid"), value: (document.activeElement as HTMLInputElement)?.value }));
+    const binding = await page.evaluate(args => window.aveApi.browserTabs?.bindTab(args), {
+      tabId: afterEnd.rendererTabId, webContentsId: inactiveGuest.id, parked: true,
+    });
+    expect(binding).toEqual({ ok: true });
+    expect(await ctx.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.isVisible())?.isFocused())).toBe(false);
+    expect(await page.evaluate(() => ({ blurs: (window as unknown as { backgroundEditBlurs: number }).backgroundEditBlurs,
+      active: document.activeElement?.getAttribute("data-testid"), value: (document.activeElement as HTMLInputElement)?.value })))
+      .toEqual(backgroundBefore);
     await test.info().attach("turn-ended-retained-tab.png", { body: await page.screenshot(), contentType: "image/png" });
   } finally {
     try {

@@ -1237,6 +1237,7 @@ export function Sidebar({
             applyElementRef={cardRef}
             ariaLabel={t("sidebar.resizeHandleAriaLabel")}
             data-testid="sidebar-resize-handle"
+            style={{ width: "var(--chrome-gap)" }}
           />
         ) : null}
         {/* ── List header (case 04): the project name opens the same menu as the rail button; the right button folds the list. */}

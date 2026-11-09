@@ -6,14 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import type { BrowserObservationEvent, BrowserObservationPreviewMessage, BrowserObservationPreviewRequest } from "../../../../shared/agent-observation.js";
+import { BROWSER_TOOL } from "../../../../shared/browser-tools.js";
+import { ApprovalDock } from "../../components/permissions/ApprovalDock.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
-import type { AveApi, AvePreviewApi } from "../../types.js";
+import type { ApprovalRequest, AveApi, AvePreviewApi } from "../../types.js";
 import { t } from "../../../../i18n/runtime.js";
 import { AgentBrowserPipLayer } from "../AgentBrowserPipLayer.js";
 import { connectBrowserObservations } from "../browser-observation-bridge.js";
 import { registerBrowserTabHost } from "../agent-browser-bridge.js";
 import { clampBrowserPipPosition } from "../browser-pip-position.js";
-import { clearWebSurfaceSlot, getWebSurfaceOccluders, isSurfaceDragActive, noteWebSurfaceFavicon, publishLiveWebTabs,
+import { clearWebSurfaceSlot, getWebSurfaceOccluders, setWebSurfaceElement, isSurfaceDragActive, noteWebSurfaceFavicon, publishLiveWebTabs,
   requestWebSurfaceLayout, setWebSurfaceSlot, setWebSurfaceUrl, withdrawLiveWebTabs } from "../web-surfaces.js";
 
 const TAB = "browser:pip-1";
@@ -49,6 +51,7 @@ beforeEach(async () => {
     if (this.dataset.testid === "agent-browser-pip-layer") return new DOMRect(Number.parseFloat(this.style.left), Number.parseFloat(this.style.top), Number.parseFloat(this.style.width), Number.parseFloat(this.style.height));
     if (this.hasAttribute("data-pip-measure")) return new DOMRect(0, 0, Number.parseFloat(this.style.width) || 240, 68);
     if (this.hasAttribute("data-pip-measure-header")) return new DOMRect(0, 0, 240, 40);
+    if (this.hasAttribute("data-pip-reservation")) return new DOMRect(800, 450, 400, 220);
     if (this.dataset.testid === "agent-browser-pip-card") return new DOMRect(20, 100, 240, this.dataset.compact === "true" ? 40 : 203);
     return new DOMRect(0, 0, 600, 150);
   });
@@ -169,10 +172,13 @@ describe("window agent browser previews", () => {
   });
   it("renders a favicon and title chip without a screencast below 480px", () => {
     show(); activate();
+    const starts = previewRequests.mock.calls.filter(([request]) => request.action === "start").length;
     act(() => { Object.defineProperty(window, "innerWidth", { value: 360 }); noteWebSurfaceFavicon(TAB, "data:image/png;base64,AA=="); fireEvent.resize(window); });
     expect(cards()[0]).toHaveAttribute("data-compact", "true");
     expect(openButton().querySelector("img")).not.toBeNull();
     expect(screen.queryByTestId("browser-observation-preview")).toBeNull();
+    expect(previewRequests.mock.calls.some(([request]) => request.action === "stop")).toBe(true);
+    expect(previewRequests.mock.calls.filter(([request]) => request.action === "start")).toHaveLength(starts);
   });
   it("keeps the newest picture and collapses older tabs without retaining their captures", async () => {
     show(); activate(); await act(async () => {});
@@ -212,6 +218,47 @@ describe("window agent browser previews", () => {
     act(() => { region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 20); requestWebSurfaceLayout(); });
     expect(cards()).toHaveLength(0); expect(screen.queryByTestId("agent-browser-pip-overflow")).toBeNull();
     expect(getWebSurfaceOccluders().has(summary)).toBe(false);
+  });
+  it("reserves canonical browser-site approval controls without approving through preview activation", () => {
+    const decide = vi.fn();
+    const request: ApprovalRequest = { id: "pip-site", category: "tool", source: "builtin", toolName: BROWSER_TOOL.navigate,
+      toolCategory: "read", args: { url: "https://example.test/" }, browserSite: "https://example.test:443", reason: "Site access",
+      createdAt: 1, requireExplicit: true, allowedChoices: ["allow-once", "deny-once"] };
+    render(<><ApprovalDock queue={[request]} conversationLabel="Browser task" onDecide={decide} />
+      <AgentBrowserPipLayer api={api} onOpen={open} /></>);
+    activate();
+    const panel = screen.getByTestId("tool-approval-panel");
+    expect(panel).toHaveAttribute("data-approval-tool-name", BROWSER_TOOL.navigate);
+    expect(screen.getByTestId("agent-browser-pip-layer").style.height).toBe("350px");
+    fireEvent.click(openButton()); expect(open).toHaveBeenCalledWith(TAB); expect(decide).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: t("toolApprovalDialog.decisionDeny") }));
+    expect(decide).toHaveBeenCalledWith("deny-once", undefined);
+  });
+  it.each(["paused", "foreign-owner", "stale-handle"] as const)("stops the exact preview when control becomes %s", (change) => {
+    show(); activate();
+    const fixture = browserControlFixture([TAB], "agent-active", 2);
+    const next: BrowserTabControlState = { ...fixture, tabs: fixture.tabs.map((tab) => change === "paused"
+      ? { ...tab, mode: "human-paused" } : change === "stale-handle" ? { ...tab, tabId: "replacement-handle" }
+        : { ...tab, owner: { sessionId: "other-session" }, lease: tab.lease ? { ...tab.lease, actor: { sessionId: "other-session" } } : null }) };
+    act(() => control(next));
+    expect(cards()).toHaveLength(0);
+    expect(previewRequests.mock.calls.some(([request]) => request.action === "stop" && request.tabId === `handle-${TAB}`)).toBe(true);
+    const starts = previewRequests.mock.calls.filter(([request]) => request.action === "start").length;
+    act(() => emit([action(2)])); expect(cards()).toHaveLength(0);
+    expect(previewRequests.mock.calls.filter(([request]) => request.action === "start")).toHaveLength(starts);
+  });
+  it("uses hidden slot intent while a parked guest remains painted and preserves an editor draft", () => {
+    const guest = document.createElement("webview"); guest.style.visibility = "visible";
+    const editor = document.createElement("input"); editor.value = "Unfinished draft";
+    const blurred = vi.fn(); editor.addEventListener("blur", blurred);
+    document.body.append(guest, editor); setWebSurfaceElement(TAB, guest); editor.focus();
+    try {
+      show(); activate(); expect(cards()).toHaveLength(1);
+      expect(guest.style.visibility).toBe("visible"); expect(document.activeElement).toBe(editor);
+      expect(editor.value).toBe("Unfinished draft"); expect(blurred).not.toHaveBeenCalled();
+      act(() => { slot.style.display = "block"; requestWebSurfaceLayout(); });
+      expect(cards()).toHaveLength(0); expect(document.activeElement).toBe(editor); expect(blurred).not.toHaveBeenCalled();
+    } finally { setWebSurfaceElement(TAB, null); guest.remove(); editor.remove(); }
   });
   it("releases the shared drag state when a dragged card disappears", () => {
     show(); activate();

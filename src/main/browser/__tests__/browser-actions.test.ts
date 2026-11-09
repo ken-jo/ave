@@ -27,6 +27,7 @@ import { withGuardedAction } from "../browser-action-guard.js";
 import { BrowserRefTable, SNAPSHOT_MAX_CHARS, type AXNode } from "../browser-snapshot.js";
 import { type as typeInto } from "../browser-actions.js";
 import { browserOrigin, createBrowserTools } from "../../../tools/browser-tools.js";
+import { fenceBrowserContent } from "../../../tools/browser-tools-execute.js";
 import { BrowserTabRegistry } from "../browser-tab-registry.js";
 import { BROWSER_ACTION_WORLD, SELECT_NATIVE_OPTION } from "../browser-select-script.js";
 
@@ -61,9 +62,11 @@ class FakeCdp implements CdpSession {
   // Text inserts lost (focus moved away) before one lands.
   dropTexts = 0;
   private focusedNode: number | undefined;
+  private emulatedFocus = false;
   private pressed = false;
   focusPage(): void { this.pressed = true; this.checksSincePress = 0; }
   loseFocus(): void {
+    if (this.emulatedFocus) return;
     this.pressed = false;
     this.checksSincePress = 0;
   }
@@ -72,6 +75,7 @@ class FakeCdp implements CdpSession {
     this.calls.push({ method, ...(params ? { params } : {}) });
     switch (method) {
       case "Emulation.setFocusEmulationEnabled":
+        this.emulatedFocus = params?.enabled === true;
         if (params?.enabled) this.focusPage(); else this.loseFocus();
         return {};
       case "Input.dispatchTouchEvent":
@@ -465,6 +469,8 @@ describe("navigate", () => {
   class FakeNavGuest extends EventEmitter implements NavigableGuest {
     url = "about:blank";
     stopped = false;
+    loading = false;
+    isLoading(): boolean { return this.loading; }
     constructor(private readonly redirects: string[], private readonly final: string) {
       super();
     }
@@ -485,10 +491,86 @@ describe("navigate", () => {
     }
   }
 
+  it("returns DOM-ready while a subresource keeps the full-load promise pending", async () => {
+    const guest = new FakeNavGuest([], "https://a.example/");
+    let rejectLoad!: (error: Error) => void;
+    const completed = new Promise<void>((_resolve, reject) => { rejectLoad = reject; });
+    vi.spyOn(guest, "loadURL").mockImplementation(() => {
+      guest.url = "https://a.example/";
+      guest.loading = true;
+      guest.emit("did-navigate");
+      guest.emit("dom-ready");
+      return completed;
+    });
+    const controller = new AbortController();
+    await expect(navigate(guest, "https://a.example/", "https://a.example:443", controller.signal, browserOrigin))
+      .resolves.toEqual({ url: guest.url, loading: true });
+    expect(guest.listenerCount("dom-ready")).toBe(0);
+    expect(guest.listenerCount("will-redirect")).toBe(0);
+    controller.abort();
+    expect(guest.stopped).toBe(false);
+    rejectLoad(new Error("late subresource failure"));
+    await Promise.resolve();
+  });
+
+  it.each([false, true])("bounds a pending load without accepting the old page: committed=%s", async committed => {
+    vi.useFakeTimers();
+    try {
+      const guest = new FakeNavGuest([], "https://a.example/new");
+      guest.url = "https://a.example/old";
+      guest.loading = true;
+      vi.spyOn(guest, "loadURL").mockImplementation(() => {
+        guest.emit("dom-ready"); // Readiness of the previous document cannot complete this request.
+        guest.emit("did-navigate-in-page", {}, guest.url, true);
+        if (committed) { guest.url = "https://a.example/new"; guest.emit("did-navigate"); }
+        return new Promise(() => {});
+      });
+      const result = navigate(guest, "https://a.example/new", "https://a.example:443", new AbortController().signal, browserOrigin)
+        .then(value => ({ value }), error => ({ error }));
+      await vi.advanceTimersByTimeAsync(9_900);
+      let finished = false;
+      void result.then(() => { finished = true; });
+      await Promise.resolve();
+      expect(finished).toBe(false);
+      await vi.advanceTimersByTimeAsync(200);
+      if (committed) expect(await result).toEqual({ value: { url: "https://a.example/new", loading: true } });
+      else { expect(await result).toMatchObject({ error: { code: "load-timeout" } }); expect(guest.stopped).toBe(true); }
+      expect(guest.listenerCount("dom-ready")).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("excludes pending admission from readiness and cannot return before the live recheck", async () => {
+    vi.useFakeTimers();
+    try {
+      const guest = new FakeNavGuest([], "https://a.example/");
+      const approval = { pending: true, denied: false };
+      const began = Date.now();
+      let paused = 0;
+      const gate = Object.assign(() => {}, {
+        waiting: () => approval.pending,
+        pausedMs: () => approval.pending ? Date.now() - began : paused,
+        assertAllowed: () => { if (approval.denied) throw new Error("Site approval denied"); },
+      });
+      vi.spyOn(guest, "loadURL").mockImplementation(() => {
+        guest.url = "https://a.example/"; guest.loading = true;
+        guest.emit("did-navigate"); guest.emit("dom-ready");
+        return new Promise(() => {});
+      });
+      let finished = false;
+      const result = navigate(guest, "https://a.example/", "https://a.example:443", new AbortController().signal, browserOrigin, true, gate)
+        .finally(() => { finished = true; });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(finished).toBe(false);
+      paused = Date.now() - began; approval.pending = false;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await result).toEqual({ url: "https://a.example/", loading: true });
+    } finally { vi.useRealTimers(); }
+  });
+
   it("follows a same-origin redirect", async () => {
     const guest = new FakeNavGuest(["https://a.example/login"], "https://a.example/login");
     await expect(navigate(guest, "https://a.example/", "https://a.example:443", new AbortController().signal, browserOrigin))
-      .resolves.toEqual({ url: "https://a.example/login" });
+      .resolves.toEqual({ url: "https://a.example/login", loading: false });
   });
 
   it("guards a page-initiated navigation before the first request can escape", async () => {
@@ -558,19 +640,19 @@ describe("navigate", () => {
 });
 
 describe("settle", () => {
-  it("waits for a committed URL and the load to finish", async () => {
+  it("returns a committed URL while subresources are still loading", async () => {
     let polls = 0;
     const guest = {
       getURL: () => (polls++ >= 2 ? "http://127.0.0.1:8775/index.html" : ""),
       isLoading: () => polls < 5,
     };
-    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "http://127.0.0.1:8775/index.html" });
-    expect(polls).toBeGreaterThanOrEqual(5);
+    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "http://127.0.0.1:8775/index.html", loading: true });
+    expect(polls).toBe(3);
   });
 
   it("gives up at its bound and stops on cancel", async () => {
     const guest = { getURL: () => "", isLoading: () => true };
-    await expect(settle(guest, new AbortController().signal, 150)).resolves.toEqual({ url: "" });
+    await expect(settle(guest, new AbortController().signal, 150)).rejects.toMatchObject({ code: "load-timeout" });
     const controller = new AbortController();
     controller.abort(new Error("the user took over this tab"));
     await expect(settle(guest, controller.signal)).rejects.toMatchObject({ code: "cancelled" });
@@ -599,7 +681,7 @@ describe("action navigation", () => {
     await navigation.outcome(new AbortController().signal, 5_000);
     navigation.stop();
     // Without the wait, settle reads the old page at once: it is committed and not loading.
-    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "https://a.example/next" });
+    await expect(settle(guest, new AbortController().signal)).resolves.toEqual({ url: "https://a.example/next", loading: false });
   });
 
   it.each([
@@ -1155,11 +1237,13 @@ function adapterFixture(options: {
   });
   cdp.events.on("message", (method: string, params: Record<string, unknown>) => debuggerEvents.emit("message", {}, method, params));
   const mainFrame = { framesInSubtree: [] };
+  const hostMainFrame = {};
+  const hostWebContents = { mainFrame: hostMainFrame, focusedFrame: hostMainFrame, isFocused: () => true };
   let url = "https://a.example/form";
   const touches: string[] = [];
   const guest = Object.assign(guestEvents, {
     id: options.guestId ?? 101, isDestroyed: (): boolean => false, isLoading: () => false, getURL: () => url, getTitle: () => "Page",
-    mainFrame, focusedFrame: mainFrame, debugger: debuggerEvents, touches,
+    mainFrame, focusedFrame: mainFrame, hostWebContents, debugger: debuggerEvents, touches,
     getBackgroundThrottling: () => true, setBackgroundThrottling: vi.fn(),
     getZoomFactor: () => zoom.factor,
     // What the guest tracking does with a page's native touch input.
@@ -1172,7 +1256,8 @@ function adapterFixture(options: {
   registry.bindTab(1, { tabId: options.tabId ?? "user", webContentsId: guest.id });
   registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (_windowId, request) => {
     layoutOps.push(request.op);
-    if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId) registry.completeFocus(_windowId, request.requestId, request.op === "capture-focus" || options.focusRestored !== false);
+    if (request.op === "restore-focus" && options.focusRestored !== false) hostWebContents.focusedFrame = hostMainFrame;
+    if (request.op === "capture-focus" || request.op === "restore-focus") registry.completeFocus(_windowId, request.requestId, request.op === "capture-focus" || options.focusRestored !== false);
     if (request.op === "wake") laidOut = true;
     if (request.op === "sleep") laidOut = false;
     return true;
@@ -1293,7 +1378,7 @@ it.each(["allow", "deny", "takeover", "destroy"])("holds the original action lea
       navigate("https://a.example/next");
       guest.emit("did-navigate", {}, "https://a.example/next", 200, "OK");
       await vi.advanceTimersByTimeAsync(200);
-      expect(await result).toEqual({ value: { url: "https://a.example/next" } });
+      expect(await result).toEqual({ value: { url: "https://a.example/next", loading: false } });
     } else {
       expect(await result).toHaveProperty("error");
       expect(cdp.calls.some(call => call.method === "Fetch.continueRequest")).toBe(false);
@@ -1429,8 +1514,8 @@ it("keeps a removed element's instruction-bearing page name inside the browser r
   expect(cdp.inputs()).toEqual([]);
 });
 
-it("finishes a parked link navigation without borrowing or restoring native focus", async () => {
-  const { cdp, actions, approve, navigate, layoutOps } = adapterFixture({ agent: true, focusRestored: false });
+it("finishes a parked link navigation after returning native routing to chrome", async () => {
+  const { cdp, actions, approve, navigate, layoutOps } = adapterFixture({ agent: true });
   cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
   const live = await approve("browser_click");
   const snapshot = await actions.snapshot(live, {});
@@ -1443,7 +1528,8 @@ it("finishes a parked link navigation without borrowing or restoring native focu
     return result;
   });
   await expect(actions.click(live, ref)).resolves.toBeUndefined();
-  expect(layoutOps.filter(op => op === "capture-focus" || op === "restore-focus" || op === "focus")).toEqual([]);
+  expect(layoutOps).toContain("restore-focus");
+  expect(layoutOps.filter(op => op === "capture-focus" || op === "focus")).toEqual([]);
   expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent", "Input.dispatchTouchEvent", "Input.dispatchTouchEvent"]);
 });
 
@@ -1992,7 +2078,7 @@ describe("approved navigation lifetime", () => {
   it("allows the approved load's own document transition without cancelling it", async () => {
     const value = await fixture();
     Object.assign(value.guest, { loadURL: async (url: string) => { value.navigate(url); await Promise.resolve(); } });
-    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).resolves.toEqual({ url: "https://a.example/next" });
+    await expect(value.actions.navigate(value.live, "https://a.example/next", "https://a.example:443")).resolves.toEqual({ url: "https://a.example/next", loading: false });
     expect(value.stop).not.toHaveBeenCalled();
   });
 
@@ -2056,6 +2142,37 @@ it.each(["function", "object", "world", "node"])("rejects a substituted native-s
       arguments: [{ value: "b" }], returnByValue: true });
   })).rejects.toMatchObject({ code: "wrong-input-target" });
   expect(cdp.calls.some(call => call.method === "Runtime.callFunctionOn")).toBe(false);
+});
+
+it.each(["X", "😀", "<browser-content>", "</browser-content>"])("preserves shared-prefix machine values through the snapshot adapter and envelope: %s", async suffix => {
+  const { cdp, actions, approve } = adapterFixture({ agent: true });
+  const prefix = "p".repeat(1_000);
+  const longer = prefix + suffix;
+  cdp.nodes = page([ax("choice", "combobox", "Choice", { backendDOMNodeId: 11 })]);
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    if (method === "DOM.describeNode" && params?.backendNodeId === 11) return { node: { nodeName: "SELECT", backendNodeId: 11,
+      children: [
+        { nodeName: "OPTION", backendNodeId: 21, attributes: ["value", longer], children: [{ nodeName: "#text", nodeValue: "Long option" }] },
+        { nodeName: "OPTION", backendNodeId: 22, attributes: ["value", prefix], children: [{ nodeName: "#text", nodeValue: "Prefix option" }] },
+      ] } };
+    return send(method, params);
+  });
+  const live = await approve("browser_select");
+  const shot = await actions.snapshot(live, {});
+  const readOptions = (text: string): Array<{ value: string; label: string }> => {
+    const json = text.match(/options=(\[[^\n]+\])/u)?.[1];
+    if (!json) throw new Error("Snapshot options unavailable");
+    return JSON.parse(json);
+  };
+  const expected = [{ value: longer, label: "Long option" }, { value: prefix, label: "Prefix option" }];
+  const actual = readOptions(shot.text);
+  expect(actual.map(({ value, label }) => ({ value, label }))).toEqual(expected);
+  expect(new Set(actual.map(option => option.value)).size).toBe(2);
+  const output = fenceBrowserContent({ url: shot.url, title: shot.title, refs: shot.refCount }, shot.text);
+  expect(readOptions(output).map(({ value, label }) => ({ value, label }))).toEqual(expected);
+  expect(output.match(/<browser-content trust="untrusted-web-data">/g)).toHaveLength(1);
+  expect(output.match(/<\/browser-content>/g)).toHaveLength(1);
 });
 
 it.each([false, true])("selects in an awake owned background guest without revealing the panel: %s", async (otherShown) => {
@@ -2220,4 +2337,66 @@ describe("native intercepted drag lifetime", () => {
     expect(f.guest.debugger.detach).toHaveBeenCalledTimes(targetCancelFails ? 1 : 0);
     f.guest.emit("destroyed");
   });
+});
+
+it("returns parked native frame focus before continuing a held touch", async () => {
+  const { cdp, actions, approve, registry } = adapterFixture({ agent: true });
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  const live = await approve("browser_click");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+  if (!ref) throw new Error("Missing link ref");
+  let nativeGuestFocus = false;
+  let touchOpen = false;
+  let checkedHeldTouch = false;
+  const release = registry.releaseFocus.bind(registry);
+  vi.spyOn(registry, "releaseFocus").mockImplementation(async (id, leaseId) => {
+    await release(id, leaseId);
+    nativeGuestFocus = false;
+  });
+  const send = cdp.send.bind(cdp);
+  vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+    if (method === "DOM.getNodeForLocation" && touchOpen) {
+      checkedHeldTouch = true;
+      expect(nativeGuestFocus, "parked input still owns the native keyboard frame").toBe(false);
+    }
+    const result = await send(method, params);
+    if (method === "Input.dispatchTouchEvent" && params?.type === "touchStart") { nativeGuestFocus = true; touchOpen = true; }
+    if (method === "Input.dispatchTouchEvent" && params?.type === "touchEnd") touchOpen = false;
+    return result;
+  });
+  await expect(actions.click(live, ref)).resolves.toBeUndefined();
+  expect(nativeGuestFocus).toBe(false);
+  expect(checkedHeldTouch).toBe(true);
+});
+
+it("refuses to continue a parked touch when an acknowledgement leaves native focus in the guest", async () => {
+  const { cdp, guest, registry, actions, approve } = adapterFixture({ agent: true });
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  Object.assign(guest.mainFrame, { framesInSubtree: [guest.mainFrame] });
+  const live = await approve("browser_click");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+  if (!ref) throw new Error("Missing link ref");
+  const release = registry.releaseFocus.bind(registry);
+  vi.spyOn(registry, "releaseFocus").mockImplementation(async (id, leaseId) => {
+    await release(id, leaseId);
+    guest.hostWebContents.focusedFrame = guest.mainFrame;
+  });
+  await expect(onFakeClock(() => actions.click(live, ref))).rejects.toThrow("did not return native keyboard routing");
+  expect(cdp.calls).toContainEqual({ method: "Input.dispatchTouchEvent", params: { type: "touchCancel", touchPoints: [] } });
+});
+
+it("does not demand a native handoff after the user switches away from the host window", async () => {
+  const { cdp, guest, registry, actions, approve } = adapterFixture({ agent: true });
+  cdp.nodes = page([ax("link", "link", "Next", { backendDOMNodeId: 5 })]);
+  Object.assign(guest.mainFrame, { framesInSubtree: [guest.mainFrame] });
+  guest.hostWebContents.isFocused = () => false;
+  const live = await approve("browser_click");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+  if (!ref) throw new Error("Missing link ref");
+  const release = registry.releaseFocus.bind(registry);
+  vi.spyOn(registry, "releaseFocus").mockImplementation(async (id, leaseId) => {
+    await release(id, leaseId);
+    guest.hostWebContents.focusedFrame = guest.mainFrame;
+  });
+  await expect(onFakeClock(() => actions.click(live, ref))).resolves.toBeUndefined();
 });

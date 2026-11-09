@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import type { AveApi } from "../types.js";
-import { getWebSurfaceElement, noteWebSurfaceFavicon, requestWebSurfaceLayout, setWebSurfaceAwake } from "./web-surfaces.js";
+import { getWebSurfaceElement, getWebSurfaceSlot, noteWebSurfaceFavicon, requestWebSurfaceLayout, setWebSurfaceAwake } from "./web-surfaces.js";
 import { guestFaviconSource } from "./favicon-source.js";
 import { isElementShown } from "./browser-observation-preview.js";
 
@@ -63,6 +63,7 @@ function isWebview(element: Element): boolean {
 export class HostFocusMemory {
   /** Most recent last. Several, because the latest (an approval card's button) is often gone by the time focus comes back. */
   private recent: HTMLElement[] = [];
+  private focusRevision = 0;
   private readonly receipts = new Map<string, { guest: HTMLElement; previous: HTMLElement; previousGuestId?: number; moved: boolean; borrowed: boolean }>();
 
   private visible(element: HTMLElement): boolean {
@@ -114,6 +115,7 @@ export class HostFocusMemory {
   constructor(private readonly doc: Document) {}
 
   readonly onFocusIn = (event: FocusEvent): void => {
+    this.focusRevision++;
     const target = event.target;
     for (const receipt of this.receipts.values()) {
       if (target === receipt.guest && !receipt.borrowed) receipt.borrowed = true;
@@ -128,8 +130,27 @@ export class HostFocusMemory {
     return () => this.doc.removeEventListener("focusin", this.onFocusIn, true);
   }
 
-  restore(): void {
+  restore(parkedGuest?: HTMLElement | null): void {
     const active = this.doc.activeElement;
+    if (parkedGuest !== undefined) {
+      if (!this.doc.hasFocus()) return;
+      if (active === this.doc.body || active === null) {
+        for (const back of [...this.recent].reverse()) {
+          if (!this.visible(back)) continue;
+          const revision = this.focusRevision;
+          back.focus({ preventScroll: true });
+          if (this.focusRevision !== revision || this.doc.activeElement !== active) break;
+        }
+      }
+      if (!this.doc.hasFocus()) return;
+      const current = this.doc.activeElement;
+      let frame: Window | null = this.doc.defaultView;
+      if (current !== parkedGuest && current instanceof HTMLIFrameElement) frame = current.contentWindow;
+      else if (current !== parkedGuest && current instanceof HTMLElement && isWebview(current)) frame = current.shadowRoot?.querySelector("iframe")?.contentWindow ?? null;
+      // Change the frame's native routing without running an editor's DOM blur handlers.
+      frame?.focus();
+      return;
+    }
     if (!(active instanceof HTMLElement) || !isWebview(active) && active !== this.doc.body) return;
     for (const back of [...this.recent].reverse()) {
       if (!this.visible(back)) continue;
@@ -166,9 +187,14 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
   }
   if (request.op === "restore-focus") {
     if (request.receiptId !== undefined) {
-      return hostFocus?.restoreReceipt(request.receiptId, getWebSurfaceElement(request.tabId), request.preserveFocus) ? undefined : "refused";
+      return hostFocus?.restoreReceipt(request.receiptId, getWebSurfaceElement(request.tabId), request.preserveFocus || !document.hasFocus()) ? undefined : "refused";
     }
-    hostFocus?.restore();
+    const guest = getWebSurfaceElement(request.tabId);
+    const slot = getWebSurfaceSlot(request.tabId);
+    // Parking keeps the old frame painted until acknowledgement; the slot owns display intent.
+    if (guest === document.activeElement && slot && isElementShown(slot)) return;
+    if (!hostFocus) return "refused";
+    hostFocus.restore(guest);
     return;
   }
   if (request.op === "new" && request.inTabId !== undefined) {
@@ -220,7 +246,7 @@ export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () =>
     const tabs = api.browserTabs;
     const offOp = tabs.onTabOp((request) => {
       const result = routeBrowserTabOp(request);
-      if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId !== undefined) {
+      if (request.op === "capture-focus" || request.op === "restore-focus") {
         void tabs.completeFocus(request.requestId, result !== "refused");
       } else if (result === "refused") void tabs.refuseTabOp(request.requestId);
     });

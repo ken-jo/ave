@@ -116,9 +116,14 @@
   "vitest": {
     "config": "config/vitest.analysis.config.ts"
   },
-  // The declaration supplies test TypeScript types for a Node test helper.
-  // The runtime import names its .mjs sibling, so the file graph misses it.
-  "ignoreFiles": ["src/__tests__/support/git-fixture-env.d.mts"],
+  // Each declaration supplies test TypeScript types for a Node module
+  // (no allowJs). The runtime import names its .mjs sibling, so the file graph
+  // misses it.
+  "ignoreFiles": [
+    "src/__tests__/support/git-fixture-env.d.mts",
+    ".github/scripts/python-archive-cache.d.mts",
+    ".github/scripts/python-download-mirror.d.mts"
+  ],
   "ignoreDependencies": [
     // Invoked as a BINARY from an argv array the pre-push hook builds at runtime
     // (`bun x electron-rebuild -f --only better-sqlite3`, scripts/hooks/run-local-checks.mjs),

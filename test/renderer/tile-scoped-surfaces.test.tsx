@@ -1,7 +1,7 @@
 // Session-owned surfaces stay with their tiles; unowned surfaces render once for the window.
 import "./setup.js";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { act, cleanup, createEvent, fireEvent, waitFor } from "@testing-library/react";
+import { act, cleanup, createEvent, fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
 import {
   approvalRequest,
@@ -48,7 +48,7 @@ function permissionSubscription(name: string): ReturnType<typeof vi.fn> {
   return (window.ave.permission as unknown as Record<string, ReturnType<typeof vi.fn>>)[name]!;
 }
 
-describe("permission disclosure toasts with two tiles", () => {
+describe("permission disclosure history with two tiles", () => {
   it("subscribes and renders once for the window, not once per tile", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     const onHit = permissionSubscription("onUserApprovalHit");
@@ -68,9 +68,10 @@ describe("permission disclosure toasts with two tiles", () => {
       fire({ toolName: "fs_write", scope: "persistent", verdictAtApproval: "low" });
     });
 
+    fireEvent.click(screen.getByTestId("notification-bell"));
     await waitFor(() => {
       expect(
-        container.querySelectorAll('[data-notice-kind="approval-memory-hit-low"]'),
+        screen.queryAllByTestId("notification-history-row"),
       ).toHaveLength(1);
     });
   });
@@ -1469,7 +1470,10 @@ describe("three tiles, every kind of surface at once", () => {
     });
 
     await waitFor(() => expect(count(container, "approval-dock")).toBe(1));
-    await waitFor(() => expect(container.querySelectorAll('[data-notice-kind="approval-memory-hit-low"]').length).toBe(1));
+    fireEvent.click(screen.getByTestId("notification-bell"));
+    await waitFor(() => expect(screen.getAllByTestId("notification-history-row")).toHaveLength(1));
+    expect(screen.getByTestId("notification-history-row")).toHaveAttribute("data-notice-id", "approval-memory-hit:low");
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(count(container, "skill-badge")).toBe(1);
     expect(count(container, "overlay-card-region")).toBe(1);
 
@@ -2265,18 +2269,36 @@ describe("notices with two tiles", () => {
   const toasts = (root: ParentNode) => root.querySelectorAll('[data-testid="status-toast-message"]');
   const strip = (c: HTMLElement) => c.querySelector<HTMLElement>('[data-testid="window-notice-strip"]')!;
 
-  it("draws a window notice once, in the window strip, and in no composer dock", async () => {
+  it("records a window notice once in the bell and in no pane or composer dock", async () => {
     const { container, emitNotificationToast } = await renderApp({ hasApiKey: true });
     await splitIntoTwoTiles(container);
+    await act(async () => { emitNotificationToast({ id: "main:1", createdAt: Date.now(), kind: "system", title: "완료", body: "창 전체에 한 번" }); });
+    await waitFor(() => expect(screen.getByTestId("notification-bell-count")).toHaveTextContent("1"));
+    expect(toasts(container)).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid="composer-toast-dock"] [data-testid="status-toast"]')).toHaveLength(0);
+    fireEvent.click(screen.getByTestId("notification-bell"));
+    expect(screen.getAllByTestId("notification-history-row")).toHaveLength(1);
+    expect(screen.getByTestId("notification-history-row")).toHaveTextContent("창 전체에 한 번");
+  });
 
-    await act(async () => {
-      emitNotificationToast({ kind: "ask-user", title: "질문", body: "창 전체에 한 번", contextRef: { questionId: "q-1" } });
-    });
-
-    // Window notifications render once regardless of tile count.
-    await waitFor(() => expect(toasts(container)).toHaveLength(1));
-    expect(toasts(strip(container))).toHaveLength(1);
-    expect(container.querySelectorAll('[data-testid="composer-toast-dock"]')).toHaveLength(0);
+  it("keeps window history and its live region across routed views", async () => {
+    const { container, emitNotificationToast } = await renderApp({ hasApiKey: true });
+    const liveRegion = strip(container).querySelector('[data-testid="notice-live-polite"]');
+    const bell = screen.getByTestId("notification-bell");
+    await act(async () => { emitNotificationToast({ id: "main:1", createdAt: Date.now(), kind: "system", title: "Ready", body: "Window notice", sticky: true }); });
+    await waitFor(() => expect(bell).toHaveAccessibleName(/1/));
+    await clickSidebarNavRow("features", "toolbar-work-board");
+    await waitFor(() => expect(container.querySelector('[data-testid="main-pane-shell"][data-view="work-board"]')).not.toBeNull());
+    expect(screen.getByTestId("notification-bell")).toBe(bell);
+    expect(strip(container).querySelector('[data-testid="notice-live-polite"]')).toBe(liveRegion);
+    fireEvent.click(bell);
+    expect(screen.getByTestId("notification-history-row")).toHaveTextContent("Window notice");
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    await act(async () => { fireEvent.click(container.querySelector('[data-testid="pane-close"]') as HTMLButtonElement); });
+    await waitFor(() => expect(container.querySelector('[data-testid="main-pane-shell"][data-view="work-board"]')).toBeNull());
+    fireEvent.click(bell);
+    expect(screen.getByTestId("notification-history-row")).toHaveTextContent("Window notice");
+    expect(toasts(container)).toHaveLength(0);
   });
 
   it("draws a provider fallback in the tile whose turn swapped, focused or not", async () => {
@@ -2292,17 +2314,15 @@ describe("notices with two tiles", () => {
     expect(toasts(strip(container))).toHaveLength(0);
     expect(toasts(container)).toHaveLength(1);
 
-    // Notices occupy their own flow row so they cannot cover the selector strip.
-    const toastRow = first!.element.querySelector<HTMLElement>('[data-testid="composer-toast-dock"]')!;
-    const selectorSlot = first!.element.querySelector<HTMLElement>('[data-testid="composer-project-selector-slot"]')!;
-    expect(selectorSlot).not.toBeNull();
-    expect(toastRow.className).not.toMatch(/\b(absolute|fixed)\b/);
-    expect(toastRow.contains(selectorSlot)).toBe(false);
-    expect(toastRow.nextElementSibling?.contains(selectorSlot)).toBe(true);
-    expect(toastRow.parentElement!.className).toMatch(/\bflex-col\b/);
+    const toastDock = first!.element.querySelector<HTMLElement>('[data-testid="composer-toast-dock"]')!;
+    const overlay = toastDock.querySelector<HTMLElement>('[data-testid="status-bar-presence"]')!;
+    expect(overlay.className).toMatch(/\babsolute\b/);
+    expect(overlay.className).toContain("bottom-full");
+    expect(overlay.className).toContain("z-30");
+    expect(toastDock.parentElement!.closest(".overflow-x-hidden")).toBeNull();
   });
 
-  it("keeps the window strip in flow above the panes, never floating over a pane's lane", async () => {
+  it("keeps persistent window banners in flow above the panes", async () => {
     const { container, api } = await renderApp({ hasApiKey: true });
     await splitIntoTwoTiles(container);
     const listener = api.onMarketplaceAnnouncements.mock.calls[0]?.[0] as

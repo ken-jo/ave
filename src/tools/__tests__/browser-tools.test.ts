@@ -100,12 +100,12 @@ function fakeActions() {
     click: record("click") as BrowserPageActions<FakeGuest>["click"],
     type: record("type") as BrowserPageActions<FakeGuest>["type"],
     pressKey: record("pressKey") as BrowserPageActions<FakeGuest>["pressKey"],
-    settle: async (target) => ({ url: target.tab.guest!.url }),
+    settle: async (target) => ({ url: target.tab.guest!.url, loading: false }),
     navigate: async (target, url) => {
       calls.push({ action: "navigate", tab: target.tab.handle, args: [url] });
       await target.authorizeSite?.(url);
       target.tab.guest!.url = url;
-      return { url };
+      return { url, loading: false };
     },
   };
   return { actions, calls, targets, release: () => pending?.resolve() };
@@ -977,7 +977,8 @@ describe("browser tools", () => {
   it("asks before every action in a user tab, with nothing to remember", async () => {
     const { run, cards, page, userTab } = harness();
     const user = userTab("https://a.example/");
-    await run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
+    const clicked = await run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
+    expect(browserHeader(clicked.output)).toMatchObject({ url: "https://a.example/", loading: false });
     await run(BROWSER_TOOL.click, { tabId: user.handle, ref: "e1" });
     expect(cards).toHaveLength(2);
     for (const card of cards) {
@@ -1067,6 +1068,7 @@ describe("browser tools", () => {
     expect(badRef.output).toContain("ref must be an element ref");
     const ok = await run(BROWSER_TOOL.navigate, { tabId: agent.handle, url: "https://b.example/page" });
     expect(ok.isError).toBe(false);
+    expect(browserHeader(ok.output)).toMatchObject({ url: "https://b.example/page", loading: false });
     expect(page.calls).toEqual([{ action: "navigate", tab: agent.handle, args: ["https://b.example/page"] }]);
     expect(cards.length).toBeGreaterThan(0);
   });
@@ -1103,7 +1105,7 @@ describe("browser tools", () => {
     h.tabs.bindTab(1, { tabId: "renderer-610", webContentsId: 610, requestId: h.ops.at(-1)!.requestId! });
     const result = await opening;
     expect(result.isError).toBe(false);
-    expect(browserHeader(result.output)).toMatchObject({ tabId: "tab-1", url: "https://a.example/start", openedBy: "agent" });
+    expect(browserHeader(result.output)).toMatchObject({ tabId: "tab-1", url: "https://a.example/start", loading: false, openedBy: "agent" });
     expect(h.cards).toHaveLength(1);
     expect(h.cards[0]?.browserSite).toBe("https://a.example:443");
     expect(h.page.calls.map((call) => call.action)).toEqual(["navigate"]);
@@ -1312,6 +1314,15 @@ describe("browser tools", () => {
     expect(JSON.stringify(schema)).not.toContain("token");
   });
 
+  it("refuses an over-limit exact option value without selecting its shorter prefix", async () => {
+    const { run, page, agentTab } = harness();
+    const tab = await agentTab("https://a.example/");
+    const result = await run(BROWSER_TOOL.select, { tabId: tab.handle, ref: "e1", value: `${"p".repeat(1_000)}X` });
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("value must be a string of at most 1000 characters");
+    expect(page.calls).toEqual([]);
+  });
+
   it("validates each new typed operand before loading or acting", async () => {
     const { run, page, userTab } = harness();
     const user = userTab("https://a.example/");
@@ -1381,6 +1392,7 @@ describe("browser tools", () => {
     expect(cards[0]).toMatchObject({ browserSite: "https://a.example:443", exactRecordAllowed: false });
     expect(result.isError).toBe(false);
     expect(result.output).toContain('"url":"https://a.example/start"');
+    expect(browserHeader(result.output)).toMatchObject({ loading: false });
     expect(result.output).toContain('"openedBy":"agent"');
     expect(page.calls).toEqual([{ action: "navigate", tab: "tab-1", args: ["https://a.example/start"] }]);
     expect(tabs.liveTab("tab-1")?.opener).toBe("agent");

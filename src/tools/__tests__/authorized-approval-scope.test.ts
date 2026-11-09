@@ -165,15 +165,16 @@ describe("authorized approval scope", () => {
     expect(authorizedApprovalMemoryScope(seen[0])).toBeUndefined();
   });
 
-  it("does not treat an arbitrary builtin's browser-shaped scope as a user-owned surface", async () => {
+  it.each(["user", "agent"])("keeps an arbitrary builtin's %s browser-shaped scope in the ordinary approval lane", async (owner) => {
     const { tool, seen } = probe({ scoped: true });
     const { run, cards } = harness([tool], "default");
-    const result = await run(BROWSER_TOOL.click, { owner: "user" });
+    const result = await run(BROWSER_TOOL.click, { owner });
     expect(result?.is_error).toBeFalsy();
     expect(cards).toHaveLength(1);
     expect(cards[0].userOwnedSurface).toBeUndefined();
     expect(cards[0].allowedChoices).toBeUndefined();
+    expect(cards[0].exactRecordAllowed).toBe(true);
     expect(seen).toHaveLength(1);
-    expect(authorizedApprovalMemoryScope(seen[0])).toMatchObject({ kind: "browser-origin", tabOpener: "user" });
+    expect(authorizedApprovalMemoryScope(seen[0])).toMatchObject({ kind: "browser-origin", tabOpener: owner });
   });
 });

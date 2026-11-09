@@ -1,3 +1,4 @@
+import { ToolbarStatusMenuButton } from "./toolbar-status-menu.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RadioTower, RefreshCw, RotateCcw, Send, Square } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -210,7 +211,7 @@ export function RemoteA2AActionButton() {
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
-            <Button
+            <ToolbarStatusMenuButton
               type="button"
               variant="ghost"
               size="sm"
@@ -220,7 +221,7 @@ export function RemoteA2AActionButton() {
             >
               <RadioTower className="h-3.5 w-3.5" aria-hidden="true" />
               <span>{t("remoteA2aActionButton.triggerLabel")}</span>
-            </Button>
+            </ToolbarStatusMenuButton>
           </PopoverTrigger>
         </TooltipTrigger>
         <TooltipContent side="bottom">{t("remoteA2aActionButton.triggerTooltip")}</TooltipContent>

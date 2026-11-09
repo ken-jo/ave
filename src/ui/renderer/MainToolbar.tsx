@@ -1,4 +1,11 @@
-import { ArrowDownToLine, Download, RefreshCw, Wrench, X } from "lucide-react";
+import { useState } from "react";
+import { ArrowDownToLine, Download, RefreshCw, Wrench, X, MoreHorizontal } from "lucide-react";
+import { Button } from "../../components/ui/button.js";
+import { Badge } from "../../components/ui/badge.js";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from "../../components/ui/dropdown-menu.js";
+import { updateViewNeedsUser } from "../../shared/git-marketplace.js";
+import { ToolbarStatusMenuContext } from "./components/toolbar-status-menu.js";
+import { useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { ZoomIndicator } from "./components/ZoomControls.js";
 import { ViewHistoryNav, ViewPathBreadcrumb, type ViewPathNavProps } from "./components/ViewPathNav.js";
 import { useTranslation } from "../../i18n/react.js";
@@ -6,7 +13,11 @@ import { RemoteA2AActionButton } from "./components/RemoteA2AActionButton.js";
 import { ToolbarStatusPill } from "./components/ToolbarStatusPill.js";
 import { BootstrapStatusPill, type BootstrapStatusPillProps } from "./components/BootstrapStatusPill.js";
 import { PluginUpdatesPill, type PluginUpdatesPillProps } from "./components/PluginUpdatesPill.js";
-import { WorkApprovalsBadge, type WorkApprovalsBadgeProps } from "./components/work-approvals/WorkApprovalsBadge.js";
+import type { WorkApprovalsProps } from "./components/work-approvals/WorkApprovalsList.js";
+import { NotificationBell } from "./components/NotificationBell.js";
+import type { NoticeRecord, NotificationHistory } from "./notification-history.js";
+
+const STATUS_OVERFLOW_WIDTH = 768;
 
 /** Every toolbar control must opt out of the title band's drag region to remain clickable. */
 function NoDrag({ children, className }: { children: React.ReactNode; className?: string }) {
@@ -31,6 +42,8 @@ function isDevMode(): boolean {
 }
 
 export interface MainToolbarProps {
+  notificationHistory?: NotificationHistory;
+  onOpenNotification?: (notice: NoticeRecord) => void;
   /** Current location path. Rendered on the band's leading edge, immediately after the sidebar-clearance reserve. */
   viewNav: ViewPathNavProps;
   streaming: boolean;
@@ -51,11 +64,13 @@ export interface MainToolbarProps {
   pluginUpdates?: PluginUpdatesPillProps;
   /** Managed-plugin bootstrap pill wiring. Omitted where no bootstrap runs. */
   bootstrapStatus?: BootstrapStatusPillProps;
-  /** 확인 필요 badge wiring (work-level approvals only). Omitted where no work board runs. */
-  workApprovals?: WorkApprovalsBadgeProps;
+  /** Work-level approvals share the notification centre. */
+  workApprovals?: WorkApprovalsProps;
 }
 
 export function MainToolbar({
+  notificationHistory,
+  onOpenNotification,
   viewNav,
   streaming: _streaming,
   hasApiKey: _hasApiKey,
@@ -70,11 +85,70 @@ export function MainToolbar({
   workApprovals,
 }: MainToolbarProps) {
   const { t } = useTranslation();
+  const [toolbar, setToolbar] = useState<HTMLDivElement | null>(null);
+  const { isNarrow: overflow } = useContainerNarrow(toolbar, { enter: STATUS_OVERFLOW_WIDTH, exit: STATUS_OVERFLOW_WIDTH });
+  const bootstrap = bootstrapStatus?.status;
+  const pillCount = Number(appUpdateState.kind !== "idle")
+    + Number((pluginUpdates?.updates.filter(updateViewNeedsUser).length ?? 0) > 0)
+    + Number(bootstrap !== null && bootstrap !== undefined && (bootstrap.phase !== "complete" || bootstrap.skipped !== undefined || bootstrap.failed.length > 0))
+    + Number(isDevMode() && onOpenDevTools !== undefined);
+  const devControl = (<>
+      {isDevMode() && onOpenDevTools !== undefined && (
+        <NoDrag className="shrink-0">
+          <ToolbarStatusPill
+            tone="warning"
+            icon={Wrench}
+            label="Dev"
+            title={t("mainToolbar.devToolsTooltip")}
+            ariaLabel={t("mainToolbar.devToolsTitle")}
+            trailing={
+              <kbd className="rounded border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-1 text-tiny">⇧⌘D</kbd>
+            }
+            onClick={onOpenDevTools}
+            testId="dev-tools-toggle"
+          />
+        </NoDrag>
+      )}
+  </>);
+  const statusControls = (<>
+      {/* Each control owns the same visibility and action in the band and menu. */}
+      <NoDrag className="shrink-0 empty:hidden">
+        <AppUpdateBadge
+          state={appUpdateState}
+          inFlight={appUpdateInFlight}
+          onDownload={onDownloadAppUpdate}
+          onInstall={onInstallAppUpdate}
+          onSkip={onSkipAppUpdate}
+        />
+      </NoDrag>
+
+      {pluginUpdates && (
+        <NoDrag className="shrink-0 empty:hidden">
+          <PluginUpdatesPill {...pluginUpdates} />
+        </NoDrag>
+      )}
+
+      <NoDrag className="shrink-0 empty:hidden">
+        <ZoomIndicator />
+      </NoDrag>
+      <NoDrag className="shrink-0 empty:hidden">
+        <RemoteA2AActionButton />
+      </NoDrag>
+
+      {bootstrapStatus && (
+        <NoDrag className="shrink-0 empty:hidden">
+          <BootstrapStatusPill {...bootstrapStatus} />
+        </NoDrag>
+      )}
+
+      {overflow && devControl}
+  </>);
   // The toolbar content lives IN the window-control band (CustomTitleBar): back / forward and the location path on the
   // leading edge, then a spacer (it stays a drag region) that pushes the status controls to the far-right edge. Each control
   // is wrapped `no-drag` so the surrounding band stays draggable.
   return (
     <div
+      ref={setToolbar}
       data-testid="main-toolbar"
       className="flex min-w-0 flex-1 items-center gap-(--chrome-gap-tight) sm:gap-(--chrome-gap)"
     >
@@ -94,83 +168,33 @@ export function MainToolbar({
           onForward={viewNav.onForward}
         />
       </NoDrag>
-      <NoDrag className="flex min-w-0 max-w-[45%] shrink-0 items-center">
+      <NoDrag className="hidden min-w-0 max-w-[45%] shrink items-center overflow-hidden md:flex">
         <ViewPathBreadcrumb segments={viewNav.segments} onSelectSegment={viewNav.onSelectSegment} />
       </NoDrag>
 
-      {/* ── Spacer pushes the trailing controls to the far-right edge (stays drag) */}
-      <div className="min-w-0 flex-1 sm:min-w-[64px]" aria-hidden="true" data-testid="main-toolbar-drag-band" />
+      <div className="min-w-0 flex-1" data-testid="main-toolbar-drag-band" />
 
-      <NoDrag className="empty:hidden">
-        <ZoomIndicator />
+      <ToolbarStatusMenuContext.Provider value={overflow}>
+        {overflow ? (
+          <NoDrag className="shrink-0">
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" className="relative h-(--chrome-control-height) w-(--chrome-control-height) shrink-0" aria-label={t("mainToolbar.statusOverflow", { count: pillCount })} data-testid="toolbar-status-overflow">
+                  <MoreHorizontal className="h-4 w-4" />
+                  <Badge aria-hidden="true" className="pointer-events-none absolute -right-1 -top-1 h-3.5 min-w-3.5 justify-center p-0 text-tiny leading-none" data-testid="toolbar-status-overflow-count">{pillCount}</Badge>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="max-w-[calc(100vw-1rem)] max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto" data-testid="toolbar-status-menu">
+                {statusControls}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </NoDrag>
+        ) : <div data-testid="toolbar-status-controls" className="flex shrink-0 items-center gap-(--chrome-gap-tight)">{statusControls}</div>}
+      </ToolbarStatusMenuContext.Provider>
+      <NoDrag className="shrink-0">
+        <NotificationBell history={notificationHistory} workApprovals={workApprovals} onOpenNotification={onOpenNotification} />
       </NoDrag>
-      <NoDrag>
-        <RemoteA2AActionButton />
-      </NoDrag>
-
-      {/* ── Lifecycle status pills, app-wide first then plugin-wide: app update,
-          plugin updates, managed-plugin bootstrap. Each is permanent (NOT a
-          toast) until acted on, and each renders nothing in its resting state,
-          so the band gains no weight on a launch where everything is current.
-
-          Plugin updates and bootstrap status used to float over the content as
-          banners in the top-right stack. They sit here because they say the
-          same kind of thing the app-update badge says — something about the
-          install, waiting on the user — and one row of pills costs the content
-          nothing.
-
-          A pill at rest renders nothing, and an empty `no-drag` span is still a
-          flex item that claims a gap — `empty:hidden` gives that width back to
-          the drag region instead of leaving three holes in the band.
-
-          The app-update download step is the user's first explicit consent.
-          Never download before the user's explicit click. */}
-      <NoDrag className="empty:hidden">
-        <AppUpdateBadge
-          state={appUpdateState}
-          inFlight={appUpdateInFlight}
-          onDownload={onDownloadAppUpdate}
-          onInstall={onInstallAppUpdate}
-          onSkip={onSkipAppUpdate}
-        />
-      </NoDrag>
-
-      {pluginUpdates && (
-        <NoDrag className="empty:hidden">
-          <PluginUpdatesPill {...pluginUpdates} />
-        </NoDrag>
-      )}
-
-      {bootstrapStatus && (
-        <NoDrag className="empty:hidden">
-          <BootstrapStatusPill {...bootstrapStatus} />
-        </NoDrag>
-      )}
-
-      {/* 확인 필요: renders nothing at zero and until its first result, like the pills above. */}
-      {workApprovals && (
-        <NoDrag className="empty:hidden">
-          <WorkApprovalsBadge {...workApprovals} />
-        </NoDrag>
-      )}
-
-      {/* Development controls stay at the trailing edge of the title band. */}
-      {isDevMode() && onOpenDevTools !== undefined && (
-        <NoDrag className="hidden sm:inline-flex">
-          <ToolbarStatusPill
-            tone="warning"
-            icon={Wrench}
-            label="Dev"
-            title={t("mainToolbar.devToolsTooltip")}
-            ariaLabel={t("mainToolbar.devToolsTitle")}
-            trailing={
-              <kbd className="rounded border border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-1 text-tiny">⇧⌘D</kbd>
-            }
-            onClick={onOpenDevTools}
-            testId="dev-tools-toggle"
-          />
-        </NoDrag>
-      )}
+      {!overflow && devControl}
 
       {/* The work-panel toggle used to sit here. It moved into the chat
           group's own header: the panel shows what THAT conversation is doing,

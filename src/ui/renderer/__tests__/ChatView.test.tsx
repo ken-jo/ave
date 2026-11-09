@@ -2646,10 +2646,8 @@ describe("ChatView", () => {
 
 });
 
-describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/3)", () => {
-  // The disclosure is a notice in the window's queue; its kind names it, its severity carries the verdict tier.
-  const APPROVAL_HIT = '[data-notice-kind^="approval-memory-hit"]';
-
+describe("ChatView — userApprovalHit disclosure history", () => {
+  const APPROVAL_HIT = '[data-testid="notification-history-row"][data-notice-id^="approval-memory-hit:"]';
   type HitCb = (payload: {
     toolName: string;
     scope: "session" | "persistent";
@@ -2657,214 +2655,182 @@ describe("ChatView — userApprovalHit disclosure toast (#793 + cluster MAJOR-2/
   }) => void;
 
   async function setupWithCallback() {
-    const { container, api, unmount } = await renderApp({ hasApiKey: true });
-    const onHitMock = window.ave.permission.onUserApprovalHit as unknown as ReturnType<
-      typeof vi.fn
-    >;
+    const { container, unmount } = await renderApp({ hasApiKey: true });
+    const onHitMock = window.ave.permission.onUserApprovalHit as unknown as ReturnType<typeof vi.fn>;
     await waitFor(() => expect(onHitMock).toHaveBeenCalled());
     const fire = onHitMock.mock.calls[0]?.[0] as HitCb;
     expect(typeof fire).toBe("function");
-    return { container, unmount, fire };
+    const openBell = async () => {
+      await act(async () => {
+        fireEvent.click(container.querySelector('[data-testid="notification-bell"]') as HTMLButtonElement);
+      });
+      await waitFor(() => expect(document.querySelector('[data-testid="notification-center"]')).not.toBeNull());
+    };
+    const hit = (tier: "low" | "medium" | "high") => document.querySelector<HTMLElement>(
+      `[data-testid="notification-history-row"][data-notice-id="approval-memory-hit:${tier}"]`,
+    );
+    return { container, unmount, fire, openBell, hit };
   }
 
-  it("renders toast on user-approval-hit broadcast with tool name + scope + verdict", async () => {
-    const { container, fire } = await setupWithCallback();
+  it("records the tool, scope and verdict in the bell without a floating notice", async () => {
+    const { container, fire, openBell, hit } = await setupWithCallback();
     await act(async () => {
       fire({ toolName: "fs_write", scope: "persistent", verdictAtApproval: "low" });
     });
-    const toast = await waitFor(() => {
-      const el = container.querySelector(APPROVAL_HIT);
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    expect(toast.textContent).toContain("권한 메모리 적용");
-    expect(toast.textContent).toContain("fs_write");
-    expect(toast.textContent).toContain("영구");
-    expect(toast.textContent).toContain("LOW");
+    expect(container.querySelector('[data-testid="status-toast"]')).toBeNull();
+    expect(container.querySelector('[data-testid="notification-bell-count"]')?.textContent).toBe("1");
+    await openBell();
+    const row = hit("low");
+    expect(row?.textContent).toContain("권한 메모리 적용");
+    expect(row?.textContent).toContain("fs_write");
+    expect(row?.textContent).toContain("영구");
+    expect(row?.textContent).toContain("LOW");
+    expect(container.querySelector('[data-testid="notification-bell-count"]')).toBeNull();
   });
 
-  it("session-scope hits render '세션' label, not '영구'", async () => {
-    const { container, fire } = await setupWithCallback();
+  it("session-scope hits show the session label", async () => {
+    const { fire, openBell, hit } = await setupWithCallback();
     await act(async () => {
       fire({ toolName: "bash_run", scope: "session", verdictAtApproval: "medium" });
     });
-    const toast = await waitFor(() => {
-      const el = container.querySelector(APPROVAL_HIT);
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    expect(toast.textContent).toContain("세션");
-    expect(toast.textContent).not.toContain("영구");
-    expect(toast.textContent).toContain("MEDIUM");
+    await openBell();
+    expect(hit("medium")?.textContent).toContain("세션");
+    expect(hit("medium")?.textContent).not.toContain("영구");
+    expect(hit("medium")?.textContent).toContain("MEDIUM");
   });
 
-  it("verdict tier sets the notice severity (low=success, medium=warning, high=warning) — a reuse is never an error", async () => {
-    const { container, fire } = await setupWithCallback();
+  it("verdict tiers retain their severity and a reuse is never an error", async () => {
+    const { fire, openBell, hit } = await setupWithCallback();
     const cases: Array<["low" | "medium" | "high", string]> = [
-      ["low", "success"],
-      ["medium", "warning"],
-      ["high", "warning"],
+      ["low", "success"], ["medium", "warning"], ["high", "warning"],
     ];
-    for (const [verdict, severity] of cases) {
-      // Each tier has its own notice; close the one shown so the next tier reaches the head.
-      const shownDismiss = container.querySelector<HTMLButtonElement>(`${APPROVAL_HIT} [data-testid="status-toast-dismiss"]`);
-      if (shownDismiss) {
-        await act(async () => {
-          fireEvent.click(shownDismiss);
-        });
-      }
+    for (const [verdict] of cases) {
       await act(async () => {
         fire({ toolName: `tool_${verdict}`, scope: "session", verdictAtApproval: verdict });
       });
-      await waitFor(() => {
-        const el = container.querySelector(APPROVAL_HIT);
-        expect(el?.textContent).toContain(`tool_${verdict}`);
-        expect(el?.getAttribute("data-severity"), `verdict=${verdict}`).toBe(severity);
-      });
+    }
+    await openBell();
+    for (const [verdict, severity] of cases) {
+      expect(hit(verdict)?.textContent).toContain(`tool_${verdict}`);
+      expect(hit(verdict)?.getAttribute("data-severity"), `verdict=${verdict}`).toBe(severity);
     }
   });
 
-  it("only a low hit, which repeats on every cached approval, offers Don't show again", async () => {
-    const { container, fire } = await setupWithCallback();
-    for (const verdict of ["high", "medium"] as const) {
-      await act(async () => {
-        fire({ toolName: `fs_${verdict}`, scope: "session", verdictAtApproval: verdict });
-      });
-      await waitFor(() => expect(container.querySelector(APPROVAL_HIT)?.textContent).toContain(`fs_${verdict}`));
-      expect(container.querySelector('[data-testid="status-toast-suppress"]'), verdict).toBeNull();
-      await act(async () => {
-        fireEvent.click(container.querySelector(`${APPROVAL_HIT} [data-testid="status-toast-dismiss"]`) as HTMLButtonElement);
-      });
-    }
+  it("clearing a low reuse removes its history without suppressing later occurrences", async () => {
+    const { container, fire, openBell, hit } = await setupWithCallback();
     await act(async () => {
       fire({ toolName: "fs_read", scope: "session", verdictAtApproval: "low" });
     });
-    const suppress = await waitFor(() => {
-      const el = container.querySelector<HTMLButtonElement>('[data-testid="status-toast-suppress"]');
-      expect(el).not.toBeNull();
-      return el as HTMLButtonElement;
+    await openBell();
+    expect(document.querySelector('[data-testid="status-toast-suppress"]')).toBeNull();
+    await act(async () => {
+      const row = hit("low");
+      if (!row) throw new Error("Missing low reuse history");
+      fireEvent.click(within(row).getByTestId("notification-history-clear"));
     });
-    try {
-      await act(async () => {
-        fireEvent.click(suppress);
-      });
-      // The strip draws its last content once more while it leaves; only a notice outside that exit copy is "shown".
-      const shown = () => container.querySelector(`[data-testid="status-bar-presence"]:not([data-leaving]) ${APPROVAL_HIT}`);
-      expect(shown()).toBeNull();
-      await act(async () => {
-        fire({ toolName: "fs_read_again", scope: "session", verdictAtApproval: "low" });
-      });
-      expect(container.textContent).not.toContain("fs_read_again");
-    } finally {
-      window.localStorage.removeItem("ave.notices.suppressed");
-    }
+    expect(hit("low")).toBeNull();
+    await act(async () => {
+      fireEvent.keyDown(within(document.body).getByTestId("notification-center"), { key: "Escape" });
+    });
+    await waitFor(() => expect(document.querySelector('[data-testid="notification-center"]')).toBeNull());
+    await act(async () => {
+      fire({ toolName: "fs_read_again", scope: "session", verdictAtApproval: "low" });
+    });
+    expect(container.querySelector('[data-testid="notification-bell-count"]')?.textContent).toBe("1");
+    await openBell();
+    expect(hit("low")?.textContent).toContain("fs_read_again");
   });
 
-  it("HIGH verdict is a polite warning that stays until it is dismissed", async () => {
+  it("HIGH verdict stays in history until cleared and never expires", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "Date"] });
     try {
-      const { container, fire } = await setupWithCallback();
+      const { fire, openBell, hit } = await setupWithCallback();
       await act(async () => {
         fire({ toolName: "fs_write_sensitive", scope: "session", verdictAtApproval: "high" });
       });
-      const toast = await waitFor(() => {
-        const el = container.querySelector('[data-notice-kind="approval-memory-hit-high"]');
-        expect(el).not.toBeNull();
-        return el as HTMLElement;
-      });
-      expect(toast.getAttribute("data-severity")).toBe("warning");
-      expect(toast.querySelector('[data-testid="status-toast-suppress"]')).toBeNull();
+      await openBell();
+      expect(hit("high")?.getAttribute("data-severity")).toBe("warning");
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      expect(hit("high")?.textContent).toContain("fs_write_sensitive");
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(60_000);
+        const row = hit("high");
+        if (!row) throw new Error("Missing high reuse history");
+        fireEvent.click(within(row).getByTestId("notification-history-clear"));
       });
-      expect(container.querySelector('[data-notice-kind="approval-memory-hit-high"]')).not.toBeNull();
+      expect(hit("high")).toBeNull();
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("a reuse is announced through the strip's polite region, never the assertive one", async () => {
-    const { container, fire } = await setupWithCallback();
+  it("announces a reuse politely while the visible history is not live", async () => {
+    const { container, fire, openBell, hit } = await setupWithCallback();
     await act(async () => {
       fire({ toolName: "fs_read", scope: "persistent", verdictAtApproval: "low" });
     });
-    const toast = await waitFor(() => {
-      const el = container.querySelector(APPROVAL_HIT);
-      expect(el).not.toBeNull();
-      return el as HTMLElement;
-    });
-    expect(toast.getAttribute("role")).toBeNull();
     const polite = [...container.querySelectorAll('[data-testid="notice-live-polite"]')].map((el) => el.textContent ?? "");
     const assertive = [...container.querySelectorAll('[data-testid="notice-live-assertive"]')].map((el) => el.textContent ?? "");
     expect(polite.some((text) => text.includes("fs_read"))).toBe(true);
     expect(assertive.some((text) => text.includes("fs_read"))).toBe(false);
+    await openBell();
+    expect(hit("low")?.getAttribute("role")).toBeNull();
+    expect(hit("low")?.closest("[aria-live]")).toBeNull();
   });
 
-  it("malformed payload dropped via structural guard (security Med-2)", async () => {
-    const { container, fire } = await setupWithCallback();
+  it("drops a malformed payload through the structural guard", async () => {
+    const { fire, openBell } = await setupWithCallback();
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await act(async () => {
-      // verdictAtApproval is null — pre-PR-A4-R3 entry shape or future bug.
-      fire({
-        toolName: "fs_write",
-        scope: "session",
-        verdictAtApproval: null as unknown as "low",
+    try {
+      await act(async () => {
+        fire({ toolName: "fs_write", scope: "session", verdictAtApproval: null as unknown as "low" });
       });
-    });
-    const toast = container.querySelector(APPROVAL_HIT);
-    expect(toast).toBeNull();
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+      await openBell();
+      expect(document.querySelector(APPROVAL_HIT)).toBeNull();
+      expect(warnSpy).toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
-  it("a later low hit queues behind an unread high notice instead of replacing it", async () => {
-    const { container, fire } = await setupWithCallback();
+  it("shows a newer low hit first while retaining the earlier high notice", async () => {
+    const { fire, openBell, hit } = await setupWithCallback();
     await act(async () => {
       fire({ toolName: "risky_tool", scope: "session", verdictAtApproval: "high" });
-    });
-    await waitFor(() => expect(container.querySelector(APPROVAL_HIT)?.textContent).toContain("risky_tool"));
-    await act(async () => {
       fire({ toolName: "safe_tool", scope: "session", verdictAtApproval: "low" });
     });
-    // After the low hit has landed (a short settle, well inside its TTL): the high notice is still the one shown — the low
-    // hit did not replace it in place — and the low one waits behind it.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const shown = container.querySelector(APPROVAL_HIT);
-    expect(shown?.textContent).toContain("risky_tool");
-    expect(shown?.textContent).not.toContain("safe_tool");
-    expect(shown?.textContent).toContain("+1");
+    await openBell();
+    expect(hit("high")?.textContent).toContain("risky_tool");
+    expect(hit("low")?.textContent).toContain("safe_tool");
+    expect([...document.querySelectorAll(APPROVAL_HIT)].map((row) => row.getAttribute("data-notice-id")))
+      .toEqual(["approval-memory-hit:low", "approval-memory-hit:high"]);
   });
 
-  it("subsequent hit replaces previous toast (new payload wins)", async () => {
-    const { container, fire } = await setupWithCallback();
+  it("a subsequent hit replaces the previous record for its verdict tier", async () => {
+    const { fire, openBell, hit } = await setupWithCallback();
     await act(async () => {
       fire({ toolName: "first_tool", scope: "session", verdictAtApproval: "low" });
-    });
-    await waitFor(() => {
-      expect(container.textContent).toContain("first_tool");
-    });
-    await act(async () => {
       fire({ toolName: "second_tool", scope: "persistent", verdictAtApproval: "low" });
     });
-    await waitFor(() => {
-      const el = container.querySelector(APPROVAL_HIT);
-      expect(el).not.toBeNull();
-      expect(el!.textContent).toContain("second_tool");
-      expect(el!.textContent).not.toContain("first_tool");
-    });
+    await openBell();
+    expect(document.querySelectorAll(APPROVAL_HIT)).toHaveLength(1);
+    expect(hit("low")?.textContent).toContain("second_tool");
+    expect(hit("low")?.textContent).not.toContain("first_tool");
   });
 
-  it("unmount mid-toast cancels dismiss timer without setState-after-unmount", async () => {
-    const { fire, unmount } = await setupWithCallback();
+  it("unmounting with open history cleans up without state warnings", async () => {
+    const { fire, openBell, unmount } = await setupWithCallback();
     await act(async () => {
       fire({ toolName: "fs_write", scope: "session", verdictAtApproval: "medium" });
     });
-    // Unmount BEFORE the 4s dismiss timer would fire. If cleanup is broken a setState-after-unmount warning would be emitted;
-    // otherwise silent.
+    await openBell();
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    unmount();
-    expect(consoleErrorSpy).not.toHaveBeenCalled();
-    consoleErrorSpy.mockRestore();
+    try {
+      unmount();
+      expect(document.querySelector('[data-testid="notification-center"]')).toBeNull();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 });
 

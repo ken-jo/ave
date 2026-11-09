@@ -33,6 +33,15 @@ describe("install-windows-git.ps1 pins", () => {
     const customInstall = nsh.slice(nsh.indexOf("!macro customInstall"), nsh.indexOf("!macroend", nsh.indexOf("!macro customInstall")));
     expect(customInstall).toContain("Call aveInstallMarketplaceGit");
   });
+
+  it("uses explicit redirects for authenticated downloads and retains the anonymous request", () => {
+    expect(source).toContain("$request.AllowAutoRedirect = $false");
+    expect(source).toContain("if ($Uri.Scheme -ne 'https')");
+    expect(source).toContain("$Uri.DnsSafeHost -in @('github.com', 'api.github.com')");
+    expect(source).toContain('$request.Headers[\'Authorization\'] = "Bearer $Token"');
+    expect(source).toContain("if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { $env:GH_TOKEN }");
+    expect(source).toContain("Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 600");
+  });
 });
 
 describe.runIf(process.platform === "win32")("install-windows-git.ps1 on Windows", () => {
@@ -67,8 +76,51 @@ describe.runIf(process.platform === "win32")("install-windows-git.ps1 on Windows
   // customInstall downloads into $INSTDIR itself, which only an administrator can write.
   function run({ scriptPath, install }: ReturnType<typeof stage>) {
     return spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath,
-      "-InstallDir", install, "-DownloadDir", install], { encoding: "utf8", timeout: 60_000 });
+      "-InstallDir", install, "-DownloadDir", install], {
+      env: { ...process.env, GITHUB_TOKEN: "", GH_TOKEN: "" }, encoding: "utf8", timeout: 60_000,
+    });
   }
+
+  it("recomputes authorization at each redirect and strips it from asset hosts", () => {
+    const start = source.indexOf("function Save-AuthenticatedRelease(");
+    const end = source.indexOf("\n\ntry {", start);
+    const download = source.slice(start, end)
+      .replace("[Net.WebRequest]::Create($Uri)", "(New-FixtureRequest $Uri)");
+    const output = path.join(dir, "download");
+    const fixture = `${download}
+$ErrorActionPreference = 'Stop'
+$script:requests = @()
+$script:locations = @('https://api.github.com/asset', 'https://objects.githubusercontent.com/asset', 'https://github.com.evil.invalid/asset')
+function New-FixtureRequest([Uri]$Uri) {
+  $request = [pscustomobject]@{ Uri = $Uri; Headers = @{}; AllowAutoRedirect = $true; Timeout = 0; ReadWriteTimeout = 0 }
+  $request | Add-Member ScriptMethod GetResponse {
+    $script:requests += @{ uri = $this.Uri.AbsoluteUri; authorization = $this.Headers['Authorization']; automatic = $this.AllowAutoRedirect }
+    $index = $script:requests.Count - 1
+    $location = if ($index -lt $script:locations.Count) { $script:locations[$index] } else { $null }
+    $response = [pscustomobject]@{ StatusCode = $(if ($location) { 302 } else { 200 }); Headers = @{ Location = $location } }
+    $response | Add-Member ScriptMethod GetResponseStream { [IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes('verified bytes')) }
+    $response | Add-Member ScriptMethod Dispose {}
+    return $response
+  }
+  return $request
+}
+Save-AuthenticatedRelease -Uri 'https://github.com/asset' -Path $env:FIXTURE_OUTPUT -Token 'fixture-token'
+ConvertTo-Json -Compress -InputObject @($script:requests)
+`;
+    const scriptPath = path.join(dir, "redirect-fixture.ps1");
+    writeFileSync(scriptPath, fixture);
+    const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-File", scriptPath], {
+      env: { ...process.env, FIXTURE_OUTPUT: output }, encoding: "utf8", timeout: 60_000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual([
+      { uri: "https://github.com/asset", authorization: "Bearer fixture-token", automatic: false },
+      { uri: "https://api.github.com/asset", authorization: "Bearer fixture-token", automatic: false },
+      { uri: "https://objects.githubusercontent.com/asset", authorization: null, automatic: false },
+      { uri: "https://github.com.evil.invalid/asset", authorization: null, automatic: false },
+    ]);
+    expect(readFileSync(output, "utf8")).toBe("verified bytes");
+  });
 
   it("places a verified archive at <install>\\git and deletes the download", () => {
     const staged = stage();

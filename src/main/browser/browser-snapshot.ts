@@ -235,7 +235,8 @@ function formatLine(depth: number, role: string, name: string, node: AXNode, ref
     parts.push(value === true || value === "true" ? `[${property.name}]` : `[${property.name}=${String(value)}]`);
   }
   if (ref) parts.push(`[ref=${ref}]`);
-  if (options) parts.push(`options=${JSON.stringify(options)}`);
+  // Keep machine values valid JSON without letting page strings forge the surrounding trust fence.
+  if (options) parts.push(`options=${JSON.stringify(options).replace(/</g, "\\u003c")}`);
   const value = text(node.value);
   return value && value !== name ? `${parts.join(" ")}: ${quote(value)}` : parts.join(" ");
 }

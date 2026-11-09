@@ -22,7 +22,7 @@ import { runWithToolExecutionCwd } from "./execution-context.js";
 import { runWithAgentObservationInvocation } from "./agent-observation-context.js";
 import { preparedShellCommand } from "./prepared-shell-invocation.js";
 import { screenEgressRequest } from "../permissions/reviewer/risk-classifier.js";
-import { isCanonicalBrowserTool } from "./browser-tools.js";
+import { browserApprovalCardFacts, isCanonicalBrowserTool } from "./browser-tools.js";
 import { browserOrigin } from "../shared/browser-tools.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { isCanonicalWebFetchTool } from "./web-fetch.js";
@@ -1013,6 +1013,7 @@ export async function executeAuthorizedToolInvocation(
       args: finalInput, reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${reason}` : reason,
       ...(approvalReasonPrefix ? { approvalReasonPrefix } : {}),
       createdAt: Date.now(), abortSignal,
+      ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
         ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
@@ -1049,6 +1050,7 @@ export async function executeAuthorizedToolInvocation(
     }
     const liveRequest: ApprovalRequestInput = { ...request,
       userOwnedSurface: undefined, userOwnedSurfaceReviewFallback: undefined,
+      ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
       reason: approvalReasonPrefix ? `${approvalReasonPrefix} ${permissionResult.reason}` : permissionResult.reason,
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
         ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),

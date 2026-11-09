@@ -19,6 +19,7 @@ import { createLogger } from "../../lib/logger.js";
 import type { BrowserTabOpener } from "../../shared/permissions-events.js";
 import { browserOrigin } from "../../shared/browser-tools.js";
 import { currentAgentObservationIdentity } from "../../tools/agent-observation-context.js";
+import { rebindBrowserPopupNavigation, retireBrowserPopupNavigation } from "./browser-popup-navigation.js";
 
 const log = createLogger("session-tab-bindings");
 
@@ -174,7 +175,7 @@ export interface BrowserTabRendererLink {
   sendSessionBindings?(windowId: number, state: SessionTabBindingsState): void;
   // Native window visibility proof, required before any explicit focus request.
   isWindowVisible?(windowId: number): boolean;
-  focusHost?(windowId: number): void;
+  isWindowFocused?(windowId: number): boolean;
 }
 
 // The tab a conversation's browser tools act on when none is named — or why there is none.
@@ -476,6 +477,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.attached.delete(guestId);
     this.injectedTouches.delete(guestId);
     if (!guest) return;
+    retireBrowserPopupNavigation(guest);
     for (const tab of this.tabs.values()) {
       if (tab.guest !== guest) continue;
       tab.guest = null;
@@ -558,6 +560,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     // A guest moves to exactly one tab: unbind it from any other.
     for (const other of this.tabs.values()) {
       if (other !== tab && other.guest?.id === entry.guest.id) {
+        retireBrowserPopupNavigation(other.guest, other.lease?.id);
         other.guest = null;
         this.settlingLeases.delete(other.handle);
         other.documentId++;
@@ -573,6 +576,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       tab.lease = null;
     }
     tab.guest = entry.guest;
+    rebindBrowserPopupNavigation(entry.guest, tab);
     if (request.parked !== undefined) entry.parked = request.parked;
     if (pendingNew && pendingNew.windowId === senderWindowId && pendingNew.request.op === "new") {
       const actor = pendingNew.actor;
@@ -590,7 +594,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     this.settleSelectIfShown(senderWindowId);
     this.broadcastControl(senderWindowId);
-    if (request.parked === true && entry.guest.isFocused?.()) this.restoreParkedGuestFocus(entry.guest.id);
+    if (request.parked === true) this.restoreParkedGuestFocus(entry.guest.id);
     return { ok: true };
   }
 
@@ -635,6 +639,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (!tab || tab.controlMode !== "human-paused" || (!tab.owner && !this.pausedControllers.has(tab.handle))) return false;
     const url = tab.guest!.getURL();
     if (url !== "about:blank" && browserOrigin(url) === null) return false;
+    if (tab.guest) retireBrowserPopupNavigation(tab.guest, tab.lease?.id);
     tab.actions.abort(new Error("browser control was resumed with new authority"));
     tab.actions = new AbortController();
     tab.controlGeneration++;
@@ -681,6 +686,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     const tab = this.tabs.get(tabId);
     if (!tab || tab.lease?.id !== leaseId) return;
+    if (tab.guest) retireBrowserPopupNavigation(tab.guest, leaseId);
     if (tab.guest && this.scopedFocusLeases.get(tab.guest.id) === leaseId) this.scopedFocusLeases.delete(tab.guest.id);
     tab.lease = null;
     if (tab.controlMode !== "human-paused") tab.controlMode = tab.owner === null ? "human" : "agent-active";
@@ -701,7 +707,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         this.settlingLeases.set(tab.handle, lease);
         tab.lease = null;
       } else if (!idleOwned || tab.controlMode !== "agent-active" || tab.owner?.sessionId !== sessionId) continue;
-      if (tab.guest) this.scopedFocusLeases.delete(tab.guest.id);
+      if (tab.guest) {
+        retireBrowserPopupNavigation(tab.guest, lease?.id);
+        this.scopedFocusLeases.delete(tab.guest.id);
+      }
       tab.controlMode = "human";
       tab.actions.abort(new Error("the browser agent turn ended"));
       tab.actions = new AbortController();
@@ -913,6 +922,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   private focusOperation(windowId: number, request: BrowserTabOpRequest): Promise<boolean> {
+    if (request.op === "restore-focus" && this.link?.isWindowFocused?.(windowId) === false) {
+      if (request.receiptId === undefined) return Promise.resolve(true);
+      request = { ...request, preserveFocus: true };
+    }
     return new Promise(resolve => {
       const settle = (restored: boolean) => { clearTimeout(timer); this.pendingFocus.delete(request.requestId); resolve(restored); };
       const timer = setTimeout(() => settle(false), FOCUS_RECEIPT_MAX_MS);
@@ -929,15 +942,21 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       return this.focusOperation(receipt.windowId, { requestId: `browser-op-${this.nextRequest++}`, op: "restore-focus", tabId: receipt.tabId, receiptId: receipt.receiptId, preserveFocus: !this.isParkedAgentGuest(guestId) && [...this.tabs.values()].some(tab => tab.guest?.id === guestId && tab.controlMode === "human-paused") })
         .then(restored => { if (!restored) throw new Error("browser focus restoration was not observed"); });
     }
-    if (this.scopedFocusLeases.get(guestId) === leaseId && leaseId !== undefined) return;
+    const parkedScope = this.scopedFocusLeases.get(guestId) === leaseId && leaseId !== undefined;
+    if (parkedScope && !this.isParkedAgentGuest(guestId)) return;
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       if (tab.rendererTabId === null || leaseId !== undefined && tab.lease?.id !== leaseId) return;
-      this.link?.sendTabOp(tab.windowId, {
-        requestId: `browser-op-${this.nextRequest++}`,
-        op: "restore-focus",
-        tabId: tab.rendererTabId,
-      });
+      const request: BrowserTabOpRequest = {
+        requestId: `browser-op-${this.nextRequest++}`, op: "restore-focus", tabId: tab.rendererTabId,
+      };
+      if (parkedScope) {
+        // A protocol touch can change the native focused frame without a DOM focus event.
+        return this.focusOperation(tab.windowId, request).then(restored => {
+          if (!restored) throw new Error("parked browser focus restoration was not observed");
+        });
+      }
+      this.link?.sendTabOp(tab.windowId, request);
       return;
     }
   }
@@ -956,9 +975,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   restoreParkedGuestFocus(guestId: number): void {
     if (!this.isParkedAgentGuest(guestId)) return;
     const tab = [...this.tabs.values()].find(candidate => candidate.guest?.id === guestId);
-    if (!tab?.guest || tab.guest.isDestroyed()) return;
+    if (!tab?.guest || tab.guest.isDestroyed() || this.link?.isWindowFocused?.(tab.windowId) === false) return;
     tab.guest.blur?.();
-    this.link?.focusHost?.(tab.windowId);
     const receipt = this.focusReceipts.get(guestId);
     if (receipt) {
       void Promise.resolve(this.releaseFocus(guestId, receipt.leaseId)).catch(error => log.warn({ err: error }, "Could not restore parked guest focus"));
@@ -1424,6 +1442,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   private invalidateActions(tab: BrowserTabRecord<G>, reason: string | Error): void {
+    if (tab.guest && !(reason instanceof BrowserDocumentChangedError)) retireBrowserPopupNavigation(tab.guest, tab.lease?.id);
     tab.actions.abort(typeof reason === "string" ? new Error(reason) : reason);
     tab.controlGeneration++;
     if (tab.controlMode !== "human-paused") tab.actions = new AbortController();
@@ -1477,6 +1496,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   __reset(): void {
+    for (const tab of this.tabs.values()) if (tab.guest) retireBrowserPopupNavigation(tab.guest);
     for (const pending of this.pendingFocus.values()) pending.settle(false);
     this.focusReceipts.clear();
     this.scopedFocusLeases.clear();

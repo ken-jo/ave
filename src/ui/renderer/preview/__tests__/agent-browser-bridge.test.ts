@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { agentDrivesBrowserTab, bindGuestToTab, reportGuestParking, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
-import { noteWebSurfaceFavicon, setWebSurfaceElement, webSurfaceFavicon } from "../web-surfaces.js";
+import { clearWebSurfaceSlot, noteWebSurfaceFavicon, setWebSurfaceElement, setWebSurfaceSlot, webSurfaceFavicon } from "../web-surfaces.js";
 
 function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { calls: string[] } {
   const calls: string[] = [];
@@ -275,7 +275,20 @@ it("acknowledges scoped focus capture and restores its exact composer", async ()
     receive({ requestId: "restore", op: "restore-focus", tabId: "borrower", receiptId: "capture" });
     expect(completeFocus).toHaveBeenLastCalledWith("restore", true);
     expect(document.activeElement).toBe(composer);
+    const focus = vi.spyOn(composer, "focus");
+    const frameFocus = vi.spyOn(window, "focus").mockImplementation(() => {});
+    receive({ requestId: "parked-return", op: "restore-focus", tabId: "borrower" });
+    expect(completeFocus).toHaveBeenLastCalledWith("parked-return", true);
+    expect(focus).not.toHaveBeenCalled();
+    expect(frameFocus).toHaveBeenCalledOnce();
+    frameFocus.mockRestore();
+    guest.focus();
+    setWebSurfaceSlot("borrower", guest);
+    vi.spyOn(guest, "getBoundingClientRect").mockReturnValue({ width: 100, height: 100, left: 0, top: 0, right: 100, bottom: 100 } as DOMRect);
+    receive({ requestId: "shown-before-return", op: "restore-focus", tabId: "borrower" });
+    expect(document.activeElement).toBe(guest);
+    clearWebSurfaceSlot("borrower", guest);
     receive({ requestId: "replay", op: "restore-focus", tabId: "borrower", receiptId: "capture" });
     expect(completeFocus).toHaveBeenLastCalledWith("replay", false);
-  } finally { unregister(); setWebSurfaceElement("borrower", null); composer.remove(); guest.remove(); }
+  } finally { clearWebSurfaceSlot("borrower", guest); unregister(); setWebSurfaceElement("borrower", null); composer.remove(); guest.remove(); }
 });

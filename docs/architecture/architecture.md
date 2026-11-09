@@ -936,8 +936,10 @@ Important rules:
   tool call does not end the turn: the loop re-prompts it a bounded number of
   times before returning, because that reasoning states the action the model
   meant to take next.
-- Foreground turn-end notices stay out of the composer notification area; system
-  notifications are reserved for background or non-focused app state.
+- Window notices, including foreground turn-end records, enter the bell's session
+  history rather than the composer notification area. OS delivery keeps its focus,
+  settings and cooldown gates and also records the event in the bell. Approval
+  and ask-user requests stay on their cards and never enter the in-app history.
 - The main window uses one responsive layout. A wide canvas may show up to
   four conversations; a narrow canvas draws the focused tile while preserving
   the tree, hidden conversations, and the saved maximized choice. Each tile is
@@ -1544,7 +1546,17 @@ an actual different focused frame remains refused. A renderer acknowledgement al
 Popups require their registered native focus callback and observed native focus.
 
 Parked input records its exact control lease without capturing a renderer focus
-receipt: it never borrowed native focus to restore. Visible embedded input captures
+receipt. A protocol touch or field focus can change the native keyboard frame
+without changing the embedder active element. Parked input therefore reasserts
+the current host frame after those dispatches and awaits renderer acknowledgement
+before continuing, while keeping page-local focus emulation. Parked restoration
+never calls DOM blur or refocus on an active editor; remembered controls are used only when the body
+or no element is active. The native owning window and renderer document must
+both hold foreground focus before a handoff, so another app remains foreground.
+Main then verifies that native keyboard routing has left that guest while the
+window is focused. An embedded child
+view can report its root view as focused; keyboard ownership is measured through
+the owning host's focused frame, not that shared view bit. Visible embedded input captures
 that receipt before borrowing focus. If a previous host control disappears or can
 no longer accept focus, restoration tries usable remembered host controls; it
 still refuses a replaced or hidden previous guest and preserves deliberate user
