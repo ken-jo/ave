@@ -12,7 +12,7 @@ import type { WorkspaceNativeFixture, WorkspaceNativeState } from "./browser-wor
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const test = createSharedElectronTest<ElectronApplication>({
-  launch: () => launch(),
+  launch: (_key, workerInfo) => launch(workerInfo.project.outputDir),
   reset: async (app) => {
     await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.reset());
     await setWindowSize(app, 940, 740);
@@ -32,7 +32,7 @@ const test = createSharedElectronTest<ElectronApplication>({
   close,
 });
 
-async function launch(mode: "cdp" | "foreground" = "cdp") {
+async function launch(outputDir: string, mode: "cdp" | "foreground" = "cdp") {
   const app = await launchNativeFixture("ave-browser-workspace-", async ({ runtime, assets }) => {
     const home = join(runtime, "home");
     const mainOut = join(assets, "main.mjs");
@@ -46,7 +46,7 @@ async function launch(mode: "cdp" | "foreground" = "cdp") {
       args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
       env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: join(runtime, "ave-home"), AVE_WORKSPACE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
     });
-  });
+  }, outputDir);
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[workspace-native:stderr] ${data}`));
   try {
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture?: WorkspaceNativeFixture }).workspaceNativeFixture?.ready === true), { timeout: 30_000 }).toBe(true);
@@ -93,8 +93,8 @@ test("native workspace fixture isolates its home from the parent process", async
   expect(child.home).not.toBe(process.env.HOME);
 });
 
-isolatedTest("CDP native popup preserves registration, hardening, opener, session and close lifecycle", { annotation: { type: "isolated-app", description: "Exercises native window lifecycle" } }, async () => {
-  const app = await launch();
+isolatedTest("CDP native popup preserves registration, hardening, opener, session and close lifecycle", { annotation: { type: "isolated-app", description: "Exercises native window lifecycle" } }, async ({}, testInfo) => {
+  const app = await launch(testInfo.project.outputDir);
   try {
     // Page activation creates an actual child; no foreground receipt is required.
     const registered = await openRegisteredPopup(app);
@@ -106,8 +106,8 @@ isolatedTest("CDP native popup preserves registration, hardening, opener, sessio
   } finally { await close(app); }
 });
 
-isolatedTest("@os-focus native popup verifies focus, human pause, trusted title and explicit resume", { annotation: { type: "isolated-app", description: "Native OS focus requires a dedicated process" } }, async () => {
-  const app = await launch("foreground");
+isolatedTest("@os-focus native popup verifies focus, human pause, trusted title and explicit resume", { annotation: { type: "isolated-app", description: "Native OS focus requires a dedicated process" } }, async ({}, testInfo) => {
+  const app = await launch(testInfo.project.outputDir, "foreground");
   try {
     const registered = await openRegisteredPopup(app);
     const selected = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.selectPopup());
@@ -157,8 +157,8 @@ test("native preview captures real bounded pixels without changing focus", async
   await testInfo.attach("native-workspace-preview", { path, contentType: "image/jpeg" });
 });
 
-isolatedTest("native capture has one in-flight owner and discards its image after window hide", { annotation: { type: "isolated-app", description: "Exercises native window lifecycle" } }, async () => {
-  const app = await launch();
+isolatedTest("native capture has one in-flight owner and discards its image after window hide", { annotation: { type: "isolated-app", description: "Exercises native window lifecycle" } }, async ({}, testInfo) => {
+  const app = await launch(testInfo.project.outputDir);
   try {
     const result = await app.evaluate(() => (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.hiddenPreviewRace());
     expect(result).toEqual({ secondError: "capture-busy", firstError: "stale-document", hiddenError: "window-hidden", hidden: true });

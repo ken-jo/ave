@@ -14,11 +14,10 @@ import type { NativeAction, NativeActionResult, NativeBrowserFixture } from "./b
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = join(HERE, "browser-actions-native");
 const execFileAsync = promisify(execFile);
-// Run this desktop fixture serially through the shared validation budget.
 // Select @cdp without an unlocked desktop; @os-focus retains actual OS focus proof.
 type FixtureMode = "cdp" | "foreground";
 const test = createSharedElectronTest<ElectronApplication>({
-  launch: () => launch(undefined, "cdp"),
+  launch: (_key, workerInfo) => launch(undefined, "cdp", workerInfo.project.outputDir),
   reset: async (app) => {
     await app.evaluate(() => (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture.reset());
     await setWindowSize(app, 1180, 820);
@@ -59,7 +58,7 @@ async function read(app: ElectronApplication): Promise<NativeActionResult> {
   return app.evaluate(async () => (globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture }).nativeBrowserFixture.read());
 }
 
-async function launch(testInfo: TestInfo | undefined, mode: FixtureMode): Promise<ElectronApplication> {
+async function launch(testInfo: TestInfo | undefined, mode: FixtureMode, outputDir: string): Promise<ElectronApplication> {
   const app = await launchNativeFixture("ave-browser-actions-", async ({ runtime, assets }) => {
     const home = join(runtime, "home");
     const mainOut = join(assets, "main.mjs");
@@ -75,7 +74,7 @@ async function launch(testInfo: TestInfo | undefined, mode: FixtureMode): Promis
       args: [mainOut, `--user-data-dir=${join(runtime, "profile")}`], timeout: 30_000,
       env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: join(runtime, "ave-home"), AVE_NATIVE_FIXTURE_DIR: FIXTURE_DIR, AVE_NATIVE_FIXTURE_PRELOAD: preloadOut, AVE_NATIVE_FIXTURE_RUNTIME: runtime, AVE_NATIVE_FIXTURE_MODE: mode }),
     });
-  });
+  }, outputDir);
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[native-browser:stderr] ${data}`));
   try {
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { nativeBrowserFixture?: NativeBrowserFixture }).nativeBrowserFixture?.ready === true), { timeout: 30_000 }).toBe(true);
@@ -160,7 +159,7 @@ test("@cdp pointer drag changes a native range value", async ({ sharedApp: app }
 });
 
 isolatedTest("@os-focus native single select proves the final requested value", { annotation: { type: "isolated-app", description: "Native OS focus requires a dedicated process" } }, async ({}, testInfo) => {
-  const app = await launch(testInfo, "foreground");
+  const app = await launch(testInfo, "foreground", testInfo.project.outputDir);
   try {
     const result = await run(app, "select");
     expect(result.ok, resultMessage(result)).toBe(true);
@@ -235,7 +234,7 @@ test("@cdp final activating click navigation completes", async ({ sharedApp: app
 });
 
 isolatedTest("@os-focus intermediate select navigation fails", { annotation: { type: "isolated-app", description: "Native OS focus requires a dedicated process" } }, async ({}, testInfo) => {
-  const app = await launch(testInfo, "foreground");
+  const app = await launch(testInfo, "foreground", testInfo.project.outputDir);
   try {
     const changed = await run(app, "select-navigation");
     expect(changed.ok, resultMessage(changed)).toBe(false);

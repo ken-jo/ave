@@ -13,7 +13,7 @@ import type { CaptureNativeFixture, CaptureNativeResult } from "./browser-captur
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, "browser-capture-native");
 const test = createSharedElectronTest<ElectronApplication>({
-  launch: async () => {
+  launch: async (_key, workerInfo) => {
     const app = await launchNativeFixture("ave-browser-capture-", async ({ runtime, assets }) => {
       const home = join(runtime, "home");
       const mainOut = join(assets, "main.mjs");
@@ -27,7 +27,7 @@ const test = createSharedElectronTest<ElectronApplication>({
         env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: join(runtime, "ave-home"), AVE_CAPTURE_FIXTURE_ASSETS: assets,
           AVE_CAPTURE_FIXTURE_RUNTIME: runtime, AVE_CAPTURE_FIXTURE_PAGE: join(HERE, "browser-actions-native/page.html") }),
       });
-    });
+    }, workerInfo.project.outputDir);
     app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[capture-native:stderr] ${data}`));
     try {
       await expect.poll(() => app.evaluate(() => (globalThis as unknown as { captureNativeFixture?: CaptureNativeFixture }).captureNativeFixture?.ready === true), { timeout: 30_000 }).toBe(true);
@@ -98,6 +98,14 @@ test("native capture fixture isolates its home from the parent process", async (
   expect(child).toEqual({ home: expected, userProfile: expected, osHome: expected,
     aveHome: join(runtime, "ave-home"), homeDirectory: true });
   expect(child.home).not.toBe(process.env.HOME);
+});
+
+test("native capture build assets stay inside the invocation output", async ({ sharedApp: app }, testInfo) => {
+  const { assets } = nativeFixturePaths(app);
+  expect(dirname(assets)).toBe(await fs.realpath(testInfo.project.outputDir));
+  expect((await fs.readFile(join(assets, "renderer.js"), "utf8")).length).toBeGreaterThan(0);
+  await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.reset());
+  await expect((await app.firstWindow()).locator("#slot")).toBeVisible();
 });
 
 async function layout(app: ElectronApplication) {
