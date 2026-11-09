@@ -28,7 +28,12 @@ beforeEach(() => {
 set -eu
 printf 'fetch\\n' >> "$FIXTURE_ROOT/fetches"
 printf '%s\\n' "$@" >> "$FIXTURE_ROOT/curl-args"
-cat >> "$FIXTURE_ROOT/curl-stdin"
+if [ "\${FIXTURE_HASH_STDIN:-}" = true ]; then
+  sha256sum >> "$FIXTURE_ROOT/curl-stdin"
+else
+  cat >> "$FIXTURE_ROOT/curl-stdin"
+fi
+if [ "\${FIXTURE_CURL_EXIT:-0}" != 0 ]; then exit "$FIXTURE_CURL_EXIT"; fi
 while [ "$1" != --output ]; do shift; done
 cp "$FIXTURE_ROOT/source/$(basename "$3")" "$2"
 `);
@@ -45,6 +50,31 @@ afterEach(() => rmSync(root, { recursive: true, force: true }));
 const run = (mode: string) => spawnSync("bash", [script, mode], { env, encoding: "utf8" });
 
 describe("runtime archive cache", () => {
+  it.each([0, 22])("keeps credentials out of xtrace and logs when curl exits %s", (exitCode) => {
+    const token = "trace-private-token";
+    const unusedToken = "trace-unused-private-token";
+    env.GITHUB_TOKEN = token;
+    env.GH_TOKEN = unusedToken;
+    env.FIXTURE_HASH_STDIN = "true";
+    env.FIXTURE_CURL_EXIT = String(exitCode);
+    const result = spawnSync("bash", ["-x", script, "verify"], { env, encoding: "utf8" });
+    expect(result.status).toBe(exitCode);
+    expect(result.stderr).toContain(exitCode === 0 ? "+ sha256sum" : "+ exit 22");
+    writeFileSync(join(root, "stdout.log"), result.stdout);
+    writeFileSync(join(root, "stderr.log"), result.stderr);
+    for (const file of ["stdout.log", "stderr.log", "curl-args", "curl-stdin", "fetches"]) {
+      const logged = readFileSync(join(root, file), "utf8");
+      expect(logged).not.toContain(token);
+      expect(logged).not.toContain(unusedToken);
+    }
+    const requests = exitCode === 0 ? 2 : 1;
+    const digest = createHash("sha256").update(`Authorization: Bearer ${token}\n`).digest("hex");
+    expect(readFileSync(join(root, "curl-stdin"), "utf8")).toBe(`${digest}  -\n`.repeat(requests));
+    const args = readFileSync(join(root, "curl-args"), "utf8").trim().split("\n");
+    expect(args.filter((arg) => arg === "--header")).toHaveLength(requests);
+    expect(args.filter((arg) => arg === "@-")).toHaveLength(requests);
+  });
+
   it.each([
     ["primary-token", "secondary-token", "primary-token"],
     ["", "secondary-token", "secondary-token"],
