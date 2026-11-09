@@ -12,11 +12,8 @@ const OUT = process.env.AVE_SHOT_DIR ?? join(process.cwd(), 'test-results', 'set
 async function expectSettingsBottomClearance(
   mainWindow: import('@playwright/test').Page,
 ) {
-  const measure = async () => mainWindow.locator('.ave-settings-scroll').evaluate(async (scroller) => {
+  const measure = () => mainWindow.locator('.ave-settings-scroll').evaluate((scroller) => {
     scroller.scrollTop = scroller.scrollHeight;
-    await new Promise<void>((resolve) => {
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-    });
 
     const activePanel = scroller.querySelector<HTMLElement>(
       '[role="tabpanel"][data-state="active"]',
