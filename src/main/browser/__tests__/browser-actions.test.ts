@@ -751,6 +751,54 @@ describe("pressing keys", () => {
 });
 
 describe("screenshot", () => {
+  async function elementCaptureFixture() {
+    const { cdp, refs } = snapshotFixture();
+    cdp.viewport = { clientWidth: 100, clientHeight: 100 };
+    cdp.nodes = page([ax("element", "button", "Blue element", { backendDOMNodeId: 3 })]);
+    const ref = /\[ref=(e\d+)\]/.exec((await snapshot(target(cdp), {}, refs)).text)?.[1];
+    if (!ref) throw new Error("Snapshot has no capture ref");
+    const { default: sharp } = await import("sharp");
+    const element = await sharp({ create: { width: 10, height: 10, channels: 3, background: "blue" } }).png().toBuffer();
+    const data = (await sharp({ create: { width: 100, height: 100, channels: 3, background: "red" } })
+      .composite([{ input: element, left: 10, top: 20 }]).png().toBuffer()).toString("base64");
+    const captureViewport = vi.fn(async () => ({ data, cssScale: 1 }));
+    return { cdp, refs, ref, captureViewport, tab: { ...target(cdp), captureViewport } };
+  }
+
+  it.each(["box", "verification"])("rejects ref preparation scroll drift during %s instead of capturing document row 60", async (stage) => {
+    const { cdp, refs, ref, tab, captureViewport } = await elementCaptureFixture();
+    const send = cdp.send.bind(cdp);
+    let layoutReads = 0;
+    vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
+      if (method === "DOM.getBoxModel") {
+        // The element was measured at document Y=40 with viewport scroll 0.
+        if (stage === "box") cdp.scroll.y = 20;
+        return { model: { border: [10, 40, 20, 40, 20, 50, 10, 50] } };
+      }
+      const response = await send(method, params);
+      // Scroll after the bracketing query, before the final ref verification/readback.
+      if (method === "Page.getLayoutMetrics" && ++layoutReads === 2 && stage === "verification") cdp.scroll.y = 20;
+      return response;
+    });
+    await expect(screenshot(tab, 1000, { ref }, refs)).rejects.toMatchObject({ code: "screenshot-unavailable", message: "the viewport changed during capture" });
+    expect(captureViewport).not.toHaveBeenCalled();
+    expect(cdp.calls.some((call) => call.method === "Page.captureScreenshot")).toBe(false);
+  });
+
+  it("captures a ref's blue pixels when the same scroll baseline spans preparation and readback", async () => {
+    const { cdp, refs, ref, tab, captureViewport } = await elementCaptureFixture();
+    cdp.scroll.y = 20;
+    const send = cdp.send.bind(cdp);
+    vi.spyOn(cdp, "send").mockImplementation((method, params) => method === "DOM.getBoxModel"
+      ? Promise.resolve({ model: { border: [10, 20, 20, 20, 20, 30, 10, 30] } }) : send(method, params));
+    const result = await screenshot(tab, 1000, { ref }, refs);
+    const { default: sharp } = await import("sharp");
+    const pixels = await sharp(Buffer.from(result.data, "base64")).raw().toBuffer();
+    expect(result).toMatchObject({ width: 10, height: 10 });
+    expect([...pixels.subarray(0, 3)]).toEqual([0, 0, 255]);
+    expect(captureViewport).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     { error: new BrowserActionError("cancelled", "Capture cancelled"), code: "cancelled" },
     { error: new Error("Node disappeared"), code: "stale-ref" },

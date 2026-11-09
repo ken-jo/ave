@@ -1,6 +1,6 @@
 // Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
 // and OTP fields as defense in depth; page-supplied labels are not a security boundary.
-import { captureBrowserPage, captureBrowserViewport } from "./browser-capture.js";
+import { assertCaptureViewport, captureBrowserPage, captureBrowserViewport, type CaptureViewport } from "./browser-capture.js";
 import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-capture-operation.js";
 import { parseBrowserScreenshotOptions, type BrowserScreenshotOptions } from "../../shared/browser-capture.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -146,8 +146,12 @@ async function captureScreenshot(
   const parsed = parseBrowserScreenshotOptions(options);
   if (!parsed) throw new BrowserActionError("invalid-capture", "use one capture mode; clip requires finite non-negative x/y and positive width/height");
   let clip = parsed.clip;
+  let expectedViewport: CaptureViewport | undefined;
   if (parsed.ref !== undefined) {
     const backendNodeId = await resolveRef(target, parsed.ref, refs);
+    const before = await target.cdp.send("Page.getLayoutMetrics") as { cssVisualViewport?: CaptureViewport };
+    assertCaptureViewport(before.cssVisualViewport);
+    expectedViewport = { ...before.cssVisualViewport };
     let border: number[] | undefined;
     try {
       const result = await target.cdp.send("DOM.getBoxModel", { backendNodeId }) as { model?: { border?: number[] } };
@@ -159,13 +163,14 @@ async function captureScreenshot(
     }
     throwIfAborted(target.signal);
     if (border?.length !== 8 || !border.every(Number.isFinite)) throw new BrowserActionError("screenshot-unavailable", "the element has no visible capture bounds");
-    const metrics = await target.cdp.send("Page.getLayoutMetrics") as { cssVisualViewport: { pageX: number; pageY: number } };
+    const after = await target.cdp.send("Page.getLayoutMetrics") as typeof before;
+    assertCaptureViewport(after.cssVisualViewport, expectedViewport);
     const xs = border.filter((_value, index) => index % 2 === 0), ys = border.filter((_value, index) => index % 2 === 1);
-    clip = { x: Math.min(...xs) + metrics.cssVisualViewport.pageX, y: Math.min(...ys) + metrics.cssVisualViewport.pageY,
+    clip = { x: Math.min(...xs) + expectedViewport.pageX, y: Math.min(...ys) + expectedViewport.pageY,
       width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
     if (await resolveRef(target, parsed.ref, refs) !== backendNodeId) throw new BrowserActionError("stale-ref", "the element changed during capture; take a new browser_snapshot");
   }
-  return captureBrowserPage(initialTarget.cdp, operation.signal, { ...(parsed.fullPage !== undefined ? { fullPage: parsed.fullPage } : {}), ...(clip ? { clip } : {}) }, pixelRatio, undefined, initialTarget.captureViewport, operation);
+  return captureBrowserPage(initialTarget.cdp, operation.signal, { ...(parsed.fullPage !== undefined ? { fullPage: parsed.fullPage } : {}), ...(clip ? { clip } : {}) }, pixelRatio, undefined, initialTarget.captureViewport, operation, expectedViewport);
 }
 
 const WAIT_POLL_MS = 250;

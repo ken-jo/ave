@@ -125,10 +125,17 @@ for (const zoom of [1, 1.25]) {
   test(`native ref capture keeps the element CSS size at zoom ${zoom}`, async ({ browserName: _browserName }, testInfo) => {
     const app = await launch(testInfo);
     try {
+      await app.evaluate(async ({ webContents }, zoom) => {
+        const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+        if (!guest) throw new Error("Capture fixture guest is unavailable");
+        guest.setZoomFactor(zoom);
+        await guest.executeJavaScript("scrollTo(0,20)");
+      }, zoom);
       const result = await capture(app, { ref: "Drag source" }, zoom);
       await attachImage(testInfo, `ref-capture-${zoom}`, result);
       expect(result.element).toEqual({ width: 145, height: 56 });
       expect(result.dimensions).toEqual(result.element);
+      expect((await layout(app)).guest.y).toBe(20);
       // Display color conversion and image resampling can round individual channels.
       for (const pixel of result.elementPixelsRGB) {
         for (const [index, expected] of [51, 102, 170].entries()) {

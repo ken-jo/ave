@@ -8,9 +8,19 @@ import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-captu
 
 const activeCaptures = new WeakSet<object>();
 const CAPTURE_VIEWPORT_FIELDS = ["pageX", "pageY", "clientWidth", "clientHeight", "zoom", "scale"] as const;
-interface CaptureViewport {
+export interface CaptureViewport {
   pageX: number; pageY: number; clientWidth: number; clientHeight: number;
   zoom?: number; scale?: number;
+}
+
+export function assertCaptureViewport(viewport: CaptureViewport | undefined, expected?: CaptureViewport): asserts viewport is CaptureViewport {
+  if (!viewport || ![viewport.pageX, viewport.pageY, viewport.clientWidth, viewport.clientHeight].every(Number.isFinite)
+    || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) {
+    throw new BrowserActionError("screenshot-unavailable", "the page has no valid viewport");
+  }
+  if (expected && CAPTURE_VIEWPORT_FIELDS.some((field) => viewport[field] !== expected[field])) {
+    throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
+  }
 }
 
 /** Read the native viewport without changing its host slot or focus; the caller owns wake activity. */
@@ -37,14 +47,16 @@ export async function captureBrowserPage(
   cdp: CdpSession, signal: AbortSignal, options: BrowserScreenshotOptions = {},
   pixelRatio = 1, maxMs: number = TOOL_TIMEOUT_POLICY.browserCaptureMs, captureViewport?: () => Promise<BrowserViewportImage>,
   operation?: BrowserCaptureOperation,
+  expectedViewport?: CaptureViewport,
 ): Promise<BrowserScreenshot> {
-  return operation ? capturePage(cdp, operation, options, pixelRatio, captureViewport)
-    : runBrowserCapture(signal, maxMs, (active) => capturePage(cdp, active, options, pixelRatio, captureViewport));
+  return operation ? capturePage(cdp, operation, options, pixelRatio, captureViewport, expectedViewport)
+    : runBrowserCapture(signal, maxMs, (active) => capturePage(cdp, active, options, pixelRatio, captureViewport, expectedViewport));
 }
 
 async function capturePage(
   cdp: CdpSession, operation: BrowserCaptureOperation, options: BrowserScreenshotOptions,
   pixelRatio: number, captureViewport?: () => Promise<BrowserViewportImage>,
+  expectedViewport?: CaptureViewport,
 ): Promise<BrowserScreenshot> {
   const key = cdp.captureKey ?? cdp;
   if (activeCaptures.has(key)) throw new BrowserActionError("screenshot-busy", "another capture is using this tab");
@@ -61,11 +73,8 @@ async function capturePage(
       cssVisualViewport: CaptureViewport;
     };
     throwIfAborted(captureSignal);
-    const viewport = metrics.cssVisualViewport;
-    if (!viewport || ![viewport.pageX, viewport.pageY, viewport.clientWidth, viewport.clientHeight].every(Number.isFinite)
-      || viewport.clientWidth <= 0 || viewport.clientHeight <= 0) {
-      throw new BrowserActionError("screenshot-unavailable", "the page has no valid viewport");
-    }
+    assertCaptureViewport(metrics.cssVisualViewport, expectedViewport);
+    const viewport = expectedViewport ?? metrics.cssVisualViewport;
     const clip = options.clip ?? (options.fullPage ? { ...metrics.cssContentSize, width: viewport.clientWidth } : {
       x: viewport.pageX, y: viewport.pageY, width: viewport.clientWidth, height: viewport.clientHeight,
     });
@@ -111,9 +120,7 @@ async function capturePage(
     if (!options.fullPage) {
       const after = await cdp.send("Page.getLayoutMetrics") as typeof metrics;
       throwIfAborted(captureSignal);
-      if (!after.cssVisualViewport || CAPTURE_VIEWPORT_FIELDS.some((field) => after.cssVisualViewport[field] !== viewport[field])) {
-        throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
-      }
+      assertCaptureViewport(after.cssVisualViewport, viewport);
     }
     if (typeof result.data !== "string" || result.data.length === 0) throw new BrowserActionError("screenshot-failed", "the tab returned no image");
     let data = result.data;
