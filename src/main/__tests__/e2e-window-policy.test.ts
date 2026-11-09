@@ -37,7 +37,7 @@ describe("background test windows", () => {
     showWindowForRuntime(presentation as never);
     expect(presentation.showInactive).toHaveBeenCalledTimes(enabled ? 1 : 0);
     expect(presentation.show).toHaveBeenCalledTimes(enabled ? 0 : 1);
-    expect(runtime.on).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    expect(runtime.on).toHaveBeenCalledTimes(enabled ? 2 : 0);
     if (enabled) {
       const window = Object.assign(new EventEmitter(), { setFocusable: vi.fn() });
       const listener = runtime.on.mock.calls[0]?.[1];
@@ -47,5 +47,19 @@ describe("background test windows", () => {
     }
   });
 
-
+  it.each(["window", "webview"])("emulates document focus after each %s navigation", async (kind) => {
+    setIsPackaged(false);
+    vi.stubEnv("AVE_E2E", "1");
+    vi.stubEnv("NODE_ENV", "test");
+    configureE2eWindowPolicy();
+    const debuggerApi = { isAttached: vi.fn(() => false), attach: vi.fn(), sendCommand: vi.fn(async () => undefined) };
+    const contents = Object.assign(new EventEmitter(), { getType: () => kind, debugger: debuggerApi });
+    const listener = runtime.on.mock.calls.find(([event]) => event === "web-contents-created")?.[1];
+    if (!listener) throw new Error("Page policy listener is missing");
+    listener({}, contents);
+    contents.emit("dom-ready");
+    await Promise.resolve();
+    expect(debuggerApi.attach).toHaveBeenCalledWith("1.3");
+    expect(debuggerApi.sendCommand).toHaveBeenCalledWith("Emulation.setFocusEmulationEnabled", { enabled: true });
+  });
 });

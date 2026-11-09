@@ -52,7 +52,13 @@ async function launch(testInfo: TestInfo, mode: FixtureMode): Promise<ElectronAp
   app.process().stderr?.on("data", (data: Buffer) => process.stdout.write(`[native-browser:stderr] ${data}`));
   try {
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { nativeBrowserFixture?: NativeBrowserFixture }).nativeBrowserFixture?.ready === true), { timeout: 30_000 }).toBe(true);
-    if (mode === "cdp") return app;
+    if (mode === "cdp") {
+      await expect.poll(() => app.evaluate(async ({ webContents }) => {
+        const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+        return guest ? guest.executeJavaScript("document.hasFocus()") : false;
+      })).toBe(true);
+      return app;
+    }
     await (await app.firstWindow()).bringToFront();
     if (process.platform === "darwin") {
       const pid = app.process().pid;
@@ -172,13 +178,13 @@ test("@cdp non-agent click pauses the guest until explicit main-process resume",
   try {
     const held = await run(app, "hold-control");
     expect(held.mode).toBe("agent-active");
-    const page = await app.firstWindow();
-    const origin = await page.locator("webview").evaluate((element) => {
-      const box = element.getBoundingClientRect();
-      const style = getComputedStyle(element);
-      return { x: box.x + parseFloat(style.borderLeftWidth), y: box.y + parseFloat(style.borderTopWidth) };
-    });
-    await page.mouse.click(origin.x + held.oracle.humanPoint.x, origin.y + held.oracle.humanPoint.y);
+    // Deliver unmarked input to the guest target; background host windows do not route OS pointer focus into embedded guests.
+    await app.evaluate(async ({ webContents }, point) => {
+      const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+      if (!guest) throw new Error("Native guest is unavailable");
+      await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", ...point, button: "left", clickCount: 1 });
+      await guest.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", ...point, button: "left", clickCount: 1 });
+    }, held.oracle.humanPoint);
     await expect.poll(async () => (await read(app)).mode).toBe("human-paused");
     await expect.poll(async () => (await read(app)).oracle.humanClicks).toBeGreaterThan(held.oracle.humanClicks);
     const blocked = await run(app, "hover");

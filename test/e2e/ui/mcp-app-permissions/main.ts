@@ -51,9 +51,10 @@ app.on("web-contents-created", (_e, contents) => {
     if (typeof message !== "string" || !message.startsWith("E2E_")) return;
     process.stdout.write(`${message}\n`);
     if (/^E2E_PROBE [a-z-]+ READY$/.test(message)) {
-      contents.focus();
-      contents.sendInputEvent({ type: "mouseDown", x: 35, y: 18, button: "left", clickCount: 1 });
-      contents.sendInputEvent({ type: "mouseUp", x: 35, y: 18, button: "left", clickCount: 1 });
+      void (async () => {
+        await contents.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mousePressed", x: 35, y: 18, button: "left", clickCount: 1 });
+        await contents.debugger.sendCommand("Input.dispatchMouseEvent", { type: "mouseReleased", x: 35, y: 18, button: "left", clickCount: 1 });
+      })().catch((error: unknown) => { console.error(error); app.exit(1); });
     }
     for (const [label, resolve] of doneWaiters) {
       if (message === `E2E_PROBE ${label} DONE`) {

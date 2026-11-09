@@ -348,7 +348,7 @@ export async function sendRendererStreamEvent(
   }, labelled);
 }
 
-/** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest visible, non-destroyed window: a spec that has opened a
+/** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest non-destroyed window, including hidden startup windows: a spec that has opened a
  * plugin or approval window must still size the shell it is measuring, and area is the only property that distinguishes them from the main process.
  * Reject below-minimum sizes before resizing, then wait up to five seconds for native content and renderer dimensions to agree within one pixel. */
 export async function setWindowSize(
@@ -361,12 +361,12 @@ export async function setWindowSize(
   }
   const { windowId, workArea, workAreaContentLimit } = await app.evaluate(({ BrowserWindow, screen }, size) => {
     const windows = BrowserWindow.getAllWindows().filter(
-      (window) => !window.isDestroyed() && window.isVisible(),
+      (window) => !window.isDestroyed(),
     );
     const target = windows.sort(
       (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
     )[0];
-    if (!target) throw new Error("No visible main window to resize");
+    if (!target) throw new Error("No main window to resize");
     const bounds = target.getBounds();
     const content = target.getContentBounds();
     const outerWidth = size.w + bounds.width - content.width;
