@@ -113,6 +113,8 @@ describe("WebSurfaceLayer", () => {
     expect(frame("browser:1").style.visibility).toBe("hidden");
   });
   it("waits for a fresh park acknowledgement when hidden during a pending unpark", async () => {
+    Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
     publishLiveWebTabs(source, new Set(["browser:1"]));
     render(<Harness where="side" />);
     const slot = screen.getByTestId("web-surface-slot");
@@ -124,13 +126,16 @@ describe("WebSurfaceLayer", () => {
     bindTab.mockImplementationOnce(() => new Promise((resolve) => { unpark = resolve; }));
     stubBox(slot, { left: 10, top: 20, width: 640, height: 480 });
     act(() => { placeWebSurfaces(); });
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:1", webContentsId: 932, parked: false });
     slot.style.visibility = "hidden";
     act(() => { placeWebSurfaces(); });
     expect(frame("browser:1").style.visibility).toBe("visible");
-    await act(async () => { unpark({ ok: true }); });
     let park!: (value: { ok: true }) => void;
+    // Unpark acknowledgement schedules layout, so reserve the fresh park response before releasing it.
     bindTab.mockImplementationOnce(() => new Promise((resolve) => { park = resolve; }));
+    await act(async () => { unpark({ ok: true }); });
     act(() => { placeWebSurfaces(); });
+    expect(bindTab).toHaveBeenLastCalledWith({ tabId: "browser:1", webContentsId: 932, parked: true });
     expect(frame("browser:1").style.visibility).toBe("visible");
     await act(async () => { park({ ok: true }); });
     act(() => { placeWebSurfaces(); });
