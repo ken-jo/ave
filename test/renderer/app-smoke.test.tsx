@@ -296,13 +296,16 @@ describe("sub-agent frames per tile", () => {
     });
     await waitFor(() => expect(container.querySelector(testIdSelector(TEST_IDS.composerTextarea))).toBeTruthy());
 
+    const panelToggle = container.querySelector(testIdSelector(TEST_IDS.panePanelToggle));
+    if (!panelToggle) throw new Error("Missing activity panel toggle");
+    fireEvent.click(panelToggle);
     await act(async () => {
-      emitAgentSpawnEvent({ spawnId: "theirs", type: "start", taskState: "TASK_STATE_SUBMITTED", title: "Theirs", parentSessionId: "another-tile" });
+      emitAgentSpawnEvent({ spawnId: "theirs", type: "start", taskState: "TASK_STATE_SUBMITTED", title: "Theirs", parentSessionId: "another-tile", childSessionId: "sub-theirs" });
     });
     expect(container.querySelector('[data-testid="chat-side-panel-subagent-row"]')).toBeNull();
 
     await act(async () => {
-      emitAgentSpawnEvent({ spawnId: "mine", type: "start", taskState: "TASK_STATE_SUBMITTED", title: "Mine", parentSessionId: MOCK_DEFAULT_SESSION_ID });
+      emitAgentSpawnEvent({ spawnId: "mine", type: "start", taskState: "TASK_STATE_SUBMITTED", title: "Mine", parentSessionId: MOCK_DEFAULT_SESSION_ID, childSessionId: "sub-mine" });
     });
     await waitFor(() =>
       expect(container.querySelectorAll('[data-testid="chat-side-panel-subagent-row"]')).toHaveLength(1),
