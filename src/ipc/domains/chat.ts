@@ -533,34 +533,33 @@ export function registerChatHandlers(deps: IpcDeps): void {
       const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, input, attachments);
       const safeDisplayText = displayText === undefined ? undefined
         : sanitizeOutgoingInput(settingsService, sink, displayText);
-      const completion = deferTurnCompletion(sink);
-      try {
-        const result = await runStreamedTurn(
-          loop,
-          sanitized.input,
-          completion.sink,
-          {
-            ...(abortSignal ? { abortSignal } : {}),
-            ...(replayStagedInputOrigin ? { inputOrigin: replayStagedInputOrigin } : { inputOrigin: "user-keyboard" as const, userKeyboardIntent }),
-            ...(sanitized.attachments && sanitized.attachments.length > 0
-              ? { attachments: sanitized.attachments }
-              : {}),
-            ...(rolePrompt ? { rolePrompt } : {}),
-            ...(safeDisplayText !== undefined ? { displayText: safeDisplayText } : {}),
-            ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
-          },
-        );
-        await markMainActiveAfterTurn(groupDeps, sanitized.input, replayStagedInputOrigin ?? "user-keyboard");
-        return result;
-      } finally {
-        completion.publish();
-      }
+      const result = await runStreamedTurn(
+        loop,
+        sanitized.input,
+        sink,
+        {
+          ...(abortSignal ? { abortSignal } : {}),
+          ...(replayStagedInputOrigin ? { inputOrigin: replayStagedInputOrigin } : { inputOrigin: "user-keyboard" as const, userKeyboardIntent }),
+          ...(sanitized.attachments && sanitized.attachments.length > 0
+            ? { attachments: sanitized.attachments }
+            : {}),
+          ...(rolePrompt ? { rolePrompt } : {}),
+          ...(safeDisplayText !== undefined ? { displayText: safeDisplayText } : {}),
+          ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
+        },
+      );
+      await markMainActiveAfterTurn(groupDeps, sanitized.input, replayStagedInputOrigin ?? "user-keyboard");
+      return result;
     };
     const tryStreamTurn = <T>(
       factory: (transport: StreamTurnTransport) => Promise<T>,
     ): Promise<T> | null => {
       const transport = createStreamTurnTransport();
-      return tryTrackStreamTurn((abortSignal) => factory({ ...transport, abortSignal }));
+      return tryTrackStreamTurn((abortSignal) => {
+        const completion = deferTurnCompletion(transport.sink);
+        completion.publishAfterTurnSettles(surfaceRuntime.activity.onTurnSettled);
+        return factory({ ...transport, sink: completion.sink, abortSignal });
+      });
     };
 
     const continueFromLastUserTurnWithinLease = async (
@@ -710,13 +709,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const holder = groupHolding(sessionId);
     if (!holder) return { status: "not-open" };
     if (holder.surfaceRuntime.activity.isBusy() || holder.loop.hasActiveTurn()) return { status: "busy" };
-    const running = holder.surfaceRuntime.activity.tryTrackTurn(() => runStreamedTurn(
-      holder.loop,
-      input,
-      holder.buildSink(holder.turns.allocateStreamId()),
-      // Scheduled text is host-authored, not the user's keyboard; the row carries the scheduled-prompt marker.
-      { inputOrigin: "agent-message", displayText, hostSubmitted: true },
-    ));
+    const running = holder.surfaceRuntime.activity.tryTrackTurn(() => {
+      const completion = deferTurnCompletion(holder.buildSink(holder.turns.allocateStreamId()));
+      completion.publishAfterTurnSettles(holder.surfaceRuntime.activity.onTurnSettled);
+      return runStreamedTurn(
+        holder.loop,
+        input,
+        completion.sink,
+        // Scheduled text is host-authored, not the user's keyboard; the row carries the scheduled-prompt marker.
+        { inputOrigin: "agent-message", displayText, hostSubmitted: true },
+      );
+    });
     if (!running) return { status: "busy" };
     await running;
     return { status: "ran" };
@@ -800,7 +803,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
         hasActiveTurn: () => loop.hasActiveTurn(),
         tryTakeTurn: (body) => surfaceRuntime.activity.tryTrackTurn(body),
         runTurn: async ({ input, displayText }) => {
-          await runStreamedTurn(loop, input, buildGroupSink(turns.allocateStreamId()), {
+          const completion = deferTurnCompletion(buildGroupSink(turns.allocateStreamId()));
+          completion.publishAfterTurnSettles(surfaceRuntime.activity.onTurnSettled);
+          await runStreamedTurn(loop, input, completion.sink, {
             // Autonomous continuation is host-authored and must retain non-keyboard provenance.
             inputOrigin: "agent-message",
             displayText,
@@ -809,7 +814,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           });
         },
       });
-      surfaceRuntime.activity.onTurnSettled(revival.reviveIfDue);
+      surfaceRuntime.activity.onIdle(revival.reviveIfDue);
       // Idle goal resume must explicitly start a turn; there is no prior turn to trigger revival.
       deps.sessionGoalStore.onChange((sessionId) => {
         if (sessionId === loop.getSessionId()) revival.reviveIfDue();
@@ -1004,28 +1009,25 @@ export function registerChatHandlers(deps: IpcDeps): void {
           return { text: "", toolCalls: [], route: "default", stopReason: "blocked" };
         }
         const completion = deferTurnCompletion(sink);
-        try {
-          const result = await runStreamedTurn(
-            conversationLoop,
-            mailboxTurn.initialGuidance,
-            completion.sink,
-            {
-              inputOrigin: "agent-message",
-              abortSignal,
-              approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
-              displayText: mailboxTurn.displayText,
-              subAgentReport: mailboxTurn.childTitle === undefined
-                ? {}
-                : { title: mailboxTurn.childTitle },
-            },
-          );
-          if (conversationLoop.getSessionId() !== parentSessionId) return result;
-          await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
-          await markMainActiveAfterTurn(deps, mailboxTurn.initialGuidance, "agent-message");
-          return result;
-        } finally {
-          completion.publish();
-        }
+        completion.publishAfterTurnSettles(conversationSurfaceRuntime.activity.onTurnSettled);
+        const result = await runStreamedTurn(
+          conversationLoop,
+          mailboxTurn.initialGuidance,
+          completion.sink,
+          {
+            inputOrigin: "agent-message",
+            abortSignal,
+            approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
+            displayText: mailboxTurn.displayText,
+            subAgentReport: mailboxTurn.childTitle === undefined
+              ? {}
+              : { title: mailboxTurn.childTitle },
+          },
+        );
+        if (conversationLoop.getSessionId() !== parentSessionId) return result;
+        await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
+        await markMainActiveAfterTurn(deps, mailboxTurn.initialGuidance, "agent-message");
+        return result;
       });
     });
   }

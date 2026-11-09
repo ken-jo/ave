@@ -4,6 +4,7 @@ import { handleChatSend, type ChatSendContext } from "../chat.js";
 import { formatAgentPluginTemplatePrompt, type AgentPluginTemplatePrompt } from "../../../shared/agent-plugin-prompt.js";
 import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
 import { bindMessageSendPayload, LOOPBACK_CONVERSATION_ACTOR } from "../../../main/conversation-command-port.js";
+import { createConversationActivityCoordinator } from "../../../engine/conversation-activity-coordinator.js";
 
 const completedTurn = { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" } as const;
 
@@ -36,10 +37,12 @@ function makeFixture() {
     auditLogger: { log: vi.fn() },
     personaPromptStore: { listTemplates: () => [EXTENSION_TEMPLATE, OTHER_EXTENSION_TEMPLATE, PACKAGE_TEMPLATE] },
   } as unknown as IpcDeps;
+  const activity = createConversationActivityCoordinator();
   const context: ChatSendContext = {
     createStreamEventSink: () => vi.fn(),
     allocateStreamId: () => 7,
-    trackStreamTurn: (factory) => factory(),
+    trackStreamTurn: activity.trackTurn,
+    onTurnSettled: activity.onTurnSettled,
   };
   return { deps, context, runTurn };
 }

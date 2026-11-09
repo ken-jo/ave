@@ -7,6 +7,7 @@ import {
 import { initDlpAudit } from "../../../audit/dlp-filter.js";
 import { turnOptions } from "./chat-test-helpers.js";
 import * as fileMentionContext from "../file-mention-context.js";
+import { createConversationActivityCoordinator } from "../../../engine/conversation-activity-coordinator.js";
 
 const completedTurn = {
   text: "done",
@@ -30,10 +31,12 @@ function makeFixture(piiRedactEnabled: boolean) {
     },
     auditLogger: { log: vi.fn() },
   } as unknown as IpcDeps;
+  const activity = createConversationActivityCoordinator();
   const context: ChatSendContext = {
     createStreamEventSink: () => sink,
     allocateStreamId: () => 43,
-    trackStreamTurn: (factory) => factory(),
+    trackStreamTurn: activity.trackTurn,
+    onTurnSettled: activity.onTurnSettled,
   };
   return { deps, context, runTurn, sink };
 }

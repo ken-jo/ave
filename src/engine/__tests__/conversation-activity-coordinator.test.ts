@@ -164,6 +164,57 @@ describe("ConversationActivityCoordinator onTurnSettled", () => {
       expect(count).toBe(2);
     });
 
+    it("does not run idle work when a turn-settled listener acquires the next turn", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      let nextTurn: Promise<void> | null = null;
+      let finishNext: (() => void) | undefined;
+      let idleCount = 0;
+      coordinator.onIdle(() => { idleCount += 1; });
+      const stopSettled = coordinator.onTurnSettled(() => {
+        stopSettled();
+        nextTurn = coordinator.trackTurn(() => new Promise<void>((resolve) => {
+          finishNext = resolve;
+        }));
+      });
+
+      await coordinator.trackTurn(async () => undefined);
+      expect(nextTurn).not.toBeNull();
+      expect(idleCount).toBe(0);
+      if (!finishNext || !nextTurn) throw new Error("turn-settled listener did not acquire the next turn");
+
+      finishNext();
+      await nextTurn;
+      expect(idleCount).toBe(1);
+    });
+
+    it("defers turn-settled work until an overlapping transition admission releases", async () => {
+      const coordinator = createConversationActivityCoordinator();
+      let finishTurn: (() => void) | undefined;
+      let nextTurn: Promise<void> | null = null;
+      let busyWhenSettled: boolean | undefined;
+      const stopSettled = coordinator.onTurnSettled(() => {
+        stopSettled();
+        busyWhenSettled = coordinator.isBusy();
+        nextTurn = coordinator.trackTurn(async () => undefined);
+      });
+      const turn = coordinator.trackTurn(() => new Promise<void>((resolve) => {
+        finishTurn = resolve;
+      }));
+      await Promise.resolve();
+      const admission = coordinator.beginSessionTransitionAdmission();
+      if (!finishTurn || !admission) throw new Error("turn or transition admission did not start");
+
+      finishTurn();
+      await turn;
+      expect(coordinator.isBusy()).toBe(true);
+      expect(busyWhenSettled).toBeUndefined();
+
+      admission.release();
+      expect(busyWhenSettled).toBe(false);
+      if (!nextTurn) throw new Error("turn-settled listener did not acquire the next turn");
+      await nextTurn;
+    });
+
     it("fires when a bound loop's session transition ends, and not while something else keeps it busy", async () => {
       const coordinator = createConversationActivityCoordinator();
       let transitioning = true;

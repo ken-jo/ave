@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createConversationActivityCoordinator } from "../../../engine/conversation-activity-coordinator.js";
 import type { IpcDeps } from "../../types.js";
+import { deferTurnCompletion } from "../chat-stream.js";
 import { handleChatSend, type ChatSendContext } from "../chat.js";
 
 const completedTurn = {
@@ -41,6 +42,7 @@ function fixture(markMainActiveResume: () => Promise<void>) {
     createStreamEventSink: () => sink,
     allocateStreamId: () => ++streamId,
     trackStreamTurn: activity.trackTurn,
+    onTurnSettled: activity.onTurnSettled,
   };
   return { activity, context, deps, runTurn, sink };
 }
@@ -54,6 +56,16 @@ describe("chat turn completion ordering", () => {
     const postTurn = deferred<void>();
     const markMainActiveResume = vi.fn(() => postTurn.promise);
     const f = fixture(markMainActiveResume);
+    let queued: ReturnType<typeof handleChatSend> | undefined;
+    let busyWhenCompleted: boolean | undefined;
+    f.sink.mockImplementation((event: { kind?: unknown }) => {
+      if (event.kind !== "turn.completed" || queued !== undefined) return;
+      busyWhenCompleted = f.activity.isBusy();
+      queued = handleChatSend(f.deps, {
+        input: "queued after done",
+        inputOrigin: "queue-auto",
+      }, f.context);
+    });
     const first = handleChatSend(f.deps, {
       input: "first",
       inputOrigin: "user-keyboard",
@@ -66,14 +78,13 @@ describe("chat turn completion ordering", () => {
       input: "queued too early",
       inputOrigin: "queue-auto",
     }, f.context)).rejects.toThrow("streaming-active");
+    expect(completedEvents(f.sink)).toHaveLength(0);
 
     postTurn.resolve();
     await expect(first).resolves.toEqual(completedTurn);
-    expect(completedEvents(f.sink)).toHaveLength(1);
-    await expect(handleChatSend(f.deps, {
-      input: "queued after done",
-      inputOrigin: "queue-auto",
-    }, f.context)).resolves.toEqual(completedTurn);
+    expect(busyWhenCompleted).toBe(false);
+    if (!queued) throw new Error("completion did not trigger queue-auto");
+    await expect(queued).resolves.toEqual(completedTurn);
     expect(f.runTurn).toHaveBeenCalledTimes(2);
     expect(completedEvents(f.sink)).toHaveLength(2);
   });
@@ -90,5 +101,23 @@ describe("chat turn completion ordering", () => {
 
     expect(completedEvents(f.sink)).toHaveLength(1);
     expect(f.activity.isBusy()).toBe(false);
+  });
+
+  it("removes its one-shot settled listener and never synthesizes an empty completion", () => {
+    const sink = vi.fn();
+    const completion = deferTurnCompletion(sink);
+    const unsubscribe = vi.fn();
+    let listener: (() => void) | undefined;
+    completion.publishAfterTurnSettles((registered) => {
+      listener = registered;
+      return unsubscribe;
+    });
+    if (!listener) throw new Error("settled listener was not registered");
+
+    listener();
+    listener();
+
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(sink).not.toHaveBeenCalled();
   });
 });

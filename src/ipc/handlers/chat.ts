@@ -419,6 +419,7 @@ export interface ChatSendContext {
   createStreamEventSink: (streamId: number) => ConversationStreamEventSink;
   allocateStreamId: () => number;
   trackStreamTurn: (factory: (signal?: AbortSignal) => Promise<ChatSendResult>) => Promise<ChatSendResult>;
+  onTurnSettled: (listener: () => void) => () => void;
   /** Host-owned remote-controller authority; external payloads cannot supply it. */
   remoteControllerAuthority?: RemoteControllerAuthority;
   /** Host-owned cancellation from admission and, when present, the public-turn owner. */
@@ -445,6 +446,8 @@ export async function handleChatSend(
   const streamId = ctx.allocateStreamId();
   const sink = ctx.createStreamEventSink(streamId);
   return ctx.trackStreamTurn(async (admissionSignal) => {
+    const completion = deferTurnCompletion(sink);
+    completion.publishAfterTurnSettles(ctx.onTurnSettled);
     const abortSignal = admissionSignal && ctx.abortSignal
       ? AbortSignal.any([admissionSignal, ctx.abortSignal]) : admissionSignal ?? ctx.abortSignal;
     let turnEntered = false;
@@ -496,50 +499,44 @@ export async function handleChatSend(
       }
       abortSignal?.throwIfAborted();
       turnEntered = true;
-      const completion = deferTurnCompletion(sink);
-      try {
-        const result = await runStreamedTurn(
-          conversationLoop,
-          sanitized.input,
-          completion.sink,
-          {
-            attachments: sanitized.attachments,
-            inputOrigin,
-            // Desktop sends only: the payload's userActivation is preload's report of a consumed gesture token (parse refuses a
-            // user-keyboard payload without it); main mints the turn's one verified intent from it.
-            ...(inputOrigin === "user-keyboard" ? { userKeyboardIntent: mintUserKeyboardIntent({ inputOrigin, userActivation }) } : {}),
-            ...(displayText === undefined ? {} : { displayText }),
-            ...((inputOrigin === "user-keyboard" && userActivation === true || ctx.remoteControllerAuthority !== undefined)
-              ? { requestAnchorRawIntent: input }
-              : {}),
-            ...(personaPrompt.rolePrompt ? { rolePrompt: personaPrompt.rolePrompt } : {}),
-            ...(turnScopedPluginIds ? { turnScopedPluginIds } : {}),
-            ...(mailboxTurn
-              ? {
-                  initialGuidance: mailboxTurn.initialGuidance,
-                  initialGuidanceDisplayText: mailboxTurn.displayText,
-                  approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
-                  subAgentReport: mailboxTurn.childTitle === undefined
-                    ? {}
-                    : { title: mailboxTurn.childTitle },
-                }
-              : {}),
-            ...(ctx.remoteControllerAuthority
-              ? { remoteControllerAuthority: ctx.remoteControllerAuthority }
-              : {}),
-            ...(abortSignal === undefined ? {} : { abortSignal }),
-          },
-        );
-        await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
-        await markMainActiveAfterTurn(deps, sanitized.input, inputOrigin);
-        return result;
-      } finally {
-        // `done` starts queue-auto work, so publish it only after every awaited owner of this turn has settled.
-        completion.publish();
-      }
+      const result = await runStreamedTurn(
+        conversationLoop,
+        sanitized.input,
+        completion.sink,
+        {
+          attachments: sanitized.attachments,
+          inputOrigin,
+          // Desktop sends only: the payload's userActivation is preload's report of a consumed gesture token (parse refuses a
+          // user-keyboard payload without it); main mints the turn's one verified intent from it.
+          ...(inputOrigin === "user-keyboard" ? { userKeyboardIntent: mintUserKeyboardIntent({ inputOrigin, userActivation }) } : {}),
+          ...(displayText === undefined ? {} : { displayText }),
+          ...((inputOrigin === "user-keyboard" && userActivation === true || ctx.remoteControllerAuthority !== undefined)
+            ? { requestAnchorRawIntent: input }
+            : {}),
+          ...(personaPrompt.rolePrompt ? { rolePrompt: personaPrompt.rolePrompt } : {}),
+          ...(turnScopedPluginIds ? { turnScopedPluginIds } : {}),
+          ...(mailboxTurn
+            ? {
+                initialGuidance: mailboxTurn.initialGuidance,
+                initialGuidanceDisplayText: mailboxTurn.displayText,
+                approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
+                subAgentReport: mailboxTurn.childTitle === undefined
+                  ? {}
+                  : { title: mailboxTurn.childTitle },
+              }
+            : {}),
+          ...(ctx.remoteControllerAuthority
+            ? { remoteControllerAuthority: ctx.remoteControllerAuthority }
+            : {}),
+          ...(abortSignal === undefined ? {} : { abortSignal }),
+        },
+      );
+      await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
+      await markMainActiveAfterTurn(deps, sanitized.input, inputOrigin);
+      return result;
     } catch (error) {
       if (turnEntered || !abortSignal?.aborted) throw error;
-      sink({ kind: "turn.completed" });
+      completion.sink({ kind: "turn.completed" });
       return { text: "", toolCalls: [], route: "default", stopReason: "interrupted" };
     }
   });

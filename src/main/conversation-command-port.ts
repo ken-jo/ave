@@ -194,6 +194,7 @@ export function createConversationCommandPort(
     ),
     allocateStreamId: () => runtime.activity.allocateStreamId(),
     trackStreamTurn: (factory) => runtime.activity.trackTurn(factory),
+    onTurnSettled: (listener) => runtime.activity.onTurnSettled(listener),
   };
   // `submit` already owns the activity lease. Re-entering `trackStreamTurn` from handleChatSend would reject its own reservation as streaming-active.
   const reservedContext = (signal: AbortSignal): ChatSendContext => ({
