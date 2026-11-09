@@ -36,6 +36,9 @@ async function mountShell(container: HTMLElement) {
   expect(aside).toBeTruthy();
   expect(main).toBeTruthy();
   expect(band).toBeTruthy();
+  // One explicit shrinkable column: a wide band row cannot widen the shell and push the panes past the window.
+  expect(container.querySelector('[data-testid="app-shell"]')).toHaveClass("grid-cols-[minmax(0,1fr)]");
+  expect(band).toHaveClass("min-w-0");
   return { toggle, aside, main, band };
 }
 

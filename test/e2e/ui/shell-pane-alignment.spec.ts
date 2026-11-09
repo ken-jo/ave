@@ -195,3 +195,24 @@ for (const axis of ["row", "column"] as const) {
     }
   });
 }
+
+test("a toolbar wider than the window cannot widen the shell column past the pane", async () => {
+  const testInfo = test.info();
+  const context = await launchSeededElectron({ historyRows: [], settings: buildLlmSettings() });
+  try {
+    await setWindowSize(context.app, 1243, 800);
+    const before = await measureShell(context.page, testInfo, "shell-wide-toolbar-before");
+    await context.page.getByTestId("main-toolbar").evaluate((toolbar) => {
+      const wide = document.createElement("div");
+      wide.style.cssText = "flex: none; width: 3000px; height: 1px";
+      toolbar.append(wide);
+    });
+    const after = await measureShell(context.page, testInfo, "shell-wide-toolbar-after");
+    expect(after.viewport).toEqual({ width: 1243, height: 800 });
+    expect(Math.abs(after.panes[0].left - before.panes[0].left)).toBeLessThanOrEqual(0.5);
+    expect(Math.abs(after.panes[0].right - before.panes[0].right)).toBeLessThanOrEqual(0.5);
+    expect(after.panes[0].right).toBeLessThanOrEqual(after.viewport.width);
+  } finally {
+    await teardownSeededElectron(context, { terminate: true });
+  }
+});
