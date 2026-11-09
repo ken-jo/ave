@@ -303,6 +303,25 @@ export async function launchSeededElectron(opts: {
   }
 }
 
+/** Keep the inspector connected through native cleanup, then release it so the process can exit. */
+export async function quitElectron(app: ElectronApplication): Promise<void> {
+  const child = app.process();
+  const isRunning = child.exitCode === null && child.signalCode === null;
+  const exited = isRunning ? once(child, "exit").then(() => {}) : Promise.resolve();
+  if (isRunning) {
+    const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
+      runtimeApp.once("will-quit", () => resolve());
+      runtimeApp.quit();
+    })).catch((error: unknown) => {
+      if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);
+      return exited;
+    });
+    await Promise.race([readyToExit, exited]);
+  }
+  await app.close().catch(() => {});
+  await exited;
+}
+
 export async function teardownSeededElectron(
   ctx: SeededElectronContext,
   options: { terminate?: boolean } = {},
@@ -314,7 +333,7 @@ export async function teardownSeededElectron(
     child.kill("SIGKILL");
     await exited;
   }
-  await ctx.app.close().catch(() => {});
+  await quitElectron(ctx.app);
   removeSeededElectronDirectories(ctx.userDataDir, ctx.tempHome);
 }
 
