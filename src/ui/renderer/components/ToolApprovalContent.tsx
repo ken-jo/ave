@@ -425,6 +425,7 @@ export function ToolApprovalContent({
   open,
   request,
   conversationLabel,
+  actionTitleVisible = true,
   narrowLaneScroll = false,
   pendingCount = 1,
   onDecide,
@@ -438,6 +439,8 @@ export function ToolApprovalContent({
   /** What the card calls the conversation that raised it; the surface's own name for itself (a tile's title,
    * "Side chat", "no conversation"). The raw session id is kept for the review details, where an id is useful. */
   conversationLabel: string;
+  /** Show the action heading when the content has no titled frame. */
+  actionTitleVisible?: boolean;
   /** Let a very narrow floating approval scroll as one card when its footer cannot fit. */
   narrowLaneScroll?: boolean;
   pendingCount?: number;
@@ -949,7 +952,7 @@ export function ToolApprovalContent({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="tool-approval-card">
         <section className={`min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-2 sm:px-4 sm:py-3 ${narrowLaneScroll ? "@max-[14rem]:overscroll-auto" : ""}`}>
           <div className="space-y-2">
-            <h3 className="break-words text-sm font-semibold" data-testid="approval-action-title">{action.title}</h3>
+            {actionTitleVisible ? <h3 className="break-words text-sm font-semibold" data-testid="approval-action-title">{action.title}</h3> : null}
             {action.primary ? <pre className="whitespace-pre-wrap break-all text-xs" data-testid="approval-action-primary">{action.primary}</pre> : null}
             {/* Identity is supplied by the host request for every card. */}
                 <div className="min-w-0 space-y-1">

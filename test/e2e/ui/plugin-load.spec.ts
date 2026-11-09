@@ -1,3 +1,4 @@
+import { quitElectron } from './seeded-electron.js';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from '../../../src/shared/test-ids.js';
 import { captureCommandMenus, capturedCommandMenus } from './command-menu.js';
@@ -27,5 +28,5 @@ test('plugins with UI views appear in the command menu', async ({ app: seededApp
   await expect
     .poll(pluginRows, { timeout: 45_000, intervals: [1_000] })
     .toEqual(expect.arrayContaining(PLUGIN_VIEW_KEYS.map((viewKey) => `plugin:${viewKey}`)));
-  } finally { await app.close(); }
+  } finally { await quitElectron(app); }
 });

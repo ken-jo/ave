@@ -46,6 +46,9 @@ export class BrowserScreencast {
   private stopCloseListener: (() => void) | undefined;
   private armed = false;
   private finished = false;
+  private stopAttempted = false;
+  private stopSucceeded = false;
+  private stopping: Promise<void> | undefined;
   private closedReason: string | undefined;
   private rearming: Promise<void> | undefined;
   private rearmAgain = false;
@@ -90,14 +93,29 @@ export class BrowserScreencast {
   }
 
   /**
-   * Stops forwarding at once and sends the stop command on the same session. The close listener stays until that
-   * command settles, so a session that closes meanwhile rejects it with a closed error instead of leaving it pending.
+   * Stops forwarding at once and sends the stop command on the same session. The close listener stays until a stop
+   * succeeds or the session closes, so a failed stop can be retried without reporting false success.
    */
   stop(): Promise<void> {
-    if (this.finished) return Promise.resolve();
-    this.finish(false);
-    if (this.closedReason !== undefined) { this.releaseClose(); return Promise.resolve(); }
-    return this.command("Page.stopScreencast").then(() => undefined).finally(() => this.releaseClose());
+    if (this.stopSucceeded || (this.finished && !this.stopAttempted)) return Promise.resolve();
+    if (!this.stopAttempted) {
+      this.stopAttempted = true;
+      this.finish(false);
+    }
+    if (this.closedReason !== undefined) {
+      this.stopSucceeded = true;
+      this.releaseClose();
+      return Promise.resolve();
+    }
+    if (this.stopping) return this.stopping;
+    const stopping = this.command("Page.stopScreencast").then(() => {
+      this.stopSucceeded = true;
+      this.releaseClose();
+    });
+    this.stopping = stopping;
+    void stopping.then(() => { if (this.stopping === stopping) this.stopping = undefined; },
+      () => { if (this.stopping === stopping) this.stopping = undefined; });
+    return stopping;
   }
 
   private onEvent(method: string, params: Record<string, unknown>): void {

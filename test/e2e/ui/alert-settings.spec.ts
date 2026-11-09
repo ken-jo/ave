@@ -1,3 +1,4 @@
+import { quitElectron } from "./seeded-electron.js";
 import type { TestT } from "./i18n.js";
 import { test, expect } from "./fixtures.js";
 import { openInlineSettings, closeInlineSettings } from "./inline-settings.js";
@@ -59,7 +60,7 @@ async function withAdmittedFixture(
   body: (app: ElectronApplication, mainWindow: Page) => Promise<void>,
 ): Promise<void> {
   const { app, mainWindow } = await admitFixturePlugins(context);
-  try { await body(app, mainWindow); } finally { await app.close(); }
+  try { await body(app, mainWindow); } finally { await quitElectron(app); }
 }
 
 test("alert choices control declared delivery and stay inside plugin Settings", async ({ app: seededApp, mainWindow: seededWindow, aveHome, userDataDir, tempHome, t }, testInfo) => {

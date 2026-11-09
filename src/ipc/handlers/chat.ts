@@ -3,6 +3,7 @@ import { MAIN_CHAT_GROUP_ID } from "../../contract/app-contract.js";
 import type { ChatInputOrigin, ChatSendPayload, RemoteControllerAuthority } from "../../shared/chat-origin.js";
 import {
   isChatSendInputOrigin,
+  isChatSendRequestId,
   isRemoteControllerAuthorityCurrent,
   isUserKeyboardOrigin,
   mintUserKeyboardIntent,
@@ -35,6 +36,7 @@ import { projectRootEquals } from "../../shared/project-identity.js";
 import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
 import { expandFileMentionContext } from "./file-mention-context.js";
 import {
+  deferTurnCompletion,
   runStreamedTurn,
   type ConversationStreamEventSink,
 } from "./chat-stream.js";
@@ -247,6 +249,7 @@ export function parseChatSendPayload(
   }
   const candidate = payload as {
     input?: unknown;
+    sendRequestId?: unknown;
     attachments?: unknown;
     inputOrigin?: unknown;
     userActivation?: unknown;
@@ -254,6 +257,9 @@ export function parseChatSendPayload(
     pluginPromptId?: unknown;
   };
   if (typeof candidate.input !== "string") {
+    return { ok: false, error: "invalid-input" };
+  }
+  if (candidate.sendRequestId !== undefined && !isChatSendRequestId(candidate.sendRequestId)) {
     return { ok: false, error: "invalid-input" };
   }
   if (!isChatSendInputOrigin(candidate.inputOrigin)) {
@@ -286,6 +292,7 @@ export function parseChatSendPayload(
     ok: true,
     payload: {
       input: candidate.input,
+      ...(typeof candidate.sendRequestId === "string" ? { sendRequestId: candidate.sendRequestId } : {}),
       attachments: candidate.attachments,
       inputOrigin: candidate.inputOrigin,
       ...(candidate.userActivation === true ? { userActivation: true } : {}),
@@ -415,9 +422,10 @@ export async function markMainActiveAfterTurn(
 }
 
 export interface ChatSendContext {
-  createStreamEventSink: (streamId: number) => ConversationStreamEventSink;
+  createStreamEventSink: (streamId: number, sendRequestId?: string) => ConversationStreamEventSink;
   allocateStreamId: () => number;
   trackStreamTurn: (factory: (signal?: AbortSignal) => Promise<ChatSendResult>) => Promise<ChatSendResult>;
+  onTurnSettled: (listener: () => void) => () => void;
   /** Host-owned remote-controller authority; external payloads cannot supply it. */
   remoteControllerAuthority?: RemoteControllerAuthority;
   /** Host-owned cancellation from admission and, when present, the public-turn owner. */
@@ -438,12 +446,14 @@ export async function handleChatSend(
   const expectedSessionId = conversationLoop.getSessionId();
   const parsed = parseChatSendPayload(payload);
   if (!parsed.ok) return { ok: false, error: parsed.error };
-  const { input, attachments, inputOrigin, userActivation, personaPromptId, pluginPromptId } = parsed.payload;
+  const { input, attachments, inputOrigin, userActivation, personaPromptId, pluginPromptId, sendRequestId } = parsed.payload;
   const turnScopedPluginIds = resolvePluginPromptScope(personaPromptStore, pluginPromptId, input);
   const validated = validateUserContentParts(attachments);
   const streamId = ctx.allocateStreamId();
-  const sink = ctx.createStreamEventSink(streamId);
+  const sink = ctx.createStreamEventSink(streamId, sendRequestId);
   return ctx.trackStreamTurn(async (admissionSignal) => {
+    const completion = deferTurnCompletion(sink);
+    completion.publishAfterTurnSettles(ctx.onTurnSettled);
     const abortSignal = admissionSignal && ctx.abortSignal
       ? AbortSignal.any([admissionSignal, ctx.abortSignal]) : admissionSignal ?? ctx.abortSignal;
     let turnEntered = false;
@@ -498,7 +508,7 @@ export async function handleChatSend(
       const result = await runStreamedTurn(
         conversationLoop,
         sanitized.input,
-        sink,
+        completion.sink,
         {
           attachments: sanitized.attachments,
           inputOrigin,
@@ -532,7 +542,7 @@ export async function handleChatSend(
       return result;
     } catch (error) {
       if (turnEntered || !abortSignal?.aborted) throw error;
-      sink({ kind: "turn.completed" });
+      completion.sink({ kind: "turn.completed" });
       return { text: "", toolCalls: [], route: "default", stopReason: "interrupted" };
     }
   });

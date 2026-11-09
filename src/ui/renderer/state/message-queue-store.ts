@@ -166,6 +166,19 @@ export class MessageQueueStore {
     if (changed) this.notify();
   }
 
+  /** Remove only rows owned by an accepted delivery. A late callback cannot consume rows from a newer reservation. */
+  commitReservation(id: string): void {
+    this.prune();
+    const before = this.items.length;
+    this.items = this.items.filter((item) => item.handoffReservationId !== id);
+    if (this.items.length !== before) this.notify();
+  }
+
+  /** Return only this delivery's rows to their original queue positions. */
+  releaseReservation(id: string): void {
+    this.settleReservation(id);
+  }
+
   /** Mark rows as accepted by the engine, recording what it was given. */
   markHandedOff(ids: readonly string[], handedOffAs: string): void {
     const target = new Set(ids);

@@ -58,6 +58,7 @@ import {
   llmRouteBaseUrlSignature,
 } from "../../shared/llm-vendor-defaults.js";
 import {
+  deferTurnCompletion,
   runStreamedTurn,
   type ConversationStreamEventSink,
 } from "../handlers/chat-stream.js";
@@ -554,7 +555,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
       factory: (transport: StreamTurnTransport) => Promise<T>,
     ): Promise<T> | null => {
       const transport = createStreamTurnTransport();
-      return tryTrackStreamTurn((abortSignal) => factory({ ...transport, abortSignal }));
+      return tryTrackStreamTurn((abortSignal) => {
+        const completion = deferTurnCompletion(transport.sink);
+        completion.publishAfterTurnSettles(surfaceRuntime.activity.onTurnSettled);
+        return factory({ ...transport, sink: completion.sink, abortSignal });
+      });
     };
 
     const continueFromLastUserTurnWithinLease = async (
@@ -704,13 +709,17 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const holder = groupHolding(sessionId);
     if (!holder) return { status: "not-open" };
     if (holder.surfaceRuntime.activity.isBusy() || holder.loop.hasActiveTurn()) return { status: "busy" };
-    const running = holder.surfaceRuntime.activity.tryTrackTurn(() => runStreamedTurn(
-      holder.loop,
-      input,
-      holder.buildSink(holder.turns.allocateStreamId()),
-      // Scheduled text is host-authored, not the user's keyboard; the row carries the scheduled-prompt marker.
-      { inputOrigin: "agent-message", displayText, hostSubmitted: true },
-    ));
+    const running = holder.surfaceRuntime.activity.tryTrackTurn(() => {
+      const completion = deferTurnCompletion(holder.buildSink(holder.turns.allocateStreamId()));
+      completion.publishAfterTurnSettles(holder.surfaceRuntime.activity.onTurnSettled);
+      return runStreamedTurn(
+        holder.loop,
+        input,
+        completion.sink,
+        // Scheduled text is host-authored, not the user's keyboard; the row carries the scheduled-prompt marker.
+        { inputOrigin: "agent-message", displayText, hostSubmitted: true },
+      );
+    });
     if (!running) return { status: "busy" };
     await running;
     return { status: "ran" };
@@ -794,7 +803,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
         hasActiveTurn: () => loop.hasActiveTurn(),
         tryTakeTurn: (body) => surfaceRuntime.activity.tryTrackTurn(body),
         runTurn: async ({ input, displayText }) => {
-          await runStreamedTurn(loop, input, buildGroupSink(turns.allocateStreamId()), {
+          const completion = deferTurnCompletion(buildGroupSink(turns.allocateStreamId()));
+          completion.publishAfterTurnSettles(surfaceRuntime.activity.onTurnSettled);
+          await runStreamedTurn(loop, input, completion.sink, {
             // Autonomous continuation is host-authored and must retain non-keyboard provenance.
             inputOrigin: "agent-message",
             displayText,
@@ -803,7 +814,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           });
         },
       });
-      surfaceRuntime.activity.onTurnSettled(revival.reviveIfDue);
+      surfaceRuntime.activity.onIdle(revival.reviveIfDue);
       // Idle goal resume must explicitly start a turn; there is no prior turn to trigger revival.
       deps.sessionGoalStore.onChange((sessionId) => {
         if (sessionId === loop.getSessionId()) revival.reviveIfDue();
@@ -997,10 +1008,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
         ) {
           return { text: "", toolCalls: [], route: "default", stopReason: "blocked" };
         }
+        const completion = deferTurnCompletion(sink);
+        completion.publishAfterTurnSettles(conversationSurfaceRuntime.activity.onTurnSettled);
         const result = await runStreamedTurn(
           conversationLoop,
           mailboxTurn.initialGuidance,
-          sink,
+          completion.sink,
           {
             inputOrigin: "agent-message",
             abortSignal,
@@ -1315,16 +1328,36 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
     if (typeof expectedSessionId !== "string" || !isValidSessionId(expectedSessionId)) return { ok: false, error: "invalid-input" };
     const group = groupOf(e, chatGroupId, CHANNELS.chat.getTurnReview);
-    const mutation = group.turns.trackSessionMutation(async (): Promise<TurnReviewResult> => {
-      const loop = group.loop;
-      if (expectedSessionId !== loop.getSessionId()) return { ok: false, error: "turn-review-stale" };
-      const turnId = latestReviewTurnId(loop);
-      if (!turnId) return { ok: false, error: "turn-review-unavailable" };
-      return getTurnChangeReview(expectedSessionId, turnId, () => ({
-        cwd: loop.getSessionExecutionCwd(), extraAllowedDirectories: loop.getTurnAdditionalDirectories(),
-      }), { currentDetails: true });
-    });
-    return mutation ?? { ok: false, error: STREAMING_ACTIVE };
+    const loop = group.loop;
+    if (group.surfaceRuntime.activity.isBusy()) return { ok: false, error: STREAMING_ACTIVE };
+    if (expectedSessionId !== loop.getSessionId()) return { ok: false, error: "turn-review-stale" };
+    const sessionEpoch = loop.getSessionEpoch();
+    const turnId = latestReviewTurnId(loop);
+    if (!turnId) return { ok: false, error: "turn-review-unavailable" };
+    const cwd = loop.getSessionExecutionCwd();
+    const extraAllowedDirectories = [...loop.getTurnAdditionalDirectories()];
+    const groupKey = scopedGroupKey(group.owner, group.rendererGroupId);
+    let contextChanged = false;
+    const isCurrent = (): boolean => {
+      const currentExtraAllowedDirectories = loop.getTurnAdditionalDirectories();
+      return groupContexts.get(groupKey) === group
+        && !group.surfaceRuntime.activity.isBusy()
+        && loop.getSessionId() === expectedSessionId
+        && loop.getSessionEpoch() === sessionEpoch
+        && loop.getSessionExecutionCwd() === cwd
+        && currentExtraAllowedDirectories.length === extraAllowedDirectories.length
+        && currentExtraAllowedDirectories.every((directory, index) => directory === extraAllowedDirectories[index])
+        && latestReviewTurnId(loop) === turnId;
+    };
+    const review = await getTurnChangeReview(expectedSessionId, turnId, () => {
+      if (!isCurrent()) {
+        contextChanged = true;
+        throw new Error("turn-review-context-changed");
+      }
+      return { cwd, extraAllowedDirectories };
+    }, { currentDetails: true });
+    if (contextChanged || !isCurrent()) return { ok: false, error: "turn-review-stale" };
+    return review;
   });
 
   // Restore code before history mutation; code-only restore leaves history intact and rewind persists its own truncation.

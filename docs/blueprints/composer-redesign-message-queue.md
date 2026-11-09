@@ -113,12 +113,24 @@ The side chat has no guide channel; its queue drains only at turn end.
 
 ### Turn-end auto-send
 
-On `done` for the current turn, pending (neither reserved nor handed-off) items are removed and
+On `done` for the current turn, the next pending source group is reserved and
 sent as a new turn with `inputOrigin: "queue-auto"`:
 
 - A re-entrancy guard (`queueAutoInflightRef`) ignores further `done` events
-  until that send settles. Rows are removed before the send so a second `done`
-  finds the queue empty.
+  until that send settles. Reserved rows remain visible but are not pending, so
+  a second `done` cannot dispatch them again.
+- Promise settlement alone does not prove admission. The send adapter reports
+  an explicit accepted or refused disposition: acceptance commits and removes
+  exactly that reservation once; host refusal, a local pre-admission gate, or a
+  thrown send releases the same rows in their original order with identity,
+  source, selection and expiration intact. A refused `queue-auto` row stays in
+  the queue and is not restored into the composer. Each reservation generates a
+  request ID before dispatch. Only a `user_message` prelude with that exact
+  `sendRequestId` proves acceptance if later turn bookkeeping rejects the invoke;
+  a delayed same-origin prelude or a missing ID cannot consume reserved rows.
+  The bounded opaque ID is owner-only correlation metadata, never authorization.
+  Acceptance cannot be downgraded into a refusal and sent twice. Refusal does not start a
+  blind retry, including when `done` arrived during an explicit send-now request.
 - The send is deferred to a microtask so every stream subscriber processes the
   `done` frame before the new turn re-arms the surface's stale-frame guard.
 - `isCurrentTurnEvent` (supplied by the side chat) filters frames from a

@@ -113,7 +113,6 @@ export interface BrowserGuest {
   isFocused?(): boolean;
   focus?(): void;
   blur?(): void;
-  close?(options: { waitForBeforeUnload: boolean }): void;
 }
 
 /** Every tab a layout keeps: shown in a pane, hidden but still open (`openSurfaces`), or in a side panel — each once. A hidden tab
@@ -1298,8 +1297,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     };
   }
 
-  // Open, select or close a tab and resolve when main observes completion. Owned guests close
-  // directly; renderer bookkeeping never supplies proof that a guest is gone.
+  // Request an open, select or close, then resolve only when main observes native completion.
+  // The renderer exclusively removes DOM-owned webviews. The shared guest-destroyed subscription supplies close proof.
   requestTabOp(
     windowId: number,
     op: RequestedTabOp,
@@ -1364,18 +1363,6 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       }
       options.signal?.addEventListener("abort", onAbort, { once: true });
       timer = setTimeout(() => settle({ ok: false, error: "timeout" }), options.timeoutMs ?? BROWSER_TAB_OP_TIMEOUT_MS);
-      if (actor && target?.owner !== null && target?.targetKind === "embedded" && op.op === "close") {
-        const guest = target.guest;
-        if (!guest?.close) { settle({ ok: false, error: "native-operation-failed" }); return; }
-        try {
-          guest.close({ waitForBeforeUnload: false });
-          if (guest.isDestroyed()) this.guestDestroyed(guest.id);
-          this.link?.sendTabOp(windowId, request);
-        } catch {
-          if (this.pending.has(requestId)) settle({ ok: false, error: "native-operation-failed" });
-        }
-        return;
-      }
       if (target?.targetKind === "popup" && op.op === "select") {
         try {
           const native = this.nativeTabs.get(target.handle);

@@ -6,6 +6,7 @@ import {
 } from "../chat.js";
 import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
 import { turnOptions } from "./chat-test-helpers.js";
+import { createConversationActivityCoordinator } from "../../../engine/conversation-activity-coordinator.js";
 
 const completedTurn = {
   text: "done",
@@ -29,10 +30,12 @@ function makeFixture() {
     },
     auditLogger: { log: vi.fn() },
   } as unknown as IpcDeps;
+  const activity = createConversationActivityCoordinator();
   const context: ChatSendContext = {
     createStreamEventSink: () => sink,
     allocateStreamId: () => 41,
-    trackStreamTurn: (factory) => factory(),
+    trackStreamTurn: activity.trackTurn,
+    onTurnSettled: activity.onTurnSettled,
   };
   return { deps, context, runTurn, sink };
 }

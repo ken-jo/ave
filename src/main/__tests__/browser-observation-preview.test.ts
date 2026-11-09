@@ -280,6 +280,56 @@ describe("agent browser live preview", () => {
     expect(request("start", observed.target.id)).toEqual({ ok: false, error: "unauthorized" });
   });
 
+  it("stops the page screencast before an agent closes its guest", async () => {
+    const observed = await agentClick();
+    request("start", observed.target.id);
+    const active = started[0];
+    if (!active) throw new Error("Expected the browser preview to start.");
+    let finishStop = () => {};
+    active.stop.mockImplementationOnce(() => new Promise<void>((resolve) => { finishStop = resolve; }));
+    let closing = false;
+    const close = runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "tab-close", async () => {
+      closing = true;
+      return 1;
+    }));
+    await vi.waitFor(() => expect(active.stop).toHaveBeenCalledOnce());
+    expect(closing).toBe(false);
+    expect(messages()).toEqual([]);
+    let overlappingRun = false;
+    await expect(runAdmittedAgentWork({ ...identity, toolUseId: "overlap" }, () => observeAgentBrowserCommand(tab, "snapshot", async () => {
+      overlappingRun = true;
+      return 1;
+    }))).rejects.toThrow("already active");
+    expect(overlappingRun).toBe(false);
+    finishStop();
+    await close;
+    expect(closing).toBe(true);
+    expect(messages().at(-1)).toMatchObject({ kind: "state", state: "stopped" });
+  });
+
+  it("keeps a live preview registered when stopping it fails before tab close", async () => {
+    const observed = await agentClick();
+    request("start", observed.target.id);
+    const active = started[0];
+    if (!active) throw new Error("Expected the browser preview to start.");
+    const stopError = new Error("Page.stopScreencast failed");
+    active.stop.mockRejectedValueOnce(stopError);
+    let closing = false;
+    await expect(runAdmittedAgentWork(identity, () => observeAgentBrowserCommand(tab, "tab-close", async () => {
+      closing = true;
+      return 1;
+    }))).rejects.toBe(stopError);
+    expect(closing).toBe(false);
+    expect(messages()).toEqual([]);
+    await runAdmittedAgentWork({ ...identity, toolUseId: "retry" }, () => observeAgentBrowserCommand(tab, "tab-close", async () => {
+      closing = true;
+      return 1;
+    }));
+    expect(active.stop).toHaveBeenCalledTimes(2);
+    expect(closing).toBe(true);
+    expect(messages().at(-1)).toMatchObject({ kind: "state", state: "stopped" });
+  });
+
   it("stops every preview when the observation runtime is disposed", async () => {
     const observed = await agentClick();
     request("start", observed.target.id);

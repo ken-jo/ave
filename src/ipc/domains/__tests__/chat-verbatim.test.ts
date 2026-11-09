@@ -2081,6 +2081,58 @@ describe("sub-agent autonomous parent wake", () => {
     expect(acknowledgeParentMailbox.mock.invocationCallOrder[0])
       .toBeLessThan(deps.memoryManager.sessions.markMainActiveResume.mock.invocationCallOrder[0]!);
   });
+
+  it("withholds autonomous wake completion until post-turn bookkeeping settles", async () => {
+    const loop = makeConversationLoop("a1bdc27a-c758-4a74-8955-5e9188412366", [
+      { role: "user", content: "existing parent input" },
+    ]);
+    loop.getSessionProjectIsDefault.mockReturnValue(true);
+    (loop as typeof loop & { hasActiveTurn: ReturnType<typeof vi.fn> }).hasActiveTurn =
+      vi.fn(() => false);
+    loop.runTurn.mockResolvedValue({
+      text: "parent response",
+      toolCalls: [],
+      route: "default",
+      stopReason: "end_turn",
+    });
+    let wakeHandler: ((parentSessionId: string) => Promise<void>) | undefined;
+    const bookkeepingEntered = new SessionMutationGate<void>();
+    const bookkeeping = new SessionMutationGate<void>();
+    const sent: Array<{ channel: string; payload: unknown }> = [];
+    const runner = {
+      setParentWakeHandler: vi.fn((handler: typeof wakeHandler) => {
+        wakeHandler = handler;
+      }),
+      peekParentMailbox: vi.fn(async () => [{
+        id: "message-wake-bookkeeping",
+        formattedText: "[Sub-Agent: Researcher]\nfinished",
+        approvalLabel: "[Sub-Agent: Researcher]",
+      }]),
+      acknowledgeParentMailbox: vi.fn(async () => 1),
+    };
+    const deps = await setupHandlers(loop, {
+      getSubAgentRunner: () => runner,
+      getMainWindow: () => ({
+        webContents: {
+          send: (channel: string, payload: unknown) => sent.push({ channel, payload }),
+        },
+      }),
+    });
+    deps.memoryManager.sessions.markMainActiveResume.mockImplementationOnce(async () => {
+      bookkeepingEntered.resolve(undefined);
+      await bookkeeping.promise;
+    });
+    if (!wakeHandler) throw new Error("parent wake handler was not registered");
+
+    const wakePromise = wakeHandler("a1bdc27a-c758-4a74-8955-5e9188412366");
+    await bookkeepingEntered.promise;
+    expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "done")).toHaveLength(0);
+
+    bookkeeping.resolve(undefined);
+    await wakePromise;
+    expect(sent.filter(({ payload }) => (payload as { type?: string }).type === "done")).toHaveLength(1);
+  });
+
   it("single-flights autonomous wake before mailbox peek starts", async () => {
     const loop = makeConversationLoop("a1bdc27a-c758-4a74-8955-5e9188412366", []);
     (loop as any).hasActiveTurn = vi.fn(() => false);

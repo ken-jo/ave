@@ -140,9 +140,13 @@ export interface ComposerSendOptions {
   injectHint?: "queue" | "interrupt";
   inputOrigin?: "queue-auto";
   appSource?: string;
+  /** The queue store, not the composer, owns this text until the host prelude or invoke proves acceptance. */
+  queueDelivery?: { accepted: boolean; sendRequestId: string };
   /** The host-chrome template selection behind a plugin-prompt send; main resolves and validates it. */
   pluginPromptId?: string;
+  /** Settle queue ownership explicitly; resolving the send promise alone does not prove admission. */
   onAccepted?: () => void;
+  /** Includes host refusal and local gates that return before IPC admission. */
   onRefused?: () => void;
 }
 
@@ -182,14 +186,27 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
       // Cache the preload-fixed debug flag per send and skip diagnostic payload allocation when disabled.
       const debugStreamEnabled = isDebugStreamEnabled();
       if (debugStreamEnabled) debugLog("handleAsk", "enter", { mode, qLen: q.length, streaming });
+      let disposition: "pending" | "accepted" | "refused" = "pending";
+      const settleDisposition = (next: "accepted" | "refused", callback?: () => void): void => {
+        if (disposition !== "pending") return;
+        disposition = next;
+        try { callback?.(); }
+        catch (error) { console.warn(`[chat-send] ${next} callback failed:`, errorMessage(error)); }
+      };
+      const notifyAccepted = () => settleDisposition("accepted", opts?.onAccepted);
+      const notifyRefused = () => settleDisposition("refused", opts?.onRefused);
       const trimmed = q.trim();
       if (!trimmed) {
         if (debugStreamEnabled) debugLog("handleAsk", "skip:empty");
+        notifyRefused();
         return;
       }
       // Do not let a fast legacy-key probe race ahead of the authoritative runtime selection. Until settings resolves we cannot
       // know whether a subscription login, rather than an API-key provider, is selected.
-      if (!settingsReady) return;
+      if (!settingsReady) {
+        notifyRefused();
+        return;
+      }
       // Explicit keyboard interruption is independent of the message's app provenance.
       const appInterrupt = mode === "app-message" && opts?.injectHint === "interrupt" && userIntent !== undefined;
       const interrupt = (mode === "default" || mode === "mcp-prompt" || mode === "plugin-prompt" || appInterrupt)
@@ -202,12 +219,14 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         if (await handleCompactCommand(trimmed)) {
           if (debugStreamEnabled) debugLog("handleAsk", "skip:compact-command-handled");
           setQuestion("");
+          notifyRefused();
           return;
         }
         if (trimmed === "/load" || trimmed.startsWith("/load ")) {
           const requested = trimmed.slice("/load".length).trim();
           if (requested.length === 0) {
             setErrorWithThought(t("app.loadCommandUsage"));
+            notifyRefused();
             return;
           }
           // Ask the widest query the IPC honours — `/load` is scoped by the id
@@ -218,31 +237,37 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           const match = findSessionByIdPrefix(listed.sessions, requested);
           if (!match) {
             setErrorWithThought(t("app.sessionNotFound", { requested }));
+            notifyRefused();
             return;
           }
           if (!(await sessionLoad(match.id, applyLoadedSession))) {
             setErrorWithThought(t("app.sessionLoadFailed", { requested }));
+            notifyRefused();
             return;
           }
           await refreshSessionId();
           await refreshSessions();
           if (debugStreamEnabled) debugLog("handleAsk", "load-session:handled", { sessionId: match.id });
+          notifyRefused();
           return;
         }
       }
       // No connected provider means no model: the draft stays put and the user lands where a provider is added.
       if (activeChatModel?.kind === "none") {
         onOpenSettings("llm");
+        notifyRefused();
         return;
       }
       // Once a subscription runtime is selected its verified chat capability is the only send gate. A stored API key belongs to
       // the inactive runtime and must never make this path sendable while login/verification is pending.
       if (subscriptionRuntimePolicy.subscriptionSelected && subscriptionRuntimePolicy.chatReady !== true) {
         onOpenSettings("llm");
+        notifyRefused();
         return;
       }
       if (!subscriptionRuntimePolicy.subscriptionSelected && !llmReadyWithoutApiKey && !(await checkApiKey())) {
         onOpenSettings("llm");
+        notifyRefused();
         return;
       }
       // Preserve the draft if the selected login runtime has not explicitly
@@ -272,6 +297,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         setErrorWithThought(t("app.subscriptionAttachmentUnsupported", {
           provider: subscriptionRuntimePolicy.provider ?? "subscription",
         }));
+        notifyRefused();
         return;
       }
       // Refuse unsupported image sends before acquiring turn state so drafts survive; keyboard sends need the same authoritative
@@ -282,6 +308,7 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
         && !supportsVision(llmVendor, llmModel, llmRouteModalities)
       ) {
         setErrorWithThought(`${t("app.visionNotSupported", { llmModel })} ${imageInputRecoveryMessage(t)}`);
+        notifyRefused();
         return;
       }
       const requestId = ++turnRequestRef.current;
@@ -334,22 +361,25 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           opts?.inputOrigin === "queue-auto"
             ? undefined
             : mode === "default" ? composed.personaPromptId : undefined,
-          ...(interrupt || pluginPromptId ? [{
+          ...(interrupt || pluginPromptId || opts?.queueDelivery ? [{
             ...(interrupt ? { interrupt: true } : {}),
             ...(pluginPromptId ? { pluginPromptId } : {}),
+            ...(opts?.queueDelivery ? { sendRequestId: opts.queueDelivery.sendRequestId } : {}),
           }] : []),
         );
         const refusal = chatSendRefusal(result);
         if (refusal !== undefined) throw new ChatSendRefusedError(refusal.code, refusal.interrupted);
-        opts?.onAccepted?.();
+        notifyAccepted();
         if (debugStreamEnabled) debugLog("handleAsk", "chatSend:resolved", { requestId });
         // After successful send, clear attachments — the textarea was already cleared by setQuestion(""). N counter persists
         // across turns so re-attached items get fresh numbers.
-        if (outgoingAttachments.length > 0 || attachments.length > 0) {
+        if (opts?.inputOrigin !== "queue-auto" && (outgoingAttachments.length > 0 || attachments.length > 0)) {
           setAttachments([]);
         }
       } catch (err) {
-        opts?.onRefused?.();
+        const queueDeliveryAccepted = opts?.queueDelivery?.accepted === true;
+        if (queueDeliveryAccepted) notifyAccepted();
+        else notifyRefused();
         if (debugStreamEnabled) {
           debugLog("handleAsk", "chatSend:rejected", {
             requestId,
@@ -367,28 +397,34 @@ export function useSendMessage(deps: UseSendMessageDeps): UseSendMessageResult {
           ? "app.sendNeedsKeyboard"
           : resolveIpcErrorKey(code);
         const message = mappedKey ? t(mappedKey) : t("app.errorGeneric", { message: rawMessage });
-        // On refusal remove the optimistic bubble before adding its notice and restore the draft because main recorded no turn.
-        if (mode === "default") dropUserEntry(displayText);
-        // An interrupting send that failed took the badge (and the user-stop mark) back unless the host reports it did abort the
-        // running turn: refused after the abort, that turn's own closing frame finalizes it as interrupted.
-        if (interrupt && !(err instanceof ChatSendRefusedError && err.interrupted)) unmarkLastAssistantInterrupted?.();
-        if (interrupt && err instanceof ChatSendRefusedError) {
-          // The running turn is not closed here with an error: refused at admission it goes on untouched.
-          appendSystemEntry(message);
-        } else {
+        if (queueDeliveryAccepted) {
+          // The host already published this queue row. A later bookkeeping/transport failure is a turn error, not an admission
+          // refusal: keep the accepted bubble and never return its text to the queue or composer.
           setErrorWithThought(message);
-        }
-        if (mode === "default") {
-          // Text AND attachments, together. They are one thing: the composer derives its
-          // chips from the markers in the body, so a body restored without its
-          // attachments is a draft with dangling references. Restored only when the
-          // composer is still empty, so a draft started during the send wins.
-          if (draftAttachments.length > 0) {
-            setAttachments((current) => (current.length > 0 ? current : draftAttachments));
+        } else {
+          // On refusal remove the optimistic bubble before adding its notice and restore the draft because main recorded no turn.
+          if (mode === "default") dropUserEntry(displayText);
+          // An interrupting send that failed took the badge (and the user-stop mark) back unless the host reports it did abort the
+          // running turn: refused after the abort, that turn's own closing frame finalizes it as interrupted.
+          if (interrupt && !(err instanceof ChatSendRefusedError && err.interrupted)) unmarkLastAssistantInterrupted?.();
+          if (interrupt && err instanceof ChatSendRefusedError) {
+            // The running turn is not closed here with an error: refused at admission it goes on untouched.
+            appendSystemEntry(message);
+          } else {
+            setErrorWithThought(message);
           }
-          // Restore only user-authored drafts, never staged provenance envelopes; functional updates preserve text typed while the
-          // send was in flight.
-          setQuestion((current) => (current.length > 0 ? current : q));
+          if (mode === "default" && opts?.queueDelivery === undefined && opts?.inputOrigin !== "queue-auto") {
+            // Text AND attachments, together. They are one thing: the composer derives its
+            // chips from the markers in the body, so a body restored without its
+            // attachments is a draft with dangling references. Restored only when the
+            // composer is still empty, so a draft started during the send wins.
+            if (draftAttachments.length > 0) {
+              setAttachments((current) => (current.length > 0 ? current : draftAttachments));
+            }
+            // Restore only user-authored drafts, never staged provenance envelopes; functional updates preserve text typed while the
+            // send was in flight.
+            setQuestion((current) => (current.length > 0 ? current : q));
+          }
         }
       } finally {
         const turnMatch = turnRequestRef.current === requestId;

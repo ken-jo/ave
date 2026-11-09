@@ -66,6 +66,18 @@ function pairedShareFixture() {
 }
 
 describe("ConversationCommandPort", () => {
+  it("publishes the exact desktop send correlation on the accepted owner message", async () => {
+    const { port, runtime } = makeFixture();
+    const events: unknown[] = [];
+    runtime.timeline.subscribe((event) => { events.push(event); });
+    await port.execute(DESKTOP_CONVERSATION_ACTOR, {
+      kind: "message.send", payload: { input: "queued", inputOrigin: "queue-auto", sendRequestId: "queued-request" },
+    });
+    expect(events).toContainEqual(expect.objectContaining({ event: expect.objectContaining({
+      kind: "user.message", ownerDetail: expect.objectContaining({ sendRequestId: "queued-request" }),
+    }) }));
+  });
+
   it("mints surface-user provenance and discards external elevation claims", async () => {
     const { port, runTurn } = makeFixture();
 
@@ -269,6 +281,12 @@ describe("ConversationCommandPort", () => {
     })).resolves.toEqual(completedTurn);
 
     expect(markMainActiveFresh).toHaveBeenCalledOnce();
+  });
+
+  it.each([LOOPBACK_CONVERSATION_ACTOR, createTailnetControllerActor("a".repeat(64)), createPlatformBridgeActor("b".repeat(64), { bridgeBinding: bridgeBindingFixture(), bridgeGuard: Object.freeze({ isCurrent: () => true }) })])("discards external send correlation claims (%s)", (actor) => {
+    expect(bindMessageSendPayload(actor, {
+      input: "external input", inputOrigin: "queue-auto", sendRequestId: "forged",
+    })).not.toHaveProperty("sendRequestId");
   });
 
   it("leaves desktop payload validation and its user-gesture boundary untouched", () => {

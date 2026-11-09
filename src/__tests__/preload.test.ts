@@ -621,6 +621,16 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith(channel, ...args);
   });
 
+  it("forwards queue correlation without minting keyboard authority", async () => {
+    const api = await loadAveApi();
+    const chatSend = api.chatSend as (...args: unknown[]) => Promise<unknown>;
+    await chatSend("queued", undefined, "queue-auto", undefined, undefined, { sendRequestId: "queued-request" });
+    expect(mockInvoke).toHaveBeenCalledWith("ave:chat:send", expect.objectContaining({
+      input: "queued", inputOrigin: "queue-auto", sendRequestId: "queued-request",
+    }), "main");
+    expect(mockInvoke.mock.calls[0]?.[1]).not.toHaveProperty("userActivation");
+  });
+
   it("does not trust renderer-minted chat userActivation flags", async () => {
     const api = await loadAveApi();
     const chatSend = api["chatSend"] as (

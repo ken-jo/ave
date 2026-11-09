@@ -12,7 +12,9 @@ test.use({ trace: "on" });
 for (const deviceScale of [1, 2]) {
   for (const appZoom of [0.9, 1, 1.25, 1.5]) {
     for (const guestZoom of appZoom === 1 ? [1, 1.25] : [1, appZoom]) {
-      test(`@os-focus clicks a parked ref across origins at app zoom ${appZoom} page zoom ${guestZoom} scale ${deviceScale}`, () => exerciseParkedClick(deviceScale, appZoom, guestZoom));
+      test(`@os-focus clicks a parked ref across origins at app zoom ${appZoom} page zoom ${guestZoom} scale ${deviceScale}`,
+        { annotation: { type: "isolated-app", description: "Native focus and process-wide input instrumentation require a dedicated process" } },
+        () => exerciseParkedClick(deviceScale, appZoom, guestZoom));
     }
   }
 }

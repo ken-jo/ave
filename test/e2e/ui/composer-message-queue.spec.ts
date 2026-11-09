@@ -143,6 +143,7 @@ test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "�
       : content;
   };
   let finishInitialTurn: (() => void) | undefined;
+  let readiness: { before: unknown; after: unknown } | undefined;
   const complete = (response: ServerResponse, text: string) => {
     const chunk = (delta: Record<string, string>, finishReason: string | null) =>
       `data: ${JSON.stringify({
@@ -181,7 +182,7 @@ test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "�
     const settings = buildLlmSettings("openai-compatible", "queue-model");
     const llm = settings.llm as { vendors: Record<string, { baseUrl?: string }> };
     llm.vendors["openai-compatible"].baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-    const readiness = await mainWindow.evaluate(async (llm) => {
+    const modelReadiness = await mainWindow.evaluate(async (llm) => {
       const api = (window as unknown as {
         aveApi: {
           getSettings: () => Promise<{ activeChatModel: unknown }>;
@@ -192,7 +193,8 @@ test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "�
       await api.updateSettings({ llm });
       return { before, after: (await api.getSettings()).activeChatModel };
     }, llm);
-    expect(readiness.after).toMatchObject({ kind: "api", vendor: "openai-compatible", model: "queue-model" });
+    readiness = modelReadiness;
+    expect(modelReadiness.after).toMatchObject({ kind: "api", vendor: "openai-compatible", model: "queue-model" });
     await expect(mainWindow.locator(MAIN + '[data-testid="iab-status-model"]')).toContainText("queue-model");
 
     const textarea = mainWindow.locator(MAIN + testIdSelector(TEST_IDS.composerTextarea));
@@ -222,6 +224,10 @@ test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "�
     });
     await mainWindow.screenshot({ path: testInfo.outputPath("queue-delivered.png") });
   } finally {
+    await testInfo.attach("queue-diagnostic", {
+      body: JSON.stringify({ readiness, requests }, null, 2),
+      contentType: "application/json",
+    });
     server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }

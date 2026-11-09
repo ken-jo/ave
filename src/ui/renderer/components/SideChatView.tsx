@@ -16,6 +16,7 @@ import { ShellTasksPanel } from "./ShellTasksPanel.js";
 import { useSideChat } from "../hooks/use-side-chat.js";
 import { useChatScroll } from "../hooks/use-chat-scroll.js";
 import { useMessageQueue } from "../hooks/use-message-queue.js";
+import type { ComposerSendOptions } from "../hooks/use-send-message.js";
 import { useAttachmentPicker } from "../hooks/use-attachment-picker.js";
 import { computeComposerPlaceholder } from "../utils/composer-placeholder.js";
 import { composeOutgoing } from "../utils/compose.js";
@@ -393,7 +394,7 @@ function SideChatSession({
     (
       text: string,
       intent?: UserKeyboardIntentSnapshot,
-      opts?: { injectHint?: "queue" | "interrupt"; inputOrigin?: "queue-auto" },
+      opts?: ComposerSendOptions,
     ) => {
       const origin = {
         ...(originSessionId ? { originSessionId } : {}),
@@ -401,7 +402,14 @@ function SideChatSession({
       };
       const settle = (turn: Promise<void>) => turn.finally(() => void onSessionsChanged?.());
       if (opts?.inputOrigin === "queue-auto") {
-        return settle(send(text, { injectHint: opts.injectHint, inputOrigin: "queue-auto", ...origin }));
+        return settle(send(text, {
+          injectHint: opts.injectHint,
+          inputOrigin: "queue-auto",
+          ...(opts.queueDelivery ? { sendRequestId: opts.queueDelivery.sendRequestId } : {}),
+          ...(opts.onAccepted ? { onAccepted: opts.onAccepted } : {}),
+          ...(opts.onRefused ? { onRefused: opts.onRefused } : {}),
+          ...origin,
+        }));
       }
       const composed = composeOutgoing({ raw: text, activePreset: null, attachments });
       setDraft("");
@@ -409,7 +417,10 @@ function SideChatSession({
       return settle(send(composed.text, {
         attachments: composed.attachments,
         ...(opts?.injectHint ? { injectHint: opts.injectHint } : {}),
+        ...(opts?.queueDelivery ? { sendRequestId: opts.queueDelivery.sendRequestId } : {}),
         ...(intent ? { userIntent: intent } : {}),
+        ...(opts?.onAccepted ? { onAccepted: opts.onAccepted } : {}),
+        ...(opts?.onRefused ? { onRefused: opts.onRefused } : {}),
         ...origin,
       }));
     },
