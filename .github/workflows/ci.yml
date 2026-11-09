@@ -49,7 +49,10 @@ jobs:
       shards: ${{ steps.plan.outputs.shards || '[1]' }}
     env:
       # Parallel runners may share a home; each workspace owns its Bun cache.
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -107,6 +110,16 @@ jobs:
           path: .cache/bun
           key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
+      - uses: ./ave/.github/actions/cache-runtime-tools
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          repository: ave
+      - name: Restore runtime download archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/electron
+          key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -210,7 +223,10 @@ jobs:
         shard: ${{ fromJSON(needs.build.outputs.shards || '[1]') }}
     env:
       # Parallel runners may share a home; each workspace owns its Bun cache.
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -269,6 +285,15 @@ jobs:
           path: .cache/bun
           key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
+      - uses: ./ave/.github/actions/cache-runtime-tools
+        with:
+          repository: ave
+      - name: Restore runtime download archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/electron
+          key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
         working-directory: ave
       # uv is fetched to resources/ (outside node_modules) by the postinstall,
@@ -336,7 +361,10 @@ jobs:
   gate-core:
     runs-on: ubuntu-24.04-arm
     env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -357,6 +385,15 @@ jobs:
           path: .cache/bun
           key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
+      - uses: ./ave/.github/actions/cache-runtime-tools
+        with:
+          repository: ave
+      - name: Restore runtime download archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/electron
+          key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
         working-directory: ave
       - name: Remove root-level binary shims before the hygiene gates
@@ -370,7 +407,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron-win
+      electron_config_cache: ${{ github.workspace }}/.cache/electron-win
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -391,13 +430,16 @@ jobs:
           path: .cache/bun
           key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
-      - run: bun install --frozen-lockfile
-        working-directory: ave
+      - uses: ./ave/.github/actions/cache-runtime-tools
+        with:
+          repository: ave
       - name: Cache Windows runtime archives
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/electron-win
           key: ci-win-electron-${{ hashFiles('ave/bun.lock') }}
+      - run: bun install --frozen-lockfile
+        working-directory: ave
       - name: Verify native SDK pins and Windows packaging
         timeout-minutes: 10
         working-directory: ave
@@ -513,7 +555,9 @@ jobs:
       # Keep bun's package cache and Electron's download cache in the
       # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
       # Seven native-process suites start together on this 4-vCPU runner; at
       # 4 workers their cold PowerShell and helper starts stall each other.
       AVE_VITEST_MAX_WORKERS: "3"
@@ -569,15 +613,34 @@ jobs:
           path: .cache/bun
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-
-      - run: bun install --frozen-lockfile
+      - uses: ./ave/.github/actions/cache-runtime-tools
         if: steps.docs-impact.outputs.docs_only != 'true'
-        working-directory: ave
+        with:
+          repository: ave
       - name: Cache Windows packaging runtime archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/electron
           key: windows-mxc-electron-${{ hashFiles('ave/bun.lock') }}
+      - run: bun install --frozen-lockfile
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+      - name: Ensure uv toolchain
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: node scripts/fetch-uv.mjs
+      - name: Resolve the native interpreter archive key
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        id: python-archive
+        working-directory: ave
+        run: node .github/scripts/python-archive-cache.mjs
+      - name: Restore native interpreter archives
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/python-archives
+          key: ${{ steps.python-archive.outputs.key }}
       - name: Verify both Windows native payload packages
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -679,6 +742,8 @@ jobs:
           src/memory/__tests__/session-turn-journal.test.ts
           src/engine/__tests__/conversation-loop-resume.test.ts
       - name: Run Windows permission regressions
+        env:
+          UV_PYTHON_CACHE_DIR: ${{ runner.temp }}/python-archives
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: >
@@ -906,7 +971,9 @@ jobs:
       # Keep bun's package cache and Electron's download cache in the
       # workspace, under the cache keys below.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
       ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -958,6 +1025,16 @@ jobs:
           path: .cache/bun
           key: ${{ runner.os }}-ci-bun-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-
+      - uses: ./ave/.github/actions/cache-runtime-tools
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          repository: ave
+      - name: Restore runtime download archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/electron
+          key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
@@ -1049,7 +1126,10 @@ jobs:
     runs-on: ubuntu-24.04-arm
     env:
       # Parallel runners may share a home; each workspace owns its Bun cache.
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1121,6 +1201,16 @@ jobs:
           path: .cache/bun
           key: ${{ runner.os }}-ci-bun-workspace-v1-${{ hashFiles('ave/bun.lock') }}
           restore-keys: ${{ runner.os }}-ci-bun-workspace-v1-
+      - uses: ./ave/.github/actions/cache-runtime-tools
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        with:
+          repository: ave
+      - name: Restore runtime download archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.docs-impact.outputs.docs_only != 'true' && steps.node-modules-cache.outputs.cache-hit != 'true'
+        with:
+          path: .cache/electron
+          key: ${{ runner.os }}-${{ runner.arch }}-runtime-electron-v1-${{ hashFiles('ave/bun.lock') }}
       - run: bun install --frozen-lockfile
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

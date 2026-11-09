@@ -564,7 +564,7 @@ function SideChatSession({
         data-composer-surface="side"
       >
         <NoticeLiveRegion toast={visibleToast} />
-        <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} toastPlacement="above" />
+        <StatusBar persistent={persistent} visibleToast={visibleToast} pendingCount={pendingCount} onToastDismiss={handleToastDismiss} />
         <MessageQueuePanel
           store={messageQueueStore}
           onSendNow={handleMessageQueueSendNow}

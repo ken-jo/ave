@@ -1,32 +1,9 @@
 // @vitest-environment jsdom
-/** Strip C0 and DEL from toast fields while preserving spaces, hyphens and other visible ASCII. */
+/** Pane-local notices retain their queue, TTL and persistent status behavior. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, renderHook, waitFor } from "@testing-library/react";
-import { useStatusBar } from "../use-status-bar.js";
-import type { AveApi } from "../../types.js";
-import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
-
-// Only wire up the methods exercised by each test so that accidental calls to
-// missing methods throw "not a function" rather than silently succeeding.
-
-function noop() {
-  return () => {};
-}
-
-function statusBarApi(overrides: Partial<AveApi> = {}): AveApi {
-  const { api } = makeMockAveApi();
-  // Keep the default status-bar fixture quiet. Individual producer tests opt into the API methods they exercise through
-  // overrides below.
-  delete api.getSettings;
-  delete api.onSettingsUpdated;
-  delete api.pingMarketplace;
-  Object.assign(api, overrides);
-  return api as unknown as AveApi;
-}
-
-// shouldAdvanceTime: true is required so that @testing-library/react's
-// internal waitFor polling timers advance alongside our fake clock.
+import { act, renderHook } from "@testing-library/react";
+import { useStatusNotices } from "../use-status-bar.js";
 
 beforeEach(() => {
   vi.useFakeTimers({
@@ -40,11 +17,10 @@ afterEach(() => {
 });
 
 // Case 1 — Toast TTL eviction
-describe("useStatusBar — toast TTL eviction", () => {
+describe("useStatusNotices — toast TTL eviction", () => {
   it("removes a toast after its TTL elapses (default 5 s, checked after 6 s)", async () => {
-    const api = statusBarApi();
     const { result } = renderHook(() =>
-      useStatusBar({ api, defaultToastTtlMs: 5000 }),
+      useStatusNotices({ defaultToastTtlMs: 5000 }),
     );
 
     act(() => {
@@ -63,37 +39,9 @@ describe("useStatusBar — toast TTL eviction", () => {
     expect(result.current.toasts).toHaveLength(0);
   });
 
-  it("keeps a sticky notification toast at the head until it is dismissed", async () => {
-    let emit: ((payload: { kind: "alert"; title: string; body: string; sticky?: true }) => void) | undefined;
-    const api = statusBarApi({
-      onNotificationToast: (handler) => {
-        emit = handler as typeof emit;
-        return noop();
-      },
-    });
-    const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 5000 }));
-    act(() => {
-      emit?.({ kind: "alert", title: "Meeting", body: "starting", sticky: true });
-      emit?.({ kind: "alert", title: "Mail", body: "new" });
-    });
-    await act(async () => {
-      vi.advanceTimersByTime(60_000);
-    });
-    expect(result.current.visibleToast?.message).toBe("Meeting: starting");
-    act(() => {
-      result.current.removeToast(result.current.visibleToast!.id);
-    });
-    expect(result.current.visibleToast?.message).toBe("Mail: new");
-    await act(async () => {
-      vi.advanceTimersByTime(6000);
-    });
-    expect(result.current.visibleToast).toBeNull();
-  });
-
   it("extends long toast TTL so marquee text can finish flowing", async () => {
-    const api = statusBarApi();
     const { result } = renderHook(() =>
-      useStatusBar({ api, defaultToastTtlMs: 3000 }),
+      useStatusNotices({ defaultToastTtlMs: 3000 }),
     );
     const longMessage =
       "Plugin login failed. code: non-corp-network. Corporate network or VPN is required. Please connect and try again.";
@@ -119,11 +67,10 @@ describe("useStatusBar — toast TTL eviction", () => {
 });
 
 // Case 2 — Toast queue cap at 50
-describe("useStatusBar — toast queue cap", () => {
+describe("useStatusNotices — toast queue cap", () => {
   it("caps at 50 toasts and keeps the LATEST 50 when 100 are pushed", () => {
-    const api = statusBarApi();
     const { result } = renderHook(() =>
-      useStatusBar({ api, defaultToastTtlMs: 60_000 }),
+      useStatusNotices({ defaultToastTtlMs: 60_000 }),
     );
 
     act(() => {
@@ -142,10 +89,9 @@ describe("useStatusBar — toast queue cap", () => {
 });
 
 // Case 3 — upsertPersistent updates in place
-describe("useStatusBar — upsertPersistent", () => {
+describe("useStatusNotices — upsertPersistent", () => {
   it("updates an existing persistent item in place (no duplicate entries)", () => {
-    const api = statusBarApi();
-    const { result } = renderHook(() => useStatusBar({ api }));
+    const { result } = renderHook(() => useStatusNotices());
 
     act(() => {
       result.current.upsertPersistent({
@@ -170,10 +116,9 @@ describe("useStatusBar — upsertPersistent", () => {
 });
 
 // Case 4 — removePersistent
-describe("useStatusBar — removePersistent", () => {
+describe("useStatusNotices — removePersistent", () => {
   it("removes a previously upserted persistent item by id", () => {
-    const api = statusBarApi();
-    const { result } = renderHook(() => useStatusBar({ api }));
+    const { result } = renderHook(() => useStatusNotices());
 
     act(() => {
       result.current.upsertPersistent({
@@ -192,61 +137,10 @@ describe("useStatusBar — removePersistent", () => {
   });
 });
 
-// Case 5 — Install lifecycle producer wires onPluginInstallResult
-type InstallResultHandler = (payload: { slug: string; success: boolean; error?: string }) => void;
-
-describe("useStatusBar — install lifecycle producer", () => {
-  function renderWithResultHandler() {
-    let handler: InstallResultHandler | null = null;
-    const api = statusBarApi({
-      onPluginInstallResult: vi.fn((h) => {
-        handler = h;
-        return noop();
-      }),
-    });
-    const hook = renderHook(() => useStatusBar({ api }));
-    expect(api.onPluginInstallResult).toHaveBeenCalledOnce();
-    return { ...hook, emit: (payload: Parameters<InstallResultHandler>[0]) => act(() => handler!(payload)) };
-  }
-
-  it("pushes a success toast when onPluginInstallResult reports an install", () => {
-    const { result, emit } = renderWithResultHandler();
-
-    emit({ slug: "samplehub", success: true });
-
-    expect(result.current.toasts).toHaveLength(1);
-    expect(result.current.toasts[0]).toMatchObject({ severity: "success", message: "samplehub 설치 완료" });
-  });
-
-  it("sanitizeToastField strips C0 control characters (0x00–0x1F) from slug", () => {
-    const { result, emit } = renderWithResultHandler();
-
-    // Null byte (0x00) is in the C0 range → stripped.
-    emit({ slug: "ev\x00il", success: true });
-    expect(result.current.toasts[0]?.message).toBe("evil 설치 완료");
-
-    // Other C0 control chars — tab (0x09), LF (0x0A), CR (0x0D).
-    emit({ slug: "a\tb\nc\rd", success: true });
-    expect(result.current.toasts[1]?.message).toBe("abcd 설치 완료");
-  });
-
-  it("keeps one toast per slug, replacing it with the latest result", () => {
-    const { result, emit } = renderWithResultHandler();
-
-    emit({ slug: "sampleassistant", success: false, error: "disk full" });
-    const toastId = result.current.toasts[0]?.id;
-    emit({ slug: "sampleassistant", success: true });
-
-    expect(result.current.toasts).toHaveLength(1);
-    expect(result.current.toasts[0]).toMatchObject({ id: toastId, severity: "success", message: "sampleassistant 설치 완료" });
-  });
-});
-
-describe("useStatusBar — sequential toast display", () => {
+describe("useStatusNotices — sequential toast display", () => {
   it("visibleToast exposes the queue head, pendingCount reflects the rest", () => {
-    const api = statusBarApi();
     const { result } = renderHook(() =>
-      useStatusBar({ api, defaultToastTtlMs: 5000 }),
+      useStatusNotices({ defaultToastTtlMs: 5000 }),
     );
 
     act(() => {
@@ -260,9 +154,8 @@ describe("useStatusBar — sequential toast display", () => {
   });
 
   it("auto-advances to next toast after the visible one's TTL elapses", async () => {
-    const api = statusBarApi();
     const { result } = renderHook(() =>
-      useStatusBar({ api, defaultToastTtlMs: 3000 }),
+      useStatusNotices({ defaultToastTtlMs: 3000 }),
     );
 
     act(() => {
@@ -283,9 +176,8 @@ describe("useStatusBar — sequential toast display", () => {
   });
 
   it("queue drains to null visibleToast after all toasts expire", async () => {
-    const api = statusBarApi();
     const { result } = renderHook(() =>
-      useStatusBar({ api, defaultToastTtlMs: 3000 }),
+      useStatusNotices({ defaultToastTtlMs: 3000 }),
     );
 
     act(() => {
@@ -303,9 +195,8 @@ describe("useStatusBar — sequential toast display", () => {
   });
 
   it("removeToast on visibleToast immediately advances to next", () => {
-    const api = statusBarApi();
     const { result } = renderHook(() =>
-      useStatusBar({ api, defaultToastTtlMs: 30_000 }),
+      useStatusNotices({ defaultToastTtlMs: 30_000 }),
     );
 
     act(() => {
@@ -325,8 +216,7 @@ describe("useStatusBar — sequential toast display", () => {
   });
 
   it("removeToast of a queued toast leaves the head's expiry alone", async () => {
-    const api = statusBarApi();
-    const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 3000 }));
+    const { result } = renderHook(() => useStatusNotices({ defaultToastTtlMs: 3000 }));
 
     let secondId = "";
     act(() => {
@@ -346,8 +236,7 @@ describe("useStatusBar — sequential toast display", () => {
   });
 
   it("removeToast gives the promoted head a full TTL", async () => {
-    const api = statusBarApi();
-    const { result } = renderHook(() => useStatusBar({ api, defaultToastTtlMs: 3000 }));
+    const { result } = renderHook(() => useStatusNotices({ defaultToastTtlMs: 3000 }));
 
     let firstId = "";
     act(() => {
@@ -371,55 +260,4 @@ describe("useStatusBar — sequential toast display", () => {
     expect(result.current.visibleToast).toBeNull();
   });
 
-  it("burst of 3 install-result events shows only 1 toast at a time, advancing sequentially", async () => {
-    let capturedHandler: ((payload: { slug: string; success: boolean; error?: string }) => void) | null = null;
-
-    const api = statusBarApi({
-      onPluginInstallResult: vi.fn((h) => {
-        capturedHandler = h;
-        return () => {};
-      }),
-    });
-
-    const { result } = renderHook(() =>
-      useStatusBar({ api, defaultToastTtlMs: 3000 }),
-    );
-
-    // Pin the fake clock to a known epoch before pushing toasts so that
-    // expiresAt values are deterministic regardless of real CI wall-clock
-    // drift (shouldAdvanceTime: true can cause extra advancement on slow
-    // runners, draining the queue prematurely).
-    vi.setSystemTime(0);
-
-    // Burst: 3 install-result events in the same tick.
-    act(() => {
-      capturedHandler!({ slug: "plugin-a", success: true });
-      capturedHandler!({ slug: "plugin-b", success: true });
-      capturedHandler!({ slug: "plugin-c", success: true });
-    });
-
-    // Only 1 visible at a time.
-    expect(result.current.visibleToast?.message).toBe("plugin-a 설치 완료");
-    expect(result.current.pendingCount).toBe(2);
-
-    // Advance past first TTL → second becomes visible.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
-    expect(result.current.visibleToast?.message).toBe("plugin-b 설치 완료");
-    expect(result.current.pendingCount).toBe(1);
-
-    // Advance past second TTL → third becomes visible.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
-    expect(result.current.visibleToast?.message).toBe("plugin-c 설치 완료");
-    expect(result.current.pendingCount).toBe(0);
-
-    // Advance past third TTL → queue empty.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3100);
-    });
-    expect(result.current.visibleToast).toBeNull();
-  });
 });

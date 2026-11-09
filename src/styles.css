@@ -751,9 +751,9 @@
    * as the chrome block above, since the sidebar card's top edge is what puts
    * the cluster strip on the traffic lights' line.
    *
-   * The inset is the shell's gutter by construction — the air between the
-   * window and a card is the air between that card and its neighbour — so it
-   * aliases `--chrome-gap` instead of restating the pixel count. The bottom
+   * The window inset and the split tiles' gutter share `--chrome-gap`.
+   * Navigation leaves only `--chrome-gap-tight` before the first pane card.
+   * The inset aliases the gutter instead of restating its pixel count. The bottom
    * inset is larger: a card resting exactly on the window's bottom edge reads
    * as stuck to it rather than floating. `SHELL_GUTTER`
    * (shared/shell-geometry.ts) is the same value for the arithmetic done in
@@ -762,15 +762,15 @@
   :root {
     --shell-card-inset: var(--chrome-gap);
     --shell-card-inset-bottom: 12px;
-    /* The sidebar card's top edge, on every platform. It is not a chosen
-     * number: the chat group's tiles start one title band down plus the
-     * tile's own half-gutter (`p-(--chrome-gap-tight)` on each pane cell), so
-     * the sidebar card takes the same sum and both cards share one top line.
+    /* The shared card top clears the window band by one tight gap.
      * The first row inside each card is a `--chrome-band-height` band, so
      * their header text shares a centre line as well. The band above stays
      * clear for the window controls — the macOS lights, or the renderer's
      * own buttons on Linux. */
     --shell-card-top: calc(var(--chrome-band-height) + var(--chrome-gap-tight));
+    /* The shell's first grid row fixes the content origin. Without persistent
+     * banners, a pane cell's half-gutter lands on the shared card top. */
+    --shell-canvas-top: calc(var(--shell-card-top) - var(--chrome-gap-tight));
     /* One corner for every shell card — the rail, the sidebar list, the chat
      * group's tiles and the docked side panel. px for the same reason as the
      * insets: the cards sit side by side and a corner that followed the type
@@ -787,6 +787,10 @@
      * larger type scale. */
     --shell-collapsed-rail-reserve: 68px;
     --shell-collapsed-rail-width: calc(var(--shell-collapsed-rail-reserve) - var(--shell-card-inset) - var(--chrome-gap));
+    /* The rail card's trailing edge: its inset plus its width. With only the
+     * rail showing, the content pads to this edge and the pane cell's own
+     * `--chrome-gap-tight` is the whole gap, so nothing is subtracted back. */
+    --shell-collapsed-rail-edge: calc(var(--shell-card-inset) + var(--shell-collapsed-rail-width));
   }
   /* Content measures — how wide a column of prose gets to be, and how tall the
    * panels that hold a scrolling body are. rem, unlike the shell geometry

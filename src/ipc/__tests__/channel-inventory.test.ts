@@ -427,6 +427,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:memory:user-prefs:refresh",
         "ave:memory:user-prefs:update",
         "ave:notification:clicked",
+        "ave:notification:toast",
         "ave:onboarding:proposals:answer",
         "ave:onboarding:proposals:list-pending",
         "ave:permission:add-rule",

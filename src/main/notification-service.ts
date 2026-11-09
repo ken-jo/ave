@@ -1,22 +1,16 @@
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
-// Host lifecycle events trigger notifications; foreground requests use their cards and other events choose toast or OS delivery. Audit metadata
-// only, never body text; test mode and pre-ready calls have no side effects.
+// Host lifecycle events enter window notification history; unfocused events additionally use OS delivery. Requests use their cards in-app.
+// Audit metadata only, never body text; test mode and pre-ready calls have no side effects.
 import type { ActivationArguments, BrowserWindow, WebContents } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
 import { stripMarkdown } from "../shared/strip-markdown.js";
 import { errorMessage } from "../shared/error-message.js";
+import { NOTIFICATION_HISTORY_LIMIT } from "../shared/notification-types.js";
+import type { NotificationKind, NotificationContextRef, NotificationToastPayload as ToastPayload } from "../shared/notification-types.js";
+export type { NotificationKind, NotificationContextRef } from "../shared/notification-types.js";
 const log = createLogger("ave");
-
-export type NotificationKind =
-  | "turn-end"
-  | "routine"
-  | "ask-user"
-  | "approval"
-  | "plugin"
-  | "alert"
-  | "system";
 
 // Closed enumeration of valid `NotificationKind` values. Exported so IPC handlers can validate untrusted renderer payloads without re-listing the kinds
 // inline. The `plugin` kind remains available to explicit plugin notification requests.
@@ -29,13 +23,6 @@ export const NOTIFICATION_KINDS: ReadonlySet<NotificationKind> = new Set([
   "alert",
   "system",
 ]);
-
-export interface NotificationContextRef {
-  sessionId?: string;
-  routineId?: string;
-  questionId?: string;
-  approvalId?: string;
-}
 
 export interface FireOptions {
   kind: NotificationKind;
@@ -82,15 +69,6 @@ const SIGNAL_OWNED_SOUND_KINDS: ReadonlySet<NotificationKind> = new Set(["turn-e
 const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f]/g;
 function stripControlChars(s: string): string {
   return s.replace(CONTROL_CHARS_RE, "");
-}
-
-interface ToastPayload {
-  kind: NotificationKind;
-  title: string;
-  body: string;
-  contextRef?: NotificationContextRef;
-  // Stays until the user dismisses it.
-  sticky?: true;
 }
 
 // Minimal Electron Notification surface used by the service. Exposed as an injectable factory so tests can stub it without spinning Electron.
@@ -161,6 +139,10 @@ export class NotificationService {
   private readonly isAnyWindowFocused: () => boolean;
   // Use monotonic time for cooldowns to survive wall-clock jumps; audit timestamps remain wall-clock time.
   private readonly lastFiredAt = new Map<NotificationKind, number>();
+  private readonly historyRecords: ToastPayload[] = [];
+  private historySequence = 0;
+  private historySubscriber: WebContents | null = null;
+  private readonly observedHistoryContents = new WeakSet<WebContents>();
 
   constructor(opts: NotificationServiceOptions) {
     this.getMainWindow = opts.getMainWindow;
@@ -186,8 +168,46 @@ export class NotificationService {
     }
   }
 
-  // Never let dependency, window, or delivery failures escape fire(); passive cues must not interrupt host lifecycle. Returns the window an in-app
-  // toast went to, so a caller can retract it there; null for an OS notification or no cue.
+  /** Only the current main renderer may restore session history after installing its listener. */
+  setHistorySubscriber(target: WebContents, ready: boolean): boolean {
+    const win = this.getMainWindow();
+    if (!win || win.isDestroyed() || win.webContents !== target || target.isDestroyed()) return false;
+    if (!ready) {
+      if (this.historySubscriber === target) this.historySubscriber = null;
+      return true;
+    }
+    if (!this.observedHistoryContents.has(target)) {
+      this.observedHistoryContents.add(target);
+      target.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+        if (isMainFrame && !isInPlace && this.historySubscriber === target) this.historySubscriber = null;
+      });
+      target.on("render-process-gone", () => {
+        if (this.historySubscriber === target) this.historySubscriber = null;
+      });
+      target.once("destroyed", () => {
+        if (this.historySubscriber === target) this.historySubscriber = null;
+      });
+    }
+    this.historySubscriber = target;
+    for (const payload of this.historyRecords) {
+      try {
+        target.send(IPC_NOTIFICATION_TOAST, payload);
+      } catch (err) {
+        this.historySubscriber = null;
+        log.warn("notification history replay failed: %s", errorMessage(err));
+        break;
+      }
+    }
+    return true;
+  }
+
+  private retainHistory(payload: ToastPayload): void {
+    this.historyRecords.push(payload);
+    if (this.historyRecords.length > NOTIFICATION_HISTORY_LIMIT) this.historyRecords.shift();
+  }
+
+  // Never let dependency, window, or delivery failures escape fire(); passive cues must not interrupt host lifecycle. Returns the window that received
+  // the history record, so a caller can retract it there, including when an OS notification also fired.
   fire(opts: FireOptions): WebContents | null {
     return this.deliver(opts).toast ?? null;
   }
@@ -210,24 +230,17 @@ export class NotificationService {
     // Test-mode + pre-ready hard guard — never pop a notification before the app is ready or inside a vitest run.
     if (this.isTestEnv() || !this.isReady()) return false;
 
-    if (opts.kind === "turn-end" && !this.isOsNotificationsEnabled()) {
-      this.auditSuppressed(opts.kind, 0, "os-notifications-disabled");
-      return false;
-    }
-
-    // #1482 — turn-end is a background-only cue. When the user is already in Ave, the conversation itself is the completion signal; do not surface a
-    // composer/status toast, and do not consume the cooldown slot.
     const win = this.getMainWindow();
     const focusGateActive = !opts.bypassFocusGate && this.canShowToast(win);
-    if (opts.kind === "turn-end" && focusGateActive) {
-      this.auditSuppressed(opts.kind, 0, "foreground");
-      return false;
-    }
+    // The completion record is always available in history. Its OS cue remains background-only and obeys the master setting.
+    const turnEndOsSuppression = opts.kind !== "turn-end" ? undefined
+      : !this.isOsNotificationsEnabled() ? "os-notifications-disabled"
+      : focusGateActive ? "foreground" : undefined;
 
-    // Audit suppressed events; bypassFocusGate escapes focus and cooldown while still consuming the next cooldown slot.
+    // Audit cooldown suppression; bypass escapes it while consuming the next slot. History-only completions leave the OS slot untouched.
     // Use monotonic elapsed time so clock changes cannot suppress later notifications.
     const cooldownMs = COOLDOWN_MS_BY_KIND[opts.kind] ?? 0;
-    if (cooldownMs > 0) {
+    if (cooldownMs > 0 && turnEndOsSuppression === undefined) {
       const last = this.lastFiredAt.get(opts.kind) ?? 0;
       const now = performance.now();
       const elapsedMs = now - last;
@@ -238,7 +251,7 @@ export class NotificationService {
       this.lastFiredAt.set(opts.kind, now);
     }
 
-    // Sanitize title and body; OS notifications need plain text while in-app toasts support markdown. Strip markup before the visible-text cap.
+    // Sanitize title and body; OS notifications need plain text while in-app records support markdown. Strip markup before the visible-text cap.
     const cleanTitle = capTitle(opts.title);
     const truncatedBody = truncateBody(opts.body);
     const truncatedPlainBody = truncateBody(stripMarkdown(opts.body));
@@ -247,41 +260,55 @@ export class NotificationService {
       opts.urgent ??
       (opts.kind === "approval" || opts.bypassFocusGate === true);
 
-    // Focus gating includes every app-owned window; bypass forces OS delivery. Minimized or destroyed main windows cannot receive a visible toast.
-    const gate: "os" | "in-app" = focusGateActive ? "in-app" : "os";
+    if (focusGateActive && (opts.kind === "approval" || opts.kind === "ask-user")) {
+      // The request card owns attention; hidden cards already have a pending-answer indicator.
+      this.audit("in-app", opts.kind, cleanTitle, "card");
+      return true;
+    }
 
-    if (focusGateActive && win) {
-      if (opts.kind === "approval" || opts.kind === "ask-user") {
-        // The request card owns attention; hidden cards already have a pending-answer indicator.
-        this.audit("in-app", opts.kind, cleanTitle, "card");
-        return true;
-      }
+    // The session ring survives renderer replacement; delivery does not remove records.
+    let recorded = false;
+    if (opts.kind !== "approval" && opts.kind !== "ask-user") {
       const payload: ToastPayload = {
+        id: `main:${++this.historySequence}`,
+        createdAt: Date.now(),
         kind: opts.kind,
         title: cleanTitle,
         body: truncatedBody,
         contextRef: opts.contextRef,
         ...(opts.sticky === true ? { sticky: true as const } : {}),
       };
-      try {
-        win.webContents.send(IPC_NOTIFICATION_TOAST, payload);
-        onToast(win.webContents);
-      } catch (err) {
-        // Send race (webContents destroyed mid-fire) — fall back to OS path so the user still sees the cue. Audit reflects the final gate used.
-        log.warn(
-          "notification toast send failed, falling back to OS: %s",
-          (err as Error).message,
-        );
-        const accepted = this.fireOsNotification(opts, cleanTitle, truncatedPlainBody, urgent);
-        this.audit("os", opts.kind, cleanTitle);
-        return accepted;
+      this.retainHistory(payload);
+      if (!win || win.isDestroyed() || this.historySubscriber !== win.webContents) {
+        recorded = true;
+      } else {
+        try {
+          win.webContents.send(IPC_NOTIFICATION_TOAST, payload);
+          recorded = true;
+          onToast(win.webContents);
+        } catch (err) {
+          this.historySubscriber = null;
+          log.warn("notification history send failed: %s", errorMessage(err));
+        }
       }
-    } else {
-      if (!this.fireOsNotification(opts, cleanTitle, truncatedPlainBody, urgent)) return false;
     }
 
-    this.audit(gate, opts.kind, cleanTitle);
-    return true;
+    if (turnEndOsSuppression !== undefined) {
+      // A history-only completion must not consume the OS cooldown or prevent a later background completion cue.
+      this.auditSuppressed(opts.kind, 0, turnEndOsSuppression);
+      if (recorded) this.audit("in-app", opts.kind, cleanTitle);
+      return recorded;
+    }
+
+    // Focus gating includes every app-owned window; bypass forces OS delivery. A failed foreground record retains the OS fallback.
+    if (focusGateActive && recorded) {
+      this.audit("in-app", opts.kind, cleanTitle);
+      return true;
+    }
+    const osDelivered = this.fireOsNotification(opts, cleanTitle, truncatedPlainBody, urgent);
+    if (osDelivered || recorded) this.audit(osDelivered ? "os" : "in-app", opts.kind, cleanTitle);
+    // OS-selected delivery acknowledges only the OS outcome: a send can precede the renderer subscription during boot.
+    return osDelivered;
   }
 
   // Whether a cue fired now without `bypassFocusGate` would be an in-app toast rather than an OS notification — so a caller can choose between the two

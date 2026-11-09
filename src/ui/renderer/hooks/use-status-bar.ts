@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useModalOpen } from "../../../components/ui/modal-presence.js";
 import { isNoticeSuppressed, suppressNotice } from "./status-bar/notice-suppression.js";
-import type { AveApi } from "../types.js";
 import { LONG_TOAST_TTL_MS } from "../constants.js";
 import type { PersistentItem, ToastItem } from "./status-bar/types.js";
-import { useStatusBarNotifications } from "./status-bar/use-status-bar-notifications.js";
-import { useStatusBarInstall } from "./status-bar/use-status-bar-install.js";
 
 // Re-export shared types so existing call sites (App.tsx, StatusBar.tsx, tests) continue to import from this module
 // without changes.
@@ -27,13 +24,6 @@ function samePersistentDisplay(a: PersistentItem, b: PersistentItem): boolean {
     a.a11yLabel === b.a11yLabel &&
     a.tooltip === b.tooltip
   );
-}
-
-interface UseStatusBarOptions {
-  api: AveApi;
-  /** Default toast TTL in milliseconds. Override per-toast at push time. Defaults to LONG_TOAST_TTL_MS (5 s) — long enough to
-   * read a single Korean sentence, short enough to feel ephemeral. */
-  defaultToastTtlMs?: number;
 }
 
 /**
@@ -94,8 +84,7 @@ function resolveToastTtlMs(message: string, requestedTtlMs: number): number {
   return Math.max(requestedTtlMs, Math.min(TOAST_MARQUEE_MAX_TTL_MS, scrollTtlMs));
 }
 
-/** Use one notice queue per owning surface so conversation toasts cannot repeat in every tile; attach window producers only
- * to the window queue. */
+/** Each pane owns its notice queue so a conversation notice cannot repeat in another tile. Window producers use history. */
 export function useStatusNotices(opts: { defaultToastTtlMs?: number } = {}) {
   // LONG_TOAST_TTL_MS (5 s) gives comfortable reading time for a Korean phrase; callers that need a shorter or longer window
   // pass defaultToastTtlMs.
@@ -239,17 +228,4 @@ export function useInlineNotice() {
   );
   const dismiss = useCallback((toast: ToastItem) => removeToast(toast.id), [removeToast]);
   return { show, notice: visibleToast, dismiss };
-}
-
-/** The WINDOW's notice queue: `useStatusNotices` with the producers that report on the window attached. Subscribed once,
- * drawn once, in the window's notice strip — never inside a tile, where a second tile would draw it again. */
-export function useStatusBar(opts: UseStatusBarOptions) {
-  const { api, defaultToastTtlMs } = opts;
-  const notices = useStatusNotices({ defaultToastTtlMs });
-
-  // Window producers own notification/install toasts; persistent operational items belong to each tile's queue.
-  useStatusBarNotifications({ api, pushToast: notices.pushToast });
-  useStatusBarInstall({ api, pushToast: notices.pushToast, upsertToast: notices.upsertToast });
-
-  return notices;
 }

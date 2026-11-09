@@ -2,8 +2,8 @@
 import "../../../../../test/renderer/setup.ts";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, fireEvent } from "@testing-library/react";
-import { StatusBar } from "../StatusBar.js";
 import { CustomTitleBar } from "../CustomTitleBar.js";
+import { BAND_LEAD_PAD_DARWIN, RAIL_BAND_LEAD } from "../../../../shared/shell-geometry.js";
 
 const mockMinimize = vi.fn().mockResolvedValue(undefined);
 const mockToggleMaximize = vi.fn().mockResolvedValue(undefined);
@@ -59,6 +59,13 @@ describe("CustomTitleBar", () => {
       expect(queryByTestId("titlebar-minimize")).toBeNull();
       expect(queryByTestId("titlebar-maximize")).toBeNull();
       expect(queryByTestId("titlebar-close")).toBeNull();
+    });
+
+    it("never starts content under the traffic lights, and follows a lead past them", () => {
+      const { getByTestId, rerender } = render(<CustomTitleBar leadClearance={RAIL_BAND_LEAD} />);
+      expect(getByTestId("custom-titlebar-darwin").style.paddingLeft).toBe(`${BAND_LEAD_PAD_DARWIN}px`);
+      rerender(<CustomTitleBar leadClearance={312} />);
+      expect(getByTestId("custom-titlebar-darwin").style.paddingLeft).toBe("312px");
     });
   });
 
@@ -166,11 +173,13 @@ describe("CustomTitleBar", () => {
     });
 
     it("keeps the sidebar reopen control available in fullscreen without native controls", async () => {
-      const { getByRole, queryByTestId } = render(
-        <CustomTitleBar keepVisibleInFullscreen><button>Show sidebar</button></CustomTitleBar>,
+      const { getByRole, getByTestId, queryByTestId } = render(
+        <CustomTitleBar keepVisibleInFullscreen leadClearance={312}><button>Show sidebar</button></CustomTitleBar>,
       );
       await act(async () => { fullscreenListener?.(true); });
       expect(getByRole("button", { name: "Show sidebar" })).toBeVisible();
+      // The fullscreen band keeps the path on the pane title's line, as the windowed band does.
+      expect(getByTestId("custom-titlebar-plain").style.paddingLeft).toBe("312px");
       expect(queryByTestId("titlebar-minimize")).toBeNull();
       expect(queryByTestId("titlebar-maximize")).toBeNull();
       expect(queryByTestId("titlebar-close")).toBeNull();
@@ -220,28 +229,6 @@ describe("CustomTitleBar", () => {
     it("plain band without a bridge", () => {
       expectNoRule(render(<CustomTitleBar><span>path</span></CustomTitleBar>).getByTestId("custom-titlebar-plain"));
     });
-  });
-
-  it.each(["native", "leading", "trailing"] as const)("keeps the %s controls reserved and notice clicks separate from dragging", (placement) => {
-    setupBridges(placement === "native", placement);
-    const { getByTestId, queryByTestId } = render(
-      <CustomTitleBar keepVisibleInFullscreen>
-        <div className="flex min-w-0 flex-1">
-          <StatusBar persistent={[]} toastPlacement="titlebar" visibleToast={{ id: "notice", message: "Ready", severity: "error", expiresAt: Number.POSITIVE_INFINITY, sticky: true }} onToastDismiss={vi.fn()} />
-        </div>
-      </CustomTitleBar>,
-    );
-    const band = getByTestId(placement === "native" ? "custom-titlebar-darwin" : "custom-titlebar");
-    expect(band.style.getPropertyValue("-webkit-app-region") || (band.style as unknown as Record<string, string>).WebkitAppRegion).toBe("drag");
-    if (placement === "native") expect(Number.parseFloat(band.style.paddingLeft)).toBeGreaterThanOrEqual(80);
-    else {
-      expect(getByTestId("titlebar-controls")).toHaveClass("shrink-0");
-      fireEvent.click(getByTestId("titlebar-minimize"));
-      expect(mockMinimize).toHaveBeenCalledOnce();
-    }
-    fireEvent.doubleClick(getByTestId("status-toast"));
-    expect(mockToggleMaximize).not.toHaveBeenCalled();
-    expect(queryByTestId("status-toast-dismiss")).not.toBeNull();
   });
 
   describe("missing bridge (non-Electron environment)", () => {

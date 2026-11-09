@@ -186,7 +186,7 @@ describe("App plugin auth routing", () => {
     expect(await screen.findByRole("heading", { name: "Token Plugin" })).toBeInTheDocument();
   });
 
-  it("login failure keeps the plugin panel closed and surfaces a safe auth error code as a toast", async () => {
+  it("login failure keeps the plugin panel closed and records a safe auth error code in the notification centre", async () => {
     const user = makeUser();
     const { api } = await renderApp(authPluginFixture);
     const nonCorpError = Object.assign(new Error("[non-corp-network] outside corporate network"), {
@@ -205,8 +205,9 @@ describe("App plugin auth routing", () => {
         userAction: true,
       });
     });
+    await user.click(screen.getByTestId("notification-bell"));
     await waitFor(() => {
-      const statusBar = within(screen.getByTestId("window-notice-slot")).getByTestId("status-bar");
+      const statusBar = within(screen.getByTestId("notification-center")).getByTestId("notification-history");
       expect(statusBar).toHaveTextContent(/code: non-corp-network/);
       expect(statusBar).toHaveTextContent(/사내망 또는 VPN 연결이 필요합니다/);
     });

@@ -11,7 +11,7 @@ import { MainToolbar } from "./MainToolbar.js";
 import { Sidebar, type SidebarLaunchKind } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
 import { DeprecatedModelNotice, RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
-import { NoticeLiveRegion, StatusBar } from "./components/StatusBar.js";
+import { NoticeLiveRegion } from "./components/StatusBar.js";
 import { PendingAnswerDot } from "./components/PendingAnswerDot.js";
 import { DevToolsPanel } from "./components/DevToolsPanel.js";
 import { DevComponentLabels } from "./components/DevComponentLabels.js";
@@ -89,7 +89,9 @@ import { usePluginViewRouting } from "./hooks/use-plugin-view-routing.js";
 import { useOnboardingTourController } from "./hooks/use-onboarding-tour-controller.js";
 import { DocumentEngineInstallContent } from "./components/DocumentEngineInstallContent.js";
 import { usePluginLifecycleRefresh } from "./hooks/use-plugin-lifecycle-refresh.js";
-import { useStatusBar, type NotificationToastMeta } from "./hooks/use-status-bar.js";
+import type { NotificationToastMeta } from "./hooks/use-status-bar.js";
+import { useWindowNotices } from "./hooks/use-window-notices.js";
+import { NotificationHistoryContext } from "./context/NotificationHistoryContext.js";
 import { useSettings } from "./hooks/use-settings.js";
 import { ApprovalSurfaceProvider, useApproval, type ApprovalSurfaceContextValue } from "./hooks/use-approval.js";
 import { usePermissionSignals } from "./hooks/use-permission-signals.js";
@@ -171,13 +173,12 @@ export function App() {
 
   // Window-scoped toasts subscribe before plugin auth can emit them.
   const {
-    visibleToast: statusVisibleToast,
-    pendingCount: statusPendingCount,
+    history: notificationHistory,
+    latestPolite: statusLatestPolite,
+    latestError: statusLatestError,
     pushToast: statusPushToast,
     upsertToast: statusUpsertToast,
-    removeToast: statusRemoveToast,
-    suppressToastKind: statusSuppressToastKind,
-  } = useStatusBar({ api });
+  } = useWindowNotices(api);
 
   // Notification clicks restore and focus the window through notifyClick; other toasts carry no notification.
   const handleStatusToastClick = useCallback(
@@ -191,9 +192,8 @@ export function App() {
       } catch {
         // notifyClick is best-effort UX; failure must not crash the bar.
       }
-      statusRemoveToast(toast.id);
     },
-    [api, statusRemoveToast],
+    [api],
   );
 
   // Download and install require a badge click; unsigned macOS builds use a manual-install toast.
@@ -202,7 +202,6 @@ export function App() {
     statusPushToast({
       severity: "warning",
       message: t("app.manualInstallRequiredToast"),
-      ttlMs: 20000,
     });
   });
 
@@ -262,7 +261,7 @@ export function App() {
    * a surface is never created or moved without knowing which project it belongs to. */
   const surfaceProjectRoot = useCallback((): string | undefined => {
     const root = surfaceProjectRootRef.current;
-    if (!root) statusPushToast({ severity: "error", message: t("app.surfaceProjectUnknown"), ttlMs: 10_000 });
+    if (!root) statusPushToast({ severity: "error", message: t("app.surfaceProjectUnknown") });
     return root;
   }, [statusPushToast, t]);
   /** The project of the conversation a side panel belongs to: that is where its tab goes when it moves to the main area. Undefined
@@ -275,7 +274,6 @@ export function App() {
       statusPushToast({
         severity: "error",
         message: t(projects.length === 0 ? "app.surfaceProjectUnknown" : "app.surfaceProjectNotOpen"),
-        ttlMs: 10_000,
       });
     }
     return root;
@@ -403,7 +401,6 @@ export function App() {
       statusPushToast({
         severity: "warning",
         message: t("app.conversationCeilingReached", { count: MAX_CHAT_GROUPS }),
-        ttlMs: 8_000,
       });
       return null;
     }
@@ -413,9 +410,6 @@ export function App() {
       statusPushToast({
         severity: "info",
         message: t("app.conversationSetAside"),
-        ttlMs: 8_000,
-        kind: "conversation-set-aside",
-        suppressible: true,
       });
     }
     return adopted.chatGroupId;
@@ -602,7 +596,7 @@ export function App() {
    * project may have been removed meanwhile; a surface never lands in a project that is not open. */
   const moveSurfaceToProject = useCallback((tabId: string, projectRoot: string) => {
     if (!findWorkspaceProject(workspaceProjectsRef.current, projectRoot)) {
-      statusPushToast({ severity: "error", message: t("app.surfaceMoveProjectGone"), ttlMs: 10_000 });
+      statusPushToast({ severity: "error", message: t("app.surfaceMoveProjectGone") });
       throw new Error(`project-unknown: ${projectRoot} is not an open project`);
     }
     mainSurfaces.setProjectRoot(tabId, projectRoot);
@@ -613,7 +607,7 @@ export function App() {
     if (!closed) return;
     // A surface never lands in a project that is not open: the closed one's project may have been removed since.
     if (!findWorkspaceProject(workspaceProjectsRef.current, closed.projectRoot)) {
-      statusPushToast({ severity: "error", message: t("app.surfaceProjectUnknown"), ttlMs: 10_000 });
+      statusPushToast({ severity: "error", message: t("app.surfaceProjectUnknown") });
       return;
     }
     // Restore terminals at their last directory and pages at their last address.
@@ -663,7 +657,7 @@ export function App() {
   /** 옆에 분할로 열기 (case 20) for a conversation: a new tile beside the focused one, or the tile already holding it. */
   const openSessionBeside = useCallback((sessionId: string) => {
     if (handleSessionDrop(chatGroupsRef.current.focusedId, sessionId, "right")) return;
-    statusPushToast({ severity: "warning", message: t("app.newPaneNoRoom"), ttlMs: 6000 });
+    statusPushToast({ severity: "warning", message: t("app.newPaneNoRoom") });
   }, [handleSessionDrop, statusPushToast, t]);
 
   /** Close a terminal or page in the main area wherever it is asked from — its pane's close button or its sidebar row. */
@@ -690,7 +684,7 @@ export function App() {
       return;
     }
     if (groups.placeOnEdge(groups.focusedId, "right", { view: VIEW_OF_SURFACE_KIND[surface.kind], surface: tabId }) === null) {
-      statusPushToast({ severity: "warning", message: t("app.newPaneNoRoom"), ttlMs: 6000 });
+      statusPushToast({ severity: "warning", message: t("app.newPaneNoRoom") });
       return;
     }
     if (isToolMainSurface(surface)) showActiveSurface(activeSurfaceOf(surface));
@@ -701,12 +695,12 @@ export function App() {
     const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
     if (surfaces.get(tabId)) {
       if (openWorkspaceSurface(tabId)) setPaneChatOpen(tabId, true);
-      else statusPushToast({ severity: "error", message: t("app.paneChatOpenFailed"), ttlMs: 10_000 });
+      else statusPushToast({ severity: "error", message: t("app.paneChatOpenFailed") });
       return;
     }
     const source = groups.groups.find((group) => getSideTabsSink(group.id)?.snapshot().some((tab) => tab.tabId === tabId));
     if (!source) {
-      statusPushToast({ severity: "error", message: t("app.paneChatUnavailable"), ttlMs: 10_000 });
+      statusPushToast({ severity: "error", message: t("app.paneChatUnavailable") });
       return;
     }
     surfaceMoves.tabToMain(source.id, tabId, { paneId: groups.focusedId, target: "center" });
@@ -922,10 +916,7 @@ export function App() {
     [overlayQueue],
   );
   // Subscribe once per window to avoid duplicate permission-memory and reviewer disclosures across tiles.
-  // A re-applied approval is disclosed in the window's notice queue. A reuse is not a failure, so no tier is an error: a
-  // high-risk reuse is a warning that stays until dismissed; only a low-risk reuse, which repeats on every cached hit, offers
-  // "Don't show again" (undone from Settings → Permissions). Medium and high cannot be silenced. One stable id per verdict tier: a newer hit of the same tier replaces the previous one, while a
-  // lower tier queues behind an unread high-risk notice instead of replacing (and so dismissing) it.
+  // Re-applied decisions remain in window history, with one replaceable record per risk tier.
   const handleUserApprovalHit = useCallback((hit: UserApprovalHitPayload) => {
     const high = hit.verdictAtApproval === "high";
     const scope = hit.scope === "persistent" ? t("chatView.approvalScopePersistent")
@@ -933,9 +924,6 @@ export function App() {
     statusUpsertToast(`approval-memory-hit:${hit.verdictAtApproval}`, {
       severity: high || hit.verdictAtApproval === "medium" ? "warning" : "success",
       message: `${t("chatView.approvalMemoryApplied")} · ${hit.toolName} · ${scope} · ${hit.verdictAtApproval.toUpperCase()}`,
-      ...(high ? { kind: "approval-memory-hit-high", sticky: true }
-        : hit.verdictAtApproval === "medium" ? { kind: "approval-memory-hit-medium" }
-        : { kind: "approval-memory-hit-low", suppressible: true as const }),
     });
   }, [statusUpsertToast, t]);
   const { reviewerSuggestion } = usePermissionSignals({ onUserApprovalHit: handleUserApprovalHit });
@@ -1081,7 +1069,7 @@ export function App() {
   const switchToProject = useCallback((root: string) => {
     const target = findWorkspaceProject(workspaceProjectsRef.current, root);
     if (!target) {
-      statusPushToast({ severity: "error", message: t("sidebar.projectNotOpen"), ttlMs: 10_000 });
+      statusPushToast({ severity: "error", message: t("sidebar.projectNotOpen") });
       return;
     }
     const selection = projectSelectionRef.current;
@@ -1131,7 +1119,6 @@ export function App() {
     statusPushToast({
       severity: "success",
       message: t(alreadyOpen ? "sidebar.projectAlreadyOpenSwitched" : "sidebar.projectAddedSwitched", { name: projectDisplayName(project) }),
-      ttlMs: 10_000,
       ...(back ? {
         action: {
           label: t("sidebar.projectBackToPrevious"),
@@ -1176,7 +1163,7 @@ export function App() {
     lockedRequestId: exactDenyDraft?.requestId ?? null,
     proposal: approvalProposal,
     reviewerSuggestion,
-    notice: (message: string) => { statusPushToast({ severity: "warning", message, ttlMs: 10_000 }); },
+    notice: (message: string) => { statusPushToast({ severity: "warning", message }); },
   }), [approvals, handleOpenPermanentDeny, exactDenyDraft, approvalProposal, reviewerSuggestion, statusPushToast]);
 
   // Initial status supports sidebar badges; only mounted plugin views keep observing changes.
@@ -1209,7 +1196,6 @@ export function App() {
               ? t("mainToolbar.newChat")
               : t("sidebar.projectsLabel"),
       }),
-      ttlMs: 10_000,
     });
   }, [statusPushToast, t]);
 
@@ -1584,7 +1570,6 @@ export function App() {
       statusPushToast({
         severity: "warning",
         message: t("app.pluginDoctorRequiredToast", { label: card?.name ?? doctorPluginId }),
-        ttlMs: 10000,
       });
       onOpenSettings("plugin-config");
       return;
@@ -1660,7 +1645,7 @@ export function App() {
         measuredCanvasSize(chatGroupCanvasRef.current),
       );
       if (opened === null) {
-        statusPushToast({ severity: "warning", message: t("app.newPaneNoRoom"), ttlMs: 6000 });
+        statusPushToast({ severity: "warning", message: t("app.newPaneNoRoom") });
         return;
       }
       newPaneTargetRef.current = opened;
@@ -2025,23 +2010,6 @@ export function App() {
     </>
   );
 
-  const windowNotice = (
-    <div className="min-w-min w-full" data-testid="window-notice-slot">
-      <StatusBar
-        persistent={[]}
-        toastPlacement="titlebar"
-        visibleToast={statusVisibleToast}
-        pendingCount={statusPendingCount}
-        onToastClick={handleStatusToastClick}
-        onToastDismiss={(toast) => statusRemoveToast(toast.id)}
-        onToastSuppress={(toast) => {
-          if (toast.kind === undefined) throw new Error("[notices] a suppressible notice reached the strip without a kind");
-          statusSuppressToastKind(toast.kind);
-        }}
-      />
-    </div>
-  );
-
   /** Each routed pane renders its own view and returns to its own conversation. */
   const renderPaneRoute = (view: InlineViewKey, paneId: string, settle: ReactNode): ReactNode => {
     // Closing a routed view reveals its conversation; toolbar history remains the sole owner of replay.
@@ -2358,6 +2326,7 @@ export function App() {
     <ErrorBoundary fallback={t("app.appErrorFallback")}>
       <ThemeProvider api={api}>
         <TooltipProvider>
+          <NotificationHistoryContext.Provider value={notificationHistory}>
           {/* IMPORTANT (render-order coupling): OverlayContextProvider MUST stay
               INSIDE this stack. It populates `addFireRef.current` DURING ITS
               RENDER (a synchronous assignment, before any effects fire), so the
@@ -2377,7 +2346,7 @@ export function App() {
             {/* `relative` makes THIS full-height shell column the positioning
                 context for the floating-card Sidebar, which starts one band down
                 (`--shell-card-top`) on the tiles' top line. */}
-            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative flex h-screen min-w-0 flex-col overflow-hidden">
+            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative grid h-screen min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[var(--shell-canvas-top)_minmax(0,1fr)] overflow-hidden">
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it
                   renders IN the band (no separate toolbar row below it). */}
@@ -2428,7 +2397,8 @@ export function App() {
                   </Button>
                 )}
                 <MainToolbar
-                  notice={windowNotice}
+                  notificationHistory={notificationHistory}
+                  onOpenNotification={handleStatusToastClick}
                   viewNav={viewNav}
                   streaming={streaming}
                   hasApiKey={effectiveLlmReady}
@@ -2534,17 +2504,17 @@ export function App() {
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
                   className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-[var(--motion-normal)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
-                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-reserve)" : ""
+                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-edge)" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
                   style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
                 >
-                  {/* Persistent banners reserve space; transient window notices use the title bar slot. */}
+                  {/* Persistent banners reserve space and also register in the notification centre. */}
                   <div
                     className="shrink-0 px-(--chrome-gap)"
                     data-testid="window-notice-strip"
                   >
-                    <div className="flex flex-col gap-2 pt-2 empty:hidden [&>*]:m-0" data-testid="window-notice-banners">
+                    <div className="flex flex-col gap-2 pt-2 [&:not(:has(>*))]:hidden [&>*]:m-0" data-testid="window-notice-banners">
                       {documentEngineOnboardingOpen ? <DocumentEngineInstallContent onDismiss={dismissDocumentEngineOnboarding} /> : null}
                       <RetiredProviderNotice
                         retiredProvider={subscriptionRuntimeSelected ? null : retiredLlmProvider}
@@ -2560,7 +2530,7 @@ export function App() {
                         onAction={handleMarketplaceAnnouncementAction}
                       />
                     </div>
-                    <NoticeLiveRegion toast={statusVisibleToast} />
+                    <NoticeLiveRegion toast={statusLatestPolite} errorToast={statusLatestError} />
                   </div>
                   <DevToolsPanel
                     api={api}
@@ -2688,7 +2658,7 @@ export function App() {
                                     than nested flex containers, so a tile's rectangle is
                                     one number that the layout, a drag hit-test, and a
                                     measurement in a test all read the same way. */}
-                                <div className="min-h-0 min-w-0 flex-1 pb-(--chrome-gap) pl-(--chrome-gap-tight) pr-(--chrome-gap) pt-0" data-testid="pane-row">
+                                <div className={`min-h-0 min-w-0 flex-1 pb-(--chrome-gap) pr-(--chrome-gap) pt-0 ${sidebarHidden ? "pl-(--chrome-gap-tight)" : "pl-0"}`} data-testid="pane-row">
                                 {/* The positioning context is INSIDE the padding: an
                                     absolutely-positioned child resolves against the padding
                                     box, so anchoring the tiles to the row itself would eat
@@ -2821,7 +2791,7 @@ export function App() {
                       </SurfaceMovesContext.Provider>
                     </ErrorBoundary>
                   </div>
-                  {/* Conversation notices float above the composer; window notices use the title bar.
+                  {/* Conversation notices float above the composer; window notices stay in the notification centre.
                       The composer's own status sub-row keeps showing
                       the ring / permission / model cells. The conversation's tool
                       activity is derived inside ChatView and shown by the right-docked
@@ -2845,6 +2815,7 @@ export function App() {
           </OverlayContextProvider>
           </ApprovalSurfaceProvider>
           </PaneChatNavigationProvider>
+          </NotificationHistoryContext.Provider>
         </TooltipProvider>
       </ThemeProvider>
     </ErrorBoundary>

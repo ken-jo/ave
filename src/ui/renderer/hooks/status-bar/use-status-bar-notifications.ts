@@ -5,7 +5,8 @@ import { sanitizeToastField } from "./toast-field.js";
 
 interface Options {
   api: AveApi;
-  pushToast: (input: {
+  receiveToast: (id: string, input: {
+    createdAt: number;
     severity: StatusBarSeverity;
     message: string;
     ttlMs?: number;
@@ -14,12 +15,15 @@ interface Options {
   }) => string;
 }
 
-export function useStatusBarNotifications({ api, pushToast }: Options): void {
+export function useStatusBarNotifications({ api, receiveToast }: Options): void {
   useEffect(() => {
     if (typeof api.onNotificationToast !== "function") return;
     const unsub = api.onNotificationToast((p) => {
+      if (p.kind === "approval" || p.kind === "ask-user") return;
+      if (typeof p.id !== "string" || p.id.length === 0 || !Number.isFinite(p.createdAt)) return;
       const severity: StatusBarSeverity = p.kind === "routine" ? "success" : "info";
-      pushToast({
+      receiveToast(`notification:${p.id}`, {
+        createdAt: p.createdAt,
         severity,
         message: `${sanitizeToastField(p.title, 64)}: ${sanitizeToastField(p.body, 80)}`,
         ttlMs: 5_000,
@@ -30,5 +34,5 @@ export function useStatusBarNotifications({ api, pushToast }: Options): void {
     return () => {
       unsub();
     };
-  }, [api, pushToast]);
+  }, [api, receiveToast]);
 }

@@ -376,15 +376,15 @@ export function ChatComposerDock({
       {statusBar ? (
         <div className={`${dockColumnClass} relative px-6`} data-testid="composer-toast-dock">
           <NoticeLiveRegion toast={statusBar.visibleToast} />
-          <StatusBar {...statusBar} toastPlacement="above" />
+          <StatusBar {...statusBar} />
         </div>
       ) : null}
       <div className={`${dockColumnClass} flex flex-col overflow-x-hidden pb-1`}>
         {/* ONE input box: textarea + the single InputActionBar (action row).
             The session line — model / permission / active / ring — is drawn
             UNDER the box by ComposerStatusRow, not inside it: what is inside
-            the box is about the message being written. The window StatusBar
-            is notifications-only.
+            the box is about the message being written. Window notifications
+            stay in the bell.
             The shared surface paints the edge as an inset hairline so
             the dock's overflow handling cannot clip the composer edge. */}
         <div className={`relative mx-3 mb-2 ${hasApiKey === false || (emptyConversation && onNewChatForProject) ? "pt-9" : ""}`}>

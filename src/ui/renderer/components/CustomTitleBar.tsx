@@ -1,5 +1,5 @@
 /** Empty title-bar space remains draggable; interactive controls opt out. Native controls stay on their platform side. */
-import { useCallback, useEffect, useState, type ReactNode, type MouseEvent } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -68,8 +68,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
   const handleMinimize = useCallback(() => { void getWindowBridge().minimize(); }, []);
   const handleMaximize = useCallback(() => { void getWindowBridge().toggleMaximize(); }, []);
   const handleClose = useCallback(() => { void getWindowBridge().close(); }, []);
-  const handleDoubleClick = useCallback((event: MouseEvent<HTMLDivElement>) => {
-    if (event.target instanceof Element && event.target.closest('[data-testid="status-toast"]')) return;
+  const handleDoubleClick = useCallback(() => {
     void getWindowBridge().toggleMaximize();
   }, []);
 
@@ -87,7 +86,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     return (
       <div
         data-testid="custom-titlebar-plain"
-        className="flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
+        className="flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_EDGE_PAD, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
@@ -104,7 +103,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     return (
       <div
         data-testid="custom-titlebar-darwin"
-        className="ave-glass-clear flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
+        className="ave-glass-clear flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none"
         style={{
           paddingLeft: `${Math.max(BAND_LEAD_PAD_DARWIN, leadClearance)}px`,
           paddingRight: `${BAND_EDGE_PAD}px`,
@@ -167,7 +166,7 @@ export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFulls
     <div
       data-testid="custom-titlebar"
       data-window-controls={leading ? "leading" : "trailing"}
-      className={`ave-glass-clear ${leading ? "relative " : ""}flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none`}
+      className={`ave-glass-clear ${leading ? "relative " : ""}flex h-(--chrome-band-height) min-w-0 shrink-0 items-center gap-(--chrome-gap) bg-background text-foreground select-none`}
       style={{
         paddingLeft: `${Math.max(leading ? BAND_LEAD_PAD_LINUX : BAND_EDGE_PAD, leadClearance)}px`,
         paddingRight: leading ? `${BAND_EDGE_PAD}px` : undefined,
