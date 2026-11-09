@@ -1328,16 +1328,36 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
     if (typeof expectedSessionId !== "string" || !isValidSessionId(expectedSessionId)) return { ok: false, error: "invalid-input" };
     const group = groupOf(e, chatGroupId, CHANNELS.chat.getTurnReview);
-    const mutation = group.turns.trackSessionMutation(async (): Promise<TurnReviewResult> => {
-      const loop = group.loop;
-      if (expectedSessionId !== loop.getSessionId()) return { ok: false, error: "turn-review-stale" };
-      const turnId = latestReviewTurnId(loop);
-      if (!turnId) return { ok: false, error: "turn-review-unavailable" };
-      return getTurnChangeReview(expectedSessionId, turnId, () => ({
-        cwd: loop.getSessionExecutionCwd(), extraAllowedDirectories: loop.getTurnAdditionalDirectories(),
-      }), { currentDetails: true });
-    });
-    return mutation ?? { ok: false, error: STREAMING_ACTIVE };
+    const loop = group.loop;
+    if (group.surfaceRuntime.activity.isBusy()) return { ok: false, error: STREAMING_ACTIVE };
+    if (expectedSessionId !== loop.getSessionId()) return { ok: false, error: "turn-review-stale" };
+    const sessionEpoch = loop.getSessionEpoch();
+    const turnId = latestReviewTurnId(loop);
+    if (!turnId) return { ok: false, error: "turn-review-unavailable" };
+    const cwd = loop.getSessionExecutionCwd();
+    const extraAllowedDirectories = [...loop.getTurnAdditionalDirectories()];
+    const groupKey = scopedGroupKey(group.owner, group.rendererGroupId);
+    let contextChanged = false;
+    const isCurrent = (): boolean => {
+      const currentExtraAllowedDirectories = loop.getTurnAdditionalDirectories();
+      return groupContexts.get(groupKey) === group
+        && !group.surfaceRuntime.activity.isBusy()
+        && loop.getSessionId() === expectedSessionId
+        && loop.getSessionEpoch() === sessionEpoch
+        && loop.getSessionExecutionCwd() === cwd
+        && currentExtraAllowedDirectories.length === extraAllowedDirectories.length
+        && currentExtraAllowedDirectories.every((directory, index) => directory === extraAllowedDirectories[index])
+        && latestReviewTurnId(loop) === turnId;
+    };
+    const review = await getTurnChangeReview(expectedSessionId, turnId, () => {
+      if (!isCurrent()) {
+        contextChanged = true;
+        throw new Error("turn-review-context-changed");
+      }
+      return { cwd, extraAllowedDirectories };
+    }, { currentDetails: true });
+    if (contextChanged || !isCurrent()) return { ok: false, error: "turn-review-stale" };
+    return review;
   });
 
   // Restore code before history mutation; code-only restore leaves history intact and rewind persists its own truncation.
