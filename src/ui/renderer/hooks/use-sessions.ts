@@ -51,7 +51,8 @@ function sessionProjectFromHistory(
  * would have had to pick one tile's copy of it to render.
  */
 function mergeSessionRows(current: readonly SessionSummary[], incoming: readonly SessionSummary[]): SessionSummary[] {
-  return [...new Map([...current, ...incoming].map((row) => [row.id, row])).values()];
+  return [...new Map([...current, ...incoming].map((row) => [row.id, row])).values()]
+    .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || b.id.localeCompare(a.id));
 }
 
 export function useSessionList(api: AveApi) {
@@ -61,6 +62,7 @@ export function useSessionList(api: AveApi) {
   const inFlightIds = useRef(new Set<string>());
   const lifetime = useRef(0);
   const pageRequest = useRef(0);
+  const refreshing = useRef(false);
 
   const publishRows = useCallback((rows: SessionSummary[]) => {
     const next = rows.map((row) => {
@@ -72,8 +74,11 @@ export function useSessionList(api: AveApi) {
   }, []);
 
   const loadSessionsPage = useCallback(async (cursor?: { before: string; beforeId: string }) => {
+    if (cursor && refreshing.current) return;
+    if (!cursor) refreshing.current = true;
     const request = ++pageRequest.current;
     const epoch = lifetime.current;
+    const knownAtRequest = new Set(rowsRef.current.map((row) => row.id));
     try {
       const result = await api.chatSessions({
         families: [...SESSION_FAMILIES],
@@ -81,11 +86,16 @@ export function useSessionList(api: AveApi) {
         ...cursor,
       });
       if (epoch !== lifetime.current || request !== pageRequest.current) return;
-      const activeRows = rowsRef.current.filter((row) => runningById.current.get(row.id) === true);
+      const received = new Set(result.sessions.map((row) => row.id));
+      const activeRows = rowsRef.current.filter((row) => runningById.current.get(row.id) === true && !received.has(row.id));
       const activeParents = new Set(activeRows.flatMap((row) => row.originSessionId ? [row.originSessionId] : []));
       const retained = rowsRef.current.filter((row) => runningById.current.get(row.id) === true || activeParents.has(row.id));
-      publishRows(mergeSessionRows(cursor ? rowsRef.current : retained, [...(result.parents ?? []), ...result.sessions]));
+      const observedSince = rowsRef.current.filter((row) => !knownAtRequest.has(row.id));
+      publishRows(mergeSessionRows(cursor ? rowsRef.current : retained, [...(result.parents ?? []), ...result.sessions, ...observedSince]));
     } catch { /* ignore */ }
+    finally {
+      if (epoch === lifetime.current && request === pageRequest.current) refreshing.current = false;
+    }
   }, [api, publishRows]);
 
   const refreshSessions = useCallback(() => loadSessionsPage(), [loadSessionsPage]);
@@ -98,7 +108,10 @@ export function useSessionList(api: AveApi) {
       const result = await api.chatSessions({ id, families: [...SESSION_FAMILIES] });
       if (epoch !== lifetime.current) return;
       const row = result.sessions.find((candidate) => candidate.id === id);
-      if (row) publishRows(mergeSessionRows(rowsRef.current, [...(result.parents ?? []), row]));
+      if (!row || rowsRef.current.some((listed) => listed.id === id)) return;
+      const known = new Set(rowsRef.current.map((listed) => listed.id));
+      const additions = [...(result.parents ?? []), row].filter((candidate) => !known.has(candidate.id));
+      publishRows(mergeSessionRows(rowsRef.current, additions));
     } catch { /* A later activity can retry a failed point read. */ }
     finally {
       if (epoch === lifetime.current) inFlightIds.current.delete(id);
@@ -123,6 +136,7 @@ export function useSessionList(api: AveApi) {
     return () => {
       lifetime.current += 1;
       inFlightIds.current.clear();
+      refreshing.current = false;
       runningById.current.clear();
       unsubscribe?.();
     };

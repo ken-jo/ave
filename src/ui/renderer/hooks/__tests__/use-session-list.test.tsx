@@ -85,10 +85,83 @@ it("merges recovered parents and later primary rows by id across row pages", asy
   const chatSessions = vi.fn().mockResolvedValueOnce({ sessions: [child], parents: [parent] }).mockResolvedValueOnce({ sessions: [{ ...parent, title: "Updated parent" }], parents: [] });
   const { result } = renderHook(() => useSessionList({ chatSessions } as unknown as AveApi));
   await act(() => result.current.refreshSessions());
-  expect(result.current.sessions.map((row) => row.id)).toEqual([parent.id, child.id]);
+  expect(result.current.sessions.map((row) => row.id)).toEqual([child.id, parent.id]);
   const cursor = { before: child.modifiedAt, beforeId: child.id };
   await act(() => result.current.loadSessionsPage(cursor));
   expect(chatSessions).toHaveBeenLastCalledWith(expect.objectContaining(cursor));
   expect(result.current.sessions).toHaveLength(2);
   expect(result.current.sessions.find((row) => row.id === parent.id)?.title).toBe("Updated parent");
+});
+
+it("inserts only missing rows when a point response follows a newer page", async () => {
+  let listener: (event: AgentSpawnEvent<ChatEntry>) => void = () => { throw new Error("missing-spawn-listener"); };
+  const point = deferred<SessionListResult>();
+  let pages = 0;
+  const currentChild = { ...child, title: "Current child" };
+  const currentParent = { ...parent, title: "Current parent" };
+  const chatSessions = vi.fn((query?: SessionListQuery) => {
+    if (query?.id) return point.promise;
+    pages += 1;
+    return Promise.resolve({ current: PARENT_ID, sessions: pages === 1 ? [] : [currentChild], parents: pages === 1 ? [] : [currentParent] });
+  });
+  const api = { chatSessions, onAgentSpawnEvent: (handler: typeof listener) => { listener = handler; return () => {}; } } as unknown as AveApi;
+  const { result } = renderHook(() => useSessionList(api));
+  await act(() => result.current.refreshSessions());
+  act(() => listener(ACTIVITY_EVENT));
+  await act(() => result.current.refreshSessions());
+  await act(async () => { point.resolve({ current: PARENT_ID, sessions: [child], parents: [parent] }); await point.promise; });
+  expect(result.current.sessions.find((row) => row.id === CHILD_ID)?.title).toBe("Current child");
+  expect(result.current.sessions.find((row) => row.id === PARENT_ID)?.title).toBe("Current parent");
+});
+
+it("keeps point rows observed after an older page request began", async () => {
+  let listener: (event: AgentSpawnEvent<ChatEntry>) => void = () => { throw new Error("missing-spawn-listener"); };
+  const point = deferred<SessionListResult>();
+  const page = deferred<SessionListResult>();
+  let pages = 0;
+  const chatSessions = vi.fn((query?: SessionListQuery) => {
+    if (query?.id) return point.promise;
+    pages += 1;
+    return pages === 1 ? Promise.resolve({ current: PARENT_ID, sessions: [] }) : page.promise;
+  });
+  const api = { chatSessions, onAgentSpawnEvent: (handler: typeof listener) => { listener = handler; return () => {}; } } as unknown as AveApi;
+  const { result } = renderHook(() => useSessionList(api));
+  await act(() => result.current.refreshSessions());
+  const pendingPage = result.current.refreshSessions();
+  act(() => listener(ACTIVITY_EVENT));
+  await act(async () => { point.resolve({ current: PARENT_ID, sessions: [{ ...child, title: "Observed child" }], parents: [{ ...parent, title: "Observed parent" }] }); await point.promise; });
+  await act(async () => { page.resolve({ current: PARENT_ID, sessions: [child], parents: [parent] }); await pendingPage; });
+  expect(result.current.sessions.find((row) => row.id === CHILD_ID)?.title).toBe("Observed child");
+  expect(result.current.sessions.find((row) => row.id === PARENT_ID)?.title).toBe("Observed parent");
+});
+
+it("lets an in-flight first-page refresh settle before accepting a continuation", async () => {
+  const page = deferred<SessionListResult>();
+  const refreshedParent = { ...parent, title: "Refreshed parent" };
+  const chatSessions = vi.fn().mockResolvedValueOnce({ current: PARENT_ID, sessions: [parent] }).mockReturnValueOnce(page.promise).mockResolvedValue({ current: PARENT_ID, sessions: [child] });
+  const api = { chatSessions } as unknown as AveApi;
+  const { result } = renderHook(() => useSessionList(api));
+  await act(() => result.current.refreshSessions());
+  const refresh = result.current.refreshSessions();
+  await act(() => result.current.loadSessionsPage({ before: parent.modifiedAt, beforeId: parent.id }));
+  expect(chatSessions).toHaveBeenCalledTimes(2);
+  await act(async () => { page.resolve({ current: PARENT_ID, sessions: [refreshedParent] }); await refresh; });
+  expect(result.current.sessions).toEqual([refreshedParent]);
+});
+
+it("drops recovered parent context when a refreshed child page reports that parent missing", async () => {
+  let listener: (event: AgentSpawnEvent<ChatEntry>) => void = () => { throw new Error("missing-spawn-listener"); };
+  let pages = 0;
+  const chatSessions = vi.fn((query?: SessionListQuery) => {
+    if (query?.id) return Promise.resolve({ current: PARENT_ID, sessions: [child], parents: [parent] });
+    pages += 1;
+    return Promise.resolve({ current: PARENT_ID, sessions: pages === 1 ? [] : [child], parents: [] });
+  });
+  const api = { chatSessions, onAgentSpawnEvent: (handler: typeof listener) => { listener = handler; return () => {}; } } as unknown as AveApi;
+  const { result } = renderHook(() => useSessionList(api));
+  await act(() => result.current.refreshSessions());
+  await act(async () => { listener(ACTIVITY_EVENT); });
+  expect(result.current.sessions.find((row) => row.id === PARENT_ID)).toBeDefined();
+  await act(() => result.current.refreshSessions());
+  expect(result.current.sessions.map((row) => row.id)).toEqual([CHILD_ID]);
 });
