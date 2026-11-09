@@ -1182,6 +1182,18 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   } | undefined;
   // While a press holds the window: when its budget runs out.
   let pressDeadline: number | null = null;
+  const returnNativeRouting = async () => {
+    await attribution.releaseFocus(guest.id, live.leaseId);
+    if (guest.isDestroyed() || !attribution.isParkedAgentGuest(guest.id)) return;
+    const host = guest.hostWebContents;
+    if (!host) throw new BrowserActionError("no-focus", "the parked page has no owning keyboard surface");
+    const restored = await pollUntil(new AbortController().signal, RELEASE_MAX_MS, async () => {
+      if (guest.isDestroyed()) return true;
+      const focused = host.focusedFrame;
+      return focused === null || !guest.mainFrame.framesInSubtree.includes(focused) ? true : undefined;
+    });
+    if (!restored) throw new BrowserActionError("no-focus", "the parked page did not return native keyboard routing to the visible surface");
+  };
   const preparePageFocus = async () => {
     if (emulatedFocus || !attribution.isParkedAgentGuest(guest.id)) return;
     assertCurrent(false);
@@ -1245,6 +1257,11 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         }
         if (method === "Input.dispatchMouseEvent" && params?.type === "mouseReleased") mouseOpen = false;
         await echo?.settle();
+        if (emulatedFocus && (phase === "touchStart" || method === "DOM.focus"
+          || method === "Input.dispatchMouseEvent" && params?.type === "mousePressed")) {
+          // Keep native keyboard routing with chrome while page-local focus remains emulated.
+          await returnNativeRouting();
+        }
         // The action guard owns input completion: its last input may navigate.
         if (method.startsWith("Input.")) assertGuest();
         else assertCurrent(false);
@@ -1416,7 +1433,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
           await session.send("Emulation.setFocusEmulationEnabled", { enabled: false });
         }
       } finally {
-        if (releaseReceipt) await attribution.releaseFocus(guest.id, live.leaseId);
+        if (releaseReceipt) await returnNativeRouting();
       }
     },
     focusPage: async () => {

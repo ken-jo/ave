@@ -3,7 +3,7 @@
 import { useSyncExternalStore } from "react";
 import type { BrowserTabControlState, BrowserTabOpRequest } from "../../../shared/browser-surface.js";
 import type { AveApi } from "../types.js";
-import { getWebSurfaceElement, noteWebSurfaceFavicon, requestWebSurfaceLayout, setWebSurfaceAwake } from "./web-surfaces.js";
+import { getWebSurfaceElement, getWebSurfaceSlot, noteWebSurfaceFavicon, requestWebSurfaceLayout, setWebSurfaceAwake } from "./web-surfaces.js";
 import { guestFaviconSource } from "./favicon-source.js";
 import { isElementShown } from "./browser-observation-preview.js";
 
@@ -128,8 +128,20 @@ export class HostFocusMemory {
     return () => this.doc.removeEventListener("focusin", this.onFocusIn, true);
   }
 
-  restore(): void {
+  restore(parkedGuest?: HTMLElement | null): void {
     const active = this.doc.activeElement;
+    if (parkedGuest !== undefined && active instanceof HTMLElement && active !== parkedGuest && active !== this.doc.body) {
+      // Reassert the current surface even when the embedder's active element did not change.
+      if (isWebview(active)) {
+        const frame = active.shadowRoot?.querySelector("iframe");
+        frame?.blur();
+        frame?.focus({ preventScroll: true });
+      } else if (this.visible(active)) {
+        active.blur();
+        active.focus({ preventScroll: true });
+      }
+      return;
+    }
     if (!(active instanceof HTMLElement) || !isWebview(active) && active !== this.doc.body) return;
     for (const back of [...this.recent].reverse()) {
       if (!this.visible(back)) continue;
@@ -168,7 +180,12 @@ export function routeBrowserTabOp(request: BrowserTabOpRequest, candidates: read
     if (request.receiptId !== undefined) {
       return hostFocus?.restoreReceipt(request.receiptId, getWebSurfaceElement(request.tabId), request.preserveFocus) ? undefined : "refused";
     }
-    hostFocus?.restore();
+    const guest = getWebSurfaceElement(request.tabId);
+    const slot = getWebSurfaceSlot(request.tabId);
+    // Parking keeps the old frame painted until acknowledgement; the slot owns display intent.
+    if (guest === document.activeElement && slot && isElementShown(slot)) return;
+    if (!hostFocus) return "refused";
+    hostFocus.restore(guest);
     return;
   }
   if (request.op === "new" && request.inTabId !== undefined) {
@@ -220,7 +237,7 @@ export function registerBrowserTabHost(api: AveApi, host: BrowserTabHost): () =>
     const tabs = api.browserTabs;
     const offOp = tabs.onTabOp((request) => {
       const result = routeBrowserTabOp(request);
-      if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId !== undefined) {
+      if (request.op === "capture-focus" || request.op === "restore-focus") {
         void tabs.completeFocus(request.requestId, result !== "refused");
       } else if (result === "refused") void tabs.refuseTabOp(request.requestId);
     });

@@ -205,3 +205,34 @@ it("retires a disconnected borrowing guest receipt before the next action", () =
   expect(document.activeElement).toBe(composer);
   detach();
 });
+
+it("reasserts the current host control after a parked touch changes native frame focus without a DOM focus event", () => {
+  const { memory, detach, composer, page } = setup();
+  composer.focus();
+  const blur = vi.spyOn(composer, "blur");
+  const focus = vi.spyOn(composer, "focus");
+  // The embedder still names the composer while the native focused frame belongs to its guest.
+  memory.restore(page);
+  expect(blur).toHaveBeenCalledOnce();
+  expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  expect(document.activeElement).toBe(composer);
+  detach();
+});
+
+it("preserves the selected visible guest when a parked guest returns native routing", () => {
+  const { memory, detach, page } = setup();
+  const visibleGuest = document.createElement("webview");
+  visibleGuest.tabIndex = 0;
+  const frame = document.createElement("iframe");
+  const root = document.createElement("div").attachShadow({ mode: "open" });
+  root.append(frame);
+  vi.spyOn(visibleGuest, "shadowRoot", "get").mockReturnValue(root);
+  document.body.append(visibleGuest);
+  visibleGuest.focus();
+  const focus = vi.spyOn(frame, "focus").mockImplementation(() => {});
+  memory.restore(page);
+  expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  expect(document.activeElement).toBe(visibleGuest);
+  visibleGuest.remove();
+  detach();
+});

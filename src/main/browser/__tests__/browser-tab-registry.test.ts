@@ -37,7 +37,7 @@ function setup() {
   registry.setRendererLink({
     sendTabOp: (windowId, request) => {
       ops.push({ windowId, request });
-      if (request.op === "capture-focus" || request.op === "restore-focus" && request.receiptId) registry.completeFocus(windowId, request.requestId, true);
+      if (request.op === "capture-focus" || request.op === "restore-focus") registry.completeFocus(windowId, request.requestId, true);
       return true;
     },
     sendControl: (windowId, state) => control.push({ windowId, state }),
@@ -1120,9 +1120,32 @@ describe("scoped browser control", () => {
     expect(ops).toHaveLength(count);
     expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
     await registry.releaseFocus(71, tab.lease?.id);
-    expect(ops).toHaveLength(count);
+    expect(ops).toHaveLength(count + 1);
+    expect(ops.at(-1)?.request.op).toBe("restore-focus");
     registry.userInput(71, { type: "keyDown" });
     await expect(registry.focusGuest(71)).rejects.toThrow("active control");
+  });
+
+  it("awaits the parked routing acknowledgement without capturing or borrowing native focus", async () => {
+    const { registry, tab } = await owned();
+    const lease = registry.acquireControl(tab, ACTOR);
+    registry.setAgentTabAwake(71, true);
+    await registry.focusGuest(71);
+    const requests: BrowserTabOpRequest[] = [];
+    registry.setRendererLink({ isWindowVisible: () => true, sendControl: () => {}, sendTabOp: (_windowId, request) => { requests.push(request); return true; } });
+    let settled = false;
+    const restoring = Promise.resolve(registry.releaseFocus(71, lease.id)).then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.op).toBe("restore-focus");
+    expect(requests[0]).not.toHaveProperty("receiptId");
+    const request = requests[0];
+    if (!request) throw new Error("Missing restore request");
+    expect(registry.completeFocus(2, request.requestId, true)).toBe(false);
+    expect(registry.completeFocus(1, request.requestId, true)).toBe(true);
+    await restoring;
+    expect(settled).toBe(true);
   });
 
   it("blocks only real parked keyboard input and restores even after takeover", async () => {

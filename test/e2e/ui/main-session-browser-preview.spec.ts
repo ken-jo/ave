@@ -98,7 +98,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
   let approvals: Promise<void> | undefined;
   try {
     ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [], launchArgs: ["--use-mock-keychain", `--force-device-scale-factor=${deviceScale}`] });
-    await ctx.app.evaluate(({ app }, delayHitMs) => {
+    await ctx.app.evaluate(({ app, BrowserWindow }, delayHitMs) => {
       const capture = globalThis as unknown as { clickMeasurements: unknown[]; pointerEchoes: unknown[]; destructionPeaks: Record<string, number>; listenerWarnings: string[] };
       capture.clickMeasurements = [];
       capture.pointerEchoes = [];
@@ -135,7 +135,13 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
             delayed = true;
             await new Promise(resolve => setTimeout(resolve, delayHitMs));
           }
-          const geometry = async () => ({ ts: Date.now(), guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor(), focused: contents.isFocused(), throttled: contents.getBackgroundThrottling(),
+          // Child views expose their root view's native focus bit, not the keyboard destination.
+          const geometry = async () => ({ ts: Date.now(), guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor(),
+            focused: !contents.hostWebContents || contents.hostWebContents.focusedFrame !== contents.hostWebContents.mainFrame,
+            rootViewFocused: contents.isFocused(), hostViewFocused: contents.hostWebContents?.isFocused(),
+            windowFocused: BrowserWindow.fromWebContents(contents.hostWebContents ?? contents)?.isFocused(),
+            hostFrame: contents.hostWebContents?.focusedFrame?.frameTreeNodeId, hostMainFrame: contents.hostWebContents?.mainFrame.frameTreeNodeId,
+            throttled: contents.getBackgroundThrottling(),
             layout: await send("Page.getLayoutMetrics"),
             box: nodeId === undefined ? null : await send("DOM.getBoxModel", { backendNodeId: nodeId }),
             viewport: await send("Runtime.evaluate", { expression: "({ width: innerWidth, height: innerHeight, deviceScale: devicePixelRatio, scrollX, scrollY, visibility: document.visibilityState })", returnByValue: true }),
@@ -279,6 +285,20 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     const retained = await ctx.app.evaluate(({ webContents }, url) => webContents.getAllWebContents().filter(contents => contents.getType() === "webview" && contents.getURL() === url).map(contents => ({ id: contents.id, url: contents.getURL(), destroyed: contents.isDestroyed() })), secondUrl);
     expect(retained).toHaveLength(1);
     expect(retained[0]).toMatchObject({ url: secondUrl, destroyed: false });
+    // The same native-frame measurement must detect a real user focus transfer.
+    const visibleBox = await retainedFrame.boundingBox();
+    if (!visibleBox) throw new Error("Visible browser focus control unavailable");
+    await page.mouse.click(visibleBox.x + 60, visibleBox.y + 60);
+    const running = ctx;
+    const keyboardTarget = () => running.app.evaluate(({ webContents }, url) => {
+      const guest = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL() === url);
+      const host = guest?.hostWebContents;
+      if (!guest || !host) throw new Error("Native keyboard target unavailable");
+      return { focused: host.focusedFrame !== host.mainFrame, guestFrame: host.focusedFrame === guest.mainFrame };
+    }, secondUrl);
+    await expect.poll(keyboardTarget).toEqual({ focused: true, guestFrame: true });
+    await page.getByTestId("chat-side-panel-close").click();
+    await expect.poll(keyboardTarget).toEqual({ focused: false, guestFrame: false });
     await test.info().attach("turn-ended-retained-tab.png", { body: await page.screenshot(), contentType: "image/png" });
   } finally {
     try {

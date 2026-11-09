@@ -175,7 +175,6 @@ export interface BrowserTabRendererLink {
   sendSessionBindings?(windowId: number, state: SessionTabBindingsState): void;
   // Native window visibility proof, required before any explicit focus request.
   isWindowVisible?(windowId: number): boolean;
-  focusHost?(windowId: number): void;
 }
 
 // The tab a conversation's browser tools act on when none is named — or why there is none.
@@ -594,7 +593,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
     this.settleSelectIfShown(senderWindowId);
     this.broadcastControl(senderWindowId);
-    if (request.parked === true && entry.guest.isFocused?.()) this.restoreParkedGuestFocus(entry.guest.id);
+    if (request.parked === true) this.restoreParkedGuestFocus(entry.guest.id);
     return { ok: true };
   }
 
@@ -938,15 +937,21 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       return this.focusOperation(receipt.windowId, { requestId: `browser-op-${this.nextRequest++}`, op: "restore-focus", tabId: receipt.tabId, receiptId: receipt.receiptId, preserveFocus: !this.isParkedAgentGuest(guestId) && [...this.tabs.values()].some(tab => tab.guest?.id === guestId && tab.controlMode === "human-paused") })
         .then(restored => { if (!restored) throw new Error("browser focus restoration was not observed"); });
     }
-    if (this.scopedFocusLeases.get(guestId) === leaseId && leaseId !== undefined) return;
+    const parkedScope = this.scopedFocusLeases.get(guestId) === leaseId && leaseId !== undefined;
+    if (parkedScope && !this.isParkedAgentGuest(guestId)) return;
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
       if (tab.rendererTabId === null || leaseId !== undefined && tab.lease?.id !== leaseId) return;
-      this.link?.sendTabOp(tab.windowId, {
-        requestId: `browser-op-${this.nextRequest++}`,
-        op: "restore-focus",
-        tabId: tab.rendererTabId,
-      });
+      const request: BrowserTabOpRequest = {
+        requestId: `browser-op-${this.nextRequest++}`, op: "restore-focus", tabId: tab.rendererTabId,
+      };
+      if (parkedScope) {
+        // A protocol touch can change the native focused frame without a DOM focus event.
+        return this.focusOperation(tab.windowId, request).then(restored => {
+          if (!restored) throw new Error("parked browser focus restoration was not observed");
+        });
+      }
+      this.link?.sendTabOp(tab.windowId, request);
       return;
     }
   }
@@ -967,7 +972,6 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     const tab = [...this.tabs.values()].find(candidate => candidate.guest?.id === guestId);
     if (!tab?.guest || tab.guest.isDestroyed()) return;
     tab.guest.blur?.();
-    this.link?.focusHost?.(tab.windowId);
     const receipt = this.focusReceipts.get(guestId);
     if (receipt) {
       void Promise.resolve(this.releaseFocus(guestId, receipt.leaseId)).catch(error => log.warn({ err: error }, "Could not restore parked guest focus"));
