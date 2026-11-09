@@ -28,6 +28,7 @@ beforeEach(() => {
 set -eu
 printf 'fetch\\n' >> "$FIXTURE_ROOT/fetches"
 printf '%s\\n' "$@" >> "$FIXTURE_ROOT/curl-args"
+cat >> "$FIXTURE_ROOT/curl-stdin"
 while [ "$1" != --output ]; do shift; done
 cp "$FIXTURE_ROOT/source/$(basename "$3")" "$2"
 `);
@@ -54,8 +55,12 @@ describe("runtime archive cache", () => {
     const result = run("verify");
     expect(result.status, result.stderr).toBe(0);
     const args = readFileSync(join(root, "curl-args"), "utf8").trim().split("\n");
+    const stdin = readFileSync(join(root, "curl-stdin"), "utf8");
     expect(args.filter((arg) => arg === "--header")).toHaveLength(expected ? 2 : 0);
-    expect(args.filter((arg) => arg === `Authorization: Bearer ${expected}`)).toHaveLength(expected ? 2 : 0);
+    expect(args.filter((arg) => arg === "@-")).toHaveLength(expected ? 2 : 0);
+    expect(stdin).toBe((expected ? `Authorization: Bearer ${expected}\n` : "\n").repeat(2));
+    for (const token of [primary, secondary].filter(Boolean)) expect(args.join("\n")).not.toContain(token);
+    expect(args.join("\n")).not.toContain("Authorization:");
     expect(args.filter((arg) => arg.startsWith("https://"))).toEqual([
       `https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/${asset}.zip`,
       "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/SHASUMS256.txt",
@@ -69,7 +74,8 @@ describe("runtime archive cache", () => {
     const args = readFileSync(join(root, "curl-args"), "utf8").trim().split("\n");
     expect(args).toContain("--location");
     expect(args).not.toContain("--location-trusted");
-    const header = args[args.indexOf("--header") + 1];
+    expect(args[args.indexOf("--header") + 1]).toBe("@-");
+    const header = readFileSync(join(root, "curl-stdin"), "utf8").split("\n")[0];
     const received: (string | undefined)[] = [];
     const server = createServer((request, response) => {
       received.push(request.headers.authorization);
@@ -86,12 +92,14 @@ describe("runtime archive cache", () => {
       if (!address || typeof address === "string") throw new Error("missing server port");
       const result = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
         const child = spawn("curl", ["--fail", "--silent", "--show-error", "--location", "--noproxy", "*",
-          "--resolve", `localhost:${address.port}:127.0.0.1`, "--max-time", "10", "--header", header,
+          "--resolve", `localhost:${address.port}:127.0.0.1`, "--max-time", "10", "--header", "@-",
           `http://127.0.0.1:${address.port}/release`], { env: process.env });
+        expect(child.spawnargs.join("\n")).not.toContain("redirect-token");
         let stderr = "";
         child.stderr.on("data", (chunk) => { stderr += chunk; });
         child.on("error", reject);
         child.on("close", (code) => resolve({ code, stderr }));
+        child.stdin.end(`${header}\n`);
       });
       expect(result.code, result.stderr).toBe(0);
       expect(received).toEqual(["Bearer redirect-token", undefined]);
