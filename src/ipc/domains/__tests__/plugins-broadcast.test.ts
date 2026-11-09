@@ -13,6 +13,8 @@ import {
 import { hostFrameEvent, untrustedEvent } from "../../../__tests__/test-helpers.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { notifyBootstrapStatus } from "../../../boot/bootstrap-status.js";
+import { getLocale, setLocale } from "../../../i18n/runtime.js";
+import { formatIpcError, resolveIpcErrorKey } from "../../../ui/renderer/format-ipc-error.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const cleanupRoots: string[] = [];
@@ -512,6 +514,33 @@ describe("plugins IPC lifecycle broadcast", () => {
       { sender, senderFrame: undefined },
     ]) expect(handler(event, { ready: true })).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(deps.notificationService.setHistorySubscriber).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "refused"] as const)("localizes the actual %s notification-service readiness result", async (availability) => {
+    const { deps, appWindows } = await setup();
+    const win = appWindows[0];
+    if (!win) throw new Error("Missing main window");
+    const frame = { url: "file:///app/index.html" };
+    const sender = Object.assign(win.webContents, { mainFrame: frame });
+    const handler = handlers.get(CHANNELS.notification.toast);
+    if (!handler) throw new Error("Missing history readiness handler");
+    if (availability === "missing") Reflect.deleteProperty(deps, "notificationService");
+    else deps.notificationService.setHistorySubscriber.mockReturnValue(false);
+    const result = handler({ sender, senderFrame: frame }, { ready: true });
+    expect(result).toEqual({ ok: false, error: "notification-unavailable" });
+    if (!result || typeof result !== "object" || !("error" in result) || typeof result.error !== "string") {
+      throw new Error("Missing readiness error code");
+    }
+    expect(resolveIpcErrorKey(result.error)).toBe("formatIpcError.notificationUnavailable");
+    const previousLocale = getLocale();
+    try {
+      setLocale("en");
+      expect(formatIpcError(result.error, undefined)).toBe("The notification service is not running, so the app's message could not be delivered.");
+      setLocale("ko");
+      expect(formatIpcError(result.error, undefined)).toBe("알림 서비스가 실행 중이 아니어서 앱 메시지를 전달하지 못했습니다.");
+    } finally {
+      setLocale(previousLocale);
+    }
   });
 
 });

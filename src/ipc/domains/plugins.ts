@@ -1412,7 +1412,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "invalid-payload" };
     }
     const accepted = deps.notificationService?.setHistorySubscriber(e.sender, payload.ready) ?? false;
-    return accepted ? { ok: true } : { ok: false, error: "notification-service-unavailable" };
+    return accepted ? { ok: true } : { ok: false, error: "notification-unavailable" };
   });
 
   ipcMain.handle(CHANNELS.notification.clicked, (e, payload: unknown) => {
