@@ -156,7 +156,7 @@ export async function captureBrowserPage(
           }
         };
         releaseCapture = false;
-        const restored = restore().then(() => { activeCaptures.delete(key); });
+        const restored = restore().finally(() => { activeCaptures.delete(key); });
         await Promise.race([
           restored,
           new Promise<never>((_resolve, reject) => {

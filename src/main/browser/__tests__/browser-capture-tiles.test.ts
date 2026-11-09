@@ -202,4 +202,12 @@ describe("browser capture tiles", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await expect(captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 60)).resolves.toMatchObject({ width: WIDTH, height: VIEWPORT_HEIGHT });
   });
+
+  it("releases a guest after a temporary scroll restoration failure", async () => {
+    const { cdp, restore, captureViewport } = tiledSession();
+    restore.mockRejectedValueOnce(new Error("Temporary restoration failure"));
+    await expect(captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport)).rejects.toThrow("Temporary restoration failure");
+    await expect(captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport)).resolves.toMatchObject({ height: CONTENT_HEIGHT });
+    expect(restore).toHaveBeenCalledTimes(2);
+  });
 });
