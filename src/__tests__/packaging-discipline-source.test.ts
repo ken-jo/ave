@@ -1298,7 +1298,7 @@ describe("installer smoke and packaging discipline", () => {
 
     // Installer caches stay per OS.
     expect(installers).toContain("key: ${{ runner.os }}-installers-");
-    expect(installers).toContain("key: ${{ runner.os }}-uv-");
+    expect(installers).toContain("uses: ./.github/actions/cache-runtime-tools");
   });
 
   it("authorizes the destructive Windows release steps only on the hosted Windows installer job", () => {
