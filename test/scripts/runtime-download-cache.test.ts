@@ -1,10 +1,12 @@
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 
-import { readRepoFile } from "../../src/__tests__/test-helpers.js";
+import { githubExpression as expr, readRepoFile } from "../../src/__tests__/test-helpers.js";
 const workflow = parse(readRepoFile(".github/workflows/ci.yml"));
 const jobIds = ["build", "vitest", "gate-core", "mxc-pins", "windows-permission-tests", "macos-permission-tests", "linux-confinement-tests"];
 const cacheAction = "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9";
+const workspace = expr("github.workspace");
+const uvArchives = `${workspace}/.cache/uv-archives`;
 
 describe("runtime download cache wiring", () => {
   it.each(jobIds)("restores fetched tools and archive downloads before %s installs dependencies", (id) => {
@@ -16,8 +18,8 @@ describe("runtime download cache wiring", () => {
     expect(tools).toBeLessThan(install);
     expect(steps[tools].with.repository).toBe("ave");
     expect(steps[tools].if).toBe(steps[install].if);
-    expect(job.env.AVE_UV_DOWNLOAD_CACHE_DIR).toBe("${{ github.workspace }}/.cache/uv-archives");
-    const directory = job.env.ELECTRON_CACHE.replace("${{ github.workspace }}/", "");
+    expect(job.env.AVE_UV_DOWNLOAD_CACHE_DIR).toBe(uvArchives);
+    const directory = job.env.ELECTRON_CACHE.replace(`${workspace}/`, "");
     const archives = steps.findIndex((step: { uses?: string; with?: { path?: string } }) => step.uses === cacheAction && step.with?.path === directory);
     expect(archives).toBeGreaterThan(-1);
     expect(archives).toBeLessThan(install);
@@ -28,7 +30,7 @@ describe("runtime download cache wiring", () => {
     expect(steps).toHaveLength(1);
     expect(steps[0].uses).toBe(cacheAction);
     const cache = steps[0].with;
-    expect(cache.path.trim().split("\n")).toEqual([".cache/uv-archives", "${{ inputs.repository }}/resources/mxc"]);
+    expect(cache.path.trim().split("\n")).toEqual([".cache/uv-archives", `${expr("inputs.repository")}/resources/mxc`]);
     for (const field of ["runner.os", "runner.arch", "scripts/uv-targets.mjs", "scripts/fetch-uv.mjs", "src/permissions/mxc-launcher-pins.json", "scripts/fetch-mxc.mjs"]) {
       expect(cache.key).toContain(field);
     }
@@ -36,7 +38,7 @@ describe("runtime download cache wiring", () => {
   });
   it("restores installer tools before the install and retains installer download caches", () => {
     const job = parse(readRepoFile(".github/workflows/build-installers.yml")).jobs.installers;
-    expect(job.env.AVE_UV_DOWNLOAD_CACHE_DIR).toBe("${{ github.workspace }}/.cache/uv-archives");
+    expect(job.env.AVE_UV_DOWNLOAD_CACHE_DIR).toBe(uvArchives);
     const steps = job.steps;
     const tools = steps.findIndex((step: { uses?: string }) => step.uses === "./.github/actions/cache-runtime-tools");
     const install = steps.findIndex((step: { run?: string }) => step.run?.includes("bun install --frozen-lockfile"));

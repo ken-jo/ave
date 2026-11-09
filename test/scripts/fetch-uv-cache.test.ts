@@ -11,6 +11,8 @@ let archiveCache: string;
 let env: NodeJS.ProcessEnv;
 let loader: string;
 let expectedCacheFile: string;
+let archive: string;
+let fetchLog: string;
 const target = getUvTargetByDir("linux-x64");
 const content = "runtime fixture bytes";
 
@@ -23,7 +25,8 @@ beforeEach(() => {
   }
   mkdirSync(join(root, "source"));
   writeFileSync(join(root, "source", "uv"), content);
-  const archive = join(root, "fixture.tar.gz");
+  archive = join(root, "fixture.tar.gz");
+  fetchLog = join(root, "fetches");
   execFileSync("tar", ["-czf", archive, "-C", join(root, "source"), "uv"]);
   const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
   const targets = join(root, "scripts", "uv-targets.mjs");
@@ -41,7 +44,7 @@ globalThis.fetch = async () => {
   return new Response(readFileSync(process.env.FIXTURE_ARCHIVE));
 };\n`);
   env = { ...process.env, AVE_UV_DOWNLOAD_CACHE_DIR: archiveCache, FIXTURE_ARCHIVE: archive,
-    FIXTURE_FETCH_LOG: join(root, "fetches") };
+    FIXTURE_FETCH_LOG: fetchLog };
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
@@ -57,25 +60,27 @@ describe("verified runtime archive reuse", () => {
     expect(saved).toHaveLength(1);
     expect(saved[0]).toBe(expectedCacheFile);
     rmSync(join(root, "resources"), { recursive: true });
-    rmSync(env.FIXTURE_ARCHIVE!);
+    rmSync(archive);
     const warm = fetchRuntime();
     expect(warm.status, warm.stderr).toBe(0);
     expect(warm.stdout).toContain("Reused verified archive");
     expect(readFileSync(binary(), "utf8")).toBe(content);
-    expect(readFileSync(env.FIXTURE_FETCH_LOG!, "utf8")).toBe("fetch\n");
+    expect(readFileSync(fetchLog, "utf8")).toBe("fetch\n");
   });
   it("rejects corrupted cached bytes before extraction", () => {
     expect(fetchRuntime().status).toBe(0);
     rmSync(join(root, "resources"), { recursive: true });
-    writeFileSync(join(archiveCache, readdirSync(archiveCache)[0]!), "corrupt");
+    const [cached] = readdirSync(archiveCache);
+    if (!cached) throw new Error("the cold run saved no archive to corrupt");
+    writeFileSync(join(archiveCache, cached), "corrupt");
     const result = fetchRuntime();
     expect(result.status).not.toBe(0);
     expect(result.stdout + result.stderr).toContain("SHA256");
     expect(existsSync(binary())).toBe(false);
-    expect(readFileSync(env.FIXTURE_FETCH_LOG!, "utf8")).toBe("fetch\n");
+    expect(readFileSync(fetchLog, "utf8")).toBe("fetch\n");
   });
   it("does not save a downloaded archive that fails the pin", () => {
-    writeFileSync(env.FIXTURE_ARCHIVE!, "corrupt");
+    writeFileSync(archive, "corrupt");
     expect(fetchRuntime().status).not.toBe(0);
     expect(existsSync(archiveCache)).toBe(false);
     expect(existsSync(binary())).toBe(false);

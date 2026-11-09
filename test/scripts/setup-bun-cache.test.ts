@@ -11,6 +11,8 @@ const payload = "archive fixture";
 const pinned = createHash("sha256").update(payload).digest("hex");
 let root: string;
 let env: NodeJS.ProcessEnv;
+let outputs: string;
+let versionFile: string;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "runtime-archive-"));
@@ -27,10 +29,12 @@ while [ "$1" != --output ]; do shift; done
 cp "$FIXTURE_ROOT/source/$(basename "$3")" "$2"
 `);
   chmodSync(curl, 0o755);
-  writeFileSync(join(root, "version"), "1.4.4\n");
+  versionFile = join(root, "version");
+  outputs = join(root, "outputs");
+  writeFileSync(versionFile, "1.4.4\n");
   env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, FIXTURE_ROOT: root,
-    RUNNER_TEMP: root, RUNNER_ARCH: "X64", BUN_VERSION_FILE: join(root, "version"),
-    GITHUB_OUTPUT: join(root, "outputs"), VERSION: "1.4.4", ASSET: asset, PINNED: pinned, CACHE_HIT: "false" };
+    RUNNER_TEMP: root, RUNNER_ARCH: "X64", BUN_VERSION_FILE: versionFile,
+    GITHUB_OUTPUT: outputs, VERSION: "1.4.4", ASSET: asset, PINNED: pinned, CACHE_HIT: "false" };
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 const run = (mode: string) => spawnSync("bash", [script, mode], { env, encoding: "utf8" });
@@ -39,13 +43,13 @@ describe("runtime archive cache", () => {
   it.each(["X64", "ARM64"])("keys %s by version, asset and reviewed digest", (arch) => {
     env.RUNNER_ARCH = arch;
     expect(run("metadata").status).toBe(0);
-    const outputs = Object.fromEntries(readFileSync(env.GITHUB_OUTPUT!, "utf8").trim().split("\n").map((s) => s.split("=")));
-    expect(outputs.asset).toBe(arch === "X64" ? asset : "bun-windows-aarch64");
-    expect(outputs.pinned).toMatch(/^[0-9a-f]{64}$/);
-    expect(outputs.key).toBe(`bun-archive-v1-1.4.4-${outputs.asset}-${outputs.pinned}`);
+    const written = Object.fromEntries(readFileSync(outputs, "utf8").trim().split("\n").map((s) => s.split("=")));
+    expect(written.asset).toBe(arch === "X64" ? asset : "bun-windows-aarch64");
+    expect(written.pinned).toMatch(/^[0-9a-f]{64}$/);
+    expect(written.key).toBe(`bun-archive-v1-1.4.4-${written.asset}-${written.pinned}`);
   });
   it.each(["1.4.5", "latest", "1.4.4\ninvalid"])("refuses an unpinned version %s", (version) => {
-    writeFileSync(env.BUN_VERSION_FILE!, version);
+    writeFileSync(versionFile, version);
     expect(run("metadata").status).not.toBe(0);
   });
   it("refuses an unsupported architecture", () => {

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { readRepoFile } from "./test-helpers.js";
+import { githubExpression, readRepoFile } from "./test-helpers.js";
 import {
   TRUSTED_EVENTS,
   PULL_REQUEST_TARGET_WORKFLOWS,
@@ -1239,7 +1239,7 @@ describe("installer smoke and packaging discipline", () => {
     }
     // The script refuses unknown releases and verifies both restored and fetched bytes.
     const bunVersion = readRepoFile(".bun-version").trim();
-    expect(archiveScript).toContain(bunVersion + ":bun-windows-x64) pinned=");
+    expect(archiveScript).toContain(`${bunVersion}:bun-windows-x64) pinned=`);
     expect(archiveScript).toContain('*) echo "no pinned SHA-256');
     expect(archiveScript).toContain('if [ "${CACHE_HIT:-}" != true ]; then');
     expect(archiveScript).toContain('[ "$actual" != "$PINNED" ]');
@@ -1252,7 +1252,7 @@ describe("installer smoke and packaging discipline", () => {
     const setup = parseYaml(setupBun);
     const archiveCache = setup.runs.steps.find((step: Record<string, unknown>) => step.id === "bun-archive-cache");
     expect(archiveCache.uses).toBe("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9");
-    expect(archiveCache.with).toEqual({ path: "${{ runner.temp }}/bun-download", key: "${{ steps.bun-archive.outputs.key }}" });
+    expect(archiveCache.with).toEqual({ path: `${githubExpression("runner.temp")}/bun-download`, key: githubExpression("steps.bun-archive.outputs.key") });
     expect(archiveCache.with["restore-keys"]).toBeUndefined();
     expect(bunStep).toContain('rm -rf "$work/out"');
     expect(bunStep).not.toContain('rm -rf "$work"');

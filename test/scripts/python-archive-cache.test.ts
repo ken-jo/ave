@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { parse } from "yaml";
 import { describe, expect, it } from "vitest";
 import { PYTHON_VERSION, pythonArchiveCacheKey } from "../../.github/scripts/python-archive-cache.mjs";
+import { githubExpression as expr } from "../../src/__tests__/test-helpers.js";
 
 const read = (file: string) => readFileSync(resolve(file), "utf8");
 
@@ -21,7 +22,7 @@ describe("managed interpreter archive cache", () => {
     const cache = steps.find((step: { name?: string }) => step.name === "Restore native interpreter archives");
     const tests = steps.find((step: { name?: string }) => step.name === "Run Windows permission regressions");
     expect(cache.uses).toBe("actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9");
-    expect(cache.with).toEqual({ path: "${{ runner.temp }}/python-archives", key: "${{ steps.python-archive.outputs.key }}" });
+    expect(cache.with).toEqual({ path: `${expr("runner.temp")}/python-archives`, key: expr("steps.python-archive.outputs.key") });
     expect(steps.indexOf(cache)).toBeLessThan(steps.indexOf(tests));
     expect(tests.env.UV_PYTHON_CACHE_DIR).toBe(cache.with.path);
     expect(tests.run).toContain("src/sandbox/__tests__/runtime-grant-native.test.ts");
