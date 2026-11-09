@@ -174,7 +174,10 @@ to its top-left with object-fit cover. Its live badge sits inside the picture.
 Below 480px window width the card becomes a favicon/title chip. The padded,
 inset bottom-right stack occupies no layout space, reserves visible composer,
 approval and question surfaces, and sits below decisions in the canvas stacking
-context. Cards can be dragged within the window. Click or Enter opens the
+context. Its bounds come from the visible pane body below the actual pane
+header and end above measured composer, approval and question rectangles; no
+header-height estimate is used. Dragging stays in those measured bounds.
+Click or Enter opens the
 original tab through workspace routing, including a retained surface without
 an assigned pane; a closed tab does nothing. Delete or × dismisses the card
 for its host-issued acting-turn observation binding. Same-turn actions keep it

@@ -10,33 +10,40 @@ import { useBrowserObservation } from "./browser-observation-bridge.js";
 import { BrowserObservationLiveStrip } from "./BrowserObservationLiveStrip.js";
 import { BrowserObservationPreview } from "./BrowserObservationPreview.js";
 import { isElementShown } from "./browser-observation-preview.js";
-import { clampBrowserPipPosition, type BrowserPipPoint } from "./browser-pip-position.js";
+import { clampBrowserPipPosition, type BrowserPipArea, type BrowserPipPoint } from "./browser-pip-position.js";
 import { beginSurfaceDrag, endSurfaceDrag, getWebSurfaceSlot, subscribeWebSurfaceLayout,
   subscribeWebSurfaces, getWebSurfaces, webSurfaceFavicon } from "./web-surfaces.js";
 import { useWebSurfaceOccluder } from "./use-web-surface-occluder.js";
 
-const EDGE = 16;
-const STACK_PADDING = 32;
 const LAYOUT_POLL_MS = 250;
-interface PipArea { width: number; height: number }
 
-function availableArea() {
-  let bottom = window.innerHeight - EDGE;
+function availableArea(): BrowserPipArea {
+  const bodies = [...document.querySelectorAll<HTMLElement>("[data-pip-region]")]
+    .filter(isElementShown).map((element) => element.getBoundingClientRect())
+    .sort((a, b) => b.right - a.right || b.bottom - a.bottom);
+  const body = bodies[0];
+  if (!body) return { left: 0, top: 0, width: 0, height: 0 };
+  const left = Math.max(0, body.left); const right = Math.min(window.innerWidth, body.right);
+  const top = Math.max(0, body.top);
+  let bottom = Math.min(window.innerHeight, body.bottom);
   const reserve = (element: HTMLElement) => {
     if (getComputedStyle(element).display === "contents") {
       for (const child of element.children) reserve(child as HTMLElement);
-    } else if (isElementShown(element)) bottom = Math.min(bottom, element.getBoundingClientRect().top - EDGE);
+    } else if (isElementShown(element)) {
+      const rect = element.getBoundingClientRect();
+      if (rect.right > left && rect.left < right && rect.bottom > top && rect.top < bottom) bottom = Math.min(bottom, rect.top);
+    }
   };
   // Input and pending decisions always keep their controls, even when a card was dragged there.
   for (const element of document.querySelectorAll<HTMLElement>(
     `[data-testid="${TEST_IDS.composer}"], [data-pip-reservation], [data-web-surface-occluder="settle"] > *`,
   )) reserve(element);
-  return { width: window.innerWidth, height: Math.max(0, bottom) };
+  return { left, top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
 }
 
 function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
   tab: BrowserTabControlView & { rendererTabId: string }; child?: AgentSpawnEvent | undefined; onOpen: (tabId: string) => void;
-  visible: boolean; area: PipArea;
+  visible: boolean; area: BrowserPipArea;
 }) {
   const { t } = useTranslation();
   const tabId = tab.rendererTabId;
@@ -76,17 +83,16 @@ function AgentBrowserPipCard({ tab, child, onOpen, visible, area }: {
     observer.observe(card);
     return () => observer.disconnect();
   }, [area, position, shown]);
-  const rendered = shown && area.height >= (compact ? 40 : 150);
+  const rendered = shown && area.height > 0 && area.width > 0;
   useEffect(() => { if (!rendered) finishDrag(); return finishDrag; }, [rendered, finishDrag]);
   if (!rendered) return null;
   const title = event.after.title || tab.title || event.after.url;
   const favicon = webSurfaceFavicon(tabId);
-  const width = Math.min(240, Math.max(0, area.width - (EDGE + STACK_PADDING) * 2));
   const hide = () => setDismissed(turnBinding);
   return <div ref={setCard}
     data-testid="agent-browser-pip-card" data-tab-id={tabId} data-compact={compact}
     className="pointer-events-auto relative shrink-0 overflow-hidden rounded-lg border bg-card text-card-foreground shadow-(--elevation-floating)"
-    style={{ width, height: compact ? 40 : undefined,
+    style={{ width: 240, maxWidth: "100%", height: compact ? 40 : undefined,
       ...(position ? { position: "fixed", left: position.x, top: position.y } : {}) }}>
     <div className="min-w-0">
       <button type="button" aria-label={t("agentBrowser.openPreview", { title })}
@@ -149,7 +155,8 @@ export function AgentBrowserPipLayer({ api, onOpen }: { api: AveApi; onOpen: (ta
   useEffect(() => {
     const check = () => {
       const next = availableArea();
-      setArea((previous) => previous.width === next.width && previous.height === next.height ? previous : next);
+      setArea((previous) => previous.width === next.width && previous.height === next.height
+        && previous.left === next.left && previous.top === next.top ? previous : next);
       const visible = getWebSurfaces().filter(({ tabId }) => {
         const slot = getWebSurfaceSlot(tabId);
         return slot !== null && isElementShown(slot);
@@ -167,8 +174,8 @@ export function AgentBrowserPipLayer({ api, onOpen }: { api: AveApi; onOpen: (ta
     return () => { off(); observer.disconnect(); window.clearInterval(timer); window.removeEventListener("resize", check); };
   }, []);
   return <div data-testid="agent-browser-pip-layer"
-    className="pointer-events-none fixed right-4 top-4 z-30 flex max-w-full flex-col-reverse items-end gap-2 overflow-y-auto p-8 pb-12"
-    style={{ height: Math.max(0, area.height - EDGE) }}>
+    className="pointer-events-none fixed z-30 flex flex-col-reverse items-end gap-2 overflow-hidden p-8 pb-12"
+    style={{ left: area.left, top: area.top, width: area.width, height: area.height }}>
     {!unavailable ? control.tabs.flatMap((tab) => {
       if (tab.kind !== "embedded" || tab.rendererTabId === null || !surfaces.some((surface) => surface.tabId === tab.rendererTabId)) return [];
       return <AgentBrowserPipCard key={tab.rendererTabId} tab={{ ...tab, rendererTabId: tab.rendererTabId }}

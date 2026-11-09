@@ -1,6 +1,6 @@
 import "../../../../test/renderer/setup.js";
 import { act, fireEvent, waitFor, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
 import { browserControlFixture } from "../../../__tests__/support/browser-control-fixture.js";
@@ -8,8 +8,15 @@ import type { BrowserTabsApi } from "../../../shared/browser-surface.js";
 import type { AvePreviewApi } from "../types.js";
 import { t } from "../../../i18n/runtime.js";
 
+afterEach(() => vi.restoreAllMocks());
+
 describe("retained main browser preview activation", () => {
   it.each(["click", "Enter"])("opens an agent-used retained surface without an assigned pane using %s", async (activation) => {
+    const originalBounds = HTMLElement.prototype.getBoundingClientRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute("data-pip-region") || this.querySelector("[data-pip-region]")
+        ? new DOMRect(10, 100, 1000, 650) : originalBounds.call(this);
+    });
     const tabId = "browser:abc12345-1";
     const surface = { kind: "browser", tabId, ordinal: 1, url: "https://example.test/retained", cwd: null, projectRoot: process.cwd() };
     const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true,

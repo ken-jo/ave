@@ -25,6 +25,7 @@ let control: (state: BrowserTabControlState) => void;
 let disconnect: () => void;
 let unregister: () => void;
 let slot: HTMLDivElement;
+let region: HTMLDivElement;
 let api: AveApi;
 const open = vi.fn();
 const previewRequests = vi.fn(async (_request: BrowserObservationPreviewRequest) => ({ ok: true }));
@@ -47,6 +48,8 @@ beforeEach(async () => {
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     return new DOMRect(0, 0, this.dataset.testid === "agent-browser-pip-card" ? 240 : 600, 150);
   });
+  region = document.createElement("div"); region.dataset.pipRegion = "";
+  region.getBoundingClientRect = () => new DOMRect(20, 100, 1200, 650); document.body.append(region);
   slot = document.createElement("div");
   slot.style.display = "none";
   document.body.append(slot);
@@ -68,7 +71,7 @@ beforeEach(async () => {
   } as unknown as AvePreviewApi);
 });
 afterEach(async () => {
-  cleanup(); disconnect(); unregister(); clearWebSurfaceSlot(TAB, slot); slot.remove();
+  cleanup(); disconnect(); unregister(); clearWebSurfaceSlot(TAB, slot); slot.remove(); region.remove();
   withdrawLiveWebTabs(source); await Promise.resolve(); vi.restoreAllMocks();
 });
 
@@ -88,7 +91,7 @@ describe("window agent browser previews", () => {
     expect(picture.style.aspectRatio.replaceAll(" ", "")).toBe("16/9");
     expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("p-8");
     expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("pb-12");
-    expect(screen.getByTestId("agent-browser-pip-layer").className).toContain("right-4");
+    expect(screen.getByTestId("agent-browser-pip-layer").style.top).toBe("100px");
   });
   it.each(["approval", "question"])("reserves an ordinary %s outside the settle wrapper and stays below decision surfaces", (kind) => {
     const composer = document.createElement("div"); composer.dataset.testid = "composer";
@@ -98,9 +101,20 @@ describe("window agent browser previews", () => {
     decision.getBoundingClientRect = () => new DOMRect(800, 450, 400, 220);
     show(); activate();
     const layer = screen.getByTestId("agent-browser-pip-layer");
-    expect(layer.style.height).toBe("418px");
+    expect(layer.style.height).toBe("350px");
+    expect(layer.style.top).toBe("100px");
     expect(layer.className).toContain("z-30");
     decision.remove(); composer.remove();
+  });
+  it("takes its bounds from the measured body below the header and updates when the header grows", () => {
+    show(); activate();
+    const layer = screen.getByTestId("agent-browser-pip-layer");
+    expect(layer.style.top).toBe("100px"); expect(layer.style.left).toBe("20px");
+    expect(layer.style.height).toBe("650px");
+    act(() => { region.getBoundingClientRect = () => new DOMRect(30, 140, 1180, 550); requestWebSurfaceLayout(); });
+    expect(layer.style.top).toBe("140px"); expect(layer.style.left).toBe("30px");
+    expect(layer.style.height).toBe("550px");
+    region.remove(); act(() => requestWebSurfaceLayout()); expect(cards()).toHaveLength(0);
   });
   it("shows no card without tabs or observations, then hides only the tab actually visible in the panel", () => {
     show(); expect(cards()).toHaveLength(0);
@@ -167,10 +181,12 @@ describe("window agent browser previews", () => {
 });
 
 it.each([
-  [{ x: -40, y: -3 }, { width: 1243, height: 800 }, { x: 0, y: 0 }],
-  [{ x: 2000, y: 1000 }, { width: 1243, height: 800 }, { x: 1003, y: 650 }],
-  [{ x: 1003, y: 650 }, { width: 360, height: 500 }, { x: 120, y: 350 }],
-  [{ x: 10, y: 20 }, { width: 120, height: 80 }, { x: 0, y: 0 }],
+  [{ x: 0, y: 0 }, { left: 200, top: 100, width: 400, height: 300 }, { x: 200, y: 100 }],
+  [{ x: 2000, y: 1000 }, { left: 200, top: 100, width: 400, height: 300 }, { x: 360, y: 250 }],
+  [{ x: -40, y: -3 }, { left: 0, top: 0, width: 1243, height: 800 }, { x: 0, y: 0 }],
+  [{ x: 2000, y: 1000 }, { left: 0, top: 0, width: 1243, height: 800 }, { x: 1003, y: 650 }],
+  [{ x: 1003, y: 650 }, { left: 0, top: 0, width: 360, height: 500 }, { x: 120, y: 350 }],
+  [{ x: 10, y: 20 }, { left: 0, top: 0, width: 120, height: 80 }, { x: 0, y: 0 }],
 ])("clamps a card to the available window area %j", (point, area, expected) => {
   expect(clampBrowserPipPosition(point, { width: 240, height: 150 }, area)).toEqual(expected);
 });
