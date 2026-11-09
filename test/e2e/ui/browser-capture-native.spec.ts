@@ -112,15 +112,24 @@ test("native parked agent tab wakes for full-page capture without selecting its 
 test("native parked agent tab captures its viewport and returns to sleep", async ({ browserName: _browserName }, testInfo) => {
   const app = await launch(testInfo);
   try {
+    const backgroundThrottled = () => app.evaluate(({ webContents }) => {
+      const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+      if (!guest) throw new Error("Capture fixture guest is unavailable");
+      return guest.getBackgroundThrottling();
+    });
     const host = await app.firstWindow();
     await host.locator("#slot").evaluate((element) => { element.style.display = "none"; });
     const frame = host.getByTestId("web-surface-frame");
     await expect.poll(() => frame.evaluate((element) => getComputedStyle(element).visibility), { timeout: 15_000 }).toBe("hidden");
     const result = await capture(app, {});
+    expect(await backgroundThrottled()).toBe(false);
     expect(result.dimensions).toEqual(result.viewport);
     expect(result.truncated).toBe(false);
     await expect(host.locator("#slot")).toBeHidden();
+    await expect(frame).toHaveAttribute("aria-hidden", "true");
+    await expect(frame).toHaveAttribute("inert", "");
     await attachImage(testInfo, "parked-viewport-capture", result);
     await expect.poll(() => frame.evaluate((element) => getComputedStyle(element).visibility), { timeout: 5_000 }).toBe("hidden");
+    await expect.poll(backgroundThrottled, { timeout: 5_000 }).toBe(true);
   } finally { await close(app); }
 });

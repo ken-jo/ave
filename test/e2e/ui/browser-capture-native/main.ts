@@ -53,6 +53,10 @@ const actions = createBrowserPageActions(browserTabRegistry, browserOrigin, () =
 function record() {
   const tab = browserTabRegistry.liveTab(tabId);
   if (!tab) throw new Error("Capture fixture tab disappeared");
+  const origin = tab.guest ? browserOrigin(tab.guest.getURL()) : null;
+  if (tab.opener !== "agent" || tab.owner?.sessionId !== actor.sessionId || origin !== null && tab.agentOrigin !== origin) {
+    throw new Error("Capture fixture tab lost its approved agent ownership");
+  }
   return tab;
 }
 
@@ -79,7 +83,8 @@ async function capture(options: BrowserScreenshotOptions, zoom = 1): Promise<Cap
     const state = await guest.executeJavaScript(`(() => {
       const element = document.getElementById('drag').getBoundingClientRect();
       const bottom = document.getElementById('bottom').getBoundingClientRect();
-      return { viewport: {width:innerWidth,height:innerHeight}, content: {width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight},
+      if (!visualViewport) throw new Error('Capture fixture viewport is unavailable');
+      return { viewport: {width:visualViewport.width,height:visualViewport.height}, content: {width:document.documentElement.scrollWidth,height:document.documentElement.scrollHeight},
         element:{width:element.width,height:element.height}, bottom:{x:bottom.x+scrollX+bottom.width/2,y:bottom.y+scrollY+bottom.height/2} };
     })()` ) as { viewport: { width: number; height: number }; content: { width: number; height: number }; element: { width: number; height: number }; bottom: { x: number; y: number } };
     const x = Math.min(dimensions.width - 1, Math.floor(state.bottom.x * dimensions.width / state.content.width));
@@ -123,7 +128,7 @@ void app.whenReady().then(async () => {
     },
     sendControl: () => {},
   });
-  const opening = browserTabRegistry.requestTabOp(win.id, { op: "new", url: "about:blank", actor, active: true });
+  const opening = browserTabRegistry.requestTabOp(win.id, { op: "new", url: `${origin}/page`, actor, active: true });
   await win.loadURL(`${origin}/host?requestId=${encodeURIComponent(requestId)}`);
   const opened = await opening;
   if (!opened.ok) throw new Error(`Capture fixture opening failed: ${opened.error}`);
