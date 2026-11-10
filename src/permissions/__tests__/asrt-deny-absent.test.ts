@@ -49,7 +49,6 @@ function writeFixtureWindowsAdapter(root: string, srtWin: { exe: string; prepend
     checkWindowsDependenciesAsync: "() => Promise.resolve({ errors: [], warnings: [] })",
     getWindowsSandboxUserStatusAsync: '() => Promise.resolve({ provisioned: true, credPresent: true, sid: "S-1-5-21-1001" })',
     verifyWindowsWfpEgress: "() => Promise.resolve()",
-    recoverWindowsAcl: "() => ({ deadBrokers: 0, acesRevoked: 0 })",
   };
   const adapter = join(root, "windows-adapter.mjs");
   writeFileSync(adapter, [
@@ -65,6 +64,27 @@ function writeFixtureWindowsAdapter(root: string, srtWin: { exe: string; prepend
   ].join("\n"));
   return adapter;
 }
+
+it("runs both recovery APIs through the guarded fixture executable", async () => {
+  const root = mkdtempSync(join(os.tmpdir(), "acl-recovery-adapter-"));
+  try {
+    const script = join(root, "recovery.mjs");
+    const calls = join(root, "recovery-calls.jsonl");
+    writeFileSync(script, [
+      'import { appendFileSync } from "node:fs";',
+      `appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + "\\n");`,
+      'process.stdout.write(JSON.stringify({ deadBrokers: 1, acesRevoked: 2 }));',
+    ].join("\n"));
+    const srtWin = { exe: process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, prependArgs: [script] };
+    const adapter = await import(/* @vite-ignore */ pathToFileURL(writeFixtureWindowsAdapter(root, srtWin)).href) as typeof windowsHelpers;
+    expect(adapter.recoverWindowsAcl({ srtWin })).toEqual({ deadBrokers: 1, acesRevoked: 2 });
+    await expect(adapter.recoverWindowsAclAsync({ srtWin })).resolves.toEqual({ deadBrokers: 1, acesRevoked: 2 });
+    expect(readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line)))
+      .toEqual([["acl", "recover", "--json"], ["acl", "recover", "--json"]]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 describe.runIf(process.platform === "win32")("Windows deny target handoff", () => {
   let root: string;
@@ -146,11 +166,12 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       `const ledger = ${JSON.stringify(ledger)};`,
       `const calls = ${JSON.stringify(calls)};`,
       'const command = process.argv[3];',
-      'const holder = process.argv[process.argv.indexOf("--holder-pid") + 1];',
+      'const holder = process.argv.includes("--holder-pid") ? process.argv[process.argv.indexOf("--holder-pid") + 1] : undefined;',
       'const filter = process.argv.includes("--path") ? process.argv[process.argv.indexOf("--path") + 1] : undefined;',
       'let rows = existsSync(ledger) ? JSON.parse(readFileSync(ledger, "utf8")) : [];',
       'const history = existsSync(calls) ? JSON.parse(readFileSync(calls, "utf8")) : [];',
       'history.push({ command, holder }); writeFileSync(calls, JSON.stringify(history));',
+      'if (command === "recover") { process.stdout.write(JSON.stringify({ deadBrokers: 0, acesRevoked: 0 })); process.exit(0); }',
       'let outcomes = [];',
       'if (command === "stamp") {',
       '  const input = JSON.parse(readFileSync(0, "utf8"));',
@@ -185,9 +206,10 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     ]);
     await resetAsrtSandbox();
     expect(JSON.parse(readFileSync(ledger, "utf8"))).toEqual([]);
-    expect(JSON.parse(readFileSync(calls, "utf8"))).toEqual(
-      ["stamp", "revoke", "restore"].map(command => ({ command, holder: String(process.pid) })),
-    );
+    expect(JSON.parse(readFileSync(calls, "utf8"))).toEqual([
+      { command: "recover" },
+      ...["stamp", "revoke", "restore"].map(command => ({ command, holder: String(process.pid) })),
+    ]);
   });
 
   it("preserves machine read protection when a parent receives a write grant", async () => {

@@ -2467,7 +2467,16 @@ it("builds the native path classifier before the Windows permission boundaries",
   expect(classifier).toBeGreaterThan(-1);
   expect(regressions).toBeGreaterThan(classifier);
   const selection = job.slice(regressions);
-  for (const suite of ["src/tools/__tests__/powershell-exfiltration-gate.test.ts", "src/permissions/__tests__/powershell-unc-write-boundary.test.ts", "src/__tests__/support/fixture-owner.test.ts", "src/__tests__/support/fixture-acl-reset.test.ts", "src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts"]) {
+  for (const suite of [
+    "src/tools/__tests__/powershell-exfiltration-gate.test.ts",
+    "src/permissions/__tests__/powershell-unc-write-boundary.test.ts",
+    "src/__tests__/support/fixture-owner.test.ts",
+    "src/__tests__/support/fixture-acl-reset.test.ts",
+    "src/permissions/__tests__/sandbox-control-writes-mxc.integration.test.ts",
+    "src/permissions/__tests__/asrt-background-initialization.test.ts",
+    "src/permissions/__tests__/asrt-windows-initialization.test.ts",
+    "src/boot/__tests__/sandbox-init-windows-mxc.test.ts",
+  ]) {
     expect(selection).toContain(suite);
   }
 });

@@ -232,6 +232,16 @@ the installed package.
     counts to the listener set with `setWindowsAclRecoveryListener` (a
     named export of dist/sandbox/windows-sandbox-utils.js). A failed recover
     fails initialize, as a failed grant or stamp does.
+
+14. Asynchronous session isolation. `SandboxManager.initializeWindowsIsolation`
+    prepares a proxy-only session's account, egress fence and ACLs without
+    blocking the event loop. The existing 60-second ACL ceilings apply to
+    recovery, grant, stamp and partial-failure release. Until every step
+    succeeds, the external-confinement wrap refusal remains active. Promotion
+    preserves current proxy traffic and connection policy. Failure leaves the
+    proxy running, and reset invalidates promotion before awaiting and releasing
+    any partial ACL state. Concurrent resets share one completion and release.
+    Ordinary initialize uses the same preparation path.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
@@ -1702,7 +1712,7 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1080ad01a8a9d05615b07194fb788f8775045900 100644
+index 5c46e7a46..c3c74469d 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -1,3 +1,11 @@
@@ -1717,7 +1727,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1080ad01a8a9d05615b07194fb788f87
  import { SentinelRegistry } from './credential-sentinel.js';
  import { MaskedFileStore } from './credential-mask-files.js';
  import { AwsPairRegistry } from './credential-aws-pairs.js';
-@@ -45,6 +53,53 @@ export type WrapWithSandboxOptions = {
+@@ -45,11 +53,60 @@ export type WrapWithSandboxOptions = {
       * reported as the violation's `command`. Defaults to `command`.
       */
      commandText?: string;
@@ -1771,7 +1781,14 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1080ad01a8a9d05615b07194fb788f87
  };
  /**
   * Interface for the sandbox manager API
-@@ -125,6 +180,66 @@ export interface ISandboxManager {
+  */
+ export interface ISandboxManager {
++    /** Upgrade a proxy-only session after its asynchronous ACL preparation succeeds. */
++    initializeWindowsIsolation(runtimeConfig: SandboxRuntimeConfig): Promise<void>;
+     initialize(runtimeConfig: SandboxRuntimeConfig, sandboxAskCallback?: SandboxAskCallback, enableLogMonitor?: boolean): Promise<void>;
+     isSupportedPlatform(): boolean;
+     isSandboxingEnabled(): boolean;
+@@ -125,6 +182,66 @@ export interface ISandboxManager {
       * none. `reset()` removes them all.
       */
      unregisterCommandNetworkLists(commandId: string): void;
@@ -1838,7 +1855,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1080ad01a8a9d05615b07194fb788f87
      /**
       * True when the network filter understands an ask callback's
       * `{ allow: false, reason }` answer (see {@link SandboxAskCallback}). Read
-@@ -143,11 +258,50 @@ export interface ISandboxManager {
+@@ -143,11 +260,52 @@ export interface ISandboxManager {
      getMaskedFileStore(): MaskedFileStore;
      updateConfig(newConfig: SandboxRuntimeConfig): void;
      cleanupAfterCommand(): void;
@@ -1865,6 +1882,8 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1080ad01a8a9d05615b07194fb788f87
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
+-//# sourceMappingURL=sandbox-manager.d.ts.map
+\ No newline at end of file
 +/** Ave patch (ACL release outcome): what reset() could not release and will not retry. Raw targets for in-process host redaction; never log this report. */
 +export interface SandboxResetReport {
 +    windowsAclUnreleased: {
@@ -1889,10 +1908,11 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..1080ad01a8a9d05615b07194fb788f87
 +    revoke: (opts: { sandboxUserSid: string; srtWin: string; onExit: (ok: boolean) => void }) => readonly { path: string; status: string }[] | undefined;
 +    restore: (opts: { sandboxUserSid: string; srtWin: string; onExit: (ok: boolean) => void }) => readonly { path: string; status: string }[] | undefined;
 +} | undefined): void;
- //# sourceMappingURL=sandbox-manager.d.ts.map
-\ No newline at end of file
++/** Supply a helper executable under the test runner. */
++export declare function setWindowsIsolationForTesting(srtWin: { exe: string; prependArgs: string[] } | undefined): void;
++//# sourceMappingURL=sandbox-manager.d.ts.map
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd999eaabd 100644
+index 810b0aa54..240853521 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -1,3 +1,4 @@
@@ -1908,7 +1928,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
 +import { assertPtySlavePaths, wrapCommandWithSandboxMacOS, startMacOSSandboxLogMonitor, } from './macos-sandbox-utils.js';
  import { startLinuxSandboxViolationMonitor, } from './linux-violation-monitor.js';
 -import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
-+import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, stampWindowsAcl, restoreWindowsAcl, grantWindowsAcl, revokeWindowsAcl, recoverWindowsAcl, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
++import { checkWindowsDependencies, checkWindowsDependenciesAsync, wrapCommandWithSandboxWindows, parseWindowsBinShell, expandWindowsFsPaths, rankWindowsFsAccess, restoreWindowsAcl, revokeWindowsAcl, stampWindowsAclAsync, restoreWindowsAclAsync, grantWindowsAclAsync, revokeWindowsAclAsync, recoverWindowsAclAsync, getWindowsSandboxUserStatusAsync, getWindowsSandboxCaCert, ensurePersistentWindowsCa, verifyWindowsWfpEgress, resolveSrtWin, WindowsSandboxError, DEFAULT_WINDOWS_PROXY_PORT_RANGE, } from './windows-sandbox-utils.js';
  import { getDefaultWritePaths, containsGlobChars, globBaseDirIsRoot, globPatternBaseDir, normalizePathForSandbox, removeTrailingGlobSuffix, walkGlobPatternSteps, workingDirectory, finish, finishInTurns, attributionKeyFor, decodeSandboxedCommand, encodeSandboxedCommand, } from './sandbox-utils.js';
  import { ownInstallWarning } from './own-files.js';
  import { SandboxViolationStore, sanitizeDenialReason, sanitizeUnregisteredCommandKey, shouldIgnoreViolation, } from './sandbox-violation-store.js';
@@ -3393,7 +3413,230 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -616,7 +1890,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -604,6 +1878,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
+         throw error;
+     }
+ }
++let windowsIsolationGeneration = 0;
++let windowsIsolationTask;
++let windowsIsolationResetting = false;
++let windowsIsolationForTesting;
++
++/** Supply a helper executable under the test runner. */
++export function setWindowsIsolationForTesting(srtWin) {
++    assertTestRunner('setWindowsIsolationForTesting');
++    windowsIsolationForTesting = srtWin;
++}
++
++async function initializeWindowsSession(runtimeConfig, generation) {
++    const assertCurrent = () => {
++        if (generation !== undefined && generation !== windowsIsolationGeneration)
++            throw new Error('Windows isolation session ended');
++    };
++    const tlsTerminate = runtimeConfig.network.tlsTerminate;
++    const useWindowsPersistentCa = tlsTerminate !== undefined &&
++        !tlsTerminate.caCertPath && !tlsTerminate.caKeyPath;
++    // Resolve once (stats disk); captured module-level for wrap/reset.
++    srtWinSpawn = windowsIsolationForTesting ?? resolveSrtWin(runtimeConfig.windows?.srtWin);
++    const srtWin = srtWinSpawn;
++    const u = await getWindowsSandboxUserStatusAsync({ srtWin });
++    assertCurrent();
++    if (!u.provisioned || !u.credPresent) {
++        if (generation === undefined) config = undefined;
++        throw new WindowsSandboxError('not_provisioned', `Windows sandbox user is not provisioned (user=` +
++            `${u.provisioned}, cred=${u.credPresent}). Run \`npx ` +
++            `sandbox-runtime windows-install\` (one UAC prompt) to ` +
++            `provision it.`);
++    }
++    // Behavioral proof the WFP egress fence is active for the
++    // sandbox user — BFE enumeration (`wfp status`) is admin-gated,
++    // so this is the non-elevated readiness check. Fails closed: a
++    // stale install (user provisioned but filters since removed)
++    // throws here instead of running every exec with full egress.
++    // After the user-status check so the not-provisioned message is
++    // the actionable one. Once per process — the fence is install-
++    // scoped, not session-scoped.
++    if (!windowsWfpVerified) {
++        try {
++            await verifyWindowsWfpEgress({
++                proxyPortRange: runtimeConfig.windows?.proxyPortRange,
++                srtWin,
++            });
++            assertCurrent();
++        }
++        catch (e) {
++            if (generation === undefined) config = undefined;
++            throw e;
++        }
++        windowsWfpVerified = true;
++    }
++    // Persistent-CA branch (see the deferral comment above).
++    // `ensurePersistentWindowsCa` reconciles the registry thumb
++    // itself (so initialize() after uninstall→reinstall repairs
++    // trust) and may make `u.caCertThumb` stale — hence the
++    // explicit-path thumb check below skips this branch.
++    if (useWindowsPersistentCa && tlsTerminate) {
++        try {
++            const p = await ensurePersistentWindowsCa({ status: u, srtWin });
++            assertCurrent();
++            mitmCA = createMitmCA({
++                caCertPem: p.certPem,
++                caKeyPem: p.keyPem,
++                caCertPath: p.certPath,
++                caKeyPath: p.keyPath,
++                extraCaCertPaths: tlsTerminate.extraCaCertPaths,
++            });
++        }
++        catch (e) {
++            if (generation === undefined) config = undefined;
++            throw e;
++        }
++    }
++    // Explicit-path branch: schannel clients (System32 curl, IWR,
++    // .NET, default-backend git) only trust what's in the sandbox
++    // user's `CurrentUser\Root` — which `srt-win exec` does not (and
++    // must not) write. Compare thumbprints so a stale install-time
++    // CA doesn't pass the gate while schannel rejects the session's
++    // proxy-minted leaves.
++    if (tlsTerminate && mitmCA && !useWindowsPersistentCa) {
++        const installed = getWindowsSandboxCaCert(u);
++        const sessionThumb = certThumbprint(mitmCA.certPem);
++        if (!installed) {
++            if (generation === undefined) config = undefined;
++            throw new WindowsSandboxError('trust_ca_not_installed', `tlsTerminate on Windows requires the sandbox to be ` +
++                `installed with this CA (thumb=${sessionThumb}): run ` +
++                `\`srt-win user trust-ca ${mitmCA.certPath}\`. Per-exec ` +
++                `installs into the sandbox user's Root store are not ` +
++                `supported.`);
++        }
++        if (installed.thumb !== sessionThumb) {
++            if (generation === undefined) config = undefined;
++            throw new WindowsSandboxError('trust_ca_thumbprint_mismatch', `tlsTerminate on Windows: the sandbox's installed CA ` +
++                `(thumb=${installed.thumb}) doesn't match this ` +
++                `session's CA (thumb=${sessionThumb}). Run \`srt-win ` +
++                `user trust-ca ${mitmCA.certPath}\` to update it.`);
++        }
++    }
++    // Filesystem grants/denies — additive sandbox-user ACEs.
++    try {
++        let maskedFiles = [];
++        try {
++            maskedFiles = windowsMaskedFileDenies(getCredentialRestrictions(runtimeConfig.credentials, runtimeConfig.network.allowedDomains));
++        }
++        catch {
++            // onExtractNoMatch: "error" is thrown by every wrap, so nothing runs.
++        }
++        const acc = computeWindowsFsAccessSet(runtimeConfig, maskedFiles);
++        // The trust bundle the CA-trust env vars point at
++        // (NODE_EXTRA_CA_CERTS etc.) must be readable by the
++        // srt-sandbox child. It's written into the broker's %TEMP%,
++        // which the sandbox user has no inherent rights on, so it
++        // rides the same session-level `acl grant` read-set as the
++        // working tree. Granted on the mkdtemp DIR (not the file)
++        // so the (OI)(CI) ACE covers both the file open AND the
++        // parent-directory list that cmd's `type`/`FindFirstFile`
++        // does before opening. Mirrors the mac/linux
++        // `ownAllowWithinDeny` in wrapWithSandbox: it is not ranked
++        // against the config's lists, nor one of the config's grants.
++        const grantRead = mitmCA
++            ? [...acc.grantRead, dirname(mitmCA.trustBundlePath)]
++            : acc.grantRead;
++        // `u` was fetched once above for the provisioning gate; the
++        // same status carries the SID — don't re-spawn `srt-win user
++        // status` here.
++        if (!u.sid) {
++            throw new Error('sandbox user SID missing from `srt-win user status` ' +
++                '(provisioned but in an inconsistent state)');
++        }
++        const sb = u.sid;
++        // Record module-level state BEFORE the first acl call so the
++        // catch's best-effort revoke/restore can address whatever
++        // partially landed.
++        windowsFsSbUserSid = sb;
++        // Ave patch (recovery report): recover a dead session's ACEs
++        // first, on its own, so the embedder gets the counts.
++        const anyApplied = grantRead.length > 0 || acc.grantWrite.length > 0 ||
++            acc.denyRead.length > 0 || acc.denyWrite.length > 0;
++        windowsFsStampedSet = anyApplied ? acc : undefined;
++        await recoverWindowsAclAsync({ srtWin });
++        assertCurrent();
++        // Grant FIRST so the sandbox user has working-tree access by
++        // the time the deny stamp runs. The two are independent
++        // refcounted state-DB sets keyed on the same holder PID.
++        if (grantRead.length > 0 || acc.grantWrite.length > 0) {
++            await grantWindowsAclAsync({
++                sandboxUserSid: sb,
++                read: grantRead,
++                write: acc.grantWrite,
++                srtWin,
++            });
++            assertCurrent();
++        }
++        if (acc.denyRead.length > 0 || acc.denyWrite.length > 0) {
++            await stampWindowsAclAsync({
++                sandboxUserSid: sb,
++                denyRead: acc.denyRead,
++                denyWrite: acc.denyWrite,
++                srtWin,
++            });
++            assertCurrent();
++        }
++        if (anyApplied) {
++            windowsFsStampedSet = acc;
++            logForDebugging(`[Sandbox Windows] fs applied: ` +
++                `${acc.grantWrite.length} grantWrite, ` +
++                `${grantRead.length} grantRead, ` +
++                `${acc.denyRead.length} denyRead, ` +
++                `${acc.denyWrite.length} denyWrite`);
++        }
++        windowsFsRawInputs = rawWindowsFsInputs(runtimeConfig);
++    }
++    catch (e) {
++        // Best-effort release of whatever WAS applied before the
++        // failure (exit-2 partial stamps/grants the resolvable
++        // inputs; harmless if nothing was — no holds for this PID).
++        if (windowsFsSbUserSid) {
++            let released = true;
++            const options = { sandboxUserSid: windowsFsSbUserSid, srtWin, onExit: ok => { released = released && ok; } };
++            const revoked = await revokeWindowsAclAsync(options);
++            const restored = await restoreWindowsAclAsync(options);
++            const completed = new Set(['revoked', 'stillHeld', 'downgraded', 'relocated', 'noRow', 'restored', 'alreadyOriginal', 'mismatch', 'missing']);
++            if (released && revoked?.every(entry => completed.has(entry.status)) &&
++                restored?.every(entry => completed.has(entry.status))) {
++                windowsFsStampedSet = undefined;
++                windowsFsSbUserSid = undefined;
++                windowsFsRawInputs = undefined;
++            }
++        }
++        if (generation === undefined) config = undefined;
++        throw e;
++    }
++}
++
++/** Prepare session ACLs while existing proxy traffic retains its current policy. */
++async function initializeWindowsIsolation(runtimeConfig) {
++    if (getPlatform() !== 'windows' || !managerContext ||
++        config?.windows?.externalConfinement !== 'embedder' || windowsIsolationTask || windowsIsolationResetting) {
++        throw new Error('Windows isolation requires a fresh proxy-only session');
++    }
++    if (runtimeConfig.windows?.externalConfinement === 'embedder')
++        throw new Error('Windows isolation requires a confined configuration');
++    const generation = windowsIsolationGeneration;
++    windowsIsolationTask = (async () => {
++        await initializeWindowsSession(runtimeConfig, generation);
++        if (generation !== windowsIsolationGeneration)
++            throw new Error('Windows isolation session ended');
++        // Retain current connection policy and listener ownership during promotion.
++        config = { ...config, filesystem: runtimeConfig.filesystem, windows: runtimeConfig.windows };
++        configInstalls++;
++    })();
++    return windowsIsolationTask;
++}
++
+ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor) {
+     // Return if already initializing
+     if (initializationPromise) {
+@@ -616,7 +2106,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -3406,11 +3649,175 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,7 +1984,17 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -705,171 +2200,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
 -    if (getPlatform() === 'windows') {
+-        // Resolve once (stats disk); captured module-level for wrap/reset.
+-        srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
+-        const srtWin = srtWinSpawn;
+-        const u = await getWindowsSandboxUserStatusAsync({ srtWin });
+-        if (!u.provisioned || !u.credPresent) {
+-            config = undefined;
+-            throw new WindowsSandboxError('not_provisioned', `Windows sandbox user is not provisioned (user=` +
+-                `${u.provisioned}, cred=${u.credPresent}). Run \`npx ` +
+-                `sandbox-runtime windows-install\` (one UAC prompt) to ` +
+-                `provision it.`);
+-        }
+-        // Behavioral proof the WFP egress fence is active for the
+-        // sandbox user — BFE enumeration (`wfp status`) is admin-gated,
+-        // so this is the non-elevated readiness check. Fails closed: a
+-        // stale install (user provisioned but filters since removed)
+-        // throws here instead of running every exec with full egress.
+-        // After the user-status check so the not-provisioned message is
+-        // the actionable one. Once per process — the fence is install-
+-        // scoped, not session-scoped.
+-        if (!windowsWfpVerified) {
+-            try {
+-                await verifyWindowsWfpEgress({
+-                    proxyPortRange: runtimeConfig.windows?.proxyPortRange,
+-                    srtWin,
+-                });
+-            }
+-            catch (e) {
+-                config = undefined;
+-                throw e;
+-            }
+-            windowsWfpVerified = true;
+-        }
+-        // Persistent-CA branch (see the deferral comment above).
+-        // `ensurePersistentWindowsCa` reconciles the registry thumb
+-        // itself (so initialize() after uninstall→reinstall repairs
+-        // trust) and may make `u.caCertThumb` stale — hence the
+-        // explicit-path thumb check below skips this branch.
+-        if (useWindowsPersistentCa && tlsTerminate) {
+-            try {
+-                const p = await ensurePersistentWindowsCa({ status: u, srtWin });
+-                mitmCA = createMitmCA({
+-                    caCertPem: p.certPem,
+-                    caKeyPem: p.keyPem,
+-                    caCertPath: p.certPath,
+-                    caKeyPath: p.keyPath,
+-                    extraCaCertPaths: tlsTerminate.extraCaCertPaths,
+-                });
+-            }
+-            catch (e) {
+-                config = undefined;
+-                throw e;
+-            }
+-        }
+-        // Explicit-path branch: schannel clients (System32 curl, IWR,
+-        // .NET, default-backend git) only trust what's in the sandbox
+-        // user's `CurrentUser\Root` — which `srt-win exec` does not (and
+-        // must not) write. Compare thumbprints so a stale install-time
+-        // CA doesn't pass the gate while schannel rejects the session's
+-        // proxy-minted leaves.
+-        if (tlsTerminate && mitmCA && !useWindowsPersistentCa) {
+-            const installed = getWindowsSandboxCaCert(u);
+-            const sessionThumb = certThumbprint(mitmCA.certPem);
+-            if (!installed) {
+-                config = undefined;
+-                throw new WindowsSandboxError('trust_ca_not_installed', `tlsTerminate on Windows requires the sandbox to be ` +
+-                    `installed with this CA (thumb=${sessionThumb}): run ` +
+-                    `\`srt-win user trust-ca ${mitmCA.certPath}\`. Per-exec ` +
+-                    `installs into the sandbox user's Root store are not ` +
+-                    `supported.`);
+-            }
+-            if (installed.thumb !== sessionThumb) {
+-                config = undefined;
+-                throw new WindowsSandboxError('trust_ca_thumbprint_mismatch', `tlsTerminate on Windows: the sandbox's installed CA ` +
+-                    `(thumb=${installed.thumb}) doesn't match this ` +
+-                    `session's CA (thumb=${sessionThumb}). Run \`srt-win ` +
+-                    `user trust-ca ${mitmCA.certPath}\` to update it.`);
+-            }
+-        }
+-        // Filesystem grants/denies — additive sandbox-user ACEs.
+-        try {
+-            let maskedFiles = [];
+-            try {
+-                maskedFiles = windowsMaskedFileDenies(getCredentialRestrictions(runtimeConfig.credentials, runtimeConfig.network.allowedDomains));
+-            }
+-            catch {
+-                // onExtractNoMatch: "error" is thrown by every wrap, so nothing runs.
+-            }
+-            const acc = computeWindowsFsAccessSet(runtimeConfig, maskedFiles);
+-            // The trust bundle the CA-trust env vars point at
+-            // (NODE_EXTRA_CA_CERTS etc.) must be readable by the
+-            // srt-sandbox child. It's written into the broker's %TEMP%,
+-            // which the sandbox user has no inherent rights on, so it
+-            // rides the same session-level `acl grant` read-set as the
+-            // working tree. Granted on the mkdtemp DIR (not the file)
+-            // so the (OI)(CI) ACE covers both the file open AND the
+-            // parent-directory list that cmd's `type`/`FindFirstFile`
+-            // does before opening. Mirrors the mac/linux
+-            // `ownAllowWithinDeny` in wrapWithSandbox: it is not ranked
+-            // against the config's lists, nor one of the config's grants.
+-            const grantRead = mitmCA
+-                ? [...acc.grantRead, dirname(mitmCA.trustBundlePath)]
+-                : acc.grantRead;
+-            // `u` was fetched once above for the provisioning gate; the
+-            // same status carries the SID — don't re-spawn `srt-win user
+-            // status` here.
+-            if (!u.sid) {
+-                throw new Error('sandbox user SID missing from `srt-win user status` ' +
+-                    '(provisioned but in an inconsistent state)');
+-            }
+-            const sb = u.sid;
+-            // Record module-level state BEFORE the first acl call so the
+-            // catch's best-effort revoke/restore can address whatever
+-            // partially landed.
+-            windowsFsSbUserSid = sb;
+-            // Grant FIRST so the sandbox user has working-tree access by
+-            // the time the deny stamp runs. The two are independent
+-            // refcounted state-DB sets keyed on the same holder PID.
+-            if (grantRead.length > 0 || acc.grantWrite.length > 0) {
+-                grantWindowsAcl({
+-                    sandboxUserSid: sb,
+-                    read: grantRead,
+-                    write: acc.grantWrite,
+-                    srtWin,
+-                });
+-            }
+-            if (acc.denyRead.length > 0 || acc.denyWrite.length > 0) {
+-                stampWindowsAcl({
+-                    sandboxUserSid: sb,
+-                    denyRead: acc.denyRead,
+-                    denyWrite: acc.denyWrite,
+-                    srtWin,
+-                });
+-            }
+-            // Only record when something was actually applied — gates
+-            // running revoke/restore at reset(). Recorded AFTER success —
+-            // the catch below clears `config`, and a non-undefined
+-            // stampedSet would leave reset()/updateConfig() seeing state
+-            // that never landed.
+-            const anyApplied = grantRead.length > 0 ||
+-                acc.grantWrite.length > 0 ||
+-                acc.denyRead.length > 0 ||
+-                acc.denyWrite.length > 0;
+-            if (anyApplied) {
+-                windowsFsStampedSet = acc;
+-                logForDebugging(`[Sandbox Windows] fs applied: ` +
+-                    `${acc.grantWrite.length} grantWrite, ` +
+-                    `${grantRead.length} grantRead, ` +
+-                    `${acc.denyRead.length} denyRead, ` +
+-                    `${acc.denyWrite.length} denyWrite`);
+-            }
+-            windowsFsRawInputs = rawWindowsFsInputs(runtimeConfig);
+-        }
+-        catch (e) {
+-            // Best-effort release of whatever WAS applied before the
+-            // failure (exit-2 partial stamps/grants the resolvable
+-            // inputs; harmless if nothing was — no holds for this PID).
+-            if (windowsFsSbUserSid) {
+-                revokeWindowsAcl({ sandboxUserSid: windowsFsSbUserSid, srtWin });
+-                restoreWindowsAcl({ sandboxUserSid: windowsFsSbUserSid, srtWin });
+-            }
+-            windowsFsSbUserSid = undefined;
+-            config = undefined;
+-            throw e;
+-        }
 +    if (getPlatform() === 'windows' &&
 +        runtimeConfig.windows?.externalConfinement === 'embedder') {
 +        // Ave patch: the embedder confines its Windows children itself (MXC
@@ -3422,20 +3829,11 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
 +            'WFP verification and session ACLs skipped');
 +    }
 +    else if (getPlatform() === 'windows') {
-         // Resolve once (stats disk); captured module-level for wrap/reset.
-         srtWinSpawn = resolveSrtWin(runtimeConfig.windows?.srtWin);
-         const srtWin = srtWinSpawn;
-@@ -820,6 +2109,9 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
-             // catch's best-effort revoke/restore can address whatever
-             // partially landed.
-             windowsFsSbUserSid = sb;
-+            // Ave patch (recovery report): recover a dead session's ACEs
-+            // first, on its own, so the embedder gets the counts.
-+            recoverWindowsAcl({ srtWin });
-             // Grant FIRST so the sandbox user has working-tree access by
-             // the time the deny stamp runs. The two are independent
-             // refcounted state-DB sets keyed on the same holder PID.
-@@ -992,6 +2284,12 @@ function checkDependenciesCommon(ripgrepConfig) {
++        await initializeWindowsSession(runtimeConfig);
+     }
+     // Initialize network infrastructure
+     initializationPromise = (async () => {
+@@ -992,6 +2334,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -3448,7 +3846,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1515,6 +2813,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2863,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -3458,7 +3856,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +3011,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +3061,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -3480,7 +3878,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1728,29 +3032,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1728,29 +3082,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  setEnvVars: credentialRestrictions.setEnvVars,
                  maskedFileBinds: credentialRestrictions.maskedFileBinds,
                  degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
@@ -3523,7 +3921,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1769,7 +3081,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1769,7 +3131,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
                  enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
                  allowNestedUserNamespaces,
@@ -3532,7 +3930,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
                  binShell,
                  ripgrepConfig: getRipgrepConfig(),
                  mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
-@@ -1786,6 +3098,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3148,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -3540,7 +3938,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3134,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3184,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -3557,7 +3955,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1950,7 +3272,7 @@ function getConfig() {
+@@ -1950,7 +3322,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -3566,7 +3964,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3311,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3361,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -3574,16 +3972,39 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2114,6 +3437,8 @@ function forceCloseHttpServer(server) {
+@@ -2113,7 +3486,30 @@ function forceCloseHttpServer(server) {
+         });
      });
  }
- async function reset() {
+-async function reset() {
++let resetPromise;
++function reset() {
++    if (resetPromise) return resetPromise;
++    windowsIsolationResetting = true;
++    windowsIsolationGeneration++;
++    let completeReset;
++    let failReset;
++    resetPromise = new Promise((resolve, reject) => {
++        completeReset = resolve;
++        failReset = reject;
++    }).finally(() => {
++        resetPromise = undefined;
++        windowsIsolationResetting = false;
++    });
++    // Install shared completion before synchronous ACL release starts.
++    resetSteps().then(completeReset, failReset);
++    return resetPromise;
++}
++async function resetSteps() {
++    if (windowsIsolationTask) {
++        await windowsIsolationTask.catch(() => {});
++    }
 +    const aclReleaseFailures = [];
 +    const aclReleaseStale = new Map();
      // Windows: release this session's sandbox-user ACEs. Best-effort
      // — log anomalies rather than throw, so teardown always
      // completes. Leftover ACEs are recoverable later via
-@@ -2123,28 +3448,54 @@ async function reset() {
+@@ -2123,28 +3519,54 @@ async function reset() {
          // Captured at initialize() — the SAME binary the grants/stamps
          // were applied with, immune to `config` mutation between.
          const srtWin = srtWinSpawn;
@@ -3657,7 +4078,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
      // windowsWfpVerified is NOT cleared — per-process, not per-session.
      // Clean up any leftover bwrap mount points. Force past the
      // active-sandbox counter — reset() means the session is over.
-@@ -2222,6 +3573,8 @@ async function reset() {
+@@ -2222,6 +3644,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -3666,7 +4087,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,7 +3582,36 @@ async function reset() {
+@@ -2229,7 +3653,37 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -3691,6 +4112,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
 +        privateSocketDir = undefined;
 +    }
      maskedFileStore.dispose();
++    windowsIsolationTask = undefined;
 +    if (aclReleaseFailures.length > 0) {
 +        throw new WindowsSandboxError('acl_release_failed', `Windows sandbox ACL release incomplete: ${aclReleaseFailures.join('; ')}`);
 +    }
@@ -3703,7 +4125,15 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..7905b23efb367badc43bc16b44e0b5dd
  }
  function getSandboxViolationStore() {
      return sandboxViolationStore;
-@@ -2336,6 +3718,12 @@ export const SandboxManager = {
+@@ -2314,6 +3768,7 @@ function getLinuxGlobPatternWarnings() {
+  */
+ export const SandboxManager = {
+     initialize,
++    initializeWindowsIsolation,
+     isSupportedPlatform,
+     isSandboxingEnabled,
+     checkDependencies,
+@@ -2336,6 +3791,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -4008,13 +4438,14 @@ index 000000000..344c83b28
 +    res.end(failure.message + '\n');
 +}
 diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sandbox-utils.d.ts
-index 65b8eef..9cff654 100644
+index 65b8eefe5..1f134dcee 100644
 --- a/dist/sandbox/windows-sandbox-utils.d.ts
 +++ b/dist/sandbox/windows-sandbox-utils.d.ts
-@@ -861,6 +861,19 @@ export interface WindowsAclStampOptions {
+@@ -861,6 +861,23 @@ export interface WindowsAclStampOptions {
   *   to release whatever WAS stamped.
   */
  export declare function stampWindowsAcl(opts: WindowsAclStampOptions): void;
++export declare function stampWindowsAclAsync(opts: WindowsAclStampOptions): Promise<void>;
 +/** Ave patch (recovery report): counts from one `srt-win acl recover` run. */
 +export interface WindowsAclRecoveryReport {
 +    /** Dead holder processes whose holds were pruned. */
@@ -4028,35 +4459,111 @@ index 65b8eef..9cff654 100644
 +export declare function recoverWindowsAcl(opts: {
 +    srtWin?: SrtWinSpawn;
 +}): WindowsAclRecoveryReport;
++export declare function recoverWindowsAclAsync(opts: {
++    srtWin?: SrtWinSpawn;
++}): Promise<WindowsAclRecoveryReport>;
  /**
   * Per-path outcome from `srt-win acl restore --json` /
   * `revoke --json`. The status set is intentionally loose: the
-@@ -884,6 +897,8 @@ export declare function restoreWindowsAcl(opts: {
+@@ -884,7 +901,16 @@ export declare function restoreWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
 +    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
 +    onExit?: (ok: boolean) => void;
  }): WindowsAclAceOutcome[] | undefined;
++export declare function restoreWindowsAclAsync(opts: {
++    sandboxUserSid: string;
++    holderPid?: number;
++    srtWin?: SrtWinSpawn;
++    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
++    onExit?: (ok: boolean) => void;
++}): Promise<WindowsAclAceOutcome[] | undefined>;
  export interface WindowsAclGrantOptions {
      /** Paths to grant `MODIFY_NO_FDC` on (the working tree, `allowWrite`). */
-@@ -918,6 +933,8 @@ export declare function revokeWindowsAcl(opts: {
+     write: readonly string[];
+@@ -909,6 +935,7 @@ export interface WindowsAclGrantOptions {
+  *   {@link revokeWindowsAcl} to release whatever WAS granted.
+  */
+ export declare function grantWindowsAcl(opts: WindowsAclGrantOptions): void;
++export declare function grantWindowsAclAsync(opts: WindowsAclGrantOptions): Promise<void>;
+ /**
+  * Release this holder's grants and remove the sandbox-user ACE on
+  * any path whose refcount falls to zero. Best-effort (does not
+@@ -918,7 +945,16 @@ export declare function revokeWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
 +    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
 +    onExit?: (ok: boolean) => void;
  }): WindowsAclAceOutcome[] | undefined;
++export declare function revokeWindowsAclAsync(opts: {
++    sandboxUserSid: string;
++    holderPid?: number;
++    srtWin?: SrtWinSpawn;
++    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
++    onExit?: (ok: boolean) => void;
++}): Promise<WindowsAclAceOutcome[] | undefined>;
  /**
   * Build the spawn descriptor for running `command` inside the Windows
+  * sandbox: an `argv` array plus the `env` to spawn it with.
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 540c566..1108c1c 100644
+index 540c56635..871f69373 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
-@@ -1197,6 +1197,34 @@ export function stampWindowsAcl(opts) {
+@@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
+     }
+     return { ok: r.status === 0, json, stderr: r.stderr };
+ }
++async function runSrtWinJsonAllowFailAsync(args, opts) {
++    const r = await runSrtWinAsync(args, opts);
++    let json;
++    try {
++        json = JSON.parse(r.stdout);
++    }
++    catch (e) {
++        throw new WindowsSandboxError('srt_win_bad_json', `srt-win ${args.join(' ')}: unparseable JSON output ` +
++            `${JSON.stringify(r.stdout)}: ${e.message}`, args[0]);
++    }
++    return { ok: r.status === 0, json, stderr: r.stderr };
++}
+ function wfpStatusArgs(sublayerGuid) {
+     const args = ['wfp', 'status'];
+     if (sublayerGuid)
+@@ -449,7 +461,7 @@ export async function verifyWindowsWfpEgress(opts = {}) {
+         // 30s: first call after install may create the sandbox user's
+         // profile (LOGON_WITH_PROFILE) via CreateProcessWithLogonW, and
+         // the runner allows itself 2s to connect (runner.rs).
+-        const r = runSrtWin(['wfp', 'verify', '--target', target], {
++        const r = await runSrtWinAsync(['wfp', 'verify', '--target', target], {
+             timeoutMs: 30000,
+             srtWin: opts.srtWin,
+         });
+@@ -1197,6 +1209,64 @@ export function stampWindowsAcl(opts) {
              `: ${r.stderr || r.stdout}`);
      }
  }
++export async function stampWindowsAclAsync(opts) {
++    const holder = opts.holderPid ?? process.pid;
++    const stdin = JSON.stringify({
++        denyRead: opts.denyRead,
++        denyWrite: opts.denyWrite,
++    });
++    const r = await runSrtWinAsync([
++        'acl',
++        'stamp',
++        '--holder-pid',
++        `${holder}`,
++        '--sandbox-user-sid',
++        opts.sandboxUserSid,
++    ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
++    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status}: ${r.stderr || r.stdout}`);
++    if (r.status !== 0) {
++        throw new WindowsSandboxError('acl_stamp_failed', `srt-win acl stamp exited ${r.status} ` +
++            (r.status === 2 ? '(partial — some inputs skipped)' : '(failed)') +
++            `: ${r.stderr || r.stdout}`);
++    }
++}
 +// Ave patch (recovery report): the embedder's listener for crash-recovery
 +// counts, set with setWindowsAclRecoveryListener.
 +let windowsAclRecoveryListener;
@@ -4085,23 +4592,119 @@ index 540c566..1108c1c 100644
 +    windowsAclRecoveryListener?.(counts);
 +    return counts;
 +}
++export async function recoverWindowsAclAsync(opts) {
++    const report = await runSrtWinJsonAsync(['acl', 'recover', '--json'], { timeoutMs: 60000, srtWin: opts.srtWin });
++    const counts = { deadBrokers: Number(report.deadBrokers), acesRevoked: Number(report.acesRevoked) };
++    if (!Number.isInteger(counts.deadBrokers) || !Number.isInteger(counts.acesRevoked)) {
++        throw new WindowsSandboxError('srt_win_bad_json', `srt-win acl recover: unexpected report ${JSON.stringify(report)}`, 'acl');
++    }
++    windowsAclRecoveryListener?.(counts);
++    return counts;
++}
  /**
   * Release this holder's deny ACEs and remove the sandbox-user ACE
   * on any path whose refcount falls to zero. Best-effort (does not
-@@ -1221,6 +1249,9 @@ export function restoreWindowsAcl(opts) {
+@@ -1221,6 +1291,47 @@ export function restoreWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
 +        // Ave patch (ACL release outcome): srt-win exits non-zero when a
 +        // path could not be released and leaves that path out of the JSON.
 +        opts.onExit?.(r.ok);
++        if (!r.ok) {
++            logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
++                `outcomes preserved): ${r.stderr}`, { level: 'error' });
++        }
++        // Pre- same-user-removal builds emit `{paths, parents}`; post-
++        // emit a flat array. Flatten either so reset()'s logging loop
++        // is shape-agnostic across the transition.
++        return Array.isArray(r.json)
++            ? r.json
++            : [...(r.json.paths ?? []), ...(r.json.parents ?? [])];
++    }
++    catch (e) {
++        logForDebugging(`[Sandbox Windows] acl restore: ${e.message}`, {
++            level: 'error',
++        });
++        return undefined;
++    }
++}
++export async function restoreWindowsAclAsync(opts) {
++    const holder = opts.holderPid ?? process.pid;
++    // Don't let a teardown helper throw — the caller's reset() must
++    // complete. runSrtWinJsonAllowFail parses stdout before checking
++    // the exit code, so a non-zero exit with the per-path JSON intact
++    // still surfaces every entry to reset()'s loop. Only spawn-fail
++    // / unparseable output throws → log and return undefined.
++    try {
++        const r = await runSrtWinJsonAllowFailAsync([
++            'acl',
++            'restore',
++            '--holder-pid',
++            `${holder}`,
++            '--sandbox-user-sid',
++            opts.sandboxUserSid,
++            '--json',
++        ], { timeoutMs: 60000, srtWin: opts.srtWin });
++        // Ave patch (ACL release outcome): srt-win exits non-zero when a
++        // path could not be released and leaves that path out of the JSON.
++        opts.onExit?.(r.ok);
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
                  `outcomes preserved): ${r.stderr}`, { level: 'error' });
-@@ -1283,6 +1314,8 @@ export function revokeWindowsAcl(opts) {
+@@ -1266,6 +1377,22 @@ export function grantWindowsAcl(opts) {
+         throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
+     }
+ }
++export async function grantWindowsAclAsync(opts) {
++    const holder = opts.holderPid ?? process.pid;
++    const stdin = JSON.stringify({ read: opts.read, write: opts.write });
++    const r = await runSrtWinAsync([
++        'acl',
++        'grant',
++        '--holder-pid',
++        `${holder}`,
++        '--sandbox-user-sid',
++        opts.sandboxUserSid,
++    ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
++    logForDebugging(`[Sandbox Windows] acl grant exit=${r.status}: ${r.stderr || r.stdout}`);
++    if (r.status !== 0) {
++        throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
++    }
++}
+ /**
+  * Release this holder's grants and remove the sandbox-user ACE on
+  * any path whose refcount falls to zero. Best-effort (does not
+@@ -1283,6 +1410,34 @@ export function revokeWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
++        // Ave patch (ACL release outcome): see restoreWindowsAcl.
++        opts.onExit?.(r.ok);
++        if (!r.ok) {
++            logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
++        }
++        return r.json;
++    }
++    catch (e) {
++        logForDebugging(`[Sandbox Windows] acl revoke: ${e.message}`, {
++            level: 'error',
++        });
++        return undefined;
++    }
++}
++export async function revokeWindowsAclAsync(opts) {
++    const holder = opts.holderPid ?? process.pid;
++    try {
++        const r = await runSrtWinJsonAllowFailAsync([
++            'acl',
++            'revoke',
++            '--holder-pid',
++            `${holder}`,
++            '--sandbox-user-sid',
++            opts.sandboxUserSid,
++            '--json',
++        ], { timeoutMs: 60000, srtWin: opts.srtWin });
 +        // Ave patch (ACL release outcome): see restoreWindowsAcl.
 +        opts.onExit?.(r.ok);
          if (!r.ok) {

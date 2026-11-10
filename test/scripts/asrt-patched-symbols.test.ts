@@ -190,8 +190,8 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
       }
       // initialize() recovers on its own before the session's first grant.
       const manager = readInstalled("dist/sandbox/sandbox-manager.js");
-      const recover = manager.indexOf("recoverWindowsAcl({ srtWin });");
-      const sessionGrant = manager.indexOf("grantWindowsAcl({\n                    sandboxUserSid: sb,");
+      const recover = manager.indexOf("await recoverWindowsAclAsync({ srtWin });");
+      const sessionGrant = manager.indexOf("await grantWindowsAclAsync({\n                sandboxUserSid: sb,");
       expect(recover).toBeGreaterThan(0);
       expect(sessionGrant).toBeGreaterThan(recover);
     });
@@ -382,7 +382,7 @@ describe("patched @anthropic-ai/sandbox-runtime", () => {
     const steps = functionBody(manager, /\nasync function initializeSteps\(/u);
     // The external-confinement branch comes first and the srt-win block is its else.
     expect(steps).toMatch(
-      /if \(getPlatform\(\) === 'windows' &&\s+runtimeConfig\.windows\?\.externalConfinement === 'embedder'\) \{[\s\S]*?\}\s+else if \(getPlatform\(\) === 'windows'\) \{\s+\/\/ Resolve once/u,
+      /if \(getPlatform\(\) === 'windows' &&\s+runtimeConfig\.windows\?\.externalConfinement === 'embedder'\) \{[\s\S]*?\}\s+else if \(getPlatform\(\) === 'windows'\) \{\s+await initializeWindowsSession\(runtimeConfig\);/u,
     );
     // initialize() checks dependencies before those steps; that check must not demand srt-win either, or the proxy never starts where it is needed.
     const deps = functionBody(manager, /\nfunction checkDependenciesCommon\(/u);
@@ -1836,7 +1836,7 @@ describe.runIf(process.platform === "darwin" || process.platform === "linux")("a
   it("exports setParentProxyRouter on SandboxManager, typed, and clears it on reset", () => {
     const manager = readInstalled("dist/sandbox/sandbox-manager.js");
     expect(manager).toMatch(/\n\s+closeInvocationConnections,\n\s+closeAllInvocationConnections,\n\s+setParentProxyRouter,\n/u);
-    expect(functionBody(manager, /\nasync function reset\(/u)).toMatch(/parentProxyRouter = undefined;/u);
+    expect(functionBody(manager, /\nasync function resetSteps\(/u)).toMatch(/parentProxyRouter = undefined;/u);
     const declarations = readInstalled("dist/sandbox/sandbox-manager.d.ts");
     expect(declarations).toMatch(/\n\s+setParentProxyRouter\(router: ParentProxyRouter \| undefined\): void;/u);
     expect(readInstalled("dist/index.d.ts")).toMatch(/ParentProxyRoute, ParentProxyRouter \} from '\.\/sandbox\/sandbox-manager\.js';/u);

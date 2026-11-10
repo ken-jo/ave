@@ -27,6 +27,7 @@ import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
 import { AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, aveHomeBoundaryFailure, getAveHomePrivacyFailure, setAveHomePrivacyAtBoot, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { isAveHomeTrustPendingAtBoot } from "../../shared/ave-home-trust.js";
 import type { ProcessRunStateProbe } from "../../permissions/windows-process-start-time.js";
+import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.js";
 
 const log = createLogger("ave");
 
@@ -143,6 +144,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       const windowsPlan = windowsInputs === undefined ? undefined : planWindowsSandbox(windowsInputs);
       // Track proxy-only startup separately from the requested runtime plan.
       let windowsStart = windowsPlan?.start;
+      let windowsMxc = windowsInputs?.mxc;
       /** Publish slow shell-probe results only if the startup record has not been replaced meanwhile. */
       const recordWindows = (started: "srt-win" | "proxy-only" | "none", failed: boolean): void => {
         if (windowsInputs === undefined) return;
@@ -150,15 +152,16 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
           const substrate = windowsSubstrateFor({ ...windowsInputs, mxc }, started);
           return failed ? windowsSubstrateWithoutAsrt(substrate) : substrate;
         };
-        const first = at(windowsInputs.mxc);
+        const first = at(windowsMxc ?? windowsInputs.mxc);
         setWindowsSandboxSubstrate(first, first.shells === "mxc" ? mxcShellCapability() : undefined);
         if (started === "proxy-only" && !failed) {
           setActiveSandboxCapability(windowsProxyOnlyCapability(first));
         }
-        if (windowsInputs.mxc.state !== "checking") return;
+        if (windowsMxc?.state !== "checking") return;
         const recorded = getWindowsSandboxSubstrate();
         void settleWindowsMxcStartProbe().then((mxc) => {
           if (getWindowsSandboxSubstrate() !== recorded) return;
+          windowsMxc = mxc;
           const settled = at(mxc);
           setWindowsSandboxSubstrate(settled, settled.shells === "mxc" ? mxcShellCapability() : undefined);
           if (started === "proxy-only" && !failed) {
@@ -295,9 +298,11 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               // Derive deny paths from actual userData so custom directories remain protected.
               userDataDir: ctx.host.userDataPath,
               ...(start === "proxy-only" ? { windows: { externalConfinement: true } } : {}),
+              ...(start === "srt-win" ? { windows: { backgroundInitialization: true } } : {}),
             }, egressAskCallback);
+          let initialization: AsrtSandboxInitialization | undefined;
           try {
-            await initializeAs(windowsStart);
+            initialization = await initializeAs(windowsStart);
           } catch (srtWinErr) {
             // A failed session setup clears runtime config, permitting clean proxy-only initialization for container shells.
             // An unverifiable Ave home boundary refuses every confined start, so a proxy-only retry cannot help.
@@ -313,6 +318,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             windowsStart = "proxy-only";
             await initializeAs(windowsStart);
           }
+          if (initialization?.windowsIsolation !== undefined) windowsStart = "proxy-only";
           // Publish only initialized confinement: full on macOS/Linux, filesystem and network only on the Windows runtime.
           // Inactive or degraded activation must leave capability none; reviewers rely on these dimensions.
           const asrtBackend =
@@ -326,20 +332,19 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             process.platform,
             confinementKind,
           );
-          const reason =
-            process.platform === "win32"
-              ? `ASRT (${asrtBackend}) active — filesystem + network contained, process isolation unavailable`
-              : `ASRT (${asrtBackend}) active — fs+process+network contained`;
-          if (windowsStart !== "proxy-only") {
+          const publishFullCapability = (backend: string): void => {
             setActiveSandboxCapability({
               kind: "asrt",
               confidence: "verified",
               platform: process.platform,
-              reason,
+              reason: process.platform === "win32"
+                ? `ASRT (${backend}) active — filesystem + network contained, process isolation unavailable`
+                : `ASRT (${backend}) active — fs+process+network contained`,
               // Report measured shell confinement dimensions, never a generic active flag.
               confines,
             });
-          }
+          };
+          if (windowsStart !== "proxy-only") publishFullCapability(asrtBackend);
           if (windowsInputs !== undefined && windowsStart !== undefined) {
             recordWindows(windowsStart, false);
             const substrate = windowsSubstrateFor(windowsInputs, windowsStart);
@@ -368,6 +373,27 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             deps.errors,
             dependencyCauses,
           );
+          // The proxy and the degraded command routes are ready. Session ACL work cannot hold boot here.
+          void initialization?.windowsIsolation?.then((result) => {
+            if (initialization?.isCurrent() !== true || result.status === "cancelled") return;
+            if (result.status === "ready") {
+              publishFullCapability("srt-win");
+              recordWindows("srt-win", false);
+              recordGate("activate", decision.reason, deps.errors, dependencyCauses);
+              log.info("boot: Windows session isolation ready; subsequent commands can use the isolated extension backend");
+              return;
+            }
+            const cause = errorMessage(result.error);
+            log.warn(
+              "boot: the Windows sandbox (srt-win) failed to start — extensions run with NO OS isolation this session; " +
+                `ASRT stays proxy only. Cause: ${cause}`,
+            );
+            const containersAvailable = windowsInputs !== undefined
+              && canRetryWindowsAsProxyOnly(windowsInputs, "srt-win");
+            recordGate(containersAvailable ? "activate" : "degrade",
+              containersAvailable ? "activate-windows-mxc-proxy-only" : "degrade-windows-init-failed",
+              [cause], ["init-failed"]);
+          });
         } catch (initErr) {
           const boundaryFailure = process.platform === "win32" ? aveHomeBoundaryFailure(initErr) : undefined;
           if (boundaryFailure !== undefined) {

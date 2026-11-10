@@ -2974,6 +2974,13 @@ in its directory.
   the signed-in user cannot swap it after the check. A source checkout's
   `resources/` is user-writable; that is a developer setup.
 - **Boot plan** (`windows-sandbox-plan.ts`). MXC and srt-win are independent.
+  Session ACL preparation runs asynchronously after the proxy starts, so boot
+  readiness never waits for its stamp. Pending preparation uses the same
+  proxy-only capability and command routes as failed preparation. Success
+  enables isolation for subsequent commands without restarting proxies or
+  changing already-admitted holders. Failure retains the degraded routes and
+  publishes the startup diagnostic. Reset invalidates pending promotion before
+  releasing session ACLs.
   With MXC, shells run in containers whether or not srt-win is installed;
   without srt-win, ASRT starts as the proxy only (`windows.externalConfinement`,
   patch part 3, which also skips the srt-win dependency check `initialize()`

@@ -10,7 +10,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { createHookCommandAuthorizer } from "../hook-command-policy.js";
+import { createHookCommandAuthorizer, type HookCommandAuthorizer } from "../hook-command-policy.js";
 import { runOneHookScript, type RunnableHook } from "../script-hook-runner.js";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
@@ -18,7 +18,10 @@ import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from ".
 import {
   __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, getHostShellExecutionPlan,
   setActiveSandboxCapability, setShellSandboxRequestedAtBoot,
+  __resetWindowsSandboxSubstrateForTest, getSandboxGeneration, setWindowsSandboxSubstrate,
 } from "../../permissions/sandbox-capability.js";
+import { windowsProxyOnlyCapability, windowsSubstrateFor, type WindowsSandboxPlanInputs } from "../../boot/steps/windows-sandbox-plan.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot } from "../../shared/ave-home.js";
 import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
@@ -87,6 +90,7 @@ afterEach(async () => {
   permits.consumed.length = 0;
   vi.restoreAllMocks();
   __resetSandboxRequestedAtBootForTest();
+  __resetWindowsSandboxSubstrateForTest();
   await reviewerResources.cleanup();
   for (const root of roots.splice(0)) await cleanupTmpDir(root);
 });
@@ -428,7 +432,48 @@ describe("hook command permission admission", () => {
     expect(permits.consumed).toEqual([false]);
   });
 
-  it("refuses to spawn after the admitted sandbox generation changes", async () => {
+  it.each(["approval", "authority refresh"])("keeps an approved hook on its captured shell route when the stamp succeeds during %s", async stage => {
+    const input: WindowsSandboxPlanInputs = {
+      shellRequested: true, workerRequested: true, srtWinReady: true, windowsBuild: null,
+      mxc: { state: "unavailable", reason: "tier-unsupported" },
+    };
+    plans.windowsPartial = true;
+    setShellSandboxRequestedAtBoot(true);
+    setActiveSandboxCapability(windowsProxyOnlyCapability());
+    setWindowsSandboxSubstrate(windowsSubstrateFor(input, "proxy-only"));
+    const capturedGeneration = getSandboxGeneration();
+    const promote = (): void => {
+      windowsPartialPlan();
+      setWindowsSandboxSubstrate(windowsSubstrateFor(input, "srt-win"));
+    };
+    const p = policy();
+    p.permissionManager.setMode("strict");
+    const entered = deferred<ApprovalRequest>();
+    const wc = { isDestroyed: () => false, send: (_channel: string, request: ApprovalRequest) => entered.resolve(request) };
+    const gate = new ApprovalGate(wc as never);
+    const authorize = createHookCommandAuthorizer({ permissionManager: p.permissionManager, approvalGate: gate });
+    const authorizeCommand: HookCommandAuthorizer = async (...args) => {
+      const admission = await authorize(...args);
+      return { ...admission, refreshAllowed: async () => {
+        await admission.refreshAllowed?.();
+        if (stage === "authority refresh") promote();
+      } };
+    };
+    const running = runOneHookScript(hook, payload, { authorizeCommand });
+    const request = await entered.promise;
+    expect(request.executionPlan).toMatchObject({ platform: "win32", mode: "plain", substrate: "none", requiresExplicitUserApproval: true });
+    if (stage === "approval") promote();
+    gate.resolve(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+
+    const result = await running;
+    expect(getSandboxGeneration()).not.toBe(capturedGeneration);
+    expect(getHostShellExecutionPlan()).toMatchObject({ identity: request.executionPlan?.identity, mode: "plain", substrate: "none" });
+    expect(result.decision, result.reason).toBe("allow");
+    expect(JSON.parse(result.rawStdout).reason).toBe("received");
+    expect(permits).toMatchObject({ minted: 1, consumed: [true] });
+  });
+
+  it("refuses to spawn after the admitted shell route changes", async () => {
     const authorizeCommand = async () => {
       const plan = getHostShellExecutionPlan();
       setShellSandboxRequestedAtBoot(true);
@@ -438,11 +483,11 @@ describe("hook command permission admission", () => {
       .toMatchObject({ decision: "deny", rawStdout: "", reason: "hook shell execution policy changed during approval" });
   });
 
-  it("rechecks the admitted sandbox generation after the final fresh authority refresh", async () => {
+  it("rechecks the admitted shell route after the final fresh authority refresh", async () => {
     const assertAllowed = vi.fn();
     const authorizeCommand = async () => ({
       decision: "allow" as const, reason: "approved", plan: getHostShellExecutionPlan(), assertAllowed,
-      // The generation changes while the final pre-spawn probe is pending.
+      // The shell policy changes while the final pre-spawn probe is pending.
       refreshAllowed: async () => { setShellSandboxRequestedAtBoot(true); },
     });
     expect(await runOneHookScript(hook, payload, { authorizeCommand }))

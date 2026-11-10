@@ -1,4 +1,4 @@
-/** Choose Windows substrates at boot and report degradation; start mode cannot change mid-session. */
+/** Choose Windows substrates from verified session readiness and report degradation. */
 import type {
   SandboxCapability,
 } from "../../permissions/sandbox-capability.js";

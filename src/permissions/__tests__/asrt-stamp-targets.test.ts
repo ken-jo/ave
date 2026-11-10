@@ -421,11 +421,15 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     writeFileSync(existing, "");
     const alias = link(target, join(scratch(), "alias"));
     const identity = observeWindowsGrantIdentity(existing);
-    const initialize = vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
+    const initialize = vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
+      expect(runtimeAllowWrite(config.filesystem)).toEqual([identity.canonical]);
+      identity.assertPinned();
+    });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, allowWrite: [join(alias, "*.stamp-fixture")] }))
-      .resolves.toBeUndefined();
-    expect(runtimeAllowWrite(initialize.mock.calls[0]![0].filesystem)).toEqual([identity.canonical]);
+    const initialization = await initializeAsrtSandbox({ windows: { externalConfinement: true }, allowWrite: [join(alias, "*.stamp-fixture")] });
+    expect(initialization.isCurrent()).toBe(true);
+    expect(initialization.windowsIsolation).toBeUndefined();
+    expect(initialize).toHaveBeenCalledOnce();
     identity.assertPinned();
   });
 
@@ -457,7 +461,9 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       expect(config.filesystem.denyWrite).toContain(alias);
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, denyRead: [alias], denyWrite: [alias] })).resolves.toBeUndefined();
+    const initialization = await initializeAsrtSandbox({ windows: { externalConfinement: true }, denyRead: [alias], denyWrite: [alias] });
+    expect(initialization.isCurrent()).toBe(true);
+    expect(initialization.windowsIsolation).toBeUndefined();
     expect(initialize).toHaveBeenCalledOnce();
   });
 
@@ -481,12 +487,16 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const target = scratch();
     const alias = link(target, join(scratch(), "alias"));
     const identity = observeWindowsGrantIdentity(target);
-    vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
+    const initialize = vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
+      expect(config.filesystem.allowRead).toEqual([{ path: identity.canonical, literal: true }]);
+      expect(config.filesystem.allowWrite).toEqual([{ path: identity.canonical, literal: true }]);
+      identity.assertPinned();
+    });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, allowRead: [alias], allowWrite: [alias] })).resolves.toBeUndefined();
-    const config = vi.mocked(SandboxManager.initialize).mock.calls[0]![0];
-    expect(config.filesystem.allowRead).toEqual([{ path: identity.canonical, literal: true }]);
-    expect(config.filesystem.allowWrite).toEqual([{ path: identity.canonical, literal: true }]);
+    const initialization = await initializeAsrtSandbox({ windows: { externalConfinement: true }, allowRead: [alias], allowWrite: [alias] });
+    expect(initialization.isCurrent()).toBe(true);
+    expect(initialization.windowsIsolation).toBeUndefined();
+    expect(initialize).toHaveBeenCalledOnce();
     identity.assertPinned();
   });
 
