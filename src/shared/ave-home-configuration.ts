@@ -48,7 +48,7 @@ export function migrateAveHomeConfiguration(home: string, privacy?: AveHomePriva
       setAveHomeConfigurationRefusedAtBoot(home, "recovery");
       return [...sources.diagnostics, ...result];
     }
-    const diagnostics = [...sources.diagnostics, ...result, ...cleanupRootConfiguration(home)];
+    const diagnostics = [...sources.diagnostics, ...result, ...(process.platform === "win32" ? [] : cleanupRootConfiguration(home))];
     aveHomeConfigurationDirectory(home);
     return diagnostics;
   });
@@ -293,7 +293,13 @@ function windowsConfigurationRequest(home: string, commit?: { contents: string[]
 ${WINDOWS_HOME_BOUNDARY_SOURCE}
 '@;
     if ($request.cleanup) { $result = [HomeDirectoryDacl]::CleanupConfiguration($request.home, $request.directory, [string[]]$request.names, $identity.User, $elevated) }
-    else { $result = [HomeDirectoryDacl]::CommitConfiguration($request.home, $request.directory, [string[]]$request.names, $identity.User, $elevated, [string[]]$request.contents, [string]$request.manifest) }
+    else {
+      $result = @([HomeDirectoryDacl]::CommitConfiguration($request.home, $request.directory, [string[]]$request.names, $identity.User, $elevated, [string[]]$request.contents, [string]$request.manifest));
+      if (-not @($result | Where-Object { $_.StartsWith('${AVE_HOME_CONFIGURATION_RECOVERY}') }).Count) {
+        try { $result += @([HomeDirectoryDacl]::CleanupConfiguration($request.home, $request.directory, [string[]]$request.names, $identity.User, $elevated)) }
+        catch { $result += ('Legacy configuration cleanup failed at ' + $request.home + ': ' + $_.Exception.GetBaseException().Message) }
+      }
+    }
     ConvertTo-Json -InputObject @($result) -Compress`;
   const output = runWindowsNative(() => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64"),

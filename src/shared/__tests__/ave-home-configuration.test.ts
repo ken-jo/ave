@@ -81,7 +81,15 @@ function exposeConfiguration(dir: string): void {
 describe("protected home configuration", () => {
   it.each(["settings.json", "policy.json", "ave-secrets.json"])("preserves %s in a new file and deletes the original", name => {
     const dir = fixture();
-    migrateAveHomeConfiguration(dir);
+    const before = vi.mocked(execFileSync).mock.calls.length;
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    if (process.platform === "win32") {
+      const requests = vi.mocked(execFileSync).mock.calls.slice(before).filter(([file]) => /powershell\.exe$/i.test(String(file)));
+      expect(requests).toHaveLength(2);
+      const script = requests[1]?.[2]?.input;
+      expect(script).toContain('$result = @([HomeDirectoryDacl]::CommitConfiguration(');
+      expect(script).toContain('$result += @([HomeDirectoryDacl]::CleanupConfiguration(');
+    }
     const path = join(dir, name);
     writeFileSync(path, "outside edit");
     const original = statSync(path, { bigint: true });
