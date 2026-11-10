@@ -54,6 +54,14 @@ live page; hiding it retains its document and viewport. Agent actions also use
 page-local focus while that page is visible. Entering the visible page yourself
 pauses agent mutation under the takeover rules above.
 
+App menus, approval and question cards, floating panels and capture selection
+stay above a live independent page. The uncovered page area remains available
+for normal interaction. A modal backdrop or full-page selection surface owns
+its entire covered area. Opening that UI or dragging and resizing a host pane
+retains the page rather than replacing it with a picture. User pointer input
+over an uncovered page follows the same takeover rules; typing in the composer
+and IME composition remain in the app document.
+
 Native mouse events have one attribution limit: a human click that exactly
 matches an armed agent click's position, button, and phase at the same time
 cannot be distinguished. Other observed input mismatches interrupt the agent.

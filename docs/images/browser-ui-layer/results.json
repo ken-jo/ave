@@ -1,0 +1,190 @@
+{
+  "runs": [
+    {
+      "id": "affected-unit",
+      "sourceRun": "test-results/ui-layer/affected-unit-final.log",
+      "sourceLogSha256": "58bb6c1ffa96c95981dd3920615bf929d2d221af74f42f34e5e3683ef7f61f4f",
+      "result": "passed",
+      "resultLines": [
+        "Test Files  30 passed (30)",
+        "Tests  1080 passed (1080)"
+      ]
+    },
+    {
+      "id": "preserved-browser-and-capture",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "sourceLogSha256": "13e368240a7feb9aecbd5eb94618a50b3fbf4ced62bf4084d9028ce3f62eada7",
+      "result": "passed",
+      "resultLines": [
+        "✓   1 [background] › test/e2e/ui/browser-agent-tab.spec.ts:10:1 › keeps an agent page mounted through blank bootstrap and first navigation (7.7s)",
+        "✓   2 [background] › test/e2e/ui/browser-observation.spec.ts:22:1 › shows admitted browser commands and excludes a later user navigation from the same tab (6.7s)",
+        "✓   3 [background] › test/e2e/ui/browser-capture-native.spec.ts:101:1 › native capture fixture isolates its home from the parent process (5.2s)",
+        "✓   4 [background] › test/e2e/ui/browser-capture-native.spec.ts:114:1 › native capture build assets stay inside the invocation output (943ms)",
+        "✓   5 [background] › test/e2e/ui/browser-capture-native.spec.ts:144:3 › native full-page capture includes the tall page bottom pixels at zoom 1 (1.3s)",
+        "✓   6 [background] › test/e2e/ui/browser-capture-native.spec.ts:144:3 › native full-page capture includes the tall page bottom pixels at zoom 1.25 (840ms)",
+        "✓   7 [background] › test/e2e/ui/browser-capture-native.spec.ts:175:3 › native ref capture keeps the element CSS size at zoom 1 (675ms)",
+        "✓   8 [background] › test/e2e/ui/browser-capture-native.spec.ts:175:3 › native ref capture keeps the element CSS size at zoom 1.25 (530ms)",
+        "✓   9 [background] › test/e2e/ui/browser-capture-native.spec.ts:197:1 › native parked agent tab wakes for full-page capture without selecting its slot (825ms)",
+        "✓  10 [background] › test/e2e/ui/browser-capture-native.spec.ts:214:1 › native parked agent tab captures its viewport and returns to sleep (2.5s)",
+        "✓  11 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: usable document (6.0s)",
+        "✓  12 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: waiting interstitial (3.6s)",
+        "✓  13 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: embedded verification (3.8s)",
+        "✓  14 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: verification dialog (3.9s)",
+        "✓  15 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: security container (5.7s)",
+        "✓  16 [background] › test/e2e/ui/browser-observation-preview.spec.ts:15:1 › keeps a parked agent guest visible to its animation clock (6.2s)",
+        "✓  17 [background] › test/e2e/ui/browser-observation-preview.spec.ts:16:1 › selects in a parked guest without taking native keyboard focus (5.8s)",
+        "✓  18 [background] › test/e2e/ui/browser-observation-preview.spec.ts:17:1 › measures renderer evaluation after an agent closes its parked guest (6.7s)",
+        "✓  19 [background] › test/e2e/ui/browser-observation-preview.spec.ts:18:1 › streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit (13.8s)",
+        "✓  20 [background] › test/e2e/ui/parked-click-focus.spec.ts:10:1 › parked agent click preserves the composer throughout native dispatch (17.5s)",
+        "✓  21 [background] › test/e2e/ui/parked-click-focus.spec.ts:11:1 › presented agent click preserves the composer throughout native dispatch (9.5s)",
+        "✓  22 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:1 › visible user takeover invalidates control before a resumed parked click (6.9s)",
+        "22 passed (2.0m)"
+      ]
+    },
+    {
+      "id": "production-typecheck",
+      "sourceRun": "test-results/ui-layer/typecheck-final.log",
+      "sourceLogSha256": "8366207267355d3e3d5bf3bf6e8c94c5f93f6078c34f08973fa2b38cdda6cc92",
+      "result": "passed",
+      "resultLines": [
+        "$ tsc --noEmit"
+      ],
+      "resultBasis": "Lead verified successful command completion; this command emits no success summary."
+    },
+    {
+      "id": "test-typecheck-baseline",
+      "sourceRun": "test-results/ui-layer/e2e-typecheck-complete.log",
+      "sourceLogSha256": "24bdb6d6d33c41257c52e78b847b043fdad296805a20021cd5c19533b505dafa",
+      "result": "baseline-held",
+      "resultLines": [
+        "[test-typecheck] baseline held: 207 files, 919 errors (1 file(s) improved, 2 fully fixed — run check:typecheck-tests:update to lock it in)"
+      ]
+    }
+  ],
+  "focusEvidence": [
+    {
+      "file": "focus-parked-1360.json",
+      "sha256": "7b951b6aa37c99e31929cc3848de27a21f954b36bed76d41ed3dba08e6693b68",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "parked agent click preserves the composer throughout native dispatch at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
+      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-park-61112-native-dispatch-at-1360x800-background/parked-click-focus.json",
+      "resultLine": "✓  3 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 1360x800 (7.8s)",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+    },
+    {
+      "file": "focus-parked-900.json",
+      "sha256": "9c65508eade0599741245bd3482ea51c7088d2f4b0ed4fa1bb38668b22c991b8",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "parked agent click preserves the composer throughout native dispatch at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
+      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-park-9057d--native-dispatch-at-900x800-background/parked-click-focus.json",
+      "resultLine": "✓  6 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 900x800 (4.6s)",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+    },
+    {
+      "file": "focus-presented-1360.json",
+      "sha256": "68c13b1ace1ada046a828ddd60efbba38eb4e1b971066881f6c479b96e9dcc10",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "presented agent click preserves the composer throughout native dispatch at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
+      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-pres-baf71-native-dispatch-at-1360x800-background/parked-click-focus.json",
+      "resultLine": "✓  4 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 1360x800 (4.4s)",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+    },
+    {
+      "file": "focus-presented-900.json",
+      "sha256": "779d5f8c34ed90595b068695dd57be06e05a786f142c9283d8d81c7ff112996e",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "presented agent click preserves the composer throughout native dispatch at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
+      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-pres-7f6de--native-dispatch-at-900x800-background/parked-click-focus.json",
+      "resultLine": "✓  7 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 900x800 (4.9s)",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+    },
+    {
+      "file": "focus-takeover-1360.json",
+      "sha256": "abcaef969bee328bfdaf6001999f5e6625055ded4edd1ce596765395915526f9",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "visible user takeover invalidates control before a resumed parked click at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
+      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-visi-b743e-ed-parked-click-at-1360x800-background/parked-click-focus.json",
+      "resultLine": "✓  5 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 1360x800 (6.7s)",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+    },
+    {
+      "file": "focus-takeover-900.json",
+      "sha256": "70841828e5e1ac0fc85fdc1f2d22de9f91fd0da13fe219b3f7c85776e2615c6a",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "visible user takeover invalidates control before a resumed parked click at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
+      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-visi-3d287-med-parked-click-at-900x800-background/parked-click-focus.json",
+      "resultLine": "✓  8 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 900x800 (5.5s)",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+    }
+  ],
+  "canonicalPreservation": {
+    "browserCases": 17,
+    "captureCases": 8,
+    "otherPassingCaseLines": [
+      "✓   1 [background] › test/e2e/ui/browser-agent-tab.spec.ts:10:1 › keeps an agent page mounted through blank bootstrap and first navigation (7.7s)",
+      "✓   2 [background] › test/e2e/ui/browser-observation.spec.ts:22:1 › shows admitted browser commands and excludes a later user navigation from the same tab (6.7s)",
+      "✓   3 [background] › test/e2e/ui/browser-capture-native.spec.ts:101:1 › native capture fixture isolates its home from the parent process (5.2s)",
+      "✓   4 [background] › test/e2e/ui/browser-capture-native.spec.ts:114:1 › native capture build assets stay inside the invocation output (943ms)",
+      "✓   5 [background] › test/e2e/ui/browser-capture-native.spec.ts:144:3 › native full-page capture includes the tall page bottom pixels at zoom 1 (1.3s)",
+      "✓   6 [background] › test/e2e/ui/browser-capture-native.spec.ts:144:3 › native full-page capture includes the tall page bottom pixels at zoom 1.25 (840ms)",
+      "✓   7 [background] › test/e2e/ui/browser-capture-native.spec.ts:175:3 › native ref capture keeps the element CSS size at zoom 1 (675ms)",
+      "✓   8 [background] › test/e2e/ui/browser-capture-native.spec.ts:175:3 › native ref capture keeps the element CSS size at zoom 1.25 (530ms)",
+      "✓   9 [background] › test/e2e/ui/browser-capture-native.spec.ts:197:1 › native parked agent tab wakes for full-page capture without selecting its slot (825ms)",
+      "✓  10 [background] › test/e2e/ui/browser-capture-native.spec.ts:214:1 › native parked agent tab captures its viewport and returns to sleep (2.5s)",
+      "✓  11 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: usable document (6.0s)",
+      "✓  12 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: waiting interstitial (3.6s)",
+      "✓  13 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: embedded verification (3.8s)",
+      "✓  14 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: verification dialog (3.9s)",
+      "✓  15 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: security container (5.7s)",
+      "✓  16 [background] › test/e2e/ui/browser-observation-preview.spec.ts:15:1 › keeps a parked agent guest visible to its animation clock (6.2s)",
+      "✓  17 [background] › test/e2e/ui/browser-observation-preview.spec.ts:16:1 › selects in a parked guest without taking native keyboard focus (5.8s)",
+      "✓  18 [background] › test/e2e/ui/browser-observation-preview.spec.ts:17:1 › measures renderer evaluation after an agent closes its parked guest (6.7s)",
+      "✓  19 [background] › test/e2e/ui/browser-observation-preview.spec.ts:18:1 › streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit (13.8s)"
+    ],
+    "focusEvidenceFiles": [
+      "focus-parked-1360.json",
+      "focus-parked-900.json",
+      "focus-presented-1360.json",
+      "focus-presented-900.json",
+      "focus-takeover-1360.json",
+      "focus-takeover-900.json"
+    ],
+    "note": "Eleven other browser cases plus six size-specific focus cases; eight capture cases. The three earlier unsized focus titles in the source run are not counted again."
+  }
+}

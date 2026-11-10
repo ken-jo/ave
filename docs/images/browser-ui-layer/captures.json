@@ -1,0 +1,6254 @@
+{
+  "archiveSourceHead": "77a8f4f6a090bd16c550e9a5013ca42866ecfbc2",
+  "sourceHeadNote": "Product revision at archive; test helpers may contain uncommitted changes. Exact source revision was not emitted by the run.",
+  "captures": [
+    {
+      "file": "agent-page-preview-1360.png",
+      "sha256": "48144d4c336cafbffbb707dd09de4cbf3deba317be3c5fb7f71cd0c962ace4f6",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-page-preview.spec.ts",
+      "testTitle": "parked agent page preview stays above another live page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/page-preview-final.log",
+      "sourceCapture": "test-results/ui-layer-page-preview-final/ui-browser-ui-page-preview-9e5b2-other-live-page-at-1360x800-background/agent-page-preview-1360.png",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-page-preview.spec.ts:14:5 › parked agent page preview stays above another live page at 1360x800 (13.9s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172412:0",
+          "ownerPid": 41583,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BUTTON",
+            "id": "",
+            "testId": null,
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:437eccc3-2",
+              "surface": "{\"tabId\":\"browser:437eccc3-2\",\"webContentsId\":3,\"epoch\":2}",
+              "bounds": {
+                "x": 305,
+                "y": 159.5,
+                "width": 1042,
+                "height": 627.5,
+                "top": 159.5,
+                "right": 1347,
+                "bottom": 787,
+                "left": 305
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 41583,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172412
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172412:0",
+          "ownerPid": 41583,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 305,
+          "y": 159.5,
+          "width": 1042,
+          "height": 627.5
+        },
+        "overlayRect": {
+          "x": 1077,
+          "y": 219.5,
+          "width": 240,
+          "height": 195.375
+        },
+        "intersection": {
+          "x": 1077,
+          "y": 219.5,
+          "right": 1317,
+          "bottom": 414.875
+        },
+        "area": 46890,
+        "overlayPoint": {
+          "x": 1092,
+          "y": 234.5
+        },
+        "exposed": {
+          "x": 818.5,
+          "y": 757,
+          "bodyBounds": {
+            "x": 305,
+            "y": 159.5,
+            "width": 1027,
+            "height": 627.5
+          },
+          "nativeViewport": {
+            "width": 1042,
+            "height": 628,
+            "clientWidth": 1027,
+            "clientHeight": 628
+          }
+        },
+        "pixels": [
+          [
+            189,
+            190,
+            191,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "agent-browser-pip-card",
+            "tabId": "browser:437eccc3-1",
+            "rect": {
+              "x": 1077,
+              "y": 219.5,
+              "width": 240,
+              "height": 195.375
+            },
+            "ancestors": [
+              "agent-browser-pip-card",
+              "agent-browser-pip-layer",
+              "route-canvas",
+              "app-shell"
+            ]
+          },
+          {
+            "kind": "browser-observation-preview",
+            "tabId": null,
+            "rect": {
+              "x": 1078,
+              "y": 255.5,
+              "width": 238,
+              "height": 133.875
+            },
+            "ancestors": [
+              "browser-observation-preview",
+              "agent-browser-pip-picture",
+              "agent-browser-pip-card",
+              "agent-browser-pip-layer",
+              "route-canvas",
+              "app-shell"
+            ]
+          },
+          {
+            "kind": "IMG",
+            "tabId": null,
+            "rect": {
+              "x": 1078,
+              "y": 255.5,
+              "width": 238,
+              "height": 133.875
+            },
+            "ancestors": [
+              "browser-observation-preview",
+              "agent-browser-pip-picture",
+              "agent-browser-pip-card",
+              "agent-browser-pip-layer",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      },
+      "pageIdentity": {
+        "first": {
+          "rendererTabId": "browser:437eccc3-1",
+          "webContentsId": 2,
+          "control": {
+            "tabId": "tab-1",
+            "rendererTabId": "browser:437eccc3-1",
+            "url": "http://127.0.0.1:64352/page",
+            "title": "Native UI fixture",
+            "mode": "agent-active",
+            "owner": {
+              "sessionId": "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee"
+            },
+            "lease": null,
+            "generation": 6,
+            "kind": "embedded",
+            "openerTabId": null
+          }
+        },
+        "second": {
+          "tabId": "browser:437eccc3-2",
+          "webContentsId": 3,
+          "epoch": 2,
+          "control": {
+            "tabId": "tab-2",
+            "rendererTabId": "browser:437eccc3-2",
+            "url": "http://127.0.0.1:64352/page#preview-second",
+            "title": "Native UI fixture",
+            "mode": "human-paused",
+            "owner": {
+              "sessionId": "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee"
+            },
+            "lease": null,
+            "generation": 7,
+            "kind": "embedded",
+            "openerTabId": null
+          }
+        },
+        "before": {
+          "x": 1079,
+          "y": 549.625,
+          "width": 240,
+          "height": 195.375
+        },
+        "moved": {
+          "x": 1077,
+          "y": 219.5,
+          "width": 240,
+          "height": 195.375
+        },
+        "native": {
+          "id": 3,
+          "type": "window",
+          "embedded": false,
+          "attached": true,
+          "focused": false,
+          "mainFrameFocused": true,
+          "ownerFocused": false,
+          "focusedContentsId": null,
+          "hostFrame": 1,
+          "focusedHostFrame": 1
+        }
+      }
+    },
+    {
+      "file": "agent-page-preview-900.png",
+      "sha256": "d3fc44b5f257f7faa0924f9cfd4d6d9ddfe3d606006dd76536adceb704ea505e",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-page-preview.spec.ts",
+      "testTitle": "parked agent page preview stays above another live page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/page-preview-final.log",
+      "sourceCapture": "test-results/ui-layer-page-preview-final/ui-browser-ui-page-preview-a10fa-nother-live-page-at-900x800-background/agent-page-preview-900.png",
+      "resultLine": "✓  2 [background] › test/e2e/ui/browser-ui-page-preview.spec.ts:14:5 › parked agent page preview stays above another live page at 900x800 (10.3s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172421:0",
+          "ownerPid": 44987,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BUTTON",
+            "id": "",
+            "testId": null,
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:2aefb437-2",
+              "surface": "{\"tabId\":\"browser:2aefb437-2\",\"webContentsId\":3,\"epoch\":2}",
+              "bounds": {
+                "x": 305,
+                "y": 159.5,
+                "width": 582,
+                "height": 627.5,
+                "top": 159.5,
+                "right": 887,
+                "bottom": 787,
+                "left": 305
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 44987,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172421
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172421:0",
+          "ownerPid": 44987,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 305,
+          "y": 159.5,
+          "width": 582,
+          "height": 627.5
+        },
+        "overlayRect": {
+          "x": 617,
+          "y": 219.5,
+          "width": 240,
+          "height": 195.375
+        },
+        "intersection": {
+          "x": 617,
+          "y": 219.5,
+          "right": 857,
+          "bottom": 414.875
+        },
+        "area": 46890,
+        "overlayPoint": {
+          "x": 632,
+          "y": 234.5
+        },
+        "exposed": {
+          "x": 588.5,
+          "y": 757,
+          "bodyBounds": {
+            "x": 305,
+            "y": 159.5,
+            "width": 567,
+            "height": 627.5
+          },
+          "nativeViewport": {
+            "width": 582,
+            "height": 628,
+            "clientWidth": 567,
+            "clientHeight": 628
+          }
+        },
+        "pixels": [
+          [
+            189,
+            190,
+            191,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "agent-browser-pip-card",
+            "tabId": "browser:2aefb437-1",
+            "rect": {
+              "x": 617,
+              "y": 219.5,
+              "width": 240,
+              "height": 195.375
+            },
+            "ancestors": [
+              "agent-browser-pip-card",
+              "agent-browser-pip-layer",
+              "route-canvas",
+              "app-shell"
+            ]
+          },
+          {
+            "kind": "browser-observation-preview",
+            "tabId": null,
+            "rect": {
+              "x": 618,
+              "y": 255.5,
+              "width": 238,
+              "height": 133.875
+            },
+            "ancestors": [
+              "browser-observation-preview",
+              "agent-browser-pip-picture",
+              "agent-browser-pip-card",
+              "agent-browser-pip-layer",
+              "route-canvas",
+              "app-shell"
+            ]
+          },
+          {
+            "kind": "IMG",
+            "tabId": null,
+            "rect": {
+              "x": 618,
+              "y": 255.5,
+              "width": 238,
+              "height": 133.875
+            },
+            "ancestors": [
+              "browser-observation-preview",
+              "agent-browser-pip-picture",
+              "agent-browser-pip-card",
+              "agent-browser-pip-layer",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      },
+      "pageIdentity": {
+        "first": {
+          "rendererTabId": "browser:2aefb437-1",
+          "webContentsId": 2,
+          "control": {
+            "tabId": "tab-1",
+            "rendererTabId": "browser:2aefb437-1",
+            "url": "http://127.0.0.1:64433/page",
+            "title": "Native UI fixture",
+            "mode": "agent-active",
+            "owner": {
+              "sessionId": "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee"
+            },
+            "lease": null,
+            "generation": 6,
+            "kind": "embedded",
+            "openerTabId": null
+          }
+        },
+        "second": {
+          "tabId": "browser:2aefb437-2",
+          "webContentsId": 3,
+          "epoch": 2,
+          "control": {
+            "tabId": "tab-2",
+            "rendererTabId": "browser:2aefb437-2",
+            "url": "http://127.0.0.1:64433/page#preview-second",
+            "title": "Native UI fixture",
+            "mode": "human-paused",
+            "owner": {
+              "sessionId": "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee"
+            },
+            "lease": null,
+            "generation": 7,
+            "kind": "embedded",
+            "openerTabId": null
+          }
+        },
+        "before": {
+          "x": 619,
+          "y": 549.625,
+          "width": 240,
+          "height": 195.375
+        },
+        "moved": {
+          "x": 617,
+          "y": 219.5,
+          "width": 240,
+          "height": 195.375
+        },
+        "native": {
+          "id": 3,
+          "type": "window",
+          "embedded": false,
+          "attached": true,
+          "focused": false,
+          "mainFrameFocused": true,
+          "ownerFocused": false,
+          "focusedContentsId": null,
+          "hostFrame": 1,
+          "focusedHostFrame": 1
+        }
+      }
+    },
+    {
+      "file": "app-fullscreen-1360.png",
+      "sha256": "8bfb6cce30342973dc4a4c98cf9463a72e10c27a85a5ad8cac4997d27d422f98",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page stays below app card floating and fullscreen modes at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-app-card-nat-89170-ullscreen-modes-at-1360x800-background/app-fullscreen-1360.png",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:48:5 › native page stays below app card floating and fullscreen modes at 1360x800 (23.0s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172250:0",
+          "ownerPid": 15832,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "TEXTAREA",
+            "id": "",
+            "testId": "composer-textarea",
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:91d3107e-1",
+              "surface": "{\"tabId\":\"browser:91d3107e-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 891,
+                "y": 166.5,
+                "width": 448,
+                "height": 608.5,
+                "top": 166.5,
+                "right": 1339,
+                "bottom": 775,
+                "left": 891
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 15832,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172250
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172250:0",
+          "ownerPid": 15832,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 0,
+          "y": 0,
+          "width": 1360,
+          "height": 800
+        },
+        "intersection": {
+          "x": 891,
+          "y": 166.5,
+          "right": 1339,
+          "bottom": 775
+        },
+        "area": 272608,
+        "overlayPoint": {
+          "x": 1115,
+          "y": 470.75
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            255,
+            255,
+            255,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 148.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "app-fullscreen-900.png",
+      "sha256": "1bce3e6e8fb0acc15e5a1e848f336fe3a7ff44d5e5a13219110313175c75f2b1",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page stays below app card floating and fullscreen modes at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/last-flows.log",
+      "sourceCapture": "test-results/ui-layer-last-flows/ui-browser-ui-app-card-nat-fc3f8-fullscreen-modes-at-900x800-background/app-fullscreen-900.png",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:48:5 › native page stays below app card floating and fullscreen modes at 900x800 (22.6s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172329:0",
+          "ownerPid": 19458,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "TEXTAREA",
+            "id": "",
+            "testId": "composer-textarea",
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:63c13b87-1",
+              "surface": "{\"tabId\":\"browser:63c13b87-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 431,
+                "y": 166.5,
+                "width": 448,
+                "height": 495,
+                "top": 166.5,
+                "right": 879,
+                "bottom": 661.5,
+                "left": 431
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 19458,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172329
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172329:0",
+          "ownerPid": 19458,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 0,
+          "y": 0,
+          "width": 900,
+          "height": 800
+        },
+        "intersection": {
+          "x": 431,
+          "y": 166.5,
+          "right": 879,
+          "bottom": 661.5
+        },
+        "area": 221760,
+        "overlayPoint": {
+          "x": 655,
+          "y": 414
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            255,
+            255,
+            255,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 148.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "app-pip-1360.png",
+      "sha256": "8d445a7c7cb12ff63946d5890e1d1a09a270205de4342733d5171644ecddccac",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page stays below app card floating and fullscreen modes at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-app-card-nat-89170-ullscreen-modes-at-1360x800-background/app-pip-1360.png",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:48:5 › native page stays below app card floating and fullscreen modes at 1360x800 (23.0s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172250:0",
+          "ownerPid": 15832,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "DIV",
+            "id": "",
+            "testId": "mcp-app-pip-drag-handle",
+            "role": "button"
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:91d3107e-1",
+              "surface": "{\"tabId\":\"browser:91d3107e-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 891,
+                "y": 166.5,
+                "width": 448,
+                "height": 608.5,
+                "top": 166.5,
+                "right": 1339,
+                "bottom": 775,
+                "left": 891
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 15832,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172250
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172250:0",
+          "ownerPid": 15832,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 507,
+          "y": 372,
+          "width": 400,
+          "height": 299.25
+        },
+        "intersection": {
+          "x": 891,
+          "y": 372,
+          "right": 907,
+          "bottom": 671.25
+        },
+        "area": 4788,
+        "overlayPoint": {
+          "x": 899,
+          "y": 521.625
+        },
+        "exposed": {
+          "x": 903,
+          "y": 745
+        },
+        "pixels": [
+          [
+            20,
+            100,
+            181,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 148.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "app-pip-900.png",
+      "sha256": "1cf714bced98e67ad5c0841f382d64c19ce9399ca1d00021c9120cc4ed806d4a",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page stays below app card floating and fullscreen modes at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/last-flows.log",
+      "sourceCapture": "test-results/ui-layer-last-flows/ui-browser-ui-app-card-nat-fc3f8-fullscreen-modes-at-900x800-background/app-pip-900.png",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:48:5 › native page stays below app card floating and fullscreen modes at 900x800 (22.6s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172329:0",
+          "ownerPid": 19458,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "DIV",
+            "id": "",
+            "testId": "mcp-app-pip-drag-handle",
+            "role": "button"
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:63c13b87-1",
+              "surface": "{\"tabId\":\"browser:63c13b87-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 431,
+                "y": 166.5,
+                "width": 448,
+                "height": 495,
+                "top": 166.5,
+                "right": 879,
+                "bottom": 661.5,
+                "left": 431
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 19458,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172329
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172329:0",
+          "ownerPid": 19458,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 47,
+          "y": 372,
+          "width": 400,
+          "height": 299.25
+        },
+        "intersection": {
+          "x": 431,
+          "y": 372,
+          "right": 447,
+          "bottom": 661.5
+        },
+        "area": 4632,
+        "overlayPoint": {
+          "x": 439,
+          "y": 516.75
+        },
+        "exposed": {
+          "x": 647.5,
+          "y": 631.5,
+          "bodyBounds": {
+            "x": 431,
+            "y": 166.5,
+            "width": 433,
+            "height": 495
+          },
+          "nativeViewport": {
+            "width": 448,
+            "height": 495,
+            "clientWidth": 433,
+            "clientHeight": 495
+          }
+        },
+        "pixels": [
+          [
+            20,
+            100,
+            181,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 148.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "capture-area-1360.png",
+      "sha256": "b90e6005fec273d7c4f484bec820b08847ad5071d9de7783a2ac71c92e79df1e",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native notification popover and capture controls stay usable at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-d8124-ols-stay-usable-at-1360x800-background/capture-area-1360.png",
+      "resultLine": "✓  15 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 1360x800 (21.1s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172134:0",
+          "ownerPid": 93209,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 93209,
+          "width": 1360,
+          "windowId": 172134
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172134:0",
+          "ownerPid": 93209,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "intersection": {
+          "x": 891,
+          "y": 166.5,
+          "right": 1339,
+          "bottom": 775
+        },
+        "area": 272608,
+        "overlayPoint": {
+          "x": 1115,
+          "y": 470.75
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            195,
+            57,
+            211,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "capture-area-900.png",
+      "sha256": "a76e917b936274e559ebeb948bfaec77338df9a112b46ec228130989c94e5de2",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native notification popover and capture controls stay usable at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-overlays-nat-332ec-rols-stay-usable-at-900x800-background/capture-area-900.png",
+      "resultLine": "✓  5 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 900x800 (17.0s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172307:0",
+          "ownerPid": 17307,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "DIV",
+            "id": "",
+            "testId": "browser-capture-overlay",
+            "role": "dialog"
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:ffd8a6db-1",
+              "surface": "{\"tabId\":\"browser:ffd8a6db-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 431,
+                "y": 166.5,
+                "width": 448,
+                "height": 495,
+                "top": 166.5,
+                "right": 879,
+                "bottom": 661.5,
+                "left": 431
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 17307,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172307
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172307:0",
+          "ownerPid": 17307,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "intersection": {
+          "x": 431,
+          "y": 166.5,
+          "right": 879,
+          "bottom": 661.5
+        },
+        "area": 221760,
+        "overlayPoint": {
+          "x": 655,
+          "y": 414
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            195,
+            57,
+            211,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "capture-menu-1360.png",
+      "sha256": "fe2bc16b0bd2f1f186a8e7a22e72b898fbd2210e182c958d9c878e253f2b3e59",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native notification popover and capture controls stay usable at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-d8124-ols-stay-usable-at-1360x800-background/capture-menu-1360.png",
+      "resultLine": "✓  15 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 1360x800 (21.1s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172134:0",
+          "ownerPid": 93209,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 93209,
+          "width": 1360,
+          "windowId": 172134
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172134:0",
+          "ownerPid": 93209,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 982,
+          "y": 114,
+          "width": 112,
+          "height": 93
+        },
+        "intersection": {
+          "x": 982,
+          "y": 166.5,
+          "right": 1094,
+          "bottom": 207
+        },
+        "area": 4536,
+        "overlayPoint": {
+          "x": 1038,
+          "y": 186.75
+        },
+        "exposed": {
+          "x": 903,
+          "y": 745
+        },
+        "pixels": [
+          [
+            185,
+            186,
+            187,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "capture-menu-900.png",
+      "sha256": "6665a97d36f2f5dd5ca4049203ea1dfb3a69e54817e1b09542156d4a9b38dca9",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native notification popover and capture controls stay usable at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-overlays-nat-332ec-rols-stay-usable-at-900x800-background/capture-menu-900.png",
+      "resultLine": "✓  5 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 900x800 (17.0s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172307:0",
+          "ownerPid": 17307,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "DIV",
+            "id": "radix-_r_2u_",
+            "testId": null,
+            "role": "menu"
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:ffd8a6db-1",
+              "surface": "{\"tabId\":\"browser:ffd8a6db-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 431,
+                "y": 166.5,
+                "width": 448,
+                "height": 495,
+                "top": 166.5,
+                "right": 879,
+                "bottom": 661.5,
+                "left": 431
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 17307,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172307
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172307:0",
+          "ownerPid": 17307,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 522,
+          "y": 114,
+          "width": 112,
+          "height": 93
+        },
+        "intersection": {
+          "x": 522,
+          "y": 166.5,
+          "right": 634,
+          "bottom": 207
+        },
+        "area": 4536,
+        "overlayPoint": {
+          "x": 578,
+          "y": 186.75
+        },
+        "exposed": {
+          "x": 443,
+          "y": 631.5
+        },
+        "pixels": [
+          [
+            185,
+            186,
+            187,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "composer-composition-1360.png",
+      "sha256": "81c797e924b4580c45d7d157c305f2536e318b8e45a59c2a780e01c0e894de12",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-interactions.spec.ts",
+      "testTitle": "composer composition and tab drag retain the native page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/last-flows.log",
+      "sourceCapture": "test-results/ui-layer-last-flows/ui-browser-ui-interactions-b1742-the-native-page-at-1360x800-background/composer-composition-1360.png",
+      "resultLine": "✓  2 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 1360x800 (16.4s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172346:0",
+          "ownerPid": 19855,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "TEXTAREA",
+            "id": "",
+            "testId": "composer-textarea",
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:2b2f1fb6-1",
+              "surface": "{\"tabId\":\"browser:2b2f1fb6-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 891,
+                "y": 166.5,
+                "width": 448,
+                "height": 608.5,
+                "top": 166.5,
+                "right": 1339,
+                "bottom": 775,
+                "left": 891
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 19855,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172346
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172346:0",
+          "ownerPid": 19855,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "captured-ui-geometry",
+      "geometry": {
+        "viewport": {
+          "width": 1360,
+          "height": 800
+        },
+        "activeElement": {
+          "tag": "TEXTAREA",
+          "id": "",
+          "testId": "composer-textarea",
+          "role": null
+        },
+        "nativePageHoles": [
+          {
+            "tabId": "browser:2b2f1fb6-1",
+            "surface": "{\"tabId\":\"browser:2b2f1fb6-1\",\"webContentsId\":2,\"epoch\":1}",
+            "bounds": {
+              "x": 891,
+              "y": 166.5,
+              "width": 448,
+              "height": 608.5,
+              "top": 166.5,
+              "right": 1339,
+              "bottom": 775,
+              "left": 891
+            },
+            "visibility": "visible"
+          }
+        ]
+      }
+    },
+    {
+      "file": "composer-composition-900.png",
+      "sha256": "938be438f3eb7a4ab9eaf912363b551a5cc2d215193e29bb1d80877343dcf30d",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-interactions.spec.ts",
+      "testTitle": "composer composition and tab drag retain the native page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/last-flows.log",
+      "sourceCapture": "test-results/ui-layer-last-flows/ui-browser-ui-interactions-46dbd--the-native-page-at-900x800-background/composer-composition-900.png",
+      "resultLine": "✓  3 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 900x800 (16.8s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172363:0",
+          "ownerPid": 20211,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "TEXTAREA",
+            "id": "",
+            "testId": "composer-textarea",
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:7cdb0ef9-1",
+              "surface": "{\"tabId\":\"browser:7cdb0ef9-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 431,
+                "y": 166.5,
+                "width": 448,
+                "height": 495,
+                "top": 166.5,
+                "right": 879,
+                "bottom": 661.5,
+                "left": 431
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 20211,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172363
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172363:0",
+          "ownerPid": 20211,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "captured-ui-geometry",
+      "geometry": {
+        "viewport": {
+          "width": 900,
+          "height": 800
+        },
+        "activeElement": {
+          "tag": "TEXTAREA",
+          "id": "",
+          "testId": "composer-textarea",
+          "role": null
+        },
+        "nativePageHoles": [
+          {
+            "tabId": "browser:7cdb0ef9-1",
+            "surface": "{\"tabId\":\"browser:7cdb0ef9-1\",\"webContentsId\":2,\"epoch\":1}",
+            "bounds": {
+              "x": 431,
+              "y": 166.5,
+              "width": 448,
+              "height": 495,
+              "top": 166.5,
+              "right": 879,
+              "bottom": 661.5,
+              "left": 431
+            },
+            "visibility": "visible"
+          }
+        ]
+      }
+    },
+    {
+      "file": "composer-with-app-pip-1360.png",
+      "sha256": "9072497243c8a0d09d2b3e9639fdc9b7002a1fc2cb824c6b57b8a9995d6ca620",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page stays below app card floating and fullscreen modes at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-app-card-nat-89170-ullscreen-modes-at-1360x800-background/composer-with-app-pip-1360.png",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:48:5 › native page stays below app card floating and fullscreen modes at 1360x800 (23.0s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172250:0",
+          "ownerPid": 15832,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "TEXTAREA",
+            "id": "",
+            "testId": "composer-textarea",
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:91d3107e-1",
+              "surface": "{\"tabId\":\"browser:91d3107e-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 891,
+                "y": 166.5,
+                "width": 448,
+                "height": 608.5,
+                "top": 166.5,
+                "right": 1339,
+                "bottom": 775,
+                "left": 891
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 15832,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172250
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172250:0",
+          "ownerPid": 15832,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "captured-ui-geometry",
+      "geometry": {
+        "viewport": {
+          "width": 1360,
+          "height": 800
+        },
+        "activeElement": {
+          "tag": "TEXTAREA",
+          "id": "",
+          "testId": "composer-textarea",
+          "role": null
+        },
+        "nativePageHoles": [
+          {
+            "tabId": "browser:91d3107e-1",
+            "surface": "{\"tabId\":\"browser:91d3107e-1\",\"webContentsId\":2,\"epoch\":1}",
+            "bounds": {
+              "x": 891,
+              "y": 166.5,
+              "width": 448,
+              "height": 608.5,
+              "top": 166.5,
+              "right": 1339,
+              "bottom": 775,
+              "left": 891
+            },
+            "visibility": "visible"
+          }
+        ]
+      }
+    },
+    {
+      "file": "composer-with-app-pip-900.png",
+      "sha256": "aff87aff54f5f3d294be77dd4f903e6cd64b7c7ff1059fc49e6039f12f6f5a3e",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page stays below app card floating and fullscreen modes at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/last-flows.log",
+      "sourceCapture": "test-results/ui-layer-last-flows/ui-browser-ui-app-card-nat-fc3f8-fullscreen-modes-at-900x800-background/composer-with-app-pip-900.png",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:48:5 › native page stays below app card floating and fullscreen modes at 900x800 (22.6s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172329:0",
+          "ownerPid": 19458,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "TEXTAREA",
+            "id": "",
+            "testId": "composer-textarea",
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:63c13b87-1",
+              "surface": "{\"tabId\":\"browser:63c13b87-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 431,
+                "y": 166.5,
+                "width": 448,
+                "height": 495,
+                "top": 166.5,
+                "right": 879,
+                "bottom": 661.5,
+                "left": 431
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 19458,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172329
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172329:0",
+          "ownerPid": 19458,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "captured-ui-geometry",
+      "geometry": {
+        "viewport": {
+          "width": 900,
+          "height": 800
+        },
+        "activeElement": {
+          "tag": "TEXTAREA",
+          "id": "",
+          "testId": "composer-textarea",
+          "role": null
+        },
+        "nativePageHoles": [
+          {
+            "tabId": "browser:63c13b87-1",
+            "surface": "{\"tabId\":\"browser:63c13b87-1\",\"webContentsId\":2,\"epoch\":1}",
+            "bounds": {
+              "x": 431,
+              "y": 166.5,
+              "width": 448,
+              "height": 495,
+              "top": 166.5,
+              "right": 879,
+              "bottom": 661.5,
+              "left": 431
+            },
+            "visibility": "visible"
+          }
+        ]
+      }
+    },
+    {
+      "file": "denial-backdrop-1360.png",
+      "sha256": "7f34ffdfeb1cceb51d5af9c7f01ec07508daf8a444d1efdc9be3ec0964a2e412",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays below denial dialog and backdrop at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-b29b4-og-and-backdrop-at-1360x800-background/denial-backdrop-1360.png",
+      "resultLine": "✓  17 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:162:5 › native page stays below denial dialog and backdrop at 1360x800 (16.1s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172167:0",
+          "ownerPid": 764,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 764,
+          "width": 1360,
+          "windowId": 172167
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172167:0",
+          "ownerPid": 764,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 0,
+          "y": 0,
+          "width": 1360,
+          "height": 800
+        },
+        "intersection": {
+          "x": 891,
+          "y": 166.5,
+          "right": 1339,
+          "bottom": 775
+        },
+        "area": 272608,
+        "overlayPoint": {
+          "x": 1327,
+          "y": 763
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            63,
+            48,
+            65,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "denial-backdrop-900.png",
+      "sha256": "41861186ee0eb4f47135f15728a52e5d18347eb48b81f14235f43e518e15f8dc",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays below denial dialog and backdrop at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-7b339-log-and-backdrop-at-900x800-background/denial-backdrop-900.png",
+      "resultLine": "✓  20 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:162:5 › native page stays below denial dialog and backdrop at 900x800 (14.2s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172202:0",
+          "ownerPid": 5496,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 5496,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172202
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172202:0",
+          "ownerPid": 5496,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 0,
+          "y": 0,
+          "width": 900,
+          "height": 800
+        },
+        "intersection": {
+          "x": 431,
+          "y": 166.5,
+          "right": 879,
+          "bottom": 661.5
+        },
+        "area": 221760,
+        "overlayPoint": {
+          "x": 867,
+          "y": 649.5
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            63,
+            48,
+            65,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "denial-dialog-1360.png",
+      "sha256": "3eab96d5aa45f5526579593115ac49b16cc2d05639da734c330eba7c078a28cb",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays below denial dialog and backdrop at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-b29b4-og-and-backdrop-at-1360x800-background/denial-dialog-1360.png",
+      "resultLine": "✓  17 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:162:5 › native page stays below denial dialog and backdrop at 1360x800 (16.1s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172167:0",
+          "ownerPid": 764,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 764,
+          "width": 1360,
+          "windowId": 172167
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172167:0",
+          "ownerPid": 764,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 386,
+          "y": 275.5,
+          "width": 588,
+          "height": 249
+        },
+        "intersection": {
+          "x": 891,
+          "y": 275.5,
+          "right": 974,
+          "bottom": 524.5
+        },
+        "area": 20667,
+        "overlayPoint": {
+          "x": 932.5,
+          "y": 400
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            249,
+            249,
+            249,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "denial-dialog-900.png",
+      "sha256": "2c8abb6a071eee71492a6c5c23563cbc03b419ab9ba7f903130fad45d241682c",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays below denial dialog and backdrop at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-7b339-log-and-backdrop-at-900x800-background/denial-dialog-900.png",
+      "resultLine": "✓  20 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:162:5 › native page stays below denial dialog and backdrop at 900x800 (14.2s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172202:0",
+          "ownerPid": 5496,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 5496,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172202
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172202:0",
+          "ownerPid": 5496,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 156,
+          "y": 275.5,
+          "width": 588,
+          "height": 249
+        },
+        "intersection": {
+          "x": 431,
+          "y": 275.5,
+          "right": 744,
+          "bottom": 524.5
+        },
+        "area": 77937,
+        "overlayPoint": {
+          "x": 587.5,
+          "y": 400
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            249,
+            249,
+            249,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "governed-right-lane-1360.png",
+      "sha256": "68847ae5a4d85e0e542a7146525c907721085bad4378db9be72033680bd0e5f9",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine governed tool approval stays usable in the right lane at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-decisions-ge-4ee39--the-right-lane-at-1360x800-background/governed-right-lane-1360.png",
+      "resultLine": "✓   7 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:81:5 › genuine governed tool approval stays usable in the right lane at 1360x800 (23.1s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172020:0",
+          "ownerPid": 77948,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 83475,
+          "frontmostBefore": 83475,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 77948,
+          "width": 1360,
+          "windowId": 172020
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172020:0",
+          "ownerPid": 77948,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 547,
+          "y": 84,
+          "width": 322,
+          "height": 355.8125
+        },
+        "intersection": {
+          "x": 891,
+          "y": 166.5,
+          "right": 869,
+          "bottom": 439.8125
+        },
+        "area": 0,
+        "overlayPoint": {
+          "x": 708,
+          "y": 261.90625
+        },
+        "exposed": {
+          "x": 903,
+          "y": 745
+        },
+        "pixels": [
+          [
+            249,
+            249,
+            249,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "governed-right-lane-900.png",
+      "sha256": "53e03caa176dc73b633c913cdcdf6e73ad29c04158c8e1b500a88931f699ee21",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine governed tool approval stays usable in the right lane at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-decisions-ge-686bd-n-the-right-lane-at-900x800-background/governed-right-lane-900.png",
+      "resultLine": "✓  10 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:81:5 › genuine governed tool approval stays usable in the right lane at 900x800 (47.8s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172073:0",
+          "ownerPid": 84277,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 84277,
+          "width": 900,
+          "windowId": 172073
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172073:0",
+          "ownerPid": 84277,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 551,
+          "y": 84,
+          "width": 322,
+          "height": 355.8125
+        },
+        "intersection": {
+          "x": 551,
+          "y": 166.5,
+          "right": 873,
+          "bottom": 439.8125
+        },
+        "area": 88006.625,
+        "overlayPoint": {
+          "x": 712,
+          "y": 303.15625
+        },
+        "exposed": {
+          "x": 443,
+          "y": 631.5
+        },
+        "pixels": [
+          [
+            247,
+            247,
+            247,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "model-fallback-toast-1360.png",
+      "sha256": "4a6c49db967d8352442e9388e08bcc5bc206ecf327c9deb44e5193320f8d1393",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-toast.spec.ts",
+      "testTitle": "real model fallback notice stays above the native page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-toast-real-m-13add-the-native-page-at-1360x800-background/model-fallback-toast-1360.png",
+      "resultLine": "✓  23 [background] › test/e2e/ui/browser-ui-toast.spec.ts:11:5 › real model fallback notice stays above the native page at 1360x800 (17.1s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172225:0",
+          "ownerPid": 7764,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 7764,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172225
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172225:0",
+          "ownerPid": 7764,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 526,
+          "y": 631.25,
+          "width": 336,
+          "height": 35.25
+        },
+        "intersection": {
+          "x": 891,
+          "y": 631.25,
+          "right": 862,
+          "bottom": 666.5
+        },
+        "area": 0,
+        "overlayPoint": {
+          "x": 694,
+          "y": 648.875
+        },
+        "exposed": {
+          "x": 903,
+          "y": 745
+        },
+        "pixels": [
+          [
+            118,
+            119,
+            122,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "model-fallback-toast-900.png",
+      "sha256": "2027c20d628cb0183bd58b124e82dd728fd8b4b2c3a1138bed5673b7c59456a4",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-toast.spec.ts",
+      "testTitle": "real model fallback notice stays above the native page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-toast-real-m-8ade7--the-native-page-at-900x800-background/model-fallback-toast-900.png",
+      "resultLine": "✓  24 [background] › test/e2e/ui/browser-ui-toast.spec.ts:11:5 › real model fallback notice stays above the native page at 900x800 (14.4s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172234:0",
+          "ownerPid": 9843,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 9843,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172234
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172234:0",
+          "ownerPid": 9843,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 530,
+          "y": 631.25,
+          "width": 336,
+          "height": 35.25
+        },
+        "intersection": {
+          "x": 530,
+          "y": 631.25,
+          "right": 866,
+          "bottom": 661.5
+        },
+        "area": 10164,
+        "overlayPoint": {
+          "x": 698,
+          "y": 646.375
+        },
+        "exposed": {
+          "x": 443,
+          "y": 631.5
+        },
+        "pixels": [
+          [
+            225,
+            225,
+            226,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "notification-1360.png",
+      "sha256": "6520deca7dd97c1c8387d652bb3418b27a5f39da7275a85ffd9eb3652b4f8196",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native notification popover and capture controls stay usable at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-d8124-ols-stay-usable-at-1360x800-background/notification-1360.png",
+      "resultLine": "✓  15 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 1360x800 (21.1s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172134:0",
+          "ownerPid": 93209,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 93209,
+          "width": 1360,
+          "windowId": 172134
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172134:0",
+          "ownerPid": 93209,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 923,
+          "y": 36,
+          "width": 336,
+          "height": 152
+        },
+        "intersection": {
+          "x": 923,
+          "y": 166.5,
+          "right": 1259,
+          "bottom": 188
+        },
+        "area": 7224,
+        "overlayPoint": {
+          "x": 1091,
+          "y": 177.25
+        },
+        "exposed": {
+          "x": 903,
+          "y": 745
+        },
+        "pixels": [
+          [
+            241,
+            241,
+            242,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      },
+      "pageActionPaint": {
+        "point": {
+          "x": 923,
+          "y": 270.5
+        },
+        "computed": [
+          239,
+          239,
+          239,
+          255
+        ],
+        "expected": [
+          239,
+          239,
+          239,
+          255
+        ],
+        "actual": [
+          239,
+          239,
+          239,
+          255
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "notification-900.png",
+      "sha256": "af50ab28675031976eb036f6b9633d9c8ab7bffe76b49f04e614257df2439099",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native notification popover and capture controls stay usable at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-overlays-nat-332ec-rols-stay-usable-at-900x800-background/notification-900.png",
+      "resultLine": "✓  5 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 900x800 (17.0s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172307:0",
+          "ownerPid": 17307,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "DIV",
+            "id": "radix-_r_2_",
+            "testId": "notification-center",
+            "role": "dialog"
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:ffd8a6db-1",
+              "surface": "{\"tabId\":\"browser:ffd8a6db-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 431,
+                "y": 166.5,
+                "width": 448,
+                "height": 495,
+                "top": 166.5,
+                "right": 879,
+                "bottom": 661.5,
+                "left": 431
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 17307,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172307
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172307:0",
+          "ownerPid": 17307,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 552,
+          "y": 36,
+          "width": 336,
+          "height": 152
+        },
+        "intersection": {
+          "x": 552,
+          "y": 166.5,
+          "right": 879,
+          "bottom": 188
+        },
+        "area": 7030.5,
+        "overlayPoint": {
+          "x": 715.5,
+          "y": 177.25
+        },
+        "exposed": {
+          "x": 443,
+          "y": 631.5
+        },
+        "pixels": [
+          [
+            241,
+            241,
+            242,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      },
+      "pageActionPaint": {
+        "point": {
+          "x": 463,
+          "y": 270.5
+        },
+        "computed": [
+          239,
+          239,
+          239,
+          255
+        ],
+        "expected": [
+          239,
+          239,
+          239,
+          255
+        ],
+        "actual": [
+          239,
+          239,
+          239,
+          255
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "plugin-notice-1360.png",
+      "sha256": "f110354eac26c9aac2109c2dbcaa4ebf506f70fbab6c745f2abf6b98629f8dee",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page remains interactive under a genuine plugin notice at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
+      "sourceCapture": "test-results/ui-layer-focus-widths-notice/ui-browser-ui-app-card-nat-73d2d-e-plugin-notice-at-1360x800-background/plugin-notice-1360.png",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:13:5 › native page remains interactive under a genuine plugin notice at 1360x800 (22.8s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172687:0",
+          "ownerPid": 82556,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BUTTON",
+            "id": "",
+            "testId": "pane-panel-toggle",
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:81ddb023-1",
+              "surface": "{\"tabId\":\"browser:81ddb023-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 891,
+                "y": 166.5,
+                "width": 448,
+                "height": 608.5,
+                "top": 166.5,
+                "right": 1339,
+                "bottom": 775,
+                "left": 891
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 28486,
+          "frontmostBefore": 28486,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 82556,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172687
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172687:0",
+          "ownerPid": 82556,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 547,
+          "y": 84,
+          "width": 322,
+          "height": 139.25
+        },
+        "intersection": {
+          "x": 891,
+          "y": 166.5,
+          "right": 869,
+          "bottom": 223.25
+        },
+        "area": 0,
+        "overlayPoint": {
+          "x": 708,
+          "y": 153.625
+        },
+        "exposed": {
+          "x": 1107.5,
+          "y": 745,
+          "bodyBounds": {
+            "x": 891,
+            "y": 166.5,
+            "width": 433,
+            "height": 608.5
+          },
+          "nativeViewport": {
+            "width": 448,
+            "height": 609,
+            "clientWidth": 433,
+            "clientHeight": 609
+          }
+        },
+        "pixels": [
+          [
+            224,
+            222,
+            229,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "plugin-notice-900.png",
+      "sha256": "4c06e0e3ec6ac6b181e85c3e3b3ef01dea34c59797145884403b071832990809",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page remains interactive under a genuine plugin notice at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
+      "sourceCapture": "test-results/ui-layer-focus-widths-notice/ui-browser-ui-app-card-nat-6be86-ne-plugin-notice-at-900x800-background/plugin-notice-900.png",
+      "resultLine": "✓  2 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:13:5 › native page remains interactive under a genuine plugin notice at 900x800 (21.5s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172697:0",
+          "ownerPid": 84499,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BUTTON",
+            "id": "",
+            "testId": "pane-panel-toggle",
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:10034445-1",
+              "surface": "{\"tabId\":\"browser:10034445-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 431,
+                "y": 166.5,
+                "width": 448,
+                "height": 495,
+                "top": 166.5,
+                "right": 879,
+                "bottom": 661.5,
+                "left": 431
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 28486,
+          "frontmostBefore": 28486,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 84499,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172697
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172697:0",
+          "ownerPid": 84499,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 551,
+          "y": 84,
+          "width": 322,
+          "height": 139.25
+        },
+        "intersection": {
+          "x": 551,
+          "y": 166.5,
+          "right": 873,
+          "bottom": 223.25
+        },
+        "area": 18273.5,
+        "overlayPoint": {
+          "x": 712,
+          "y": 194.875
+        },
+        "exposed": {
+          "x": 647.5,
+          "y": 631.5,
+          "bodyBounds": {
+            "x": 431,
+            "y": 166.5,
+            "width": 433,
+            "height": 495
+          },
+          "nativeViewport": {
+            "width": 448,
+            "height": 495,
+            "clientWidth": 433,
+            "clientHeight": 495
+          }
+        },
+        "pixels": [
+          [
+            177,
+            4,
+            201,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "question-settle-1360.png",
+      "sha256": "f17d73924d55166419b40b44dfbc68c69cf1ad490654f9cf2587ebc9dc6ce203",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine site approval and question stay above the same-pane page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-decisions-ge-3833f--same-pane-page-at-1360x800-background/question-settle-1360.png",
+      "resultLine": "✓  3 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:12:5 › genuine site approval and question stay above the same-pane page at 1360x800 (15.3s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172281:0",
+          "ownerPid": 16702,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BUTTON",
+            "id": "",
+            "testId": null,
+            "role": "option"
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:d8bfbb9d-1",
+              "surface": "{\"tabId\":\"browser:d8bfbb9d-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 305,
+                "y": 159.5,
+                "width": 1042,
+                "height": 627.5,
+                "top": 159.5,
+                "right": 1347,
+                "bottom": 787,
+                "left": 305
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 16702,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172281
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172281:0",
+          "ownerPid": 16702,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 305,
+          "y": 159.5,
+          "width": 1042,
+          "height": 627.5
+        },
+        "overlayRect": {
+          "x": 430.5,
+          "y": 603.75,
+          "width": 791,
+          "height": 176.25
+        },
+        "intersection": {
+          "x": 430.5,
+          "y": 603.75,
+          "right": 1221.5,
+          "bottom": 780
+        },
+        "area": 139413.75,
+        "overlayPoint": {
+          "x": 826,
+          "y": 691.875
+        },
+        "exposed": {
+          "x": 317,
+          "y": 473.25
+        },
+        "pixels": [
+          [
+            255,
+            255,
+            255,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "question-settle-900.png",
+      "sha256": "786e9bede6547d1d7066f110d9bededd04951a76c323d2439abdf7ad3ecf0b28",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine site approval and question stay above the same-pane page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-decisions-ge-50265-e-same-pane-page-at-900x800-background/question-settle-900.png",
+      "resultLine": "✓  4 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:12:5 › genuine site approval and question stay above the same-pane page at 900x800 (12.7s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172294:0",
+          "ownerPid": 16988,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BUTTON",
+            "id": "",
+            "testId": null,
+            "role": "option"
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:056956fc-1",
+              "surface": "{\"tabId\":\"browser:056956fc-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 305,
+                "y": 159.5,
+                "width": 582,
+                "height": 627.5,
+                "top": 159.5,
+                "right": 887,
+                "bottom": 787,
+                "left": 305
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 16988,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172294
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172294:0",
+          "ownerPid": 16988,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 305,
+          "y": 159.5,
+          "width": 582,
+          "height": 627.5
+        },
+        "overlayRect": {
+          "x": 315.5,
+          "y": 603.75,
+          "width": 561,
+          "height": 176.25
+        },
+        "intersection": {
+          "x": 315.5,
+          "y": 603.75,
+          "right": 876.5,
+          "bottom": 780
+        },
+        "area": 98876.25,
+        "overlayPoint": {
+          "x": 596,
+          "y": 691.875
+        },
+        "exposed": {
+          "x": 317,
+          "y": 473.25
+        },
+        "pixels": [
+          [
+            255,
+            255,
+            255,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "question-work-panel-1360.png",
+      "sha256": "8fbc8d0fe4311cde23f97ba259a5ecffa61dd9f3b58a2c5d2c840b947f207eae",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine question stays usable beside a retained work-panel page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-decisions-ge-039cf-work-panel-page-at-1360x800-background/question-work-panel-1360.png",
+      "resultLine": "✓   6 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:60:5 › genuine question stays usable beside a retained work-panel page at 1360x800 (24.2s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172003:0",
+          "ownerPid": 76618,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 83475,
+          "frontmostBefore": 83475,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 76618,
+          "width": 1360,
+          "windowId": 172003
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172003:0",
+          "ownerPid": 76618,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 315.5,
+          "y": 603.75,
+          "width": 557,
+          "height": 176.25
+        },
+        "intersection": {
+          "x": 891,
+          "y": 603.75,
+          "right": 872.5,
+          "bottom": 775
+        },
+        "area": 0,
+        "overlayPoint": {
+          "x": 594,
+          "y": 691.875
+        },
+        "exposed": {
+          "x": 903,
+          "y": 745
+        },
+        "pixels": [
+          [
+            255,
+            255,
+            255,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "question-work-panel-900.png",
+      "sha256": "d4261b724f41245e66e476f508ea11df96bf1593f459b407e6fce7611dbda94d",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine question stays usable beside a retained work-panel page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-decisions-ge-209b6--work-panel-page-at-900x800-background/question-work-panel-900.png",
+      "resultLine": "✓   9 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:60:5 › genuine question stays usable beside a retained work-panel page at 900x800 (33.3s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172057:0",
+          "ownerPid": 80144,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 80144,
+          "width": 900,
+          "windowId": 172057
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172057:0",
+          "ownerPid": 80144,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 315.5,
+          "y": 603.75,
+          "width": 561,
+          "height": 176.25
+        },
+        "intersection": {
+          "x": 431,
+          "y": 603.75,
+          "right": 876.5,
+          "bottom": 661.5
+        },
+        "area": 25727.625,
+        "overlayPoint": {
+          "x": 653.75,
+          "y": 632.625
+        },
+        "exposed": {
+          "x": 443,
+          "y": 414
+        },
+        "pixels": [
+          [
+            249,
+            249,
+            249,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "resize-strip-1360.png",
+      "sha256": "b34a748698589f488bac84d76a0e0f5a94f01b28416d75ad7a05bf2d5f484edf",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays live through resize and surface work panel at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-22c41-face-work-panel-at-1360x800-background/resize-strip-1360.png",
+      "resultLine": "✓  16 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:86:5 › native page stays live through resize and surface work panel at 1360x800 (26.7s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172153:0",
+          "ownerPid": 96969,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 96969,
+          "width": 1360,
+          "windowId": 172153
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172153:0",
+          "ownerPid": 96969,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 875,
+          "y": 166.5,
+          "width": 464,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 875,
+          "y": 49,
+          "width": 7,
+          "height": 726
+        },
+        "intersection": {
+          "x": 875,
+          "y": 166.5,
+          "right": 882,
+          "bottom": 775
+        },
+        "area": 4259.5,
+        "overlayPoint": {
+          "x": 875.875,
+          "y": 412
+        },
+        "exposed": {
+          "x": 887,
+          "y": 745
+        },
+        "pixels": [
+          [
+            10,
+            14,
+            18,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "resize-strip-900.png",
+      "sha256": "87dc2ce323a1dde1864208f9ae777a24366c3ff9ba2d455f2b5154069ea49c4d",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays live through resize and surface work panel at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-01491-rface-work-panel-at-900x800-background/resize-strip-900.png",
+      "resultLine": "✓  19 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:86:5 › native page stays live through resize and surface work panel at 900x800 (19.8s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172189:0",
+          "ownerPid": 3980,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 3980,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172189
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172189:0",
+          "ownerPid": 3980,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 415,
+          "y": 166.5,
+          "width": 464,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 415,
+          "y": 49,
+          "width": 7,
+          "height": 612.5
+        },
+        "intersection": {
+          "x": 415,
+          "y": 166.5,
+          "right": 422,
+          "bottom": 661.5
+        },
+        "area": 3465,
+        "overlayPoint": {
+          "x": 415.875,
+          "y": 355.25
+        },
+        "exposed": {
+          "x": 427,
+          "y": 631.5
+        },
+        "pixels": [
+          [
+            10,
+            14,
+            18,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "site-settle-1360.png",
+      "sha256": "55b5a651b98a75fdba41d4b0517d90fbd83c2e1fb37ca9b96987b27ca8aa8e35",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine site approval and question stay above the same-pane page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-decisions-ge-3833f--same-pane-page-at-1360x800-background/site-settle-1360.png",
+      "resultLine": "✓  3 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:12:5 › genuine site approval and question stay above the same-pane page at 1360x800 (15.3s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172281:0",
+          "ownerPid": 16702,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BODY",
+            "id": "",
+            "testId": null,
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:d8bfbb9d-1",
+              "surface": "{\"tabId\":\"browser:d8bfbb9d-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 305,
+                "y": 159.5,
+                "width": 1042,
+                "height": 627.5,
+                "top": 159.5,
+                "right": 1347,
+                "bottom": 787,
+                "left": 305
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 16702,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172281
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172281:0",
+          "ownerPid": 16702,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 305,
+          "y": 159.5,
+          "width": 1042,
+          "height": 627.5
+        },
+        "overlayRect": {
+          "x": 420,
+          "y": 583.5,
+          "width": 812,
+          "height": 193
+        },
+        "intersection": {
+          "x": 420,
+          "y": 583.5,
+          "right": 1232,
+          "bottom": 776.5
+        },
+        "area": 156716,
+        "overlayPoint": {
+          "x": 826,
+          "y": 680
+        },
+        "exposed": {
+          "x": 317,
+          "y": 757
+        },
+        "pixels": [
+          [
+            249,
+            249,
+            249,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "site-settle-900.png",
+      "sha256": "5e99a67045f46aff478a2b0c54cfe2fdf86016b310d9c012f31f551a8d010da5",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine site approval and question stay above the same-pane page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-failed-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-failed-final/ui-browser-ui-decisions-ge-50265-e-same-pane-page-at-900x800-background/site-settle-900.png",
+      "resultLine": "✓  4 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:12:5 › genuine site approval and question stay above the same-pane page at 900x800 (12.7s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172294:0",
+          "ownerPid": 16988,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BODY",
+            "id": "",
+            "testId": null,
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:056956fc-1",
+              "surface": "{\"tabId\":\"browser:056956fc-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 305,
+                "y": 159.5,
+                "width": 582,
+                "height": 627.5,
+                "top": 159.5,
+                "right": 887,
+                "bottom": 787,
+                "left": 305
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 16988,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172294
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172294:0",
+          "ownerPid": 16988,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 305,
+          "y": 159.5,
+          "width": 582,
+          "height": 627.5
+        },
+        "overlayRect": {
+          "x": 315.5,
+          "y": 583.5,
+          "width": 561,
+          "height": 193
+        },
+        "intersection": {
+          "x": 315.5,
+          "y": 583.5,
+          "right": 876.5,
+          "bottom": 776.5
+        },
+        "area": 108273,
+        "overlayPoint": {
+          "x": 596,
+          "y": 680
+        },
+        "exposed": {
+          "x": 317,
+          "y": 473.25
+        },
+        "pixels": [
+          [
+            249,
+            249,
+            249,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "surface-tab-drag-1360.png",
+      "sha256": "4c8256c8fa3628357d30a3cf2becfc1996fc90d2c69964acc90a78a174178786",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-interactions.spec.ts",
+      "testTitle": "composer composition and tab drag retain the native page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/last-flows.log",
+      "sourceCapture": "test-results/ui-layer-last-flows/ui-browser-ui-interactions-b1742-the-native-page-at-1360x800-background/surface-tab-drag-1360.png",
+      "resultLine": "✓  2 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 1360x800 (16.4s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172346:0",
+          "ownerPid": 19855,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BUTTON",
+            "id": "",
+            "testId": "chat-side-panel-tab",
+            "role": "tab"
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:2b2f1fb6-1",
+              "surface": "{\"tabId\":\"browser:2b2f1fb6-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 891,
+                "y": 166.5,
+                "width": 448,
+                "height": 608.5,
+                "top": 166.5,
+                "right": 1339,
+                "bottom": 775,
+                "left": 891
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 19855,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172346
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172346:0",
+          "ownerPid": 19855,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 891,
+          "y": 166.5,
+          "width": 448,
+          "height": 608.5
+        },
+        "overlayRect": {
+          "x": 305,
+          "y": 41,
+          "width": 1042,
+          "height": 746
+        },
+        "intersection": {
+          "x": 891,
+          "y": 166.5,
+          "right": 1339,
+          "bottom": 775
+        },
+        "area": 272608,
+        "overlayPoint": {
+          "x": 1115,
+          "y": 470.75
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            163,
+            2,
+            181,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "surface-tab-drag-900.png",
+      "sha256": "050b3c4ad19a6743cd4e5ac2defcedee0a7465b50e25bdb2d33bd38648abd844",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-interactions.spec.ts",
+      "testTitle": "composer composition and tab drag retain the native page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/last-flows.log",
+      "sourceCapture": "test-results/ui-layer-last-flows/ui-browser-ui-interactions-46dbd--the-native-page-at-900x800-background/surface-tab-drag-900.png",
+      "resultLine": "✓  3 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 900x800 (16.8s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172363:0",
+          "ownerPid": 20211,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BUTTON",
+            "id": "",
+            "testId": "chat-side-panel-tab",
+            "role": "tab"
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:7cdb0ef9-1",
+              "surface": "{\"tabId\":\"browser:7cdb0ef9-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 431,
+                "y": 166.5,
+                "width": 448,
+                "height": 495,
+                "top": 166.5,
+                "right": 879,
+                "bottom": 661.5,
+                "left": 431
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 20211,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172363
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172363:0",
+          "ownerPid": 20211,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 431,
+          "y": 166.5,
+          "width": 448,
+          "height": 495
+        },
+        "overlayRect": {
+          "x": 305,
+          "y": 41,
+          "width": 582,
+          "height": 746
+        },
+        "intersection": {
+          "x": 431,
+          "y": 166.5,
+          "right": 879,
+          "bottom": 661.5
+        },
+        "area": 221760,
+        "overlayPoint": {
+          "x": 655,
+          "y": 414
+        },
+        "exposed": null,
+        "pixels": [
+          [
+            163,
+            2,
+            181,
+            255
+          ]
+        ],
+        "paint": [
+          {
+            "kind": "tool-browser-preview",
+            "tabId": null,
+            "rect": {
+              "x": 333,
+              "y": 225.5,
+              "width": 266,
+              "height": 200.484375
+            },
+            "ancestors": [
+              "tool-browser-preview",
+              "work-group",
+              "chat-transcript-log",
+              "chat-transcript-stage",
+              "chat-main-column",
+              "chat-view-root",
+              "pane",
+              "pane-cell:main",
+              "pane-canvas",
+              "pane-row",
+              "main-pane-shell",
+              "chat-surface",
+              "route-canvas",
+              "app-shell"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "file": "surface-tab-dropped-1360.png",
+      "sha256": "c80668490e9df2a749a30acd78b6798bdb6ba00ebacac2482e3e24d69c077346",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-interactions.spec.ts",
+      "testTitle": "composer composition and tab drag retain the native page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/last-flows.log",
+      "sourceCapture": "test-results/ui-layer-last-flows/ui-browser-ui-interactions-b1742-the-native-page-at-1360x800-background/surface-tab-dropped-1360.png",
+      "resultLine": "✓  2 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 1360x800 (16.4s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172346:0",
+          "ownerPid": 19855,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 1360,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BODY",
+            "id": "",
+            "testId": null,
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:2b2f1fb6-1",
+              "surface": "{\"tabId\":\"browser:2b2f1fb6-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 305,
+                "y": 159.5,
+                "width": 1042,
+                "height": 627.5,
+                "top": 159.5,
+                "right": 1347,
+                "bottom": 787,
+                "left": 305
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 19855,
+          "targetActivatedDuringCapture": false,
+          "width": 1360,
+          "windowId": 172346
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172346:0",
+          "ownerPid": 19855,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "captured-ui-geometry",
+      "geometry": {
+        "viewport": {
+          "width": 1360,
+          "height": 800
+        },
+        "activeElement": {
+          "tag": "BODY",
+          "id": "",
+          "testId": null,
+          "role": null
+        },
+        "nativePageHoles": [
+          {
+            "tabId": "browser:2b2f1fb6-1",
+            "surface": "{\"tabId\":\"browser:2b2f1fb6-1\",\"webContentsId\":2,\"epoch\":1}",
+            "bounds": {
+              "x": 305,
+              "y": 159.5,
+              "width": 1042,
+              "height": 627.5,
+              "top": 159.5,
+              "right": 1347,
+              "bottom": 787,
+              "left": 305
+            },
+            "visibility": "visible"
+          }
+        ]
+      }
+    },
+    {
+      "file": "surface-tab-dropped-900.png",
+      "sha256": "4bcac98a7690070bf0e5b8771ee75822d940f080527ee7f3f177300e498f7c14",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-interactions.spec.ts",
+      "testTitle": "composer composition and tab drag retain the native page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/last-flows.log",
+      "sourceCapture": "test-results/ui-layer-last-flows/ui-browser-ui-interactions-46dbd--the-native-page-at-900x800-background/surface-tab-dropped-900.png",
+      "resultLine": "✓  3 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 900x800 (16.8s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172363:0",
+          "ownerPid": 20211,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "ui": {
+          "viewport": {
+            "width": 900,
+            "height": 800
+          },
+          "activeElement": {
+            "tag": "BODY",
+            "id": "",
+            "testId": null,
+            "role": null
+          },
+          "nativePageHoles": [
+            {
+              "tabId": "browser:7cdb0ef9-1",
+              "surface": "{\"tabId\":\"browser:7cdb0ef9-1\",\"webContentsId\":2,\"epoch\":1}",
+              "bounds": {
+                "x": 305,
+                "y": 159.5,
+                "width": 582,
+                "height": 627.5,
+                "top": 159.5,
+                "right": 887,
+                "bottom": 787,
+                "left": 305
+              },
+              "visibility": "visible"
+            }
+          ]
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 20211,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172363
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172363:0",
+          "ownerPid": 20211,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "captured-ui-geometry",
+      "geometry": {
+        "viewport": {
+          "width": 900,
+          "height": 800
+        },
+        "activeElement": {
+          "tag": "BODY",
+          "id": "",
+          "testId": null,
+          "role": null
+        },
+        "nativePageHoles": [
+          {
+            "tabId": "browser:7cdb0ef9-1",
+            "surface": "{\"tabId\":\"browser:7cdb0ef9-1\",\"webContentsId\":2,\"epoch\":1}",
+            "bounds": {
+              "x": 305,
+              "y": 159.5,
+              "width": 582,
+              "height": 627.5,
+              "top": 159.5,
+              "right": 887,
+              "bottom": 787,
+              "left": 305
+            },
+            "visibility": "visible"
+          }
+        ]
+      }
+    },
+    {
+      "file": "surface-work-panel-1360.png",
+      "sha256": "f0e55f6a03243f45c6b463f6f83ec4c11793edd41e50d02dfb6095b18cdb76a4",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays live through resize and surface work panel at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-22c41-face-work-panel-at-1360x800-background/surface-work-panel-1360.png",
+      "resultLine": "✓  16 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:86:5 › native page stays live through resize and surface work panel at 1360x800 (26.7s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172153:0",
+          "ownerPid": 96969,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 96969,
+          "width": 1360,
+          "windowId": 172153
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172153:0",
+          "ownerPid": 96969,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 305,
+          "y": 159.5,
+          "width": 538,
+          "height": 627.5
+        },
+        "overlayRect": {
+          "x": 851,
+          "y": 49,
+          "width": 488,
+          "height": 726
+        },
+        "intersection": {
+          "x": 851,
+          "y": 159.5,
+          "right": 843,
+          "bottom": 775
+        },
+        "area": 0,
+        "overlayPoint": {
+          "x": 1095,
+          "y": 412
+        },
+        "exposed": {
+          "x": 317,
+          "y": 757
+        },
+        "pixels": [
+          [
+            249,
+            249,
+            249,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "surface-work-panel-900.png",
+      "sha256": "ae3bf56714becb1c61ed15849c85ac2b3fb20741e9893d78031babae6fee57f9",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays live through resize and surface work panel at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-overlays-nat-01491-rface-work-panel-at-900x800-background/surface-work-panel-900.png",
+      "resultLine": "✓  19 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:86:5 › native page stays live through resize and surface work panel at 900x800 (19.8s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172189:0",
+          "ownerPid": 3980,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 3980,
+          "targetActivatedDuringCapture": false,
+          "width": 900,
+          "windowId": 172189
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172189:0",
+          "ownerPid": 3980,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageRect": {
+          "x": 305,
+          "y": 159.5,
+          "width": 582,
+          "height": 627.5
+        },
+        "overlayRect": {
+          "x": 391,
+          "y": 49,
+          "width": 488,
+          "height": 726
+        },
+        "intersection": {
+          "x": 391,
+          "y": 159.5,
+          "right": 879,
+          "bottom": 775
+        },
+        "area": 300364,
+        "overlayPoint": {
+          "x": 635,
+          "y": 467.25
+        },
+        "exposed": {
+          "x": 317,
+          "y": 757
+        },
+        "pixels": [
+          [
+            249,
+            249,
+            249,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ],
+        "paint": []
+      }
+    },
+    {
+      "file": "toolbar-add-menu-1360.png",
+      "sha256": "c9ff82a0addb6071d9f45c5b7bdf0dab7ac8d8aeb13bdba5ae7c78b02d00cf5b",
+      "contentSize": {
+        "width": 1360,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-layer.spec.ts",
+      "testTitle": "native UI add menu stays above a live agent page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-layer-native-9ebb8-live-agent-page-at-1360x800-background/toolbar-add-menu-1360.png",
+      "resultLine": "✓  13 [background] › test/e2e/ui/browser-ui-layer.spec.ts:13:5 › native UI add menu stays above a live agent page at 1360x800 (10.3s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172116:0",
+          "ownerPid": 90825,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 90825,
+          "width": 1360,
+          "windowId": 172116
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172116:0",
+          "ownerPid": 90825,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 1360,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageBox": {
+          "x": 953.421875,
+          "y": 166.5,
+          "width": 385.578125,
+          "height": 608.5
+        },
+        "menuBox": {
+          "x": 1126,
+          "y": 81,
+          "width": 182,
+          "height": 220
+        },
+        "overlap": {
+          "left": 1126,
+          "right": 1308,
+          "top": 166.5,
+          "bottom": 301
+        },
+        "menuPoint": {
+          "x": 1217,
+          "y": 233.75
+        },
+        "pagePoint": {
+          "x": 965.421875,
+          "y": 739
+        },
+        "pixels": [
+          [
+            241,
+            241,
+            242,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ]
+      }
+    },
+    {
+      "file": "toolbar-add-menu-900.png",
+      "sha256": "04a62c27f11cb4690e1d75e22ff7af1fd180005c44705b057f790fe621b062ad",
+      "contentSize": {
+        "width": 900,
+        "height": 800
+      },
+      "captureMethod": "desktopIndependentWindow",
+      "testFile": "test/e2e/ui/browser-ui-layer.spec.ts",
+      "testTitle": "native UI add menu stays above a live agent page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/acceptance-final.log",
+      "sourceCapture": "test-results/ui-layer-acceptance-final/ui-browser-ui-layer-native-270da--live-agent-page-at-900x800-background/toolbar-add-menu-900.png",
+      "resultLine": "✓  14 [background] › test/e2e/ui/browser-ui-layer.spec.ts:13:5 › native UI add menu stays above a live agent page at 900x800 (12.7s)",
+      "nativeState": {
+        "before": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172125:0",
+          "ownerPid": 91847,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        },
+        "result": {
+          "frontmostAfter": 41477,
+          "frontmostBefore": 41477,
+          "height": 800,
+          "onScreen": true,
+          "ownerPid": 91847,
+          "width": 900,
+          "windowId": 172125
+        },
+        "after": {
+          "windowId": 1,
+          "chromeId": 1,
+          "mediaSourceId": "window:172125:0",
+          "ownerPid": 91847,
+          "bounds": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "content": {
+            "x": 0,
+            "y": 30,
+            "width": 900,
+            "height": 800
+          },
+          "zoom": 1,
+          "focused": false,
+          "focusedContentsId": null
+        }
+      },
+      "geometrySource": "overlay-geometry",
+      "geometry": {
+        "pageBox": {
+          "x": 492.84375,
+          "y": 166.5,
+          "width": 386.15625,
+          "height": 495
+        },
+        "menuBox": {
+          "x": 666,
+          "y": 81,
+          "width": 182,
+          "height": 220
+        },
+        "overlap": {
+          "left": 666,
+          "right": 848,
+          "top": 166.5,
+          "bottom": 301
+        },
+        "menuPoint": {
+          "x": 757,
+          "y": 233.75
+        },
+        "pagePoint": {
+          "x": 504.84375,
+          "y": 625.5
+        },
+        "pixels": [
+          [
+            241,
+            241,
+            242,
+            255
+          ],
+          [
+            180,
+            0,
+            200,
+            255
+          ]
+        ]
+      }
+    }
+  ]
+}
