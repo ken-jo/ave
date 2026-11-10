@@ -97,7 +97,7 @@ export function parseBrowserNativeSurfaceRequest(value: unknown): BrowserNativeS
   return null;
 }
 
-export function parseBrowserNativeSurfaceState(value: unknown): BrowserNativeSurfaceState | null {
+function parseBrowserNativeSurfaceState(value: unknown): BrowserNativeSurfaceState | null {
   if (!isRecord(value) || !hasOnlyKeys(value, ["tabId", "webContentsId", "epoch", "revision", "url", "title", "favicon", "loading", "canGoBack", "canGoForward", "visible"])
     || !isId(value.tabId) || !isPositiveInteger(value.webContentsId) || !isPositiveInteger(value.epoch)
     || !isPositiveInteger(value.revision) || typeof value.url !== "string" || typeof value.title !== "string"

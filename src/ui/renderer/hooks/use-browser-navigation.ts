@@ -4,7 +4,7 @@ import { getWebSurfaceElement, nativeWebSurfaceState, subscribeWebSurfaces } fro
 import { commandNativeBrowserSurface } from "../preview/native-browser-surfaces.js";
 
 /** The subset of a `<webview>` a panel's chrome drives. */
-export interface GuestElement extends HTMLElement {
+interface GuestElement extends HTMLElement {
   getURL(): string;
   getTitle(): string;
   canGoBack(): boolean;
