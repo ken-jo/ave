@@ -59,6 +59,40 @@ afterEach(() => {
 
 describe("BrowserTabRegistry", () => {
 
+  it("coalesces duplicate human pause receipts while preserving explicit stop invalidation", async () => {
+    const { registry, ops, control } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    const requestId = ops.at(-1)?.request.requestId;
+    if (!requestId) throw new Error("Missing native creation request");
+    const guest = new FakeGuest(500, "about:blank");
+    registry.guestAttached(guest, 1, { kind: "native-view" });
+    registry.bindTab(1, { tabId: "native-page", webContentsId: guest.id, requestId, parked: false });
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing independent page");
+    const tab = registry.liveTab(opened.tabId);
+    if (!tab) throw new Error("Missing independent page binding");
+    registry.acquireControl(tab, ACTOR);
+    registry.userFocus(guest.id, true);
+    expect(tab.controlMode).toBe("human-paused");
+    expect(tab.actions.signal.aborted).toBe(true);
+    const generation = tab.controlGeneration;
+    const broadcasts = control.length;
+    const actions = tab.actions;
+    registry.userFocus(guest.id);
+    registry.userInput(guest.id, { type: "mouseDown" });
+    registry.userInput(guest.id, { type: "mouseUp" });
+    registry.userInput(guest.id, { type: "mouseWheel" });
+    expect(registry.pause(1, "native-page")).toBe(true);
+    expect(tab.controlGeneration).toBe(generation);
+    expect(tab.actions).toBe(actions);
+    expect(control).toHaveLength(broadcasts);
+    expect(registry.stop(1, "native-page")).toBe(true);
+    expect(tab.agentOrigin).toBeNull();
+    expect(tab.opener).toBe("user");
+    expect(tab.controlGeneration).toBe(generation + 1);
+    expect(control).toHaveLength(broadcasts + 1);
+  });
+
   it("authorizes independent creation from the matching pending actor and preserves its durable host identity", async () => {
     const { registry, ops } = setup();
     const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });

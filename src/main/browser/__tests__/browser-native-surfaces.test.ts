@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
-import type { BrowserWindow } from "electron";
+import type { MainWindow } from "../../main-window-host.js";
+import type { BrowserNativeInput } from "../../../shared/browser-native-input.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 import type { BrowserNativeSurfaceState } from "../../../shared/browser-native-surface.js";
 import { BROWSER_NATIVE_FAVICON_MAX_LENGTH } from "../../../shared/browser-native-surface.js";
 import type { BrowserTabBindResult } from "../../../shared/browser-surface.js";
@@ -18,6 +20,7 @@ interface Page extends EventEmitter {
   reload: ReturnType<typeof vi.fn>;
   openDevTools: ReturnType<typeof vi.fn>;
   setBackgroundThrottling: ReturnType<typeof vi.fn>;
+  sendInputEvent: ReturnType<typeof vi.fn>;
   navigationHistory: {
     canGoBack: ReturnType<typeof vi.fn>;
     canGoForward: ReturnType<typeof vi.fn>;
@@ -55,6 +58,7 @@ vi.mock("electron", async () => {
     getURL() { return this.url; }
     getTitle() { return this.title; }
     setBackgroundThrottling = vi.fn();
+    sendInputEvent = vi.fn(() => { native.trace.push("input"); });
     loadURL = vi.fn((url: string) => {
       this.url = url;
       if (native.deferredLoad) return new Promise<void>((resolve, reject) => { native.pendingLoads.push({ resolve, reject }); });
@@ -101,6 +105,10 @@ vi.mock("../../e2e-window-presentation.js", () => ({
   whenFocusEmulated: vi.fn(async () => native.emulated),
 }));
 
+vi.mock("../../main-window-host.js", () => ({
+  attachMainWindowPage: (window: { contentView: NativeView }, view: NativeView) => window.contentView.addChildView(view),
+}));
+
 import { View as NativeContainer } from "electron";
 import { BrowserNativeSurfaceHost, type BrowserNativeSurfaceDependencies } from "../browser-native-surfaces.js";
 
@@ -128,19 +136,21 @@ let owner: Window;
 let secondOwner: Window;
 let deps: BrowserNativeSurfaceDependencies;
 let windows: Map<number, Window>;
+let nextInputSequence = 0;
 
 beforeEach(() => {
+  nextInputSequence = 0;
   native.pages = []; native.views = []; native.preferences = []; native.trace = []; native.pendingLoads = [];
   native.deferredLoad = false; native.background = false; native.emulated = true; native.nextId = 10;
   owner = new Window(1);
   secondOwner = new Window(2);
   windows = new Map([[owner.id, owner], [secondOwner.id, secondOwner]]);
   deps = {
-    windowForId: id => windows.get(id) as unknown as BrowserWindow | undefined,
+    windowForId: id => windows.get(id) as unknown as MainWindow | undefined,
     authorizeCreate: vi.fn(() => true),
     attach: vi.fn(),
     bind: vi.fn((_windowId, request): BrowserTabBindResult => { native.trace.push(`bind:${request.parked}`); return { ok: true }; }),
-    changed: vi.fn(), userFocus: vi.fn(), userNavigate: vi.fn(),
+    changed: vi.fn(), inputStateChanged: vi.fn(), userFocus: vi.fn(), userNavigate: vi.fn(),
   };
   host = new BrowserNativeSurfaceHost(deps);
 });
@@ -178,6 +188,331 @@ function pageView(index = 0): NativeView {
 function ownerChildren(window = owner): NativeView[] {
   return (window.contentView as unknown as NativeView).children;
 }
+
+function pointer(surface: BrowserNativeSurfaceState, overrides: Partial<BrowserNativeInput> = {}): BrowserNativeInput {
+  return { tabId: surface.tabId, webContentsId: surface.webContentsId, epoch: surface.epoch, sequence: ++nextInputSequence,
+    type: "mouseDown", x: 100, y: 120, button: "left", clickCount: 1, modifiers: [], ...overrides };
+}
+
+async function customCursorImage(width = 16, height = 16) {
+  const png = await sharp({ create: { width, height, channels: 4, background: { r: 20, g: 80, b: 140, alpha: 1 } } }).png().toBuffer();
+  const toPNG = vi.fn(() => png);
+  return { png, toPNG, isEmpty: vi.fn(() => false), getSize: vi.fn(() => ({ width: width * 2, height: height * 2 })),
+    resize: vi.fn((_options: unknown) => ({ toPNG })) };
+}
+
+describe("native browser trusted user pointer routing", () => {
+  it("rejects stale, foreign, malformed and parked input without native delivery", async () => {
+    const state = await create();
+    expect(host.input(1, pointer(state))).toBe(false);
+    await present(state);
+    expect(host.input(2, pointer(state))).toBe(false);
+    expect(host.input(1, pointer(state, { epoch: state.epoch + 1 }))).toBe(false);
+    expect(host.input(1, pointer(state, { webContentsId: state.webContentsId + 1 }))).toBe(false);
+    expect(host.input(1, pointer(state, { x: Number.NaN }))).toBe(false);
+    owner.visible = false;
+    expect(host.input(1, pointer(state))).toBe(false);
+    expect(nativePage().sendInputEvent).not.toHaveBeenCalled();
+    expect(deps.userFocus).not.toHaveBeenCalled();
+  });
+
+  it("translates host coordinates through UI zoom and records takeover before native input", async () => {
+    owner.zoom = 1.5;
+    const state = await create();
+    await present(state);
+    native.trace = [];
+    vi.mocked(deps.userFocus).mockImplementation(() => { native.trace.push("takeover"); });
+    nativePage().focus.mockImplementation(() => { native.trace.push("focus"); });
+    expect(host.input(1, pointer(state, { x: 100.5, y: 121.5, modifiers: ["shift"] }))).toBe(true);
+    expect(nativePage().sendInputEvent).toHaveBeenCalledExactlyOnceWith({
+      type: "mouseDown", x: 76, y: 62, button: "left", clickCount: 1, modifiers: ["shift"],
+    });
+    expect(deps.userFocus).toHaveBeenCalledExactlyOnceWith(state.webContentsId, true);
+    expect(native.trace).toEqual(["takeover", "focus", "input"]);
+  });
+
+  it("rejects a down outside the authoritative page clip", async () => {
+    const state = await create();
+    await host.request(1, { action: "present", tabId: state.tabId, webContentsId: state.webContentsId, epoch: state.epoch,
+      sequence: 1, bounds: { x: 50, y: 80, width: 800, height: 600 }, clipBounds: { x: 100, y: 100, width: 100, height: 100 } });
+    expect(host.input(1, pointer(state, { x: 99 }))).toBe(false);
+    expect(host.input(1, pointer(state, { x: 200 }))).toBe(false);
+    expect(host.input(1, pointer(state, { x: 100 }))).toBe(true);
+    expect(nativePage().sendInputEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the actual native geometry while a UI zoom update awaits presentation", async () => {
+    const state = await create();
+    await present(state);
+    owner.zoom = 2;
+    expect(host.input(1, pointer(state))).toBe(true);
+    expect(nativePage().sendInputEvent).toHaveBeenCalledExactlyOnceWith({
+      type: "mouseDown", x: 150, y: 160, button: "left", clickCount: 1, modifiers: [],
+    });
+  });
+
+  it("retains a captured drag through an outside release and ends it once", async () => {
+    const state = await create();
+    await present(state);
+    expect(host.input(1, pointer(state))).toBe(true);
+    expect(vi.mocked(deps.userFocus).mock.calls).toEqual([[state.webContentsId, true], [state.webContentsId]]);
+    expect(host.input(1, pointer(state, { type: "mouseMove", x: -20, y: 900, modifiers: ["leftbuttondown"] }))).toBe(true);
+    expect(host.input(1, pointer(state, { type: "mouseUp", x: -20, y: 900 }))).toBe(true);
+    expect(nativePage().sendInputEvent).toHaveBeenLastCalledWith({ type: "mouseUp", x: -70, y: 820, button: "left", clickCount: 1, modifiers: [] });
+    expect(host.input(1, pointer(state, { type: "mouseUp" }))).toBe(false);
+    expect(host.input(1, pointer(state, { type: "mouseMove", x: -20 }))).toBe(false);
+    expect(vi.mocked(deps.userFocus).mock.calls).toEqual([[state.webContentsId, true], [state.webContentsId]]);
+  });
+
+  it("clears capture when parking and rejects a release after reacquisition", async () => {
+    const state = await create();
+    await present(state);
+    expect(host.input(1, pointer(state))).toBe(true);
+    await host.request(1, { action: "present", tabId: state.tabId, webContentsId: state.webContentsId, epoch: state.epoch, sequence: 2, bounds: null });
+    await present(state, 3);
+    expect(host.input(1, pointer(state, { type: "mouseUp" }))).toBe(false);
+    expect(host.input(1, pointer(state))).toBe(true);
+    const retained = await create();
+    await present(retained);
+    expect(host.input(1, pointer(retained, { type: "mouseUp" }))).toBe(false);
+  });
+
+  it("keeps captured releases on their page and replaces a missed release on a new down", async () => {
+    const first = await create();
+    const second = await create("browser:second");
+    await present(first);
+    await present(second);
+    expect(host.input(1, pointer(first))).toBe(true);
+    expect(host.input(1, pointer(second, { type: "mouseMove", modifiers: ["leftbuttondown"] }))).toBe(false);
+    expect(host.input(1, pointer(second, { type: "mouseUp" }))).toBe(false);
+    expect(host.input(1, pointer(second))).toBe(true);
+    expect(host.input(1, pointer(first, { type: "mouseUp" }))).toBe(false);
+    expect(host.input(1, pointer(second, { type: "mouseUp" }))).toBe(true);
+  });
+
+  it("clears a captured gesture when its native window loses focus", async () => {
+    const state = await create();
+    await present(state);
+    expect(host.input(1, pointer(state))).toBe(true);
+    owner.emit("blur");
+    expect(host.input(1, pointer(state, { type: "mouseUp" }))).toBe(false);
+    expect(host.input(1, pointer(state, { type: "mouseMove", x: -20 }))).toBe(false);
+    expect(host.input(1, pointer(state))).toBe(true);
+  });
+
+  it("keeps hover passive while wheel input takes over and uses native delta direction", async () => {
+    owner.zoom = 2;
+    const state = await create();
+    await present(state);
+    expect(host.input(1, pointer(state, { type: "mouseMove" }))).toBe(true);
+    expect(deps.userFocus).not.toHaveBeenCalled();
+    expect(nativePage().focus).not.toHaveBeenCalled();
+    expect(host.input(1, pointer(state, { type: "mouseWheel", deltaX: 2, deltaY: -35 }))).toBe(true);
+    expect(nativePage().sendInputEvent).toHaveBeenLastCalledWith({ type: "mouseWheel", x: 100, y: 80, button: "left",
+      clickCount: 1, modifiers: [], deltaX: 4, deltaY: -70, hasPreciseScrollingDeltas: true, canScroll: true });
+    expect(vi.mocked(deps.userFocus).mock.calls).toEqual([[state.webContentsId, true]]);
+    expect(nativePage().focus).not.toHaveBeenCalled();
+  });
+
+  it("does not activate an inactive owner and preserves background test focus isolation", async () => {
+    const state = await create();
+    await present(state);
+    owner.focused = false;
+    expect(host.input(1, pointer(state))).toBe(false);
+    expect(nativePage().sendInputEvent).not.toHaveBeenCalled();
+    native.background = true;
+    expect(host.input(1, pointer(state))).toBe(true);
+    expect(nativePage().focus).not.toHaveBeenCalled();
+    expect(owner.contents.focus).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and drops capture when native delivery throws", async () => {
+    const state = await create();
+    await present(state);
+    expect(host.input(1, pointer(state))).toBe(true);
+    nativePage().sendInputEvent.mockImplementationOnce(() => { throw new Error("Native page unavailable"); });
+    expect(host.input(1, pointer(state, { type: "mouseMove" }))).toBe(false);
+    expect(host.input(1, pointer(state, { type: "mouseUp" }))).toBe(false);
+  });
+
+  it("sends leave outside the pane without pausing or focusing", async () => {
+    const state = await create();
+    await present(state);
+    expect(host.input(1, pointer(state, { type: "mouseLeave", x: -10, y: -10 }))).toBe(true);
+    expect(nativePage().sendInputEvent).toHaveBeenCalledExactlyOnceWith({ type: "mouseLeave", x: -60, y: -90,
+      button: "left", clickCount: 1, modifiers: [] });
+    expect(deps.userFocus).not.toHaveBeenCalled();
+    expect(nativePage().focus).not.toHaveBeenCalled();
+  });
+
+  it("cancels the exact down sequence on blur without cancelling a newer gesture", async () => {
+    const state = await create();
+    await present(state);
+    const first = pointer(state);
+    expect(host.input(1, first)).toBe(true);
+    owner.emit("blur");
+    expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "cancel", tabId: state.tabId,
+      webContentsId: state.webContentsId, epoch: state.epoch, sequence: first.sequence });
+    const second = pointer(state);
+    expect(host.input(1, second)).toBe(true);
+    expect(host.input(1, { ...first, type: "mouseUp" })).toBe(false);
+    expect(deps.inputStateChanged).toHaveBeenCalledTimes(1);
+    expect(host.input(1, pointer(state, { type: "mouseUp" }))).toBe(true);
+  });
+
+  it("releases a missed up before passive hover enters another page and rejects host-owned drags", async () => {
+    const first = await create();
+    const second = await create("browser:second");
+    await present(first);
+    await present(second);
+    const down = pointer(first);
+    expect(host.input(1, down)).toBe(true);
+    expect(host.input(1, pointer(second, { type: "mouseMove" }))).toBe(true);
+    expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "cancel", tabId: first.tabId,
+      webContentsId: first.webContentsId, epoch: first.epoch, sequence: down.sequence });
+    expect(host.input(1, pointer(second, { type: "mouseMove", modifiers: ["leftbuttondown"] }))).toBe(false);
+    expect(nativePage(1).sendInputEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["park", "reacquire", "delivery", "reject", "new-down", "reload", "close"] as const)("cancels the captured down on %s", async reason => {
+    const state = await create();
+    await present(state);
+    const down = pointer(state);
+    expect(host.input(1, down)).toBe(true);
+    if (reason === "park") await host.request(1, { action: "present", tabId: state.tabId, webContentsId: state.webContentsId, epoch: state.epoch, sequence: 2, bounds: null });
+    if (reason === "reacquire") await create();
+    if (reason === "delivery") {
+      nativePage().sendInputEvent.mockImplementationOnce(() => { throw new Error("Native page unavailable"); });
+      expect(host.input(1, pointer(state, { type: "mouseMove" }))).toBe(false);
+    }
+    if (reason === "reject") expect(host.input(1, pointer(state, { type: "mouseUp", button: "right" }))).toBe(false);
+    if (reason === "new-down") expect(host.input(1, pointer(state))).toBe(true);
+    if (reason === "reload") owner.contents.emit("did-start-loading");
+    if (reason === "close") await host.request(1, { action: "close", tabId: state.tabId, webContentsId: state.webContentsId });
+    expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "cancel", tabId: state.tabId,
+      webContentsId: state.webContentsId, epoch: state.epoch, sequence: down.sequence });
+  });
+
+  it("cancels a down whose first native delivery fails", async () => {
+    const state = await create();
+    await present(state);
+    const down = pointer(state);
+    nativePage().sendInputEvent.mockImplementationOnce(() => { throw new Error("Native page unavailable"); });
+    expect(host.input(1, down)).toBe(false);
+    expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "cancel", tabId: state.tabId,
+      webContentsId: state.webContentsId, epoch: state.epoch, sequence: down.sequence });
+  });
+
+  it("cancels a rejected initial down so the private sender drops its local capture", async () => {
+    const state = await create();
+    await present(state);
+    const down = pointer(state, { x: -20 });
+    expect(host.input(1, down)).toBe(false);
+    expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "cancel", tabId: state.tabId,
+      webContentsId: state.webContentsId, epoch: state.epoch, sequence: down.sequence });
+  });
+
+  it("accepts the restarted UI sequence after all earlier pages have closed", async () => {
+    const state = await create();
+    await present(state);
+    expect(host.input(1, pointer(state, { sequence: 50 }))).toBe(true);
+    await host.request(1, { action: "close", tabId: state.tabId, webContentsId: state.webContentsId });
+    const replacement = await create();
+    await present(replacement);
+    expect(host.input(1, pointer(replacement, { sequence: 1 }))).toBe(true);
+  });
+
+  it.each([["pointer", "default"], ["hand", "pointer"], ["text", "text"], ["nodrop", "no-drop"], ["e-panning", "e-resize"],
+    ["m-panning", "all-scroll"], ["drag-drop-link", "alias"], ["ns-no-resize", "not-allowed"], ["custom", "auto"], ["unrecognized", "auto"]])("maps native cursor %s to CSS %s only while attached", async (type, cursor) => {
+    const state = await create();
+    nativePage().emit("cursor-changed", {}, type);
+    expect(deps.inputStateChanged).not.toHaveBeenCalled();
+    await present(state);
+    nativePage().emit("cursor-changed", {}, type);
+    expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "cursor", tabId: state.tabId,
+      webContentsId: state.webContentsId, epoch: state.epoch, cursor });
+    await host.request(1, { action: "present", tabId: state.tabId, webContentsId: state.webContentsId, epoch: state.epoch, sequence: 2, bounds: null });
+    nativePage().emit("cursor-changed", {}, type);
+    expect(deps.inputStateChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("resizes custom bitmap cursors to logical size and floors the scaled hotspot", async () => {
+    const state = await create();
+    await present(state);
+    const image = await customCursorImage();
+    nativePage().emit("cursor-changed", {}, "custom", image, 2, { width: 32, height: 32 }, { x: 7, y: 11 });
+    expect(image.resize).toHaveBeenCalledExactlyOnceWith({ width: 16, height: 16, quality: "best" });
+    expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "custom-cursor", tabId: state.tabId,
+      webContentsId: state.webContentsId, epoch: state.epoch, dataUrl: `data:image/png;base64,${image.png.toString("base64")}`,
+      width: 16, height: 16, hotspot: { x: 3, y: 5 } });
+    expect(deps.userFocus).not.toHaveBeenCalled();
+    expect(nativePage().focus).not.toHaveBeenCalled();
+  });
+
+  it("rounds logical dimensions while preserving an in-bounds fractional-scale hotspot", async () => {
+    const state = await create();
+    await present(state);
+    const image = await customCursorImage(21, 13);
+    image.getSize.mockReturnValue({ width: 31, height: 19 });
+    nativePage().emit("cursor-changed", {}, "custom", image, 1.5, { width: 31, height: 19 }, { x: 30, y: 18 });
+    expect(image.resize).toHaveBeenCalledExactlyOnceWith({ width: 21, height: 13, quality: "best" });
+    expect(deps.inputStateChanged).toHaveBeenLastCalledWith(1, expect.objectContaining({ type: "custom-cursor", width: 21,
+      height: 13, hotspot: { x: 20, y: 12 } }));
+  });
+
+  it("admits the bounded maximum bitmap scale and logical cursor size", async () => {
+    const state = await create();
+    await present(state);
+    const image = await customCursorImage(128, 128);
+    image.getSize.mockReturnValue({ width: 1024, height: 1024 });
+    nativePage().emit("cursor-changed", {}, "custom", image, 8, { width: 1024, height: 1024 }, { x: 1023, y: 1023 });
+    expect(image.resize).toHaveBeenCalledExactlyOnceWith({ width: 128, height: 128, quality: "best" });
+    expect(deps.inputStateChanged).toHaveBeenLastCalledWith(1, expect.objectContaining({ type: "custom-cursor", width: 128,
+      height: 128, hotspot: { x: 127, y: 127 } }));
+  });
+
+  it.each([0, -1, 9, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid custom cursor scale %s before image encoding", async scale => {
+    const state = await create();
+    await present(state);
+    const image = await customCursorImage();
+    nativePage().emit("cursor-changed", {}, "custom", image, scale, { width: 32, height: 32 }, { x: 0, y: 0 });
+    expect(image.resize).not.toHaveBeenCalled();
+    expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "cursor", tabId: state.tabId,
+      webContentsId: state.webContentsId, epoch: state.epoch, cursor: "auto" });
+  });
+
+  it.each(["raw-size", "logical-size", "fractional-size", "negative-hotspot", "outside-hotspot", "fractional-hotspot", "image-size", "empty-image"] as const)("rejects custom cursor %s before image encoding", async invalid => {
+    const state = await create();
+    await present(state);
+    const image = await customCursorImage();
+    const size = { width: 32, height: 32 };
+    const hotspot = { x: 0, y: 0 };
+    let scale = 2;
+    if (invalid === "raw-size") size.width = 1025;
+    if (invalid === "logical-size") scale = 0.1;
+    if (invalid === "fractional-size") size.width = 32.5;
+    if (invalid === "negative-hotspot") hotspot.x = -1;
+    if (invalid === "outside-hotspot") hotspot.y = 32;
+    if (invalid === "fractional-hotspot") hotspot.x = 0.5;
+    if (invalid === "image-size") image.getSize.mockReturnValue({ width: 31, height: 32 });
+    if (invalid === "empty-image") image.isEmpty.mockReturnValue(true);
+    nativePage().emit("cursor-changed", {}, "custom", image, scale, size, hotspot);
+    expect(image.resize).not.toHaveBeenCalled();
+    expect(deps.inputStateChanged).toHaveBeenLastCalledWith(1, expect.objectContaining({ type: "cursor", cursor: "auto" }));
+  });
+
+  it.each(["oversized", "invalid-png", "wrong-dimensions", "encode-error"] as const)("rejects %s custom cursor output", async invalid => {
+    const state = await create();
+    await present(state);
+    const image = await customCursorImage();
+    if (invalid === "oversized") image.toPNG.mockReturnValue(Buffer.alloc(262145));
+    if (invalid === "invalid-png") image.toPNG.mockReturnValue(Buffer.from("invalid"));
+    if (invalid === "wrong-dimensions") image.toPNG.mockReturnValue((await customCursorImage(15, 15)).png);
+    if (invalid === "encode-error") image.toPNG.mockImplementation(() => { throw new Error("Cursor encoding failed"); });
+    nativePage().emit("cursor-changed", {}, "custom", image, 2, { width: 32, height: 32 }, { x: 0, y: 0 });
+    expect(deps.inputStateChanged).toHaveBeenLastCalledWith(1, expect.objectContaining({ type: "cursor", cursor: "auto" }));
+  });
+});
 
 describe("native browser page creation", () => {
   it("creates a detached isolated page in the browser session and binds only its blank bootstrap", async () => {
@@ -561,6 +896,7 @@ describe("native browser user commands and state", () => {
     expect(ownerChildren()).toEqual([]);
     expect(deps.changed).toHaveBeenLastCalledWith(1, null, state.tabId);
     expect(page.listenerCount("focus")).toBe(0);
+    expect(page.listenerCount("cursor-changed")).toBe(0);
     expect(page.listenerCount("did-navigate")).toBe(0);
     expect(page.close).not.toHaveBeenCalled();
   });

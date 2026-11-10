@@ -13,6 +13,7 @@ import { BrowserNativeSurfaceHost } from "../../main/browser/browser-native-surf
 import { attachSideBrowserWebview } from "../../main/side-browser-webview.js";
 import { trackBrowserGuest } from "../../main/browser/browser-guest-tracking.js";
 import { parseBrowserNativeSurfaceRequest, type BrowserNativeSurfaceResult } from "../../shared/browser-native-surface.js";
+import { parseBrowserNativeInput } from "../../shared/browser-native-input.js";
 import type {
   BrowserTabStopRequest,
   ActiveWorkspaceSurface,
@@ -59,10 +60,24 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       const owner = getMainWindows().find(window => window.id === windowId && !window.isDestroyed());
       sendToWindow(owner, CHANNELS.browser.nativeSurfaceChanged, { tabId, surface }, log);
     },
+    inputStateChanged: (windowId, state) => {
+      const owner = getMainWindows().find(window => window.id === windowId && !window.isDestroyed());
+      sendToWindow(owner, CHANNELS.browser.nativeInputState, state, log);
+    },
     userFocus: (guestId, explicit) => browserTabRegistry.userFocus(guestId, explicit),
     userNavigate: (windowId, tabId) => { browserTabRegistry.stop(windowId, tabId); },
   });
   const surfaces = nativeSurfaces;
+
+  ipcMain.on(CHANNELS.browser.nativeInput, (event, payload: unknown) => {
+    const owner = mainWindowForContents(event.sender);
+    if (!validateHostRendererSender(event) || !owner || !event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.browser.nativeInput, event);
+      return;
+    }
+    const input = parseBrowserNativeInput(payload);
+    if (input) surfaces.input(owner.id, input);
+  });
 
   ipcMain.handle(CHANNELS.browser.nativeSurface, (event, payload: unknown): Promise<BrowserNativeSurfaceResult> | BrowserNativeSurfaceResult => {
     if (!validateHostRendererSender(event)) {

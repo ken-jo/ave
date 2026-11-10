@@ -25,6 +25,8 @@ const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
 const mockUserActivation = { isActive: false };
 
+vi.mock("../preload/browser-native-input.js", () => ({ installBrowserNativeInput: vi.fn() }));
+
 // Named exports only — mirrors the named-import shape in preload.ts.
 vi.mock("electron", () => ({
   contextBridge: {

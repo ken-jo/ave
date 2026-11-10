@@ -15,6 +15,8 @@ const mockSend = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
 const mockUserActivation = { isActive: false };
+
+vi.mock("../preload/browser-native-input.js", () => ({ installBrowserNativeInput: vi.fn() }));
 const originalDebugStreamEnv = process.env.VITE_DEBUG_STREAM;
 const originalAveDebugStreamEnv = process.env.AVE_DEBUG_STREAM;
 const originalAveDevEnv = process.env.AVE_DEV;

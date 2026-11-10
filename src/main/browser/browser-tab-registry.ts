@@ -1490,6 +1490,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
   }
 
   private pauseRecord(tab: BrowserTabRecord<G>, clearOrigin: boolean): boolean {
+    if (!clearOrigin && tab.controlMode === "human-paused" && tab.actions.signal.aborted) return true;
     const controller = tab.lease?.actor ?? tab.owner;
     if (controller) this.pausedControllers.set(tab.handle, controller);
     if (controller || tab.controlMode === "agent-active" || tab.controlMode === "human-paused") {

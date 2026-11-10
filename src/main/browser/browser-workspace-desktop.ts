@@ -5,6 +5,7 @@ import { createLogger } from "../../lib/logger.js";
 import type { BrowserTabControlState } from "../../shared/browser-surface.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
 import { getMainWindows } from "../app-state.js";
+import type { MainWindow } from "../main-window-host.js";
 import { observeAgentBrowserDownload } from "../browser-observation.js";
 import { trackBrowserGuest } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
@@ -13,12 +14,12 @@ import { createBrowserWorkspaceService, type BrowserWorkspaceService } from "./b
 
 const log = createLogger("browser-workspace-desktop");
 const FOCUS_TIMEOUT_MS = 750;
-const guests = new Map<number, { contents: WebContents; owner: BrowserWindow; dispose(): void }>();
-const windows = new Map<number, { owner: BrowserWindow; dispose(): void }>();
-const popups = new Map<string, { window: BrowserWindow; owner: BrowserWindow; title: string; dispose(): void }>();
+const guests = new Map<number, { contents: WebContents; owner: MainWindow; dispose(): void }>();
+const windows = new Map<number, { owner: MainWindow; dispose(): void }>();
+const popups = new Map<string, { window: BrowserWindow; owner: MainWindow; title: string; dispose(): void }>();
 let service: BrowserWorkspaceService | null = null;
 
-function mainWindow(windowId: number): BrowserWindow | undefined {
+function mainWindow(windowId: number): MainWindow | undefined {
   return getMainWindows().find((window) => !window.isDestroyed() && window.id === windowId);
 }
 
@@ -63,7 +64,7 @@ export function browserWorkspaceGuestWindowId(contents: WebContents | null): num
   return entry?.contents === contents && !entry.owner.isDestroyed() && mainWindow(entry.owner.id) === entry.owner ? entry.owner.id : null;
 }
 
-export function observeBrowserWorkspaceGuest(contents: WebContents, owner: BrowserWindow): void {
+export function observeBrowserWorkspaceGuest(contents: WebContents, owner: MainWindow): void {
   if (contents.isDestroyed() || owner.isDestroyed() || mainWindow(owner.id) !== owner
     || contents.session !== session.fromPartition(AVE_SIDE_BROWSER_PARTITION)) throw new Error("browser-guest-owner-mismatch");
   const guestId = contents.id;
@@ -169,7 +170,7 @@ export function refreshBrowserPopupControl(windowId: number, state: BrowserTabCo
 }
 
 // The caller must first verify the native child's session and owning main window.
-export function registerBrowserWorkspacePopup(openerGuestId: number, child: BrowserWindow, owner: BrowserWindow): string | null {
+export function registerBrowserWorkspacePopup(openerGuestId: number, child: BrowserWindow, owner: MainWindow): string | null {
   if (child.isDestroyed() || owner.isDestroyed() || mainWindow(owner.id) !== owner) return null;
   const contents = child.webContents;
   if (contents.session !== session.fromPartition(AVE_SIDE_BROWSER_PARTITION)) return null;

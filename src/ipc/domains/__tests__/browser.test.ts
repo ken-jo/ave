@@ -12,13 +12,17 @@ vi.mock("../../../main/browser/browser-workspace-desktop.js", () => ({
 
 vi.mock("electron", () => ({
   ipcMain: {
+    on: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
+      handlers.set(channel, fn);
+    }),
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
     }),
   },
 }));
 
-const windowSender = { id: 500 };
+const windowFrame = { url: "file:///Applications/Ave.app/dist/index.html" };
+const windowSender = { id: 500, mainFrame: windowFrame };
 vi.mock("../../../main/app-state.js", () => ({
   getMainWindows: () => [],
   getPrimaryMainWindow: () => null,
@@ -27,9 +31,10 @@ vi.mock("../../../main/app-state.js", () => ({
 
 const { registerBrowserHandlers, parseActiveSurface } = await import("../browser.js");
 const { browserTabRegistry } = await import("../../../main/browser/browser-tab-registry.js");
+const { BrowserNativeSurfaceHost } = await import("../../../main/browser/browser-native-surfaces.js");
 
 function fromWindow(): IpcMainInvokeEvent {
-  return { ...hostFrameEvent(), sender: windowSender } as unknown as IpcMainInvokeEvent;
+  return { ...hostFrameEvent(), sender: windowSender, senderFrame: windowFrame } as unknown as IpcMainInvokeEvent;
 }
 
 function invoke(channel: string, event: IpcMainInvokeEvent, payload: unknown): unknown {
@@ -51,6 +56,22 @@ afterEach(() => {
 });
 
 describe("browser IPC", () => {
+  it("routes private pointer input only from the owning top-level UI with a validated envelope", () => {
+    const input = vi.spyOn(BrowserNativeSurfaceHost.prototype, "input").mockReturnValue(true);
+    const payload = { tabId: "native", webContentsId: 43, epoch: 2, sequence: 1, type: "mouseDown", x: 100, y: 150,
+      button: "left", clickCount: 1, modifiers: [] };
+    try {
+      invoke(CHANNELS.browser.nativeInput, isolatedAppFrameEvent(), payload);
+      invoke(CHANNELS.browser.nativeInput, hostFrameEvent(), payload);
+      invoke(CHANNELS.browser.nativeInput, { ...fromWindow(), senderFrame: { url: windowFrame.url } } as unknown as IpcMainInvokeEvent, payload);
+      invoke(CHANNELS.browser.nativeInput, fromWindow(), { ...payload, ownerWindowId: 8 });
+      invoke(CHANNELS.browser.nativeInput, fromWindow(), { ...payload, type: "keyDown" });
+      expect(input).not.toHaveBeenCalled();
+      invoke(CHANNELS.browser.nativeInput, fromWindow(), payload);
+      expect(input).toHaveBeenCalledExactlyOnceWith(7, payload);
+    } finally { input.mockRestore(); }
+  });
+
   it("refuses a non-host frame on every invoke", () => {
     for (const channel of [CHANNELS.browser.nativeSurface, CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.browser.pause, CHANNELS.browser.resume, CHANNELS.browser.getState,
       CHANNELS.browser.getSessionBindings, CHANNELS.surface.setActive]) {

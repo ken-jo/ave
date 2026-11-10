@@ -2,14 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WebContents } from "electron";
 
 const native = vi.hoisted(() => ({
-  fromId: vi.fn(),
+  windows: [] as unknown[],
+  mainWindowForContents: vi.fn(),
   fromWebContents: vi.fn(),
   getDisplayMatching: vi.fn(),
   getPrimaryDisplay: vi.fn(),
 }));
 vi.mock("electron", () => ({
-  BrowserWindow: { fromId: native.fromId, fromWebContents: native.fromWebContents },
+  BrowserWindow: { fromWebContents: native.fromWebContents },
   screen: { getDisplayMatching: native.getDisplayMatching, getPrimaryDisplay: native.getPrimaryDisplay },
+}));
+
+vi.mock("../../app-state.js", () => ({
+  getMainWindows: () => native.windows, mainWindowForContents: native.mainWindowForContents,
 }));
 
 import { browserTabRegistry } from "../browser-tab-registry.js";
@@ -18,6 +23,7 @@ import { browserCapturePixelRatio } from "../browser-capture-desktop.js";
 
 beforeEach(() => {
   vi.resetAllMocks();
+  native.windows = [];
   browserTabRegistry.__reset();
 });
 afterEach(() => browserTabRegistry.__reset());
@@ -28,14 +34,13 @@ describe("browser page owner window", () => {
     const owner = { id: 7, getBounds: () => bounds };
     const page = { id: 81, isDestroyed: () => false } as WebContents;
     browserTabRegistry.guestAttached(page, owner.id, { kind: "native-view" });
-    native.fromId.mockReturnValue(owner);
+    native.windows = [owner];
     native.fromWebContents.mockReturnValue(null);
     native.getDisplayMatching.mockReturnValue({ scaleFactor: 2 });
     native.getPrimaryDisplay.mockReturnValue({ scaleFactor: 1 });
 
     expect(browserGuestOwnerWindow(page)).toBe(owner);
     expect(browserCapturePixelRatio(page)).toBe(2);
-    expect(native.fromId).toHaveBeenCalledWith(7);
     expect(native.getDisplayMatching).toHaveBeenCalledWith(bounds);
     expect(native.fromWebContents).not.toHaveBeenCalled();
     expect(native.getPrimaryDisplay).not.toHaveBeenCalled();
@@ -44,7 +49,7 @@ describe("browser page owner window", () => {
   it("does not replace a retired logical owner with a stale native association", () => {
     const page = { id: 82, isDestroyed: () => false } as WebContents;
     browserTabRegistry.guestAttached(page, 8, { kind: "native-view" });
-    native.fromId.mockReturnValue(null);
+    native.windows = [];
     native.fromWebContents.mockReturnValue({ id: 9 });
     expect(browserGuestOwnerWindow(page)).toBeNull();
     expect(native.fromWebContents).not.toHaveBeenCalled();
@@ -57,5 +62,15 @@ describe("browser page owner window", () => {
     native.fromWebContents.mockReturnValue(owner);
     expect(browserGuestOwnerWindow(page)).toBe(owner);
     expect(native.fromWebContents).toHaveBeenCalledWith(host);
+  });
+
+  it("resolves a legacy embedded page through its registered main UI", () => {
+    const host = { id: 91 };
+    const page = { id: 84, hostWebContents: host } as WebContents;
+    const owner = { id: 10 };
+    native.mainWindowForContents.mockReturnValue(owner);
+    expect(browserGuestOwnerWindow(page)).toBe(owner);
+    expect(native.mainWindowForContents).toHaveBeenCalledWith(host);
+    expect(native.fromWebContents).not.toHaveBeenCalled();
   });
 });
