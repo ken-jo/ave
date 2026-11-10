@@ -62,13 +62,14 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
   $env:USERNAME = $identity.Name.Split('\')[-1]
   New-Item -ItemType Directory -Path $env:TEMP -Force | Out-Null
   $probe = 'SOFTWARE\AveInstallerOwnerProbe'
+  $mappingProof = [Guid]::NewGuid().ToString('N')
   New-Item -Path "HKCU:\$probe" -Force | Out-Null
-  New-ItemProperty -Path "HKCU:\$probe" -Name OwnerSid -Value $ExpectedUserSid -Force | Out-Null
+  New-ItemProperty -Path "HKCU:\$probe" -Name MappingProof -Value $mappingProof -Force | Out-Null
   $users = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::Users, [Microsoft.Win32.RegistryView]::Registry64)
   try {
     $key = $users.OpenSubKey("$ExpectedUserSid\$probe")
     if ($null -eq $key) { throw 'The owner HKCU hive is not loaded under its SID' }
-    try { if ($key.GetValue('OwnerSid') -ne $ExpectedUserSid) { throw 'The owner HKCU hive maps to another SID' } } finally { $key.Dispose() }
+    try { if ($key.GetValue('MappingProof') -ne $mappingProof) { throw 'The owner HKCU hive maps to another SID' } } finally { $key.Dispose() }
   } finally { $users.Dispose() }
   $evidenceName = if ($ElevatedOwner) { 'elevated-owner.json' } else { 'filtered-owner.json' }
   @{ userSid = $identity.User.Value; administrator = $admin; profile = $env:USERPROFILE; hiveVerified = $true } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $OutputDirectory $evidenceName) -Encoding UTF8
