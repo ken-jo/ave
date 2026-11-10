@@ -101,7 +101,7 @@ $sid = $null
 $code = 1
 $failure = $null
 $cleanupErrors = @()
-$OutputDirectory = Join-Path $env:TEMP ('ave-smoke-owner-' + [Guid]::NewGuid().ToString('N'))
+$OutputDirectory = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ('ave-smoke-owner-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
 try {
   # Consent is automatic only for this disposable test. UAC itself remains on;
@@ -115,6 +115,8 @@ try {
   Add-LocalGroupMember -Group $administrators -Member $user
   & icacls.exe $OutputDirectory /grant "*${sid}:(OI)(CI)F" | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Could not grant the temporary owner its report directory' }
+  & icacls.exe $OutputDirectory /setintegritylevel '(OI)(CI)M' | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Could not make the report directory writable at medium integrity' }
   # The filtered bootstrap needs only this staged script, not access to the
   # runner account's workspace. The elevated owner opens the checkout later.
   $ownerScript = Join-Path $OutputDirectory 'owner.ps1'
