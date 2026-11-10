@@ -4760,10 +4760,10 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..9ebe9c3c6b6e11fb49f521d620c960e0
          }
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..503e8ee6f6552a7d7f41dea9c37014a445c2be7d
+index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1eb3f1641
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,2148 @@
+@@ -0,0 +1,2161 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
 +index 0efb5956f..2cba4b41e 100644
 +--- a/vendor/srt-win-src/src/acl.rs
@@ -5546,10 +5546,10 @@ index 0000000000000000000000000000000000000000..503e8ee6f6552a7d7f41dea9c37014a4
 +         let ct = process_create_time(unsafe { GetCurrentProcess() }).unwrap();
 +diff --git a/vendor/srt-win-src/tests/acl_parent_scope.rs b/vendor/srt-win-src/tests/acl_parent_scope.rs
 +new file mode 100644
-+index 000000000..14064e546
++index 000000000..76ecbf488
 +--- /dev/null
 ++++ b/vendor/srt-win-src/tests/acl_parent_scope.rs
-+@@ -0,0 +1,1362 @@
++@@ -0,0 +1,1375 @@
 ++//! Parent deletion protection must not spread over unrelated sibling trees.
 ++//! All ACL changes are confined to a fresh owned fixture. No sandbox account,
 ++//! elevation, WFP installation or machine-wide state is needed.
@@ -6812,12 +6812,12 @@ index 0000000000000000000000000000000000000000..503e8ee6f6552a7d7f41dea9c37014a4
 ++        vec![(1, 0, Mask::FILE_DELETE_CHILD.bits())],
 ++        "CWD-held parent must receive its object-only guard"
 ++    );
-++    assert!(
-++        sandbox_aces(&target)
-++            .iter()
-++            .any(|&(kind, flags, mask)| kind == 1
-++                && flags & 3 == 3
-++                && mask == Mask::FILE_ALL.bits())
+++    let target_aces = sandbox_aces(&target);
+++    eprintln!("CWD-held child file ACEs: {target_aces:?}");
+++    assert_eq!(
+++        target_aces,
+++        vec![(1, 0, Mask::FILE_ALL.bits())],
+++        "child file must carry exactly its effective full deny"
 ++    );
 ++    assert_eq!(snapshot(&sentinel), sentinel_before);
 ++    {
@@ -6868,6 +6868,19 @@ index 0000000000000000000000000000000000000000..503e8ee6f6552a7d7f41dea9c37014a4
 ++    // The same verified open is also used when the CWD itself is a full deny.
 ++    run_acl("stamp", &parent);
 ++    assert!(holder.0.try_wait().unwrap().is_none());
+++    let directory_aces = sandbox_aces(&parent);
+++    let descendant_aces = sandbox_aces(&target);
+++    eprintln!("CWD-held directory ACEs: root={directory_aces:?} child_file={descendant_aces:?}");
+++    assert_eq!(
+++        directory_aces,
+++        vec![(1, 3, Mask::FILE_ALL.bits())],
+++        "directory must carry exactly its inheritable full deny"
+++    );
+++    assert_eq!(
+++        descendant_aces,
+++        vec![(1, 0x10, Mask::FILE_ALL.bits())],
+++        "descendant file must carry exactly the inherited effective full deny"
+++    );
 ++    {
 ++        let _impersonation = Impersonation::begin();
 ++        assert_eq!(
