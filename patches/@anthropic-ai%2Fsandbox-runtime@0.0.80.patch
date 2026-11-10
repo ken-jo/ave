@@ -4910,12 +4910,12 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..13072ec11000550155d61ecb01d96efb
          }
 diff --git a/vendor/srt-win/persistent-denies.patch b/vendor/srt-win/persistent-denies.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8fd5b5902
+index 0000000000000000000000000000000000000000..1ad045a068e7da6d87dfb3a80b893ff10ba58354
 --- /dev/null
 +++ b/vendor/srt-win/persistent-denies.patch
-@@ -0,0 +1,4541 @@
+@@ -0,0 +1,4539 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
-+index 0efb5956f..786df8f70 100644
++index 0efb5956f..05912ba77 100644
 +--- a/vendor/srt-win-src/src/acl.rs
 ++++ b/vendor/srt-win-src/src/acl.rs
 +@@ -9,15 +9,15 @@
@@ -5338,7 +5338,7 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 + /// silently re-enable inheritance, and neither revoke nor restore
 + /// could undo that — the parent's inheritable ACEs (e.g. a data-drive
 + /// root's `Authenticated Users:(M)`) would durably re-open a path its
-+@@ -814,52 +996,211 @@ impl SbAceSet {
++@@ -814,52 +996,213 @@ impl SbAceSet {
 + /// Both grant and deny carry `(OI)(CI)` so directory targets cover
 + /// the subtree; on a file the inheritance flags are inert.
 + pub fn apply_sandbox_aces(canonical_path: &str, sandbox_sid: &str, set: SbAceSet) -> Result<()> {
@@ -5539,6 +5539,8 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 ++    if crate::path_id::file_id_from_handle(tree.0)? != identity {
 ++        bail!("ACL target identity changed");
 ++    }
+++    // The verified tree handle now pins the object for the remaining effect.
+++    drop(handle);
 ++    let (sd, old) = read_local_dacl(&tree)?;
 ++    let new = compose(old)?;
 ++    before_tree_write()?;
@@ -5580,7 +5582,7 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 +     let denies = filter_aces(dacl, |hdr, body| {
 +         // ACCESS_DENIED_ACE layout: header (4) then Mask (u32 LE).
 +         let mask = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
-+@@ -886,6 +1227,10 @@ mod tests {
++@@ -886,6 +1229,10 @@ mod tests {
 +     /// revision 2, GENERIC_ALL on each. Regression for the
 +     /// `KeptAces`/`rebuild_acl` chokepoint: a sizing or revision
 +     /// bug here breaks the sandbox-user desktop attach (R1 hang).
@@ -5591,7 +5593,7 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 +     #[test]
 +     fn isolated_desk_dacl_shape() {
 +         let d = build_allow_dacl(&[
-+@@ -935,7 +1280,7 @@ mod tests {
++@@ -935,7 +1282,7 @@ mod tests {
 +             Allow(SID_SYSTEM, Mask::FILE_ALL, OICI),
 +         ])
 +         .unwrap();
@@ -5600,7 +5602,7 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 +         let (sd, _) = read_file_dacl(path).unwrap();
 +         assert!(sd_dacl_protected(&sd).unwrap(), "setup: DACL protected");
 +
-+@@ -962,9 +1307,7 @@ mod tests {
++@@ -962,9 +1309,7 @@ mod tests {
 +         // The common case keeps its contract: an unprotected dir
 +         // stays unprotected across the same round-trip, and its
 +         // inherited ACEs (the parent's OICI lockdown entries
@@ -5611,7 +5613,7 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 +         let plain = dir.join("plain");
 +         std::fs::create_dir_all(&plain).unwrap();
 +         let plain_path = plain.to_str().unwrap();
-+@@ -978,12 +1321,545 @@ mod tests {
++@@ -978,12 +1323,541 @@ mod tests {
 +         let (aces, ..) = filter_aces(dacl, |hdr, _| hdr.AceFlags & INHERITED_ACE != 0).unwrap();
 +         assert!(
 +             !aces.is_empty(),
@@ -5683,7 +5685,7 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 ++        let owner = crate::sid::current_user_sid().unwrap();
 ++        let sid = LocalPsid::from_string(SANDBOX_SID).unwrap();
 ++        let mut outcomes = Vec::new();
-++        let mut named_propagated = false;
+++        let mut all_modes_matched = true;
 ++        for (base_index, base) in bases.into_iter().enumerate() {
 ++            let root = base.join(format!("{suffix}-{base_index}"));
 ++            std::fs::create_dir_all(&root).unwrap();
@@ -5820,21 +5822,15 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 ++                        );
 ++                        eprintln!("tree handle probe: {outcome}");
 ++                        outcomes.push(outcome);
-++                        if base_index == 0
-++                            && mode == "named"
-++                            && protection == "protected"
-++                            && hold_max
-++                        {
-++                            named_propagated = result.is_ok() && inherited == 1;
-++                        }
+++                        all_modes_matched &= result.is_ok() && inherited == usize::from(!hold_max);
 ++                    }
 ++                }
 ++            }
 ++            std::fs::remove_dir_all(root).unwrap();
 ++        }
 ++        assert!(
-++            named_propagated,
-++            "named security positive control did not propagate: {outcomes:#?}"
+++            all_modes_matched,
+++            "released maximum-access handles must permit propagation and held ones must suppress it: {outcomes:#?}"
 ++        );
 ++    }
 ++
@@ -5889,6 +5885,7 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 ++        .unwrap();
 ++        let new = rebuild_acl(kept.2, &set.head_aces(sid.as_psid()), &kept, &[]).unwrap();
 ++        write_composed_dacl(&handle, old, &new, dacl_control(&sd).unwrap()).unwrap();
+++        drop(handle);
 ++        assert_eq!(
 ++            inherited_guard_count(),
 ++            1,
@@ -6079,6 +6076,7 @@ index 0000000000000000000000000000000000000000..71f86044371fe04190f8a6ef90939ef8
 ++        .unwrap();
 ++        let new = rebuild_acl(kept.2, &[], &kept, &[]).unwrap();
 ++        write_composed_dacl(&handle, old, &new, dacl_control(&sd).unwrap()).unwrap();
+++        drop(handle);
 ++        assert_eq!(count(child.to_str().unwrap(), 0), 1);
 ++        remove_sandbox_allow_aces(path, RETIRED_SID, &identity, false).unwrap();
 ++        assert_eq!(count(child.to_str().unwrap(), 0), 1);
