@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSharedElectronTest } from "./shared-electron.js";
 import { closeNativeFixture, launchNativeFixture, nativeFixturePaths } from "./native-fixture-runtime.js";
-import { buildIsolatedElectronEnv, launchElectron, setWindowSize } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, REPO_ROOT, setWindowSize } from "./seeded-electron.js";
 import type { BrowserScreenshotOptions } from "../../../src/shared/browser-capture.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./browser-capture-native/contract.js";
 import { browserTargetId, inspectBrowserTarget } from "./browser-native-target.js";
@@ -20,9 +20,10 @@ const test = createSharedElectronTest<ElectronApplication>({
     if (temporaryRoot === "/private/tmp" || temporaryRoot.startsWith("/private/tmp/")) throw new Error("Capture fixture requires an external temporary directory");
     const app = await launchNativeFixture("ave-browser-capture-", async ({ runtime, assets }) => {
       const home = join(runtime, "home");
-      const mainOut = join(assets, "main.mjs");
+      const mainOut = join(assets, "host", "src", "main", "main.js");
       await fs.mkdir(home, { recursive: true });
-      await build({ entryPoints: [join(FIXTURE, "preload.ts")], outfile: join(assets, "preload.cjs"), bundle: true, format: "cjs", platform: "node", external: ["electron"], logLevel: "silent" });
+      await fs.mkdir(dirname(mainOut), { recursive: true });
+      await fs.copyFile(join(REPO_ROOT, "dist", "src", "preload.cjs"), join(assets, "host", "src", "preload.cjs"));
       await build({ entryPoints: [join(FIXTURE, "renderer.tsx")], outfile: join(assets, "renderer.js"), bundle: true, format: "iife", platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"test"' }, logLevel: "silent" });
       await build({ entryPoints: [join(FIXTURE, "main.ts")], outfile: mainOut, bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron", "@napi-rs/canvas"],
         banner: { js: "import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);" }, logLevel: "silent" });
@@ -49,12 +50,14 @@ const test = createSharedElectronTest<ElectronApplication>({
   },
   assertClean: async (app) => {
     await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.assertClean());
-    expect(await app.evaluate(async ({ BrowserWindow, webContents }) => {
-      const windows = BrowserWindow.getAllWindows();
+    expect(await app.evaluate(async ({ BaseWindow, webContents }) => {
+      const windows = BaseWindow.getAllWindows();
       const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
-      const owner = BrowserWindow.fromId(fixture.windowId);
+      const owner = BaseWindow.fromId(fixture.windowId);
       if (!owner) throw new Error("Capture fixture owner is unavailable");
-      const guests = webContents.getAllWebContents().filter(contents => contents.getType() === "window" && contents.id !== owner.webContents.id);
+      const chrome = webContents.getAllWebContents().find(contents => contents === Reflect.get(owner, "webContents"));
+      if (!chrome) throw new Error("Capture fixture UI is unavailable");
+      const guests = webContents.getAllWebContents().filter(contents => contents.getType() === "window" && contents.id !== chrome.id);
       const guest = guests[0];
       return { windows: windows.length, guests: guests.length, visible: windows[0]?.isVisible(), focused: windows.some(window => window.isFocused()),
         independent: guest?.id === fixture.targetId && !guest.hostWebContents,
@@ -122,8 +125,8 @@ async function layout(app: ElectronApplication) {
     return { windowId: fixture.windowId, targetId: fixture.targetId, pageUrl: fixture.pageUrl };
   });
   expect(await browserTargetId(app, target.pageUrl)).toBe(target.targetId);
-  const native = await app.evaluate(({ BrowserWindow, webContents }, target) => {
-    const window = BrowserWindow.fromId(target.windowId);
+  const native = await app.evaluate(({ BaseWindow, webContents }, target) => {
+    const window = BaseWindow.fromId(target.windowId);
     const guest = webContents.fromId(target.targetId);
     if (!window || !guest) throw new Error("Capture fixture native layout is unavailable");
     return { bounds: window.getContentBounds(), zoom: guest.getZoomFactor(), type: guest.getType(), embedded: Boolean(guest.hostWebContents) };

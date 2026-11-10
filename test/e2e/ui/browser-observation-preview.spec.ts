@@ -174,7 +174,7 @@ async function exercisePreview(scope: "parked" | "focus" | "closure" | "navigati
       dataTransfer.setData("application/x-ave-surface", JSON.stringify({ tabId: id, kind: "browser", from: { side: "main" } }));
       element.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer, clientX: rect.right - 2, clientY: rect.top + rect.height / 2 }));
     }, rendererTabId);
-    const guestFrame = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${rendererTabId}"]`);
+    const guestFrame = page.locator(`[data-testid="chat-side-panel-browser-native"][data-tab-id="${rendererTabId}"]`);
     await expect(guestFrame).toHaveCSS("visibility", "visible");
     const nativePageId = await browserTargetId(ctx.app, firstUrl);
     expect(await inspectBrowserTarget(ctx.app, host.windowId, firstUrl)).toMatchObject({

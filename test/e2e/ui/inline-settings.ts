@@ -10,8 +10,8 @@ const originalMainWindowBounds = new WeakMap<ElectronApplication, MainWindowBoun
 
 // Restore saved window bounds when closing settings.
 export async function forceWideMainWindow(app: ElectronApplication): Promise<void> {
-  const originalBounds = await app.evaluate(({ BrowserWindow }, size) => {
-    const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible());
+  const originalBounds = await app.evaluate(({ BaseWindow }, size) => {
+    const wins = BaseWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible());
     const target = wins.sort(
       (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
     )[0];
@@ -28,8 +28,8 @@ export async function forceWideMainWindow(app: ElectronApplication): Promise<voi
 async function restoreMainWindowBounds(app: ElectronApplication): Promise<void> {
   const bounds = originalMainWindowBounds.get(app);
   if (!bounds) return;
-  await app.evaluate(({ BrowserWindow }, original) => {
-    const wins = BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible());
+  await app.evaluate(({ BaseWindow }, original) => {
+    const wins = BaseWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible());
     const target = wins.sort(
       (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
     )[0];
@@ -45,13 +45,15 @@ export async function openInlineSettings(
   initialTab = 'llm',
 ): Promise<Page> {
   await forceWideMainWindow(app);
-  await app.evaluate(({ BrowserWindow }, tab) => {
-    const wins = BrowserWindow.getAllWindows().filter((win) => !win.isDestroyed() && win.isVisible());
+  await app.evaluate(({ BaseWindow, webContents }, tab) => {
+    const wins = BaseWindow.getAllWindows().filter((win) => !win.isDestroyed() && win.isVisible());
     const target = wins.sort(
       (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
     )[0];
     if (!target) throw new Error('main window is unavailable');
-    target.webContents.send('ave:view:activate', { viewKey: 'settings', settingsTab: tab });
+    const chrome = webContents.getAllWebContents().find(contents => contents === Reflect.get(target, "webContents"));
+    if (!chrome) throw new Error('main window UI is unavailable');
+    chrome.send('ave:view:activate', { viewKey: 'settings', settingsTab: tab });
   }, initialTab);
 
   // Use the layout marker for locale-independent settings readiness.

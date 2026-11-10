@@ -40,14 +40,18 @@ export async function withNativeFocusDiagnostics<T>(
 ): Promise<T> {
   try { return await verifyFocus(); }
   catch (error) {
-    const windows = await app.evaluate(({ BrowserWindow }) => ({
-      focusedWindowId: BrowserWindow.getFocusedWindow()?.id ?? null,
-      windows: BrowserWindow.getAllWindows().map((window) => ({
-        id: window.id, visible: window.isVisible(), minimized: window.isMinimized(), focused: window.isFocused(),
-        modal: window.isModal(), parentId: window.getParentWindow()?.id ?? null,
-        contentsFocused: window.webContents.isFocused(),
-        mainFrameFocused: window.webContents.focusedFrame === window.webContents.mainFrame,
-      })),
+    const windows = await app.evaluate(({ BaseWindow, webContents }) => ({
+      focusedWindowId: BaseWindow.getFocusedWindow()?.id ?? null,
+      windows: BaseWindow.getAllWindows().map((window) => {
+        const chrome = webContents.getAllWebContents().find(contents => contents === Reflect.get(window, "webContents"));
+        return {
+          id: window.id, visible: window.isVisible(), minimized: window.isMinimized(), focused: window.isFocused(),
+          modal: window.isModal(), parentId: window.getParentWindow()?.id ?? null,
+          chromeId: chrome?.id ?? null,
+          contentsFocused: chrome?.isFocused() ?? false,
+          mainFrameFocused: chrome !== undefined && chrome.focusedFrame === chrome.mainFrame,
+        };
+      }),
     })).catch((inspectionError: unknown) => ({ unavailable: inspectionError instanceof Error ? inspectionError.message : String(inspectionError) }));
     const diagnostic = { at: new Date().toISOString(), expectedPid: app.process().pid, desktop: await desktopFocus(), native: windows };
     const body = JSON.stringify(diagnostic, null, 2);

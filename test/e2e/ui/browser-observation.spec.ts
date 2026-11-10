@@ -4,7 +4,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { writeFileSync } from "node:fs";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import type { AgentObservationEvent } from "../../../src/shared/agent-observation.js";
-import { buildLlmSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from "./seeded-electron.js";
 
 interface BrowserGuestGeometry {
   at: number;
@@ -137,20 +137,17 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
       });
     });
     const page = ctx.page;
+    const observationApp = ctx.app;
     const errors: string[] = [];
     page.on("crash", () => errors.push("Main renderer crashed"));
     page.on("pageerror", (error) => errors.push(error.message));
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: {
       reviewer: { interactive: { autoApprove: "off" } } } }));
-    await ctx.app.evaluate(({ BrowserWindow }) => {
-      const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-      if (!window) throw new Error("Browser fixture window unavailable");
-      window.setContentSize(1280, 860);
-    });
+    await setWindowSize(ctx.app, 1280, 860);
     await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
       .toEqual({ width: 1280, height: 860 });
-    await expect.poll(() => ctx!.app.evaluate(({ BrowserWindow }) => {
-      const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
+    await expect.poll(() => observationApp.evaluate(({ BaseWindow }) => {
+      const window = BaseWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
       if (!window) throw new Error("Browser fixture window unavailable");
       const { width, height } = window.getContentBounds();
       return { width, height };
@@ -171,7 +168,7 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
       });
       let previous = "";
       const measure = () => {
-        const guest = document.querySelector('[data-testid="web-surface-frame"]');
+        const guest = document.querySelector('[data-testid="chat-side-panel-browser-native"]');
         if (guest) {
           const bounds = guest.getBoundingClientRect().toJSON();
           const state = { bounds, strip: document.querySelector('[data-testid="browser-preview-live-strip"]') !== null,
@@ -222,7 +219,7 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
         return guest.executeJavaScript("document.querySelector('output').textContent");
       }, guestId)).toBe("Clicked");
     } finally {
-      const diagnostic = await ctx.app.evaluate(async ({ BrowserWindow, webContents }, id) => {
+      const diagnostic = await ctx.app.evaluate(async ({ BaseWindow, webContents }, id) => {
         const guest = webContents.fromId(id);
         if (!guest) throw new Error("Browser fixture guest unavailable");
         const state = globalThis as unknown as { browserFixtureConsole: unknown[]; browserFixtureCrashes: unknown[]; browserFixtureInput: unknown[] };
@@ -236,14 +233,18 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
               clientWidth: document.documentElement.clientWidth, clientHeight: document.documentElement.clientHeight,
               scale: visualViewport?.scale } };
         })()`);
-        const windows = await Promise.all(BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed()).map(async (window) => ({
-          id: window.id, contentBounds: window.getContentBounds(), bounds: window.getBounds(),
-          viewport: await window.webContents.executeJavaScript("({ innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio, screenX, screenY, scale: visualViewport?.scale })"),
-        })));
+        const windows = await Promise.all(BaseWindow.getAllWindows().filter((window) => !window.isDestroyed()).map(async (window) => {
+          const chrome = webContents.getAllWebContents().find(contents => contents === Reflect.get(window, "webContents"));
+          if (!chrome) throw new Error("Browser fixture UI unavailable");
+          return {
+            id: window.id, contentBounds: window.getContentBounds(), bounds: window.getBounds(),
+            viewport: await chrome.executeJavaScript("({ innerWidth, innerHeight, outerWidth, outerHeight, devicePixelRatio, screenX, screenY, scale: visualViewport?.scale })"),
+          };
+        }));
         return { guestId: id, dom, windows, nativeInput: state.browserFixtureInput,
           console: state.browserFixtureConsole, crashes: state.browserFixtureCrashes };
       }, guestId);
-      const guestBounds = await page.getByTestId("web-surface-frame").boundingBox();
+      const guestBounds = await page.getByTestId("chat-side-panel-browser-native").boundingBox();
       const geometry = await page.evaluate(() => (window as unknown as { browserGuestGeometry: BrowserGuestGeometry[] }).browserGuestGeometry);
       const control = await page.evaluate(() => (window as unknown as { browserControlTransitions: unknown[] }).browserControlTransitions);
       const proof = { ...diagnostic, guestBounds, geometry, control };

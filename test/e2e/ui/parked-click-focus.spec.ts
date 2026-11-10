@@ -2,16 +2,19 @@ import { expect, test } from "@playwright/test";
 import { createServer, type ServerResponse } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { writeFile } from "node:fs/promises";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron, setWindowSize } from "./seeded-electron.js";
 import { browserHostIdentity, browserTargetId, inspectBrowserTarget } from "./browser-native-target.js";
 
 test.use({ trace: "on" });
-test("parked agent click preserves the composer throughout native dispatch", () => exerciseParkedClick(false));
-test("presented agent click preserves the composer throughout native dispatch", () => exerciseParkedClick(false, false, false, true));
+for (const width of [1360, 900]) {
+  test(`parked agent click preserves the composer throughout native dispatch at ${width}x800`, () => exerciseParkedClick(false, false, false, false, width));
+  test(`presented agent click preserves the composer throughout native dispatch at ${width}x800`, () => exerciseParkedClick(false, false, false, true, width));
+  test(`visible user takeover invalidates control before a resumed parked click at ${width}x800`, () => exerciseParkedClick(false, true, false, false, width));
+}
 test("@os-focus parked agent click preserves native composer focus", () => exerciseParkedClick(true));
 test("@os-focus presented agent click preserves native composer focus", () => exerciseParkedClick(true, false, false, true));
-test("visible user takeover invalidates control before a resumed parked click", () => exerciseParkedClick(false, true));
 test("@os-focus visible user takeover restores native keyboard ownership before agent resume", () => exerciseParkedClick(true, true));
 if (process.platform === "darwin") {
   test("@os-focus native pointer takeover routes OS keystrokes before the agent resumes", () => exerciseParkedClick(true, true, true));
@@ -27,7 +30,7 @@ interface PressSample {
   editor: { active: string; draft: string; blurs: number; sameElement: boolean };
 }
 
-async function exerciseParkedClick(foreground: boolean, takeover = false, osTyping = false, presented = false): Promise<void> {
+async function exerciseParkedClick(foreground: boolean, takeover = false, osTyping = false, presented = false, width = 1200): Promise<void> {
   const model = "static-editor-press-fixture";
   let phase = 0,
     url = "",
@@ -145,11 +148,12 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
       launchArgs: ["--use-mock-keychain"],
       launchEnv: foreground ? { AVE_NATIVE_FIXTURE_MODE: "foreground" } : undefined,
     });
-    await setWindowSize(ctx.app, 1200, 800);
+    await setWindowSize(ctx.app, width, 800);
     const host = await browserHostIdentity(ctx.app, ctx.page);
-    await ctx.app.evaluate(({ app, BrowserWindow, webContents }, input) => {
-      const owner = BrowserWindow.fromId(input.windowId);
-      if (!owner || owner.webContents.id !== input.chromeId) throw new Error("Fixture owner window unavailable");
+    await ctx.app.evaluate(({ app, BaseWindow, webContents }, input) => {
+      const owner = BaseWindow.fromId(input.windowId);
+      const chrome = webContents.fromId(input.chromeId);
+      if (!owner || !chrome || Reflect.get(owner, "webContents") !== chrome) throw new Error("Fixture owner window unavailable");
       const state = globalThis as unknown as { pressProbe: PressSample[] };
       state.pressProbe = [];
       app.on("web-contents-created", (_e, wc) => {
@@ -160,9 +164,9 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
           targetId: wc.id,
           focusedContentsId: webContents.getFocusedWebContents()?.id ?? null,
           windowFocused: owner.isFocused(),
-          focusedFrame: owner.webContents.focusedFrame?.frameTreeNodeId,
-          hostFrame: owner.webContents.mainFrame.frameTreeNodeId,
-          editor: await owner.webContents.executeJavaScript(
+          focusedFrame: chrome.focusedFrame?.frameTreeNodeId,
+          hostFrame: chrome.mainFrame.frameTreeNodeId,
+          editor: await chrome.executeJavaScript(
             "({ active: document.activeElement?.id, draft: document.getElementById('press-editor')?.value, blurs: window.pressEditorState?.blurs, events: window.pressEditorState?.events, sameElement: document.activeElement === window.pressEditorState?.element })",
           ),
         });
@@ -225,15 +229,16 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
     approve = false;
     await approvals;
     if (foreground) {
-      await ctx.app.evaluate(({ app, BrowserWindow }, windowId) => {
+      await ctx.app.evaluate(({ app, BaseWindow, webContents }, identity) => {
         app.focus({ steal: true });
-        const owner = BrowserWindow.fromId(windowId);
-        if (!owner) throw new Error("Fixture owner window unavailable");
+        const owner = BaseWindow.fromId(identity.windowId);
+        const chrome = webContents.fromId(identity.chromeId);
+        if (!owner || !chrome) throw new Error("Fixture owner window unavailable");
         owner.focus();
-        owner.webContents.focus();
-      }, host.windowId);
+        chrome.focus();
+      }, host);
       await expect
-        .poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((window) => window.isFocused())))
+        .poll(() => app.evaluate(({ BaseWindow }) => BaseWindow.getAllWindows().some((window) => window.isFocused())))
         .toBe(true);
     }
     await page.evaluate(() => {
@@ -257,7 +262,7 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
       active: document.activeElement?.id,
       draft: (document.getElementById("press-editor") as HTMLTextAreaElement)?.value,
       blurs: (window as unknown as { pressEditorState: { blurs: number } }).pressEditorState.blurs,
-      layout: [...document.querySelectorAll<HTMLElement>('[data-testid="web-surface-frame"]')].map((e) => ({
+      layout: [...document.querySelectorAll<HTMLElement>('[data-testid="chat-side-panel-browser-native"]')].map((e) => ({
         rect: e.getBoundingClientRect().toJSON(),
         visibility: getComputedStyle(e).visibility,
         opacity: getComputedStyle(e).opacity,
@@ -274,7 +279,12 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
       sameElement:
         document.activeElement === (window as unknown as { pressEditorState: { element: HTMLElement } }).pressEditorState.element,
     }));
-    const native = await ctx.app.evaluate(async ({ webContents, BrowserWindow }, input) => ({
+    const native = await ctx.app.evaluate(async ({ webContents, BaseWindow }, input) => ({
+      owner: {
+        pid: process.pid,
+        windowId: input.windowId,
+        content: BaseWindow.fromId(input.windowId)?.getContentBounds(),
+      },
       measurements: (globalThis as unknown as { pressProbe: PressSample[] }).pressProbe,
       guests: await Promise.all(
         webContents
@@ -283,7 +293,7 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
           .map(async (w) => ({
             url: w.getURL(),
             id: w.id,
-            windowFocused: BrowserWindow.fromId(input.windowId)?.isFocused(),
+            windowFocused: BaseWindow.fromId(input.windowId)?.isFocused(),
             clicks: await w.executeJavaScript("document.body.dataset.clicks"),
             trusted: await w.executeJavaScript("document.body.dataset.trusted"),
             activation: await w.executeJavaScript("document.body.dataset.activation"),
@@ -293,9 +303,10 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
     }), { url, windowId: host.windowId });
     const evidence = { before, after, ...native, toolResults: results };
 
-    await test
-      .info()
-      .attach("parked-click-focus.json", { body: JSON.stringify(evidence, null, 2), contentType: "application/json" });
+    const evidencePath = test.info().outputPath("parked-click-focus.json");
+    await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+    await test.info().attach("parked-click-focus.json", { path: evidencePath, contentType: "application/json" });
+    expect(native.owner.content).toMatchObject({ width, height: 800 });
     expect(native.guests).toHaveLength(1);
     expect(native.guests[0]?.clicks).toBe("1");
     expect(native.guests[0]?.trusted).toBe("true");
@@ -336,8 +347,8 @@ async function exerciseParkedClick(foreground: boolean, takeover = false, osTypi
       await toggle.click();
       await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, url)).attached).toBe(true);
       if (osTyping) {
-        const point = await ctx.app.evaluate(async ({ BrowserWindow, webContents }, input) => {
-          const owner = BrowserWindow.fromId(input.windowId);
+        const point = await ctx.app.evaluate(async ({ BaseWindow, webContents }, input) => {
+          const owner = BaseWindow.fromId(input.windowId);
           const target = webContents.fromId(input.targetId);
           if (!owner || !target) throw new Error("Visible native target unavailable");
           type NativeView = { children: NativeView[]; webContents?: { id: number }; getBounds(): { x: number; y: number } };
