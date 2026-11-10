@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter, once } from "node:events";
+import type { ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +8,7 @@ import { maskSensitiveData } from "../../../audit/dlp-filter.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { JudgeFailure } from "../judge-contract.js";
 import { buildExternalJudgeEnv, ExternalJudge, parseJudgeResponse, type JudgeFetch } from "../external-judge.js";
-import { getManagedChildProcessCount } from "../../../main/managed-child-processes.js";
+import { getManagedChildProcessCount, trackManagedChildProcess } from "../../../main/managed-child-processes.js";
 import { PLANTED_CREDENTIAL, judgeInvocation, judgeRequest } from "./judge-request-fixture.js";
 
 function unparseableKind(text: string): string | null {
@@ -123,7 +125,12 @@ describe("ExternalJudge — url transport", () => {
 describe.skipIf(process.platform === "win32")("ExternalJudge — command transport", () => {
   const dirs: string[] = [];
   afterEach(async () => {
-    for (const dir of dirs.splice(0)) await cleanupTmpDir(dir);
+    try {
+      // A canceled call can reject before its process group has been disposed.
+      await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(0), { timeout: 5_000, interval: 50 });
+    } finally {
+      for (const dir of dirs.splice(0)) await cleanupTmpDir(dir);
+    }
   });
 
   function script(body: string): { path: string; dir: string } {
@@ -208,14 +215,31 @@ describe.skipIf(process.platform === "win32")("ExternalJudge — command transpo
   });
 
   it("tracks the judge process as a managed child until it is gone", async () => {
-    const slow = script("cat >/dev/null\nsleep 30");
-    const before = getManagedChildProcessCount();
+    expect(getManagedChildProcessCount()).toBe(0);
+    // An earlier group's disposal can finish while this judge is running.
+    const earlier = new EventEmitter();
+    const disposeEarlier = trackManagedChildProcess(earlier as ChildProcess, { label: "previous-judge" });
+    const tracked = vi.spyOn(await import("../../../main/managed-child-processes.js"), "trackManagedChildProcess");
     const controller = new AbortController();
-    const pending = new ExternalJudge({ command: [slow.path] }).judge(judgeRequest(), controller.signal);
-    expect(getManagedChildProcessCount()).toBe(before + 1);
-    controller.abort(new Error("stop"));
-    await expect(pending).rejects.toThrow("stop");
-    await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(before), { timeout: 5_000, interval: 50 });
+    try {
+      const slow = script("cat >/dev/null\nexec sleep 30");
+      expect(getManagedChildProcessCount()).toBe(1);
+      const pending = new ExternalJudge({ command: [slow.path] }).judge(judgeRequest(), controller.signal);
+      expect(getManagedChildProcessCount()).toBe(2);
+      const current = tracked.mock.calls[0]?.[0];
+      if (!current) throw new Error("Judge child was not tracked");
+      const closed = once(current, "close");
+      earlier.emit("exit", 0, null);
+      expect(getManagedChildProcessCount()).toBe(1);
+      controller.abort(new Error("stop"));
+      await expect(pending).rejects.toThrow("stop");
+      await closed;
+      await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(0), { timeout: 5_000, interval: 50 });
+    } finally {
+      controller.abort();
+      disposeEarlier();
+      tracked.mockRestore();
+    }
   });
 
   it("abort kills the process", async () => {
