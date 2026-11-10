@@ -2216,6 +2216,10 @@ exhaustive own-property readiness assertion before `assembleAppServices`; a
 missing producer is reported by field name instead of leaking `undefined` into
 the running application.
 
+Desktop boot registers the native notification identity before asynchronous
+startup and home initialization. Registration needs no settings or audit state;
+notification delivery remains behind audited service initialization.
+
 ## Current Large-Module Ownership
 
 The remaining high-churn surfaces keep one state owner while delegating focused

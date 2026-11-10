@@ -178,6 +178,11 @@ export async function bootstrap(
     );
   }
   const ctx = createBootContext({ projectRoot, mainWindow, getMainWindow, host });
+  // Native identity registration must not wait for home repair or services.
+  if (host.desktop) {
+    const supported = host.desktop.initializeNotificationPresenter();
+    log.info("boot: OS notification presenter initialised (supported=%s)", supported);
+  }
 
   // Before any provider exists, so the AI SDK integration is registered by the
   // time the first model is constructed. An unreadable spec leaves tracing off
