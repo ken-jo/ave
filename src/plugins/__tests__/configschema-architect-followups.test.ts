@@ -204,6 +204,7 @@ const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({
   protocol: { handle: vi.fn() },
   ipcMain: {
+    on: vi.fn(),
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       ipcHandlers.set(channel, fn);
     }),
