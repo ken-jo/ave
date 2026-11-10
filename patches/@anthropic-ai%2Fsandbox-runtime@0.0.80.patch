@@ -4910,7 +4910,7 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..13072ec11000550155d61ecb01d96efb
          }
 diff --git a/vendor/srt-win/persistent-denies.patch b/vendor/srt-win/persistent-denies.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..1ad045a068e7da6d87dfb3a80b893ff10ba58354
+index 0000000000000000000000000000000000000000..ac99d4d9abdab2056a28626b89906cb5731d4138
 --- /dev/null
 +++ b/vendor/srt-win/persistent-denies.patch
 @@ -0,0 +1,4539 @@
@@ -8726,7 +8726,7 @@ index 0000000000000000000000000000000000000000..1ad045a068e7da6d87dfb3a80b893ff1
 + }
 +diff --git a/vendor/srt-win-src/tests/acl_parent_scope.rs b/vendor/srt-win-src/tests/acl_parent_scope.rs
 +new file mode 100644
-+index 000000000..ed1eaa13d
++index 000000000..04198bc31
 +--- /dev/null
 ++++ b/vendor/srt-win-src/tests/acl_parent_scope.rs
 +@@ -0,0 +1,723 @@
@@ -9386,6 +9386,8 @@ index 0000000000000000000000000000000000000000..1ad045a068e7da6d87dfb3a80b893ff1
 ++        // Replacement changes file identity, so converge the replacement too.
 ++        apply_session_aces(denied.to_str().unwrap(), TEST_SID, deny).unwrap();
 ++        std::fs::write(&replacement, "forbidden replacement").unwrap();
+++        let protected_paths = [&denied, &nested, &future]
+++            .map(|path| (path, snapshot(path), snapshot(path.parent().unwrap())));
 ++        {
 ++            let _impersonation = Impersonation::begin();
 ++            match mask {
@@ -9401,9 +9403,7 @@ index 0000000000000000000000000000000000000000..1ad045a068e7da6d87dfb3a80b893ff1
 ++                std::fs::write(&denied, "forbidden").unwrap_err().kind(),
 ++                std::io::ErrorKind::PermissionDenied
 ++            );
-++            for path in [&denied, &nested, &future] {
-++                let object_before = snapshot(path);
-++                let parent_before = snapshot(path.parent().unwrap());
+++            for (path, object_before, parent_before) in protected_paths {
 ++                let removal = std::fs::remove_file(path);
 ++                assert_eq!(
 ++                    removal.as_ref().err().map(std::io::Error::kind),
