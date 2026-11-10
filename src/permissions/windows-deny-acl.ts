@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { admitWindowsReparse, leadingWindowsDenies, readWindowsDacls } from "../shared/windows-path-facts.js";
 
 export const WINDOWS_READ_DENY_MASK = 0x1f01ff;
-export const WINDOWS_WRITE_DENY_MASK = 0x10116;
+export const WINDOWS_WRITE_DENY_MASK = 0x10156;
 
 export interface WindowsDenyAcl {
   readonly denyMask: number;

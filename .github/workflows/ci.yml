@@ -166,7 +166,7 @@ jobs:
       - name: Verify Windows sandbox helper pins
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
-        run: node scripts/check-srt-win-integrity.cjs
+        run: node scripts/check-srt-win-integrity.cjs --upstream --inputs
       # `typecheck` covers production sources only — both tsconfigs exclude
       # `src/**/__tests__/**`, so before this step a test could reference an unimported
       # symbol and reach CI green. This is the ratchet for the rest: new test files are
@@ -708,6 +708,19 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:plugin-host-protocol-schema
+      - name: Build and test patched Windows sandbox helper
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        shell: powershell
+        run: |
+          node --import ./scripts/lib/document-consumer-guard.mjs --test test/scripts/srt-win-build.test.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/check-srt-win-integrity.cjs --upstream --inputs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-srt-win.mjs --test-native
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/check-srt-win-integrity.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Provision sandbox for native permission tests
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave

@@ -5,16 +5,26 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
+import BUILD_RECEIPTS from "../generated/srt-win-build-receipts.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, getSrtWinArchitecture, prepareSrtWinExecutable, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
 
 const require = createRequire(import.meta.url);
-const { assertSrtWinVendor } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
-  assertSrtWinVendor: (path: string, arches?: string[]) => void;
+const { assertSrtWinVendor: assertVendor } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
+  assertSrtWinVendor: (path: string, arches: string[] | undefined, receipts: typeof BUILD_RECEIPTS) => void;
 };
-const vendor = join(dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json")), "vendor");
+const originalVendor = join(dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json")), "vendor");
+const vendor = mkdtempSync(join(tmpdir(), "ave-srt-vendor-fixture-"));
+for (const arch of ["x64", "arm64"]) {
+  const directory = join(vendor, "srt-win", arch);
+  mkdirSync(directory, { recursive: true });
+  copyFileSync(join(originalVendor, "srt-win", arch, "srt-win.exe"), join(directory, "srt-win.exe"));
+  writeFileSync(join(directory, "build-receipt.json"), JSON.stringify(BUILD_RECEIPTS[arch]));
+}
+const assertSrtWinVendor = (path: string, arches?: string[]): void => assertVendor(path, arches, BUILD_RECEIPTS);
+afterAll(() => rmSync(vendor, { recursive: true, force: true }));
 const directories: string[] = [];
 function fixture(): { source: string; bytes: Buffer } {
   const directory = mkdtempSync(join(tmpdir(), "ave-srt-integrity-test-"));
@@ -29,6 +39,21 @@ afterEach(() => {
 });
 
 describe("Windows helper integrity", () => {
+  it("refuses upstream bytes when the compiled receipt map is empty", async () => {
+    vi.resetModules();
+    vi.doMock("../generated/srt-win-build-receipts.js", () => ({ default: {} }));
+    try {
+      const { assertSrtWinDigest: assertUnbuiltDigest } = await import("../srt-win-integrity.js");
+      for (const arch of ["x64", "arm64"]) {
+        expect(() => assertUnbuiltDigest(readFileSync(join(originalVendor, "srt-win", arch, "srt-win.exe")), arch))
+          .toThrow(expect.objectContaining({ code: "srt-win-integrity-mismatch" }));
+      }
+    } finally {
+      vi.doMock("../generated/srt-win-build-receipts.js", () => ({ default: BUILD_RECEIPTS }));
+      vi.resetModules();
+    }
+  });
+
   it.each([["ia32", "x64"], ["x64", "x64"], ["arm64", "arm64"]])("maps host architecture %s to %s", (host, expected) => {
     expect(getSrtWinArchitecture(host)).toBe(expected);
   });
@@ -286,6 +311,7 @@ describe("Windows helper integrity", () => {
       const target = join(outputVendor, "srt-win", arch);
       mkdirSync(target, { recursive: true });
       copyFileSync(join(vendor, "srt-win", arch, "srt-win.exe"), join(target, "srt-win.exe"));
+      copyFileSync(join(vendor, "srt-win", arch, "build-receipt.json"), join(target, "build-receipt.json"));
     }
     // Isolate the separate SDK boundary; the actual signing hook and helper
     // verifier still read the final unpacked images in this subprocess.
@@ -301,7 +327,11 @@ describe("Windows helper integrity", () => {
         };
         return nextLoad(url, context);
       }});
-      const afterSign = createRequire(import.meta.url)(process.argv[3]);
+      const require = createRequire(import.meta.url);
+      const verifier = require(process.argv[4]);
+      const verify = verifier.assertSrtWinVendor;
+      verifier.assertSrtWinVendor = (vendor, arches) => verify(vendor, arches, JSON.parse(process.env.AVE_TEST_SRT_RECEIPTS));
+      const afterSign = require(process.argv[3]);
       try {
         await afterSign({ electronPlatformName: process.argv[2], appOutDir: process.argv[1],
           arch: 1, packager: { appInfo: { productFilename: 'Ave' } } });
@@ -309,9 +339,9 @@ describe("Windows helper integrity", () => {
       } catch (error) { console.error(error.message); process.exitCode = 1; }
     `;
     const afterSign = (platform: string, output: string) => spawnSync(process.execPath, ["--input-type=module", "-e", script, output, platform,
-      require.resolve("../../../scripts/electron-after-sign.cjs")], {
+      require.resolve("../../../scripts/electron-after-sign.cjs"), require.resolve("../../../scripts/lib/srt-win-integrity.cjs")], {
       cwd: resolve("."),
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8",
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_TEST_SRT_RECEIPTS: JSON.stringify(BUILD_RECEIPTS) }, encoding: "utf8",
     });
     const valid = afterSign("win32", directory);
     expect(valid.error).toBeUndefined();
@@ -531,7 +561,7 @@ describe("Windows helper integrity", () => {
       const { source } = fixture();
       const resultPath = join(dirname(source), "result.json");
       const child = spawnSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, ["--import=tsx", exitOrderChild, source, resultPath, mode], {
-        cwd: repoRoot, env: process.env, encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
+        cwd: repoRoot, env: { ...process.env, AVE_TEST_SRT_RECEIPTS: JSON.stringify(BUILD_RECEIPTS) }, encoding: "utf8", windowsHide: true, timeout: TOOL_TIMEOUT_POLICY.shellDefaultMs,
       });
       expect(child.error).toBeUndefined();
       expect(child.status, child.stderr).toBe(0);
