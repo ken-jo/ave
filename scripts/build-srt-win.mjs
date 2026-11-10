@@ -179,7 +179,7 @@ export async function buildSrtWin(options) {
       run("rustup", ["target", "add", "--toolchain", pins.rustToolchain, target], extracted);
       const cargoArgs = [`+${pins.rustToolchain}`, "--release", "--locked", "--manifest-path", join(source, "Cargo.toml"), "--target", target];
       run("cargo", [cargoArgs[0], "build", ...cargoArgs.slice(1)], extracted);
-      if (options.testNative && arch === process.arch) run("cargo", [cargoArgs[0], "test", ...cargoArgs.slice(1)], extracted);
+      if (options.testNative && arch === process.arch) run("cargo", [cargoArgs[0], "test", "--no-fail-fast", ...cargoArgs.slice(1)], extracted);
       const binary = join(source, "target", target, "release", "srt-win.exe");
       const bytes = readPlainFile(binary);
       receipts[arch] = { schemaVersion: 1, sourceRevision: pins.source.revision, sourceArchiveSha256: pins.source.sha256,
