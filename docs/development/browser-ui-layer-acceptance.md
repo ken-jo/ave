@@ -124,7 +124,7 @@ A real provider HTTP 404 produced the system notice after two trusted page click
 | 1360 | 305–883 | 319–869 | 891–1339 | 0 / 0 |
 | 900 | 305–887 | 319–873 | 431–879 | 0 / 0 |
 
-Containment already passed in the red run. At 900px the floating page legitimately overlaps its owning chat column; its transcript mask preserves the page pixels. This correction proves an opaque notice surface without claiming a reproduced column-overflow fix. The evidence identifies its dirty source diff and actual loaded bundles rather than treating HEAD alone as the fixed tree. The separate formatting correction below leaves these layout observations unchanged.
+Containment already passed in the red run. At 900px the floating page legitimately overlaps its owning chat column; its transcript mask preserves the page pixels. This correction proves an opaque notice surface without claiming a reproduced column-overflow fix. The evidence identifies its dirty source diff and actual loaded bundles rather than treating HEAD alone as the fixed tree. The separate formatting correction below leaves these layout observations unchanged. The four public history snapshots replace only the isolated workspace path with an explicit placeholder and retain its original hash in the capture manifest. Raw local receipts and message bodies remain intact.
 
 ## System-alert error formatting
 

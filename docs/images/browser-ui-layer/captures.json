@@ -15520,7 +15520,7 @@
           "sessionId": "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee",
           "sessionTitle": "Native UI composition",
           "sessionKind": "main",
-          "projectRoot": "/Users/Shared/parked-click-touch-blur.Aw6Ple/ave-seeded-e2e-home-7fRtWR/.ave/workspace",
+          "projectRoot": "<isolated-e2e-workspace>",
           "projectName": "default",
           "projectIsDefault": true,
           "restoredSubAgents": [],
@@ -21918,7 +21918,7 @@
           "sessionId": "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee",
           "sessionTitle": "Native UI composition",
           "sessionKind": "main",
-          "projectRoot": "/Users/Shared/parked-click-touch-blur.Aw6Ple/ave-seeded-e2e-home-s8fd6i/.ave/workspace",
+          "projectRoot": "<isolated-e2e-workspace>",
           "projectName": "default",
           "projectIsDefault": true,
           "restoredSubAgents": [],
@@ -28316,7 +28316,7 @@
           "sessionId": "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee",
           "sessionTitle": "Native UI composition",
           "sessionKind": "main",
-          "projectRoot": "/Users/Shared/parked-click-touch-blur.Aw6Ple/ave-seeded-e2e-home-r10JIV/.ave/workspace",
+          "projectRoot": "<isolated-e2e-workspace>",
           "projectName": "default",
           "projectIsDefault": true,
           "restoredSubAgents": [],
@@ -34714,7 +34714,7 @@
           "sessionId": "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee",
           "sessionTitle": "Native UI composition",
           "sessionKind": "main",
-          "projectRoot": "/Users/Shared/parked-click-touch-blur.Aw6Ple/ave-seeded-e2e-home-8EVdTD/.ave/workspace",
+          "projectRoot": "<isolated-e2e-workspace>",
           "projectName": "default",
           "projectIsDefault": true,
           "restoredSubAgents": [],
@@ -35185,5 +35185,34 @@
         ]
       }
     }
-  ]
+  ],
+  "publicPathRedactions": {
+    "reason": "Only isolated workspace paths are replaced in public history snapshots. Raw local receipts remain intact. Error text, native pixels, source hashes and passing results are preserved.",
+    "entries": [
+      {
+        "capture": "system-alert-layout-1360.png",
+        "field": "/geometry/history/projectRoot",
+        "originalSha256": "2d509360629affcad5aaae62fbaca9ade971b068c25aec118ce6e34ad7ad5116",
+        "replacement": "<isolated-e2e-workspace>"
+      },
+      {
+        "capture": "system-alert-layout-900.png",
+        "field": "/geometry/history/projectRoot",
+        "originalSha256": "ac0116d64aa04d0c383b451bae631821d699ba4a1c64409c4f3cdd5e3fd31818",
+        "replacement": "<isolated-e2e-workspace>"
+      },
+      {
+        "capture": "system-alert-prefix-1360.png",
+        "field": "/geometry/history/projectRoot",
+        "originalSha256": "b194802a3823504e78e8249852c23b91b2e66a0de67442c428d3f46e5e362a8f",
+        "replacement": "<isolated-e2e-workspace>"
+      },
+      {
+        "capture": "system-alert-prefix-900.png",
+        "field": "/geometry/history/projectRoot",
+        "originalSha256": "717473a1114fc8d65c818fccd9c9307a7d8b814a9b6c3f28b3278f1a53e8ed94",
+        "replacement": "<isolated-e2e-workspace>"
+      }
+    ]
+  }
 }
