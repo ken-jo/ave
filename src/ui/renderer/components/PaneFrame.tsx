@@ -379,6 +379,7 @@ export function PaneFrame({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-approval-scope>
       <header
         data-testid="pane-header"
+        data-native-page-chrome="card"
         className={[
           "flex h-(--chrome-band-height) shrink-0 items-center gap-(--chrome-gap-tight) border-b border-border/(--opacity-half) px-(--chrome-gap)",
           dragSurface ? "cursor-grab active:cursor-grabbing" : "",

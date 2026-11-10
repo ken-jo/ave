@@ -480,7 +480,7 @@ export function UrlDocumentViewer({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background" data-testid="chat-side-panel-url-viewer">
       {showHeader ? (
-        <div className="flex min-h-9 shrink-0 items-center gap-2 border-b bg-muted/(--opacity-muted) px-2 text-dense text-muted-foreground">
+        <div className="flex min-h-9 shrink-0 items-center gap-2 border-b bg-muted/(--opacity-muted) px-2 text-dense text-muted-foreground" data-native-page-chrome="background">
           <Globe className="h-3.5 w-3.5 shrink-0" />
           <span className="min-w-0 flex-1 truncate">{displayedUrl}</span>
           <Tooltip>

@@ -8,7 +8,10 @@ import type { BrowserNativeSurfaceResult } from "../../../../shared/browser-nati
 import type { BrowserTabsApi, SessionTabBindingsState } from "../../../../shared/browser-surface.js";
 import { nativeSurfaceFixture } from "../../../../__tests__/support/native-browser-surface.js";
 import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../../hooks/use-browser-navigation.js";
-import { committedWebSurfaceLocation, nativeWebSurfaceState, publishLiveWebTabs, setNativeBrowserTabIds, setNativeWebSurfaceState, withdrawLiveWebTabs, webSurfaceFavicon } from "../../preview/web-surfaces.js";
+import { committedWebSurfaceLocation, nativeWebSurfaceState, publishLiveWebTabs, setNativeBrowserTabIds, setNativeWebSurfaceState, withdrawLiveWebTabs, webSurfaceFavicon, beginSurfaceDrag, endSurfaceDrag, registerWebSurfaceOccluder } from "../../preview/web-surfaces.js";
+import { BROWSER_NATIVE_HOLE_ATTRIBUTE } from "../../../../shared/browser-native-input.js";
+import { PaneFrame } from "../PaneFrame.js";
+import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { WebSurfaceLayer, WebSurfaceSlot, placeWebSurfaces } from "../WebSurfaceLayer.js";
 const source = Symbol("native-pages");
 beforeEach(() => {
@@ -48,6 +51,9 @@ describe("native page presentation", () => {
     expect(fixture.nativeSurface).toHaveBeenCalledWith(expect.objectContaining({ action: "present", bounds: { x: 10, y: 20, width: 640, height: 480 }, sequence: expect.any(Number) }));
     expect(fixture.nativeSurface.mock.calls.some(([r]) => r.action === "focus")).toBe(false);
     const element = screen.getByTestId("chat-side-panel-browser-native");
+    expect(screen.getByTestId("web-surface-slot")).toContainElement(element);
+    expect(screen.getByTestId("web-surface-layer")).not.toContainElement(element);
+    expect(JSON.parse(element.getAttribute(BROWSER_NATIVE_HOLE_ATTRIBUTE) ?? "null")).toEqual({ tabId: "browser:native", webContentsId: 42, epoch: 1 });
     view.rerender(<NativePaneHarness api={fixture.api} location="pane:main" />);
     await act(async () => {});
     expect(screen.getByTestId("chat-side-panel-browser-native")).toBe(element);
@@ -83,14 +89,14 @@ describe("native page presentation", () => {
     expect(fixture.nativeSurface.mock.calls.filter(([r]) => r.action === "navigate")).toHaveLength(2);
     expect(fixture.states.get("browser:native")?.url).toBe("https://example.com/next");
   });
-  it("waits for parking acknowledgement before hiding the placeholder and keeps the native page alive", async () => {
+  it("keeps native identity until parking acknowledgement and retains the native page", async () => {
     const fixture = nativeSurfaceFixture();
     publishLiveWebTabs(source, new Set(["browser:native"]));
     render(<><WebSurfaceSlot tabId="browser:native" url="about:blank" bindRequestId="request:new" location="side-panel" /><WebSurfaceLayer api={{ browserTabs: fixture.api } as AveApi} /></>);
     await act(async () => {});
     const slot = slotBox();
     await act(async () => { placeWebSurfaces(); });
-    const frame = screen.getByTestId("web-surface-frame");
+    const sentinel = screen.getByTestId("chat-side-panel-browser-native");
     const run = fixture.nativeSurface.getMockImplementation();
     ok(run);
     let acknowledge!: (result: BrowserNativeSurfaceResult) => void;
@@ -98,13 +104,62 @@ describe("native page presentation", () => {
       ? new Promise((resolve) => { acknowledge = resolve; }) : run(request));
     slot.style.visibility = "hidden";
     act(() => { placeWebSurfaces(); });
-    expect(frame.style.visibility).toBe("visible");
+    expect(sentinel).toHaveAttribute(BROWSER_NATIVE_HOLE_ATTRIBUTE);
     expect(fixture.states.get("browser:native")?.visible).toBe(true);
     const visible = fixture.states.get("browser:native");
     ok(visible);
     await act(async () => acknowledge({ ok: true, surface: { ...visible, visible: false } }));
-    expect(frame.style.visibility).toBe("hidden");
+    expect(sentinel).not.toHaveAttribute(BROWSER_NATIVE_HOLE_ATTRIBUTE);
+    expect(document.documentElement).not.toHaveAttribute("data-ave-native-branch");
     expect(fixture.nativeSurface.mock.calls.some(([r]) => r.action === "close")).toBe(false);
+  });
+  it("keeps the live native viewport attached through overlays, drag and resize", async () => {
+    const fixture = nativeSurfaceFixture();
+    publishLiveWebTabs(source, new Set(["browser:native"]));
+    render(<NativePaneHarness api={fixture.api} location="pane:main" />);
+    await act(async () => {});
+    const slot = slotBox();
+    await act(async () => { placeWebSurfaces(); });
+    const count = fixture.nativeSurface.mock.calls.length;
+    const overlay = document.createElement("div");
+    document.body.append(overlay);
+    const release = registerWebSurfaceOccluder(overlay);
+    try {
+      await act(async () => { beginSurfaceDrag(); placeWebSurfaces(); });
+      expect(fixture.states.get("browser:native")?.visible).toBe(true);
+      expect(fixture.nativeSurface.mock.calls.slice(count).some(([r]) => r.action === "present" && r.bounds === null)).toBe(false);
+      const rect = { left: 10, top: 20, right: 710, bottom: 520, width: 700, height: 500 };
+      Object.defineProperty(slot, "getBoundingClientRect", { value: () => rect, configurable: true });
+      Object.defineProperty(slot, "getClientRects", { value: () => [rect], configurable: true });
+      await act(async () => { placeWebSurfaces(); });
+      expect(fixture.nativeSurface).toHaveBeenLastCalledWith(expect.objectContaining({ action: "present", bounds: { x: 10, y: 20, width: 700, height: 500 } }));
+      expect(fixture.states.get("browser:native")?.visible).toBe(true);
+    } finally {
+      act(() => { endSurfaceDrag(); });
+      release();
+      overlay.remove();
+    }
+  });
+  it("places the page hole below same-pane decisions in the actual pane subtree", async () => {
+    const fixture = nativeSurfaceFixture();
+    publishLiveWebTabs(source, new Set(["browser:native"]));
+    render(<TooltipProvider><PaneFrame title="Page" settle={<button type="button" data-testid="settle-decision">Decide</button>}>
+      <WebSurfaceSlot tabId="browser:native" url="about:blank" bindRequestId="request:new" location="pane:main" />
+    </PaneFrame><WebSurfaceLayer api={{ browserTabs: fixture.api } as AveApi} /></TooltipProvider>);
+    await act(async () => {});
+    slotBox();
+    await act(async () => { placeWebSurfaces(); });
+    const sentinel = screen.getByTestId("chat-side-panel-browser-native");
+    const decision = screen.getByTestId("settle-decision");
+    const pane = screen.getByTestId("pane");
+    expect(pane).toContainElement(sentinel);
+    expect(pane).toContainElement(decision);
+    expect(sentinel.closest('[data-web-surface-occluder="settle"]')).toBeNull();
+    expect(sentinel.compareDocumentPosition(decision) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(pane).toHaveAttribute("data-ave-native-branch");
+    expect(screen.getByTestId("pane-header")).toHaveAttribute("data-native-page-chrome", "card");
+    expect(decision).not.toHaveAttribute("data-ave-native-branch");
+    expect(screen.getByTestId("web-surface-layer")).not.toContainElement(sentinel);
   });
   it("waits for durable restored identity, navigates the retained address once and closes only on source removal", async () => {
     setNativeBrowserTabIds(null);

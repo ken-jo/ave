@@ -95,6 +95,7 @@ function WebPanelBody({
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="web-panel" data-tab-id={surface.tabId}>
       <form
+        data-native-page-chrome="card"
         className="flex shrink-0 items-center gap-1 border-b border-border/(--opacity-half) px-2 py-1"
         onSubmit={(event) => {
           event.preventDefault();
@@ -129,7 +130,7 @@ function WebPanelBody({
       <BrowserSurfaceTools api={api} tabId={surface.tabId} onOpenUrl={(url) => navigateAsUser(() => onNavigate(url))} />
       <BrowserObservationLiveStrip tabId={surface.tabId} />
       {error ? (
-        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-testid="web-panel-address-error">{error}</div>
+        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-native-page-chrome="background" data-testid="web-panel-address-error">{error}</div>
       ) : null}
       {surface.url ? (
         <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`}

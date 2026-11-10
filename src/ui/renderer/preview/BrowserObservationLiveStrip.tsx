@@ -34,7 +34,7 @@ export function BrowserObservationLiveStrip({ tabId, sessionId }: { tabId: strin
   const { t } = useTranslation();
   const event = useBrowserObservation(tabId, sessionId);
   const idle = !event || (event.kind === "status" && event.after.code === "session-cleared");
-  const slot = (content: ReactNode = null) => <div data-testid="browser-observation-slot"
+  const slot = (content: ReactNode = null) => <div data-testid="browser-observation-slot" data-native-page-chrome="background"
     aria-hidden={idle ? true : undefined} className="h-7 shrink-0">{content}</div>;
   if (!event) return slot();
   if (event.kind === "status") {

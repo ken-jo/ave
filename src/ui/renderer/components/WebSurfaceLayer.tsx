@@ -1,7 +1,8 @@
-/** Portal guests to body so transforms cannot capture fixed positioning; clip slots around occluders and stay below
- * popovers. Measure moving slots during layout changes. */
+/** Embedded pages retain their body layer; native pages stay below UI holes in their actual pane slots. */
 import { createElement, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
+import { BROWSER_NATIVE_HOLE_ATTRIBUTE } from "../../../shared/browser-native-input.js";
+import { registerNativePageBranch } from "../preview/native-page-branches.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
@@ -33,6 +34,7 @@ import {
   requestWebSurfaceLayout,
   setNativeBrowserTabIds,
   setNativeWebSurfaceElement,
+  nativeWebSurfaceState,
   type WebSurface,
 } from "../preview/web-surfaces.js";
 
@@ -149,13 +151,10 @@ interface Placed {
 const placed = new Map<string, Placed>();
 
 interface NativePlacement {
-  frame: HTMLElement;
-  viewport: HTMLElement;
   api: BrowserTabsApi;
   surface: BrowserNativeSurfaceState;
   sequence: number;
   requestedKey: string;
-  parked: boolean;
 }
 const nativePlaced = new Map<string, NativePlacement>();
 
@@ -251,41 +250,25 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
   for (const [tabId, entry] of nativePlaced) {
     const slot = getWebSurfaceSlot(tabId);
     const boxes = slot ? visibleBox(slot) : null;
-    const key = boxes && !drag ? JSON.stringify(boxes) : "parked";
-    if (boxes && !drag) visibleCount++;
+    const key = boxes ? JSON.stringify(boxes) : "parked";
+    if (boxes) visibleCount++;
     if (key === entry.requestedKey) continue;
     entry.requestedKey = key;
     const sequence = ++entry.sequence;
     moved++;
-    if (boxes && !drag) {
-      const { slot: viewport, visible } = boxes;
-      Object.assign(entry.frame.style, {
-        left: `${visible.left}px`, top: `${visible.top}px`, width: `${visible.right - visible.left}px`,
-        height: `${visible.bottom - visible.top}px`, visibility: "visible", pointerEvents: "auto",
-      });
-      Object.assign(entry.viewport.style, {
-        left: `${viewport.left - visible.left}px`, top: `${viewport.top - visible.top}px`,
-        width: `${viewport.right - viewport.left}px`, height: `${viewport.bottom - viewport.top}px`,
-      });
-    }
     void requestNativeBrowserSurface(entry.api, {
       action: "present", tabId, webContentsId: entry.surface.webContentsId, epoch: entry.surface.epoch, sequence,
-      bounds: boxes && !drag ? {
+      bounds: boxes ? {
         x: boxes.slot.left, y: boxes.slot.top, width: boxes.slot.right - boxes.slot.left, height: boxes.slot.bottom - boxes.slot.top,
       } : null,
-      ...(boxes && !drag ? {
+      ...(boxes ? {
         clipBounds: { x: boxes.visible.left, y: boxes.visible.top,
           width: boxes.visible.right - boxes.visible.left, height: boxes.visible.bottom - boxes.visible.top },
         borderRadius: Number.parseFloat(boxes.radius) || 0,
       } : {}),
     }).then((accepted) => {
       if (nativePlaced.get(tabId) !== entry || entry.sequence !== sequence) return;
-      if (!accepted) { entry.requestedKey = ""; return; }
-      entry.parked = !boxes || drag;
-      if (entry.parked) {
-        entry.frame.style.visibility = "hidden";
-        entry.frame.style.pointerEvents = "none";
-      }
+      if (!accepted) entry.requestedKey = "";
     });
   }
   return { visible: visibleCount, moved };
@@ -398,10 +381,7 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
   );
 }
 
-function NativeGuestFrame({ api, surface }: { api: BrowserTabsApi; surface: WebSurface }) {
-  const { t } = useTranslation();
-  const frameRef = useRef<HTMLDivElement | null>(null);
-  const viewportRef = useRef<HTMLButtonElement | null>(null);
+function NativePageLifecycle({ api, surface }: { api: BrowserTabsApi; surface: WebSurface }) {
   const [binding, setBinding] = useState<BrowserNativeSurfaceState | null>(null);
   const targetUrl = useRef(surface.url);
   const requestedUrl = useRef(surface.url);
@@ -417,10 +397,7 @@ function NativeGuestFrame({ api, surface }: { api: BrowserTabsApi; surface: WebS
           webContentsId: created.webContentsId, epoch: created.epoch, sequence: 1, bounds: null });
         return;
       }
-      const frame = frameRef.current;
-      const viewport = viewportRef.current;
-      if (!frame || !viewport) return;
-      placement = { frame, viewport, api, surface: created, sequence: 0, requestedKey: "", parked: !created.visible };
+      placement = { api, surface: created, sequence: 0, requestedKey: "" };
       nativePlaced.set(surface.tabId, placement);
       setBinding(created);
       if (acquisition.initialNavigation && surface.bindRequestId === undefined && targetUrl.current !== created.url) {
@@ -446,16 +423,27 @@ function NativeGuestFrame({ api, surface }: { api: BrowserTabsApi; surface: WebS
     void requestNativeBrowserSurface(api, { action: "navigate", tabId: surface.tabId,
       webContentsId: binding.webContentsId, url: surface.url });
   }, [api, binding, surface.tabId, surface.url]);
-  const attach = useCallback((element: HTMLButtonElement | null) => {
-    viewportRef.current = element;
-    setNativeWebSurfaceElement(surface.tabId, element);
+  return null;
+}
+
+function NativePageSentinel({ surface }: { surface: BrowserNativeSurfaceState }) {
+  const { t } = useTranslation();
+  const [element, setElement] = useState<HTMLButtonElement | null>(null);
+  const attach = useCallback((node: HTMLButtonElement | null) => {
+    setElement(node);
+    setNativeWebSurfaceElement(surface.tabId, node);
   }, [surface.tabId]);
-  return <div ref={frameRef} data-testid="web-surface-frame" data-tab-id={surface.tabId} data-surface-host="native"
-    style={{ position: "fixed", overflow: "hidden", visibility: "hidden", pointerEvents: "none", left: 0, top: 0, width: 0, height: 0 }}>
-    <button ref={attach} type="button" aria-label={t("browserWorkspace.title")} data-testid="chat-side-panel-browser-native" data-tab-id={surface.tabId}
-      onFocus={() => { void commandNativeBrowserSurface(surface.tabId, "focus"); }}
-      style={{ position: "absolute", width: 1024, height: 768, border: 0, padding: 0, background: "transparent" }} />
-  </div>;
+  useEffect(() => {
+    const slot = element?.parentElement;
+    return surface.visible && slot ? registerNativePageBranch(slot) : undefined;
+  }, [element, surface.visible]);
+  return <button ref={attach} type="button" aria-label={t("browserWorkspace.title")}
+    {...(surface.visible ? { [BROWSER_NATIVE_HOLE_ATTRIBUTE]: JSON.stringify({ tabId: surface.tabId,
+      webContentsId: surface.webContentsId, epoch: surface.epoch }) } : {})}
+    data-testid="chat-side-panel-browser-native" data-tab-id={surface.tabId}
+    onFocus={() => { void commandNativeBrowserSurface(surface.tabId, "focus"); }}
+    style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0, padding: 0, background: "transparent",
+      visibility: surface.visible ? "visible" : "hidden", pointerEvents: "auto" }} />;
 }
 
 export function WebSurfaceLayer({ api }: { api: AveApi }) {
@@ -528,7 +516,7 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
       style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: WEB_SURFACE_LAYER_Z }}
     >
       {surfaces.map((surface) => surface.host === "native"
-        ? api.browserTabs ? <NativeGuestFrame key={surface.tabId} api={api.browserTabs} surface={surface} /> : null
+        ? api.browserTabs ? <NativePageLifecycle key={surface.tabId} api={api.browserTabs} surface={surface} /> : null
         : surface.host === "webview" ? <GuestFrame key={surface.tabId} api={api} surface={surface} /> : null)}
     </div>,
     document.body,
@@ -560,6 +548,7 @@ export function WebSurfaceSlot({
   const { t } = useTranslation();
   const mount = useSurfaceMount(tabId, location);
   const [element, setElement] = useState<HTMLDivElement | null>(null);
+  const native = useSyncExternalStore(subscribeWebSurfaces, () => mount.owned ? nativeWebSurfaceState(tabId) : null);
 
   useEffect(() => {
     if (mount.owned) setWebSurfaceUrl(tabId, url, bindRequestId);
@@ -578,7 +567,9 @@ export function WebSurfaceSlot({
       data-testid="web-surface-slot"
       data-tab-id={tabId}
       data-owned={mount.owned ? "true" : "false"}
+      data-surface-host={native ? "native" : undefined}
     >
+      {native ? <NativePageSentinel surface={native} /> : null}
       {mount.owned ? null : (
         <div
           className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground"

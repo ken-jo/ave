@@ -1078,6 +1078,7 @@ export function BrowserWorkspace({
         so there is no duplicate URL band nesting.
       */}
       <form
+        data-native-page-chrome="background"
         className="flex shrink-0 items-center gap-2 border-b px-3 py-2"
         onBlur={(event) => {
           // The draft lives while focus stays on the field or the Go button that submits it; focus going anywhere else,
@@ -1166,7 +1167,7 @@ export function BrowserWorkspace({
       <BrowserSurfaceTools api={api} tabId={tabId} composerGroupId={composerGroupId}
         onOpenUrl={(url) => { void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, url)); }} />
       {addressError ? (
-        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-testid="chat-side-panel-browser-address-error">
+        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-native-page-chrome="background" data-testid="chat-side-panel-browser-address-error">
           {addressError}
         </div>
       ) : null}
