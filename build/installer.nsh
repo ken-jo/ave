@@ -11,6 +11,8 @@
 ; 사용자 confirmation:
 ;   - GUI 설치 제거 → MessageBox 로 "Yes/No" 묻기. Default 는 Yes.
 ;   - Silent uninstall (`/S` flag) → /SD IDYES 라서 자동 Yes (스크립트/MDM 운영 정합).
+;   - Silent uninstall without /KEEP_APP_DATA deletes user data by design
+;     (owner directive 2026-05-20); /KEEP_APP_DATA explicitly preserves it.
 ;
 ; 제거 사유 / 보존 사유:
 ;   - 사용자 명시 directive (2026-05-20): "삭제 코드를 추가했는데 Roaming 폴더 / 홈
