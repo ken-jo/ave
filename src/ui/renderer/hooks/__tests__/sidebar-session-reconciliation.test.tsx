@@ -31,7 +31,7 @@ function mountSessionList(chatSessions = vi.fn().mockResolvedValue(EMPTY_PAGE), 
   return { ...renderHook(() => useSessionList(api)), emit: (event: AgentSpawnEvent) => listener(event) };
 }
 
-it("keeps a resumed child reachable when an older in-flight list omits its stopped row", async () => {
+it("replaces the stopped projection and restores the resumed child's ancestry from its next response", async () => {
   const stoppedPage = deferred<SessionListResult>();
   const resumedPage = deferred<SessionListResult>();
   const chatSessions = vi.fn().mockResolvedValueOnce(PAGE).mockReturnValueOnce(stoppedPage.promise).mockReturnValueOnce(resumedPage.promise);
@@ -41,7 +41,7 @@ it("keeps a resumed child reachable when an older in-flight list omits its stopp
   act(() => emit(ACTIVITY));
   expect(chatSessions).toHaveBeenCalledTimes(2);
   await act(async () => { stoppedPage.resolve(EMPTY_PAGE); await stoppedPage.promise; });
-  expect(result.current.sessions).toBe(PAGE.sidebar.rows);
+  expect(result.current.sessions).toEqual([]);
   expect(chatSessions).toHaveBeenCalledTimes(3);
   await act(async () => { resumedPage.resolve(PAGE); await refresh; });
   expect(result.current.sessions.find((row) => row.id === child.id)?.running).toBe(true);

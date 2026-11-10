@@ -1369,7 +1369,8 @@ the asynchronous structure reads and returned with the rows.
 Activity, start and completion events are re-query hints. Session hydration
 starts the first query; title and deletion handlers request the same refresh.
 The renderer coalesces them into at most one query in flight and one pending
-query. Only the newest requested response replaces its entire sidebar state
+query. The request sequence advances when a query starts. Coalesced hints
+leave the in-flight response eligible to replace the entire sidebar state
 for the requested slice and its required branches and ancestors.
 It applies no event deltas or separate activity snapshots. Expanding a parent
 adds its id to the next query, which loads direct children by parent id and

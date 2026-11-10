@@ -46,6 +46,30 @@ function harness(chatSessions = vi.fn().mockResolvedValue(PAGE)) {
   return { ...renderHook(() => useSessionList(api)), chatSessions, agentSpawnSnapshot, unsubscribe, emit: (event: AgentSpawnEvent) => emit(event) };
 }
 
+it("applies running responses while activity keeps a six-query refresh queue busy", async () => {
+  const responses = Array.from({ length: 6 }, () => deferred<SessionListResult>());
+  const chatSessions = vi.fn();
+  for (const response of responses) chatSessions.mockReturnValueOnce(response.promise);
+  const { result, emit } = harness(chatSessions);
+  const refresh = result.current.refreshSessions();
+  const applied: string[] = [];
+  for (const [index, response] of responses.slice(0, -1).entries()) {
+    act(() => emit(EVENT));
+    const running = page([{ ...child, title: `Running ${index + 1}` }, parent]);
+    await act(async () => { response.resolve(running); await response.promise; });
+    const current = result.current.sessions.find((row) => row.id === child.id);
+    if (current?.running) applied.push(current.title);
+    expect(chatSessions).toHaveBeenCalledTimes(index + 2);
+  }
+  const quiet = responses.at(-1);
+  if (!quiet) throw new Error("missing-final-response");
+  const completed = page([{ ...child, running: false }, parent]);
+  await act(async () => { quiet.resolve(completed); await refresh; });
+  expect(applied).toEqual(["Running 1", "Running 2", "Running 3", "Running 4", "Running 5"]);
+  expect(result.current.sessions).toBe(completed.sidebar.rows);
+  expect(chatSessions).toHaveBeenCalledTimes(6);
+});
+
 it("coalesces every event type into one in-flight query and one pending query", async () => {
   const first = deferred<SessionListResult>();
   const second = deferred<SessionListResult>();
@@ -60,7 +84,7 @@ it("coalesces every event type into one in-flight query and one pending query", 
   expect(chatSessions).toHaveBeenCalledTimes(1);
   await act(async () => { first.resolve(page([parent])); await first.promise; });
   expect(chatSessions).toHaveBeenCalledTimes(2);
-  expect(result.current.sessions).toEqual([]);
+  expect(result.current.sessions).toEqual([parent]);
   await act(async () => { second.resolve(PAGE); await refresh; });
   expect(result.current.sessions).toBe(PAGE.sidebar.rows);
   expect(agentSpawnSnapshot).not.toHaveBeenCalled();
@@ -82,7 +106,7 @@ it("replaces a deleted parent and keeps its surviving children reachable as root
     .toMatchObject([{ session: other, children: [] }, { session: child, children: [] }]);
 });
 
-it("discards an older expansion response when newer parent options are pending", async () => {
+it("applies issued expansion responses while newer parent options are pending", async () => {
   const stale = deferred<SessionListResult>();
   const newest = deferred<SessionListResult>();
   const latest = page([{ ...child, title: "Current child" }, { ...parent, title: "Current parent" }]);
@@ -92,7 +116,7 @@ it("discards an older expansion response when newer parent options are pending",
   act(() => result.current.configureSessions({ rootLimit: 20, expandedParentIds: [parent.id] }));
   act(() => result.current.configureSessions({ rootLimit: 20, expandedParentIds: [parent.id], rootLimits: { "": 40 } }));
   await act(async () => { stale.resolve(page([])); await stale.promise; });
-  expect(result.current.sessions).toBe(PAGE.sidebar.rows);
+  expect(result.current.sessions).toEqual([]);
   expect(chatSessions).toHaveBeenCalledTimes(3);
   const refresh = result.current.refreshSessions;
   await act(async () => { newest.resolve(latest); await newest.promise; });

@@ -63,7 +63,6 @@ export function useSessionList(api: AveApi) {
   const refreshQueue = useRef<{ running: Promise<void> | null; pending: boolean }>({ running: null, pending: false });
 
   const refreshSessions = useCallback((): Promise<void> => {
-    sequence.current += 1;
     const queue = refreshQueue.current;
     if (queue.running) { queue.pending = true; return queue.running; }
     const epoch = lifetime.current;
@@ -71,7 +70,7 @@ export function useSessionList(api: AveApi) {
       try {
         do {
           queue.pending = false;
-          const issued = sequence.current;
+          const issued = ++sequence.current;
           try {
             const result = await api.chatSessions({ families: [...SESSION_FAMILIES], limit: SESSION_LIST_MAX_LIMIT, sidebar: options.current });
             if (epoch === lifetime.current && issued === sequence.current && result.sidebar) setProjection(result.sidebar);
