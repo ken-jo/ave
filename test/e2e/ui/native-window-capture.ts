@@ -35,6 +35,8 @@ export async function prepareNativeWindowCapture(testInfo: TestInfo): Promise<st
 
 export async function captureNativeWindow(app: ElectronApplication, page: Page, testInfo: TestInfo, name: string) {
   const helper = await prepareNativeWindowCapture(testInfo);
+  const sourceRevision = (await run("git", ["-C", REPO_ROOT, "rev-parse", "HEAD"])).stdout.trim();
+  assert.match(sourceRevision, /^[0-9a-f]{40}$/);
   const identity = await browserHostIdentity(app, page);
   const inspect = () => app.evaluate(({ BaseWindow, webContents }, identity) => {
     const owner = BaseWindow.fromId(identity.windowId);
@@ -66,7 +68,7 @@ export async function captureNativeWindow(app: ElectronApplication, page: Page, 
   const result = JSON.parse((await run(helper, [windowId, String(before.ownerPid), String(before.bounds.width), String(before.bounds.height), path])).stdout);
   const after = await inspect();
   const statePath = testInfo.outputPath(`${name}-native-state.json`);
-  await fs.writeFile(statePath, `${JSON.stringify({ before, ui, result, after }, null, 2)}\n`);
+  await fs.writeFile(statePath, `${JSON.stringify({ sourceRevision, before, ui, result, after }, null, 2)}\n`);
   await testInfo.attach(`${name}-native-state`, { path: statePath, contentType: "application/json" });
   assert.equal(after.focused, false);
   assert.equal(after.focusedContentsId, before.focusedContentsId);
