@@ -19,6 +19,7 @@ import { readRepoFile } from "../../src/__tests__/test-helpers.js";
 import {
   ACL_QUERY_SCRIPT,
   assertAsrtUserReady,
+  assertDisposableSmokeGate,
   assertLimitedUninstallResult,
   assertRuntimeNotificationArtifactsRemoved,
   FOREIGN_PROTOCOL_FIXTURE_SCRIPT,
@@ -111,6 +112,14 @@ function runPowerShellParser(source: string) {
 }
 
 describe("Windows NSIS installer smoke contracts", () => {
+  it("requires the actual hosted platform metadata after account switching", () => {
+    const env = { GITHUB_ACTIONS: "true", RUNNER_OS: "Windows", AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: "1" };
+    expect(() => assertDisposableSmokeGate(env)).not.toThrow();
+    for (const runnerOs of [undefined, "Linux"]) {
+      expect(() => assertDisposableSmokeGate({ ...env, RUNNER_OS: runnerOs })).toThrow("requires RUNNER_OS=Windows");
+    }
+    expect(() => assertDisposableSmokeGate({ ...env, AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: undefined })).toThrow("=1 is required");
+  });
   it("rejects elevated launchers, wrong integrity and failed uninstall exits", () => {
     const result = { administrator: false, mediumIntegrity: true, userSid: "S-1-5-21-123", exitCode: 0 };
     expect(() => assertLimitedUninstallResult(result)).not.toThrow();

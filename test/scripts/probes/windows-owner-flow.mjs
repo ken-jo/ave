@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { windowsPowerShellEnv } from "../../../scripts/lib/windows-powershell-env.mjs";
+import { assertDisposableSmokeGate } from "../../../scripts/smoke-windows-nsis-installer.mjs";
 
 const script = fileURLToPath(import.meta.url);
 const root = resolve(dirname(script), "..", "..", "..");
@@ -27,6 +28,7 @@ if (!process.argv.includes("--owner")) {
     assert.equal(result.status, expectedExit, "owner-profile preflight exit propagation failed");
   }
 } else {
+  assertDisposableSmokeGate();
   for (const expectedExit of [0, 7]) {
     const directory = mkdtempSync(join(tmpdir(), "ave-owner-flow-"));
     const report = join(directory, "report.json");
@@ -36,7 +38,7 @@ if (!process.argv.includes("--owner")) {
       const result = spawnSync(powershell, [...prefix,
         "-File", launcher,
         "-FilePath", powershell,
-        "-ArgumentsBase64", Buffer.from(JSON.stringify([...prefix, "-Command", `exit ${expectedExit}`])).toString("base64"),
+        "-ArgumentsBase64", Buffer.from(JSON.stringify([...prefix, "-Command", `$ErrorActionPreference = 'Stop'; $form = $null; try { Add-Type -AssemblyName System.Windows.Forms; $form = New-Object System.Windows.Forms.Form; $handle = $form.Handle; if ($null -eq $handle -or $handle -eq [IntPtr]::Zero) { throw 'The filtered owner cannot create a desktop window' } } finally { if ($form) { $form.Dispose() } }; exit ${expectedExit}`])).toString("base64"),
         "-WorkingDirectory", tmpdir(),
         "-ReportPath", report,
         "-DeadlineUnixMs", String(Date.now() + 30_000),

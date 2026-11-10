@@ -10,7 +10,7 @@ param(
   [switch]$ElevatedOwner
 )
 $ErrorActionPreference = 'Stop'
-$smokeEnvironmentNames = @('GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE', 'AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE')
+$smokeEnvironmentNames = @('GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'RUNNER_OS', 'AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE', 'AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE')
 if ($OwnerBootstrap -or $ElevatedOwner) {
   # Alternate-credential startup constructs a new environment. Transfer only
   # the explicit disposable-smoke authorization, never the runner's secrets.
