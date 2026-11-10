@@ -256,6 +256,10 @@ the installed package.
     writes. Explicit disable and uninstall remove durable ownership; ordinary
     reset and exit release only live holds. Principal replacement cannot
     repurpose the owner's or another account's access entries.
+
+17. Stamp diagnostics. Debug output records each input target, its absolute
+    parent and deny kind before native work, followed by elapsed stamp time.
+    It contains paths, never file contents or credential values.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
@@ -4546,7 +4550,7 @@ index 760a10b1d1c475a7636ff78092d3c9daaafe7335..a7a39777c3584689fc7efd44e8f298e1
              if (!clientGone) {
                  try {
 diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sandbox-utils.d.ts
-index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..a9f2e55c0ad42395e06441507013fefe98822166 100644
+index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..6e5df6a047e8a5dfa95e5f24d9f3124bb1a16b6e 100644
 --- a/dist/sandbox/windows-sandbox-utils.d.ts
 +++ b/dist/sandbox/windows-sandbox-utils.d.ts
 @@ -833,6 +833,8 @@ export interface MappedDriveCwdError extends WindowsSandboxError {
@@ -4558,7 +4562,20 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..a9f2e55c0ad42395e06441507013fefe
      /** Paths the sandboxed child must not read. */
      denyRead: readonly string[];
      /** Paths the sandboxed child must not write (read stays allowed). */
-@@ -861,6 +863,29 @@ export interface WindowsAclStampOptions {
+@@ -847,9 +849,10 @@ export interface WindowsAclStampOptions {
+ /**
+  * Apply the file-deny ACE set for one host session: an additive
+  * `(D;OICI;mask;;;<sb-SID>)` on the target plus a
+- * `(D;OICI;FILE_DELETE_CHILD;;;<sb-SID>)` on the parent — no
++ * `(D;;FILE_DELETE_CHILD;;;<sb-SID>)` on the parent — no
+  * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
+- * srt-win's `working_aces` table.
++ * srt-win's `working_aces` table. A persistent owner supplies its complete
++ * durable base list, including an empty list; live holders remain independent.
+  *
+  * Inputs are passed verbatim to `srt-win` (which canonicalizes and
+  * rejects globs). Callers that accept globs should pre-expand via
+@@ -861,6 +864,29 @@ export interface WindowsAclStampOptions {
   *   to release whatever WAS stamped.
   */
  export declare function stampWindowsAcl(opts: WindowsAclStampOptions): void;
@@ -4588,7 +4605,7 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..a9f2e55c0ad42395e06441507013fefe
  /**
   * Per-path outcome from `srt-win acl restore --json` /
   * `revoke --json`. The status set is intentionally loose: the
-@@ -884,7 +909,16 @@ export declare function restoreWindowsAcl(opts: {
+@@ -884,7 +910,16 @@ export declare function restoreWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -4605,7 +4622,7 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..a9f2e55c0ad42395e06441507013fefe
  export interface WindowsAclGrantOptions {
      /** Paths to grant `MODIFY_NO_FDC` on (the working tree, `allowWrite`). */
      write: readonly string[];
-@@ -909,6 +943,7 @@ export interface WindowsAclGrantOptions {
+@@ -909,6 +944,7 @@ export interface WindowsAclGrantOptions {
   *   {@link revokeWindowsAcl} to release whatever WAS granted.
   */
  export declare function grantWindowsAcl(opts: WindowsAclGrantOptions): void;
@@ -4613,7 +4630,7 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..a9f2e55c0ad42395e06441507013fefe
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -918,7 +953,16 @@ export declare function revokeWindowsAcl(opts: {
+@@ -918,7 +954,16 @@ export declare function revokeWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -4631,7 +4648,7 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..a9f2e55c0ad42395e06441507013fefe
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 540c56635e4c5b1b78997f0ec4185fe9d9968806..467d6ec0ffc7dd2f672fef8a9894c91df8e5f767 100644
+index 540c56635e4c5b1b78997f0ec4185fe9d9968806..13072ec11000550155d61ecb01d96efbcc7d3682 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
 @@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
@@ -4662,13 +4679,46 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..467d6ec0ffc7dd2f672fef8a9894c91d
              timeoutMs: 30000,
              srtWin: opts.srtWin,
          });
-@@ -1189,6 +1201,29 @@ export function stampWindowsAcl(opts) {
+@@ -1163,9 +1175,10 @@ export function parseWindowsSandboxError(stderr) {
+ /**
+  * Apply the file-deny ACE set for one host session: an additive
+  * `(D;OICI;mask;;;<sb-SID>)` on the target plus a
+- * `(D;OICI;FILE_DELETE_CHILD;;;<sb-SID>)` on the parent — no
++ * `(D;;FILE_DELETE_CHILD;;;<sb-SID>)` on the parent — no
+  * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
+- * srt-win's `working_aces` table.
++ * srt-win's `working_aces` table. A persistent owner supplies its complete
++ * durable base list, including an empty list; live holders remain independent.
+  *
+  * Inputs are passed verbatim to `srt-win` (which canonicalizes and
+  * rejects globs). Callers that accept globs should pre-expand via
+@@ -1176,7 +1189,19 @@ export function parseWindowsSandboxError(stderr) {
+  *   2, so on throw the caller should call {@link restoreWindowsAcl}
+  *   to release whatever WAS stamped.
+  */
++function logWindowsStampTargets(opts) {
++    if (!process.env.SRT_DEBUG) return;
++    const rows = [['denyRead', opts.denyRead], ['denyWrite', opts.denyWrite]].flatMap(([kind, targets]) =>
++        targets.map(target => {
++            const paths = path.win32.isAbsolute(target) ? path.win32 : path;
++            const resolved = paths.resolve(target);
++            return { path: resolved, parent: paths.dirname(resolved), kind };
++        }));
++    logForDebugging(`[Sandbox Windows] acl stamp targets=${JSON.stringify(rows)}`);
++}
+ export function stampWindowsAcl(opts) {
++    const started = performance.now();
++    logWindowsStampTargets(opts);
+     const holder = opts.holderPid ?? process.pid;
+     const stdin = JSON.stringify({
+         denyRead: opts.denyRead,
+@@ -1189,14 +1214,88 @@ export function stampWindowsAcl(opts) {
          `${holder}`,
          '--sandbox-user-sid',
          opts.sandboxUserSid,
 +        ...(opts.persistentOwner === undefined ? [] : ['--persistent-owner', opts.persistentOwner]),
 +    ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
-+    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status}: ${r.stderr || r.stdout}`);
++    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status} elapsedMs=${(performance.now() - started).toFixed(2)}: ${r.stderr || r.stdout}`);
 +    if (r.status !== 0) {
 +        throw new WindowsSandboxError('acl_stamp_failed', `srt-win acl stamp exited ${r.status} ` +
 +            (r.status === 2 ? '(partial — some inputs skipped)' : '(failed)') +
@@ -4676,6 +4726,8 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..467d6ec0ffc7dd2f672fef8a9894c91d
 +    }
 +}
 +export async function stampWindowsAclAsync(opts) {
++    const started = performance.now();
++    logWindowsStampTargets(opts);
 +    const holder = opts.holderPid ?? process.pid;
 +    const stdin = JSON.stringify({
 +        denyRead: opts.denyRead,
@@ -4690,9 +4742,11 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..467d6ec0ffc7dd2f672fef8a9894c91d
 +        opts.sandboxUserSid,
 +        ...(opts.persistentOwner === undefined ? [] : ['--persistent-owner', opts.persistentOwner]),
      ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
-     logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status}: ${r.stderr || r.stdout}`);
+-    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status}: ${r.stderr || r.stdout}`);
++    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status} elapsedMs=${(performance.now() - started).toFixed(2)}: ${r.stderr || r.stdout}`);
      if (r.status !== 0) {
-@@ -1197,6 +1232,55 @@ export function stampWindowsAcl(opts) {
+         throw new WindowsSandboxError('acl_stamp_failed', `srt-win acl stamp exited ${r.status} ` +
+             (r.status === 2 ? '(partial — some inputs skipped)' : '(failed)') +
              `: ${r.stderr || r.stdout}`);
      }
  }
@@ -4748,7 +4802,7 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..467d6ec0ffc7dd2f672fef8a9894c91d
  /**
   * Release this holder's deny ACEs and remove the sandbox-user ACE
   * on any path whose refcount falls to zero. Best-effort (does not
-@@ -1221,6 +1305,47 @@ export function restoreWindowsAcl(opts) {
+@@ -1221,6 +1320,47 @@ export function restoreWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -4796,7 +4850,7 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..467d6ec0ffc7dd2f672fef8a9894c91d
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
                  `outcomes preserved): ${r.stderr}`, { level: 'error' });
-@@ -1266,6 +1391,22 @@ export function grantWindowsAcl(opts) {
+@@ -1266,6 +1406,22 @@ export function grantWindowsAcl(opts) {
          throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
      }
  }
@@ -4819,7 +4873,7 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..467d6ec0ffc7dd2f672fef8a9894c91d
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -1283,6 +1424,34 @@ export function revokeWindowsAcl(opts) {
+@@ -1283,6 +1439,34 @@ export function revokeWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });

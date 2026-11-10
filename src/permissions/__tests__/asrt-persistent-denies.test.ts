@@ -1,12 +1,13 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WindowsConfigSchema } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-config.js";
 import { forgetWindowsDenyStampsAsync, stampWindowsAcl, stampWindowsAclAsync } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
-import { useTempDirs } from "../../__tests__/test-helpers.js";
+import { useTempDirs as fixtureDirectories } from "../../__tests__/test-helpers.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
-const scratch = useTempDirs("persistent-deny-transport-");
+const scratch = fixtureDirectories("persistent-deny-transport-");
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 function helper(reply: unknown = [], code = 0) {
   const root = scratch();
@@ -47,6 +48,30 @@ describe("durable deny transport", () => {
     const runtime = helper();
     await stampWindowsAclAsync({ ...runtime, sandboxUserSid: "S-1-5-21-123", denyRead: [], denyWrite: [] });
     expect(runtime.calls()[0]?.args).not.toContain("--persistent-owner");
+  });
+
+  it.each([stampWindowsAcl, stampWindowsAclAsync])("logs structured targets and their parents before the native result", async stamp => {
+    vi.stubEnv("SRT_DEBUG", "1");
+    const output = vi.spyOn(console, "error").mockImplementation(() => {});
+    await stamp({ ...helper(), sandboxUserSid: "S-1-5-21-123",
+      denyRead: ["C:\\Users\\fixture-account\\.ssh"], denyWrite: ["C:\\fixture\\protected"] });
+    const messages = output.mock.calls.map(([message]) => String(message));
+    const prefix = "[SandboxDebug] [Sandbox Windows] acl stamp targets=";
+    const targets = messages[0];
+    if (targets === undefined) throw new Error("Stamp target diagnostic is missing");
+    expect(targets.startsWith(prefix)).toBe(true);
+    expect(JSON.parse(targets.slice(prefix.length))).toEqual([
+      { path: "C:\\Users\\fixture-account\\.ssh", parent: "C:\\Users\\fixture-account", kind: "denyRead" },
+      { path: "C:\\fixture\\protected", parent: "C:\\fixture", kind: "denyWrite" },
+    ]);
+    expect(messages[1]).toMatch(/acl stamp exit=0 elapsedMs=\d+(?:\.\d+)?:/);
+  });
+
+  it("does not emit target paths when debug output is disabled", async () => {
+    vi.stubEnv("SRT_DEBUG", "");
+    const output = vi.spyOn(console, "error").mockImplementation(() => {});
+    await stampWindowsAclAsync({ ...helper(), sandboxUserSid: "S-1-5-21-123", denyRead: ["C:\\fixture\\private"], denyWrite: [] });
+    expect(output).not.toHaveBeenCalled();
   });
 
   it("explicit teardown addresses one owner without a caller-supplied trustee", async () => {
