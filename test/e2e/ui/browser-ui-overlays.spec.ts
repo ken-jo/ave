@@ -26,11 +26,16 @@ if (process.platform === "darwin") {
         await typeExposedEditor(fixture, "BELL", [notificationBounds]);
         await expect(notifications).toHaveCount(0);
         await bell.click();
-        await clickExposedAction(fixture, [notificationBounds]);
+        await expect(notifications).toBeVisible();
+        await expect(notifications).toBeFocused();
+        const reopenedNotificationBounds = await notifications.boundingBox();
+        assert(reopenedNotificationBounds);
+        await clickExposedAction(fixture, [reopenedNotificationBounds]);
         await expect(notifications).toHaveCount(0);
         await bell.focus();
         await bell.press("Enter");
         await expect(notifications).toBeVisible();
+        await expect(notifications).toBeFocused();
         await page.keyboard.press("Escape");
         await expect(notifications).toHaveCount(0);
         await expect(bell).toBeFocused();
