@@ -1,5 +1,6 @@
 import { TEST_OWNER } from "../../main/__tests__/routines-fixture.js";
-import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
+import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
+import * as tracing from "../../engine/telemetry/tracing.js";
 /** Boot integration checks service shape and construction order with heavy dependencies mocked.
  * It does not verify the behavior of closures wired to those mocks. */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -644,6 +645,30 @@ function bootWithWindow(
 ) {
   return bootstrap("/tmp/ave-boot-test/project", window, () => window, mode, createBootHostFixture());
 }
+
+describe("bootstrap desktop identity registration", () => {
+  it.each([true, false])("initializes the presenter before asynchronous startup when support is %s", async (supported) => {
+    const failure = new Error("Startup is held before core services");
+    let release!: (error: Error) => void;
+    const held = new Promise<Awaited<ReturnType<typeof tracing.configureTracing>>>((_resolve, reject) => { release = reject; });
+    const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(held);
+    const initializeNotificationPresenter = vi.fn(() => supported);
+    const window = fakeWindow();
+    const boot = bootstrap("/tmp/ave-boot-test/project", window, () => window, "interactive", createBootHostFixture({
+      desktop: createDesktopHostFixture({ initializeNotificationPresenter }),
+    }));
+    try {
+      expect(initializeNotificationPresenter).toHaveBeenCalledOnce();
+      const tracingOrder = configure.mock.invocationCallOrder[0];
+      if (tracingOrder === undefined) throw new Error("Tracing entry was not observed");
+      expect(initializeNotificationPresenter.mock.invocationCallOrder[0]).toBeLessThan(tracingOrder);
+    } finally {
+      release(failure);
+      await expect(boot).rejects.toBe(failure);
+      configure.mockRestore();
+    }
+  });
+});
 
 describe("bootstrap() integration lock", () => {
   let services: AppServices;

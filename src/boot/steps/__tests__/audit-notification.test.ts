@@ -118,24 +118,14 @@ describe("setupAuditAndNotification audit lifecycle", () => {
 });
 
 describe("setupAuditAndNotification OS notification presenter", () => {
-  // Initialize the presenter at boot so Windows registers persisted-toast activation before the first cue.
-  it("initialises the desktop notification presenter once during boot", async () => {
+  it("does not repeat native identity registration during audited service setup", async () => {
     const initializeNotificationPresenter = vi.fn(() => true);
     const desktop = createDesktopHostFixture({ initializeNotificationPresenter });
     const ctx = makeContext(createBootHostFixture({ desktop }));
 
     await setupAuditAndNotification(ctx);
 
-    expect(initializeNotificationPresenter).toHaveBeenCalledOnce();
-  });
-
-  it("initialises the presenter even when OS notifications are unsupported", async () => {
-    const initializeNotificationPresenter = vi.fn(() => false);
-    const desktop = createDesktopHostFixture({ initializeNotificationPresenter });
-
-    await setupAuditAndNotification(makeContext(createBootHostFixture({ desktop })));
-
-    expect(initializeNotificationPresenter).toHaveBeenCalledOnce();
+    expect(initializeNotificationPresenter).not.toHaveBeenCalled();
   });
 
   it("boots a host without a desktop surface", async () => {
