@@ -146,6 +146,16 @@ public static class HomeDirectoryDacl {
       return OpenRelative(parent, leaf, user, create ? 3u : 1u, true, true, true, readOnly, readOnly ? 7u : 3u);
     }
   }
+  public static bool ParentMatches(SafeFileHandle home, string childPath, SecurityIdentifier user) {
+    string parentPath = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(childPath));
+    if (String.IsNullOrEmpty(parentPath)) return false;
+    using (var parent = OpenHome(parentPath, user, false, true)) {
+      if (parent == null) return false;
+      var expected = FileIdentity(home);
+      var actual = FileIdentity(parent);
+      return expected.Volume == actual.Volume && expected.IndexHigh == actual.IndexHigh && expected.IndexLow == actual.IndexLow;
+    }
+  }
   public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u, uint access = 0u) {
     if (String.IsNullOrEmpty(leaf) || leaf == "." || leaf == ".." || leaf.IndexOfAny(new char[] { '\\\\', '/', ':' }) >= 0) throw new InvalidOperationException("Directory leaf is invalid");
     IntPtr buffer = Marshal.StringToHGlobalUni(leaf);

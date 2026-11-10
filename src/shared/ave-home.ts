@@ -587,7 +587,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
             $refused = -not [HomeDirectoryDacl]::RootSafe([HomeDirectoryDacl]::Read($handle), $identity.User, $elevated, $request.readOnlyRights);
             if (-not $refused) { $workspaceState = [HomeDirectoryDacl]::ReinheritWorkspace($handle, $identity.User) }
           } else {
-            if ([System.IO.Path]::GetDirectoryName($path) -ne [System.IO.Path]::GetFullPath($request.paths[0])) { throw 'Directory is outside the pinned home' }
+            if (-not [HomeDirectoryDacl]::ParentMatches($homeHandle, $path, $identity.User)) { throw 'Directory is outside the pinned home' }
             $leaf = [System.IO.Path]::GetFileName($path);
             if (-not $elevated -and $path -eq $request.claimableRuntimeRoot) {
               try { [HomeDirectoryDacl]::ClaimRuntimeRoot($homeHandle, $leaf, $identity.User) }
