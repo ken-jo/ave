@@ -421,6 +421,36 @@ describe("ensureAveHomePrivate", () => {
     expect(readWindowsDirectoryDacls(paths)).toEqual([descriptor(dir),
       { path: paths[1], category: "read-back-failed", error: "read failed" }]);
   });
+  it("reads protected directories together while preserving write errors and result order", () => {
+    const dir = home();
+    const paths = [dir, ...AVE_HOME_PROTECTED_DIRECTORIES.map(name => join(dir, name))];
+    const failedIndex = 2;
+    const writes = paths.map((path, index) => index === failedIndex
+      ? { path, category: "directory-failed", error: "Access is denied" } : { path });
+    vi.spyOn(windowsNativeHost, "runWindowsNative").mockImplementation(operation => operation());
+    vi.mocked(execFileSync).mockImplementationOnce(() => JSON.stringify(writes));
+    const read = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(targets => targets.map(path => nativeDescriptor(path)));
+    const result = readWindowsDirectoryDacls(paths, true);
+    expect(read.mock.calls.map(([targets]) => targets)).toEqual([
+      [resolve(dir)], paths.filter((_, index) => index !== failedIndex).map(path => resolve(path)), [join(resolve(dir), "workspace")],
+    ]);
+    expect(result).toEqual(paths.map((path, index) => index === failedIndex ? writes[index]
+      : { ...descriptor(path), ...(index === 0 ? { workspaceRules: [{ ...OWNER_RULE }] } : {}) }));
+  });
+  it("fails every protected read-back closed when the native batch fails", () => {
+    const dir = home();
+    const paths = [dir, join(dir, "secrets"), join(dir, "config")];
+    const writes = [{ path: dir }, { path: paths[1], error: "Write refused" }, { path: paths[2] }];
+    vi.spyOn(windowsNativeHost, "runWindowsNative").mockImplementation(operation => operation());
+    vi.mocked(execFileSync).mockImplementationOnce(() => JSON.stringify(writes));
+    const read = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementationOnce(targets => targets.map(path => nativeDescriptor(path)))
+      .mockImplementation(() => { throw new Error("Invalid native result"); });
+    expect(readWindowsDirectoryDacls(paths, true)).toEqual([
+      { path: dir, category: "read-back-failed", error: "Invalid native result" }, writes[1],
+      { path: paths[2], category: "read-back-failed", error: "Invalid native result" },
+    ]);
+    expect(read.mock.calls.map(([targets]) => targets)).toEqual([[resolve(dir)], [resolve(dir), resolve(join(dir, "config"))]]);
+  });
   it("reports a directory the protecting step could not create", () => {
     const dir = home();
     const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
