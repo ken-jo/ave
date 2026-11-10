@@ -2,12 +2,12 @@
   "runs": [
     {
       "id": "affected-unit",
-      "sourceRun": "test-results/ui-layer/affected-unit-final.log",
-      "sourceLogSha256": "58bb6c1ffa96c95981dd3920615bf929d2d221af74f42f34e5e3683ef7f61f4f",
+      "sourceRun": "test-results/ui-layer/affected-unit-current-main.log",
+      "sourceLogSha256": "618a80349649c235c479d2d376dfa3e63e9e8e10691919af1d39b8106f5bd9c5",
       "result": "passed",
       "resultLines": [
         "Test Files  30 passed (30)",
-        "Tests  1080 passed (1080)"
+        "Tests  1084 passed (1084)"
       ]
     },
     {
@@ -43,114 +43,180 @@
     },
     {
       "id": "production-typecheck",
-      "sourceRun": "test-results/ui-layer/typecheck-final.log",
+      "sourceRun": "test-results/ui-layer/typecheck-final-product.log",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
       "sourceLogSha256": "8366207267355d3e3d5bf3bf6e8c94c5f93f6078c34f08973fa2b38cdda6cc92",
       "result": "passed",
       "resultLines": [
         "$ tsc --noEmit"
       ],
-      "resultBasis": "Lead verified successful command completion; this command emits no success summary."
+      "resultBasis": "Lead verified successful command completion with exit 0."
     },
     {
       "id": "test-typecheck-baseline",
-      "sourceRun": "test-results/ui-layer/e2e-typecheck-complete.log",
+      "sourceRun": "test-results/ui-layer/typecheck-tests-integrated.log",
       "sourceLogSha256": "24bdb6d6d33c41257c52e78b847b043fdad296805a20021cd5c19533b505dafa",
       "result": "baseline-held",
       "resultLines": [
         "[test-typecheck] baseline held: 207 files, 919 errors (1 file(s) improved, 2 fully fixed — run check:typecheck-tests:update to lock it in)"
       ]
+    },
+    {
+      "id": "native-menu-and-registry-unit",
+      "sourceRun": "test-results/ui-layer/context-menu-final-unit.log",
+      "sourceLogSha256": "8e14bceb07d3afb2603598e9d20f3eb01695bdfffca4276f073d07cf2093f64c",
+      "result": "passed",
+      "resultLines": [
+        "Test Files  2 passed (2)",
+        "Tests  143 passed (143)"
+      ],
+      "coverageScope": "Native menu uses mocked presentation; this overlaps registry coverage in the affected 30-file run and does not establish OS menu placement.",
+      "sourceRevisionBasis": "The unit log does not emit its exact checked-out revision; the reported passing command is preserved without substituting the archive revision."
+    },
+    {
+      "id": "required-locks",
+      "sourceRun": "test-results/ui-layer/required-lock-vitest-integrated.log",
+      "sourceLogSha256": "5a8f8880f92e213b620f6e843b9fb34d4e8bd8cfee18c225e0e9987d422fcfaf",
+      "result": "passed-with-existing-skips",
+      "resultLines": [
+        "Test Files  87 passed | 1 skipped (88)",
+        "Tests  1767 passed | 19 skipped (1786)"
+      ],
+      "skipScope": "The 19 skips are existing coverage exclusions reported by the lead, not new skips added for these changes."
+    },
+    {
+      "id": "node-publish-checks",
+      "sourceRun": "test-results/ui-layer/required-lock-node-publish.log",
+      "sourceLogSha256": "1ff8b469a372b088d61275e66ae996e33a798f9a78bc0915be3f154708492e41",
+      "result": "passed",
+      "resultLines": [
+        "ℹ tests 122",
+        "ℹ pass 122",
+        "ℹ fail 0",
+        "ℹ skipped 0"
+      ]
+    },
+    {
+      "id": "frozen-window-size-guard",
+      "sourceRun": "test-results/ui-layer/window-size-guard-frozen.log",
+      "sourceLogSha256": "d94e8659db5ba7e489980efa694fbbebbeb44ad08671eddda15f03ca73f00377",
+      "result": "passed",
+      "resultLines": [
+        "ℹ tests 2",
+        "ℹ pass 2",
+        "ℹ fail 0"
+      ]
+    },
+    {
+      "id": "frozen-swift-typecheck",
+      "sourceReport": "test-results/ui-layer/native-validation-commands.md",
+      "sourceReportSha256": "10a9e696eb27fb84297434c4499f6745effdfc377acc54d1ccd52e0f3c645b7d",
+      "result": "passed",
+      "resultBasis": "The frozen runner report explicitly records successful Swift typecheck; no OS input coverage follows."
     }
   ],
   "focusEvidence": [
     {
       "file": "focus-parked-1360.json",
-      "sha256": "7b951b6aa37c99e31929cc3848de27a21f954b36bed76d41ed3dba08e6693b68",
+      "sha256": "a1f7cc0597677a7341a7594f5beb40dc4a2e22dd8df195e44b5c0237b6e17015",
       "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
       "testTitle": "parked agent click preserves the composer throughout native dispatch at 1360x800",
       "result": "passed",
-      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
-      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-park-61112-native-dispatch-at-1360x800-background/parked-click-focus.json",
-      "resultLine": "✓  3 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 1360x800 (7.8s)",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceRevisionBasis": "Lead identified the committed revision used to launch this nonvisual run.",
+      "sourceEvidence": "test-results/ui-layer-final-context-smoke/ui-parked-click-focus-park-61112-native-dispatch-at-1360x800-background/parked-click-focus.json",
+      "resultLine": "✓  5 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 1360x800 (6.9s)",
       "contentSize": {
         "width": 1360,
         "height": 800
       },
-      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+      "scope": "Background click-phase JSON; the whole test result also covers its later control checks. No native screenshot or OS input claim."
     },
     {
       "file": "focus-parked-900.json",
-      "sha256": "9c65508eade0599741245bd3482ea51c7088d2f4b0ed4fa1bb38668b22c991b8",
+      "sha256": "34c430044382c463d9ea22896d00640a23b584731296fcbc12e1325fc2a3c15e",
       "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
       "testTitle": "parked agent click preserves the composer throughout native dispatch at 900x800",
       "result": "passed",
-      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
-      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-park-9057d--native-dispatch-at-900x800-background/parked-click-focus.json",
-      "resultLine": "✓  6 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 900x800 (4.6s)",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceRevisionBasis": "Lead identified the committed revision used to launch this nonvisual run.",
+      "sourceEvidence": "test-results/ui-layer-final-committed/ui-parked-click-focus-park-9057d--native-dispatch-at-900x800-background/parked-click-focus.json",
+      "resultLine": "✓  31 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 900x800 (4.3s)",
       "contentSize": {
         "width": 900,
         "height": 800
       },
-      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+      "scope": "Background click-phase JSON; the whole test result also covers its later control checks. No native screenshot or OS input claim."
     },
     {
       "file": "focus-presented-1360.json",
-      "sha256": "68c13b1ace1ada046a828ddd60efbba38eb4e1b971066881f6c479b96e9dcc10",
+      "sha256": "0651d8e49dc937911e66118fa61025d2de23288dcf7f8122b671e29c45148c0f",
       "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
       "testTitle": "presented agent click preserves the composer throughout native dispatch at 1360x800",
       "result": "passed",
-      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
-      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-pres-baf71-native-dispatch-at-1360x800-background/parked-click-focus.json",
-      "resultLine": "✓  4 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 1360x800 (4.4s)",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceRevisionBasis": "Lead identified the committed revision used to launch this nonvisual run.",
+      "sourceEvidence": "test-results/ui-layer-final-context-smoke/ui-parked-click-focus-pres-baf71-native-dispatch-at-1360x800-background/parked-click-focus.json",
+      "resultLine": "✓  6 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 1360x800 (4.2s)",
       "contentSize": {
         "width": 1360,
         "height": 800
       },
-      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+      "scope": "Background click-phase JSON; the whole test result also covers its later control checks. No native screenshot or OS input claim."
     },
     {
       "file": "focus-presented-900.json",
-      "sha256": "779d5f8c34ed90595b068695dd57be06e05a786f142c9283d8d81c7ff112996e",
+      "sha256": "cd9f8f485a5f497f0e0523d70492ae73e0353704266179018662a19ddb33d539",
       "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
       "testTitle": "presented agent click preserves the composer throughout native dispatch at 900x800",
       "result": "passed",
-      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
-      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-pres-7f6de--native-dispatch-at-900x800-background/parked-click-focus.json",
-      "resultLine": "✓  7 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 900x800 (4.9s)",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceRevisionBasis": "Lead identified the committed revision used to launch this nonvisual run.",
+      "sourceEvidence": "test-results/ui-layer-final-committed/ui-parked-click-focus-pres-7f6de--native-dispatch-at-900x800-background/parked-click-focus.json",
+      "resultLine": "✓  32 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 900x800 (4.2s)",
       "contentSize": {
         "width": 900,
         "height": 800
       },
-      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+      "scope": "Background click-phase JSON; the whole test result also covers its later control checks. No native screenshot or OS input claim."
     },
     {
       "file": "focus-takeover-1360.json",
-      "sha256": "abcaef969bee328bfdaf6001999f5e6625055ded4edd1ce596765395915526f9",
+      "sha256": "3a6be4977b9dbf8733531bcc7818e1d5af6e42e83bd2dc5237ff821bcebe221f",
       "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
       "testTitle": "visible user takeover invalidates control before a resumed parked click at 1360x800",
       "result": "passed",
-      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
-      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-visi-b743e-ed-parked-click-at-1360x800-background/parked-click-focus.json",
-      "resultLine": "✓  5 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 1360x800 (6.7s)",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceRevisionBasis": "Lead identified the committed revision used to launch this nonvisual run.",
+      "sourceEvidence": "test-results/ui-layer-final-context-smoke/ui-parked-click-focus-visi-b743e-ed-parked-click-at-1360x800-background/parked-click-focus.json",
+      "resultLine": "✓  7 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 1360x800 (4.8s)",
       "contentSize": {
         "width": 1360,
         "height": 800
       },
-      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+      "scope": "Background click-phase JSON; the whole test result also covers its later control checks. No native screenshot or OS input claim."
     },
     {
       "file": "focus-takeover-900.json",
-      "sha256": "70841828e5e1ac0fc85fdc1f2d22de9f91fd0da13fe219b3f7c85776e2615c6a",
+      "sha256": "a4cb98d76fcc1456d810ed445ff4b6f1aaf36f0b8a2b6a0fc079311c946bdf0b",
       "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
       "testTitle": "visible user takeover invalidates control before a resumed parked click at 900x800",
       "result": "passed",
-      "sourceRun": "test-results/ui-layer/focus-widths-notice.log",
-      "sourceEvidence": "test-results/ui-layer-focus-widths-notice/ui-parked-click-focus-visi-3d287-med-parked-click-at-900x800-background/parked-click-focus.json",
-      "resultLine": "✓  8 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 900x800 (5.5s)",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceRevisionBasis": "Lead identified the committed revision used to launch this nonvisual run.",
+      "sourceEvidence": "test-results/ui-layer-final-committed/ui-parked-click-focus-visi-3d287-med-parked-click-at-900x800-background/parked-click-focus.json",
+      "resultLine": "✓  33 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 900x800 (5.1s)",
       "contentSize": {
         "width": 900,
         "height": 800
       },
-      "scope": "Background click-phase JSON; whole test result also covers its later control checks. No native screenshot or OS input claim."
+      "scope": "Background click-phase JSON; the whole test result also covers its later control checks. No native screenshot or OS input claim."
     }
   ],
   "canonicalPreservation": {
@@ -186,5 +252,920 @@
       "focus-takeover-900.json"
     ],
     "note": "Eleven other browser cases plus six size-specific focus cases; eight capture cases. The three earlier unsized focus titles in the source run are not counted again."
-  }
+  },
+  "cases": [
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-agent-tab.spec.ts",
+      "testTitle": "keeps an agent page mounted through blank bootstrap and first navigation",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓   1 [background] › test/e2e/ui/browser-agent-tab.spec.ts:10:1 › keeps an agent page mounted through blank bootstrap and first navigation (7.7s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "capture-regression",
+      "testFile": "test/e2e/ui/browser-capture-native.spec.ts",
+      "testTitle": "native capture build assets stay inside the invocation output",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓   4 [background] › test/e2e/ui/browser-capture-native.spec.ts:114:1 › native capture build assets stay inside the invocation output (943ms)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "capture-regression",
+      "testFile": "test/e2e/ui/browser-capture-native.spec.ts",
+      "testTitle": "native capture fixture isolates its home from the parent process",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓   1 [background] › test/e2e/ui/browser-capture-native.spec.ts:101:1 › native capture fixture isolates its home from the parent process (4.6s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "capture-regression",
+      "testFile": "test/e2e/ui/browser-capture-native.spec.ts",
+      "testTitle": "native full-page capture includes the tall page bottom pixels at zoom 1",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓   5 [background] › test/e2e/ui/browser-capture-native.spec.ts:144:3 › native full-page capture includes the tall page bottom pixels at zoom 1 (1.3s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "capture-regression",
+      "testFile": "test/e2e/ui/browser-capture-native.spec.ts",
+      "testTitle": "native full-page capture includes the tall page bottom pixels at zoom 1.25",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓   2 [background] › test/e2e/ui/browser-capture-native.spec.ts:144:3 › native full-page capture includes the tall page bottom pixels at zoom 1.25 (1.3s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "capture-regression",
+      "testFile": "test/e2e/ui/browser-capture-native.spec.ts",
+      "testTitle": "native parked agent tab captures its viewport and returns to sleep",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  10 [background] › test/e2e/ui/browser-capture-native.spec.ts:214:1 › native parked agent tab captures its viewport and returns to sleep (2.5s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "capture-regression",
+      "testFile": "test/e2e/ui/browser-capture-native.spec.ts",
+      "testTitle": "native parked agent tab wakes for full-page capture without selecting its slot",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓   9 [background] › test/e2e/ui/browser-capture-native.spec.ts:197:1 › native parked agent tab wakes for full-page capture without selecting its slot (825ms)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "capture-regression",
+      "testFile": "test/e2e/ui/browser-capture-native.spec.ts",
+      "testTitle": "native ref capture keeps the element CSS size at zoom 1",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓   7 [background] › test/e2e/ui/browser-capture-native.spec.ts:175:3 › native ref capture keeps the element CSS size at zoom 1 (675ms)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "capture-regression",
+      "testFile": "test/e2e/ui/browser-capture-native.spec.ts",
+      "testTitle": "native ref capture keeps the element CSS size at zoom 1.25",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓   8 [background] › test/e2e/ui/browser-capture-native.spec.ts:175:3 › native ref capture keeps the element CSS size at zoom 1.25 (530ms)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-navigation-readiness.spec.ts",
+      "testTitle": "returns main-document readiness and challenge metadata: embedded verification",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  13 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: embedded verification (3.8s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-navigation-readiness.spec.ts",
+      "testTitle": "returns main-document readiness and challenge metadata: security container",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  15 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: security container (5.7s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-navigation-readiness.spec.ts",
+      "testTitle": "returns main-document readiness and challenge metadata: usable document",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  11 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: usable document (6.0s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-navigation-readiness.spec.ts",
+      "testTitle": "returns main-document readiness and challenge metadata: verification dialog",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  14 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: verification dialog (3.9s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-navigation-readiness.spec.ts",
+      "testTitle": "returns main-document readiness and challenge metadata: waiting interstitial",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  12 [background] › test/e2e/ui/browser-navigation-readiness.spec.ts:15:42 › returns main-document readiness and challenge metadata: waiting interstitial (3.6s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-observation-preview.spec.ts",
+      "testTitle": "keeps a parked agent guest visible to its animation clock",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  16 [background] › test/e2e/ui/browser-observation-preview.spec.ts:15:1 › keeps a parked agent guest visible to its animation clock (6.2s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-observation-preview.spec.ts",
+      "testTitle": "measures renderer evaluation after an agent closes its parked guest",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  18 [background] › test/e2e/ui/browser-observation-preview.spec.ts:17:1 › measures renderer evaluation after an agent closes its parked guest (6.7s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-observation-preview.spec.ts",
+      "testTitle": "selects in a parked guest without taking native keyboard focus",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  17 [background] › test/e2e/ui/browser-observation-preview.spec.ts:16:1 › selects in a parked guest without taking native keyboard focus (5.8s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-observation-preview.spec.ts",
+      "testTitle": "streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓  19 [background] › test/e2e/ui/browser-observation-preview.spec.ts:18:1 › streams a bounded live preview of the agent's tab and re-arms it across a cross-site commit (13.8s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "preserved-browser",
+      "testFile": "test/e2e/ui/browser-observation.spec.ts",
+      "testTitle": "shows admitted browser commands and excludes a later user navigation from the same tab",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/preservation-current.log",
+      "resultLine": "✓   2 [background] › test/e2e/ui/browser-observation.spec.ts:22:1 › shows admitted browser commands and excludes a later user navigation from the same tab (6.7s)",
+      "sourceRevision": null,
+      "sourceContext": "Earlier preservation run before incoming-main integration; exact revision was not emitted. This is not labeled as the final committed run.",
+      "evidenceFiles": []
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page remains interactive under a genuine plugin notice at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓   3 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:13:5 › native page remains interactive under a genuine plugin notice at 1360x800 (30.1s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "plugin-notice-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page remains interactive under a genuine plugin notice at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓   5 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:13:5 › native page remains interactive under a genuine plugin notice at 900x800 (17.2s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "plugin-notice-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page stays below app card floating and fullscreen modes at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓   4 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:41:5 › native page stays below app card floating and fullscreen modes at 1360x800 (30.1s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "app-fullscreen-1360.png",
+        "app-pip-1360.png",
+        "composer-with-app-pip-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-app-card.spec.ts",
+      "testTitle": "native page stays below app card floating and fullscreen modes at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓   6 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:41:5 › native page stays below app card floating and fullscreen modes at 900x800 (25.0s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "app-fullscreen-900.png",
+        "app-pip-900.png",
+        "composer-with-app-pip-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-chrome.spec.ts",
+      "testTitle": "main browser tooltip and keyboard reload preserve the native page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/chrome-merged.log",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:26:5 › main browser tooltip and keyboard reload preserve the native page at 1360x800 (14.5s)",
+      "sourceRevision": null,
+      "sourceContext": "Passing run recorded before revision metadata was added; archive HEAD is not substituted for run identity.",
+      "evidenceFiles": [
+        "main-navigation-tooltip-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-chrome.spec.ts",
+      "testTitle": "main browser tooltip and keyboard reload preserve the native page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/chrome-merged.log",
+      "resultLine": "✓  5 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:26:5 › main browser tooltip and keyboard reload preserve the native page at 900x800 (15.8s)",
+      "sourceRevision": null,
+      "sourceContext": "Passing run recorded before revision metadata was added; archive HEAD is not substituted for run identity.",
+      "evidenceFiles": [
+        "main-navigation-tooltip-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-chrome.spec.ts",
+      "testTitle": "real missing credential popover stays usable beside the page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/chrome-merged.log",
+      "resultLine": "✓  3 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:100:5 › real missing credential popover stays usable beside the page at 1360x800 (19.6s)",
+      "sourceRevision": null,
+      "sourceContext": "Passing run recorded before revision metadata was added; archive HEAD is not substituted for run identity.",
+      "evidenceFiles": [
+        "runtime-issue-popover-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-chrome.spec.ts",
+      "testTitle": "real missing credential popover stays usable beside the page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/runtime-complete.log",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:126:5 › real missing credential popover stays usable beside the page at 900x800 (13.4s)",
+      "sourceRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+      "sourceContext": "Revision recorded by the native capture helper.",
+      "evidenceFiles": [
+        "runtime-issue-popover-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-chrome.spec.ts",
+      "testTitle": "sidebar plugin flyout stays above the main browser at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/chrome-complete.log",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:52:5 › sidebar plugin flyout stays above the main browser at 1360x800 (15.1s)",
+      "sourceRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+      "sourceContext": "Revision recorded by the native capture helper.",
+      "evidenceFiles": [
+        "sidebar-group-flyout-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-chrome.spec.ts",
+      "testTitle": "sidebar plugin flyout stays above the main browser at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/chrome-complete.log",
+      "resultLine": "✓  2 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:52:5 › sidebar plugin flyout stays above the main browser at 900x800 (14.2s)",
+      "sourceRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+      "sourceContext": "Revision recorded by the native capture helper.",
+      "evidenceFiles": [
+        "sidebar-group-flyout-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-chrome.spec.ts",
+      "testTitle": "user-opened webview retains input and workspace controls at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:174:5 › user-opened webview retains input and workspace controls at 1360x800 (11.1s)",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "retained-user-host-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-chrome.spec.ts",
+      "testTitle": "user-opened webview retains input and workspace controls at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/chrome-merged.log",
+      "resultLine": "✓  8 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:137:5 › user-opened webview retains input and workspace controls at 900x800 (11.7s)",
+      "sourceRevision": null,
+      "sourceContext": "Passing run recorded before revision metadata was added; archive HEAD is not substituted for run identity.",
+      "evidenceFiles": [
+        "retained-user-host-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine governed tool approval stays usable in the right lane at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓   9 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:178:5 › genuine governed tool approval stays usable in the right lane at 1360x800 (11.6s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "governed-right-lane-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine governed tool approval stays usable in the right lane at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  12 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:178:5 › genuine governed tool approval stays usable in the right lane at 900x800 (11.9s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "governed-right-lane-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine question stays usable beside a retained work-panel page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓   8 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:157:5 › genuine question stays usable beside a retained work-panel page at 1360x800 (8.7s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "question-work-panel-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine question stays usable beside a retained work-panel page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  11 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:157:5 › genuine question stays usable beside a retained work-panel page at 900x800 (8.7s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "question-work-panel-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine site approval and question stay above the same-pane page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓   7 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:110:5 › genuine site approval and question stay above the same-pane page at 1360x800 (15.4s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "question-settle-1360.png",
+        "site-settle-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "genuine site approval and question stay above the same-pane page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  10 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:110:5 › genuine site approval and question stay above the same-pane page at 900x800 (13.8s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "question-settle-900.png",
+        "site-settle-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "main browser chat-panel approval and question stay interactive at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/extra-classification.log",
+      "resultLine": "✓  6 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:69:5 › main browser chat-panel approval and question stay interactive at 1360x800 (16.8s)",
+      "sourceRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+      "sourceContext": "Revision recorded by the native capture helper.",
+      "evidenceFiles": [
+        "chat-panel-approval-1360.png",
+        "chat-panel-question-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "main browser chat-panel approval and question stay interactive at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/extra-classification.log",
+      "resultLine": "✓  9 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:69:5 › main browser chat-panel approval and question stay interactive at 900x800 (16.5s)",
+      "sourceRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+      "sourceContext": "Revision recorded by the native capture helper.",
+      "evidenceFiles": [
+        "chat-panel-approval-900.png",
+        "chat-panel-question-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "natural browser move keeps the originating approval usable at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/extra-classification.log",
+      "resultLine": "✓  5 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:53:5 › natural browser move keeps the originating approval usable at 1360x800 (9.7s)",
+      "sourceRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+      "sourceContext": "Revision recorded by the native capture helper.",
+      "evidenceFiles": [
+        "site-natural-move-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "natural browser move keeps the originating approval usable at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/extra-classification.log",
+      "resultLine": "✓  8 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:53:5 › natural browser move keeps the originating approval usable at 900x800 (8.7s)",
+      "sourceRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+      "sourceContext": "Revision recorded by the native capture helper.",
+      "evidenceFiles": [
+        "site-natural-move-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "ordinary work-panel site approval preserves page input and invalidates stale navigation at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/extra-classification.log",
+      "resultLine": "✓  4 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:43:5 › ordinary work-panel site approval preserves page input and invalidates stale navigation at 1360x800 (12.5s)",
+      "sourceRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+      "sourceContext": "Revision recorded by the native capture helper.",
+      "evidenceFiles": [
+        "site-work-panel-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-decisions.spec.ts",
+      "testTitle": "ordinary work-panel site approval preserves page input and invalidates stale navigation at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/extra-classification.log",
+      "resultLine": "✓  7 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:43:5 › ordinary work-panel site approval preserves page input and invalidates stale navigation at 900x800 (9.0s)",
+      "sourceRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+      "sourceContext": "Revision recorded by the native capture helper.",
+      "evidenceFiles": [
+        "site-work-panel-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-interactions.spec.ts",
+      "testTitle": "composer composition and tab drag retain the native page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  13 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 1360x800 (18.0s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "composer-composition-1360.png",
+        "surface-tab-drag-1360.png",
+        "surface-tab-dropped-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-interactions.spec.ts",
+      "testTitle": "composer composition and tab drag retain the native page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  14 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 900x800 (20.3s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "composer-composition-900.png",
+        "surface-tab-drag-900.png",
+        "surface-tab-dropped-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-layer.spec.ts",
+      "testTitle": "native UI add menu stays above a live agent page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "resultLine": "✓  2 [background] › test/e2e/ui/browser-ui-layer.spec.ts:13:5 › native UI add menu stays above a live agent page at 1360x800 (8.5s)",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "toolbar-add-menu-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-layer.spec.ts",
+      "testTitle": "native UI add menu stays above a live agent page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  16 [background] › test/e2e/ui/browser-ui-layer.spec.ts:13:5 › native UI add menu stays above a live agent page at 900x800 (10.3s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "toolbar-add-menu-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native notification popover and capture controls stay usable at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "resultLine": "✓  3 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 1360x800 (17.0s)",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "capture-area-1360.png",
+        "capture-menu-1360.png",
+        "notification-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native notification popover and capture controls stay usable at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "resultLine": "✓  4 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 900x800 (17.2s)",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "capture-area-900.png",
+        "capture-menu-900.png",
+        "notification-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays below denial dialog and backdrop at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  19 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:162:5 › native page stays below denial dialog and backdrop at 1360x800 (12.4s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "denial-backdrop-1360.png",
+        "denial-dialog-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays below denial dialog and backdrop at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  22 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:162:5 › native page stays below denial dialog and backdrop at 900x800 (12.6s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "denial-backdrop-900.png",
+        "denial-dialog-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays live through resize and surface work panel at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  18 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:86:5 › native page stays live through resize and surface work panel at 1360x800 (21.4s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "resize-strip-1360.png",
+        "surface-work-panel-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-overlays.spec.ts",
+      "testTitle": "native page stays live through resize and surface work panel at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  21 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:86:5 › native page stays live through resize and surface work panel at 900x800 (15.7s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "resize-strip-900.png",
+        "surface-work-panel-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-page-preview.spec.ts",
+      "testTitle": "parked agent page preview stays above another live page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  23 [background] › test/e2e/ui/browser-ui-page-preview.spec.ts:14:5 › parked agent page preview stays above another live page at 1360x800 (9.6s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "agent-page-preview-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-page-preview.spec.ts",
+      "testTitle": "parked agent page preview stays above another live page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  24 [background] › test/e2e/ui/browser-ui-page-preview.spec.ts:14:5 › parked agent page preview stays above another live page at 900x800 (9.3s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "agent-page-preview-900.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-toast.spec.ts",
+      "testTitle": "real model fallback notice stays above the native page at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  25 [background] › test/e2e/ui/browser-ui-toast.spec.ts:11:5 › real model fallback notice stays above the native page at 1360x800 (14.4s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "model-fallback-toast-1360.png"
+      ]
+    },
+    {
+      "group": "composition",
+      "testFile": "test/e2e/ui/browser-ui-toast.spec.ts",
+      "testTitle": "real model fallback notice stays above the native page at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  26 [background] › test/e2e/ui/browser-ui-toast.spec.ts:11:5 › real model fallback notice stays above the native page at 900x800 (13.8s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "model-fallback-toast-900.png"
+      ]
+    },
+    {
+      "group": "focus-control",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "parked agent click preserves the composer throughout native dispatch at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "resultLine": "✓  5 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 1360x800 (6.9s)",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "focus-parked-1360.json"
+      ]
+    },
+    {
+      "group": "focus-control",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "parked agent click preserves the composer throughout native dispatch at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  31 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 900x800 (4.3s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "focus-parked-900.json"
+      ]
+    },
+    {
+      "group": "focus-control",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "presented agent click preserves the composer throughout native dispatch at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "resultLine": "✓  6 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 1360x800 (4.2s)",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "focus-presented-1360.json"
+      ]
+    },
+    {
+      "group": "focus-control",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "presented agent click preserves the composer throughout native dispatch at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  32 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 900x800 (4.2s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "focus-presented-900.json"
+      ]
+    },
+    {
+      "group": "focus-control",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "visible user takeover invalidates control before a resumed parked click at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "resultLine": "✓  7 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 1360x800 (4.8s)",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "focus-takeover-1360.json"
+      ]
+    },
+    {
+      "group": "focus-control",
+      "testFile": "test/e2e/ui/parked-click-focus.spec.ts",
+      "testTitle": "visible user takeover invalidates control before a resumed parked click at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  33 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 900x800 (5.1s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision.",
+      "evidenceFiles": [
+        "focus-takeover-900.json"
+      ]
+    },
+    {
+      "group": "incoming-main-compatibility",
+      "testFile": "test/e2e/ui/sidebar-subagent-nesting.spec.ts",
+      "testTitle": "nests persisted sub-agent conversations at native window sizes and keeps orphans reachable",
+      "result": "passed",
+      "evidenceFiles": [],
+      "sourceRun": "test-results/ui-layer/final-committed.log",
+      "resultLine": "✓  27 [background] › test/e2e/ui/sidebar-subagent-nesting.spec.ts:12:1 › nests persisted sub-agent conversations at native window sizes and keeps orphans reachable (4.5s)",
+      "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+      "sourceContext": "Lead identified this committed revision at final batch launch; screenshot records also contain the emitted revision."
+    }
+  ],
+  "caseCounts": {
+    "preserved-browser": 11,
+    "capture-regression": 8,
+    "composition": 38,
+    "focus-control": 6,
+    "incoming-main-compatibility": 1
+  },
+  "finalCommittedValidation": {
+    "sourceRun": "test-results/ui-layer/final-committed.log",
+    "sourceLogSha256": "738787aca9ad264dbcb184acbde2575ac35a42f7e0aacbf28c7d1a9820b94bc9",
+    "sourceRevision": "f1985a7d3f1ab100b82e56c5782ea360794b02ae",
+    "productBuildRevision": "23e884c9bd2bb15a4dd3a575dd0eb23d510a3ef5",
+    "productEquivalence": "Checked diff between build and committed test revision contains only test/e2e and test/fixtures paths.",
+    "result": "resolved-by-targeted-passing-rerun",
+    "passed": 31,
+    "failed": 2,
+    "failureScope": "The two notification fixture readiness failures were resolved by the visible/natural-focus gate and both exact cases passed in the targeted run.",
+    "passingLines": [
+      "✓   1 [background] › test/e2e/ui/browser-capture-native.spec.ts:101:1 › native capture fixture isolates its home from the parent process (4.6s)",
+      "✓   2 [background] › test/e2e/ui/browser-capture-native.spec.ts:144:3 › native full-page capture includes the tall page bottom pixels at zoom 1.25 (1.3s)",
+      "✓   3 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:13:5 › native page remains interactive under a genuine plugin notice at 1360x800 (30.1s)",
+      "✓   4 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:41:5 › native page stays below app card floating and fullscreen modes at 1360x800 (30.1s)",
+      "✓   5 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:13:5 › native page remains interactive under a genuine plugin notice at 900x800 (17.2s)",
+      "✓   6 [background] › test/e2e/ui/browser-ui-app-card.spec.ts:41:5 › native page stays below app card floating and fullscreen modes at 900x800 (25.0s)",
+      "✓   7 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:110:5 › genuine site approval and question stay above the same-pane page at 1360x800 (15.4s)",
+      "✓   8 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:157:5 › genuine question stays usable beside a retained work-panel page at 1360x800 (8.7s)",
+      "✓   9 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:178:5 › genuine governed tool approval stays usable in the right lane at 1360x800 (11.6s)",
+      "✓  10 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:110:5 › genuine site approval and question stay above the same-pane page at 900x800 (13.8s)",
+      "✓  11 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:157:5 › genuine question stays usable beside a retained work-panel page at 900x800 (8.7s)",
+      "✓  12 [background] › test/e2e/ui/browser-ui-decisions.spec.ts:178:5 › genuine governed tool approval stays usable in the right lane at 900x800 (11.9s)",
+      "✓  13 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 1360x800 (18.0s)",
+      "✓  14 [background] › test/e2e/ui/browser-ui-interactions.spec.ts:17:5 › composer composition and tab drag retain the native page at 900x800 (20.3s)",
+      "✓  15 [background] › test/e2e/ui/browser-ui-layer.spec.ts:13:5 › native UI add menu stays above a live agent page at 1360x800 (10.9s)",
+      "✓  16 [background] › test/e2e/ui/browser-ui-layer.spec.ts:13:5 › native UI add menu stays above a live agent page at 900x800 (10.3s)",
+      "✓  18 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:86:5 › native page stays live through resize and surface work panel at 1360x800 (21.4s)",
+      "✓  19 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:162:5 › native page stays below denial dialog and backdrop at 1360x800 (12.4s)",
+      "✓  21 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:86:5 › native page stays live through resize and surface work panel at 900x800 (15.7s)",
+      "✓  22 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:162:5 › native page stays below denial dialog and backdrop at 900x800 (12.6s)",
+      "✓  23 [background] › test/e2e/ui/browser-ui-page-preview.spec.ts:14:5 › parked agent page preview stays above another live page at 1360x800 (9.6s)",
+      "✓  24 [background] › test/e2e/ui/browser-ui-page-preview.spec.ts:14:5 › parked agent page preview stays above another live page at 900x800 (9.3s)",
+      "✓  25 [background] › test/e2e/ui/browser-ui-toast.spec.ts:11:5 › real model fallback notice stays above the native page at 1360x800 (14.4s)",
+      "✓  26 [background] › test/e2e/ui/browser-ui-toast.spec.ts:11:5 › real model fallback notice stays above the native page at 900x800 (13.8s)",
+      "✓  27 [background] › test/e2e/ui/sidebar-subagent-nesting.spec.ts:12:1 › nests persisted sub-agent conversations at native window sizes and keeps orphans reachable (4.5s)",
+      "✓  28 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 1360x800 (7.0s)",
+      "✓  29 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 1360x800 (4.5s)",
+      "✓  30 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 1360x800 (4.9s)",
+      "✓  31 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 900x800 (4.3s)",
+      "✓  32 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 900x800 (4.2s)",
+      "✓  33 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 900x800 (5.1s)"
+    ],
+    "failedLines": [
+      "✘  17 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 1360x800 (25.0s)",
+      "✘  20 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 900x800 (18.7s)"
+    ],
+    "resolution": {
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "sourceLogSha256": "1e43ecd4d30dcc563c3808b3e557bcecbd5d31f7dbeb8addfe9ba50ccf18189e",
+      "passed": 7,
+      "failed": 0,
+      "passingLines": [
+        "✓  1 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:174:5 › user-opened webview retains input and workspace controls at 1360x800 (11.1s)",
+        "✓  2 [background] › test/e2e/ui/browser-ui-layer.spec.ts:13:5 › native UI add menu stays above a live agent page at 1360x800 (8.5s)",
+        "✓  3 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 1360x800 (17.0s)",
+        "✓  4 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 900x800 (17.2s)",
+        "✓  5 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 1360x800 (6.9s)",
+        "✓  6 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 1360x800 (4.2s)",
+        "✓  7 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 1360x800 (4.8s)"
+      ]
+    }
+  },
+  "finalProductValidation": {
+    "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+    "build": {
+      "sourceRun": "test-results/ui-layer/build-final-product.log",
+      "result": "passed",
+      "resultBasis": "Lead verified exit 0."
+    },
+    "productionTypecheck": {
+      "sourceRun": "test-results/ui-layer/typecheck-final-product.log",
+      "result": "passed",
+      "resultBasis": "Lead verified exit 0."
+    },
+    "affectedNativeRerun": {
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/final-context-smoke.log",
+      "sourceRevision": "67572ca2fb1647515ab2357bd607858f0eb31577",
+      "passed": 7,
+      "failed": 0,
+      "resultLines": [
+        "✓  1 [background] › test/e2e/ui/browser-ui-chrome.spec.ts:174:5 › user-opened webview retains input and workspace controls at 1360x800 (11.1s)",
+        "✓  2 [background] › test/e2e/ui/browser-ui-layer.spec.ts:13:5 › native UI add menu stays above a live agent page at 1360x800 (8.5s)",
+        "✓  3 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 1360x800 (17.0s)",
+        "✓  4 [background] › test/e2e/ui/browser-ui-overlays.spec.ts:12:5 › native notification popover and capture controls stay usable at 900x800 (17.2s)",
+        "✓  5 [background] › test/e2e/ui/parked-click-focus.spec.ts:12:3 › parked agent click preserves the composer throughout native dispatch at 1360x800 (6.9s)",
+        "✓  6 [background] › test/e2e/ui/parked-click-focus.spec.ts:13:3 › presented agent click preserves the composer throughout native dispatch at 1360x800 (4.2s)",
+        "✓  7 [background] › test/e2e/ui/parked-click-focus.spec.ts:14:3 › visible user takeover invalidates control before a resumed parked click at 1360x800 (4.8s)"
+      ]
+    }
+  },
+  "currentNativeFailures": 0
 }

@@ -1657,6 +1657,14 @@ control before navigating. Page navigation invalidates its document/control
 state only for a main-frame transition; a child-frame load cannot masquerade as
 page navigation or revoke the active action. Development tools remain a user action.
 
+Native edit-menu admission for an independent page requires the registry's
+`human-paused` takeover state, an attached page, and actual native focus on both
+the page and its visible owning window.
+[`native-edit-context-menu.ts`](../../src/main/native-edit-context-menu.ts)
+resolves the page's origin from the owning `View` hierarchy and translates the
+page-local menu position once. Permission guards and coordinate unit tests do
+not establish OS menu placement or foreground input coverage.
+
 The retained user-page webview host keeps its existing focus and parking rules.
 Its main-owned `focus` operation resolves the stored renderer ID, visible owning
 window and active embedded tab, preserving guest, document, control generation
