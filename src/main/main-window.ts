@@ -182,9 +182,10 @@ export function createWindow(
   });
   win.on("close", (event) => {
     if (win.isDestroyed()) return;
+    if (isAppUpdateInstallRequested()) return;
     const closeDocument = (): void => { event.preventDefault(); closeMainWindowUi(win); };
     // Final quit must continue synchronously; closed disposes the explicit UI document.
-    if (isAppUpdateInstallRequested() || isAppShutdownCompleted() || isAppQuitRequested() && !getServices()) return;
+    if (isAppShutdownCompleted() || isAppQuitRequested() && !getServices()) return;
     if (isAppShutdownStarted()) { event.preventDefault(); return; }
     if (!getTray()) { closeDocument(); return; }
     // With another main window still open, closing this one closes it for real: only the last remaining window follows the close-button preference (hide to
