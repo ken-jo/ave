@@ -952,6 +952,32 @@
       ]
     },
     {
+      "group": "system-alert-single-error-prefix",
+      "testFile": "test/e2e/ui/browser-ui-system-alert-prefix.spec.ts",
+      "testTitle": "system alert formats one error prefix at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/system-alert-green.log",
+      "resultLine": "✓  1 [background] › test/e2e/ui/browser-ui-system-alert-prefix.spec.ts:8:5 › system alert formats one error prefix at 1360x800 (10.6s)",
+      "sourceRevision": "b072a18a9c9bed83c8b67227fb0e53e5d6b3226f",
+      "sourceContext": "The helper records HEAD; actual dirty source status/diff hash and source/bundle hashes are retained in the capture proof.",
+      "evidenceFiles": [
+        "system-alert-prefix-1360.png"
+      ]
+    },
+    {
+      "group": "system-alert-single-error-prefix",
+      "testFile": "test/e2e/ui/browser-ui-system-alert-prefix.spec.ts",
+      "testTitle": "system alert formats one error prefix at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/system-alert-green.log",
+      "resultLine": "✓  2 [background] › test/e2e/ui/browser-ui-system-alert-prefix.spec.ts:8:5 › system alert formats one error prefix at 900x800 (7.7s)",
+      "sourceRevision": "b072a18a9c9bed83c8b67227fb0e53e5d6b3226f",
+      "sourceContext": "The helper records HEAD; actual dirty source status/diff hash and source/bundle hashes are retained in the capture proof.",
+      "evidenceFiles": [
+        "system-alert-prefix-900.png"
+      ]
+    },
+    {
       "group": "system-alert-layout",
       "testFile": "test/e2e/ui/browser-ui-system-alert.spec.ts",
       "testTitle": "system alert stays within its owning chat column at 1360x800",
@@ -1097,6 +1123,7 @@
     "preserved-browser": 11,
     "capture-regression": 8,
     "composition": 38,
+    "system-alert-single-error-prefix": 2,
     "system-alert-layout": 2,
     "focus-control": 6,
     "incoming-main-compatibility": 1
@@ -1430,6 +1457,160 @@
         }
       ],
       "note": "The red run already had zero column-crossing visible descendants/text. The reproduced surface defect was alpha13/255; this item does not claim to have fixed an observed column-overflow defect."
+    },
+    "prefix": {
+      "result": "passed",
+      "selectedCases": 2,
+      "scope": "Newly produced provider errors use the complete classifier body unchanged. Existing persisted text and already-formatted incoming messages remain verbatim; no retroactive normalization or regex stripping.",
+      "mainParity": {
+        "revision": "bbb8767526cc20ba33615dd681627a3090728bbb",
+        "basis": "Formatting owner compared six byte-identical production blobs before the fix; the defect was shared with this main revision.",
+        "files": [
+          {
+            "path": "src/engine/llm/error-classifier.ts",
+            "mainBlob": "66c166c47df5a753242ba2be28ab0ad7a35cf310",
+            "preFixLaneBlob": "66c166c47df5a753242ba2be28ab0ad7a35cf310"
+          },
+          {
+            "path": "src/engine/turn/stream-collector.ts",
+            "mainBlob": "8f37f2f1e22324229c3519f1e446dc714b0b5030",
+            "preFixLaneBlob": "8f37f2f1e22324229c3519f1e446dc714b0b5030"
+          },
+          {
+            "path": "src/engine/turn/query-loop.ts",
+            "mainBlob": "47a80f8dde74e7b56406a2fb6c82cdb3c054219b",
+            "preFixLaneBlob": "47a80f8dde74e7b56406a2fb6c82cdb3c054219b"
+          },
+          {
+            "path": "src/ui/renderer/hooks/use-chat-state.ts",
+            "mainBlob": "6db3b28d92f5a9742dff80692c89bdddcf36da08",
+            "preFixLaneBlob": "6db3b28d92f5a9742dff80692c89bdddcf36da08"
+          },
+          {
+            "path": "src/ui/renderer/hooks/use-side-chat.ts",
+            "mainBlob": "9f0ca97196e6ce3dc05948c75acdb39d283ac733",
+            "preFixLaneBlob": "9f0ca97196e6ce3dc05948c75acdb39d283ac733"
+          },
+          {
+            "path": "src/ui/renderer/hooks/use-send-message.ts",
+            "mainBlob": "7512678a7c487daf1f95b513985c8df60c70384a",
+            "preFixLaneBlob": "7512678a7c487daf1f95b513985c8df60c70384a"
+          }
+        ],
+        "sourceReport": "test-results/ui-layer/error-prefix-report.md",
+        "sourceReportSha256": "e94b3aec82355df4a87366c07060d0b8a16c4311a5201f68a4d579a79d7702e1"
+      },
+      "redUnit": {
+        "sourceRun": "test-results/ui-layer/error-prefix-red.log",
+        "sourceLogSha256": "4be9a2abca94770359fd2cbcdf297613f9856faa6d501897a52b131364fb4b4a",
+        "resultLines": [
+          "Test Files  1 failed (1)",
+          "Tests  8 failed (8)"
+        ]
+      },
+      "greenUnits": [
+        {
+          "sourceRun": "test-results/ui-layer/error-prefix-targeted.log",
+          "sourceLogSha256": "f8ac1c23d5c233b2b8c0f30d3fad001c5cd48f3a22b9578df093d8f4ab396d03",
+          "resultLines": [
+            "Test Files  5 passed (5)",
+            "Tests  323 passed (323)"
+          ]
+        },
+        {
+          "sourceRun": "test-results/ui-layer/error-prefix-consumers.log",
+          "sourceLogSha256": "a71dc84340ca6ca591243bcade3aaaa12ba6cb0d49f60a93158a4d447946d4d7",
+          "resultLines": [
+            "Test Files  5 passed (5)",
+            "Tests  81 passed (81)"
+          ]
+        }
+      ],
+      "greenUnitScope": "Ten distinct files /404 passing tests:323 targeted plus81 consumers. The new8 regressions are included in323, not added again.",
+      "redNative": {
+        "sourceRun": "test-results/ui-layer/system-alert-red.log",
+        "sourceLogSha256": "1dce8a02449b24a1fc327790fd2ef66e4aac905726c584a235672abf4008020f",
+        "resultLines": [
+          "✘  2 [background] › test/e2e/ui/browser-ui-system-alert.spec.ts:165:5 › system alert formats one error prefix at 1360x800 (7.2s)",
+          "✘  4 [background] › test/e2e/ui/browser-ui-system-alert.spec.ts:165:5 › system alert formats one error prefix at 900x800 (13.8s)"
+        ]
+      },
+      "greenNative": {
+        "sourceRun": "test-results/ui-layer/system-alert-green.log",
+        "sourceLogSha256": "ca8e8cd4520ef6ec34a7f612323a4ff0181f4cb2fa87aba531d998259fc43dc8",
+        "resultLines": [
+          "✓  1 [background] › test/e2e/ui/browser-ui-system-alert-prefix.spec.ts:8:5 › system alert formats one error prefix at 1360x800 (10.6s)",
+          "✓  2 [background] › test/e2e/ui/browser-ui-system-alert-prefix.spec.ts:8:5 › system alert formats one error prefix at 900x800 (7.7s)"
+        ]
+      },
+      "observations": [
+        {
+          "width": 1360,
+          "rawFailure": "Model native-ui-layer-fixture is unavailable",
+          "before": {
+            "displayed": "오류: 오류: 오류가 발생했습니다: Model native-ui-layer-fixture is unavailable",
+            "prefixCount": 3
+          },
+          "after": {
+            "displayed": "오류가 발생했습니다: Model native-ui-layer-fixture is unavailable",
+            "prefixCount": 1,
+            "streamError": "오류가 발생했습니다: Model native-ui-layer-fixture is unavailable",
+            "historyContent": "오류가 발생했습니다: Model native-ui-layer-fixture is unavailable",
+            "focus": {
+              "active": true,
+              "blurs": 0
+            },
+            "pageState": {
+              "clicks": 2,
+              "trusted": true,
+              "activation": true,
+              "wheels": 0,
+              "keys": [],
+              "value": "",
+              "heldMoves": 0,
+              "unsolicitedUps": 0,
+              "pageDown": false,
+              "scrollY": 0
+            }
+          },
+          "sourceDiffSha256": "98b8c50377211ab7046f5652ee045f75a4ebed0635f725b4ef4c38733bf74e22",
+          "evidenceFile": "system-alert-prefix-1360.png",
+          "sourceRevision": "b072a18a9c9bed83c8b67227fb0e53e5d6b3226f"
+        },
+        {
+          "width": 900,
+          "rawFailure": "Model native-ui-layer-fixture is unavailable",
+          "before": {
+            "displayed": "오류: 오류: 오류가 발생했습니다: Model native-ui-layer-fixture is unavailable",
+            "prefixCount": 3
+          },
+          "after": {
+            "displayed": "오류가 발생했습니다: Model native-ui-layer-fixture is unavailable",
+            "prefixCount": 1,
+            "streamError": "오류가 발생했습니다: Model native-ui-layer-fixture is unavailable",
+            "historyContent": "오류가 발생했습니다: Model native-ui-layer-fixture is unavailable",
+            "focus": {
+              "active": true,
+              "blurs": 0
+            },
+            "pageState": {
+              "clicks": 2,
+              "trusted": true,
+              "activation": true,
+              "wheels": 0,
+              "keys": [],
+              "value": "",
+              "heldMoves": 0,
+              "unsolicitedUps": 0,
+              "pageDown": false,
+              "scrollY": 0
+            }
+          },
+          "sourceDiffSha256": "98b8c50377211ab7046f5652ee045f75a4ebed0635f725b4ef4c38733bf74e22",
+          "evidenceFile": "system-alert-prefix-900.png",
+          "sourceRevision": "b072a18a9c9bed83c8b67227fb0e53e5d6b3226f"
+        }
+      ]
     }
   }
 }

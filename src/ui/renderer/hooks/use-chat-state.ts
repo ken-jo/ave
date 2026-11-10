@@ -370,7 +370,7 @@ export function useChatState(
         setEntries((p) =>
           setAssistantError(
             p,
-            t("useChatState.errorPrefix", { error: ev.error || t("useChatState.unknownError") }),
+            ev.error || t("useChatState.unknownError"),
             thoughtRef.current,
             ev.systemNotice,
           ),

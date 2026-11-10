@@ -236,7 +236,7 @@ export async function collectRoundStream(
           );
           return {
             kind: "stream_error",
-            userMessage: t("be_streamCollector.streamError", { userMessage }),
+            userMessage,
             classification,
             providerError,
           };
@@ -254,7 +254,7 @@ export async function collectRoundStream(
     const classified = classifyProviderError(raw);
     return {
       kind: "stream_error",
-      userMessage: t("be_streamCollector.streamError", { userMessage: classified.userMessage }),
+      userMessage: classified.userMessage,
       classification: classified.category,
       providerError: withProviderErrorClassification(
         extractProviderErrorDiagnostics(err),
