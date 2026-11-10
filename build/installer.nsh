@@ -19,6 +19,12 @@
 
 !define AVE_GIT_INSTALL_SCRIPT "install-windows-git.ps1"
 
+!macro customHeader
+  !ifdef BUILD_UNINSTALLER
+    !include "${BUILD_RESOURCES_DIR}\uninstaller-init.nsh"
+  !endif
+!macroend
+
 !ifndef BUILD_UNINSTALLER
 ; Marketplace sources are git repositories. Like Hermes Agent's installer, fetch the pinned official MinGit release
 ; at install time instead of shipping it; build/install-windows-git.ps1 checks its sha256 and places only a verified
@@ -636,14 +642,32 @@ FunctionEnd
   RMDir /r "$INSTDIR"
 
   StrCpy $R2 ""
-  IfFileExists "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0 +2
-    StrCpy $R2 "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
-  IfFileExists "$INSTDIR\resources\app.asar" 0 +2
-    StrCpy $R2 "$INSTDIR\resources\app.asar"
-  ${if} $R2 == ""
+  ; Enumerate actual leftovers: the wildcard directory-exists idiom also
+  ; matches an empty directory. Always close the search handle before removal.
+  ClearErrors
+  FindFirst $R0 $R1 "$INSTDIR\*.*"
+  IfErrors ave_remove_files_empty
+  ave_remove_files_next:
+    StrCmp $R1 "" ave_remove_files_close_empty
+    StrCmp $R1 "." ave_remove_files_find_next
+    StrCmp $R1 ".." ave_remove_files_find_next
+    StrCpy $R2 "$INSTDIR\$R1"
+    FindClose $R0
+    Goto ave_remove_files_retry
+  ave_remove_files_find_next:
+    FindNext $R0 $R1
+    IfErrors ave_remove_files_close_empty
+    Goto ave_remove_files_next
+  ave_remove_files_close_empty:
+    FindClose $R0
+  ave_remove_files_empty:
+    ; Remove the empty root after enumeration. If it still cannot be removed,
+    ; fail explicitly rather than claiming a complete uninstall.
+    RMDir "$INSTDIR"
     IfFileExists "$INSTDIR\*.*" 0 ave_remove_files_done
     StrCpy $R2 "$INSTDIR"
-  ${endif}
+
+  ave_remove_files_retry:
 
   ClearErrors
   ${GetParameters} $R0
