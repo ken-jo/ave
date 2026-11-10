@@ -2270,6 +2270,12 @@ export function assertLimitedUninstallResult(result) {
 async function runLimitedUninstaller(machineInstall, args, timeoutMs) {
   const reportRoot = mkdtempSync(join(tmpdir(), "ave-limited-uninstall-"));
   try {
+    // Stage the same temporary worker the on-disk bootstrap would start. The
+    // bootstrap exits before removal finishes, so its exit code proves nothing
+    // about the worker. _?= disables that extra fork and must be last/unquoted.
+    const worker = join(reportRoot, basename(machineInstall.uninstaller));
+    copyFileSync(machineInstall.uninstaller, worker);
+    const workerArgs = [...args, `_?=${machineInstall.installDir}`];
     const parent = await runPowerShellJson(buildPowerShellScript([
       "$identity = [Security.Principal.WindowsIdentity]::GetCurrent()",
       "$principal = New-Object Security.Principal.WindowsPrincipal($identity)",
@@ -2282,8 +2288,8 @@ async function runLimitedUninstaller(machineInstall, args, timeoutMs) {
       [
         "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
         "-File", fileURLToPath(new URL("./lib/run-limited-windows-process.ps1", import.meta.url)),
-        "-FilePath", machineInstall.uninstaller,
-        "-ArgumentsBase64", Buffer.from(JSON.stringify(args)).toString("base64"),
+        "-FilePath", worker,
+        "-ArgumentsBase64", Buffer.from(JSON.stringify(workerArgs)).toString("base64"),
         "-WorkingDirectory", tmpdir(),
         "-ReportPath", join(reportRoot, "result.json"),
         "-DeadlineUnixMs", String(Date.now() + timeoutMs),

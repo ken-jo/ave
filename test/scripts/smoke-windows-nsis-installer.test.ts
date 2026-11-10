@@ -136,6 +136,10 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(launcher).toContain("exit $process.ExitCode");
     expect(launcher).toContain("$start.UseShellExecute = $false");
     expect(launcher).toContain("$identity.User.Value -ne $ExpectedUserSid");
+    expect(smoke).toContain("copyFileSync(machineInstall.uninstaller, worker)");
+    expect(smoke).toMatch(/const workerArgs = \[\.\.\.args, `_\?=\$\{machineInstall\.installDir\}`\]/);
+    expect(smoke).toContain('"-FilePath", worker');
+    expect(smoke).toContain("Buffer.from(JSON.stringify(workerArgs))");
   });
 
   it("checks owned keys in both hives without fixture cleanup masking an empty root", () => {
