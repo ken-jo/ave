@@ -15,13 +15,15 @@ The base read/write deny list is retained in the existing protected native state
 
 Each base reconciliation supplies the complete list, including an empty list. The first call applies it; an identical completed list with the same principal and resolved target/parent identities performs no ACL writes. Changed lists apply the delta, but an active session's earlier obligations remain held until that session releases. Identity changes require fresh work. A crash can leave a pending intent; recovery completes it before treating it as completed. Concurrent native operations use the existing initialization lock.
 
+Before adopting older state, close hosts using the previous ACL format. A live or unverifiable older holder causes reconciliation, recovery and teardown to refuse before changing ACLs. Dead older holders can be recovered. Durable no-op decisions require a completed physical-format record for the same principal, identities and deny mask; an older logical state row alone cannot establish completion.
+
 This changes ACL lifetime and parent-guard propagation, not deny target selection, path admission, materialization or permission decisions. Missing-target and machine-root rules still apply. Placeholders remain after release. Existing inheritable parent guards may need one traversal to remove legacy descendant ACEs. Full target deny application and removal still propagate and can remain expensive; persistence does not promise a faster first stamp or eliminate every ACL walk.
 
 ## Why an isolated home still protects the account profile
 
 [`policyHomeAnchors`](../../src/shared/policy-home.ts) collects independent valid anchors from the OS home, `HOME`, a profile-variable fallback when OS resolution fails, and `userInfo().homedir`. Equivalent anchors are deduplicated. [`sensitiveDenyHomes`](../../src/permissions/asrt-sandbox.ts) uses that complete set to project sensitive denies. `getPolicyHome` separately selects the configured policy root.
 
-Consequently, setting both `HOME` and `USERPROFILE` to a scratch directory does not remove the account profile returned by `userInfo()`. Denies beneath `C:\Users\fixture-account` can be intended even when the application home is elsewhere: moving an environment variable must not expose the original account's credentials or startup files. This is a protection floor, not evidence that the isolated application home was ignored. `AVE_HOME` selects application storage; it does not redefine the account identity.
+Consequently, setting both `HOME` and `USERPROFILE` to a scratch directory does not remove the account profile returned by `userInfo()`. Denies beneath `C:\Users\example` can be intended even when the application home is elsewhere: moving an environment variable must not expose the original account's credentials or startup files. This is a protection floor, not evidence that the isolated application home was ignored. `AVE_HOME` selects application storage; it does not redefine the account identity.
 
 Tests that must avoid real-profile targets mock both `homedir()` and `userInfo()` before policy construction. Environment isolation alone is insufficient. [`policy-home-anchors.test.ts`](../../src/shared/__tests__/policy-home-anchors.test.ts) uses synthetic strings only and performs no filesystem or ACL operations.
 
@@ -69,7 +71,7 @@ node scripts/build-srt-win.mjs --test-native
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 ```
 
-The native executable's adjacent `build-receipt.json` is checked against `src/permissions/generated/srt-win-build-receipts.json`. These bind source revision and archive hash, native patch hash, toolchain, target and compiled hash. Keep the receipts with field evidence. For focused reruns in the patched native source directory, use:
+The native executable's adjacent `build-receipt.json` is checked against `src/permissions/generated/srt-win-build-receipts.json`. These bind source revision and archive hash, native patch hash, toolchain, target and compiled hash. The verified original executable is retained as a build input outside the packaged output. Publication uses an atomic replacement so a package-cache hardlink cannot modify that original. A sidecar receipt alone never establishes a trusted compiled result. Keep the receipts with field evidence. For focused reruns in the patched native source directory, use:
 
 ```powershell
 cargo test --lib

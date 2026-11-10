@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const pins = require("../src/permissions/srt-win-pins.json");
-const { TARGETS, RECEIPTS_DIRECTORY, digest, readPlainFile, readBuildReceipts, assertBuildReceipt, assertSrtWinVendor, assertSrtWinBuildInputs, assertSrtWinReceiptModule } = require("./lib/srt-win-integrity.cjs");
+const { TARGETS, RECEIPTS_DIRECTORY, digest, readPlainFile, readBuildReceipts, readUpstreamSrtWinInput, assertBuildReceipt, assertSrtWinVendor, assertSrtWinBuildInputs, assertSrtWinReceiptModule } = require("./lib/srt-win-integrity.cjs");
 
 export function parseBuildOptions(args) {
   const options = { arches: Object.keys(TARGETS), testNative: false, sourceArchive: undefined };
@@ -44,6 +44,8 @@ export function canReuseSrtWinBuild(vendor, arches, receipts = readBuildReceipts
     try { assertBuildReceipt(receipt, arch); }
     catch { current = false; continue; }
     if (!Object.hasOwn(receipts, arch)) { current = false; continue; }
+    try { assertBuildReceipt(receipts[arch], arch); }
+    catch { current = false; continue; }
     assertSrtWinVendor(vendor, [arch], receipts);
   }
   return current;
@@ -65,8 +67,29 @@ function run(command, args, cwd, options = {}) {
 function atomicWrite(path, contents) {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
-  try { writeFileSync(temporary, contents, { flag: "wx" }); renameSync(temporary, path); }
-  finally { rmSync(temporary, { force: true }); }
+  let created = false;
+  try {
+    const descriptor = openSync(temporary, "wx");
+    created = true;
+    try { writeFileSync(descriptor, contents); }
+    finally { closeSync(descriptor); }
+    renameSync(temporary, path);
+  } finally { if (created) rmSync(temporary, { force: true }); }
+}
+export function retainUpstreamSrtWinInputs(vendor, arches) {
+  for (const arch of arches) {
+    const bytes = readUpstreamSrtWinInput(vendor, arch);
+    const retained = join(vendor, "srt-win", arch, "upstream-srt-win.exe");
+    if (lstatSync(retained, { throwIfNoEntry: false }) === undefined) {
+      writeFileSync(retained, bytes, { flag: "wx" });
+      readUpstreamSrtWinInput(vendor, arch);
+    }
+  }
+}
+export function publishSrtWinExecutable(vendor, arch, bytes) {
+  if (!Object.hasOwn(TARGETS, arch)) throw new Error("Unsupported helper architecture");
+  // Replacement breaks package-cache hardlinks instead of mutating their shared inode.
+  atomicWrite(join(vendor, "srt-win", arch, "srt-win.exe"), bytes);
 }
 export function recordBuildReceipts(vendor, newReceipts, receiptsDirectory = RECEIPTS_DIRECTORY) {
   const previousPath = join(receiptsDirectory, "srt-win-build-receipts.json");
@@ -101,6 +124,7 @@ export async function buildSrtWin(options) {
   const vendor = join(dirname(require.resolve(`${pins.package}/package.json`)), "vendor");
   assertSrtWinBuildInputs(vendor);
   if (options.testNative && !options.arches.includes(process.arch)) throw new Error("Native tests require the host architecture");
+  retainUpstreamSrtWinInputs(vendor, options.arches);
   if (!options.testNative && !options.sourceArchive) {
     assertSrtWinReceiptModule();
     if (canReuseSrtWinBuild(vendor, options.arches)) {
@@ -162,7 +186,7 @@ export async function buildSrtWin(options) {
         nativePatchSha256: pins.nativePatchSha256, rustToolchain: pins.rustToolchain, target, binarySha256: digest(bytes) };
       const directory = join(vendor, "srt-win", arch);
       mkdirSync(directory, { recursive: true });
-      copyFileSync(binary, join(directory, "srt-win.exe"));
+      publishSrtWinExecutable(vendor, arch, bytes);
       atomicWrite(join(directory, "build-receipt.json"), `${JSON.stringify(receipts[arch], null, 2)}\n`);
     }
     const complete = recordBuildReceipts(vendor, receipts);

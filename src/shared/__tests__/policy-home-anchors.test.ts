@@ -9,14 +9,14 @@ vi.mock("node:os", async (importOriginal) => ({
 }));
 
 const ISOLATED_HOME = "C:\\fixture\\isolated-home";
-const ACCOUNT_HOME = "C:\\Users\\fixture-account";
+const ACCOUNT_HOME = "C:\\Users\\example";
 
 describe("independent policy home anchors", () => {
   beforeEach(() => {
     vi.mocked(homedir).mockReturnValue(ISOLATED_HOME);
     vi.mocked(userInfo).mockReturnValue({
       homedir: ACCOUNT_HOME,
-      username: "fixture-account",
+      username: "example",
       uid: -1,
       gid: -1,
       shell: null,
@@ -53,7 +53,7 @@ describe("independent policy home anchors", () => {
   it("deduplicates equivalent isolated and account anchors without dropping the account lookup", () => {
     vi.mocked(homedir).mockReturnValue(ACCOUNT_HOME);
 
-    expect(policyHomeAnchors({ HOME: "c:/users/FIXTURE-ACCOUNT/.", USERPROFILE: ACCOUNT_HOME }, "win32"))
+    expect(policyHomeAnchors({ HOME: "c:/users/EXAMPLE/.", USERPROFILE: ACCOUNT_HOME }, "win32"))
       .toEqual([ACCOUNT_HOME]);
     expect(userInfo).toHaveBeenCalledOnce();
   });

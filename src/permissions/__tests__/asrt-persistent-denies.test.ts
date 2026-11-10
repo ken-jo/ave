@@ -54,14 +54,14 @@ describe("durable deny transport", () => {
     vi.stubEnv("SRT_DEBUG", "1");
     const output = vi.spyOn(console, "error").mockImplementation(() => {});
     await stamp({ ...helper(), sandboxUserSid: "S-1-5-21-123",
-      denyRead: ["C:\\Users\\fixture-account\\.ssh"], denyWrite: ["C:\\fixture\\protected"] });
+      denyRead: ["C:\\Users\\example\\.ssh"], denyWrite: ["C:\\fixture\\protected"] });
     const messages = output.mock.calls.map(([message]) => String(message));
     const prefix = "[SandboxDebug] [Sandbox Windows] acl stamp targets=";
     const targets = messages[0];
     if (targets === undefined) throw new Error("Stamp target diagnostic is missing");
     expect(targets.startsWith(prefix)).toBe(true);
     expect(JSON.parse(targets.slice(prefix.length))).toEqual([
-      { path: "C:\\Users\\fixture-account\\.ssh", parent: "C:\\Users\\fixture-account", kind: "denyRead" },
+      { path: "C:\\Users\\example\\.ssh", parent: "C:\\Users\\example", kind: "denyRead" },
       { path: "C:\\fixture\\protected", parent: "C:\\fixture", kind: "denyWrite" },
     ]);
     expect(messages[1]).toMatch(/acl stamp exit=0 elapsedMs=\d+(?:\.\d+)?:/);

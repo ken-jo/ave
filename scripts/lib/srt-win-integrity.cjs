@@ -47,12 +47,20 @@ function assertSrtWinVendor(vendorDirectory, arches = Object.keys(TARGETS), rece
     }
   }
 }
+function readUpstreamSrtWinInput(vendorDirectory, arch) {
+  try {
+    if (!Object.hasOwn(pins.sha256, arch)) throw new Error("Unsupported helper architecture");
+    const directory = join(vendorDirectory, "srt-win", arch);
+    const retained = join(directory, "upstream-srt-win.exe");
+    // Any retained entry selects this state, including an invalid or dangling link; never fall back.
+    const path = lstatSync(retained, { throwIfNoEntry: false }) === undefined ? join(directory, "srt-win.exe") : retained;
+    const bytes = readPlainFile(path);
+    if (digest(bytes) !== pins.sha256[arch]) throw new Error("Upstream helper digest mismatch");
+    return bytes;
+  } catch (cause) { throw new Error(`srt-win-upstream-integrity-mismatch: ${arch}`, { cause }); }
+}
 function assertUpstreamSrtWinVendor(vendorDirectory, arches = Object.keys(pins.sha256)) {
-  for (const arch of arches) {
-    if (!Object.hasOwn(pins.sha256, arch) || digest(readPlainFile(join(vendorDirectory, "srt-win", arch, "srt-win.exe"))) !== pins.sha256[arch]) {
-      throw new Error(`srt-win-upstream-integrity-mismatch: ${arch}`);
-    }
-  }
+  for (const arch of arches) readUpstreamSrtWinInput(vendorDirectory, arch);
 }
 function assertSrtWinBuildInputs(vendorDirectory) {
   if (digest(readPlainFile(join(vendorDirectory, "srt-win", "persistent-denies.patch"))) !== pins.nativePatchSha256) {
@@ -60,4 +68,4 @@ function assertSrtWinBuildInputs(vendorDirectory) {
   }
 }
 module.exports = { TARGETS, RECEIPTS_DIRECTORY, digest, readPlainFile, assertBuildReceipt, readBuildReceipts,
-  assertSrtWinVendor, assertUpstreamSrtWinVendor, assertSrtWinBuildInputs, assertSrtWinReceiptModule };
+  assertSrtWinVendor, readUpstreamSrtWinInput, assertUpstreamSrtWinVendor, assertSrtWinBuildInputs, assertSrtWinReceiptModule };

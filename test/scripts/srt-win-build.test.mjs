@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertBaselineRegression, assertSourceArchive, canReuseSrtWinBuild, parseBuildOptions, recordBuildReceipts } from "../../scripts/build-srt-win.mjs";
+import { assertBaselineRegression, assertSourceArchive, canReuseSrtWinBuild, parseBuildOptions, publishSrtWinExecutable, recordBuildReceipts, retainUpstreamSrtWinInputs } from "../../scripts/build-srt-win.mjs";
 const require = createRequire(import.meta.url);
 const pins = require("../../src/permissions/srt-win-pins.json");
-const { TARGETS, assertBuildReceipt, assertSrtWinVendor, assertUpstreamSrtWinVendor, assertSrtWinBuildInputs } = require("../../scripts/lib/srt-win-integrity.cjs");
+const { TARGETS, assertBuildReceipt, assertSrtWinVendor, readUpstreamSrtWinInput, assertUpstreamSrtWinVendor, assertSrtWinBuildInputs } = require("../../scripts/lib/srt-win-integrity.cjs");
+const installedVendor = join(dirname(require.resolve(`${pins.package}/package.json`)), "vendor");
 function fixture(t) {
   const vendor = mkdtempSync(join(tmpdir(), "ave-native-integrity-"));
   t.after(() => rmSync(vendor, { recursive: true, force: true }));
@@ -26,6 +27,14 @@ function fixture(t) {
     receipts[arch] = receipt;
   }
   return { vendor, receipts };
+}
+function upstreamFixture(t) {
+  const result = fixture(t);
+  for (const arch of Object.keys(TARGETS)) {
+    writeFileSync(join(result.vendor, "srt-win", arch, "srt-win.exe"), readUpstreamSrtWinInput(installedVendor, arch));
+    rmSync(join(result.vendor, "srt-win", arch, "build-receipt.json"));
+  }
+  return result;
 }
 test("native build accepts both target architectures and rejects ambiguous options", () => {
   assert.deepEqual(parseBuildOptions([]).arches, ["x64", "arm64"]);
@@ -98,6 +107,11 @@ test("verified build reuse rejects tampering and rebuilds after fixed input chan
   writeFileSync(join(vendor, "srt-win", "x64", "srt-win.exe"), "tampered cache");
   assert.throws(() => canReuseSrtWinBuild(vendor, ["x64"], receipts), /integrity-mismatch/);
 });
+test("an interrupted input refresh rebuilds when central trust still names the previous inputs", (t) => {
+  const { vendor, receipts } = fixture(t);
+  const previous = { ...receipts, x64: { ...receipts.x64, nativePatchSha256: "f".repeat(64) } };
+  assert.equal(canReuseSrtWinBuild(vendor, ["x64"], previous), false);
+});
 test("native baseline requires the exact inheritance assertion rather than a compilation failure", () => {
   const expected = { status: 101, stdout: "parent_fdc_is_object_only_and_round_trips FAILED", stderr:
     "assertion `left == right` failed\n left: [(1, 3, 64)]\n right: [(1, 0, 64)]" };
@@ -132,6 +146,80 @@ test("a partial refresh omits an architecture without prior central trust", (t) 
   const { vendor, receipts } = fixture(t);
   const recorded = recordBuildReceipts(vendor, { x64: receipts.x64 }, join(vendor, "generated"));
   assert.deepEqual(Object.keys(recorded), ["x64"]);
+});
+test("upstream supply checks survive compiled replacement and repeated retention", (t) => {
+  const { vendor } = upstreamFixture(t);
+  assert.doesNotThrow(() => assertUpstreamSrtWinVendor(vendor));
+  retainUpstreamSrtWinInputs(vendor, Object.keys(TARGETS));
+  for (const arch of Object.keys(TARGETS)) publishSrtWinExecutable(vendor, arch, Buffer.from(`compiled ${arch}`));
+  assert.doesNotThrow(() => assertUpstreamSrtWinVendor(vendor));
+  assert.doesNotThrow(() => retainUpstreamSrtWinInputs(vendor, Object.keys(TARGETS)));
+  for (const arch of Object.keys(TARGETS)) {
+    const bytes = readFileSync(join(vendor, "srt-win", arch, "upstream-srt-win.exe"));
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), pins.sha256[arch]);
+  }
+});
+test("cached compiled binaries without central trust require rebuild despite valid retained supply", (t) => {
+  const { vendor, receipts } = fixture(t);
+  for (const arch of Object.keys(TARGETS)) {
+    writeFileSync(join(vendor, "srt-win", arch, "upstream-srt-win.exe"), readUpstreamSrtWinInput(installedVendor, arch));
+  }
+  assert.doesNotThrow(() => assertUpstreamSrtWinVendor(vendor));
+  assert.equal(canReuseSrtWinBuild(vendor, Object.keys(TARGETS), {}), false);
+  assert.deepEqual(recordBuildReceipts(vendor, {}, join(vendor, "empty-central")), {});
+  assert.throws(() => assertSrtWinVendor(vendor, undefined, {}), /integrity-mismatch/);
+  assert.doesNotThrow(() => assertSrtWinVendor(vendor, undefined, receipts));
+});
+test("invalid retained supply never falls back to an otherwise pristine original", (t) => {
+  const { vendor } = upstreamFixture(t);
+  const retained = join(vendor, "srt-win", "x64", "upstream-srt-win.exe");
+  writeFileSync(retained, "tampered retained input");
+  assert.throws(() => assertUpstreamSrtWinVendor(vendor), /upstream-integrity-mismatch/);
+  assert.throws(() => retainUpstreamSrtWinInputs(vendor, ["x64"]), /upstream-integrity-mismatch/);
+  assert.equal(readFileSync(retained, "utf8"), "tampered retained input");
+  rmSync(retained);
+  symlinkSync(join(vendor, "missing-input"), retained);
+  assert.throws(() => assertUpstreamSrtWinVendor(vendor), /upstream-integrity-mismatch/);
+});
+test("compiled cache without retained pristine supply is refused without repair", (t) => {
+  const { vendor } = fixture(t);
+  assert.throws(() => retainUpstreamSrtWinInputs(vendor, ["x64"]), /upstream-integrity-mismatch/);
+  assert.equal(readFileSync(join(vendor, "srt-win", "x64", "srt-win.exe"), "utf8"), "native fixture x64");
+});
+test("compiled publication preserves the original hardlinked package-cache inode", (t) => {
+  const { vendor } = upstreamFixture(t);
+  const original = join(vendor, "srt-win", "x64", "srt-win.exe");
+  const cache = join(vendor, "package-cache-original.exe");
+  const upstream = readFileSync(original);
+  linkSync(original, cache);
+  retainUpstreamSrtWinInputs(vendor, ["x64"]);
+  publishSrtWinExecutable(vendor, "x64", Buffer.from("compiled replacement"));
+  assert.deepEqual(readFileSync(cache), upstream);
+  assert.equal(readFileSync(original, "utf8"), "compiled replacement");
+  assert.deepEqual(readFileSync(join(dirname(original), "upstream-srt-win.exe")), upstream);
+  assert.doesNotThrow(() => assertUpstreamSrtWinVendor(vendor));
+});
+test("compiled publication preserves a pre-existing temporary entry on exclusive-create failure", (t) => {
+  const { vendor } = fixture(t);
+  const original = join(vendor, "srt-win", "x64", "srt-win.exe");
+  const temporary = `${original}.${process.pid}.tmp`;
+  writeFileSync(temporary, "pre-existing entry");
+  assert.throws(() => publishSrtWinExecutable(vendor, "x64", Buffer.from("replacement")), { code: "EEXIST" });
+  assert.equal(readFileSync(temporary, "utf8"), "pre-existing entry");
+  assert.equal(readFileSync(original, "utf8"), "native fixture x64");
+});
+test("package file matching excludes retained supply while keeping compiled binaries and receipts", (t) => {
+  const { vendor } = fixture(t);
+  const { FileMatcher } = require("app-builder-lib/out/fileMatcher.js");
+  const { build } = require("../../package.json");
+  const filter = new FileMatcher(vendor, join(vendor, "output"), (pattern) => pattern, build.files).createFilter();
+  const stat = statSync(join(vendor, "srt-win", "x64", "srt-win.exe"));
+  for (const arch of Object.keys(TARGETS)) {
+    const directory = join(vendor, "node_modules", "@anthropic-ai", "sandbox-runtime", "vendor", "srt-win", arch);
+    assert.equal(filter(join(directory, "upstream-srt-win.exe"), stat), false);
+    assert.equal(filter(join(directory, "srt-win.exe"), stat), true);
+    assert.equal(filter(join(directory, "build-receipt.json"), stat), true);
+  }
 });
 test("runtime bundling embeds generated receipts rather than reading a mutable runtime receipt", async () => {
   const { build } = await import("esbuild");

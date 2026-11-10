@@ -291,6 +291,7 @@
       "!resources/uv-runtime{,/**/*}",
       "!node_modules/@koromix/koffi-win32-*/**/*.{lib,exp}",
       "!node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*.patch",
+      "!node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/*/upstream-srt-win.exe",
       "!node_modules/@microsoft/mxc-sdk/node_modules/.bin{,/**/*}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/dotnet{,/**/*}",
       "!node_modules/@microsoft/mxc-sdk/bin/**/*.{exe,so,dylib}",

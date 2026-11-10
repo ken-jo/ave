@@ -4910,12 +4910,12 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..13072ec11000550155d61ecb01d96efb
          }
 diff --git a/vendor/srt-win/persistent-denies.patch b/vendor/srt-win/persistent-denies.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3e33bf89b
+index 0000000000000000000000000000000000000000..468085d05a2f35c876c09318ad2d9049b1f5005f
 --- /dev/null
 +++ b/vendor/srt-win/persistent-denies.patch
-@@ -0,0 +1,3345 @@
+@@ -0,0 +1,3991 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
-+index 0efb5956f..c9b72c409 100644
++index 0efb5956f..1fe4e05c3 100644
 +--- a/vendor/srt-win-src/src/acl.rs
 ++++ b/vendor/srt-win-src/src/acl.rs
 +@@ -9,15 +9,15 @@
@@ -4947,18 +4947,17 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 + };
 + use windows::Win32::Security::{
 +     ACE_FLAGS, ACE_HEADER, ACE_REVISION, ACL, ACL_REVISION, ACL_SIZE_INFORMATION,
-+@@ -43,8 +43,8 @@ use windows::Win32::Security::{
++@@ -43,7 +43,8 @@ use windows::Win32::Security::{
 +     DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetLengthSid,
 +     GetSecurityDescriptorControl, InitializeAcl, InitializeSecurityDescriptor, OBJECT_INHERIT_ACE,
 +     OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
 +-    SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl,
-+-    SetSecurityDescriptorDacl, UNPROTECTED_DACL_SECURITY_INFORMATION,
-++    SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
-++    SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
+++    SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES,
+++    SECURITY_DESCRIPTOR, SetKernelObjectSecurity, SetSecurityDescriptorControl,
++     SetSecurityDescriptorDacl, UNPROTECTED_DACL_SECURITY_INFORMATION,
 + };
 + use windows::Win32::Storage::FileSystem::{
-+     FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
-+@@ -341,48 +341,15 @@ pub(crate) fn read_file_dacl(canonical_path: &str) -> Result<(OwnedSd, *mut ACL)
++@@ -341,48 +342,15 @@ pub(crate) fn read_file_dacl(canonical_path: &str) -> Result<(OwnedSd, *mut ACL)
 +     Ok((OwnedSd::from_raw(psd), dacl))
 + }
 +
@@ -5011,7 +5010,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +             None,
 +             None,
 +             Some(acl),
-+@@ -392,6 +359,114 @@ pub(crate) fn write_file_dacl(path: &str, acl: *const ACL, p: Protection) -> Res
++@@ -392,6 +360,137 @@ pub(crate) fn write_file_dacl(path: &str, acl: *const ACL, p: Protection) -> Res
 +     win32_ok(r, &format!("SetNamedSecurityInfoW('{path}')"))
 + }
 +
@@ -5023,29 +5022,13 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++}
 ++
 ++fn open_dacl(path: &str, propagation_enabled: bool) -> Result<crate::util::OwnedHandle> {
-++    use windows::Win32::Storage::FileSystem::{
-++        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
-++        FILE_SHARE_WRITE, OPEN_EXISTING,
-++    };
 ++    use windows::Win32::System::SystemServices::MAXIMUM_ALLOWED;
-++    let w = wstr(path);
-++    let h = unsafe {
-++        CreateFileW(
-++            pcwstr(&w),
-++            if propagation_enabled {
-++                Mask::READ_CONTROL.bits() | Mask::WRITE_DAC.bits()
-++            } else {
-++                MAXIMUM_ALLOWED
-++            },
-++            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-++            None,
-++            OPEN_EXISTING,
-++            FILE_FLAG_BACKUP_SEMANTICS,
-++            None,
-++        )
-++    }
-++    .with_context(|| format!("CreateFileW('{path}', security)"))?;
-++    Ok(crate::util::OwnedHandle(h))
+++    let access = if propagation_enabled {
+++        Mask::READ_CONTROL.bits() | Mask::WRITE_DAC.bits()
+++    } else {
+++        MAXIMUM_ALLOWED
+++    };
+++    open_security_no_follow(path, access)
 ++}
 ++
 ++fn read_local_dacl(h: &crate::util::OwnedHandle) -> Result<(OwnedSd, *mut ACL)> {
@@ -5088,10 +5071,9 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++    Ok(aces)
 ++}
 ++
-++/// Replace explicit entries while retaining inherited entries and protection.
-++/// A maximum-access handle suppresses child propagation; a handle opened
-++/// with explicit security rights permits it. Reads and writes stay bound
-++/// to the same object, and the old inherited entries retain their flags.
+++/// Write only this object's complete DACL, retaining inherited entries and
+++/// control. The inheritance request bit is needed to preserve an existing
+++/// auto-inherited mark. The descriptor writer does not refresh descendants.
 ++fn write_composed_dacl(
 ++    h: &crate::util::OwnedHandle,
 ++    old: *const ACL,
@@ -5104,18 +5086,58 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++    all.extend_from_slice(&inherited.0);
 ++    let kept = (all, own.1 + inherited.1, own.2);
 ++    let full = rebuild_acl(kept.2, &[], &kept, &[])?;
+++    let mut sd = SECURITY_DESCRIPTOR::default();
+++    let psd = PSECURITY_DESCRIPTOR(&mut sd as *mut _ as *mut c_void);
+++    let mut flags = windows::Win32::Security::SECURITY_DESCRIPTOR_CONTROL(control);
+++    if control & SE_DACL_AUTO_INHERITED.0 != 0 {
+++        flags |= SE_DACL_AUTO_INHERIT_REQ;
+++    }
+++    unsafe {
+++        InitializeSecurityDescriptor(psd, SECURITY_DESCRIPTOR_REVISION)
+++            .context("InitializeSecurityDescriptor")?;
+++        SetSecurityDescriptorDacl(psd, true, Some(full.as_ptr()), false)
+++            .context("SetSecurityDescriptorDacl")?;
+++        SetSecurityDescriptorControl(
+++            psd,
+++            SE_DACL_AUTO_INHERIT_REQ | SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED,
+++            flags,
+++        )
+++        .context("SetSecurityDescriptorControl")?;
+++        SetKernelObjectSecurity(h.0, DACL_SECURITY_INFORMATION, psd)
+++            .context("SetKernelObjectSecurity")?;
+++    }
+++    verify_dacl_control(h, control)
+++}
+++
+++/// Refresh descendants from the new explicit entries. Supplying the original
+++/// protection mode makes the filesystem recompute inherited entries, including
+++/// removal of obsolete inherited grants and guards after an interrupted write.
+++fn write_propagating_dacl(
+++    h: &crate::util::OwnedHandle,
+++    explicit: &BuiltAcl,
+++    control: u16,
+++) -> Result<()> {
+++    let protection = if control & SE_DACL_PROTECTED.0 != 0 {
+++        PROTECTED_DACL_SECURITY_INFORMATION
+++    } else {
+++        UNPROTECTED_DACL_SECURITY_INFORMATION
+++    };
 ++    let result = unsafe {
 ++        SetSecurityInfo(
 ++            h.0,
 ++            SE_FILE_OBJECT,
-++            DACL_SECURITY_INFORMATION,
+++            DACL_SECURITY_INFORMATION | protection,
 ++            None,
 ++            None,
-++            Some(full.as_ptr()),
+++            Some(explicit.as_ptr()),
 ++            None,
 ++        )
 ++    };
-++    win32_ok(result, "SetSecurityInfo(dacl)")?;
+++    win32_ok(result, "SetSecurityInfo(propagating dacl)")?;
+++    verify_dacl_control(h, control)
+++}
+++
+++fn verify_dacl_control(h: &crate::util::OwnedHandle, control: u16) -> Result<()> {
 ++    let (after, _) = read_local_dacl(h)?;
 ++    if dacl_control(&after)? != control {
 ++        bail!("DACL write changed inheritance control");
@@ -5126,7 +5148,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 + /// `(kept ACE ptrs+sizes, Σ kept sizes, source AclRevision)`.
 + pub(crate) type KeptAces = (Vec<(*const c_void, u16)>, usize, ACE_REVISION);
 +
-+@@ -507,7 +582,7 @@ pub fn set_path_dacl_from_sddl(path: &str, sddl: &str, label: &str) -> Result<()
++@@ -507,7 +606,7 @@ pub fn set_path_dacl_from_sddl(path: &str, sddl: &str, label: &str) -> Result<()
 +     if !present.as_bool() || dacl.is_null() {
 +         bail!("{label}: SDDL '{sddl}' yielded no DACL");
 +     }
@@ -5135,7 +5157,30 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 + }
 +
 + /// Open `path` for security-descriptor writes with NO-FOLLOW
-+@@ -620,7 +695,7 @@ pub fn set_handle_dacl_from_sddl(
++@@ -521,6 +620,13 @@ pub fn set_path_dacl_from_sddl(path: &str, sddl: &str, label: &str) -> Result<()
++ /// and the returned HANDLE is what the security writes below
++ /// operate on — validate-then-use on the same object, not a name.
++ pub fn open_for_security_no_follow(path: &str) -> Result<crate::util::OwnedHandle> {
+++    open_security_no_follow(
+++        path,
+++        Mask::READ_CONTROL.bits() | Mask::WRITE_DAC.bits() | 0x0008_0000, // + WRITE_OWNER
+++    )
+++}
+++
+++fn open_security_no_follow(path: &str, access: u32) -> Result<crate::util::OwnedHandle> {
++     use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
++     use windows::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
++     use windows::Win32::Storage::FileSystem::{
++@@ -532,7 +638,7 @@ pub fn open_for_security_no_follow(path: &str) -> Result<crate::util::OwnedHandl
++     let h = unsafe {
++         CreateFileW(
++             pcwstr(&w),
++-            Mask::READ_CONTROL.bits() | Mask::WRITE_DAC.bits() | 0x0008_0000, // + WRITE_OWNER
+++            access,
++             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
++             None,
++             OPEN_EXISTING,
++@@ -620,7 +726,7 @@ pub fn set_handle_dacl_from_sddl(
 + // ALLOW ACE for the sandbox user's SID on a path (typically the
 + // working-tree root) so the child can read/write there; `acl stamp
 + // --sandbox-user-sid` adds an explicit DENY ACE on a path (and a
@@ -5144,7 +5189,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 + // can NOT read/write/delete it even when an inherited
 + // `BUILTIN\Users` ACE would otherwise allow. Both are ADDITIVE
 + // (the path keeps its own explicit ACEs and inheritance);
-+@@ -650,14 +725,14 @@ pub enum DenyMask {
++@@ -650,14 +756,14 @@ pub enum DenyMask {
 + /// One explicit ACE the sandbox user holds on a path. The
 + /// separate-user FS model is entirely additive: `acl grant` adds
 + /// ALLOW ACEs, `acl stamp --sandbox-user-sid` adds DENY ACEs (plus
@@ -5161,7 +5206,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +     /// of every denied target so the sandbox user cannot `del`/`ren`
 +     /// it via parent-FDC even when the parent carries an inherited
 +     /// `BUILTIN\Users:(F)` (which the sandbox user, a Users member,
-+@@ -767,19 +842,28 @@ pub struct SbAceSet {
++@@ -767,19 +873,28 @@ pub struct SbAceSet {
 +
 + impl SbAceSet {
 +     /// The set's entries as [`NewAce`]s for `sid`, in canonical
@@ -5195,7 +5240,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +         }
 +         if let Some(m) = self.grant {
 +             v.push(NewAce::Allow(sid, m.bits(), OICI));
-+@@ -791,14 +875,12 @@ impl SbAceSet {
++@@ -791,14 +906,12 @@ impl SbAceSet {
 + /// Converge `canonical_path`'s explicit ACEs for `sandbox_sid` to
 + /// exactly `set`. Idempotent — every existing explicit ACE for the
 + /// SID (allow AND deny) is dropped, then `set`'s entries are
@@ -5216,7 +5261,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 + /// silently re-enable inheritance, and neither revoke nor restore
 + /// could undo that — the parent's inheritable ACEs (e.g. a data-drive
 + /// root's `Authenticated Users:(M)`) would durably re-open a path its
-+@@ -814,35 +896,182 @@ impl SbAceSet {
++@@ -814,35 +927,182 @@ impl SbAceSet {
 + /// Both grant and deny carry `(OI)(CI)` so directory targets cover
 + /// the subtree; on a file the inheritance flags are inert.
 + pub fn apply_sandbox_aces(canonical_path: &str, sandbox_sid: &str, set: SbAceSet) -> Result<()> {
@@ -5420,12 +5465,12 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++    let (sd, old) = read_local_dacl(&tree)?;
 ++    let new = compose(old)?;
 ++    before_tree_write()?;
-++    write_composed_dacl(&tree, old, &new, dacl_control(&sd)?)
+++    write_propagating_dacl(&tree, &new, dacl_control(&sd)?)
 ++        .with_context(|| format!("recompose '{path}'"))
 + }
 +
 + /// Whether `canonical_path` carries an EXPLICIT `(OI)(CI)` deny ACE
-+@@ -886,6 +1115,10 @@ mod tests {
++@@ -886,6 +1146,10 @@ mod tests {
 +     /// revision 2, GENERIC_ALL on each. Regression for the
 +     /// `KeptAces`/`rebuild_acl` chokepoint: a sizing or revision
 +     /// bug here breaks the sandbox-user desktop attach (R1 hang).
@@ -5436,7 +5481,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +     #[test]
 +     fn isolated_desk_dacl_shape() {
 +         let d = build_allow_dacl(&[
-+@@ -935,7 +1168,7 @@ mod tests {
++@@ -935,7 +1199,7 @@ mod tests {
 +             Allow(SID_SYSTEM, Mask::FILE_ALL, OICI),
 +         ])
 +         .unwrap();
@@ -5445,7 +5490,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +         let (sd, _) = read_file_dacl(path).unwrap();
 +         assert!(sd_dacl_protected(&sd).unwrap(), "setup: DACL protected");
 +
-+@@ -962,9 +1195,7 @@ mod tests {
++@@ -962,9 +1226,7 @@ mod tests {
 +         // The common case keeps its contract: an unprotected dir
 +         // stays unprotected across the same round-trip, and its
 +         // inherited ACEs (the parent's OICI lockdown entries
@@ -5456,7 +5501,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +         let plain = dir.join("plain");
 +         std::fs::create_dir_all(&plain).unwrap();
 +         let plain_path = plain.to_str().unwrap();
-+@@ -978,12 +1209,329 @@ mod tests {
++@@ -978,12 +1240,329 @@ mod tests {
 +         let (aces, ..) = filter_aces(dacl, |hdr, _| hdr.AceFlags & INHERITED_ACE != 0).unwrap();
 +         assert!(
 +             !aces.is_empty(),
@@ -5999,10 +6044,10 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +     };
 +diff --git a/vendor/srt-win-src/src/persistent_denies.rs b/vendor/srt-win-src/src/persistent_denies.rs
 +new file mode 100644
-+index 000000000..c45d96351
++index 000000000..df17f55e4
 +--- /dev/null
 ++++ b/vendor/srt-win-src/src/persistent_denies.rs
-+@@ -0,0 +1,1268 @@
++@@ -0,0 +1,1447 @@
 ++//! Durable deny intent and replayable ACL deltas in the protected session DB.
 ++//!
 ++//! A desired-set transaction records both durable rows and live holder edges,
@@ -6026,6 +6071,14 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++CREATE TABLE IF NOT EXISTS persistent_deny_owners (
 ++  owner TEXT PRIMARY KEY,
 ++  sandbox_sid TEXT NOT NULL
+++);
+++CREATE TABLE IF NOT EXISTS persistent_deny_formats (
+++  owner TEXT NOT NULL REFERENCES persistent_deny_owners(owner) ON DELETE CASCADE,
+++  canonical_path TEXT NOT NULL,
+++  kind TEXT NOT NULL,
+++  file_id BLOB NOT NULL,
+++  writer_format INTEGER NOT NULL,
+++  PRIMARY KEY(owner, canonical_path, kind)
 ++);
 ++CREATE TABLE IF NOT EXISTS persistent_denies (
 ++  owner TEXT NOT NULL REFERENCES persistent_deny_owners(owner) ON DELETE CASCADE,
@@ -6238,6 +6291,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++}
 ++
 ++fn prepare_principal(conn: &Connection, sid: &str) -> Result<()> {
+++    state_db::ensure_writer_compatibility(conn)?;
 ++    retire_old_principals_with(
 ++        conn,
 ++        sid,
@@ -6279,15 +6333,21 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++    Ok(out)
 ++}
 ++
+++fn queue_pending(conn: &Connection, path: &str, id: &[u8], sid: &str) -> Result<()> {
+++    conn.execute("INSERT OR IGNORE INTO pending_deny_acl(canonical_path, file_id, sandbox_sid) VALUES (?1, ?2, ?3)",
+++        params![path, id, sid])?;
+++    conn.execute(
+++        "DELETE FROM persistent_deny_formats WHERE canonical_path = ?1 AND file_id = ?2",
+++        params![path, id],
+++    )?;
+++    Ok(())
+++}
+++
 ++fn journal_delta(conn: &Connection, before: &Effective, sid: &str) -> Result<()> {
 ++    let after = snapshot(conn)?;
 ++    for object in before.keys().chain(after.keys()) {
 ++        if before.get(object) != after.get(object) {
-++            conn.execute(
-++                "INSERT OR IGNORE INTO pending_deny_acl \
-++                (canonical_path, file_id, sandbox_sid) VALUES (?1, ?2, ?3)",
-++                params![object.0, object.1, sid],
-++            )?;
+++            queue_pending(conn, &object.0, &object.1, sid)?;
 ++        }
 ++    }
 ++    Ok(())
@@ -6310,8 +6370,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++    if !bound || before == &signature(conn, path, id)? {
 ++        return Ok(false);
 ++    }
-++    conn.execute("INSERT OR IGNORE INTO pending_deny_acl(canonical_path, file_id, sandbox_sid) VALUES (?1, ?2, ?3)",
-++        params![path, id, sid])?;
+++    queue_pending(conn, path, id, sid)?;
 ++    Ok(true)
 ++}
 ++
@@ -6359,6 +6418,17 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++) -> Result<()> {
 ++    validate_owner(owner)?;
 ++    let before = snapshot(conn)?;
+++    let mut adoptions = Vec::new();
+++    for target in targets {
+++        let verified: bool = conn.prepare_cached(
+++            "SELECT 1 FROM persistent_denies d JOIN persistent_deny_owners o ON o.owner = d.owner JOIN persistent_deny_formats f ON f.owner = d.owner AND f.canonical_path = d.canonical_path AND f.kind = d.kind AND f.file_id = d.file_id \
+++             WHERE d.owner = ?1 AND d.canonical_path = ?2 AND d.kind = ?3 AND d.file_id = ?4 AND o.sandbox_sid = ?5 AND f.writer_format = ?6 AND d.mask = ?7")?
+++            .exists(params![owner, target.path, target.ace.kind(), target.file_id, sid, state_db::ACL_WRITER_FORMAT, target.ace.as_str()])?;
+++        if !verified {
+++            adoptions.push((target.path.clone(), target.file_id.clone()));
+++        }
+++    }
+++
 ++    // A live hold refers to the original file object. Do not overwrite its
 ++    // identity with a replacement at the same spelling.
 ++    for target in targets {
@@ -6423,7 +6493,17 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++            ON CONFLICT(canonical_path, kind) DO UPDATE SET file_id = excluded.file_id, mask = excluded.mask",
 ++            params![target.path, target.ace.kind(), target.file_id, effective.as_str()])?;
 ++    }
+++    tx.execute("DELETE FROM persistent_deny_formats WHERE owner = ?1 AND NOT EXISTS \
+++        (SELECT 1 FROM persistent_denies d WHERE d.owner = persistent_deny_formats.owner \
+++         AND d.canonical_path = persistent_deny_formats.canonical_path \
+++         AND d.kind = persistent_deny_formats.kind AND d.file_id = persistent_deny_formats.file_id)", [owner])?;
 ++    journal_delta(&tx, &before, sid)?;
+++
+++    // Opaque working labels do not establish physical masks or flags. First
+++    // adoption must reach the identity-aware writer even when labels match.
+++    for (path, id) in adoptions {
+++        queue_pending(&tx, &path, &id, sid)?;
+++    }
 ++    tx.commit()?;
 ++    Ok(())
 ++}
@@ -6456,8 +6536,16 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++        };
 ++        match write(&path, &id, tree_repair, &mut before_tree_write) {
 ++            Ok(()) => {
-++                conn.execute("DELETE FROM pending_deny_acl WHERE canonical_path = ?1 AND file_id = ?2 AND sandbox_sid = ?3",
+++                let tx = conn.unchecked_transaction()?;
+++                tx.execute("INSERT INTO persistent_deny_formats(owner, canonical_path, kind, file_id, writer_format) \
+++                    SELECT d.owner, d.canonical_path, d.kind, d.file_id, ?4 \
+++                    FROM persistent_denies d JOIN persistent_deny_owners o ON o.owner = d.owner \
+++                    WHERE d.canonical_path = ?1 AND d.file_id = ?2 AND o.sandbox_sid = ?3 \
+++                    ON CONFLICT(owner, canonical_path, kind) DO UPDATE SET file_id = excluded.file_id, writer_format = excluded.writer_format",
+++                    params![path, id, sid, state_db::ACL_WRITER_FORMAT])?;
+++                tx.execute("DELETE FROM pending_deny_acl WHERE canonical_path = ?1 AND file_id = ?2 AND sandbox_sid = ?3",
 ++                    params![path, id, sid])?;
+++                tx.commit()?;
 ++                out.push(path);
 ++            }
 ++            Err(error) => failures.push(format!("{path}: {error:#}")),
@@ -6560,6 +6648,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++}
 ++
 ++pub(crate) fn apply_pending(conn: &Connection, sid: &str) -> Result<Vec<String>> {
+++    state_db::ensure_writer_compatibility(conn)?;
 ++    replay_with(conn, sid, |path, bytes, repair, before_tree_write| {
 ++        if let Some(actual) = resolve_pending_object(path, bytes)? {
 ++            state_db::recompose_identity(
@@ -6577,6 +6666,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++}
 ++
 ++pub(crate) fn recover(conn: &Connection) -> Result<()> {
+++    state_db::ensure_writer_compatibility(conn)?;
 ++    let present: bool = conn.query_row(
 ++        "SELECT EXISTS(SELECT 1 FROM persistent_deny_owners) \
 ++        OR EXISTS(SELECT 1 FROM pending_deny_acl) OR EXISTS(SELECT 1 FROM pending_retired_grants) OR (EXISTS(SELECT 1 FROM persistent_deny_principal) AND EXISTS(SELECT 1 FROM working_aces))",
@@ -6722,6 +6812,8 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++        .unwrap();
 ++        for pid in [11, 12] {
 ++            conn.execute("INSERT INTO brokers VALUES (?1, 1, 1)", [pid])
+++                .unwrap();
+++            conn.execute("INSERT INTO broker_acl_formats VALUES (?1, 1, 1)", [pid])
 ++                .unwrap();
 ++        }
 ++        conn
@@ -7270,24 +7362,184 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++        assert_eq!(pending(&conn), 1);
 ++        assert_eq!(flush(&conn), vec![row.path]);
 ++    }
+++    #[test]
+++    fn first_owner_adoption_verifies_equal_opaque_working_labels_once() {
+++        let conn = database();
+++        let row = write(r"C:\fixture\secret");
+++        conn.execute(
+++            "INSERT INTO working_aces VALUES (?1, 'deny', ?2, 'denyWrite')",
+++            params![row.path, row.file_id],
+++        )
+++        .unwrap();
+++        conn.execute(
+++            "INSERT INTO ace_holders VALUES (?1, 'deny', 11, 'denyWrite')",
+++            [&row.path],
+++        )
+++        .unwrap();
+++        reconcile_rows(&conn, 11, "ave", SID, std::slice::from_ref(&row)).unwrap();
+++        assert_eq!(
+++            flush(&conn),
+++            vec![row.path.clone()],
+++            "a string label is not physical ACL proof"
+++        );
+++        reconcile_rows(&conn, 11, "ave", SID, &[row]).unwrap();
+++        assert!(
+++            flush(&conn).is_empty(),
+++            "completed same-owner desired lists remain no-op"
+++        );
+++    }
+++    #[test]
+++    fn draft_durable_rows_without_completed_format_are_verified_again() {
+++        let conn = database();
+++        let rows = [
+++            write(r"C:\fixture\secret"),
+++            target(r"C:\fixture", SbAce::DenyFdc),
+++        ];
+++        reconcile_rows(&conn, 11, "ave", SID, &rows).unwrap();
+++        // Represent an earlier stored desired set without physical-format proof.
+++        conn.execute("DELETE FROM pending_deny_acl", []).unwrap();
+++        reconcile_rows(&conn, 11, "ave", SID, &rows).unwrap();
+++        assert_eq!(
+++            flush(&conn).len(),
+++            2,
+++            "both target and parent require verification"
+++        );
+++        reconcile_rows(&conn, 11, "ave", SID, &rows).unwrap();
+++        assert!(flush(&conn).is_empty());
+++    }
+++
+++    #[test]
+++    fn completed_format_is_written_only_after_successful_object_recompose() {
+++        let conn = database();
+++        let row = write(r"C:\fixture\secret");
+++        reconcile_rows(&conn, 11, "ave", SID, &[row]).unwrap();
+++        assert!(replay_with(&conn, SID, |_, _, _, _| bail!("interrupted ACL update")).is_err());
+++        let completed: i64 = conn
+++            .query_row("SELECT count(*) FROM persistent_deny_formats", [], |r| {
+++                r.get(0)
+++            })
+++            .unwrap();
+++        assert_eq!(completed, 0);
+++        flush(&conn);
+++        let format: i64 = conn
+++            .query_row(
+++                "SELECT writer_format FROM persistent_deny_formats",
+++                [],
+++                |r| r.get(0),
+++            )
+++            .unwrap();
+++        assert_eq!(format, state_db::ACL_WRITER_FORMAT);
+++        assert_eq!(pending(&conn), 0);
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(r"C:\fixture\secret")]).unwrap();
+++        assert!(replay_with(&conn, SID, |_, _, _, _| bail!("interrupted deny upgrade")).is_err());
+++        let completed: i64 = conn
+++            .query_row("SELECT count(*) FROM persistent_deny_formats", [], |r| {
+++                r.get(0)
+++            })
+++            .unwrap();
+++        assert_eq!(
+++            completed, 0,
+++            "an earlier proof cannot mark an interrupted upgrade complete"
+++        );
+++    }
+++
+++    #[test]
+++    fn completed_format_from_another_writer_forces_reverification() {
+++        let conn = database();
+++        let row = write(r"C:\fixture\secret");
+++        reconcile_rows(&conn, 11, "ave", SID, std::slice::from_ref(&row)).unwrap();
+++        flush(&conn);
+++        conn.execute(
+++            "UPDATE persistent_deny_formats SET writer_format = ?1",
+++            [state_db::ACL_WRITER_FORMAT + 1],
+++        )
+++        .unwrap();
+++        reconcile_rows(&conn, 11, "ave", SID, &[row]).unwrap();
+++        assert_eq!(flush(&conn).len(), 1);
+++    }
+++    #[test]
+++    fn completed_write_proof_cannot_skip_read_upgrade_with_opaque_read_labels() {
+++        let conn = database();
+++        let path = r"C:\fixture\secret";
+++        reconcile_rows(&conn, 11, "ave", SID, &[write(path)]).unwrap();
+++        flush(&conn);
+++        // An interrupted ordinary stamp can advance logical working/holder
+++        // masks before its physical write; the durable Write proof remains.
+++        conn.execute(
+++            "UPDATE working_aces SET mask = 'denyRead' WHERE canonical_path = ?1",
+++            [path],
+++        )
+++        .unwrap();
+++        conn.execute(
+++            "UPDATE ace_holders SET want_mask = 'denyRead' WHERE canonical_path = ?1",
+++            [path],
+++        )
+++        .unwrap();
+++        let before = snapshot(&conn).unwrap();
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(path)]).unwrap();
+++        assert_eq!(
+++            snapshot(&conn).unwrap(),
+++            before,
+++            "effective logical labels alone did not change"
+++        );
+++        assert_eq!(
+++            pending(&conn),
+++            1,
+++            "the old durable Write proof cannot cover desired Read"
+++        );
+++        assert_eq!(flush(&conn), vec![path]);
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(path)]).unwrap();
+++        assert!(
+++            flush(&conn).is_empty(),
+++            "completed unchanged Read remains a no-op"
+++        );
+++    }
 ++}
 +diff --git a/vendor/srt-win-src/src/state_db.rs b/vendor/srt-win-src/src/state_db.rs
-+index d3778f4e6..3f3ecb128 100644
++index d3778f4e6..1708d1d16 100644
 +--- a/vendor/srt-win-src/src/state_db.rs
 ++++ b/vendor/srt-win-src/src/state_db.rs
-+@@ -72,9 +72,9 @@ impl std::str::FromStr for HolderPid {
++@@ -72,14 +72,22 @@ impl std::str::FromStr for HolderPid {
 + }
 +
 + /// Per-user session DB (brokers / ace_holders / working_aces).
 +-const SESSION_SCHEMA_VERSION: i64 = 8;
 ++pub(crate) const SESSION_SCHEMA_VERSION: i64 = 8;
+++pub(crate) const ACL_WRITER_FORMAT: i64 = 1;
 +
 +-const SESSION_SCHEMA_SQL: &str = r#"
 ++pub(crate) const SESSION_SCHEMA_SQL: &str = r#"
 + CREATE TABLE IF NOT EXISTS brokers (
 +   pid                 INTEGER PRIMARY KEY,
 +   process_create_time INTEGER NOT NULL,
-+@@ -304,7 +304,7 @@ pub const KIND_GRANT: &[&str] = &["grant"];
++   started_at          INTEGER NOT NULL
++ );
+++-- A writer format belongs to this exact process birth, never to a recycled PID.
+++CREATE TABLE IF NOT EXISTS broker_acl_formats (
+++  pid INTEGER NOT NULL REFERENCES brokers(pid) ON DELETE CASCADE,
+++  process_create_time INTEGER NOT NULL,
+++  writer_format INTEGER NOT NULL,
+++  PRIMARY KEY(pid, process_create_time)
+++);
++ -- Additive explicit ACEs for the sandbox user. kind ∈
++ -- {'grant','deny','deny_fdc'}: `acl grant` writes ALLOW rows,
++ -- `acl stamp` writes DENY rows on the target plus a `deny_fdc`
++@@ -216,9 +224,12 @@ impl InitMutex {
++
++ /// The one seam through which install-time flows (ambient deny
++ /// stamping/clearing) serialize against this user's brokers —
++-/// acquire the session init lock without opening the session DB.
+++/// acquire the session init lock and refuse incompatible live writers.
++ pub fn acquire_session_lock() -> Result<impl Drop> {
++-    InitMutex::acquire()
+++    let lock = InitMutex::acquire()?;
+++    let conn = open_db()?;
+++    ensure_writer_compatibility(&conn)?;
+++    Ok(lock)
++ }
++
++ /// Open (creating if needed) the per-user SESSION DB. Stamps the
++@@ -304,7 +315,7 @@ pub const KIND_GRANT: &[&str] = &["grant"];
 + /// `prepare → query_map → collect` with one error context. Shared
 + /// by every "list of T from one query" site so error plumbing is
 + /// edited once.
@@ -7296,7 +7548,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +     conn: &Connection,
 +     sql: &str,
 +     p: P,
-+@@ -474,16 +474,19 @@ pub(crate) fn open_db_at(
++@@ -474,16 +485,19 @@ pub(crate) fn open_db_at(
 +     }
 +     let conn = Connection::open(path).with_context(|| format!("sqlite open {}", path.display()))?;
 +     // WAL = concurrent readers + single writer + crash safety.
@@ -7319,15 +7571,48 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +     conn.pragma_update(None, "user_version", schema_version)?;
 +     Ok(conn)
 + }
-+@@ -557,6 +560,7 @@ pub fn with_init_lock<R>(
++@@ -557,10 +571,40 @@ pub fn with_init_lock<R>(
 + fn locked_recovered(force_recover: bool) -> Result<(InitMutex, Connection, RecoveryReport)> {
 +     let mutex = InitMutex::acquire()?;
 +     let conn = open_db()?;
+++    ensure_writer_compatibility(&conn)?;
 ++    crate::persistent_denies::recover(&conn)?;
 +     let report = crash_recovery(&conn, force_recover)?;
 +     Ok((mutex, conn, report))
 + }
-+@@ -572,8 +576,8 @@ fn locked_recovered(force_recover: bool) -> Result<(InitMutex, Connection, Recov
++
+++/// The current writer changes the physical deny representation. Live holders
+++/// from another representation must finish before any target ACL can change.
+++fn ensure_writer_compatibility_with(
+++    conn: &Connection,
+++    alive: impl Fn(u32, i64) -> bool,
+++) -> Result<()> {
+++    let legacy: Vec<(u32, i64)> = query_vec(
+++        conn,
+++        "SELECT b.pid, b.process_create_time FROM brokers b \
+++         WHERE EXISTS(SELECT 1 FROM ace_holders h WHERE h.pid = b.pid) \
+++           AND NOT EXISTS(SELECT 1 FROM broker_acl_formats f \
+++             WHERE f.pid = b.pid AND f.process_create_time = b.process_create_time \
+++               AND f.writer_format = ?1)",
+++        [ACL_WRITER_FORMAT],
+++        |row| Ok((row.get(0)?, row.get(1)?)),
+++    )?;
+++    if legacy.into_iter().any(|(pid, created)| alive(pid, created)) {
+++        bail!(
+++            "previous sandbox sessions use an incompatible ACL format; close previous sandbox sessions and retry"
+++        );
+++    }
+++    Ok(())
+++}
+++
+++pub(crate) fn ensure_writer_compatibility(conn: &Connection) -> Result<()> {
+++    ensure_writer_compatibility_with(conn, is_process_alive)
+++}
+++
++ /// View inside `with_init_lock`. Owns the `Connection`; each method
++ /// commits independently (rusqlite autocommits a lone `execute`).
++ ///
++@@ -572,8 +616,8 @@ fn locked_recovered(force_recover: bool) -> Result<(InitMutex, Connection, Recov
 + /// means a stamp persists until that process exits (or explicitly
 + /// restores), and refcount / crash-recovery track the real session.
 + pub struct Locked {
@@ -7338,23 +7623,54 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 + }
 +
 + impl Locked {
-+@@ -671,6 +675,7 @@ impl Locked {
++@@ -591,9 +635,11 @@ impl Locked {
++     /// while the holder's child is still running. `ON CONFLICT DO
++     /// UPDATE` updates in place and leaves child rows intact.
++     pub fn register_broker(&self) -> Result<()> {
+++        ensure_writer_compatibility(&self.conn)?;
++         let ct = pid_create_time(self.holder_pid.0)
++             .with_context(|| format!("read create-time of holder pid {}", self.holder_pid.0))?;
++         let now = unix_now();
+++        let tx = self.conn.unchecked_transaction()?;
++         self.conn
++             .execute(
++                 "INSERT INTO brokers (pid, process_create_time, started_at) \
++@@ -604,6 +650,8 @@ impl Locked {
++                 params![self.holder_pid.0 as i64, ct, now],
++             )
++             .context("INSERT brokers")?;
+++        tx.execute("INSERT INTO broker_acl_formats(pid, process_create_time, writer_format) VALUES (?1, ?2, ?3) ON CONFLICT(pid, process_create_time) DO UPDATE SET writer_format = excluded.writer_format", params![self.holder_pid.0, ct, ACL_WRITER_FORMAT])?;
+++        tx.commit()?;
++         Ok(())
++     }
++
++@@ -671,6 +719,8 @@ impl Locked {
 +         sandbox_sid: &str,
 +         targets: &[(String, SbAce)],
 +     ) -> Result<(Vec<AceWitness>, usize)> {
+++        ensure_writer_compatibility(&self.conn)?;
 ++        crate::persistent_denies::validate_supplied(&self.conn, sandbox_sid)?;
 +         self.with_broker_registration(sandbox_sid, |db| {
 +             let mut witnesses = Vec::with_capacity(targets.len());
 +             let mut failed = 0usize;
-+@@ -834,6 +839,7 @@ impl Locked {
++@@ -710,6 +760,7 @@ impl Locked {
++     /// crash between leaves a row whose ACE hasn't been written —
++     /// the next call re-derives and reapplies.
++     fn ensure_ace(&self, canon: &str, want: SbAce, sandbox_sid: &str) -> Result<AceWitness> {
+++        ensure_writer_compatibility(&self.conn)?;
++         let (cur_id, links, is_dir) = path_id::capture_id_and_links(canon)
++             .with_context(|| format!("capture file_id+links '{canon}'"))?;
++         // Hardlink guard: NTFS hardlinks share one SD across
++@@ -834,6 +885,8 @@ impl Locked {
 +     /// best-effort `locate_by_file_id` and revoke at the moved path
 +     /// so the sandbox user does not keep stale access.
 +     fn release_one_ace(&self, canon: &str, kind: &str, sandbox_sid: &str) -> Result<AceRelease> {
+++        ensure_writer_compatibility(&self.conn)?;
 ++        let tx = self.conn.unchecked_transaction()?;
 +         self.conn
 +             .prepare_cached(
 +                 "DELETE FROM ace_holders WHERE canonical_path = ?1 \
-+@@ -850,8 +856,10 @@ impl Locked {
++@@ -850,8 +903,10 @@ impl Locked {
 +             .query_row(params![canon, kind], |r| Ok((r.get(0)?, r.get(1)?)))
 +             .optional()?;
 +         let Some((fid, stored)) = row else {
@@ -7365,7 +7681,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +         let new_eff = self.effective_ace(canon, kind)?;
 +         // Row update first (record-first), then converge disk.
 +         match new_eff {
-+@@ -872,10 +880,28 @@ impl Locked {
++@@ -872,10 +927,28 @@ impl Locked {
 +                 )
 +                 .context("DELETE working_aces")?,
 +         };
@@ -7395,15 +7711,16 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +                 Ok(match new_eff {
 +                     Some(e) if e.as_str() == stored => AceRelease::StillHeld,
 +                     Some(_) => AceRelease::Downgraded,
-+@@ -950,6 +976,7 @@ impl Locked {
++@@ -950,6 +1023,8 @@ impl Locked {
 +         sandbox_sid: &str,
 +         kinds: &[&str],
 +     ) -> Result<(Vec<(String, AceRelease)>, usize)> {
+++        ensure_writer_compatibility(&self.conn)?;
 ++        crate::persistent_denies::validate_supplied(&self.conn, sandbox_sid)?;
 +         let holds = self.my_ace_holds(Some(kinds))?;
 +         let mut out = Vec::with_capacity(holds.len());
 +         let mut failed = 0usize;
-+@@ -975,6 +1002,40 @@ impl Locked {
++@@ -975,6 +1050,40 @@ impl Locked {
 +         Ok((out, failed))
 +     }
 +
@@ -7444,17 +7761,14 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +     /// Record a placeholder component `acl stamp` is about to
 +     /// create (see the `placeholders` table comment). Idempotent
 +     /// (`INSERT OR IGNORE`); called intent-first — before the
-+@@ -1019,33 +1080,78 @@ impl Locked {
++@@ -1019,33 +1128,79 @@ impl Locked {
 + /// here so a path with both a grant AND a deny (or a parent that is
 + /// both granted and `deny_fdc`'d) is handled consistently.
 + fn recompose_at(conn: &Connection, canon: &str, sandbox_sid: &str) -> Result<()> {
 +-    let rows: Vec<(String, String)> = query_vec(
 ++    let id = path_id::capture_file_id(canon)?;
 ++    recompose_identity(
-+         conn,
-+-        "SELECT kind, mask FROM working_aces \
-+-         WHERE canonical_path = ?1",
-+-        params![canon],
+++        conn,
 ++        canon,
 ++        canon,
 ++        &id.as_bytes(),
@@ -7475,8 +7789,12 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++    repair_propagation: bool,
 ++    before_tree_write: &mut dyn FnMut() -> Result<()>,
 ++) -> Result<()> {
+++    ensure_writer_compatibility(conn)?;
 ++    let mut rows: Vec<(String, String)> = query_vec(
-++        conn,
++         conn,
++-        "SELECT kind, mask FROM working_aces \
++-         WHERE canonical_path = ?1",
++-        params![canon],
 ++        "SELECT kind, mask FROM working_aces WHERE canonical_path = ?1 AND file_id = ?2",
 ++        params![source, file_id],
 +         |r| Ok((r.get(0)?, r.get(1)?)),
@@ -7540,7 +7858,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 + }
 +
 + /// Sealed proof that [`Locked::apply_aces`] converged `canon` to
-+@@ -1059,7 +1165,7 @@ pub struct AceWitness {
++@@ -1059,7 +1214,7 @@ pub struct AceWitness {
 +     /// A row already existed (another holder, or a re-apply).
 +     pub already: bool,
 +     pub holder_added: bool,
@@ -7549,7 +7867,15 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 + }
 +
 + /// Per-path outcome of [`Locked::release_aces`].
-+@@ -1163,15 +1269,28 @@ fn crash_recovery(conn: &Connection, force: bool) -> Result<RecoveryReport> {
++@@ -1107,6 +1262,7 @@ impl AceRelease {
++ /// leaves path X's recompose+delete durable. `force` is reserved
++ /// for a future "force-recompose ignoring file-id mismatch" mode.
++ fn crash_recovery(conn: &Connection, force: bool) -> Result<RecoveryReport> {
+++    ensure_writer_compatibility(conn)?;
++     let mut report = RecoveryReport::default();
++
++     // 1. Find dead brokers.
++@@ -1163,15 +1319,28 @@ fn crash_recovery(conn: &Connection, force: bool) -> Result<RecoveryReport> {
 +             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
 +         )?;
 +         for (canon, kind, fid) in orphan_aces {
@@ -7578,7 +7904,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +                     if let Err(e) = recompose_at(conn, &canon, &sb) {
 +                         eprintln!(
 +                             "srt-win: orphaned {kind} '{canon}': \
-+@@ -1224,7 +1343,7 @@ fn identity_gate(path: &str, expect: FileId) -> IdGate {
++@@ -1224,7 +1393,7 @@ fn identity_gate(path: &str, expect: FileId) -> IdGate {
 +
 + /// True if `pid` refers to a live process whose CreationTime
 + /// matches `expected_create_filetime`. PID-recycle guard.
@@ -7587,7 +7913,7 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 +     if pid == std::process::id() {
 +         // Don't reap ourselves even if the stored CreationTime is
 +         // somehow stale.
-+@@ -1420,4 +1539,68 @@ mod tests {
++@@ -1420,4 +1589,331 @@ mod tests {
 +         // PID 0x7FFF_FFFE is well above any plausible live PID.
 +         assert!(!is_process_alive(0x7FFF_FFFE, 0));
 +     }
@@ -7655,13 +7981,276 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++            db.ensure_no_live_holders().unwrap();
 ++        });
 ++    }
+++    fn legacy_hold(db: &Locked, pid: u32, created: i64) {
+++        db.conn
+++            .execute(
+++                "INSERT INTO brokers VALUES (?1, ?2, 1)",
+++                params![pid, created],
+++            )
+++            .unwrap();
+++        db.conn
+++            .execute(
+++                "INSERT INTO ace_holders VALUES ('fixture', 'deny', ?1, 'denyWrite')",
+++                [pid],
+++            )
+++            .unwrap();
+++    }
+++
+++    #[test]
+++    fn live_legacy_holder_blocks_writer_before_registration_can_adopt_it() {
+++        with_mem_db(|db| {
+++            let created = pid_create_time(db.holder_pid.0).unwrap();
+++            legacy_hold(db, db.holder_pid.0, created);
+++            assert!(ensure_writer_compatibility_with(&db.conn, |_, _| true).is_err());
+++            let error = db.register_broker().unwrap_err().to_string();
+++            assert!(error.contains("close previous sandbox sessions and retry"));
+++            let formats: i64 = db
+++                .conn
+++                .query_row("SELECT count(*) FROM broker_acl_formats", [], |r| r.get(0))
+++                .unwrap();
+++            assert_eq!(
+++                formats, 0,
+++                "registration cannot relabel a live legacy holder"
+++            );
+++        });
+++    }
+++
+++    #[test]
+++    fn dead_legacy_holder_allows_existing_recovery_path_without_adoption() {
+++        with_mem_db(|db| {
+++            legacy_hold(db, 123, 456);
+++            ensure_writer_compatibility_with(&db.conn, |_, _| false).unwrap();
+++            let formats: i64 = db
+++                .conn
+++                .query_row("SELECT count(*) FROM broker_acl_formats", [], |r| r.get(0))
+++                .unwrap();
+++            assert_eq!(formats, 0);
+++        });
+++    }
+++
+++    #[test]
+++    fn uncertain_legacy_holder_liveness_is_conservatively_blocked() {
+++        with_mem_db(|db| {
+++            legacy_hold(db, 123, 456);
+++            // The native liveness probe maps inaccessible/uncertain processes
+++            // to alive; uncertainty must never authorize a format transition.
+++            assert!(ensure_writer_compatibility_with(&db.conn, |_, _| true).is_err());
+++        });
+++    }
+++
+++    #[test]
+++    fn current_writer_live_holder_is_supported() {
+++        with_mem_db(|db| {
+++            legacy_hold(db, 123, 456);
+++            db.conn
+++                .execute(
+++                    "INSERT INTO broker_acl_formats VALUES (123, 456, ?1)",
+++                    [ACL_WRITER_FORMAT],
+++                )
+++                .unwrap();
+++            ensure_writer_compatibility_with(&db.conn, |_, _| {
+++                panic!("current writer needs no legacy probe")
+++            })
+++            .unwrap();
+++        });
+++    }
+++
+++    #[test]
+++    fn writer_metadata_for_another_process_birth_does_not_cover_holder() {
+++        with_mem_db(|db| {
+++            legacy_hold(db, 123, 456);
+++            db.conn
+++                .execute(
+++                    "INSERT INTO broker_acl_formats VALUES (123, 457, ?1)",
+++                    [ACL_WRITER_FORMAT],
+++                )
+++                .unwrap();
+++            assert!(ensure_writer_compatibility_with(&db.conn, |_, _| true).is_err());
+++        });
+++    }
+++
+++    #[test]
+++    fn another_writer_format_does_not_cover_live_holder() {
+++        with_mem_db(|db| {
+++            legacy_hold(db, 123, 456);
+++            db.conn
+++                .execute(
+++                    "INSERT INTO broker_acl_formats VALUES (123, 456, ?1)",
+++                    [ACL_WRITER_FORMAT + 1],
+++                )
+++                .unwrap();
+++            assert!(ensure_writer_compatibility_with(&db.conn, |_, _| true).is_err());
+++        });
+++    }
+++    #[test]
+++    fn live_legacy_parent_grant_is_refused_without_changing_dacls_or_denies() {
+++        use windows::Win32::Foundation::HANDLE;
+++        use windows::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
+++        use windows::Win32::Security::{
+++            CreateRestrictedToken, DACL_SECURITY_INFORMATION, DISABLE_MAX_PRIVILEGE,
+++            GetSecurityDescriptorDacl, ImpersonateLoggedOnUser, SID_AND_ATTRIBUTES,
+++            TOKEN_DUPLICATE, TOKEN_QUERY, UNPROTECTED_DACL_SECURITY_INFORMATION,
+++        };
+++        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+++        const SANDBOX_SID: &str = "S-1-5-21-101-202-303-1001";
+++        struct Impersonation;
+++        impl Drop for Impersonation {
+++            fn drop(&mut self) {
+++                if unsafe { windows::Win32::Security::RevertToSelf() }.is_err() {
+++                    std::process::abort();
+++                }
+++            }
+++        }
+++        fn dacl_bytes(path: &str) -> Vec<u8> {
+++            let (_sd, dacl) = acl::read_file_dacl(path).unwrap();
+++            assert!(!dacl.is_null());
+++            unsafe { std::slice::from_raw_parts(dacl.cast::<u8>(), (*dacl).AclSize as usize) }
+++                .to_vec()
+++        }
+++        fn assert_legacy_denied(inner: &std::path::Path, control: &std::path::Path) {
+++            let mut raw = HANDLE::default();
+++            unsafe {
+++                OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut raw)
+++            }
+++            .unwrap();
+++            let original = crate::util::OwnedHandle(raw);
+++            let sandbox = crate::sid::LocalPsid::from_string(SANDBOX_SID).unwrap();
+++            let everyone = crate::sid::LocalPsid::from_string("S-1-1-0").unwrap();
+++            let restricting = [
+++                SID_AND_ATTRIBUTES {
+++                    Sid: sandbox.as_psid(),
+++                    Attributes: 0,
+++                },
+++                SID_AND_ATTRIBUTES {
+++                    Sid: everyone.as_psid(),
+++                    Attributes: 0,
+++                },
+++            ];
+++            let mut raw = HANDLE::default();
+++            unsafe {
+++                CreateRestrictedToken(
+++                    original.raw(),
+++                    DISABLE_MAX_PRIVILEGE,
+++                    None,
+++                    None,
+++                    Some(&restricting),
+++                    &mut raw,
+++                )
+++            }
+++            .unwrap();
+++            let restricted = crate::util::OwnedHandle(raw);
+++            unsafe { ImpersonateLoggedOnUser(restricted.raw()) }.unwrap();
+++            let _impersonation = Impersonation;
+++            std::fs::write(control, "control").unwrap();
+++            assert_eq!(std::fs::read_to_string(inner).unwrap(), "keep");
+++            assert_eq!(
+++                std::fs::write(inner, "blocked").unwrap_err().kind(),
+++                std::io::ErrorKind::PermissionDenied
+++            );
+++            assert_eq!(
+++                std::fs::remove_file(inner).unwrap_err().kind(),
+++                std::io::ErrorKind::PermissionDenied
+++            );
+++        }
+++        with_mem_db(|db| {
+++            let fixture = std::env::temp_dir().join(format!(
+++                "srt-live-legacy-{}-{}",
+++                std::process::id(),
+++                SystemTime::now()
+++                    .duration_since(UNIX_EPOCH)
+++                    .unwrap()
+++                    .as_nanos()
+++            ));
+++            std::fs::create_dir(&fixture).unwrap();
+++            let owner = crate::sid::current_user_sid().unwrap();
+++            acl::set_path_dacl_from_sddl(fixture.to_str().unwrap(),
+++                &format!("D:P(D;OICI;0x40;;;{SANDBOX_SID})(A;OICI;FA;;;WD)(A;OICI;FA;;;{owner})(A;OICI;FA;;;SY)"),
+++                "legacy fixture parent").unwrap();
+++            let target = fixture.join("protected");
+++            std::fs::create_dir(&target).unwrap();
+++            // Reproduce the old physical write mask while retaining inherited
+++            // parent deletion protection; no legacy writer process runs here.
+++            let sd = crate::util::OwnedSd::from_sddl(&format!(
+++                "D:(D;OICI;0x10116;;;{SANDBOX_SID})(A;OICI;FA;;;WD)(A;OICI;FA;;;{owner})(A;OICI;FA;;;SY)"
+++            )).unwrap();
+++            let mut present = windows::core::BOOL::from(false);
+++            let mut defaulted = windows::core::BOOL::from(false);
+++            let mut dacl = std::ptr::null_mut();
+++            unsafe { GetSecurityDescriptorDacl(sd.ptr, &mut present, &mut dacl, &mut defaulted) }
+++                .unwrap();
+++            assert!(present.as_bool());
+++            let wide = crate::util::wstr(target.to_str().unwrap());
+++            unsafe {
+++                SetNamedSecurityInfoW(
+++                    crate::util::pcwstr(&wide),
+++                    SE_FILE_OBJECT,
+++                    DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+++                    None,
+++                    None,
+++                    Some(dacl),
+++                    None,
+++                )
+++            }
+++            .ok()
+++            .unwrap();
+++            let inner = target.join("inner.txt");
+++            let control = fixture.join("control.txt");
+++            std::fs::write(&inner, "keep").unwrap();
+++            std::fs::write(&control, "control").unwrap();
+++            let (parent_path, _) = path_id::canonicalize_path(fixture.to_str().unwrap()).unwrap();
+++            let (target_path, _) = path_id::canonicalize_path(target.to_str().unwrap()).unwrap();
+++            let paths = [&parent_path, &target_path, inner.to_str().unwrap()];
+++            let before: Vec<_> = paths.iter().map(|path| dacl_bytes(path)).collect();
+++            assert_legacy_denied(&inner, &control);
+++            let created = pid_create_time(db.holder_pid.0).unwrap();
+++            db.conn
+++                .execute(
+++                    "INSERT INTO brokers VALUES (?1, ?2, 1)",
+++                    params![db.holder_pid.0, created],
+++                )
+++                .unwrap();
+++            for (path, ace) in [
+++                (&parent_path, SbAce::DenyFdc),
+++                (&target_path, SbAce::Deny(acl::DenyMask::WriteDeny)),
+++            ] {
+++                let id = path_id::capture_file_id(path).unwrap();
+++                db.conn
+++                    .execute(
+++                        "INSERT INTO working_aces VALUES (?1, ?2, ?3, ?4)",
+++                        params![path, ace.kind(), id.as_bytes().as_slice(), ace.as_str()],
+++                    )
+++                    .unwrap();
+++                db.conn
+++                    .execute(
+++                        "INSERT INTO ace_holders VALUES (?1, ?2, ?3, ?4)",
+++                        params![path, ace.kind(), db.holder_pid.0, ace.as_str()],
+++                    )
+++                    .unwrap();
+++            }
+++            let error = db
+++                .apply_aces(
+++                    SANDBOX_SID,
+++                    &[(parent_path.clone(), SbAce::Grant(acl::GrantMask::Modify))],
+++                )
+++                .unwrap_err();
+++            assert!(
+++                error
+++                    .to_string()
+++                    .contains("close previous sandbox sessions and retry")
+++            );
+++            let after: Vec<_> = paths.iter().map(|path| dacl_bytes(path)).collect();
+++            assert_eq!(before, after, "all original ACL bytes must stay unchanged");
+++            assert_legacy_denied(&inner, &control);
+++            std::fs::remove_dir_all(&fixture).unwrap();
+++        });
+++    }
 + }
 +diff --git a/vendor/srt-win-src/tests/acl_parent_scope.rs b/vendor/srt-win-src/tests/acl_parent_scope.rs
 +new file mode 100644
-+index 000000000..43cc25668
++index 000000000..5b69a4871
 +--- /dev/null
 ++++ b/vendor/srt-win-src/tests/acl_parent_scope.rs
-+@@ -0,0 +1,597 @@
++@@ -0,0 +1,654 @@
 ++//! Parent deletion protection must not spread over unrelated sibling trees.
 ++//! All ACL changes are confined to a fresh owned fixture. No sandbox account,
 ++//! elevation, WFP installation or machine-wide state is needed.
@@ -7672,7 +8261,8 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++use std::time::{SystemTime, UNIX_EPOCH};
 ++
 ++use srt_win::acl::{
-++    DenyMask, GrantMask, Mask, SbAceSet, apply_sandbox_aces, set_path_dacl_from_sddl,
+++    DenyMask, GrantMask, Mask, SbAceSet, apply_sandbox_aces, open_for_security_no_follow,
+++    set_path_dacl_from_sddl,
 ++};
 ++use srt_win::sid::LocalPsid;
 ++use srt_win::util::{OwnedSd, from_pwstr, local_free, pcwstr, wstr};
@@ -7795,6 +8385,62 @@ index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3
 ++        "fixture setup",
 ++    )
 ++    .unwrap();
+++}
+++
+++#[test]
+++fn security_writes_refuse_owned_junctions_without_touching_target() {
+++    let fixture = Fixture::new();
+++    let target = fixture.0.join("target");
+++    let junction = fixture.0.join("redirect");
+++    std::fs::create_dir(&target).unwrap();
+++    let child = target.join("sentinel.txt");
+++    std::fs::write(&child, "owned target").unwrap();
+++    let target_before = snapshot(&target);
+++    let child_before = snapshot(&child);
+++    let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
+++    let output = std::process::Command::new(shell)
+++        .args(["/D", "/C", "mklink", "/J"])
+++        .arg(srt_win::path_id::strip_extended_prefix(
+++            junction.to_str().unwrap(),
+++        ))
+++        .arg(srt_win::path_id::strip_extended_prefix(
+++            target.to_str().unwrap(),
+++        ))
+++        .output()
+++        .unwrap();
+++    assert!(
+++        output.status.success(),
+++        "owned junction creation failed: {output:?}"
+++    );
+++    assert_eq!(
+++        std::fs::read_to_string(junction.join("sentinel.txt")).unwrap(),
+++        "owned target"
+++    );
+++    assert!(open_for_security_no_follow(junction.to_str().unwrap()).is_err());
+++    for set in [
+++        SbAceSet {
+++            deny_fdc: true,
+++            ..Default::default()
+++        },
+++        SbAceSet {
+++            deny: Some(DenyMask::WriteDeny),
+++            ..Default::default()
+++        },
+++    ] {
+++        assert!(apply_sandbox_aces(junction.to_str().unwrap(), TEST_SID, set).is_err());
+++    }
+++    assert_eq!(
+++        snapshot(&target),
+++        target_before,
+++        "junction target DACL changed"
+++    );
+++    assert_eq!(
+++        snapshot(&child),
+++        child_before,
+++        "junction descendant DACL changed"
+++    );
+++    std::fs::remove_dir(&junction).unwrap();
+++    assert_eq!(std::fs::read_to_string(&child).unwrap(), "owned target");
 ++}
 ++
 ++#[test]
