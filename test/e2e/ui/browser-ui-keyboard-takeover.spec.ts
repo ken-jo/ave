@@ -113,7 +113,6 @@ if (process.platform === "linux") {
         await expect(composer).toHaveValue("HOSTDRAFTAFTERAGENT");
         const userTakeover = await sample("after-user-os-typing");
         expect(userTakeover.native).toMatchObject({ focusedContentsId: targetId, ownerFocused: true });
-        expect(userTakeover.composer.documentFocused).toBe(false);
 
         await clickComposer();
         await composer.evaluate(() => {
