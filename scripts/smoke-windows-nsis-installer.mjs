@@ -1147,6 +1147,34 @@ async function assertNoCurrentUserProtocolHandlers(context) {
   }
 }
 
+export const OWNED_PROTOCOL_FIXTURE_SCRIPT = buildPowerShellScript([
+    "$ErrorActionPreference = 'Stop'",
+    "foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {",
+    "  $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)",
+    "  try {",
+    "    $root = $base.CreateSubKey('SOFTWARE\\Classes\\ave')",
+    "    try { $root.SetValue('', 'URL:ave'); $root.SetValue('URL Protocol', '', [Microsoft.Win32.RegistryValueKind]::String) } finally { $root.Dispose() }",
+    "    $command = $base.CreateSubKey('SOFTWARE\\Classes\\ave\\shell\\open\\command')",
+    `    try { $command.SetValue('', '"' + $env:AVE_INSTALLED_EXECUTABLE + '" "%1"') } finally { $command.Dispose() }`,
+    "    $icon = $base.CreateSubKey('SOFTWARE\\Classes\\ave\\DefaultIcon')",
+    `    try { $icon.SetValue('', '"' + $env:AVE_INSTALLED_EXECUTABLE + '",0') } finally { $icon.Dispose() }`,
+    "  } finally { $base.Dispose() }",
+    "}",
+    "@{ seeded = $true } | ConvertTo-Json -Compress",
+]);
+
+async function seedOwnedCurrentUserProtocol(machineInstall) {
+  await assertNoCurrentUserProtocolHandlers("before owned protocol fixture");
+  const result = await runPowerShellJson(OWNED_PROTOCOL_FIXTURE_SCRIPT, {
+    AVE_INSTALLED_EXECUTABLE: machineInstall.installedExe,
+  });
+  if (result?.seeded !== true) throw new Error("owned current-user protocol fixture was not seeded");
+  const registrations = await protocolRegistrations("HKCU");
+  if (registrations.length === 0 || registrations.some(({ command }) => !isExactProtocolCommand(command, machineInstall.installedExe))) {
+    throw new Error("owned current-user protocol fixture is missing its exact command");
+  }
+}
+
 async function assertInstalledSurface(machineInstall) {
   const { installDir, installedExe, markerPath, uninstaller } = machineInstall;
   await waitForFile(installedExe, 30_000);
@@ -2212,8 +2240,10 @@ async function uninstallAndVerify(
   await waitForExactUninstallRegistrationRemoved(machineInstall, timeoutMs);
   await waitForFileRemoved(machineInstall.installedExe, timeoutMs);
   await assertRuntimeNotificationArtifactsRemoved(machineInstall);
-  await assertForeignProtocolFixturePreserved(foreignProtocolFixture);
-  await cleanupForeignProtocolFixture(foreignProtocolFixture);
+  if (foreignProtocolFixture) {
+    await assertForeignProtocolFixturePreserved(foreignProtocolFixture);
+    await cleanupForeignProtocolFixture(foreignProtocolFixture);
+  }
   await assertUninstalledSurface(machineInstall);
   await assertAsrtTeardown(probe);
   process.stdout.write(
@@ -2236,10 +2266,13 @@ export function assertLimitedUninstallResult(result) {
 async function runLimitedUninstaller(machineInstall, args, timeoutMs) {
   const reportRoot = mkdtempSync(join(tmpdir(), "ave-limited-uninstall-"));
   try {
-    const consent = await runPowerShellJson(
-      "[bool](Get-ItemPropertyValue 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' EnableLUA) | ConvertTo-Json",
-    );
-    process.stdout.write(`[windows-installer-smoke] consent enabled=${consent}; launching a medium-integrity non-admin outer uninstaller\n`);
+    const parent = await runPowerShellJson(buildPowerShellScript([
+      "$identity = [Security.Principal.WindowsIdentity]::GetCurrent()",
+      "$principal = New-Object Security.Principal.WindowsPrincipal($identity)",
+      "@{ elevatedParent = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator); consentEnabled = [bool](Get-ItemPropertyValue 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' EnableLUA) } | ConvertTo-Json -Compress",
+    ]));
+    if (parent?.elevatedParent !== true) throw new Error("limited uninstall smoke requires an elevated parent");
+    process.stdout.write(`[windows-installer-smoke] parent token: ${JSON.stringify(parent)}; launching a medium-integrity non-admin outer uninstaller\n`);
     const result = await runProcess(
       powershellExecutable(),
       [
@@ -2408,8 +2441,14 @@ async function runInstallerPass(
       }
     }
 
-    state.foreignProtocolFixture = createForeignProtocolFixture(keepAppData);
-    await seedForeignProtocolFixture(state.foreignProtocolFixture);
+    await seedOwnedCurrentUserProtocol(state.machineInstall);
+    // KEEP checks clean owned protocol keys with no post-uninstall fixture
+    // deletion that could mask a leftover empty root. DELETE also checks that
+    // unrelated machine protocol values survive owner-only removal.
+    if (!keepAppData) {
+      state.foreignProtocolFixture = createForeignProtocolFixture(keepAppData);
+      await seedForeignProtocolFixture(state.foreignProtocolFixture);
+    }
     state.probe = await prepareAsrtUninstallProbe(
       state.machineInstall.installDir,
     );

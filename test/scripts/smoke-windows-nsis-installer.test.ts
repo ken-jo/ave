@@ -29,6 +29,7 @@ import {
   isOwnedRuntimeShortcut,
   MAX_OUTPUT_CHARS,
   normalizeToastActivatorClsid,
+  OWNED_PROTOCOL_FIXTURE_SCRIPT,
   parseExecutableFromCommand,
   parseJsonProcessResult,
   REGISTRY_KEY_DELETED_ERROR,
@@ -133,6 +134,16 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(launcher).toContain("if ($admin) { throw");
     expect(launcher).toContain("if (-not $medium) { throw");
     expect(launcher).toContain("exit $process.ExitCode");
+    expect(launcher).toContain("$start.UseShellExecute = $false");
+    expect(launcher).toContain("$identity.User.Value -ne $ExpectedUserSid");
+  });
+
+  it("checks owned keys in both hives without fixture cleanup masking an empty root", () => {
+    const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
+    const pass = smoke.slice(smoke.indexOf("async function runInstallerPass("), smoke.indexOf("async function main("));
+    expect(pass).toContain("await seedOwnedCurrentUserProtocol(state.machineInstall)");
+    expect(pass).toMatch(/if \(!keepAppData\) \{\s+state\.foreignProtocolFixture = createForeignProtocolFixture\(keepAppData\);\s+await seedForeignProtocolFixture\(state\.foreignProtocolFixture\);\s+\}/);
+    expect(pass.indexOf("await seedOwnedCurrentUserProtocol")).toBeLessThan(pass.indexOf("await uninstallAndVerify"));
   });
 
   it("extracts quoted and unquoted executable paths from registry commands", () => {
@@ -422,6 +433,7 @@ describe("Windows NSIS installer smoke contracts", () => {
         registry: REGISTRY_QUERY_SCRIPT,
         acl: ACL_QUERY_SCRIPT,
         foreignProtocolFixture: FOREIGN_PROTOCOL_FIXTURE_SCRIPT,
+        ownedProtocolFixture: OWNED_PROTOCOL_FIXTURE_SCRIPT,
         limitedProcessLauncher: readRepoFile("scripts/lib/run-limited-windows-process.ps1"),
         notificationCleanup: readRepoFile(
           "build/uninstall-windows-notification-artifacts.ps1",
