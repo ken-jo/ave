@@ -3431,6 +3431,10 @@ with its own owner rule:
   protected and checked on every boot by Repair and OwnerOnly. The one
   exception is `workspace`: the cwd, the default workspace root and the
   in-project auto-write scope.
+  Each boundary's parent is opened without creating it or accepting a reparse
+  point, then its volume and file identity are compared with the pinned home.
+  Short and long names for that same directory are equivalent; repairs and
+  child opens still use the original home handle.
   Every boot whose root passes RootSafe checks the workspace on a no-reparse
   handle, whether or not that boot repaired the root. The workspace is the
   process's own cwd, so the handle is opened for READ_CONTROL, WRITE_DAC,

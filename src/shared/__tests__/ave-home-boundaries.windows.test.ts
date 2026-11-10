@@ -4,12 +4,12 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 useConfigurationOwner();
 
 import { execFileSync } from "node:child_process";
-import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
-import { useTempPaths } from "../../__tests__/test-helpers.js";
+import { useScratchLinks, useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
-import { ensureAveHomePrivate, readWindowsDirectoryDacls, win32SystemBinary, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest } from "../ave-home.js";
+import { createAveHomeIfAbsent, ensureAveHomePrivate, readWindowsDirectoryDacls, win32SystemBinary, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest } from "../ave-home.js";
 import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
 import { NotificationService } from "../../main/notification-service.js";
 import { notifyHomeBoundaryRepairs } from "../../boot/steps/home-privacy-notice.js";
@@ -26,6 +26,7 @@ beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), i
 describe.runIf(process.platform === "win32")("protected home boundaries", () => {
   afterEach(() => { _resetAveHomePrivacyForTest(); vi.unstubAllEnvs(); });
   const home = useTempPaths("ave-boundaries-", ".ave");
+  const makeLink = useScratchLinks();
   const PRESERVED = "Legacy configuration preserved at ";
   /** The aside copy a commit made of root file `name`, from its diagnostic. */
   function asideOf(diagnostics: readonly string[], dir: string, name: string): string {
@@ -189,6 +190,73 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
       ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64")],
       { input, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env, AVE_TEST_TARGET: path }) }).trim();
   }
+
+  it.each(["short", "short-root", "long-root"])("protects the same home through real short-name aliases: %s", mode => {
+    const localAppData = process.env.LOCALAPPDATA;
+    if (!localAppData) throw new Error("Local application data is required for a native alias fixture");
+    vi.stubEnv("TEMP", join(localAppData, "Temp"));
+    vi.stubEnv("TMP", join(localAppData, "Temp"));
+    const dir = home();
+    explicitParent(dirname(dir));
+    expect(createAveHomeIfAbsent(dir)).toBe("created");
+    const longPath = realpathSync.native(dir);
+    const identity = statSync(longPath, { bigint: true });
+    const shortPath = command(`Add-Type -TypeDefinition @'
+using System; using System.Text; using System.ComponentModel; using System.Runtime.InteropServices;
+public static class NativeShortPath {
+  [DllImport("kernel32.dll", EntryPoint="GetShortPathNameW", ExactSpelling=true, CharSet=CharSet.Unicode, SetLastError=true)] static extern uint GetShortPathName(string path, StringBuilder result, uint length);
+  public static string Read(string path) { var result=new StringBuilder(32768); uint size=GetShortPathName(path,result,(uint)result.Capacity); if(size==0 || size>=result.Capacity) throw new Win32Exception(Marshal.GetLastWin32Error()); return result.ToString(); }
+}
+'@
+[NativeShortPath]::Read($env:AVE_TEST_TARGET)`, longPath);
+    expect(shortPath.toLowerCase()).not.toBe(longPath.toLowerCase());
+    const root = mode === "long-root" ? longPath : shortPath;
+    const parent = mode === "short" ? shortPath : mode === "short-root" ? longPath : shortPath;
+    const boundaries = ["secrets", "config"].map(leaf => join(parent, leaf));
+    expect(boundaries.every(path => !existsSync(path))).toBe(true);
+    const rows = readWindowsDirectoryDacls([root, ...boundaries], true);
+    expect(rows.every(row => !("error" in row)), JSON.stringify(rows)).toBe(true);
+    for (const path of [root, ...boundaries]) expectBoundary(path);
+    expect(statSync(shortPath, { bigint: true })).toMatchObject({ dev: identity.dev, ino: identity.ino });
+    expect(statSync(longPath, { bigint: true }).ino).toBe(identity.ino);
+    expect(ensureAveHomePrivate(root)).toMatchObject({ enforcement: "win32-dacl" });
+  });
+
+  it.each(["sibling", "nested", "parent-junction", "child-junction"])("refuses a different or reparse parent before changing outside contents: %s", kind => {
+    const dir = fixture();
+    const outside = home();
+    mkdirSync(outside, { recursive: true });
+    const leaf = "boundary-probe";
+    let target = join(outside, leaf);
+    let observedParent = outside;
+    if (kind === "nested") {
+      const nested = join(dir, "nested");
+      mkdirSync(nested);
+      target = join(nested, leaf);
+      observedParent = nested;
+    } else if (kind === "parent-junction") {
+      const alias = join(dirname(dir), "alias");
+      makeLink(dir, alias);
+      target = join(alias, leaf);
+      observedParent = dir;
+    } else if (kind === "child-junction") {
+      target = join(dir, leaf);
+      makeLink(outside, target);
+    }
+    const marker = join(observedParent, "retained.txt");
+    writeFileSync(marker, "preserved");
+    const acl = command("(Get-Acl -LiteralPath $env:AVE_TEST_TARGET).Sddl", observedParent);
+    const rows = readWindowsDirectoryDacls([dir, target], true);
+    expect(rows[0]).not.toHaveProperty("error");
+    expect(rows[1]).toHaveProperty("error");
+    expect(readFileSync(marker, "utf8")).toBe("preserved");
+    expect(command("(Get-Acl -LiteralPath $env:AVE_TEST_TARGET).Sddl", observedParent)).toBe(acl);
+    if (kind === "child-junction") expect(lstatSync(target).isSymbolicLink()).toBe(true);
+    else expect(existsSync(target)).toBe(false);
+    const allowed = join(dir, "allowed-probe");
+    expect(readWindowsDirectoryDacls([dir, allowed], true).every(row => !("error" in row))).toBe(true);
+    expectBoundary(allowed);
+  });
 
   it("creates all six boundaries with the exact owner-only descriptor", () => {
     const dir = fixture();
