@@ -7,8 +7,8 @@
  * uninstall pass for CI runners.
  * Genuine removal starts from a verified medium-integrity non-admin token of
  * the same user, so the uninstaller must retain an outer process and elevate.
- * This requires an elevated disposable runner able to create primary tokens;
- * consent availability is logged, and elevation failure fails the smoke.
+ * A retained filtered owner creates the outer process directly; consent
+ * availability is logged, and elevation failure fails the smoke.
  */
 
 import { spawn } from "node:child_process";
@@ -1907,15 +1907,15 @@ function assertWfpRemoved(raw) {
   }
 }
 
-function assertDisposableSmokeGate() {
-  if (process.env[DISPOSABLE_SMOKE_ENV] !== "1") {
+export function assertDisposableSmokeGate(env = process.env) {
+  if (env[DISPOSABLE_SMOKE_ENV] !== "1") {
     throw new Error(
       `${DISPOSABLE_SMOKE_ENV}=1 is required because this smoke installs machine-wide state and genuinely uninstalls ASRT; use only a disposable Windows runner or VM`,
     );
   }
   if (
-    process.env.GITHUB_ACTIONS === "true" &&
-    process.env.RUNNER_OS !== "Windows"
+    env.GITHUB_ACTIONS === "true" &&
+    env.RUNNER_OS !== "Windows"
   ) {
     throw new Error(
       "GitHub Actions disposable installer smoke requires RUNNER_OS=Windows",
