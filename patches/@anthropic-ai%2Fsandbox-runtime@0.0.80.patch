@@ -4760,10 +4760,10 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..9ebe9c3c6b6e11fb49f521d620c960e0
          }
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d645234915cdd
+index 0000000000000000000000000000000000000000..71f83ca62c4ed55fd8e7c025c702d5dedbe3701e
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,3220 @@
+@@ -0,0 +1,3275 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
 +index 0efb5956f..0a8424ad5 100644
 +--- a/vendor/srt-win-src/src/acl.rs
@@ -5423,7 +5423,7 @@ index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d6452
 ++    }
 + }
 +diff --git a/vendor/srt-win-src/src/path_id.rs b/vendor/srt-win-src/src/path_id.rs
-+index 00d63d724..9c503d291 100644
++index 00d63d724..779c1cb85 100644
 +--- a/vendor/srt-win-src/src/path_id.rs
 ++++ b/vendor/srt-win-src/src/path_id.rs
 +@@ -202,9 +202,8 @@ pub struct Placeholder {
@@ -5454,7 +5454,7 @@ index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d6452
 +                         cur_raw.display()
 +                     );
 +                 }
-+@@ -377,6 +375,89 @@ fn final_path_from_handle(h: HANDLE) -> Result<Vec<u16>> {
++@@ -377,6 +375,91 @@ fn final_path_from_handle(h: HANDLE) -> Result<Vec<u16>> {
 +     Ok(buf)
 + }
 +
@@ -5478,6 +5478,8 @@ index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d6452
 ++}
 ++
 ++/// Open the final component itself, then verify its kind, size and identity.
+++/// Data-read access makes the sharing restriction participate in the kernel's
+++/// checks; a zero-access metadata handle does not exclude conflicting writers.
 ++/// Read-only sharing keeps the zero-byte object and its name stable until the
 ++/// pin is dropped. Security-only ACL opens remain compatible with this handle.
 ++/// `None` means the initial open reported absence; later metadata errors remain
@@ -5486,13 +5488,13 @@ index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d6452
 ++    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
 ++    use windows::Win32::Storage::FileSystem::{
 ++        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-++        GetFileInformationByHandle,
+++        FILE_READ_DATA, GetFileInformationByHandle,
 ++    };
 ++    let name = wstr(path);
 ++    let opened = unsafe {
 ++        CreateFileW(
 ++            pcwstr(&name),
-++            0,
+++            FILE_READ_DATA.0,
 ++            FILE_SHARE_READ,
 ++            None,
 ++            OPEN_EXISTING,
@@ -5544,7 +5546,7 @@ index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d6452
 + /// Immediate parent of a `\\?\…` canonical path, as a string.
 + /// Returns `None` when there is no targetable parent (the path is
 + /// a root, or its immediate parent is a root — touching the
-+@@ -426,7 +507,7 @@ impl FileId {
++@@ -426,7 +509,7 @@ impl FileId {
 + }
 +
 + /// `FILE_ID_INFO` of an already-open handle.
@@ -5553,7 +5555,7 @@ index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d6452
 +     use windows::Win32::Storage::FileSystem::{
 +         FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
 +     };
-+@@ -552,6 +633,184 @@ pub fn locate_by_file_id(file_id: &FileId) -> Option<String> {
++@@ -552,6 +635,237 @@ pub fn locate_by_file_id(file_id: &FileId) -> Option<String> {
 + mod tests {
 +     use super::*;
 +
@@ -5568,6 +5570,70 @@ index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d6452
 ++        ));
 ++        std::fs::create_dir(&root).unwrap();
 ++        root
+++    }
+++
+++    fn create_pin_junction(path: &std::path::Path, target: &std::path::Path) {
+++        use windows::Win32::Storage::FileSystem::{
+++            FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE,
+++        };
+++        use windows::Win32::System::IO::DeviceIoControl;
+++        use windows::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
+++        const SET_REPARSE_POINT: u32 = 0x0009_00a4;
+++        std::fs::create_dir(path).unwrap();
+++        let print = strip_extended_prefix(target.to_str().unwrap());
+++        let substitute: Vec<u16> = format!(r"\??\{print}").encode_utf16().collect();
+++        let print: Vec<u16> = print.encode_utf16().collect();
+++        let path_bytes = (substitute.len() + 1 + print.len() + 1) * 2;
+++        let data_length = 8 + path_bytes;
+++        let mut buffer = Vec::with_capacity(8 + data_length);
+++        buffer.extend_from_slice(&IO_REPARSE_TAG_MOUNT_POINT.to_le_bytes());
+++        for value in [
+++            data_length as u16,
+++            0,
+++            0,
+++            (substitute.len() * 2) as u16,
+++            ((substitute.len() + 1) * 2) as u16,
+++            (print.len() * 2) as u16,
+++        ] {
+++            buffer.extend_from_slice(&value.to_le_bytes());
+++        }
+++        for value in substitute
+++            .iter()
+++            .chain([0].iter())
+++            .chain(print.iter())
+++            .chain([0].iter())
+++        {
+++            buffer.extend_from_slice(&value.to_le_bytes());
+++        }
+++        let name = wstr(path.to_str().unwrap());
+++        let handle = OwnedHandle(
+++            unsafe {
+++                CreateFileW(
+++                    pcwstr(&name),
+++                    FILE_GENERIC_WRITE.0,
+++                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+++                    None,
+++                    OPEN_EXISTING,
+++                    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+++                    None,
+++                )
+++            }
+++            .unwrap(),
+++        );
+++        let mut returned = 0;
+++        unsafe {
+++            DeviceIoControl(
+++                handle.raw(),
+++                SET_REPARSE_POINT,
+++                Some(buffer.as_ptr().cast()),
+++                buffer.len() as u32,
+++                None,
+++                0,
+++                Some(&mut returned),
+++                None,
+++            )
+++        }
+++        .unwrap();
 ++    }
 ++
 ++    #[test]
@@ -5705,18 +5771,7 @@ index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d6452
 ++                .contains("is a directory")
 ++        );
 ++        let junction = root.join("junction");
-++        let command = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-++            .join("System32/cmd.exe");
-++        let result = std::process::Command::new(command)
-++            .args(["/d", "/c", "mklink", "/J"])
-++            .arg(strip_extended_prefix(junction.to_str().unwrap()))
-++            .arg(strip_extended_prefix(directory.to_str().unwrap()))
-++            .output()
-++            .unwrap();
-++        assert!(
-++            result.status.success(),
-++            "owned junction setup failed: {result:?}"
-++        );
+++        create_pin_junction(&junction, &directory);
 ++        assert_eq!(
 ++            std::fs::canonicalize(&junction).unwrap(),
 ++            std::fs::canonicalize(&directory).unwrap()
