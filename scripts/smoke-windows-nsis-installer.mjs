@@ -40,6 +40,7 @@ import {
   prepareElectronLaunchArgs,
   prepareElectronLaunchEnv,
 } from "./lib/electron-launch-options.mjs";
+import { readProductionLogsSince, snapshotProductionLogs } from "./lib/packaged-smoke-readiness.mjs";
 
 const packageJson = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -2065,6 +2066,8 @@ async function assertAsrtTeardown(probe) {
 
 async function startInstalledApp(executable, timeoutMs) {
   const userDataDir = mkdtempSync(join(tmpdir(), "ave-nsis-smoke-user-data-"));
+  const homeDir = process.env.AVE_HOME || join(process.env.USERPROFILE, ".ave");
+  const logSnapshot = snapshotProductionLogs(homeDir);
   const env = prepareElectronLaunchEnv({
     ...process.env,
     ELECTRON_ENABLE_LOGGING: "1",
@@ -2088,6 +2091,7 @@ async function startInstalledApp(executable, timeoutMs) {
 
       const timer = setTimeout(() => {
         cleanupListeners();
+        process.stdout.write(`[windows-installer-smoke] installed app output:\n${output}\nproduction log tail:\n${readProductionLogsSince(homeDir, logSnapshot).slice(-8_000)}\n`);
         process.stdout.write(
           `[windows-installer-smoke] app stayed up for ${timeoutMs}ms; launch smoke passed\n`,
         );
@@ -2436,11 +2440,19 @@ async function runInstallerPass(
       if (state.runningApp) {
         await state.runningApp.stop();
         state.runningApp = null;
-        await assertNoCurrentUserProtocolHandlers("installed app launch");
-        await assertRuntimeNotificationArtifacts(state.machineInstall);
+        try {
+          await assertNoCurrentUserProtocolHandlers("installed app launch");
+          await assertRuntimeNotificationArtifacts(state.machineInstall);
+        } catch (error) {
+          launchError ??= error;
+          process.stderr.write(`[windows-installer-smoke] launch postcondition failed; retaining failure while verifying uninstall: ${error.message}\n`);
+        }
       }
     }
 
+    // Let first launch create its protected home. A plain pre-launch mkdir
+    // creates an inherited boundary that startup is required to refuse.
+    createUserDataSentinels();
     await seedOwnedCurrentUserProtocol(state.machineInstall);
     // KEEP checks clean owned protocol keys with no post-uninstall fixture
     // deletion that could mask a leftover empty root. DELETE also checks that
@@ -2491,7 +2503,6 @@ async function main() {
   await assertCleanInstallSurface();
   await assertNoPreexistingAsrtState();
   assertNoExistingUserDataTargets();
-  createUserDataSentinels();
 
   await runInstallerPass(installer, options, {
     keepAppData: true,

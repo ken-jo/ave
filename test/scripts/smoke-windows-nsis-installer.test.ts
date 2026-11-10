@@ -144,6 +144,12 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(pass).toContain("await seedOwnedCurrentUserProtocol(state.machineInstall)");
     expect(pass).toMatch(/if \(!keepAppData\) \{\s+state\.foreignProtocolFixture = createForeignProtocolFixture\(keepAppData\);\s+await seedForeignProtocolFixture\(state\.foreignProtocolFixture\);\s+\}/);
     expect(pass.indexOf("await seedOwnedCurrentUserProtocol")).toBeLessThan(pass.indexOf("await uninstallAndVerify"));
+    expect(pass).toContain("launchError ??= error");
+    expect(pass).toContain("if (launchError) throw launchError");
+    expect(pass.indexOf("if (launchError) throw launchError")).toBeGreaterThan(pass.indexOf("await uninstallAndVerify"));
+    expect(pass.indexOf("createUserDataSentinels()")).toBeGreaterThan(pass.indexOf("await assertRuntimeNotificationArtifacts"));
+    expect(pass.indexOf("createUserDataSentinels()")).toBeLessThan(pass.indexOf("await uninstallAndVerify"));
+    expect(smoke.slice(smoke.indexOf("async function main("))).not.toContain("createUserDataSentinels()");
   });
 
   it("extracts quoted and unquoted executable paths from registry commands", () => {
