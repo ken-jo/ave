@@ -4760,10 +4760,10 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..9ebe9c3c6b6e11fb49f521d620c960e0
          }
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..71f83ca62c4ed55fd8e7c025c702d5dedbe3701e
+index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16c263bc57
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,3275 @@
+@@ -0,0 +1,3320 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
 +index 0efb5956f..0a8424ad5 100644
 +--- a/vendor/srt-win-src/src/acl.rs
@@ -5423,7 +5423,7 @@ index 0000000000000000000000000000000000000000..71f83ca62c4ed55fd8e7c025c702d5de
 ++    }
 + }
 +diff --git a/vendor/srt-win-src/src/path_id.rs b/vendor/srt-win-src/src/path_id.rs
-+index 00d63d724..779c1cb85 100644
++index 00d63d724..6379e15de 100644
 +--- a/vendor/srt-win-src/src/path_id.rs
 ++++ b/vendor/srt-win-src/src/path_id.rs
 +@@ -202,9 +202,8 @@ pub struct Placeholder {
@@ -5555,7 +5555,7 @@ index 0000000000000000000000000000000000000000..71f83ca62c4ed55fd8e7c025c702d5de
 +     use windows::Win32::Storage::FileSystem::{
 +         FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
 +     };
-+@@ -552,6 +635,237 @@ pub fn locate_by_file_id(file_id: &FileId) -> Option<String> {
++@@ -552,6 +635,282 @@ pub fn locate_by_file_id(file_id: &FileId) -> Option<String> {
 + mod tests {
 +     use super::*;
 +
@@ -5639,7 +5639,7 @@ index 0000000000000000000000000000000000000000..71f83ca62c4ed55fd8e7c025c702d5de
 ++    #[test]
 ++    fn empty_file_pin_blocks_writes_and_replacement_and_binds_acl_effect() {
 ++        use crate::acl::{DenyMask, SbAceSet, apply_sandbox_aces_with_identity, read_file_dacl};
-++        use windows::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MoveFileExW};
+++        use windows::Win32::Storage::FileSystem::{DELETE, MOVEFILE_REPLACE_EXISTING, MoveFileExW};
 ++
 ++        let root = pin_fixture("window");
 ++        let file = root.join("placeholder");
@@ -5651,6 +5651,17 @@ index 0000000000000000000000000000000000000000..71f83ca62c4ed55fd8e7c025c702d5de
 ++        std::fs::remove_file(&file).unwrap();
 ++        std::fs::write(&file, []).unwrap();
 ++        std::fs::write(&replacement, "replacement").unwrap();
+++        let source = wstr(replacement.to_str().unwrap());
+++        let target = wstr(file.to_str().unwrap());
+++        let control_id = capture_file_id(replacement.to_str().unwrap()).unwrap();
+++        unsafe { MoveFileExW(pcwstr(&source), pcwstr(&target), MOVEFILE_REPLACE_EXISTING) }
+++            .unwrap();
+++        assert_eq!(std::fs::read_to_string(&file).unwrap(), "replacement");
+++        assert_eq!(capture_file_id(file.to_str().unwrap()).unwrap(), control_id);
+++        assert!(!replacement.exists());
+++        std::fs::write(&file, []).unwrap();
+++        std::fs::write(&replacement, "replacement").unwrap();
+++        let replacement_id = capture_file_id(replacement.to_str().unwrap()).unwrap();
 ++        let pin = pin_empty_file_no_follow(file.to_str().unwrap())
 ++            .unwrap()
 ++            .unwrap();
@@ -5675,12 +5686,38 @@ index 0000000000000000000000000000000000000000..71f83ca62c4ed55fd8e7c025c702d5de
 ++            std::fs::rename(&file, &renamed).unwrap_err().raw_os_error(),
 ++            Some(32)
 ++        );
-++        let source = wstr(replacement.to_str().unwrap());
-++        let target = wstr(file.to_str().unwrap());
+++        let error = unsafe {
+++            CreateFileW(
+++                pcwstr(&target),
+++                DELETE.0,
+++                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+++                None,
+++                OPEN_EXISTING,
+++                FILE_FLAG_BACKUP_SEMANTICS,
+++                None,
+++            )
+++        }
+++        .unwrap_err();
+++        assert_eq!(error.code(), windows::core::HRESULT::from_win32(32));
 ++        let error =
 ++            unsafe { MoveFileExW(pcwstr(&source), pcwstr(&target), MOVEFILE_REPLACE_EXISTING) }
 ++                .unwrap_err();
-++        assert_eq!(error.code(), windows::core::HRESULT::from_win32(32));
+++        // Replacement reports access denied; the direct DELETE open above
+++        // independently proves the pin's no-delete-sharing restriction.
+++        assert_eq!(error.code(), windows::core::HRESULT::from_win32(5));
+++        assert!(std::fs::read(&file).unwrap().is_empty());
+++        assert_eq!(
+++            capture_file_id(file.to_str().unwrap()).unwrap(),
+++            pin.file_id()
+++        );
+++        assert_eq!(
+++            std::fs::read_to_string(&replacement).unwrap(),
+++            "replacement"
+++        );
+++        assert_eq!(
+++            capture_file_id(replacement.to_str().unwrap()).unwrap(),
+++            replacement_id
+++        );
 ++
 ++        let descriptor = |name: &str| {
 ++            let (_sd, acl) = read_file_dacl(name).unwrap();
@@ -5739,6 +5776,14 @@ index 0000000000000000000000000000000000000000..71f83ca62c4ed55fd8e7c025c702d5de
 ++        );
 ++        assert_eq!(std::fs::metadata(&file).unwrap().len(), 0);
 ++        drop(pin);
+++        unsafe { MoveFileExW(pcwstr(&source), pcwstr(&target), MOVEFILE_REPLACE_EXISTING) }
+++            .unwrap();
+++        assert_eq!(std::fs::read_to_string(&file).unwrap(), "replacement");
+++        assert_eq!(
+++            capture_file_id(file.to_str().unwrap()).unwrap(),
+++            replacement_id
+++        );
+++        assert!(!replacement.exists());
 ++        std::fs::write(&file, "pin released").unwrap();
 ++        std::fs::rename(&file, &renamed).unwrap();
 ++        std::fs::remove_file(&renamed).unwrap();
