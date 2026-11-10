@@ -5,6 +5,10 @@
  * script covers the installer path: silent install, launch installed app,
  * silent uninstall while preserving user data, and an opt-in destructive
  * uninstall pass for CI runners.
+ * Genuine removal starts from a verified medium-integrity non-admin token of
+ * the same user, so the uninstaller must retain an outer process and elevate.
+ * This requires an elevated disposable runner able to create primary tokens;
+ * consent availability is logged, and elevation failure fails the smoke.
  */
 
 import { spawn } from "node:child_process";
@@ -2204,7 +2208,7 @@ async function uninstallAndVerify(
   foreignProtocolFixture,
 ) {
   const args = ["/S", "/allusers", ...(keepAppData ? ["/KEEP_APP_DATA"] : [])];
-  await runProcess(machineInstall.uninstaller, args, { timeoutMs });
+  await runLimitedUninstaller(machineInstall, args, timeoutMs);
   await waitForExactUninstallRegistrationRemoved(machineInstall, timeoutMs);
   await waitForFileRemoved(machineInstall.installedExe, timeoutMs);
   await assertRuntimeNotificationArtifactsRemoved(machineInstall);
@@ -2215,6 +2219,46 @@ async function uninstallAndVerify(
   process.stdout.write(
     `[windows-installer-smoke] ${keepAppData ? "KEEP_APP_DATA" : "DELETE"} genuine uninstall pass completed\n`,
   );
+}
+
+export function assertLimitedUninstallResult(result) {
+  if (
+    result?.administrator !== false ||
+    result?.mediumIntegrity !== true ||
+    typeof result?.userSid !== "string" ||
+    !result.userSid.startsWith("S-1-5-") ||
+    result?.exitCode !== 0
+  ) {
+    throw new Error(`limited uninstall did not complete successfully: ${JSON.stringify(result)}`);
+  }
+}
+
+async function runLimitedUninstaller(machineInstall, args, timeoutMs) {
+  const reportRoot = mkdtempSync(join(tmpdir(), "ave-limited-uninstall-"));
+  try {
+    const consent = await runPowerShellJson(
+      "[bool](Get-ItemPropertyValue 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System' EnableLUA) | ConvertTo-Json",
+    );
+    process.stdout.write(`[windows-installer-smoke] consent enabled=${consent}; launching a medium-integrity non-admin outer uninstaller\n`);
+    const result = await runProcess(
+      powershellExecutable(),
+      [
+        "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+        "-File", fileURLToPath(new URL("./lib/run-limited-windows-process.ps1", import.meta.url)),
+        "-FilePath", machineInstall.uninstaller,
+        "-ArgumentsBase64", Buffer.from(JSON.stringify(args)).toString("base64"),
+        "-WorkingDirectory", tmpdir(),
+        "-ReportPath", join(reportRoot, "result.json"),
+        "-DeadlineUnixMs", String(Date.now() + timeoutMs),
+      ],
+      { timeoutMs, env: windowsPowerShellEnv() },
+    );
+    const report = parseJsonProcessResult(result, "limited uninstall");
+    assertLimitedUninstallResult(report);
+    process.stdout.write(`[windows-installer-smoke] limited uninstall: ${JSON.stringify(report)}\n`);
+  } finally {
+    rmSync(reportRoot, { recursive: true, force: true });
+  }
 }
 
 async function cleanupFailedInstallerPass(state, timeoutMs) {

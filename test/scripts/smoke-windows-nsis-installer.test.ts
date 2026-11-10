@@ -19,6 +19,7 @@ import { readRepoFile } from "../../src/__tests__/test-helpers.js";
 import {
   ACL_QUERY_SCRIPT,
   assertAsrtUserReady,
+  assertLimitedUninstallResult,
   assertRuntimeNotificationArtifactsRemoved,
   FOREIGN_PROTOCOL_FIXTURE_SCRIPT,
   buildPowerShellScript,
@@ -109,6 +110,31 @@ function runPowerShellParser(source: string) {
 }
 
 describe("Windows NSIS installer smoke contracts", () => {
+  it("rejects elevated launchers, wrong integrity and failed uninstall exits", () => {
+    const result = { administrator: false, mediumIntegrity: true, userSid: "S-1-5-21-123", exitCode: 0 };
+    expect(() => assertLimitedUninstallResult(result)).not.toThrow();
+    for (const patch of [{ administrator: true }, { mediumIntegrity: false }, { exitCode: 1 }, { exitCode: null }, { userSid: "" }]) {
+      expect(() => assertLimitedUninstallResult({ ...result, ...patch })).toThrow("limited uninstall did not complete successfully");
+    }
+    expect(() => assertLimitedUninstallResult(null)).toThrow();
+  });
+
+  it("runs genuine uninstall through a verified restricted primary token", () => {
+    const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
+    const body = smoke.slice(smoke.indexOf("async function uninstallAndVerify("), smoke.indexOf("export function assertLimitedUninstallResult("));
+    expect(body).toContain("await runLimitedUninstaller(machineInstall, args, timeoutMs)");
+    expect(body).toContain("await assertUninstalledSurface(machineInstall)");
+    expect(body).not.toContain("await runProcess(machineInstall.uninstaller");
+    const launcher = readRepoFile("scripts/lib/run-limited-windows-process.ps1");
+    expect(launcher).toContain("CreateRestrictedToken(token, 1, 1");
+    expect(launcher).toContain('ConvertStringSidToSid("S-1-5-32-544"');
+    expect(launcher).toContain('ConvertStringSidToSid("S-1-16-8192"');
+    expect(launcher).toContain("SetTokenInformation(restricted, 25");
+    expect(launcher).toContain("if ($admin) { throw");
+    expect(launcher).toContain("if (-not $medium) { throw");
+    expect(launcher).toContain("exit $process.ExitCode");
+  });
+
   it("extracts quoted and unquoted executable paths from registry commands", () => {
     expect(
       parseExecutableFromCommand(
@@ -396,6 +422,7 @@ describe("Windows NSIS installer smoke contracts", () => {
         registry: REGISTRY_QUERY_SCRIPT,
         acl: ACL_QUERY_SCRIPT,
         foreignProtocolFixture: FOREIGN_PROTOCOL_FIXTURE_SCRIPT,
+        limitedProcessLauncher: readRepoFile("scripts/lib/run-limited-windows-process.ps1"),
         notificationCleanup: readRepoFile(
           "build/uninstall-windows-notification-artifacts.ps1",
         ),
@@ -1232,7 +1259,7 @@ describe("Windows NSIS installer smoke contracts", () => {
       smoke.indexOf("async function uninstallAndVerify"),
       smoke.indexOf("async function cleanupFailedInstallerPass"),
     );
-    const processExit = uninstallFlow.indexOf("await runProcess");
+    const processExit = uninstallFlow.indexOf("await runLimitedUninstaller");
     const uninstallRegistrationBarrier = uninstallFlow.indexOf(
       "await waitForExactUninstallRegistrationRemoved",
     );
@@ -1488,7 +1515,7 @@ describe("Windows NSIS installer smoke contracts", () => {
       smoke.indexOf("async function uninstallAndVerify"),
       smoke.indexOf("async function cleanupFailedInstallerPass"),
     );
-    const processExit = uninstallFlow.indexOf("await runProcess");
+    const processExit = uninstallFlow.indexOf("await runLimitedUninstaller");
     const uninstallRegistrationBarrier = uninstallFlow.indexOf(
       "await waitForExactUninstallRegistrationRemoved",
     );
