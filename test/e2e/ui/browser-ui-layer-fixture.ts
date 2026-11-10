@@ -11,6 +11,7 @@ export async function launchUiLayerFixture(width: number, options: {
   admitPreparedPlugins?: boolean;
   fallbackNotice?: boolean;
   suggestions?: boolean;
+  foreground?: boolean;
 } = {}) {
   const model = "native-ui-layer-fixture";
   const fallbackModel = "native-ui-layer-backup";
@@ -120,6 +121,7 @@ export async function launchUiLayerFixture(width: number, options: {
   let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
   try {
     ctx = await launchSeededElectron({ settings, sessionTitle: "Native UI composition", historyRows: [], prepareHome: options.prepareHome,
+      launchEnv: options.foreground ? { AVE_NATIVE_FIXTURE_MODE: "foreground" } : undefined,
       sessionId: options.suggestions ? SUGGESTIONS_SESSION_ID : undefined });
     if (options.admitPreparedPlugins) {
       const admitted = await admitFixturePlugins({ ...ctx, mainWindow: ctx.page });

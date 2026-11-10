@@ -1,0 +1,380 @@
+{
+  "backgroundEvidence": {
+    "nativeCases": 68,
+    "nativePngs": 62,
+    "resultFile": "results.json",
+    "captureFile": "captures.json"
+  },
+  "heldButtonReleases": {
+    "testFile": "src/main/browser/__tests__/browser-native-surfaces.test.ts",
+    "testTitle": "delivers left-down, right-down, right-up and left-up to the same page",
+    "inputSequence": [
+      "left-down",
+      "right-down",
+      "right-up",
+      "left-up"
+    ],
+    "sourceFile": "src/main/browser/browser-native-surfaces.ts",
+    "originalSourceBlob": "8c21a51d29dbc1e63a4a95b2f2401e362f895618",
+    "fixedCommit": "2e0fdd85273eaf78adb21697c23cbaa912f51f48",
+    "fixedSourceBlob": "f7bb09a9306a3f857316b8f208cf496763e6c773",
+    "red": {
+      "result": "failed",
+      "command": "bun run test:vitest -- run src/main/browser/__tests__/browser-native-surfaces.test.ts",
+      "files": 1,
+      "passed": 92,
+      "failed": 3,
+      "acceptance": [
+        true,
+        true,
+        true,
+        false
+      ],
+      "log": {
+        "path": "test-results/ui-layer/review-p2-input-red.log",
+        "sha256": "a2dfd60b509c4468b180ecc1ba548ef5811eb69ccfbe069733c383dc064bd064"
+      }
+    },
+    "green": {
+      "result": "passed",
+      "command": "bun run test:vitest -- run src/main/browser/__tests__/browser-native-surfaces.test.ts src/preload/__tests__/browser-native-input.test.ts src/shared/__tests__/browser-native-input.test.ts",
+      "files": 3,
+      "passed": 128,
+      "failed": 0,
+      "acceptance": [
+        true,
+        true,
+        true,
+        true
+      ],
+      "deliveredEvents": [
+        "mouseDown:left",
+        "mouseDown:right",
+        "mouseUp:right",
+        "mouseUp:left"
+      ],
+      "log": {
+        "path": "test-results/ui-layer/review-p2-input-green.log",
+        "sha256": "fbb6edcffba822c6bdb47cba5ebbdc4667ae4aaccd5a654b807ab15d7c1bfeaf"
+      }
+    },
+    "scope": "Behavioral unit evidence also checks full-set cancellation on blur and parking, latest press sequence and stale release rejection."
+  },
+  "popupDisplayDensity": {
+    "testFile": "src/main/browser/__tests__/browser-guest-owner.test.ts",
+    "testTitle": "uses a registered popup's own 1x display while its parent remains on a 2x display",
+    "sourceFile": "src/main/browser/browser-guest-owner.ts",
+    "originalSourceBlob": "a63d4156c2d3036c16ab6814d023e29a4d8e01c0",
+    "fixedCommit": "984c39750105f7ae13566cf892b008a945eaec07",
+    "fixedSourceBlob": "2bb3a97b5d883be546c7d98ab55c98af6c81b1dc",
+    "parentScaleFactor": 2,
+    "popupScaleFactor": 1,
+    "red": {
+      "result": "failed",
+      "command": "bun run test:vitest -- run src/main/browser/__tests__/browser-guest-owner.test.ts",
+      "files": 1,
+      "passed": 4,
+      "failed": 1,
+      "popupCapturePixelRatio": 2,
+      "log": {
+        "path": "test-results/ui-layer/review-p2-owner-red.log",
+        "sha256": "bb50341e5cad5710bcbf25b0d5fc9a753372f8c81734df3cfef4ede410b5d9a2"
+      }
+    },
+    "green": {
+      "result": "passed",
+      "command": "bun run test:vitest -- run src/main/browser/__tests__/browser-guest-owner.test.ts src/main/browser/__tests__/browser-workspace-capture.test.ts src/main/browser/__tests__/browser-capture.test.ts src/main/browser/__tests__/browser-capture-tiles.test.ts src/main/browser/__tests__/browser-capture-operation.test.ts",
+      "files": 5,
+      "passed": 64,
+      "failed": 0,
+      "popupCapturePixelRatio": 1,
+      "parentCapturePixelRatio": 2,
+      "log": {
+        "path": "test-results/ui-layer/review-p2-owner-green.log",
+        "sha256": "7122901441d8e286cdde73dae5d8e43e40cb64519aaa04111670faf783308a76"
+      }
+    },
+    "scope": "Registry and native API unit evidence models different display densities. A physical dual-display run is outside this record."
+  },
+  "systemKeyboardTakeover": {
+    "testFile": "test/e2e/ui/browser-ui-keyboard-takeover.spec.ts",
+    "project": "os-focus",
+    "requiredEnv": {
+      "AVE_E2E_OS_FOCUS": "1"
+    },
+    "retries": 0,
+    "keyboardSource": "global-x11-key-events",
+    "redControl": {
+      "workflowRunUrl": "https://github.com/ken-jo/ave/actions/runs/42757034412",
+      "workflowRunId": 42757034412,
+      "jobUrl": "https://github.com/ken-jo/ave/actions/runs/42757034412/job/129633680515",
+      "jobId": 129633680515,
+      "workflowConclusion": "failure",
+      "testResult": "failed",
+      "failedCases": 1,
+      "sourceRevision": "e2b7595ee02fe028830a1448de17008f03470c9e",
+      "sourceClean": false,
+      "sourceDiffSha256": "838588e544deb7c92c7cde81077b68d549a82bca9d77d218355dc1ffef2945ed",
+      "fault": "The temporary proof source focuses the UI after native pointer dispatch, leaving system typing in the composer.",
+      "testTitle": "@os-focus native page keyboard takeover routes system keys at 1360x800",
+      "assertion": "OS keyboard takeover typing must reach the native page",
+      "expectedPageValue": "PAGEKEYS",
+      "actualPageValue": "",
+      "actualComposerValue": "HOSTDRAFTAFTERAGENTPAGEKEYS",
+      "evidenceFile": "keyboard-routing-red-1360.json",
+      "evidenceSha256": "4e45c3837bfa3df7753cdf22be9bf091a58f0f1396fac91f01ad26a0eb113421",
+      "sourceArtifactPath": "test-results/ui-layer/review-p2-proof-artifacts/native-keyboard-red/cases/ui-browser-ui-keyboard-tak-94ba0-tes-system-keys-at-1360x800-os-focus/native-keyboard-routing-1360.json",
+      "log": {
+        "path": "test-results/ui-layer/review-p2-os-proof-failed.log",
+        "sha256": "1549faa1e054b4de861f8476bd5891a4e9d01b2320ee46ed6a17dc5255ee3e40"
+      },
+      "workflowLimit": "The expected OS typing assertion failed. A later controller read of a relative JSON report path also failed, so this workflow is recorded as failed and supplies only the raw negative-control evidence."
+    },
+    "green": {
+      "result": "passed",
+      "workflowRunUrl": "https://github.com/ken-jo/ave/actions/runs/42758561595",
+      "workflowRunId": 42758561595,
+      "jobUrl": "https://github.com/ken-jo/ave/actions/runs/42758561595/job/129638585863",
+      "jobId": 129638585863,
+      "workflowConclusion": "success",
+      "sourceRevision": "f6050391e41cd445a1786f0cfab875bffbd51572",
+      "sourceContext": "The hosted proof branch ran the exact keyboard spec, foreground fixture option and workflow source. The later lane evidence commit preserves this tested revision identity.",
+      "sourceClean": true,
+      "runner": "ubuntu-24.04",
+      "virtualDisplay": "1600x1000x24",
+      "windowManager": "openbox",
+      "command": "bun run test:ui-e2e:os-focus ui/browser-ui-keyboard-takeover.spec.ts --retries=0 --reporter=list,json --output=test-results/native-os-focus/cases",
+      "requiredEnv": {
+        "AVE_E2E_OS_FOCUS": "1"
+      },
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "flaky": 0,
+      "durationSeconds": 15.8,
+      "artifact": {
+        "id": 13736662662,
+        "name": "native-os-focus-results",
+        "sha256": "aee0816e966a0e16a8c9b787375fb1e6b0af8cd7cbb7fc3f870ad1ada5d91a95",
+        "workflowRunId": 42758561595
+      },
+      "sourceReport": {
+        "path": "test-results/ui-layer/review-p2-os-proof-green-artifacts/native-os-focus/results.json",
+        "sha256": "c4cc4d50926f5ef58414763b091e0196a51dddf5b8258a00e5f51abf36edda8f"
+      },
+      "sourceLog": {
+        "path": "test-results/ui-layer/review-p2-os-proof-green.log",
+        "sha256": "119942a08e02e0d66bdeec4c5da2393548fca52a6637eda19ce3a5cd1eec949c"
+      },
+      "cases": [
+        {
+          "width": 1360,
+          "height": 800,
+          "testTitle": "@os-focus native page keyboard takeover routes system keys at 1360x800",
+          "result": "passed",
+          "resultLine": "✓  1 [os-focus] › test/e2e/ui/browser-ui-keyboard-takeover.spec.ts:15:5 › @os-focus native page keyboard takeover routes system keys at 1360x800 (8.3s)",
+          "sourceRevision": "f6050391e41cd445a1786f0cfab875bffbd51572",
+          "sourceClean": true,
+          "evidenceFile": "keyboard-routing-1360.json",
+          "evidenceSha256": "cb646330466029ca6132c014327781d18672acfd3aeb612037bcd031d83da87d",
+          "sourceArtifactPath": "test-results/ui-layer/review-p2-os-proof-green-artifacts/native-os-focus/cases/ui-browser-ui-keyboard-tak-94ba0-tes-system-keys-at-1360x800-os-focus/native-keyboard-routing-1360.json",
+          "keyboardSource": "global-x11-key-events",
+          "osWindow": "4194307",
+          "pageContentsId": 2,
+          "hostFocusedContentsId": 1,
+          "focusedContentsSequence": [
+            1,
+            1,
+            2,
+            1,
+            1,
+            1
+          ],
+          "pageValueAfterTakeover": "PAGEKEYS",
+          "pageInputTrusted": true,
+          "composerValueAfterPageTyping": "HOSTDRAFTAFTERAGENT",
+          "composerValueAfterResumedTyping": "HOSTDRAFTAFTERAGENTHOSTAGAIN",
+          "agentComposerBlurCounts": [
+            0,
+            0
+          ],
+          "nativeIdentityScope": "Raw receipts retain the X11 window and focused WebContents IDs. The executed test asserts real native content size. Separate process ID and content origin are not archived."
+        },
+        {
+          "width": 900,
+          "height": 800,
+          "testTitle": "@os-focus native page keyboard takeover routes system keys at 900x800",
+          "result": "passed",
+          "resultLine": "✓  2 [os-focus] › test/e2e/ui/browser-ui-keyboard-takeover.spec.ts:15:5 › @os-focus native page keyboard takeover routes system keys at 900x800 (6.3s)",
+          "sourceRevision": "f6050391e41cd445a1786f0cfab875bffbd51572",
+          "sourceClean": true,
+          "evidenceFile": "keyboard-routing-900.json",
+          "evidenceSha256": "c78514cb3775680368da8855e917e3ce9159084920662921f1cb6675fded5b51",
+          "sourceArtifactPath": "test-results/ui-layer/review-p2-os-proof-green-artifacts/native-os-focus/cases/ui-browser-ui-keyboard-tak-0e900-utes-system-keys-at-900x800-os-focus/native-keyboard-routing-900.json",
+          "keyboardSource": "global-x11-key-events",
+          "osWindow": "4194307",
+          "pageContentsId": 2,
+          "hostFocusedContentsId": 1,
+          "focusedContentsSequence": [
+            1,
+            1,
+            2,
+            1,
+            1,
+            1
+          ],
+          "pageValueAfterTakeover": "PAGEKEYS",
+          "pageInputTrusted": true,
+          "composerValueAfterPageTyping": "HOSTDRAFTAFTERAGENT",
+          "composerValueAfterResumedTyping": "HOSTDRAFTAFTERAGENTHOSTAGAIN",
+          "agentComposerBlurCounts": [
+            0,
+            0
+          ],
+          "nativeIdentityScope": "Raw receipts retain the X11 window and focused WebContents IDs. The executed test asserts real native content size. Separate process ID and content origin are not archived."
+        }
+      ],
+      "displayCommand": "xvfb-run -a -s '-screen 0 1600x1000x24' bash"
+    },
+    "manual": [
+      "system IME candidate interaction",
+      "screen-reader focus traversal",
+      "native OS menus",
+      "OS drag-and-drop"
+    ],
+    "diagnosticCorrection": {
+      "workflowRunUrl": "https://github.com/ken-jo/ave/actions/runs/42757938670",
+      "workflowRunId": 42757938670,
+      "jobId": 129636583399,
+      "sourceRevision": "63cd6a2601c2641fac69d40443f5319231a28a91",
+      "workflowConclusion": "failure",
+      "failedCases": 2,
+      "removedAssertion": "expect(userTakeover.composer.documentFocused).toBe(false)",
+      "reason": "Both actual system-input receipts show PAGEKEYS in the native page with its WebContents focused and the composer value preserved, while the UI document reports hasFocus() true. That DOM value remains diagnostic; OS key destination and native focus assertions establish keyboard routing.",
+      "retainedAssertions": [
+        "global OS typing reaches the page",
+        "native focused WebContents matches the page",
+        "page input is trusted",
+        "composer value is preserved during page typing",
+        "agent clicks retain native UI focus and zero composer blur",
+        "resumed OS typing remains in composer"
+      ],
+      "sourceLog": {
+        "path": "test-results/ui-layer/review-p2-green-first-failed.log",
+        "sha256": "bd663d91c2c343c3ff77eb2331db57be396bf3b9722cec471e512c36e96fb69d"
+      },
+      "cases": [
+        {
+          "width": 1360,
+          "height": 800,
+          "testTitle": "@os-focus native page keyboard takeover routes system keys at 1360x800",
+          "result": "failed",
+          "sourceRevision": "63cd6a2601c2641fac69d40443f5319231a28a91",
+          "sourceClean": true,
+          "evidenceFile": "keyboard-routing-diagnostic-1360.json",
+          "evidenceSha256": "2b011f7e4df88949d38e6fbb4766e1fef4596e64a38290157461952de9471829",
+          "observed": {
+            "pageValue": "PAGEKEYS",
+            "pageInputTrusted": true,
+            "focusedContentsId": 2,
+            "pageContentsId": 2,
+            "composerValue": "HOSTDRAFTAFTERAGENT",
+            "composerDocumentFocused": true,
+            "composerBlurs": 0
+          }
+        },
+        {
+          "width": 900,
+          "height": 800,
+          "testTitle": "@os-focus native page keyboard takeover routes system keys at 900x800",
+          "result": "failed",
+          "sourceRevision": "63cd6a2601c2641fac69d40443f5319231a28a91",
+          "sourceClean": true,
+          "evidenceFile": "keyboard-routing-diagnostic-900.json",
+          "evidenceSha256": "6ce21d697d696462b8727aa4747822a2629c7dee8a779d1d9420d278e2db37bb",
+          "observed": {
+            "pageValue": "PAGEKEYS",
+            "pageInputTrusted": true,
+            "focusedContentsId": 2,
+            "pageContentsId": 2,
+            "composerValue": "HOSTDRAFTAFTERAGENT",
+            "composerDocumentFocused": true,
+            "composerBlurs": 0
+          }
+        }
+      ]
+    }
+  },
+  "integratedValidation": [
+    {
+      "id": "integration-unit",
+      "result": "passed",
+      "passed": 283,
+      "files": 10,
+      "sourceLog": {
+        "path": "test-results/ui-layer/review-p2-integrated-unit.log",
+        "sha256": "edb20f1530e92834483358647448d45f21a5af7569b563a9f04ae853e8ccfdd7"
+      },
+      "scope": "Ten distinct input, owner/capture, chat consumer and project-gating suites."
+    },
+    {
+      "id": "background-focus-repeat",
+      "result": "passed",
+      "passed": 6,
+      "files": 1,
+      "sourceLog": {
+        "path": "test-results/ui-layer/review-p2-background.log",
+        "sha256": "3ea78490362cbaf50a41c4d2e8e71e0a02b910301e4f8568cd42b434f29ff443"
+      },
+      "scope": "Repeat of existing background cases; no addition to the 68-case unique count."
+    },
+    {
+      "id": "background-capture-repeat",
+      "result": "passed",
+      "passed": 8,
+      "files": 1,
+      "sourceLog": {
+        "path": "test-results/ui-layer/review-p2-capture.log",
+        "sha256": "2437c2ff50575856b9220724cc45dfeee4e4313dd6889e2e419d37c8c88c5915"
+      },
+      "scope": "Repeat of existing background cases; no addition to the 68-case unique count."
+    },
+    {
+      "id": "gate-core",
+      "result": "passed",
+      "sourceLog": {
+        "path": "test-results/ui-layer/review-p2-gate-core.log",
+        "sha256": "996a0542fc951cc3d5fde3ed9ed262c36a0ca47b61987eb2d74e481cabc0013e"
+      }
+    },
+    {
+      "id": "document-consumer-node",
+      "result": "passed",
+      "passed": 122,
+      "failed": 0,
+      "sourceLog": {
+        "path": "test-results/ui-layer/review-p2-node-lock.log",
+        "sha256": "0ab635b74e44c7724dab6facab0ff02f196a5f393354819b3f400f1f6af95d0c"
+      }
+    },
+    {
+      "id": "lock-suite-initial",
+      "result": "failed",
+      "passed": 1766,
+      "failed": 1,
+      "scope": "Temporary nested proof checkout added duplicate helper matches. After that checkout moved outside the lane, the unchanged 14-case failed suite passed.",
+      "sourceLog": {
+        "path": "test-results/ui-layer/review-p2-lock-vitest.log",
+        "sha256": "2cf72937377430913f0507417bfe01102e7789f328283df421711582efd00749"
+      },
+      "failedSuiteRecheck": {
+        "result": "passed",
+        "passed": 14,
+        "sourceLog": {
+          "path": "test-results/ui-layer/review-p2-duplicate-recheck.log",
+          "sha256": "0fa86df445fc8de4d6fa7cbfc584f29af6272eefbdf51e39d1fee6085b91014b"
+        }
+      }
+    }
+  ]
+}
