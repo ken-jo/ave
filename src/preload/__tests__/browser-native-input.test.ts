@@ -41,7 +41,7 @@ describe("trusted native page holes", () => {
       ...IDENTITY, sequence: 1, type: "mouseDown", x: 200, y: 250, button: "left", clickCount: 1, modifiers: ["shift", "leftbuttondown"],
     });
     expect(event.preventDefault).toHaveBeenCalledOnce();
-    expect(event.stopImmediatePropagation).toHaveBeenCalledOnce();
+    expect(event.stopImmediatePropagation).not.toHaveBeenCalled();
     host.stop();
     expect(host.handlers.size).toBe(0);
   });
@@ -78,8 +78,9 @@ describe("trusted native page holes", () => {
 
   it.each([[0, 1], [1, 16], [2, 800]])("converts DOM wheel unit %s into native direction", (deltaMode, unit) => {
     const host = hostDocument();
-    host.event("wheel", { deltaMode, deltaX: 2, deltaY: 3, buttons: 0 });
+    const event = host.event("wheel", { deltaMode, deltaX: 2, deltaY: 3, buttons: 0 });
     expect(send).toHaveBeenLastCalledWith(CHANNELS.browser.nativeInput, expect.objectContaining({ type: "mouseWheel", deltaX: -2 * unit, deltaY: -3 * unit }));
+    expect(event.stopImmediatePropagation).toHaveBeenCalledOnce();
   });
 
   it("leaves keyboard, composition, drag and host context menus in their native route", () => {

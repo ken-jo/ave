@@ -60,7 +60,8 @@ export function installBrowserNativeInput(document: Document = globalThis.docume
     if (type === "mouseDown") gesture = { ...identity, sequence: input.sequence };
     if (type === "mouseUp" && event.buttons === 0) gesture = null;
     event.preventDefault();
-    event.stopImmediatePropagation();
+    // Outside-click dismissal still observes the host gesture; only wheel must bypass host scrolling.
+    if (type === "mouseWheel") event.stopImmediatePropagation();
     ipcRenderer.send(CHANNELS.browser.nativeInput, input);
   };
   const contextMenu = (event: MouseEvent): void => {
