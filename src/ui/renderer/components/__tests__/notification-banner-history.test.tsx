@@ -19,7 +19,7 @@ const ABSENT: DocumentEngineInstallationState = {
 };
 let previousLocale: ReturnType<typeof getLocale>;
 beforeEach(() => { previousLocale = getLocale(); setLocale("en"); });
-afterEach(() => { cleanup(); setLocale(previousLocale); });
+afterEach(() => { cleanup(); setLocale(previousLocale); vi.useRealTimers(); });
 
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error("Expected a banner history value");
@@ -199,23 +199,30 @@ describe("banner notification history", () => {
   });
 
   it("does not reinterpret a saved document install action as uninstall after the engine becomes ready", async () => {
+    vi.useFakeTimers();
     const history = createNotificationHistory();
     const api = installation();
-    render(<NotificationHistoryContext.Provider value={history}>
-      <DocumentEngineInstallContent api={api} onDismiss={vi.fn()} />
-    </NotificationHistoryContext.Provider>);
-    const installButton = await screen.findByRole("button", { name: t("documentEngine.install") });
-    await waitFor(() => expect(installButton).toBeEnabled());
+    await act(async () => {
+      render(<NotificationHistoryContext.Provider value={history}>
+        <DocumentEngineInstallContent api={api} onDismiss={vi.fn()} />
+      </NotificationHistoryContext.Provider>);
+    });
+    const installButton = screen.getByRole("button", { name: t("documentEngine.install") });
+    expect(installButton).toBeEnabled();
     const installAction = required(required(history.getSnapshot()[0]).actions?.[0]);
     api.status.mockResolvedValueOnce({ ok: true, state: { ...ABSENT, phase: "ready" } });
-    fireEvent.click(installButton);
-    await waitFor(() => expect(screen.getByRole("button", { name: t("documentEngine.uninstall") })).toBeEnabled());
-    act(() => installAction.run());
+    // Flush status promises and history effects before inspecting the saved actions.
+    await act(async () => { fireEvent.click(installButton); });
+    expect(api.install).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: t("documentEngine.uninstall") })).toBeEnabled();
+    const uninstallAction = required(required(history.getSnapshot()[0]).actions?.[0]);
+    expect(uninstallAction).toMatchObject({ label: t("documentEngine.uninstall"), disabled: false });
+    await act(async () => { installAction.run(); });
     expect(api.install).toHaveBeenCalledOnce();
     expect(api.uninstall).not.toHaveBeenCalled();
-    act(() => required(required(history.getSnapshot()[0]).actions?.[0]).run());
-    await waitFor(() => expect(api.uninstall).toHaveBeenCalledOnce());
-    await waitFor(() => expect(screen.getByRole("button", { name: t("documentEngine.install") })).toBeEnabled());
+    await act(async () => { uninstallAction.run(); });
+    expect(api.uninstall).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: t("documentEngine.install") })).toBeEnabled();
   });
 
   it("mirrors the install action and disables it in both places while an installation is in flight", async () => {
