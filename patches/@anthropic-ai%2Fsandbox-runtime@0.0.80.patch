@@ -4760,12 +4760,12 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..9ebe9c3c6b6e11fb49f521d620c960e0
          }
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4f79886a3
+index 0000000000000000000000000000000000000000..873ae99de0195845242d75d4b769794625b5757c
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,1627 @@
+@@ -0,0 +1,1873 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
-+index 0efb5956f..a6e9f5477 100644
++index 0efb5956f..35cc65a17 100644
 +--- a/vendor/srt-win-src/src/acl.rs
 ++++ b/vendor/srt-win-src/src/acl.rs
 +@@ -9,7 +9,7 @@
@@ -5105,7 +5105,7 @@ index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4
 +         }
 +         if let Some(m) = self.grant {
 +             v.push(NewAce::Allow(sid, m.bits(), OICI));
-+@@ -791,14 +959,12 @@ impl SbAceSet {
++@@ -791,14 +959,14 @@ impl SbAceSet {
 + /// Converge `canonical_path`'s explicit ACEs for `sandbox_sid` to
 + /// exactly `set`. Idempotent — every existing explicit ACE for the
 + /// SID (allow AND deny) is dropped, then `set`'s entries are
@@ -5117,16 +5117,18 @@ index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4
 +-/// dropped; a hand-crafted stray `INHERITED_ACE`-flagged entry is
 +-/// dropped and not re-derived, which fails closed) is written back
 +-/// `PROTECTED_`: recomposing it `UNPROTECTED_` would
-++/// prepended in canonical (deny-before-allow) order. When inheritable
-++/// entries change, the propagating writer refreshes descendants, including
-++/// removing legacy inheritable parent guards. Otherwise only this object
-++/// is written, preserving its inherited entries and leaving unrelated
-++/// descendants untouched. A `SE_DACL_PROTECTED` DACL keeps its protection:
+++/// prepended in canonical (deny-before-allow) order. Full denies always
+++/// refresh descendants, including when the root already matches: a directory
+++/// moved into the subtree can retain permissive inherited entries. Without a
+++/// full deny, unchanged inheritable entries permit an object-only update that
+++/// preserves inherited entries and leaves unrelated descendants untouched.
+++/// Changed inheritable entries still refresh descendants, including removal
+++/// of legacy inheritable parent guards. A `SE_DACL_PROTECTED` DACL keeps its protection:
 ++/// recomposing it `UNPROTECTED_` would
 + /// silently re-enable inheritance, and neither revoke nor restore
 + /// could undo that — the parent's inheritable ACEs (e.g. a data-drive
 + /// root's `Authenticated Users:(M)`) would durably re-open a path its
-+@@ -816,32 +982,44 @@ impl SbAceSet {
++@@ -816,32 +984,45 @@ impl SbAceSet {
 + pub fn apply_sandbox_aces(canonical_path: &str, sandbox_sid: &str, set: SbAceSet) -> Result<()> {
 +     let sid = LocalPsid::from_string(sandbox_sid)
 +         .with_context(|| format!("parse sandbox SID '{sandbox_sid}'"))?;
@@ -5165,7 +5167,7 @@ index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4
 ++        open_local_dacl(canonical_path).with_context(|| format!("recompose '{canonical_path}'"))?;
 ++    let (sd, old) = read_local_dacl(&handle)?;
 ++    let new = compose(old)?;
-++    if explicit_aces(old, true)? == explicit_aces(new.as_ptr(), true)? {
+++    if set.deny.is_none() && explicit_aces(old, true)? == explicit_aces(new.as_ptr(), true)? {
 ++        if explicit_aces(old, false)? == explicit_aces(new.as_ptr(), false)? {
 ++            return Ok(());
 ++        }
@@ -5183,9 +5185,10 @@ index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4
 ++    // Reread and compose on the verified handle retained through the write.
 ++    let (sd, old) = read_local_dacl(&tree)?;
 ++    let new = compose(old)?;
-++    // Another writer may have converged the inheritable entries while the
-++    // narrower handle was opened. Keep an object-only update local in that case.
-++    if explicit_aces(old, true)? == explicit_aces(new.as_ptr(), true)? {
+++    // A full deny must refresh descendants even if another writer converged
+++    // the root while this handle was opened. Other object-only updates stay local
+++    // when the inheritable entries now match.
+++    if set.deny.is_none() && explicit_aces(old, true)? == explicit_aces(new.as_ptr(), true)? {
 ++        if explicit_aces(old, false)? == explicit_aces(new.as_ptr(), false)? {
 ++            return Ok(());
 ++        }
@@ -5196,7 +5199,7 @@ index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4
 +         .with_context(|| format!("recompose '{canonical_path}'"))
 + }
 +
-+@@ -935,7 +1113,7 @@ mod tests {
++@@ -935,7 +1116,7 @@ mod tests {
 +             Allow(SID_SYSTEM, Mask::FILE_ALL, OICI),
 +         ])
 +         .unwrap();
@@ -5205,7 +5208,7 @@ index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4
 +         let (sd, _) = read_file_dacl(path).unwrap();
 +         assert!(sd_dacl_protected(&sd).unwrap(), "setup: DACL protected");
 +
-+@@ -997,4 +1175,196 @@ mod tests {
++@@ -997,4 +1178,196 @@ mod tests {
 +         assert_ne!(ow.bits(), 0);
 +         assert_eq!(ow.bits() & Mask::WRITE_DAC.bits(), 0);
 +     }
@@ -5543,10 +5546,10 @@ index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4
 +         let ct = process_create_time(unsafe { GetCurrentProcess() }).unwrap();
 +diff --git a/vendor/srt-win-src/tests/acl_parent_scope.rs b/vendor/srt-win-src/tests/acl_parent_scope.rs
 +new file mode 100644
-+index 000000000..d8d53f266
++index 000000000..a577d6548
 +--- /dev/null
 ++++ b/vendor/srt-win-src/tests/acl_parent_scope.rs
-+@@ -0,0 +1,844 @@
++@@ -0,0 +1,1087 @@
 ++//! Parent deletion protection must not spread over unrelated sibling trees.
 ++//! All ACL changes are confined to a fresh owned fixture. No sandbox account,
 ++//! elevation, WFP installation or machine-wide state is needed.
@@ -6390,4 +6393,247 @@ index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4
 ++        .write_all(b"release\r\n")
 ++        .unwrap();
 ++    assert!(running.0.wait().unwrap().success());
+++}
+++
+++#[test]
+++fn second_holder_full_deny_refreshes_moved_in_subtree() {
+++    use srt_win::util::OwnedHandle;
+++    use std::io::{BufRead, BufReader, Write};
+++    use std::process::{Child, Command, Stdio};
+++    use windows::Win32::Foundation::{HANDLE, LUID};
+++    use windows::Win32::Security::{
+++        LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, PRIVILEGE_SET, PrivilegeCheck,
+++        SE_PRIVILEGE_ENABLED, TOKEN_QUERY,
+++    };
+++    use windows::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
+++
+++    fn assert_traversal_privilege_enabled() {
+++        let mut raw = HANDLE::default();
+++        unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, true, &mut raw) }.unwrap();
+++        let token = OwnedHandle(raw);
+++        let mut luid = LUID::default();
+++        let privilege = wstr("SeChangeNotifyPrivilege");
+++        unsafe { LookupPrivilegeValueW(None, pcwstr(&privilege), &mut luid) }.unwrap();
+++        let mut required = PRIVILEGE_SET {
+++            PrivilegeCount: 1,
+++            Control: 1, // All required privileges must be enabled.
+++            Privilege: [LUID_AND_ATTRIBUTES {
+++                Luid: luid,
+++                Attributes: SE_PRIVILEGE_ENABLED,
+++            }],
+++        };
+++        let mut enabled = windows::core::BOOL::default();
+++        unsafe { PrivilegeCheck(token.raw(), &mut required, &mut enabled) }.unwrap();
+++        assert!(
+++            enabled.as_bool(),
+++            "sandbox traversal privilege is not enabled"
+++        );
+++        eprintln!("moved-subtree principal: SeChangeNotifyPrivilege=enabled");
+++    }
+++
+++    struct HolderProcess(Child);
+++    impl Drop for HolderProcess {
+++        fn drop(&mut self) {
+++            let _ = self.0.kill();
+++            let _ = self.0.wait();
+++        }
+++    }
+++
+++    let fixture = Fixture::new();
+++    set_fixture_dacl(&fixture.0, "(A;OICI;FA;;;WD)");
+++    let denied_root = fixture.0.join("denied-root");
+++    let donor = fixture.0.join("donor");
+++    let moved = denied_root.join("moved");
+++    let secret = moved.join("nested/secret.txt");
+++    std::fs::create_dir(&denied_root).unwrap();
+++    std::fs::create_dir_all(donor.join("moved/nested")).unwrap();
+++    std::fs::write(donor.join("moved/nested/secret.txt"), "secret").unwrap();
+++    let donor_identity =
+++        srt_win::path_id::capture_file_id(donor.join("moved").to_str().unwrap()).unwrap();
+++    let command_image = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+++        .join("System32")
+++        .join("cmd.exe");
+++    let mut holder_b = HolderProcess(
+++        Command::new(command_image)
+++            .args(["/d", "/q", "/c", "echo holder-ready&set /p release="])
+++            .stdin(Stdio::piped())
+++            .stdout(Stdio::piped())
+++            .stderr(Stdio::inherit())
+++            .spawn()
+++            .unwrap(),
+++    );
+++    let mut output = BufReader::new(holder_b.0.stdout.take().unwrap());
+++    let mut ready = String::new();
+++    output.read_line(&mut ready).unwrap();
+++    assert_eq!(ready.trim(), "holder-ready");
+++    assert!(holder_b.0.try_wait().unwrap().is_none());
+++    let holder_a_pid = std::process::id();
+++    let holder_b_pid = holder_b.0.id();
+++    let session = fixture.0.join("session");
+++    let run_acl = |action: &str, pid: u32| {
+++        let pid = pid.to_string();
+++        let mut command = Command::new(env!("CARGO_BIN_EXE_srt-win"));
+++        command
+++            .args([
+++                "acl",
+++                action,
+++                "--holder-pid",
+++                &pid,
+++                "--sandbox-user-sid",
+++                TEST_SID,
+++            ])
+++            .env("HOME", &session)
+++            .env("USERPROFILE", &session)
+++            .env("AVE_HOME", session.join("ave"))
+++            .env("LOCALAPPDATA", session.join("local"))
+++            .env("ProgramData", session.join("machine"))
+++            .env("SRT_DEBUG", "1")
+++            .stdin(Stdio::piped())
+++            .stdout(Stdio::piped())
+++            .stderr(Stdio::piped());
+++        let mut child = command.spawn().unwrap();
+++        if action == "stamp" {
+++            let input = serde_json::json!({"denyRead": [denied_root.to_str().unwrap()]});
+++            child
+++                .stdin
+++                .take()
+++                .unwrap()
+++                .write_all(input.to_string().as_bytes())
+++                .unwrap();
+++        } else {
+++            drop(child.stdin.take());
+++        }
+++        let result = child.wait_with_output().unwrap();
+++        eprintln!(
+++            "holder {pid} {action}: {}",
+++            String::from_utf8_lossy(&result.stderr)
+++        );
+++        assert!(
+++            result.status.success(),
+++            "holder {pid} {action} failed: {result:?}"
+++        );
+++    };
+++    run_acl("stamp", holder_a_pid);
+++    let root_before = snapshot(&denied_root);
+++    std::fs::rename(donor.join("moved"), &moved).unwrap();
+++    assert_eq!(
+++        srt_win::path_id::capture_file_id(moved.to_str().unwrap()).unwrap(),
+++        donor_identity,
+++        "owner move did not preserve the same-volume directory object"
+++    );
+++    assert!(sandbox_aces(&moved).is_empty());
+++    assert!(sandbox_aces(&secret).is_empty());
+++    let replacement = fixture.0.join("replacement.txt");
+++    {
+++        let _impersonation = Impersonation::begin();
+++        assert_traversal_privilege_enabled();
+++        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "secret");
+++        assert_eq!(std::fs::read_dir(&moved).unwrap().count(), 1);
+++        std::fs::rename(&secret, secret.with_extension("renamed")).unwrap();
+++        std::fs::rename(secret.with_extension("renamed"), &secret).unwrap();
+++        std::fs::write(&replacement, "replacement").unwrap();
+++        replace_file(&replacement, &secret).unwrap();
+++        std::fs::write(&secret, "secret").unwrap();
+++        let disposable = moved.join("disposable.txt");
+++        std::fs::write(&disposable, "delete control").unwrap();
+++        std::fs::remove_file(disposable).unwrap();
+++    }
+++    eprintln!("moved-subtree preconditions: read/list/delete/rename/replace=allowed");
+++    run_acl("stamp", holder_b_pid);
+++    assert!(holder_b.0.try_wait().unwrap().is_none());
+++    assert_eq!(
+++        snapshot(&denied_root),
+++        root_before,
+++        "root ACEs changed between equal full denies"
+++    );
+++    {
+++        let db = rusqlite::Connection::open_with_flags(
+++            session.join("local/sandbox-runtime/state.db"),
+++            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+++        )
+++        .unwrap();
+++        let canonical = srt_win::path_id::canonicalize_path(denied_root.to_str().unwrap())
+++            .unwrap()
+++            .0;
+++        let mut statement = db.prepare(
+++            "SELECT pid FROM ace_holders WHERE canonical_path = ?1 AND kind = 'deny' ORDER BY pid",
+++        ).unwrap();
+++        let actual = statement
+++            .query_map([canonical], |row| row.get::<_, u32>(0))
+++            .unwrap()
+++            .collect::<rusqlite::Result<Vec<_>>>()
+++            .unwrap();
+++        let mut expected = vec![holder_a_pid, holder_b_pid];
+++        expected.sort_unstable();
+++        assert_eq!(actual, expected, "both live holders must own the full deny");
+++        eprintln!("moved-subtree live holder rows: {actual:?}");
+++    }
+++    std::fs::write(&replacement, "forbidden replacement").unwrap();
+++    {
+++        let _impersonation = Impersonation::begin();
+++        assert_traversal_privilege_enabled();
+++        let read = std::fs::read(&secret);
+++        assert_eq!(
+++            read.as_ref().err().map(std::io::Error::kind),
+++            Some(std::io::ErrorKind::PermissionDenied),
+++            "holder B full deny did not block moved-in file read: {read:?}"
+++        );
+++        assert_eq!(
+++            std::fs::read_dir(&moved).unwrap_err().kind(),
+++            std::io::ErrorKind::PermissionDenied,
+++            "holder B full deny did not block moved-in listing"
+++        );
+++        assert_eq!(
+++            std::fs::remove_file(&secret).unwrap_err().kind(),
+++            std::io::ErrorKind::PermissionDenied,
+++            "holder B full deny did not block moved-in deletion"
+++        );
+++        assert_eq!(
+++            std::fs::rename(&secret, secret.with_extension("forbidden"))
+++                .unwrap_err()
+++                .kind(),
+++            std::io::ErrorKind::PermissionDenied,
+++            "holder B full deny did not block moved-in rename"
+++        );
+++        assert_eq!(
+++            replace_file(&replacement, &secret).unwrap_err().kind(),
+++            std::io::ErrorKind::PermissionDenied,
+++            "holder B full deny did not block moved-in replacement"
+++        );
+++        let sibling = fixture.0.join("allowed-sibling.txt");
+++        std::fs::write(&sibling, "sibling control").unwrap();
+++        assert_eq!(
+++            std::fs::read_to_string(&sibling).unwrap(),
+++            "sibling control"
+++        );
+++        std::fs::rename(&sibling, sibling.with_extension("renamed")).unwrap();
+++        std::fs::remove_file(sibling.with_extension("renamed")).unwrap();
+++    }
+++    eprintln!(
+++        "moved-subtree after holder B: read/list/delete/rename/replace=denied sibling=allowed"
+++    );
+++    assert_eq!(std::fs::read_to_string(&secret).unwrap(), "secret");
+++    assert_eq!(std::fs::read_dir(&moved).unwrap().count(), 1);
+++    std::fs::write(&secret, "owner control").unwrap();
+++    std::fs::rename(&secret, secret.with_extension("owner")).unwrap();
+++    std::fs::rename(secret.with_extension("owner"), &secret).unwrap();
+++    let owner_file = moved.join("owner-delete.txt");
+++    std::fs::write(&owner_file, "owner delete control").unwrap();
+++    std::fs::remove_file(owner_file).unwrap();
+++    run_acl("restore", holder_a_pid);
+++    run_acl("restore", holder_b_pid);
+++    {
+++        let _impersonation = Impersonation::begin();
+++        assert_traversal_privilege_enabled();
+++        assert_eq!(std::fs::read_to_string(&secret).unwrap(), "owner control");
+++        assert_eq!(std::fs::read_dir(&moved).unwrap().count(), 1);
+++    }
+++    holder_b
+++        .0
+++        .stdin
+++        .take()
+++        .unwrap()
+++        .write_all(b"release\r\n")
+++        .unwrap();
+++    assert!(holder_b.0.wait().unwrap().success());
 ++}

@@ -2,6 +2,8 @@
 
 The native parent `FILE_DELETE_CHILD` deny is object-only. A full target deny retains inheritable `FILE_DELETE_CHILD` and existing subtree inheritance. The change must preserve owner and unrelated ACEs, protected DACL state, sibling access, and kernel delete, rename and replacement denial.
 
+Every full deny application refreshes descendant inheritance, including when the root ACEs already match. This repairs permissive ACLs retained by an unprotected subtree moved into the denied directory. Without a full deny, parent guard updates with matching inheritable entries use the local writer and leave unrelated descendants untouched.
+
 The [permission decision tree](../architecture/permission-decision-tree.md) remains authoritative in its original order. Deny selection, independent home anchors and the profile-child Ave home projection are unchanged. `policyHomeAnchors` intentionally includes `userInfo().homedir`: isolating `HOME` and `USERPROFILE` redirects application data without dropping credential protection for the real account profile. The four synthetic anchor regressions cover isolated variables, failed OS home resolution, distinct anchors and equivalent-path deduplication.
 
 Stamps remain transient under the existing state schema, holder lifetime, restore and crash recovery. This scope excludes durable deny ownership, a journal, reconciliation and identity relocation. Retain `NativeDB` and the existing 60-second ACL command ceiling.
