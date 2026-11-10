@@ -4760,12 +4760,12 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..9ebe9c3c6b6e11fb49f521d620c960e0
          }
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1eb3f1641
+index 0000000000000000000000000000000000000000..e8082d20d100373c7dbc824a5a6d645234915cdd
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,2161 @@
+@@ -0,0 +1,3220 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
-+index 0efb5956f..2cba4b41e 100644
++index 0efb5956f..0a8424ad5 100644
 +--- a/vendor/srt-win-src/src/acl.rs
 ++++ b/vendor/srt-win-src/src/acl.rs
 +@@ -9,7 +9,7 @@
@@ -5128,8 +5128,20 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 + /// silently re-enable inheritance, and neither revoke nor restore
 + /// could undo that — the parent's inheritable ACEs (e.g. a data-drive
 + /// root's `Authenticated Users:(M)`) would durably re-open a path its
-+@@ -816,32 +984,45 @@ impl SbAceSet {
++@@ -814,34 +982,62 @@ impl SbAceSet {
++ /// Both grant and deny carry `(OI)(CI)` so directory targets cover
++ /// the subtree; on a file the inheritance flags are inert.
 + pub fn apply_sandbox_aces(canonical_path: &str, sandbox_sid: &str, set: SbAceSet) -> Result<()> {
+++    apply_sandbox_aces_with_identity(canonical_path, sandbox_sid, set, None)
+++}
+++
+++/// Bind a verified placeholder identity to the actual handle used for the write.
+++pub(crate) fn apply_sandbox_aces_with_identity(
+++    canonical_path: &str,
+++    sandbox_sid: &str,
+++    set: SbAceSet,
+++    expected: Option<crate::path_id::FileId>,
+++) -> Result<()> {
 +     let sid = LocalPsid::from_string(sandbox_sid)
 +         .with_context(|| format!("parse sandbox SID '{sandbox_sid}'"))?;
 +-    let sid_bytes = sid.as_bytes();
@@ -5165,6 +5177,11 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 +-    write_file_dacl(canonical_path, new.as_ptr(), prot)
 ++    let handle =
 ++        open_local_dacl(canonical_path).with_context(|| format!("recompose '{canonical_path}'"))?;
+++    if let Some(file_id) = expected
+++        && crate::path_id::file_id_from_handle(handle.0)? != file_id
+++    {
+++        bail!("recorded placeholder '{canonical_path}': identity changed before ACL write");
+++    }
 ++    let (sd, old) = read_local_dacl(&handle)?;
 ++    let new = compose(old)?;
 ++    if set.deny.is_none() && explicit_aces(old, true)? == explicit_aces(new.as_ptr(), true)? {
@@ -5199,7 +5216,7 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 +         .with_context(|| format!("recompose '{canonical_path}'"))
 + }
 +
-+@@ -935,7 +1116,7 @@ mod tests {
++@@ -935,7 +1131,7 @@ mod tests {
 +             Allow(SID_SYSTEM, Mask::FILE_ALL, OICI),
 +         ])
 +         .unwrap();
@@ -5208,7 +5225,7 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 +         let (sd, _) = read_file_dacl(path).unwrap();
 +         assert!(sd_dacl_protected(&sd).unwrap(), "setup: DACL protected");
 +
-+@@ -997,4 +1178,196 @@ mod tests {
++@@ -997,4 +1193,196 @@ mod tests {
 +         assert_ne!(ow.bits(), 0);
 +         assert_eq!(ow.bits() & Mask::WRITE_DAC.bits(), 0);
 +     }
@@ -5406,10 +5423,128 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 ++    }
 + }
 +diff --git a/vendor/srt-win-src/src/path_id.rs b/vendor/srt-win-src/src/path_id.rs
-+index 00d63d724..56cc65a8d 100644
++index 00d63d724..9c503d291 100644
 +--- a/vendor/srt-win-src/src/path_id.rs
 ++++ b/vendor/srt-win-src/src/path_id.rs
-+@@ -426,7 +426,7 @@ impl FileId {
++@@ -202,9 +202,8 @@ pub struct Placeholder {
++ /// Idempotent: an `AlreadyExists` on any component is accepted and
++ /// not added to the return list (we didn't create it); the
++ /// caller's ancestor-discovery picks it up if it's a recorded
++-/// placeholder. An intermediate that already exists as a FILE is a
++-/// hard error (cannot mkdir through it); a leaf that already
++-/// exists as either kind is accepted.
+++/// placeholder. An intermediate or directory-form leaf that already exists as
+++/// a FILE is a hard error. A bare leaf accepts either existing kind.
++ ///
++ /// [`SbAce::Deny`]: crate::acl::SbAce::Deny
++ pub fn create_placeholder_chain(
++@@ -300,12 +299,11 @@ pub fn create_placeholder_chain(
++                 is_dir,
++             }),
++             Err(e) if e.kind() == AlreadyExists => {
++-                if !is_leaf && !cur_raw.is_dir() {
+++                if (!is_leaf || leaf_is_dir) && !cur_raw.is_dir() {
++                     unwind(&created);
++                     bail!(
++-                        "deny target '{path}': intermediate '{}' \
++-                         exists as a FILE — cannot create placeholder \
++-                         chain through it",
+++                        "deny target '{path}': directory component '{}' \
+++                         exists as a FILE — cannot create directory placeholder",
++                         cur_raw.display()
++                     );
++                 }
++@@ -377,6 +375,89 @@ fn final_path_from_handle(h: HANDLE) -> Result<Vec<u16>> {
++     Ok(buf)
++ }
++
+++/// A verified empty regular file held against data writes and name replacement.
+++/// The trusted placeholder namespace record is checked separately by the caller.
+++#[derive(Debug)]
+++pub struct EmptyFilePin {
+++    canonical: String,
+++    file_id: FileId,
+++    _handle: OwnedHandle,
+++}
+++
+++impl EmptyFilePin {
+++    pub fn canonical_path(&self) -> &str {
+++        &self.canonical
+++    }
+++
+++    pub fn file_id(&self) -> FileId {
+++        self.file_id
+++    }
+++}
+++
+++/// Open the final component itself, then verify its kind, size and identity.
+++/// Read-only sharing keeps the zero-byte object and its name stable until the
+++/// pin is dropped. Security-only ACL opens remain compatible with this handle.
+++/// `None` means the initial open reported absence; later metadata errors remain
+++/// errors and cannot trigger placeholder creation.
+++pub fn pin_empty_file_no_follow(path: &str) -> Result<Option<EmptyFilePin>> {
+++    use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
+++    use windows::Win32::Storage::FileSystem::{
+++        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+++        GetFileInformationByHandle,
+++    };
+++    let name = wstr(path);
+++    let opened = unsafe {
+++        CreateFileW(
+++            pcwstr(&name),
+++            0,
+++            FILE_SHARE_READ,
+++            None,
+++            OPEN_EXISTING,
+++            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+++            None,
+++        )
+++    };
+++    let handle = match opened {
+++        Ok(handle) => handle,
+++        Err(error)
+++            if error.code() == ERROR_FILE_NOT_FOUND.into()
+++                || error.code() == ERROR_PATH_NOT_FOUND.into() =>
+++        {
+++            return Ok(None);
+++        }
+++        Err(error) => {
+++            return Err(error).with_context(|| {
+++                format!("open recorded placeholder candidate '{path}' (no-follow)")
+++            });
+++        }
+++    };
+++    let handle = OwnedHandle(handle);
+++    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+++    unsafe { GetFileInformationByHandle(handle.raw(), &mut info) }
+++        .with_context(|| format!("inspect recorded placeholder candidate '{path}'"))?;
+++    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+++        bail!("recorded placeholder candidate '{path}' is a reparse point");
+++    }
+++    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0 {
+++        bail!("recorded placeholder candidate '{path}' is a directory");
+++    }
+++    if info.nFileSizeHigh != 0 || info.nFileSizeLow != 0 {
+++        bail!("recorded placeholder candidate '{path}' is not empty");
+++    }
+++    let raw = final_path_from_handle(handle.raw())
+++        .with_context(|| format!("resolve recorded placeholder candidate '{path}'"))?;
+++    let canonical = String::from_utf16_lossy(&raw);
+++    if !utf16_roundtrips(&raw, &canonical) {
+++        bail!("recorded placeholder candidate '{path}' is not representable as UTF-8");
+++    }
+++    let file_id = file_id_from_handle(handle.raw())?;
+++    Ok(Some(EmptyFilePin {
+++        canonical,
+++        file_id,
+++        _handle: handle,
+++    }))
+++}
+++
++ /// Immediate parent of a `\\?\…` canonical path, as a string.
++ /// Returns `None` when there is no targetable parent (the path is
++ /// a root, or its immediate parent is a root — touching the
++@@ -426,7 +507,7 @@ impl FileId {
 + }
 +
 + /// `FILE_ID_INFO` of an already-open handle.
@@ -5418,8 +5553,193 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 +     use windows::Win32::Storage::FileSystem::{
 +         FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
 +     };
++@@ -552,6 +633,184 @@ pub fn locate_by_file_id(file_id: &FileId) -> Option<String> {
++ mod tests {
++     use super::*;
++
+++    fn pin_fixture(label: &str) -> std::path::PathBuf {
+++        let unique = std::time::SystemTime::now()
+++            .duration_since(std::time::UNIX_EPOCH)
+++            .unwrap()
+++            .as_nanos();
+++        let root = std::env::temp_dir().join(format!(
+++            "srt-empty-pin-{label}-{}-{unique}",
+++            std::process::id()
+++        ));
+++        std::fs::create_dir(&root).unwrap();
+++        root
+++    }
+++
+++    #[test]
+++    fn empty_file_pin_blocks_writes_and_replacement_and_binds_acl_effect() {
+++        use crate::acl::{DenyMask, SbAceSet, apply_sandbox_aces_with_identity, read_file_dacl};
+++        use windows::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MoveFileExW};
+++
+++        let root = pin_fixture("window");
+++        let file = root.join("placeholder");
+++        let replacement = root.join("replacement");
+++        let renamed = root.join("renamed");
+++        std::fs::write(&file, "write control").unwrap();
+++        std::fs::rename(&file, &renamed).unwrap();
+++        std::fs::rename(&renamed, &file).unwrap();
+++        std::fs::remove_file(&file).unwrap();
+++        std::fs::write(&file, []).unwrap();
+++        std::fs::write(&replacement, "replacement").unwrap();
+++        let pin = pin_empty_file_no_follow(file.to_str().unwrap())
+++            .unwrap()
+++            .unwrap();
+++        assert_eq!(
+++            pin.file_id(),
+++            capture_file_id(file.to_str().unwrap()).unwrap()
+++        );
+++        assert!(std::fs::read(&file).unwrap().is_empty());
+++        assert_eq!(
+++            std::fs::OpenOptions::new()
+++                .write(true)
+++                .open(&file)
+++                .unwrap_err()
+++                .raw_os_error(),
+++            Some(32)
+++        );
+++        assert_eq!(
+++            std::fs::remove_file(&file).unwrap_err().raw_os_error(),
+++            Some(32)
+++        );
+++        assert_eq!(
+++            std::fs::rename(&file, &renamed).unwrap_err().raw_os_error(),
+++            Some(32)
+++        );
+++        let source = wstr(replacement.to_str().unwrap());
+++        let target = wstr(file.to_str().unwrap());
+++        let error =
+++            unsafe { MoveFileExW(pcwstr(&source), pcwstr(&target), MOVEFILE_REPLACE_EXISTING) }
+++                .unwrap_err();
+++        assert_eq!(error.code(), windows::core::HRESULT::from_win32(32));
+++
+++        let descriptor = |name: &str| {
+++            let (_sd, acl) = read_file_dacl(name).unwrap();
+++            if acl.is_null() {
+++                Vec::new()
+++            } else {
+++                unsafe { std::slice::from_raw_parts(acl.cast::<u8>(), (*acl).AclSize as usize) }
+++                    .to_vec()
+++            }
+++        };
+++        let before = descriptor(pin.canonical_path());
+++        let wrong_id = capture_file_id(replacement.to_str().unwrap()).unwrap();
+++        let deny = SbAceSet {
+++            deny: Some(DenyMask::ReadDeny),
+++            ..Default::default()
+++        };
+++        let error = apply_sandbox_aces_with_identity(
+++            pin.canonical_path(),
+++            "S-1-5-32-546",
+++            deny,
+++            Some(wrong_id),
+++        )
+++        .unwrap_err();
+++        assert!(
+++            error
+++                .to_string()
+++                .contains("identity changed before ACL write")
+++        );
+++        assert_eq!(
+++            descriptor(pin.canonical_path()),
+++            before,
+++            "foreign identity changed ACL"
+++        );
+++        apply_sandbox_aces_with_identity(
+++            pin.canonical_path(),
+++            "S-1-5-32-546",
+++            deny,
+++            Some(pin.file_id()),
+++        )
+++        .unwrap();
+++        assert_ne!(
+++            descriptor(pin.canonical_path()),
+++            before,
+++            "positive ACL control did not write"
+++        );
+++        apply_sandbox_aces_with_identity(
+++            pin.canonical_path(),
+++            "S-1-5-32-546",
+++            SbAceSet::default(),
+++            Some(pin.file_id()),
+++        )
+++        .unwrap();
+++        assert_eq!(
+++            capture_file_id(file.to_str().unwrap()).unwrap(),
+++            pin.file_id()
+++        );
+++        assert_eq!(std::fs::metadata(&file).unwrap().len(), 0);
+++        drop(pin);
+++        std::fs::write(&file, "pin released").unwrap();
+++        std::fs::rename(&file, &renamed).unwrap();
+++        std::fs::remove_file(&renamed).unwrap();
+++        std::fs::remove_dir_all(root).unwrap();
+++    }
+++
+++    #[test]
+++    fn empty_file_pin_rejects_nonempty_directory_and_reparse_candidates() {
+++        let root = pin_fixture("kind");
+++        let missing = root.join("missing");
+++        assert!(
+++            pin_empty_file_no_follow(missing.to_str().unwrap())
+++                .unwrap()
+++                .is_none()
+++        );
+++        let nonempty = root.join("nonempty");
+++        std::fs::write(&nonempty, "owner contents").unwrap();
+++        assert!(
+++            pin_empty_file_no_follow(nonempty.to_str().unwrap())
+++                .unwrap_err()
+++                .to_string()
+++                .contains("not empty")
+++        );
+++        let directory = root.join("directory");
+++        std::fs::create_dir(&directory).unwrap();
+++        assert!(
+++            pin_empty_file_no_follow(directory.to_str().unwrap())
+++                .unwrap_err()
+++                .to_string()
+++                .contains("is a directory")
+++        );
+++        let junction = root.join("junction");
+++        let command = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+++            .join("System32/cmd.exe");
+++        let result = std::process::Command::new(command)
+++            .args(["/d", "/c", "mklink", "/J"])
+++            .arg(strip_extended_prefix(junction.to_str().unwrap()))
+++            .arg(strip_extended_prefix(directory.to_str().unwrap()))
+++            .output()
+++            .unwrap();
+++        assert!(
+++            result.status.success(),
+++            "owned junction setup failed: {result:?}"
+++        );
+++        assert_eq!(
+++            std::fs::canonicalize(&junction).unwrap(),
+++            std::fs::canonicalize(&directory).unwrap()
+++        );
+++        assert!(
+++            pin_empty_file_no_follow(junction.to_str().unwrap())
+++                .unwrap_err()
+++                .to_string()
+++                .contains("is a reparse point")
+++        );
+++        std::fs::remove_dir(&junction).unwrap();
+++        assert_eq!(
+++            std::fs::read_to_string(&nonempty).unwrap(),
+++            "owner contents"
+++        );
+++        std::fs::remove_dir_all(root).unwrap();
+++    }
+++
++     #[test]
++     fn canonicalize_rejects_globs() {
++         for p in ["C:\\foo\\*.txt", "C:\\foo\\bar?.txt"] {
 +diff --git a/vendor/srt-win-src/src/state_db.rs b/vendor/srt-win-src/src/state_db.rs
-+index d3778f4e6..a5cf42180 100644
++index d3778f4e6..daf9df65d 100644
 +--- a/vendor/srt-win-src/src/state_db.rs
 ++++ b/vendor/srt-win-src/src/state_db.rs
 +@@ -46,7 +46,7 @@
@@ -5431,13 +5751,33 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 + use windows::Win32::Foundation::{FILETIME, HANDLE, WAIT_OBJECT_0};
 + use windows::Win32::System::Threading::{
 +     GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-+@@ -675,7 +675,23 @@ impl Locked {
++@@ -670,12 +670,43 @@ impl Locked {
++         &self,
++         sandbox_sid: &str,
++         targets: &[(String, SbAce)],
+++    ) -> Result<(Vec<AceWitness>, usize)> {
+++        self.apply_aces_with_pins(sandbox_sid, targets, &[])
+++    }
+++
+++    /// Apply a batch while retaining verified empty-file pins. Expected identities
+++    /// are checked before bookkeeping and again by the handle-bound ACL writer.
+++    pub fn apply_aces_with_pins(
+++        &self,
+++        sandbox_sid: &str,
+++        targets: &[(String, SbAce)],
+++        pins: &[path_id::EmptyFilePin],
++     ) -> Result<(Vec<AceWitness>, usize)> {
++         self.with_broker_registration(sandbox_sid, |db| {
 +             let mut witnesses = Vec::with_capacity(targets.len());
 +             let mut failed = 0usize;
 +             let mut one = |canon: &str, ace: SbAce| -> bool {
 +-                match db.ensure_ace(canon, ace, sandbox_sid) {
 ++                let started = Instant::now();
-++                let result = db.ensure_ace(canon, ace, sandbox_sid);
+++                let expected = pins
+++                    .iter()
+++                    .find(|pin| pin.canonical_path() == canon)
+++                    .map(path_id::EmptyFilePin::file_id);
+++                let result = db.ensure_ace(canon, ace, sandbox_sid, expected);
 ++                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
 ++                if std::env::var_os("SRT_DEBUG").is_some_and(|value| !value.is_empty())
 ++                    && matches!(ace, SbAce::Deny(_) | SbAce::DenyFdc | SbAce::DenyDelete)
@@ -5456,10 +5796,132 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 +                     Ok(w) => {
 +                         witnesses.push(w);
 +                         true
-+@@ -1406,6 +1422,87 @@ mod tests {
++@@ -709,9 +740,18 @@ impl Locked {
++     /// row plus `working_aces` row) then [`recompose_at`] so a
++     /// crash between leaves a row whose ACE hasn't been written —
++     /// the next call re-derives and reapplies.
++-    fn ensure_ace(&self, canon: &str, want: SbAce, sandbox_sid: &str) -> Result<AceWitness> {
+++    fn ensure_ace(
+++        &self,
+++        canon: &str,
+++        want: SbAce,
+++        sandbox_sid: &str,
+++        expected: Option<FileId>,
+++    ) -> Result<AceWitness> {
++         let (cur_id, links, is_dir) = path_id::capture_id_and_links(canon)
++             .with_context(|| format!("capture file_id+links '{canon}'"))?;
+++        if expected.is_some_and(|file_id| file_id != cur_id) {
+++            bail!("recorded placeholder '{canon}': identity changed before bookkeeping");
+++        }
++         // Hardlink guard: NTFS hardlinks share one SD across
++         // distinct canonical paths, but `ace_holders` is
++         // PATH-keyed. A Deny on one alias is invisible to a holder
++@@ -799,7 +839,7 @@ impl Locked {
++                 eff.as_str()
++             ])
++             .context("UPSERT working_aces")?;
++-        recompose_at(&self.conn, canon, sandbox_sid)?;
+++        recompose_at_with_identity(&self.conn, canon, sandbox_sid, expected)?;
++         Ok(AceWitness {
++             canon: canon.to_string(),
++             ace: eff,
++@@ -992,6 +1032,16 @@ impl Locked {
++         Ok(())
++     }
++
+++    /// The protected ledger records ownership of a canonical placeholder name.
+++    /// It does not record historical object identity; callers verify the current
+++    /// empty object and retain its identity through the ACL effect separately.
+++    pub fn is_placeholder(&self, canon: &str) -> Result<bool> {
+++        self.conn
+++            .prepare_cached("SELECT 1 FROM placeholders WHERE canonical_path = ?1")?
+++            .exists(params![canon])
+++            .context("SELECT recorded placeholder")
+++    }
+++
++     /// Every recorded placeholder that is a STRICT ancestor of
++     /// `canon` (i.e. `canon` starts with `placeholder || '\'`) —
++     /// the discovery half of the full-chain hold (see the
++@@ -1019,6 +1069,15 @@ impl Locked {
++ /// here so a path with both a grant AND a deny (or a parent that is
++ /// both granted and `deny_fdc`'d) is handled consistently.
++ fn recompose_at(conn: &Connection, canon: &str, sandbox_sid: &str) -> Result<()> {
+++    recompose_at_with_identity(conn, canon, sandbox_sid, None)
+++}
+++
+++fn recompose_at_with_identity(
+++    conn: &Connection,
+++    canon: &str,
+++    sandbox_sid: &str,
+++    expected: Option<FileId>,
+++) -> Result<()> {
++     let rows: Vec<(String, String)> = query_vec(
++         conn,
++         "SELECT kind, mask FROM working_aces \
++@@ -1044,7 +1103,7 @@ fn recompose_at(conn: &Connection, canon: &str, sandbox_sid: &str) -> Result<()>
++     if crate::install::ambient_deny_recorded(canon) {
++         set.deny.get_or_insert(acl::DenyMask::WriteDeny);
++     }
++-    acl::apply_sandbox_aces(canon, sandbox_sid, set)
+++    acl::apply_sandbox_aces_with_identity(canon, sandbox_sid, set, expected)
++         .with_context(|| format!("recompose '{canon}' ({set:?})"))
++ }
++
++@@ -1406,6 +1465,138 @@ mod tests {
 +         });
 +     }
 +
+++    #[test]
+++    fn verified_placeholder_identity_is_checked_before_bookkeeping() {
+++        const SID: &str = "S-1-5-32-546";
+++        with_deny_directory("pinned", |directory, _| {
+++            let file = std::path::Path::new(directory).join("placeholder");
+++            std::fs::write(&file, []).unwrap();
+++            let pin = path_id::pin_empty_file_no_follow(file.to_str().unwrap())
+++                .unwrap()
+++                .unwrap();
+++            let wrong_id = path_id::capture_file_id(directory).unwrap();
+++            with_mem_db(|db| {
+++                let error = db
+++                    .ensure_ace(
+++                        pin.canonical_path(),
+++                        SbAce::Deny(acl::DenyMask::ReadDeny),
+++                        SID,
+++                        Some(wrong_id),
+++                    )
+++                    .unwrap_err();
+++                assert!(
+++                    error
+++                        .to_string()
+++                        .contains("identity changed before bookkeeping")
+++                );
+++                for table in ["brokers", "ace_holders", "working_aces"] {
+++                    let count: i64 = db
+++                        .conn
+++                        .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+++                        .unwrap();
+++                    assert_eq!(count, 0, "mismatched identity changed {table}");
+++                }
+++                db.record_placeholder(pin.canonical_path()).unwrap();
+++                assert!(db.is_placeholder(pin.canonical_path()).unwrap());
+++                assert!(!db.is_placeholder(directory).unwrap());
+++                let target = (
+++                    pin.canonical_path().to_string(),
+++                    SbAce::Deny(acl::DenyMask::ReadDeny),
+++                );
+++                let (_, failed) = db
+++                    .apply_aces_with_pins(SID, &[target], std::slice::from_ref(&pin))
+++                    .unwrap();
+++                assert_eq!(failed, 0, "matching identity positive control failed");
+++                assert!(!db.my_ace_holds(None).unwrap().is_empty());
+++                let (_, failed) = db.release_aces(SID, KIND_DENY).unwrap();
+++                assert_eq!(failed, 0);
+++                assert!(db.my_ace_holds(None).unwrap().is_empty());
+++            });
+++            drop(pin);
+++        });
+++    }
+++
 ++    fn with_deny_directory(label: &str, f: impl FnOnce(&str, &str)) {
 ++        let unique = SystemTime::now()
 ++            .duration_since(UNIX_EPOCH)
@@ -5544,12 +6006,231 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 +     #[test]
 +     fn aliveness_self_is_alive() {
 +         let ct = process_create_time(unsafe { GetCurrentProcess() }).unwrap();
++diff --git a/vendor/srt-win-src/src/cli.rs b/vendor/srt-win-src/src/cli.rs
++index 677f89568..61c5e3022 100644
++--- a/vendor/srt-win-src/src/cli.rs
+++++ b/vendor/srt-win-src/src/cli.rs
++@@ -388,6 +388,8 @@ struct AceTargets {
++     targets: Vec<(String, srt_win::acl::SbAce)>,
++     /// Inputs that could not be canonicalized (soft-skip → exit 2).
++     bad_inputs: Vec<(String, String)>,
+++    /// Verified placeholder objects stay bound until apply and rollback finish.
+++    pins: Vec<srt_win::path_id::EmptyFilePin>,
++ }
++
++ /// Canonicalize `(paths, ace)` pairs for `acl grant`/`acl stamp`
++@@ -429,11 +431,13 @@ fn canonicalize_ace_targets(
++     use anyhow::anyhow;
++     use srt_win::acl::SbAce;
++     use srt_win::path_id::{
++-        CanonError, canonicalize_path, create_placeholder_chain, is_unc_path, strip_extended_prefix,
+++        CanonError, canonicalize_path, create_placeholder_chain, is_unc_path,
+++        pin_empty_file_no_follow, strip_extended_prefix,
++     };
++     use std::io::ErrorKind;
++     let mut targets = Vec::new();
++     let mut bad_inputs = Vec::new();
+++    let mut pins = Vec::new();
++     // Deepest-first so overlapping non-existent denies (`['y',
++     // 'y\secret']`) materialize as `y/` DIR + `secret` FILE, not
++     // `y` FILE (which would then fail `y\secret` with "ancestor is
++@@ -455,64 +459,103 @@ fn canonicalize_ace_targets(
++         )
++     });
++     for (p, ace) in flat {
++-        let canon = match canonicalize_path(p) {
++-            Ok((c, _is_dir)) => c,
++-            Err(CanonError::Glob) => {
++-                return Err(anyhow!(
++-                    "Windows fs {label} requires explicit file \
++-                     or directory paths; got glob '{p}'."
++-                ));
+++        let resolved = canonicalize_path(p);
+++        // A bare-name deny from an earlier session can leave a permanent file.
+++        // Preflight both missing-path and other directory-form errors so an
+++        // existing foreign file can never enter intent-first creation.
+++        let pinned = if matches!(ace, SbAce::Deny(_))
+++            && p.ends_with(['\\', '/'])
+++            && !is_unc_path(p)
+++            && matches!(
+++                &resolved,
+++                Err(CanonError::NotFound(_) | CanonError::Other(_))
+++            ) {
+++            let candidate = p.trim_end_matches(['\\', '/']);
+++            match pin_empty_file_no_follow(candidate) {
+++                Ok(Some(pin)) => {
+++                    if !db.is_placeholder(pin.canonical_path())? {
+++                        bad_inputs.push((
+++                            p.clone(),
+++                            "directory-form target is a file without a recorded placeholder"
+++                                .to_string(),
+++                        ));
+++                        continue;
+++                    }
+++                    Some(pin)
+++                }
+++                Ok(None) => None,
+++                Err(error) => {
+++                    bad_inputs.push((p.clone(), format!("{error:#}")));
+++                    continue;
+++                }
++             }
++-            Err(CanonError::NotFound(_)) if matches!(ace, SbAce::Deny(_)) => {
++-                if is_unc_path(p) {
++-                    eprintln!(
++-                        "srt-win: deny target '{p}' is a UNC path \
+++        } else {
+++            None
+++        };
+++        let canon = if let Some(pin) = pinned {
+++            let canonical = pin.canonical_path().to_string();
+++            pins.push(pin);
+++            canonical
+++        } else {
+++            match resolved {
+++                Ok((c, _is_dir)) => c,
+++                Err(CanonError::Glob) => {
+++                    return Err(anyhow!(
+++                        "Windows fs {label} requires explicit file \
+++                     or directory paths; got glob '{p}'."
+++                    ));
+++                }
+++                Err(CanonError::NotFound(_)) if matches!(ace, SbAce::Deny(_)) => {
+++                    if is_unc_path(p) {
+++                        eprintln!(
+++                            "srt-win: deny target '{p}' is a UNC path \
++                          and does not exist; dropping — the local \
++                          ACL model does not cover SMB shares"
++-                    );
++-                    continue;
++-                }
++-                let leaf_is_dir = p.ends_with(['\\', '/']);
++-                match create_placeholder_chain(p, leaf_is_dir, |c| db.record_placeholder(c)) {
++-                    Ok((leaf_canon, chain)) => {
++-                        if !chain.is_empty() {
++-                            eprintln!(
++-                                "srt-win: deny target '{p}' does \
+++                        );
+++                        continue;
+++                    }
+++                    let leaf_is_dir = p.ends_with(['\\', '/']);
+++                    match create_placeholder_chain(p, leaf_is_dir, |c| db.record_placeholder(c)) {
+++                        Ok((leaf_canon, chain)) => {
+++                            if !chain.is_empty() {
+++                                eprintln!(
+++                                    "srt-win: deny target '{p}' does \
++                                  not exist; created {} placeholder \
++                                  component(s) and stamping the chain",
++-                                chain.len(),
++-                            );
+++                                    chain.len(),
+++                                );
+++                            }
+++                            leaf_canon
++                         }
++-                        leaf_canon
++-                    }
++-                    Err(e) => {
++-                        // Soft-drop per the doc above (NotFound =
++-                        // unwind removed a half-built chain); any
++-                        // other kind fails loudly via bad_inputs.
++-                        let io_kind = e
++-                            .root_cause()
++-                            .downcast_ref::<std::io::Error>()
++-                            .map(|io| io.kind());
++-                        if matches!(
++-                            io_kind,
++-                            Some(ErrorKind::PermissionDenied | ErrorKind::NotFound)
++-                        ) {
++-                            eprintln!(
++-                                "srt-win: cannot create placeholder \
+++                        Err(e) => {
+++                            // Soft-drop per the doc above (NotFound =
+++                            // unwind removed a half-built chain); any
+++                            // other kind fails loudly via bad_inputs.
+++                            let io_kind = e
+++                                .root_cause()
+++                                .downcast_ref::<std::io::Error>()
+++                                .map(|io| io.kind());
+++                            if matches!(
+++                                io_kind,
+++                                Some(ErrorKind::PermissionDenied | ErrorKind::NotFound)
+++                            ) {
+++                                eprintln!(
+++                                    "srt-win: cannot create placeholder \
++                                  for deny target '{p}' ({e:#}); \
++                                  dropping — the sandbox cannot \
++                                  create there either"
++-                            );
++-                        } else {
++-                            bad_inputs.push((p.clone(), format!("{e:#}")));
+++                                );
+++                            } else {
+++                                bad_inputs.push((p.clone(), format!("{e:#}")));
+++                            }
+++                            continue;
++                         }
++-                        continue;
++                     }
++                 }
++-            }
++-            Err(CanonError::NotFound(e) | CanonError::Other(e)) => {
++-                bad_inputs.push((p.clone(), format!("{e:#}")));
++-                continue;
+++                Err(CanonError::NotFound(e) | CanonError::Other(e)) => {
+++                    bad_inputs.push((p.clone(), format!("{e:#}")));
+++                    continue;
+++                }
++             }
++         };
++         targets.push((canon.clone(), ace));
++@@ -526,6 +569,7 @@ fn canonicalize_ace_targets(
++     Ok(AceTargets {
++         targets: merge_ace_targets(targets),
++         bad_inputs,
+++        pins,
++     })
++ }
++
++@@ -1165,12 +1209,14 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                     for (p, e) in &at.bad_inputs {
++                         eprintln!("srt-win: skipped: '{p}': {e}");
++                     }
++-                    let (w, f) = db.apply_aces(&sandbox_user_sid, &at.targets)?;
+++                    let (w, f) =
+++                        db.apply_aces_with_pins(&sandbox_user_sid, &at.targets, &at.pins)?;
++                     Ok((at, w, f))
++                 })?;
++             let AceTargets {
++                 targets,
++                 bad_inputs,
+++                ..
++             } = at;
++             let fresh = witnesses.iter().filter(|w| !w.already).count();
++             eprintln!(
++@@ -1241,6 +1287,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++             let AceTargets {
++                 targets,
++                 bad_inputs,
+++                ..
++             } = at;
++             let fresh = witnesses.iter().filter(|w| !w.already).count();
++             eprintln!(
++@@ -1483,7 +1530,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                     if let Some((p, e)) = at.bad_inputs.first() {
++                         return Err(anyhow!("per-exec --deny-*: '{p}': {e}"));
++                     }
++-                    let (w, f) = db.apply_aces(&sb_sid, &at.targets)?;
+++                    let (w, f) = db.apply_aces_with_pins(&sb_sid, &at.targets, &at.pins)?;
++                     Ok((at, w, f))
++                 })
++                 .context("per-exec deny-ace")?;
 +diff --git a/vendor/srt-win-src/tests/acl_parent_scope.rs b/vendor/srt-win-src/tests/acl_parent_scope.rs
 +new file mode 100644
-+index 000000000..76ecbf488
++index 000000000..8e08f670b
 +--- /dev/null
 ++++ b/vendor/srt-win-src/tests/acl_parent_scope.rs
-+@@ -0,0 +1,1375 @@
++@@ -0,0 +1,1753 @@
 ++//! Parent deletion protection must not spread over unrelated sibling trees.
 ++//! All ACL changes are confined to a fresh owned fixture. No sandbox account,
 ++//! elevation, WFP installation or machine-wide state is needed.
@@ -6924,4 +7605,382 @@ index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1
 ++        drop(OwnedHandle(open_parent(access).unwrap()));
 ++    }
 ++    eprintln!("CWD sharing control: holder_exit=OK conflicting_access=OK");
+++}
+++
+++#[test]
+++fn consecutive_sessions_reuse_recorded_file_placeholders_in_directory_form() {
+++    use std::io::{BufRead, BufReader, Write};
+++    use std::process::{Child, Command, Output, Stdio};
+++
+++    struct SessionProcess(Child);
+++    impl Drop for SessionProcess {
+++        fn drop(&mut self) {
+++            let _ = self.0.kill();
+++            let _ = self.0.wait();
+++        }
+++    }
+++
+++    let fixture = Fixture::new();
+++    set_fixture_dacl(&fixture.0, "(A;OICI;FA;;;WD)");
+++    let parent = fixture.0.join("targets");
+++    std::fs::create_dir(&parent).unwrap();
+++    let parent_before = snapshot(&parent);
+++    let first = parent.join("first-private-root");
+++    let second = parent.join("second-private-root");
+++    let directory_first = parent.join("directory-first");
+++    let directory_later = parent.join("directory-later");
+++    let session = fixture.0.join("session");
+++    let plain =
+++        |path: &Path| srt_win::path_id::strip_extended_prefix(path.to_str().unwrap()).to_string();
+++    let run_acl = |action: &str, pid: u32, read: &[String], write: &[String]| -> Output {
+++        let mut command = Command::new(env!("CARGO_BIN_EXE_srt-win"));
+++        command
+++            .args([
+++                "acl",
+++                action,
+++                "--holder-pid",
+++                &pid.to_string(),
+++                "--sandbox-user-sid",
+++                TEST_SID,
+++            ])
+++            .env("HOME", &session)
+++            .env("USERPROFILE", &session)
+++            .env("AVE_HOME", session.join("ave"))
+++            .env("LOCALAPPDATA", session.join("local"))
+++            .env("ProgramData", session.join("machine"))
+++            .env("SRT_DEBUG", "1")
+++            .stdin(Stdio::piped())
+++            .stdout(Stdio::piped())
+++            .stderr(Stdio::piped());
+++        let mut child = command.spawn().unwrap();
+++        if action == "stamp" {
+++            let request = serde_json::json!({"denyRead": read, "denyWrite": write});
+++            child
+++                .stdin
+++                .take()
+++                .unwrap()
+++                .write_all(request.to_string().as_bytes())
+++                .unwrap();
+++        } else {
+++            drop(child.stdin.take());
+++        }
+++        let result = child.wait_with_output().unwrap();
+++        eprintln!(
+++            "placeholder session {pid} {action}: status={} {}",
+++            result.status,
+++            String::from_utf8_lossy(&result.stderr)
+++        );
+++        result
+++    };
+++    let assert_success = |result: &Output, description: &str| {
+++        assert_eq!(
+++            result.status.code(),
+++            Some(0),
+++            "{description}: status={} stderr={}",
+++            result.status,
+++            String::from_utf8_lossy(&result.stderr)
+++        );
+++        let error = String::from_utf8_lossy(&result.stderr);
+++        assert!(!error.contains("skipped"), "{description}: {error}");
+++        assert!(!error.contains("FAILED"), "{description}: {error}");
+++    };
+++    let assert_empty_session = || {
+++        let db = rusqlite::Connection::open_with_flags(
+++            session.join("local/sandbox-runtime/state.db"),
+++            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+++        )
+++        .unwrap();
+++        for table in ["brokers", "ace_holders", "working_aces"] {
+++            let count: i64 = db
+++                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+++                .unwrap();
+++            assert_eq!(count, 0, "restore left {table} rows");
+++        }
+++    };
+++
+++    let command_image = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+++        .join("System32")
+++        .join("cmd.exe");
+++    let mut next_holder = SessionProcess(
+++        Command::new(command_image)
+++            .args(["/d", "/q", "/c", "echo session-ready&set /p release="])
+++            .stdin(Stdio::piped())
+++            .stdout(Stdio::piped())
+++            .stderr(Stdio::inherit())
+++            .spawn()
+++            .unwrap(),
+++    );
+++    let mut output = BufReader::new(next_holder.0.stdout.take().unwrap());
+++    let mut ready = String::new();
+++    output.read_line(&mut ready).unwrap();
+++    assert_eq!(ready.trim(), "session-ready");
+++    let first_pid = std::process::id();
+++    let second_pid = next_holder.0.id();
+++    assert_ne!(first_pid, second_pid);
+++
+++    let first_inputs = vec![
+++        plain(&first),
+++        plain(&second),
+++        format!("{}\\", plain(&directory_first)),
+++    ];
+++    let result = run_acl("stamp", first_pid, &first_inputs, &[]);
+++    assert_success(&result, "first placeholder session must apply every target");
+++    assert!(String::from_utf8_lossy(&result.stderr).contains("3 target(s)"));
+++    for path in [&first, &second] {
+++        assert!(path.is_file());
+++        assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
+++        assert_eq!(sandbox_aces(path), vec![(1, 0, Mask::FILE_ALL.bits())]);
+++    }
+++    assert!(directory_first.is_dir());
+++    assert_eq!(
+++        sandbox_aces(&directory_first),
+++        vec![(1, 3, Mask::FILE_ALL.bits())]
+++    );
+++    let result = run_acl("restore", first_pid, &[], &[]);
+++    assert_success(&result, "first placeholder session must restore");
+++    assert_empty_session();
+++    assert_eq!(snapshot(&parent), parent_before);
+++    let file_id = srt_win::path_id::capture_file_id(first.to_str().unwrap()).unwrap();
+++    let first_before = snapshot(&first);
+++    let second_before = snapshot(&second);
+++    let directory_before = snapshot(&directory_first);
+++
+++    let ordinary = parent.join("ordinary.txt");
+++    let replacement = parent.join("replacement.txt");
+++    {
+++        let _impersonation = Impersonation::begin();
+++        std::fs::write(&ordinary, "ordinary access").unwrap();
+++        assert_eq!(
+++            std::fs::read_to_string(&ordinary).unwrap(),
+++            "ordinary access"
+++        );
+++        std::fs::rename(&ordinary, ordinary.with_extension("moved")).unwrap();
+++        std::fs::rename(ordinary.with_extension("moved"), &ordinary).unwrap();
+++        std::fs::write(&replacement, "replacement control").unwrap();
+++        replace_file(&replacement, &ordinary).unwrap();
+++        std::fs::remove_file(&ordinary).unwrap();
+++        let allowed = parent.join("ordinary-directory");
+++        std::fs::create_dir(&allowed).unwrap();
+++        std::fs::remove_dir(allowed).unwrap();
+++    }
+++
+++    let second_inputs = vec![
+++        format!("{}\\", first.to_str().unwrap()),
+++        format!("{}/", plain(&first)),
+++        format!("{}/", plain(&second)),
+++        format!("{}\\", plain(&directory_first)),
+++        format!("{}/", plain(&directory_later)),
+++    ];
+++    let write_inputs = vec![
+++        format!("{}\\", plain(&first)),
+++        format!("{}\\", plain(&second)),
+++        format!("{}/", plain(&directory_first)),
+++    ];
+++    let result = run_acl("stamp", second_pid, &second_inputs, &write_inputs);
+++    assert_success(
+++        &result,
+++        "second directory-form session must apply every recorded placeholder",
+++    );
+++    assert!(String::from_utf8_lossy(&result.stderr).contains("4 target(s)"));
+++    assert!(next_holder.0.try_wait().unwrap().is_none());
+++    assert_eq!(
+++        srt_win::path_id::capture_file_id(first.to_str().unwrap()).unwrap(),
+++        file_id,
+++        "second session replaced its recorded placeholder"
+++    );
+++    {
+++        let db = rusqlite::Connection::open_with_flags(
+++            session.join("local/sandbox-runtime/state.db"),
+++            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+++        )
+++        .unwrap();
+++        let count: i64 = db
+++            .query_row(
+++                "SELECT count(*) FROM ace_holders WHERE kind='deny' AND pid=?1",
+++                [second_pid],
+++                |r| r.get(0),
+++            )
+++            .unwrap();
+++        assert_eq!(count, 4, "second session omitted or duplicated a target");
+++        for path in [&first, &second] {
+++            let canonical = srt_win::path_id::canonicalize_path(path.to_str().unwrap())
+++                .unwrap()
+++                .0;
+++            assert!(
+++                db.prepare("SELECT 1 FROM placeholders WHERE canonical_path=?1")
+++                    .unwrap()
+++                    .exists([canonical])
+++                    .unwrap(),
+++                "file has no trusted placeholder namespace record"
+++            );
+++        }
+++    }
+++    assert_eq!(
+++        sandbox_aces(&parent),
+++        vec![(1, 0, Mask::FILE_DELETE_CHILD.bits())]
+++    );
+++    for path in [&first, &second] {
+++        assert!(path.is_file());
+++        assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
+++        assert_eq!(sandbox_aces(path), vec![(1, 0, Mask::FILE_ALL.bits())]);
+++        std::fs::write(&replacement, "replacement refused").unwrap();
+++        let _impersonation = Impersonation::begin();
+++        assert_eq!(
+++            std::fs::read(path).unwrap_err().kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++        assert_eq!(
+++            std::fs::OpenOptions::new()
+++                .write(true)
+++                .truncate(true)
+++                .open(path)
+++                .unwrap_err()
+++                .kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++        assert_eq!(
+++            std::fs::remove_file(path).unwrap_err().kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++        assert_eq!(
+++            std::fs::rename(path, path.with_extension("moved"))
+++                .unwrap_err()
+++                .kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++        assert_eq!(
+++            replace_file(&replacement, path).unwrap_err().kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++        assert!(
+++            std::fs::create_dir(path).is_err(),
+++            "placeholder name admitted mkdir"
+++        );
+++        assert!(
+++            std::fs::OpenOptions::new()
+++                .write(true)
+++                .create_new(true)
+++                .open(path)
+++                .is_err(),
+++            "placeholder name admitted file creation"
+++        );
+++    }
+++    for path in [&directory_first, &directory_later] {
+++        assert!(path.is_dir());
+++        assert_eq!(sandbox_aces(path), vec![(1, 3, Mask::FILE_ALL.bits())]);
+++        let _impersonation = Impersonation::begin();
+++        assert_eq!(
+++            std::fs::write(path.join("blocked.txt"), "blocked")
+++                .unwrap_err()
+++                .kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++    }
+++    {
+++        let _impersonation = Impersonation::begin();
+++        std::fs::write(&ordinary, "sibling remains writable").unwrap();
+++        assert_eq!(
+++            std::fs::read_to_string(&ordinary).unwrap(),
+++            "sibling remains writable"
+++        );
+++        std::fs::remove_file(&ordinary).unwrap();
+++    }
+++    eprintln!(
+++        "placeholder second session: all=applied file_and_directory_creation=blocked delete_rename_replace_truncate=denied sibling=allowed"
+++    );
+++    let result = run_acl("restore", second_pid, &[], &[]);
+++    assert_success(&result, "second placeholder session must restore");
+++    assert_empty_session();
+++    assert_eq!(snapshot(&parent), parent_before);
+++    assert_eq!(snapshot(&first), first_before);
+++    assert_eq!(snapshot(&second), second_before);
+++    assert_eq!(snapshot(&directory_first), directory_before);
+++    {
+++        let _impersonation = Impersonation::begin();
+++        assert!(std::fs::read(&first).unwrap().is_empty());
+++        assert!(std::fs::read(&second).unwrap().is_empty());
+++        std::fs::write(directory_first.join("restored.txt"), "restored").unwrap();
+++        std::fs::remove_file(directory_first.join("restored.txt")).unwrap();
+++    }
+++
+++    for (name, contents) in [("foreign-empty", ""), ("foreign-data", "owner data")] {
+++        let foreign = parent.join(name);
+++        std::fs::write(&foreign, contents).unwrap();
+++        let original = snapshot(&foreign);
+++        let input = vec![format!("{}\\", plain(&foreign))];
+++        let result = run_acl("stamp", second_pid, &input, &[]);
+++        assert_eq!(
+++            result.status.code(),
+++            Some(2),
+++            "foreign file must fail: {result:?}"
+++        );
+++        assert!(String::from_utf8_lossy(&result.stderr).contains("skipped"));
+++        assert_eq!(snapshot(&foreign), original);
+++        assert_eq!(std::fs::read_to_string(&foreign).unwrap(), contents);
+++        let db = rusqlite::Connection::open_with_flags(
+++            session.join("local/sandbox-runtime/state.db"),
+++            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+++        )
+++        .unwrap();
+++        let canonical = srt_win::path_id::canonicalize_path(foreign.to_str().unwrap())
+++            .unwrap()
+++            .0;
+++        assert!(
+++            !db.prepare("SELECT 1 FROM placeholders WHERE canonical_path=?1")
+++                .unwrap()
+++                .exists([canonical])
+++                .unwrap(),
+++            "foreign file was adopted into placeholder records"
+++        );
+++        drop(db);
+++        assert_success(
+++            &run_acl("restore", second_pid, &[], &[]),
+++            "foreign control cleanup",
+++        );
+++    }
+++    std::fs::write(&first, "owner contents must remain").unwrap();
+++    let original = snapshot(&first);
+++    let result = run_acl("stamp", second_pid, &[format!("{}\\", plain(&first))], &[]);
+++    assert_eq!(
+++        result.status.code(),
+++        Some(2),
+++        "nonempty recorded file must fail: {result:?}"
+++    );
+++    assert_eq!(snapshot(&first), original);
+++    assert_eq!(
+++        std::fs::read_to_string(&first).unwrap(),
+++        "owner contents must remain"
+++    );
+++    assert_success(
+++        &run_acl("restore", second_pid, &[], &[]),
+++        "nonempty control cleanup",
+++    );
+++    let alias = parent.join("hardlink-alias");
+++    std::fs::hard_link(&second, &alias).unwrap();
+++    let original = snapshot(&second);
+++    let result = run_acl("stamp", second_pid, &[format!("{}\\", plain(&second))], &[]);
+++    assert_eq!(
+++        result.status.code(),
+++        Some(1),
+++        "recorded hardlink deny must fail: {result:?}"
+++    );
+++    assert!(String::from_utf8_lossy(&result.stderr).contains("hardlink"));
+++    assert_eq!(snapshot(&second), original);
+++    assert_eq!(snapshot(&alias), original);
+++    assert_success(
+++        &run_acl("restore", second_pid, &[], &[]),
+++        "hardlink control cleanup",
+++    );
+++    assert_empty_session();
+++    next_holder
+++        .0
+++        .stdin
+++        .take()
+++        .unwrap()
+++        .write_all(b"release\r\n")
+++        .unwrap();
+++    assert!(next_holder.0.wait().unwrap().success());
+++    eprintln!(
+++        "placeholder controls: foreign_empty_and_nonempty=refused nonempty_record=refused hardlink=refused restore=clean"
+++    );
 ++}

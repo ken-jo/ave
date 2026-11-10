@@ -16,6 +16,14 @@ The other opens in the patched ACL and identity helpers use security rights plus
 
 Collect profile-parent `fdc` durations after a complete successful stamp and verify restore with the CWD holder still alive. Successful real-host guard timing remains to be measured.
 
+## Directory-form placeholders
+
+A missing deny target with a trailing separator creates a directory. A missing bare target creates a zero-byte file, and placeholder objects remain after restore. A later directory-form input can therefore encounter an existing file at a name reserved by an earlier creation attempt.
+
+The native helper can reuse that file only when its kernel-canonical path exactly matches the existing per-user placeholder ledger and a no-follow handle verifies a zero-byte regular file. The handle pins the current object through application and rollback, with identity checked again at the ACL effect. The legacy ledger records namespace intent; current-object identity comes from the live handle rather than historical creator provenance. Unrecorded files, nonempty files and reparse leaves fail clearly. General partial-stamp exit handling remains strict.
+
+The requested file deny and parent deletion guard protect the occupied name. Sandbox processes cannot truncate, delete, rename or replace the file to create a file or directory there. Restore removes the holder's ACEs and preserves the placeholder and namespace record.
+
 ## Peer three-boot procedure
 
 Run on a disposable Windows test host with the [Windows source prerequisites](../guides/windows-setup.md#1-prerequisites), plus `rustup`, `cargo`, `tar.exe` and the C++ compiler/linker and SDK for both native targets. The build selects the toolchain in `src/permissions/srt-win-pins.json`; this procedure requires Bun 1.4.4. Close all prior Ave hosts and development watchers before starting. Use the same Windows account and one unchanged isolated `HOME`, `USERPROFILE`, `AVE_HOME` and `AVE_USER_DATA_DIR` for installation, build and all three boots. Do not delete `NativeDB`, reset ACLs, change the sandbox account, reinstall or recreate the isolated directories between boots. Quit each boot normally before the next so holder measurements do not overlap.
