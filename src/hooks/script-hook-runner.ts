@@ -38,8 +38,8 @@ import { resolveScriptAnchor } from "./hook-config-trust.js";
 import { resolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
-import { getHostShellExecutionPlan, getIssuedHostShellExecutionPlanGeneration, getSandboxGeneration, isIssuedHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
-import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
+import { getHostShellExecutionPlan, isIssuedHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
+import { getHostShellExecutionPlanAuditProjection, getHostShellExecutionPlanCacheIdentity, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import {
   assertExtensionStartAllowed, cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive,
 } from "../permissions/asrt-sandbox.js";
@@ -92,6 +92,13 @@ export interface RunnableHook {
 
 function hashCommandArgv(command: string[]): string {
   return sha256Hex(command.join("\0"));
+}
+
+function isHookShellPlanCurrent(plan: HostShellExecutionPlan): boolean {
+  if (!isIssuedHostShellExecutionPlan(plan)) return false;
+  const current = getHostShellExecutionPlan(plan.executionRequest);
+  return getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(plan))
+    === getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(current));
 }
 
 export function runnableFromDiscovered(hook: DiscoveredHook): RunnableHook {
@@ -199,9 +206,7 @@ export async function runOneHookScript(
       admittedPlan = admission.plan;
       assertCommandAllowed = admission.assertAllowed;
       refreshCommandAllowed = admission.refreshAllowed;
-      if (admittedPlan && (!isIssuedHostShellExecutionPlan(admittedPlan)
-        || getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
-        || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
+      if (admittedPlan && !isHookShellPlanCurrent(admittedPlan)) {
         return deny("hook shell execution policy changed during approval");
       }
     } catch (error) {
@@ -290,8 +295,7 @@ export async function runOneHookScript(
     : { kind: "worker", role: "hook", pluginId: undefined, instanceId: sha256Hex(runnable.id) };
   const assertHookStillAdmitted = (): void => {
     abortSignal?.throwIfAborted();
-    if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
-      || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
+    if (admittedPlan && !isHookShellPlanCurrent(admittedPlan)) {
       throw new Error("Hook shell execution policy changed before spawn");
     }
     assertCommandAllowed?.();
@@ -398,8 +402,7 @@ export async function runOneHookScript(
     cleanupWrap?.();
     return deny("Hook execution cancelled");
   }
-  if (admittedPlan && (getIssuedHostShellExecutionPlanGeneration(admittedPlan) !== getSandboxGeneration()
-    || admittedPlan.identity !== getHostShellExecutionPlan().identity)) {
+  if (admittedPlan && !isHookShellPlanCurrent(admittedPlan)) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook shell policy changed");
     wrappedEgress?.release();
     cleanupWrap?.();

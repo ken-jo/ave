@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/runtime.js";
 import type { RunnableHook } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
-import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
+import { buildHostShellExecutionPlan, type HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
+import { mxcShellCapability, windowsProxyOnlyCapability, windowsSubstrateFor, type WindowsSandboxPlanInputs } from "../../boot/steps/windows-sandbox-plan.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { __issueHostShellExecutionPlanForTest } from "../../permissions/sandbox-capability.js";
 
 const state = vi.hoisted(() => ({
   selected: true,
@@ -25,9 +28,6 @@ vi.mock("../../sandbox/wrap-bundled-command.js", async (original) => ({
 vi.mock("../../permissions/sandbox-capability.js", async (original) => ({
   ...await original<typeof import("../../permissions/sandbox-capability.js")>(),
   getHostShellExecutionPlan: () => state.shellPlan,
-  isIssuedHostShellExecutionPlan: () => true,
-  getIssuedHostShellExecutionPlanGeneration: () => "g1",
-  getSandboxGeneration: () => "g1",
 }));
 vi.mock("../../permissions/asrt-sandbox.js", async (original) => ({
   ...await original<typeof import("../../permissions/asrt-sandbox.js")>(),
@@ -67,7 +67,11 @@ function pluginHook(command: string[] = [`${GEN}\\hook.exe`, "--check"]): Runnab
 }
 
 function shellPlan(substrate: "asrt" | "mxc"): HostShellExecutionPlan {
-  return { mode: "asrt", substrate, identity: `plan-${substrate}` } as unknown as HostShellExecutionPlan;
+  return __issueHostShellExecutionPlanForTest(buildHostShellExecutionPlan({
+    platform: "win32", requestedSandbox: true, shellSubstrate: substrate,
+    activeCapability: { kind: "asrt", confidence: "verified", platform: "win32", reason: "confined shell fixture",
+      confines: { filesystem: true, process: true, network: true } },
+  }));
 }
 
 function userHook(command: string[]): RunnableHook {
@@ -254,6 +258,56 @@ describe("pinned 0.0.80 fallback", () => {
 });
 
 describe("user hook follows its admitted host-shell plan", () => {
+  it("keeps a pending container hook approval across a late extension isolation promotion", async () => {
+    const capability = await vi.importActual<typeof import("../../permissions/sandbox-capability.js")>("../../permissions/sandbox-capability.js");
+    const input: WindowsSandboxPlanInputs = { shellRequested: true, workerRequested: true, srtWinReady: true,
+      windowsBuild: null, mxc: { state: "available" } };
+    const approved = deferred<void>();
+    const entered = deferred<void>();
+    try {
+      capability.setShellSandboxRequestedAtBoot(true);
+      capability.setActiveSandboxCapability(windowsProxyOnlyCapability());
+      capability.setWindowsSandboxSubstrate(windowsSubstrateFor(input, "proxy-only"), mxcShellCapability());
+      const plan = capability.getHostShellExecutionPlan();
+      state.shellPlan = plan;
+      const generation = capability.getSandboxGeneration();
+      state.holderSpawn.mockResolvedValue(fakeHolder({ stdout: '{"action":"allow","reason":"approved container hook"}' }).holder);
+      const running = runOneHookScript(userHook(["powershell.exe", "-File", "C:\\hooks\\check.ps1"]), PAYLOAD, {
+        cwd: "D:\\work", authorizeCommand: async () => {
+          entered.resolve();
+          await approved.promise;
+          return { decision: "allow", reason: "approved", plan };
+        },
+      });
+      await entered.promise;
+      capability.setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: "win32", reason: "session isolation ready",
+        confines: { filesystem: true, process: false, network: true } });
+      capability.setWindowsSandboxSubstrate(windowsSubstrateFor(input, "srt-win"), mxcShellCapability());
+      state.shellPlan = capability.getHostShellExecutionPlan();
+      expect(capability.getSandboxGeneration()).not.toBe(generation);
+      approved.resolve();
+      expect(await running).toMatchObject({ decision: "allow", reason: "approved container hook" });
+      expect(state.holderSpawn).toHaveBeenCalledOnce();
+      expect(state.legacySpawn).not.toHaveBeenCalled();
+    } finally {
+      approved.resolve();
+      capability.__resetActiveSandboxCapabilityForTest();
+      capability.__resetSandboxRequestedAtBootForTest();
+      capability.__resetWindowsSandboxSubstrateForTest();
+    }
+  });
+
+  it("refuses an admitted hook when confinement changes under the same plan identity", async () => {
+    const plan = shellPlan("mxc");
+    const options = admitUnder(plan);
+    state.holderSpawn.mockResolvedValue(fakeHolder({ stdout: '{"action":"allow","reason":"hook ran"}' }).holder);
+    state.shellPlan = { ...plan, capability: { ...plan.capability, confines: { filesystem: true, process: true, network: false } } };
+    const result = await runOneHookScript(userHook(["powershell.exe", "-File", "C:\\hooks\\check.ps1"]), PAYLOAD, options);
+    expect(result).toMatchObject({ decision: "deny", reason: "hook shell execution policy changed during approval" });
+    expect(state.holderSpawn).not.toHaveBeenCalled();
+    expect(state.legacySpawn).not.toHaveBeenCalled();
+  });
+
   it("keeps an srt-win plan's route under a container extension backend, carrying the issued plan", async () => {
     const options = admitUnder(shellPlan("asrt"));
     await runOneHookScript(userHook(["C:\\tools\\check.exe"]), PAYLOAD, options);
