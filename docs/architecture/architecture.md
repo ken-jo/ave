@@ -1370,22 +1370,55 @@ the rows are merged into a single list ordered by `modifiedAt`. A request that
 names no family is answered from the main store alone under its `kind` filter,
 which is what every caller but the sidebar wants.
 
+Each store receives the same bounded row limit and time cursor. The federated
+rows are sorted by modification time and id, then limited again. The last row
+in `sessions` remains the continuation cursor. Primary-page summary reads stay
+bounded by the requested page. A sidebar query also returns one complete projection of
+page rows, running or attention rows, and their full same-project ancestor
+chains. Ancestor recovery guards cycles and reports ancestry beyond 64 levels.
+Main slices conversation and open-surface roots per project while retaining branches with running,
+attention or selected descendants. Running and attention flags are read after
+the asynchronous structure reads and returned with the rows.
+
+Activity, start and completion events are re-query hints. Session hydration
+starts the first query; title and deletion handlers request the same refresh.
+The renderer coalesces them into at most one query in flight and one pending
+query. The request sequence advances when a query starts. Coalesced hints
+leave the in-flight response eligible to replace the entire sidebar state
+for the requested slice and its required branches and ancestors.
+It applies no event deltas or separate activity snapshots. Expanding a parent
+adds its id to the next query, which loads direct children by parent id and
+returns the complete projection again. The same request ordering covers
+successive expansions of each parent.
+
 | Family | Store | Row | Opens |
 | --- | --- | --- | --- |
 | `main` | main | chat glyph, the conversation's title | the conversation, in the focused tile |
 | `routine` | main (`sessionKind: "routine"`) | routine glyph, the run's title | the run, through the same session-load path the routine panel uses |
 | `work-board` | sub-agent (origin names an item) | work glyph, the item's title | the board item, newest run transcript expanded |
+| `subagent` | sub-agent | child title, nested beneath its parent | read-only child transcript |
 | `side-chat` | side-chat | side-chat glyph, nested under its live pane or listed ordinarily | the bound live terminal or page and its pane chat; with no live pane binding, the conversation and its side-chat tab |
 
-A sub-agent session that is not an item's run has no family and is not listed:
-it is already reachable inside its parent conversation's sub-agent tab, and a
-row beside the conversation would say the same thing twice.
+Ordinary child sessions use the `subagent` family. The list carries their existing
+host-written `originSessionId` from the sub-agent store; checkpoint ancestry is
+unrelated. The sidebar nests them beneath a listed parent in the same project,
+without moving an orphan or a child from another project out of its own list.
+Branches default to collapsed away from the selected parent and stay expanded
+while a descendant is selected or running. The existing tree levels, roving
+focus and arrow navigation apply to these rows too. A child opens the read-only
+transcript viewer. Reading a child of an inactive or deleted parent requires
+proof of the exact origin-child relationship from host-written metadata through
+an explicit sidebar read scope. Tile and side-chat transcript reads retain their
+active-parent requirement; sidebar reads never use transcript references as an
+ownership substitute.
 
 Only a `main` row carries the main store's actions. Every other family is
 read-only in the list — open, and nothing else: no rename, archive, pin, delete
-or drag, because those act on the main session store and three of the four
-families do not live in it. Archived conversations keep their existing
-behaviour; archiving hides a row, and a family never did.
+or drag, because those actions target ordinary conversations in the main store.
+Main hides archived branches unless they are selected or contain a running or
+attention session. Required archived ancestors carry `context: true` and keep
+their archived styling. The renderer draws every returned row and partitions
+the projection into project and pane groups.
 
 A side chat records the conversation it was started beside as its
 `originSessionId`, written by the host on the turn that first gives the side

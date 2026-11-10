@@ -8,6 +8,7 @@ import { ThemeProvider } from "./theme/index.js";
 import { OverlayContextProvider, type OverlayItem } from "./context/OverlayContext.js";
 import { CustomTitleBar } from "./components/CustomTitleBar.js";
 import { MainToolbar } from "./MainToolbar.js";
+import { SubAgentConversationDialog } from "./dialogs/SubAgentConversationDialog.js";
 import { Sidebar, type SidebarLaunchKind } from "./components/Sidebar.js";
 import { MarketplaceAnnouncementBanner } from "./components/MarketplaceAnnouncementBanner.js";
 import { DeprecatedModelNotice, RetiredProviderNotice } from "./components/RetiredProviderNotice.js";
@@ -162,7 +163,7 @@ export function App() {
   const chatGroupSessions = useMemo(() => new ChatGroupSessionRegistry(), []);
 
   // The conversation list belongs to the window, independently of tile sessions.
-  const { sessions, refreshSessions } = useSessionList(api);
+  const { sessions, hiddenRoots, hasArchived, visibleSurfaceIds, refreshSessions, configureSessions } = useSessionList(api);
 
   // Window-scoped toasts subscribe before plugin auth can emit them.
   const {
@@ -898,7 +899,7 @@ export function App() {
     const tile = tileSessions.find((candidate) => candidate.sessionId === sessionId || candidate.sideChat?.sessionId === sessionId);
     return tile === undefined || tile.paneHidden || (tile.sideChat?.sessionId === sessionId && !tile.sideChat.shown);
   });
-  const workingSessions = useMemo(() => selectWorkingSessionIds(tileSessions, sessions), [tileSessions, sessions]);
+  const workingSessions = useMemo(() => new Set([...selectWorkingSessionIds(tileSessions, sessions), ...sessions.filter((row) => row.running).map((row) => row.id)]), [tileSessions, sessions]);
   const laneApprovalHead = pendingAnswers.unattributed[0] ?? null;
   const suggestionsPendingCount = useMemo(
     () => overlayQueue.filter((card) => isSuggestionsSession(card.originSessionId)).length,
@@ -1599,6 +1600,7 @@ export function App() {
   }, [handleViewSelect]);
 
   /** Side-chat requests are one-shot events; nonce distinguishes repeated requests for the same ids. */
+  const [openSubAgentSession, setOpenSubAgentSession] = useState<SessionSummary | null>(null);
   const [sideChatOpenRequest, setSideChatOpenRequest] = useState<SideChatOpenRequest | null>(null);
   const sideChatRequestNonce = useRef(0);
   const openSideChat = useCallback(async (sideChatSessionId: string, originSessionId?: string) => {
@@ -2428,6 +2430,11 @@ export function App() {
                 inactivePluginCards={inactivePluginCards}
                 pluginAuthStatuses={pluginAuthStatuses}
                 sessions={sessions}
+                hiddenRoots={hiddenRoots}
+                hasArchived={hasArchived}
+                visibleSurfaceIds={visibleSurfaceIds}
+                onSessionListOptionsChange={configureSessions}
+                pinnedSessionIds={starred.filter((item) => item.messageIndex === -1).map((item) => item.sessionId)}
                 currentSessionId={currentSessionId}
                 onLoadSession={async (sessionId) => {
                   const loaded = await handleLoadSessionAndRefresh(sessionId);
@@ -2435,10 +2442,12 @@ export function App() {
                   return loaded;
                 }}
                 onOpenWorkBoardItem={openWorkBoardItem}
+                activeSubAgentSessionId={openSubAgentSession?.id}
+                onOpenSubAgent={setOpenSubAgentSession}
                 onOpenPaneChat={openPaneChat}
                 onOpenSideChat={(sideChatSessionId, originSessionId) =>
                   void openSideChat(sideChatSessionId, originSessionId)}
-                pendingAnswerSessionIds={pendingAnswers.sessionIds}
+                pendingAnswerSessionIds={new Set([...pendingAnswers.sessionIds, ...sessions.filter((row) => row.attention).map((row) => row.id)])}
                 suggestionsPendingCount={suggestionsPendingCount}
                 pluginRequestPending={pendingAnswers.unattributed.length > 0}
                 hasApiKey={effectiveLlmReady}
@@ -2789,6 +2798,7 @@ export function App() {
             </div>
 
             {/* App-level dialogs that remain available after removing setup flows. */}
+            {openSubAgentSession && <SubAgentConversationDialog api={api} session={sessions.find((row) => row.id === openSubAgentSession.id) ?? openSubAgentSession} onClose={() => setOpenSubAgentSession(null)} />}
             <RecentlyDeniedDialog open={recentlyDeniedOpen} onOpenChange={setRecentlyDeniedOpen} />
             <SpotlightTour
               api={api}

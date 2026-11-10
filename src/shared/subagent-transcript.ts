@@ -4,6 +4,8 @@ import type { SerializedHistoryMessage } from "./chat-history.js";
 export interface SubAgentTranscriptRequest {
   originSessionId: string;
   childSessionId: string;
+  /** Window-owned sidebar reads require persisted ownership, independent of the active tile. */
+  scope?: "sidebar";
 }
 
 export type SubAgentTranscriptResult =

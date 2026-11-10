@@ -9,6 +9,8 @@ import {
   SESSION_FAMILIES,
   SESSION_LIST_MAX_LIMIT,
   type SessionListRow,
+  type SessionListQuery,
+  type SessionListResult,
 } from "../../../shared/session-lookup.js";
 
 /**
@@ -49,22 +51,61 @@ function sessionProjectFromHistory(
  * which session a tile is holding is that tile's own business. Keeping them in
  * one hook meant every tile would have refetched the list, and the sidebar
  * would have had to pick one tile's copy of it to render.
+ * Session hydration starts the initial query. Callers refresh after title,
+ * deletion and other mutations; spawn and reconnect hints are subscribed here.
  */
 export function useSessionList(api: AveApi) {
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [projection, setProjection] = useState<NonNullable<SessionListResult["sidebar"]>>({ rows: [], hiddenRoots: {} });
+  const options = useRef<NonNullable<SessionListQuery["sidebar"]>>({ rootLimit: 20, expandedParentIds: [] });
+  const sequence = useRef(0);
+  const lifetime = useRef(0);
+  const subscribedApi = useRef(api);
+  const refreshQueue = useRef<{ running: Promise<void> | null; pending: boolean }>({ running: null, pending: false });
 
-  const refreshSessions = useCallback(async () => {
-    try {
-      // Request all session families with the widest allowed page so routine and side-chat rows do not crowd out conversations.
-      const r = await api.chatSessions({
-        families: [...SESSION_FAMILIES],
-        limit: SESSION_LIST_MAX_LIMIT,
-      });
-      setSessions(r.sessions);
-    } catch { /* ignore */ }
+  const refreshSessions = useCallback((): Promise<void> => {
+    const queue = refreshQueue.current;
+    if (queue.running) { queue.pending = true; return queue.running; }
+    const epoch = lifetime.current;
+    const request = (async () => {
+      try {
+        do {
+          queue.pending = false;
+          const issued = ++sequence.current;
+          try {
+            const result = await api.chatSessions({ families: [...SESSION_FAMILIES], limit: SESSION_LIST_MAX_LIMIT, sidebar: options.current });
+            if (epoch === lifetime.current && issued === sequence.current && result.sidebar) setProjection(result.sidebar);
+          } catch { /* A later refresh can retry. */ }
+        } while (queue.pending && epoch === lifetime.current);
+      } finally { queue.running = null; }
+    })();
+    queue.running = request;
+    return request;
   }, [api]);
 
-  return { sessions, refreshSessions };
+  const configureSessions = useCallback((next: NonNullable<SessionListQuery["sidebar"]>) => {
+    if (JSON.stringify(options.current) === JSON.stringify(next)) return;
+    options.current = next;
+    void refreshSessions();
+  }, [refreshSessions]);
+
+  useEffect(() => {
+    if (subscribedApi.current !== api) {
+      subscribedApi.current = api;
+      setProjection({ rows: [], hiddenRoots: {} });
+      void refreshSessions();
+    }
+    const unsubscribe = api.onAgentSpawnEvent?.(() => { void refreshSessions(); });
+    const reconnect = () => { void refreshSessions(); };
+    window.addEventListener("online", reconnect);
+    return () => {
+      lifetime.current += 1;
+      refreshQueue.current = { running: null, pending: false };
+      window.removeEventListener("online", reconnect);
+      unsubscribe?.();
+    };
+  }, [api, refreshSessions]);
+
+  return { sessions: projection.rows, hiddenRoots: projection.hiddenRoots, hasArchived: projection.hasArchived, visibleSurfaceIds: projection.visibleSurfaceIds, refreshSessions, configureSessions };
 }
 
 export interface CurrentSessionDeps {

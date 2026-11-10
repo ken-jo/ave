@@ -1,14 +1,14 @@
 /** Partial-ID lookup spans all persisted kinds, not recency. Main and renderer share the match rule and IPC page ceiling. */
 
 /**
- * Largest page `ave:chat:sessions` will return. The handler clamps to this,
- * so asking for more is indistinguishable from asking for exactly this.
+ * Largest primary row page `ave:chat:sessions` accepts. The handler applies
+ * the same row limit and time cursor to each participating store.
  */
 export const SESSION_LIST_MAX_LIMIT = 100;
 
 export type SessionKind = "main" | "routine" | "subagent";
 
-/** The main store lists main and routine kinds only; subagent runs arrive through the work-board family. */
+/** The main store lists main and routine kinds only; child sessions use their own store. */
 export type SessionListKindFilter = Exclude<SessionKind, "subagent"> | "all";
 
 /** Key by the union so a new filter cannot be omitted from runtime validation. */
@@ -23,7 +23,7 @@ export function isSessionListKindFilter(value: unknown): value is SessionListKin
 }
 
 /** Main and routine use the main store; work-board and side-chat rows come from separate stores. */
-export type SessionFamily = "main" | "routine" | "work-board" | "side-chat";
+export type SessionFamily = "main" | "routine" | "work-board" | "side-chat" | "subagent";
 
 /** Key by the union so adding a family cannot leave runtime validation silently incomplete. */
 const SESSION_FAMILY_TABLE: Readonly<Record<SessionFamily, true>> = Object.freeze({
@@ -31,6 +31,7 @@ const SESSION_FAMILY_TABLE: Readonly<Record<SessionFamily, true>> = Object.freez
   "routine": true,
   "work-board": true,
   "side-chat": true,
+  subagent: true,
 });
 
 export const SESSION_FAMILIES: readonly SessionFamily[] = Object.freeze(
@@ -42,7 +43,7 @@ export function isSessionFamily(value: unknown): value is SessionFamily {
   return typeof value === "string" && Object.hasOwn(SESSION_FAMILY_TABLE, value);
 }
 
-/** Main stamps family once for every consumer. originSessionId is a side-chat parent, distinct from checkpoint/fork parentSessionId. */
+/** Main stamps family once for every consumer. originSessionId is a side-chat or sub-agent parent, distinct from checkpoint/fork parentSessionId. */
 export interface SessionListRow {
   id: string;
   modifiedAt: string;
@@ -54,7 +55,7 @@ export interface SessionListRow {
   /** Present on a work-board run row — the item it opens. */
   workBoardItemId?: number;
   /**
-   * Present on a side-chat row — the conversation it belongs to, so the
+   * Present on a side-chat or sub-agent row — the conversation it belongs to, so the
    * sidebar can draw it under that conversation instead of beside it.
    */
   originSessionId?: string;
@@ -73,6 +74,11 @@ export interface SessionListRow {
   archivedAt?: string;
   /** ISO time the user marked it unread. Absent = read. */
   unreadSince?: string;
+  running?: boolean;
+  attention?: boolean;
+  hasChildren?: boolean;
+  /** Archived row retained as required branch context while archived rows are hidden. */
+  context?: boolean;
 }
 
 /** Request all kinds at the IPC ceiling; renderer lookup remains capped while engine lookup sees all sessions. */
@@ -96,4 +102,38 @@ const SESSION_ID_DISPLAY_LENGTH = 8;
 
 export function shortSessionId(sessionId: string): string {
   return sessionId.slice(0, SESSION_ID_DISPLAY_LENGTH);
+}
+
+/** One primary row page, with related parents kept outside its continuation cursor. */
+export interface SessionListResult {
+  current: string;
+  sessions: SessionListRow[];
+  /** Running rows and complete ancestor context, outside the primary cursor. */
+  related?: SessionListRow[];
+  /** Complete main-owned sidebar projection, replaced as one response. */
+  sidebar?: { rows: SessionListRow[]; hiddenRoots: Record<string, number>; hasArchived?: boolean; visibleSurfaceIds?: string[] };
+}
+
+export interface SessionSidebarQuery {
+  rootLimit: number;
+  rootLimits?: Record<string, number>;
+  expandedParentIds: string[];
+  selectedSessionId?: string;
+  pinnedSessionIds?: string[];
+  showArchived?: boolean;
+  surfaces?: { id: string; projectRoot?: string; modifiedAt: string; boundSessionIds?: string[] }[];
+  defaultProjectRoot?: string;
+  projectRoots?: string[];
+}
+
+export interface SessionListQuery {
+  kind?: SessionListKindFilter;
+  families?: SessionFamily[];
+  routineId?: string;
+  projectRoot?: string;
+  limit?: number;
+  before?: string;
+  beforeId?: string;
+  after?: string;
+  sidebar?: SessionSidebarQuery;
 }

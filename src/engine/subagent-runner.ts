@@ -116,6 +116,8 @@ import {
   type A2AProjectedTaskState,
 } from "../shared/a2a.js";
 import type {
+  SessionActivity,
+  SessionActivitySnapshot,
   SubAgentRunStatus,
   SubAgentSuspension,
 } from "../shared/subagent-events.js";
@@ -1981,6 +1983,35 @@ export class SubAgentRunner {
       kind: "subagent",
       workBoardRuns: true,
     });
+  }
+
+  /** List ordinary child conversations from the same store that records their origin. */
+  listSubAgentSessions(
+    options: Pick<ListSessionsOptions, "limit" | "before" | "beforeId" | "after" | "projectRoot" | "includeUnscoped" | "originSessionId"> = {},
+  ): SessionListEntry[] {
+    return this.deps.subAgentMemoryManager.sessions.listSessionsPage({ ...options, kind: "subagent", workBoardRuns: false });
+  }
+
+  getSessionListEntry(sessionId: string): SessionListEntry | null {
+    const session = this.deps.subAgentMemoryManager.sessions.getSessionListEntry(sessionId);
+    return session?.sessionKind === "subagent" ? session : null;
+  }
+
+  listSubAgentSessionParents(): { originSessionId: string; projectRoot?: string }[] {
+    return this.deps.subAgentMemoryManager.sessions.listSubAgentSessionParents();
+  }
+
+  getSessionActivity(sessionId: string): SessionActivity | undefined {
+    const run = this.trackedRuns.get(sessionId);
+    if (!run) return undefined;
+    const status = this.snapshotRun(run).status;
+    return { sessionId, running: status === "running", attention: status === "waiting" };
+  }
+
+  getSessionActivitySnapshot(): SessionActivitySnapshot {
+    const sessions = [...new Set([...this.uniqueTrackedRuns()].map((run) => run.childSessionId))].map((id) => this.getSessionActivity(id))
+      .filter((row): row is SessionActivity => row !== undefined);
+    return { sessions };
   }
 
   /** Whether `childSessionId` is a sub-agent this exact parent spawned. Answers ownership from the record the HOST wrote at spawn time rather than from the parent's transcript, which compaction may have stripped

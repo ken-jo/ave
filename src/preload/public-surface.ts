@@ -15,7 +15,7 @@ import type {
 } from "../shared/chat-origin.js";
 import type { SerializedHistoryMessage } from "../shared/chat-history.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../shared/subagent-transcript.js";
-import type { SessionFamily, SessionListKindFilter, SessionListRow } from "../shared/session-lookup.js";
+import type { SessionListQuery, SessionListResult } from "../shared/session-lookup.js";
 import type { ChatStreamEvent } from "../lib/chat-stream-state.js";
 import type { AvePreloadApi } from "../ui/renderer/types.js";
 
@@ -73,11 +73,8 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     userActivation: consumeUserKeyboardIntent(userIntent),
   }),
   chatNew: async (opts?: { projectRoot?: string; projectName?: string }) => ipcRenderer.invoke(CHANNELS.chat.new, opts, chatGroupId),
-  chatSessions: async (opts?: { kind?: SessionListKindFilter; families?: SessionFamily[]; routineId?: string; projectRoot?: string; limit?: number; before?: string; beforeId?: string; after?: string }) =>
-    ipcRenderer.invoke(CHANNELS.chat.sessions, opts) as Promise<{
-      current: string;
-      sessions: SessionListRow[];
-    }>,
+  chatSessions: async (opts?: SessionListQuery) =>
+    ipcRenderer.invoke(CHANNELS.chat.sessions, opts) as Promise<SessionListResult>,
   chatGetHistory: async () =>
     ipcRenderer.invoke(CHANNELS.chat.getHistory, chatGroupId) as Promise<{
       sessionId: string;

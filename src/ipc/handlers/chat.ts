@@ -25,11 +25,13 @@ import {
   SESSION_LIST_MAX_LIMIT,
   type SessionFamily,
   type SessionListRow,
+  type SessionListResult,
+  type SessionSidebarQuery,
 } from "../../shared/session-lookup.js";
 import type { IpcDeps } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
 import { isValidSessionId } from "../../shared/session-id.js";
-import { MAX_PROJECT_NAME_CHARS, MAX_PROJECT_ROOT_CHARS, sessionFamilyOf, toSessionListRow } from "../../memory/session-repository.js";
+import { MAX_PROJECT_NAME_CHARS, MAX_PROJECT_ROOT_CHARS, sessionFamilyOf, toSessionListRow, type SessionListEntry } from "../../memory/session-repository.js";
 import { type SessionKind } from "../../shared/session-lookup.js";
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
@@ -561,8 +563,8 @@ function requestedSessionFamilies(raw: unknown): ReadonlySet<SessionFamily> | un
 // Federate requested conversation families across their owning stores with one shared pagination contract.
 export async function handleChatSessions(
   deps: IpcDeps,
-  opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown; families?: unknown },
-) {
+  opts?: { limit?: unknown; before?: unknown; beforeId?: unknown; after?: unknown; kind?: unknown; routineId?: unknown; projectRoot?: unknown; families?: unknown; sidebar?: unknown },
+): Promise<SessionListResult> {
   const { conversationLoop, memoryManager } = deps;
   const limit = typeof opts?.limit === "number" && Number.isFinite(opts.limit)
     ? Math.max(1, Math.min(SESSION_LIST_MAX_LIMIT, Math.floor(opts.limit)))
@@ -602,17 +604,238 @@ export async function handleChatSessions(
     return { current: conversationLoop.getSessionId(), sessions };
   }
   const pageWindow = { limit, before, beforeId, after, projectRoot, includeUnscoped };
+  const sidebar = sessionSidebarQuery(opts?.sidebar);
   const federated = [
     ...sessions,
     ...(families.has("work-board") ? await workBoardRunRows(deps, pageWindow) : []),
     ...(families.has("side-chat") ? sideChatRows(deps, pageWindow) : []),
+    ...(families.has("subagent") ? subAgentRows(deps, pageWindow) : []),
   ]
     .sort((a, b) => {
       const delta = b.modifiedAt.localeCompare(a.modifiedAt);
       return delta !== 0 ? delta : b.id.localeCompare(a.id);
     })
     .slice(0, limit);
-  return { current: conversationLoop.getSessionId(), sessions: federated };
+  const expanded: SessionListRow[] = [];
+  if (sidebar && families.has("subagent")) {
+    for (const id of sidebar.expandedParentIds) {
+      const parent = federated.find((row) => row.id === id) ?? await sessionRowById(deps, id);
+      if (!parent || projectRoot !== undefined && !projectRootEquals(parent.projectRoot, projectRoot) && !(includeUnscoped && parent.projectRoot === undefined)) continue;
+      expanded.push(parent, ...subAgentRows(deps, { limit: SESSION_LIST_MAX_LIMIT, originSessionId: id, projectRoot: parent.projectRoot, includeUnscoped: false })
+        .filter((child) => sameSessionProject(parent, child)));
+    }
+  }
+  const activity = deps.getSubAgentRunner?.()?.getSessionActivitySnapshot().sessions ?? [];
+  const running: SessionListRow[] = [];
+  if (families.has("subagent")) {
+    for (const state of activity) {
+      if (!state.running && !state.attention || federated.some((row) => row.id === state.sessionId)) continue;
+      const row = await sessionRowById(deps, state.sessionId);
+      if (row?.family === "subagent" && (projectRoot === undefined || projectRootEquals(row.projectRoot, projectRoot) || includeUnscoped && row.projectRoot === undefined)) running.push(row);
+    }
+  }
+  const related = [...running, ...expanded, ...await sessionPageParents(deps, [...federated, ...running, ...expanded])];
+  const rows = [...new Map([...federated, ...related].map((row) => [row.id, row])).values()];
+  const projection = sidebar ? sidebarSessionRows(deps, rows, deps.getSubAgentRunner?.()?.getSessionActivitySnapshot().sessions ?? [], sidebar) : undefined;
+  return { current: conversationLoop.getSessionId(), sessions: federated, related, ...(projection ? { sidebar: projection } : {}) };
+}
+
+function sessionSidebarQuery(value: unknown): SessionSidebarQuery | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object") throw new Error("Invalid sidebar query");
+  const query = value as Partial<SessionSidebarQuery>;
+  if (typeof query.rootLimit !== "number" || !Number.isFinite(query.rootLimit) || !Array.isArray(query.expandedParentIds)) {
+    throw new Error("Invalid sidebar query");
+  }
+  return {
+    rootLimit: Math.max(1, Math.min(SESSION_LIST_MAX_LIMIT, Math.floor(query.rootLimit))),
+    rootLimits: query.rootLimits,
+    expandedParentIds: [...new Set(query.expandedParentIds.slice(0, SESSION_LIST_MAX_LIMIT).filter(isValidSessionId))],
+    selectedSessionId: isValidSessionId(query.selectedSessionId) ? query.selectedSessionId : undefined,
+    pinnedSessionIds: Array.isArray(query.pinnedSessionIds) ? query.pinnedSessionIds.slice(0, SESSION_LIST_MAX_LIMIT).filter(isValidSessionId) : [],
+    showArchived: query.showArchived === true,
+    surfaces: Array.isArray(query.surfaces) ? query.surfaces.slice(0, SESSION_LIST_MAX_LIMIT).flatMap((surface) => {
+      if (!surface || typeof surface !== "object"
+        || typeof surface.id !== "string" || surface.id.length === 0 || surface.id.length > 256
+        || typeof surface.modifiedAt !== "string" || surface.modifiedAt.length > 64
+        || !Number.isFinite(Date.parse(surface.modifiedAt))) return [];
+      return [{
+        id: surface.id,
+        projectRoot: normalizeProjectString(surface.projectRoot, MAX_PROJECT_ROOT_CHARS),
+        modifiedAt: new Date(surface.modifiedAt).toISOString(),
+        boundSessionIds: Array.isArray(surface.boundSessionIds)
+          ? surface.boundSessionIds.slice(0, SESSION_LIST_MAX_LIMIT).filter(isValidSessionId)
+          : [],
+      }];
+    }) : [],
+    defaultProjectRoot: normalizeProjectString(query.defaultProjectRoot, MAX_PROJECT_ROOT_CHARS),
+    projectRoots: Array.isArray(query.projectRoots) ? query.projectRoots.slice(0, SESSION_LIST_MAX_LIMIT).flatMap((root) => {
+      const normalized = normalizeProjectString(root, MAX_PROJECT_ROOT_CHARS);
+      return normalized ? [normalized] : [];
+    }) : undefined,
+  };
+}
+
+function sameSessionProject(left: SessionListRow, right: SessionListRow): boolean {
+  return left.projectRoot === undefined && right.projectRoot === undefined || projectRootEquals(left.projectRoot, right.projectRoot);
+}
+
+/** Choose visible branches once, together with the live state that keeps them reachable. */
+function sidebarSessionRows(
+  deps: IpcDeps,
+  rows: SessionListRow[],
+  activity: readonly { sessionId: string; running: boolean; attention: boolean }[],
+  query: SessionSidebarQuery,
+): NonNullable<SessionListResult["sidebar"]> {
+  const hasArchived = rows.some((row) => row.archivedAt !== undefined);
+  const paneSurfaces = new Map<string, string>();
+  for (const row of rows) {
+    const surface = row.family === "side-chat" && row.paneTabId
+      ? query.surfaces?.find((surface) => surface.id === row.paneTabId && surface.boundSessionIds?.includes(row.id))
+      : undefined;
+    if (surface) paneSurfaces.set(row.id, surface.id);
+  }
+  rows = rows.filter((row) => row.family !== "side-chat" || !row.paneTabId || row.archivedAt || paneSurfaces.has(row.id));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const parentOf = new Map<string, string>();
+  for (const row of rows) {
+    const parent = row.family === "subagent" && row.originSessionId ? byId.get(row.originSessionId) : undefined;
+    if (parent && sameSessionProject(row, parent)) parentOf.set(row.id, parent.id);
+  }
+  for (const id of parentOf.keys()) {
+    const seen = new Set([id]);
+    let next = parentOf.get(id);
+    while (next !== undefined) {
+      if (seen.has(next)) { parentOf.delete(next); break; }
+      seen.add(next);
+      next = parentOf.get(next);
+    }
+  }
+  const rootOf = (id: string): string => {
+    let root = id;
+    for (let parent = parentOf.get(root); parent !== undefined; parent = parentOf.get(root)) {
+      root = parent;
+    }
+    return root;
+  };
+  const active = new Map(activity.map((state) => [state.sessionId, state]));
+  const retained = new Set(activity.filter((state) => state.running || state.attention).map((state) => state.sessionId));
+  if (query.selectedSessionId) retained.add(query.selectedSessionId);
+  for (const id of retained) {
+    const parent = parentOf.get(id);
+    if (parent) retained.add(parent);
+  }
+  const retainedRoots = new Set([...retained].map(rootOf));
+  const isArchiveVisible = (id: string): boolean => {
+    if (query.showArchived || retained.has(id)) return true;
+    for (let current: string | undefined = id; current !== undefined; current = parentOf.get(current)) {
+      if (byId.get(current)?.archivedAt) return false;
+    }
+    return true;
+  };
+  const retainedSurfaces = new Set([...retainedRoots].map((id) => paneSurfaces.get(id)));
+  const pinned = new Set(query.pinnedSessionIds);
+  const roots = [
+    ...rows.filter((row) => !parentOf.has(row.id) && !paneSurfaces.has(row.id) && isArchiveVisible(row.id))
+      .map((row) => ({ ...row, surface: false, pinned: pinned.has(row.id) })),
+    ...(query.surfaces ?? []).map((surface) => ({ ...surface, surface: true, pinned: false })),
+  ].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.modifiedAt.localeCompare(a.modifiedAt) || Number(a.surface) - Number(b.surface) || b.id.localeCompare(a.id));
+  const visible = new Set<string>();
+  const visibleSurfaceIds: string[] = [];
+  const counts = new Map<string, number>();
+  const hiddenRoots: Record<string, number> = Object.create(null);
+  for (const root of roots) {
+    const key = query.projectRoots
+      ? query.projectRoots.find((project) => projectRootEquals(root.projectRoot, project)) ?? query.defaultProjectRoot ?? ""
+      : root.projectRoot ?? query.defaultProjectRoot ?? "";
+    const count = counts.get(key) ?? 0;
+    counts.set(key, count + 1);
+    const requested = query.rootLimits && Object.hasOwn(query.rootLimits, key) ? query.rootLimits[key] : query.rootLimit;
+    const limit = typeof requested === "number" && Number.isFinite(requested) ? Math.max(1, Math.min(SESSION_LIST_MAX_LIMIT, Math.floor(requested))) : query.rootLimit;
+    if (count < limit || (root.surface ? retainedSurfaces.has(root.id) : retainedRoots.has(root.id))) {
+      if (root.surface) visibleSurfaceIds.push(root.id);
+      else visible.add(root.id);
+    }
+    else hiddenRoots[key] = (hiddenRoots[key] ?? 0) + 1;
+  }
+  const parents = deps.getSubAgentRunner?.()?.listSubAgentSessionParents() ?? [];
+  return {
+    rows: rows.filter((row) => isArchiveVisible(row.id) && (visible.has(rootOf(row.id)) || visibleSurfaceIds.includes(paneSurfaces.get(rootOf(row.id)) ?? ""))).map((row) => ({
+      ...row,
+      context: !query.showArchived && Boolean(row.archivedAt),
+      running: active.get(row.id)?.running ?? false,
+      attention: active.get(row.id)?.attention ?? false,
+      hasChildren: parents.some((child) => child.originSessionId === row.id && (child.projectRoot === undefined && row.projectRoot === undefined || projectRootEquals(child.projectRoot, row.projectRoot))),
+    })),
+    hiddenRoots,
+    hasArchived,
+    visibleSurfaceIds,
+  };
+}
+
+const SESSION_ANCESTOR_MAX_DEPTH = 64;
+
+/** Supplemental rows never change the primary page's last-row cursor. */
+async function sessionPageParents(deps: IpcDeps, page: readonly SessionListRow[]): Promise<SessionListRow[]> {
+  const present = new Set(page.map((row) => row.id));
+  const lookedUp = new Map<string, SessionListRow | null>(page.map((row) => [row.id, row]));
+  const parents: SessionListRow[] = [];
+  for (const child of page) {
+    const seen = new Set([child.id]);
+    let current = child;
+    let depth = 0;
+    while (current.family === "subagent" && current.originSessionId) {
+      const id = current.originSessionId;
+      if (seen.has(id)) break;
+      if (depth === SESSION_ANCESTOR_MAX_DEPTH) {
+        log.error({ sessionId: child.id, ancestorId: id, maxDepth: SESSION_ANCESTOR_MAX_DEPTH },
+          "session-ancestor-depth-exceeded: session ancestry exceeds the depth contract");
+        break;
+      }
+      seen.add(id);
+      if (!lookedUp.has(id)) lookedUp.set(id, await sessionRowById(deps, id));
+      const parent = lookedUp.get(id);
+      if (!parent || !(parent.projectRoot === undefined && current.projectRoot === undefined || projectRootEquals(parent.projectRoot, current.projectRoot))) break;
+      if (!present.has(id)) {
+        parents.push(parent);
+        present.add(id);
+      }
+      current = parent;
+      depth += 1;
+    }
+  }
+  return parents;
+}
+
+async function sessionRowById(deps: IpcDeps, id: string): Promise<SessionListRow | null> {
+  const main = deps.memoryManager.sessions.getSessionListEntry(id);
+  if (main) {
+    const legacyDefault = main.projectRoot !== undefined && isDefaultWorkspaceRoot(main.projectRoot);
+    const row = toSessionListRow("main", legacyDefault ? { ...main, projectRoot: undefined, projectName: undefined } : main);
+    if (row) return row;
+  }
+  const side = deps.sideChatMemoryManager?.sessions.getSessionListEntry(id);
+  if (side) return toSessionListRow("side-chat", side);
+  const child = deps.getSubAgentRunner?.()?.getSessionListEntry(id);
+  if (!child) return null;
+  if (child.workBoardItemId !== undefined) {
+    const rows = await workBoardRunRows(deps, { limit: 1, includeUnscoped: false }, [child]);
+    return rows.at(0) ?? null;
+  }
+  const row = toSessionListRow("subagent", child);
+  return row;
+}
+
+function subAgentRows(
+  deps: IpcDeps,
+  window: { limit: number; before?: Date; beforeId?: string; after?: Date; projectRoot?: string; includeUnscoped: boolean; originSessionId?: string },
+): SessionListRow[] {
+  const runner = deps.getSubAgentRunner?.();
+  if (!runner) return [];
+  return runner.listSubAgentSessions(window).flatMap((session) => {
+    const row = toSessionListRow("subagent", session);
+    return row?.family === "subagent" ? [row] : [];
+  });
 }
 
 async function workBoardRunRows(
@@ -625,11 +848,12 @@ async function workBoardRunRows(
     projectRoot?: string;
     includeUnscoped: boolean;
   },
+  listedRuns?: readonly SessionListEntry[],
 ): Promise<SessionListRow[]> {
   const runner = deps.getSubAgentRunner?.();
   const store = deps.workBoardStore;
   if (!runner || !store) return [];
-  const runs = runner.listWorkBoardRunSessions({
+  const runs = listedRuns ?? runner.listWorkBoardRunSessions({
     limit: window.limit,
     ...(window.before ? { before: window.before } : {}),
     ...(window.beforeId ? { beforeId: window.beforeId } : {}),

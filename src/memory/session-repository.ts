@@ -154,14 +154,14 @@ export interface ToolResultArtifact {
 // Session family depends on the owning store as well as metadata; identical kinds can name different namespaces.
 export type SessionNamespace = "main" | "side-chat" | "subagent";
 
-// Return no family for ordinary spawned children; only work-board runs belong in the sidebar list.
+// Classify spawned conversations from their host-written origin.
 export function sessionFamilyOf(
   namespace: SessionNamespace,
-  session: Pick<SessionListEntry, "sessionKind" | "workBoardItemId">,
+  session: Pick<SessionListEntry, "sessionKind" | "workBoardItemId" | "originSessionId">,
 ): SessionFamily | null {
   if (namespace === "side-chat") return "side-chat";
   if (namespace === "subagent") {
-    return session.workBoardItemId !== undefined ? "work-board" : null;
+    return session.workBoardItemId !== undefined ? "work-board" : isValidSessionId(session.originSessionId) ? "subagent" : null;
   }
   if (session.sessionKind === "main") return "main";
   if (session.sessionKind === "routine") return "routine";
@@ -183,8 +183,8 @@ export function toSessionListRow(
     sessionKind: session.sessionKind,
     family,
     ...(session.workBoardItemId !== undefined ? { workBoardItemId: session.workBoardItemId } : {}),
-    // Only side-chat origins group sidebar rows; spawned children stay in their parent's panel.
-    ...(family === "side-chat" && session.originSessionId
+    // Reuse the host-written conversation origin; checkpoint ancestry is separate.
+    ...((family === "side-chat" || family === "subagent") && session.originSessionId
       ? { originSessionId: session.originSessionId }
       : {}),
     ...(family === "side-chat" && session.paneTabId ? { paneTabId: session.paneTabId } : {}),
@@ -214,8 +214,9 @@ export interface RestoredSubAgentSession {
 
 export interface ListSessionsOptions {
   kind?: SessionKind | "all";
-  // Work-board filtering applies only to child sessions whose host-written origin names an item.
+  // True selects item runs; false selects children with a conversation origin.
   workBoardRuns?: boolean;
+  originSessionId?: string;
   routineId?: string;
   projectRoot?: string;
   includeUnscoped?: boolean;
@@ -564,7 +565,7 @@ function extractSearchableContent(messages: unknown[]): string {
 
 function matchesSessionScope(
   metadata: SessionMetadata | null,
-  options: Pick<ListSessionsOptions, "kind" | "workBoardRuns" | "routineId" | "projectRoot" | "includeUnscoped">,
+  options: Pick<ListSessionsOptions, "kind" | "workBoardRuns" | "originSessionId" | "routineId" | "projectRoot" | "includeUnscoped">,
 ): boolean {
   const kind = options.kind ?? "main";
   const sessionKind = metadata?.sessionKind ?? normalizeSessionKind(undefined);
@@ -573,6 +574,9 @@ function matchesSessionScope(
     options.workBoardRuns === true &&
     (sessionKind !== "subagent" || parseWorkBoardOriginSessionId(metadata?.originSessionId) === null)
   ) return false;
+  // Ordinary child rows need a conversation origin; board and unattributed sessions stay internal.
+  if (options.workBoardRuns === false && !isValidSessionId(metadata?.originSessionId)) return false;
+  if (options.originSessionId !== undefined && metadata?.originSessionId !== options.originSessionId) return false;
   if (options.routineId !== undefined && metadata?.routineId !== options.routineId) return false;
   if (
     options.projectRoot !== undefined &&
@@ -1787,6 +1791,16 @@ export class SessionRepository {
       .sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
   }
 
+  /** Parent affordances require metadata only, without reading child summaries. */
+  listSubAgentSessionParents(): { originSessionId: string; projectRoot?: string }[] {
+    return readdirIfPresent(this.sessionsDir).flatMap((file) => {
+      if (!file.endsWith(".jsonl")) return [];
+      const metadata = this.loadSessionMetadata(file.slice(0, -".jsonl".length));
+      if (metadata?.sessionKind !== "subagent" || !isValidSessionId(metadata.originSessionId)) return [];
+      return [{ originSessionId: metadata.originSessionId, ...(metadata.projectRoot ? { projectRoot: metadata.projectRoot } : {}) }];
+    });
+  }
+
   listSessionsPage(options: ListSessionsOptions = {}): SessionListEntry[] {
     const limit = Number.isFinite(options.limit)
       ? Math.max(0, Math.floor(options.limit ?? 0))
@@ -1819,41 +1833,51 @@ export class SessionRepository {
       .map((session) => ({ ...session, metadata: this.loadSessionMetadata(session.id) }))
       .filter((session) => matchesSessionScope(session.metadata, options))
       .slice(0, Number.isFinite(limit) ? limit : undefined)
-      .map((session) => {
-        const metadata = session.metadata;
-        const sessionKind = metadata?.sessionKind ?? normalizeSessionKind(undefined);
-        const workBoardItemId = sessionKind === "subagent"
-          ? parseWorkBoardOriginSessionId(metadata?.originSessionId)
-          : null;
-        const summary = session.size > MAX_SESSION_FILE_BYTES
-          ? {
-              title: metadata?.routineTitle
-                ? t("be_memoryManager.sessionTitleWithRoutine", { routineTitle: metadata.routineTitle })
-                : t("be_memoryManager.sessionTitleShort", { id: session.id.slice(0, 8) }),
-              preview: t("be_memoryManager.sessionPreviewTooLarge"),
-            }
-          : this.readSessionSummary(session.id);
-        return {
-          id: session.id,
-          modifiedAt: session.modifiedAt,
-          sessionKind,
-          title: resolveConversationTitle({ sessionId: session.id, title: metadata?.title || summary.title, routineTitle: metadata?.routineTitle }, t),
-          preview: summary.preview,
-          routineId: metadata?.routineId,
-          routineTitle: metadata?.routineTitle,
-          routineFiredAt: metadata?.routineFiredAt,
-          ...(metadata?.projectRoot ? { projectRoot: metadata.projectRoot } : {}),
-          ...(metadata?.projectName ? { projectName: metadata.projectName } : {}),
-          ...(workBoardItemId !== null ? { workBoardItemId } : {}),
-          ...(isValidSessionId(metadata?.originSessionId) ? { originSessionId: metadata.originSessionId } : {}),
-          ...(metadata?.paneTabId ? { paneTabId: metadata.paneTabId } : {}),
-          ...(metadata?.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
-          ...(metadata?.branchedFromCompactNum !== undefined ? { branchedFromCompactNum: metadata.branchedFromCompactNum } : {}),
-          ...(metadata?.branchedAt ? { branchedAt: metadata.branchedAt } : {}),
-          ...(metadata?.archivedAt ? { archivedAt: metadata.archivedAt } : {}),
-          ...(metadata?.unreadSince ? { unreadSince: metadata.unreadSince } : {}),
-        };
-      });
+      .map((session) => this.toSessionListEntry(session));
+  }
+
+  /** Read one row without enumerating unrelated histories. */
+  getSessionListEntry(sessionId: string): SessionListEntry | null {
+    if (!isValidSessionId(sessionId)) return null;
+    const stat = statPathIfPresent(join(this.sessionsDir, `${sessionId}.jsonl`));
+    if (!stat) return null;
+    return this.toSessionListEntry({ id: sessionId, modifiedAt: stat.mtime, size: stat.size, metadata: this.loadSessionMetadata(sessionId) });
+  }
+
+  private toSessionListEntry(session: { id: string; modifiedAt: Date; size: number; metadata: SessionMetadata | null }): SessionListEntry {
+    const metadata = session.metadata;
+    const sessionKind = metadata?.sessionKind ?? normalizeSessionKind(undefined);
+    const workBoardItemId = sessionKind === "subagent"
+      ? parseWorkBoardOriginSessionId(metadata?.originSessionId)
+      : null;
+    const summary = session.size > MAX_SESSION_FILE_BYTES
+      ? {
+          title: metadata?.routineTitle
+            ? t("be_memoryManager.sessionTitleWithRoutine", { routineTitle: metadata.routineTitle })
+            : t("be_memoryManager.sessionTitleShort", { id: session.id.slice(0, 8) }),
+          preview: t("be_memoryManager.sessionPreviewTooLarge"),
+        }
+      : this.readSessionSummary(session.id);
+    return {
+      id: session.id,
+      modifiedAt: session.modifiedAt,
+      sessionKind,
+      title: resolveConversationTitle({ sessionId: session.id, title: metadata?.title || metadata?.subAgentTitle || summary.title, routineTitle: metadata?.routineTitle }, t),
+      preview: summary.preview,
+      routineId: metadata?.routineId,
+      routineTitle: metadata?.routineTitle,
+      routineFiredAt: metadata?.routineFiredAt,
+      ...(metadata?.projectRoot ? { projectRoot: metadata.projectRoot } : {}),
+      ...(metadata?.projectName ? { projectName: metadata.projectName } : {}),
+      ...(workBoardItemId !== null ? { workBoardItemId } : {}),
+      ...(isValidSessionId(metadata?.originSessionId) ? { originSessionId: metadata.originSessionId } : {}),
+      ...(metadata?.paneTabId ? { paneTabId: metadata.paneTabId } : {}),
+      ...(metadata?.parentSessionId ? { parentSessionId: metadata.parentSessionId } : {}),
+      ...(metadata?.branchedFromCompactNum !== undefined ? { branchedFromCompactNum: metadata.branchedFromCompactNum } : {}),
+      ...(metadata?.branchedAt ? { branchedAt: metadata.branchedAt } : {}),
+      ...(metadata?.archivedAt ? { archivedAt: metadata.archivedAt } : {}),
+      ...(metadata?.unreadSince ? { unreadSince: metadata.unreadSince } : {}),
+    };
   }
 
   listSessionsByRoutine(routineId: string, limit = Number.POSITIVE_INFINITY): SessionListEntry[] {

@@ -18,7 +18,7 @@ import type { ModelCatalogIpcResult } from "../../src/shared/model-catalog/types
 import type { SubscriptionRuntimeStatusUpdatedEvent } from "../../src/shared/subscription-runtime.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../src/shared/subagent-transcript.js";
 import type { SessionSummary } from "../../src/ui/renderer/hooks/use-sessions.js";
-import type { SessionFamily, SessionListKindFilter } from "../../src/shared/session-lookup.js";
+import type { SessionListQuery } from "../../src/shared/session-lookup.js";
 import { terminalSessionFixture } from "../../src/__tests__/support/terminal-session-fixtures.js";
 import { browserControlFixture } from "../../src/__tests__/support/browser-control-fixture.js";
 import type { TerminalDataEvent, TerminalRef, TerminalSessionRef } from "../../src/shared/terminal-session.js";
@@ -553,7 +553,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     }),
     chatGuide: vi.fn(async () => ({ ok: true })),
     chatNew: vi.fn(async () => ({ ok: true })),
-    chatSessions: vi.fn(async (opts?: { kind?: SessionListKindFilter; families?: SessionFamily[]; routineId?: string; limit?: number; before?: string; beforeId?: string; after?: string }) => {
+    chatSessions: vi.fn(async (opts?: SessionListQuery) => {
       const beforeTime = opts?.before ? Date.parse(opts.before) : Number.NaN;
       const afterTime = opts?.after ? Date.parse(opts.after) : Number.NaN;
       const filtered = sessions.filter((session) => {
@@ -575,6 +575,7 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
       return {
         current: currentSession,
         sessions: filtered.slice(0, opts?.limit ?? 20),
+        ...(opts?.sidebar ? { sidebar: { rows: filtered.slice(0, opts.limit ?? 20), hiddenRoots: {} } } : {}),
       };
     }),
     chatSessionResume: vi.fn(async (_id: string) => ({ ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 })),

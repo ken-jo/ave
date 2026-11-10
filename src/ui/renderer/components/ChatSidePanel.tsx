@@ -209,15 +209,17 @@ type TranscriptHydration =
   | { key: string; status: "failed" }
   | { key: string; status: "loaded"; entries: ChatEntry[] };
 
-function SubAgentTranscriptDetail({
+export function SubAgentTranscriptDetail({
   api,
   visible,
   parentSessionId: panelSessionId,
+  transcriptScope,
   sideChatSessionId,
   spawn,
 }: {
   api: AveApi;
   parentSessionId?: string;
+  transcriptScope?: "sidebar";
   sideChatSessionId: string | null;
   spawn: SubAgentSpawn;
   visible: boolean;
@@ -229,7 +231,7 @@ function SubAgentTranscriptDetail({
   const parentSessionId = spawn.parentSessionId ?? panelSessionId;
   const isTerminalSpawn = spawn.status === "done" || spawn.status === "error" || spawn.status === "interrupted";
   const isSideChatSpawn = sideChatSessionId !== null && spawn.parentSessionId === sideChatSessionId;
-  const hydrationKey = `${isSideChatSpawn ? "side-chat" : "tile"}\u0001${parentSessionId ?? ""}\u0001${spawn.childSessionId ?? ""}\u0001${isTerminalSpawn ? "terminal" : "active"}`;
+  const hydrationKey = `${transcriptScope ?? (isSideChatSpawn ? "side-chat" : "tile")}\u0001${parentSessionId ?? ""}\u0001${spawn.childSessionId ?? ""}\u0001${isTerminalSpawn ? "terminal" : "active"}`;
   const getSubAgentTranscript = isSideChatSpawn
     ? api.sideChat?.getSubAgentTranscript
     : api.chatGetSubAgentTranscript;
@@ -244,6 +246,7 @@ function SubAgentTranscriptDetail({
     void getSubAgentTranscript({
       originSessionId: parentSessionId,
       childSessionId: spawn.childSessionId,
+      ...(transcriptScope ? { scope: transcriptScope } : {}),
     }).then((result) => {
       if (cancelled) return;
       setHydrated(result.ok
@@ -259,7 +262,7 @@ function SubAgentTranscriptDetail({
     return () => {
       cancelled = true;
     };
-  }, [getSubAgentTranscript, parentSessionId, spawn.childSessionId, hydrationKey]);
+  }, [getSubAgentTranscript, parentSessionId, spawn.childSessionId, hydrationKey, transcriptScope]);
   // Prevent a one-frame flash from the previous selection before effects run.
   const activeHydration = hydrated?.key === hydrationKey ? hydrated : null;
   const sourceEntries = useMemo(() => {
