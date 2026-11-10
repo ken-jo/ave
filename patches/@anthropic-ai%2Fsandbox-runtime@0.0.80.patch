@@ -1,4 +1,4 @@
-Two backports and ten Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Local runtime corrections and host integration.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -242,6 +242,12 @@ the installed package.
     proxy running, and reset invalidates promotion before awaiting and releasing
     any partial ACL state. Concurrent resets share one completion and release.
     Ordinary initialize uses the same preparation path.
+
+15. Object-local parent deletion guards. The carried native source patch keeps
+    the parent guard on its own object, adds inheritable delete-child protection
+    to full denies, and preserves propagation for inheritable policy changes
+    and legacy cleanup. Native builds verify fixed source and patch inputs,
+    then embed their exact binary receipts in the host bundle.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
@@ -259,7 +265,7 @@ index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b
  export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
  export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
 diff --git a/dist/sandbox/http-proxy.d.ts b/dist/sandbox/http-proxy.d.ts
-index bb9071e3a..34cb5ff3f 100644
+index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..34cb5ff3f3366a5044ed88ee05e87659143d68d2 100644
 --- a/dist/sandbox/http-proxy.d.ts
 +++ b/dist/sandbox/http-proxy.d.ts
 @@ -8,8 +8,10 @@ import { type TunnelTimeouts } from './tls-terminate-proxy.js';
@@ -325,7 +331,7 @@ index bb9071e3a..34cb5ff3f 100644
       * Per-session bearer token. When set, every CONNECT and absolute-URI
       * request must carry `Proxy-Authorization: Basic
 diff --git a/dist/sandbox/http-proxy.js b/dist/sandbox/http-proxy.js
-index 7ad12c3c8..514f4c561 100644
+index 7ad12c3c8529987ba0a045103b8b30be09df0c99..514f4c5615de30f2600c01ee07b7139dca5a7506 100644
 --- a/dist/sandbox/http-proxy.js
 +++ b/dist/sandbox/http-proxy.js
 @@ -1,3 +1,4 @@
@@ -607,7 +613,7 @@ index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18
      socksSocketPath?: string;
      httpProxyPort?: number;
 diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
-index b3acba671fe6356ad5d9e187ca13753f345f931b..37148f95320768342b2dd8837b75ead011f7f96d 100644
+index b3acba671fe6356ad5d9e187ca13753f345f931b..64fcebe2402a63e030dbcfe371ce3a6ef3ab319f 100644
 --- a/dist/sandbox/linux-sandbox-utils.js
 +++ b/dist/sandbox/linux-sandbox-utils.js
 @@ -260,11 +260,11 @@ function makeableMountPoint(dest, wanted) {
@@ -1118,13 +1124,6 @@ index b3acba671fe6356ad5d9e187ca13753f345f931b..37148f95320768342b2dd8837b75ead0
          // ========== PID NAMESPACE ISOLATION ==========
          // IMPORTANT: These must come AFTER filesystem binds for nested bwrap to work
          // By default, always unshare PID namespace and mount fresh /proc.
-@@ -3144,4 +3384,4 @@ export async function wrapCommandWithSandboxLinux(params) {
-         throw error;
-     }
- }
--//# sourceMappingURL=linux-sandbox-utils.js.map
-\ No newline at end of file
-+//# sourceMappingURL=linux-sandbox-utils.js.map
 diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
 index 8af5e03041b27d060b0027278fb0567745b06f2f..51c351272bca59d6bb4cc91928ab2d33ff2bf02b 100644
 --- a/dist/sandbox/macos-sandbox-utils.d.ts
@@ -1435,7 +1434,7 @@ index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..0e5f5fae9ec6e3c2accee790e7cdaa23
  export declare function formatAuthority(host: string, port: number, defaultPort: number): string;
  export interface DirectRequestOptions {
 diff --git a/dist/sandbox/parent-proxy.js b/dist/sandbox/parent-proxy.js
-index 1f39c7792..bb34f8629 100644
+index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..bb34f8629ceabb393af090a3d1378ad3829eadab 100644
 --- a/dist/sandbox/parent-proxy.js
 +++ b/dist/sandbox/parent-proxy.js
 @@ -197,10 +197,15 @@ export function openConnectTunnel(opts) {
@@ -1572,6 +1571,58 @@ index 1f39c7792..bb34f8629 100644
          s.once('connect', () => done());
          s.once('error', done);
          s.once('close', () => done(new Error('socket closed before connect')));
+diff --git a/dist/sandbox/proxy-failure.d.ts b/dist/sandbox/proxy-failure.d.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab0de24a1aceac54c5e4bf112f36f3c6a0a0738c
+--- /dev/null
++++ b/dist/sandbox/proxy-failure.d.ts
+@@ -0,0 +1,10 @@
++import type { ServerResponse } from 'node:http';
++export type ProxyFailureKind = 'dns' | 'connect' | 'timeout' | 'routing';
++export declare class ProxyTransportError extends Error {
++    readonly kind: ProxyFailureKind;
++    readonly httpStatus: 502 | 504;
++    constructor(kind: ProxyFailureKind, reason: string);
++}
++export declare function transportFailure(error: unknown): ProxyTransportError;
++export declare function rawTransportFailure(failure: ProxyTransportError): string;
++export declare function respondTransportFailure(res: ServerResponse, failure: ProxyTransportError): void;
+diff --git a/dist/sandbox/proxy-failure.js b/dist/sandbox/proxy-failure.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..344c83b28b06e2ab293471df4935b2289621529b
+--- /dev/null
++++ b/dist/sandbox/proxy-failure.js
+@@ -0,0 +1,30 @@
++import { sanitizeDenialReason } from './sandbox-violation-store.js';
++// Transport failures never authorize a connection and never claim a policy denial.
++export class ProxyTransportError extends Error {
++    constructor(kind, reason) {
++        super(sanitizeDenialReason(reason) || 'upstream transport failed');
++        this.name = 'ProxyTransportError';
++        this.kind = kind;
++        this.httpStatus = kind === 'timeout' ? 504 : 502;
++    }
++}
++export function transportFailure(error) {
++    if (error instanceof ProxyTransportError) return error;
++    const code = error?.code;
++    if (code === 'ERR_SRT_STALE_ROUTE')
++        return new ProxyTransportError('routing', 'upstream routing changed during the connection decision');
++    if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT')
++        return new ProxyTransportError('timeout', 'upstream connection timed out');
++    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN')
++        return new ProxyTransportError('dns', 'destination name did not resolve');
++    return new ProxyTransportError('connect', 'upstream connection failed');
++}
++export function rawTransportFailure(failure) {
++    const phrase = failure.httpStatus === 504 ? 'Gateway Timeout' : 'Bad Gateway';
++    return `HTTP/1.1 ${failure.httpStatus} ${phrase}\r\nContent-Type: text/plain\r\nX-Proxy-Error: transport-${failure.kind}\r\nX-Proxy-Reason: ${failure.message}\r\nConnection: close\r\n\r\n${failure.message}\n`;
++}
++export function respondTransportFailure(res, failure) {
++    if (res.headersSent || res.destroyed) { res.destroy(); return; }
++    res.writeHead(failure.httpStatus, { 'Content-Type': 'text/plain', 'X-Proxy-Error': 'transport-' + failure.kind, 'X-Proxy-Reason': failure.message });
++    res.end(failure.message + '\n');
++}
 diff --git a/dist/sandbox/sandbox-config.d.ts b/dist/sandbox/sandbox-config.d.ts
 index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf68d4b71b9 100644
 --- a/dist/sandbox/sandbox-config.d.ts
@@ -1712,7 +1763,7 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a46..c3c74469d 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..c3c74469dbcd4156baaa6a1d8be38bdb64bb2241 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -1,3 +1,11 @@
@@ -1882,8 +1933,6 @@ index 5c46e7a46..c3c74469d 100644
   * for this session. This runs outside of the sandbox, on the host machine.
   */
  export declare const SandboxManager: ISandboxManager;
--//# sourceMappingURL=sandbox-manager.d.ts.map
-\ No newline at end of file
 +/** Ave patch (ACL release outcome): what reset() could not release and will not retry. Raw targets for in-process host redaction; never log this report. */
 +export interface SandboxResetReport {
 +    windowsAclUnreleased: {
@@ -1910,9 +1959,9 @@ index 5c46e7a46..c3c74469d 100644
 +} | undefined): void;
 +/** Supply a helper executable under the test runner. */
 +export declare function setWindowsIsolationForTesting(srtWin: { exe: string; prependArgs: string[] } | undefined): void;
-+//# sourceMappingURL=sandbox-manager.d.ts.map
+ //# sourceMappingURL=sandbox-manager.d.ts.map
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54..240853521 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a988449215cce 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -1,3 +1,4 @@
@@ -4285,7 +4334,7 @@ index 3c92084c9e46fb8bec96a25789e0fdec69965ecb..3384c42609399cdd4b59318af6e07a41
  }
  /**
 diff --git a/dist/sandbox/socks-proxy.d.ts b/dist/sandbox/socks-proxy.d.ts
-index a4ba5d4f7..d987a8d7b 100644
+index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..d987a8d7b6da3fd9a46174e93cb33decd72664da 100644
 --- a/dist/sandbox/socks-proxy.d.ts
 +++ b/dist/sandbox/socks-proxy.d.ts
 @@ -1,12 +1,14 @@
@@ -4319,7 +4368,7 @@ index a4ba5d4f7..d987a8d7b 100644
       * Per-session token (same value as the HTTP proxy's). When set, the
       * server requires SOCKS5 username/password auth and only accepts
 diff --git a/dist/sandbox/socks-proxy.js b/dist/sandbox/socks-proxy.js
-index 760a10b1d..a7a39777c 100644
+index 760a10b1d1c475a7636ff78092d3c9daaafe7335..a7a39777c3584689fc7efd44e8f298e1c6fb0995 100644
 --- a/dist/sandbox/socks-proxy.js
 +++ b/dist/sandbox/socks-proxy.js
 @@ -1,7 +1,8 @@
@@ -4385,60 +4434,8 @@ index 760a10b1d..a7a39777c 100644
              logForDebugging(`SOCKS connect to ${host}:${port} failed: ${err.message}`, { level: 'error' });
              if (!clientGone) {
                  try {
-diff --git a/dist/sandbox/proxy-failure.d.ts b/dist/sandbox/proxy-failure.d.ts
-new file mode 100644
-index 000000000..ab0de24a1
---- /dev/null
-+++ b/dist/sandbox/proxy-failure.d.ts
-@@ -0,0 +1,10 @@
-+import type { ServerResponse } from 'node:http';
-+export type ProxyFailureKind = 'dns' | 'connect' | 'timeout' | 'routing';
-+export declare class ProxyTransportError extends Error {
-+    readonly kind: ProxyFailureKind;
-+    readonly httpStatus: 502 | 504;
-+    constructor(kind: ProxyFailureKind, reason: string);
-+}
-+export declare function transportFailure(error: unknown): ProxyTransportError;
-+export declare function rawTransportFailure(failure: ProxyTransportError): string;
-+export declare function respondTransportFailure(res: ServerResponse, failure: ProxyTransportError): void;
-diff --git a/dist/sandbox/proxy-failure.js b/dist/sandbox/proxy-failure.js
-new file mode 100644
-index 000000000..344c83b28
---- /dev/null
-+++ b/dist/sandbox/proxy-failure.js
-@@ -0,0 +1,30 @@
-+import { sanitizeDenialReason } from './sandbox-violation-store.js';
-+// Transport failures never authorize a connection and never claim a policy denial.
-+export class ProxyTransportError extends Error {
-+    constructor(kind, reason) {
-+        super(sanitizeDenialReason(reason) || 'upstream transport failed');
-+        this.name = 'ProxyTransportError';
-+        this.kind = kind;
-+        this.httpStatus = kind === 'timeout' ? 504 : 502;
-+    }
-+}
-+export function transportFailure(error) {
-+    if (error instanceof ProxyTransportError) return error;
-+    const code = error?.code;
-+    if (code === 'ERR_SRT_STALE_ROUTE')
-+        return new ProxyTransportError('routing', 'upstream routing changed during the connection decision');
-+    if (code === 'ETIMEDOUT' || code === 'ESOCKETTIMEDOUT')
-+        return new ProxyTransportError('timeout', 'upstream connection timed out');
-+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN')
-+        return new ProxyTransportError('dns', 'destination name did not resolve');
-+    return new ProxyTransportError('connect', 'upstream connection failed');
-+}
-+export function rawTransportFailure(failure) {
-+    const phrase = failure.httpStatus === 504 ? 'Gateway Timeout' : 'Bad Gateway';
-+    return `HTTP/1.1 ${failure.httpStatus} ${phrase}\r\nContent-Type: text/plain\r\nX-Proxy-Error: transport-${failure.kind}\r\nX-Proxy-Reason: ${failure.message}\r\nConnection: close\r\n\r\n${failure.message}\n`;
-+}
-+export function respondTransportFailure(res, failure) {
-+    if (res.headersSent || res.destroyed) { res.destroy(); return; }
-+    res.writeHead(failure.httpStatus, { 'Content-Type': 'text/plain', 'X-Proxy-Error': 'transport-' + failure.kind, 'X-Proxy-Reason': failure.message });
-+    res.end(failure.message + '\n');
-+}
 diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sandbox-utils.d.ts
-index 65b8eefe5..1f134dcee 100644
+index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..1f134dceedbfda1f7021a8783f150cb76134412e 100644
 --- a/dist/sandbox/windows-sandbox-utils.d.ts
 +++ b/dist/sandbox/windows-sandbox-utils.d.ts
 @@ -861,6 +861,23 @@ export interface WindowsAclStampOptions {
@@ -4508,7 +4505,7 @@ index 65b8eefe5..1f134dcee 100644
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 540c56635..871f69373 100644
+index 540c56635e4c5b1b78997f0ec4185fe9d9968806..871f693732e1cf859dfaa0aab5f34cbb859dfec9 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
 @@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
@@ -4710,3 +4707,1498 @@ index 540c56635..871f69373 100644
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
          }
+diff --git a/vendor/srt-win/persistent-denies.patch b/vendor/srt-win/persistent-denies.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..f578c0cb941901b5f10acaebb054c8fcec0966f9
+--- /dev/null
++++ b/vendor/srt-win/persistent-denies.patch
+@@ -0,0 +1,1489 @@
++diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
++index 0efb5956f..c9b72c409 100644
++--- a/vendor/srt-win-src/src/acl.rs
+++++ b/vendor/srt-win-src/src/acl.rs
++@@ -9,15 +9,15 @@
++ //!   sandbox user (which has no inherent rights on real-user-owned
++ //!   files) can reach the working tree;
++ //! - `stamp` ⇒ `(D;OICI;mask;;;<sb-SID>)` on the target plus
++-//!   `(D;OICI;FILE_DELETE_CHILD;;;<sb-SID>)` on the parent;
+++//!   `(D;;FILE_DELETE_CHILD;;;<sb-SID>)` on the parent;
++ //! - install-time ambient write-denies (`ambient.rs`) reuse the
++ //!   `stamp` deny shape, recorded in `ambient_denies` with no holder
++ //!   so they persist across sessions until `uninstall`.
++ //!
++ //! Restore = walk the path's explicit ACEs, drop any whose trustee
++-//! is `<sb-SID>`, write back preserving the DACL's protection state
++-//! (`UNPROTECTED` re-derives inherited ACEs; a `SE_DACL_PROTECTED`
++-//! path keeps its severed inheritance). The single chokepoint is
+++//! is `<sb-SID>`, write back preserving inherited entries and the
+++//! DACL's protection state. Inheritable changes refresh descendants;
+++//! a `SE_DACL_PROTECTED` path keeps its severed inheritance. The chokepoint is
++ //! [`apply_sandbox_aces`] ([`SbAceSet`]): converge the path to
++ //! exactly the wanted ALLOW + DENY for `<sb-SID>`, idempotently.
++ //!
++@@ -35,7 +35,7 @@ use anyhow::{Context, Result, anyhow, bail};
++ use std::ffi::c_void;
++ use std::mem::size_of;
++ use windows::Win32::Security::Authorization::{
++-    GetNamedSecurityInfoW, SE_FILE_OBJECT, SetNamedSecurityInfoW,
+++    GetNamedSecurityInfoW, GetSecurityInfo, SE_FILE_OBJECT, SetNamedSecurityInfoW, SetSecurityInfo,
++ };
++ use windows::Win32::Security::{
++     ACE_FLAGS, ACE_HEADER, ACE_REVISION, ACL, ACL_REVISION, ACL_SIZE_INFORMATION,
++@@ -43,8 +43,8 @@ use windows::Win32::Security::{
++     DACL_SECURITY_INFORMATION, GetAce, GetAclInformation, GetLengthSid,
++     GetSecurityDescriptorControl, InitializeAcl, InitializeSecurityDescriptor, OBJECT_INHERIT_ACE,
++     OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
++-    SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl,
++-    SetSecurityDescriptorDacl, UNPROTECTED_DACL_SECURITY_INFORMATION,
+++    SE_DACL_AUTO_INHERITED, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+++    SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
++ };
++ use windows::Win32::Storage::FileSystem::{
++     FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ,
++@@ -341,48 +341,15 @@ pub(crate) fn read_file_dacl(canonical_path: &str) -> Result<(OwnedSd, *mut ACL)
++     Ok((OwnedSd::from_raw(psd), dacl))
++ }
++
++-/// Whether `sd`'s DACL carries `SE_DACL_PROTECTED` — inheritance from
++-/// the parent was deliberately severed (`icacls /inheritance:d`,
++-/// hardened trees). [`apply_sandbox_aces`] preserves this bit on
++-/// write-back: recomposing such a path with `UNPROTECTED_` would
++-/// silently re-enable inheritance, durably re-admitting the parent's
++-/// (often permissive — e.g. a data-drive root's `Authenticated
++-/// Users:(M)`) inheritable ACEs.
++-pub(crate) fn sd_dacl_protected(sd: &OwnedSd) -> Result<bool> {
++-    // The binding's `pcontrol` is a bare `*mut u16` (the wire shape
++-    // of `SECURITY_DESCRIPTOR_CONTROL`).
++-    let mut control: u16 = 0;
++-    let mut revision = 0u32;
++-    unsafe { GetSecurityDescriptorControl(sd.ptr, &mut control, &mut revision) }
++-        .context("GetSecurityDescriptorControl")?;
++-    Ok(control & SE_DACL_PROTECTED.0 != 0)
++-}
++-
++-/// Whether [`write_file_dacl`] sets `PROTECTED_` (block inheritance
++-/// from the parent — the state-DB dir's allow-list, and
++-/// [`apply_sandbox_aces`] on a path whose DACL was already
++-/// protected) or `UNPROTECTED_DACL_SECURITY_INFORMATION` (re-derive
++-/// inherited ACEs from the parent — [`apply_sandbox_aces`] on the
++-/// common unprotected path).
++-pub(crate) enum Protection {
++-    Protected,
++-    Unprotected,
++-}
++-
++-/// Write `acl` as `path`'s DACL via
++-/// `SetNamedSecurityInfoW(SE_FILE_OBJECT, DACL | <p>)`. Mirror of
++-/// [`read_file_dacl`].
++-pub(crate) fn write_file_dacl(path: &str, acl: *const ACL, p: Protection) -> Result<()> {
++-    let prot = match p {
++-        Protection::Protected => PROTECTED_DACL_SECURITY_INFORMATION,
++-        Protection::Unprotected => UNPROTECTED_DACL_SECURITY_INFORMATION,
++-    };
+++/// Write a protected private-store DACL by name. Session recomposition uses
+++/// the pinned-handle writer instead, preserving its original protection.
+++pub(crate) fn write_protected_file_dacl(path: &str, acl: *const ACL) -> Result<()> {
++     let w = wstr(path);
++     let r = unsafe {
++         SetNamedSecurityInfoW(
++             pcwstr(&w),
++             SE_FILE_OBJECT,
++-            DACL_SECURITY_INFORMATION | prot,
+++            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
++             None,
++             None,
++             Some(acl),
++@@ -392,6 +359,114 @@ pub(crate) fn write_file_dacl(path: &str, acl: *const ACL, p: Protection) -> Res
++     win32_ok(r, &format!("SetNamedSecurityInfoW('{path}')"))
++ }
++
+++/// Open the object once for descriptor reads and local writes. Requesting
+++/// maximum access also prevents security APIs from propagating through the
+++/// handle; a local parent guard must never walk unrelated descendants.
+++fn open_local_dacl(path: &str) -> Result<crate::util::OwnedHandle> {
+++    open_dacl(path, false)
+++}
+++
+++fn open_dacl(path: &str, propagation_enabled: bool) -> Result<crate::util::OwnedHandle> {
+++    use windows::Win32::Storage::FileSystem::{
+++        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_SHARE_DELETE, FILE_SHARE_READ,
+++        FILE_SHARE_WRITE, OPEN_EXISTING,
+++    };
+++    use windows::Win32::System::SystemServices::MAXIMUM_ALLOWED;
+++    let w = wstr(path);
+++    let h = unsafe {
+++        CreateFileW(
+++            pcwstr(&w),
+++            if propagation_enabled {
+++                Mask::READ_CONTROL.bits() | Mask::WRITE_DAC.bits()
+++            } else {
+++                MAXIMUM_ALLOWED
+++            },
+++            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+++            None,
+++            OPEN_EXISTING,
+++            FILE_FLAG_BACKUP_SEMANTICS,
+++            None,
+++        )
+++    }
+++    .with_context(|| format!("CreateFileW('{path}', security)"))?;
+++    Ok(crate::util::OwnedHandle(h))
+++}
+++
+++fn read_local_dacl(h: &crate::util::OwnedHandle) -> Result<(OwnedSd, *mut ACL)> {
+++    let mut dacl = std::ptr::null_mut();
+++    let mut sd = PSECURITY_DESCRIPTOR::default();
+++    let result = unsafe {
+++        GetSecurityInfo(
+++            h.0,
+++            SE_FILE_OBJECT,
+++            DACL_SECURITY_INFORMATION,
+++            None,
+++            None,
+++            Some(&mut dacl),
+++            None,
+++            Some(&mut sd),
+++        )
+++    };
+++    win32_ok(result, "GetSecurityInfo(dacl)")?;
+++    Ok((OwnedSd::from_raw(sd), dacl))
+++}
+++
+++fn dacl_control(sd: &OwnedSd) -> Result<u16> {
+++    let mut control = 0;
+++    let mut revision = 0;
+++    unsafe { GetSecurityDescriptorControl(sd.ptr, &mut control, &mut revision) }
+++        .context("GetSecurityDescriptorControl")?;
+++    Ok(control & (SE_DACL_AUTO_INHERITED | SE_DACL_PROTECTED).0)
+++}
+++
+++fn explicit_aces(acl: *const ACL, inheritable_only: bool) -> Result<Vec<Vec<u8>>> {
+++    let mut aces = Vec::new();
+++    filter_aces(acl, |hdr, body| {
+++        if hdr.AceFlags & INHERITED_ACE == 0
+++            && (!inheritable_only || hdr.AceFlags & OICI.0 as u8 != 0)
+++        {
+++            aces.push(body.to_vec());
+++        }
+++        false
+++    })?;
+++    Ok(aces)
+++}
+++
+++/// Replace explicit entries while retaining inherited entries and protection.
+++/// A maximum-access handle suppresses child propagation; a handle opened
+++/// with explicit security rights permits it. Reads and writes stay bound
+++/// to the same object, and the old inherited entries retain their flags.
+++fn write_composed_dacl(
+++    h: &crate::util::OwnedHandle,
+++    old: *const ACL,
+++    explicit: &BuiltAcl,
+++    control: u16,
+++) -> Result<()> {
+++    let own = filter_aces(explicit.as_ptr(), |_, _| true)?;
+++    let inherited = filter_aces(old, |hdr, _| hdr.AceFlags & INHERITED_ACE != 0)?;
+++    let mut all = own.0;
+++    all.extend_from_slice(&inherited.0);
+++    let kept = (all, own.1 + inherited.1, own.2);
+++    let full = rebuild_acl(kept.2, &[], &kept, &[])?;
+++    let result = unsafe {
+++        SetSecurityInfo(
+++            h.0,
+++            SE_FILE_OBJECT,
+++            DACL_SECURITY_INFORMATION,
+++            None,
+++            None,
+++            Some(full.as_ptr()),
+++            None,
+++        )
+++    };
+++    win32_ok(result, "SetSecurityInfo(dacl)")?;
+++    let (after, _) = read_local_dacl(h)?;
+++    if dacl_control(&after)? != control {
+++        bail!("DACL write changed inheritance control");
+++    }
+++    Ok(())
+++}
+++
++ /// `(kept ACE ptrs+sizes, Σ kept sizes, source AclRevision)`.
++ pub(crate) type KeptAces = (Vec<(*const c_void, u16)>, usize, ACE_REVISION);
++
++@@ -507,7 +582,7 @@ pub fn set_path_dacl_from_sddl(path: &str, sddl: &str, label: &str) -> Result<()
++     if !present.as_bool() || dacl.is_null() {
++         bail!("{label}: SDDL '{sddl}' yielded no DACL");
++     }
++-    write_file_dacl(path, dacl, Protection::Protected).context(label.to_owned())
+++    write_protected_file_dacl(path, dacl).context(label.to_owned())
++ }
++
++ /// Open `path` for security-descriptor writes with NO-FOLLOW
++@@ -620,7 +695,7 @@ pub fn set_handle_dacl_from_sddl(
++ // ALLOW ACE for the sandbox user's SID on a path (typically the
++ // working-tree root) so the child can read/write there; `acl stamp
++ // --sandbox-user-sid` adds an explicit DENY ACE on a path (and a
++-// `(OI)(CI)` `FILE_DELETE_CHILD` DENY on its parent) so the child
+++// object-only `FILE_DELETE_CHILD` DENY on its parent) so the child
++ // can NOT read/write/delete it even when an inherited
++ // `BUILTIN\Users` ACE would otherwise allow. Both are ADDITIVE
++ // (the path keeps its own explicit ACEs and inheritance);
++@@ -650,14 +725,14 @@ pub enum DenyMask {
++ /// One explicit ACE the sandbox user holds on a path. The
++ /// separate-user FS model is entirely additive: `acl grant` adds
++ /// ALLOW ACEs, `acl stamp --sandbox-user-sid` adds DENY ACEs (plus
++-/// a `(OI)(CI)` `FILE_DELETE_CHILD` DENY on the parent). Restore
+++/// an object-only `FILE_DELETE_CHILD` DENY on the parent). Restore
++ /// drops the SID's ACEs via walk-and-filter — no PROTECTED rewrite,
++ /// no SD snapshot, no calibration.
++ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
++ pub enum SbAce {
++     Grant(GrantMask),
++     Deny(DenyMask),
++-    /// `(D;OICI;FILE_DELETE_CHILD;;;<sb>)` — applied to the parent
+++    /// `(D;;FILE_DELETE_CHILD;;;<sb>)` — applied to the parent
++     /// of every denied target so the sandbox user cannot `del`/`ren`
++     /// it via parent-FDC even when the parent carries an inherited
++     /// `BUILTIN\Users:(F)` (which the sandbox user, a Users member,
++@@ -767,19 +842,28 @@ pub struct SbAceSet {
++
++ impl SbAceSet {
++     /// The set's entries as [`NewAce`]s for `sid`, in canonical
++-    /// deny → deny-fdc → allow order. `Deny`/`DenyFdc`/`Grant` carry
++-    /// [`OICI`]; `DenyDelete` is object-only ([`NO_INHERIT`]) — see
++-    /// [`SbAce::DenyDelete`].
+++    /// deny → deny-fdc → allow order. `Deny` and `Grant` carry
+++    /// [`OICI`]; `DenyFdc` and `DenyDelete` are object-only.
++     fn head_aces(&self, sid: PSID) -> Vec<NewAce> {
++         let mut v = Vec::with_capacity(4);
++         if let Some(m) = self.deny {
++-            v.push(NewAce::Deny(sid, m.bits(), OICI));
+++            // A denied directory must itself deny deletion via its
+++            // children's parent throughout the protected subtree.
+++            v.push(NewAce::Deny(
+++                sid,
+++                m.bits() | Mask::FILE_DELETE_CHILD.bits(),
+++                OICI,
+++            ));
++         }
++         if self.deny_delete {
++             v.push(NewAce::Deny(sid, Mask::DELETE.bits(), NO_INHERIT));
++         }
++         if self.deny_fdc {
++-            v.push(NewAce::Deny(sid, Mask::FILE_DELETE_CHILD.bits(), OICI));
+++            v.push(NewAce::Deny(
+++                sid,
+++                Mask::FILE_DELETE_CHILD.bits(),
+++                NO_INHERIT,
+++            ));
++         }
++         if let Some(m) = self.grant {
++             v.push(NewAce::Allow(sid, m.bits(), OICI));
++@@ -791,14 +875,12 @@ impl SbAceSet {
++ /// Converge `canonical_path`'s explicit ACEs for `sandbox_sid` to
++ /// exactly `set`. Idempotent — every existing explicit ACE for the
++ /// SID (allow AND deny) is dropped, then `set`'s entries are
++-/// prepended in canonical (deny-before-allow) order. Inherited ACEs
++-/// are dropped too; on the (common) unprotected DACL,
++-/// `SetNamedSecurityInfoW` without `PROTECTED_` re-derives them from
++-/// the parent. A `SE_DACL_PROTECTED` DACL (inheritance deliberately
++-/// severed — its ACEs are normally all explicit, so nothing is
++-/// dropped; a hand-crafted stray `INHERITED_ACE`-flagged entry is
++-/// dropped and not re-derived, which fails closed) is written back
++-/// `PROTECTED_`: recomposing it `UNPROTECTED_` would
+++/// prepended in canonical (deny-before-allow) order. When inheritable
+++/// entries change, the propagating writer refreshes descendants, including
+++/// removing legacy inheritable parent guards. Otherwise only this object
+++/// is written, preserving its inherited entries and leaving unrelated
+++/// descendants untouched. A `SE_DACL_PROTECTED` DACL keeps its protection:
+++/// recomposing it `UNPROTECTED_` would
++ /// silently re-enable inheritance, and neither revoke nor restore
++ /// could undo that — the parent's inheritable ACEs (e.g. a data-drive
++ /// root's `Authenticated Users:(M)`) would durably re-open a path its
++@@ -814,35 +896,182 @@ impl SbAceSet {
++ /// Both grant and deny carry `(OI)(CI)` so directory targets cover
++ /// the subtree; on a file the inheritance flags are inert.
++ pub fn apply_sandbox_aces(canonical_path: &str, sandbox_sid: &str, set: SbAceSet) -> Result<()> {
+++    apply_sandbox_aces_repair(canonical_path, sandbox_sid, set, false)
+++}
+++
+++/// Reapply an unfinished mutation whose earlier propagation may have stopped
+++/// after changing the root. Normal reconciliation leaves `force_propagation`
+++/// false; pending-intent replay may set it to finish descendant cleanup even
+++/// when the root already carries the desired explicit entries.
+++pub fn apply_sandbox_aces_repair(
+++    canonical_path: &str,
+++    sandbox_sid: &str,
+++    set: SbAceSet,
+++    force_propagation: bool,
+++) -> Result<()> {
+++    recompose_sandbox_aces(
+++        canonical_path,
+++        sandbox_sid,
+++        set,
+++        force_propagation,
+++        None,
+++        &mut || Ok(()),
+++    )
+++}
+++
+++/// Converge only the object whose persisted identity is expected. Identity,
+++/// descriptor reads and security writes are bound to the same opened object.
+++pub fn apply_sandbox_aces_for_identity(
+++    canonical_path: &str,
+++    sandbox_sid: &str,
+++    set: SbAceSet,
+++    force_propagation: bool,
+++    expected_file_id: &[u8],
+++) -> Result<()> {
+++    apply_sandbox_aces_for_identity_with_tree_intent(
+++        canonical_path,
+++        sandbox_sid,
+++        set,
+++        force_propagation,
+++        expected_file_id,
+++        &mut || Ok(()),
+++    )
+++}
+++
+++/// Record durable descendant-refresh intent only when this mutation actually
+++/// selects the propagating writer. Object-only writes never call the hook.
+++pub fn apply_sandbox_aces_for_identity_with_tree_intent(
+++    canonical_path: &str,
+++    sandbox_sid: &str,
+++    set: SbAceSet,
+++    force_propagation: bool,
+++    expected_file_id: &[u8],
+++    before_tree_write: &mut dyn FnMut() -> Result<()>,
+++) -> Result<()> {
+++    recompose_sandbox_aces(
+++        canonical_path,
+++        sandbox_sid,
+++        set,
+++        force_propagation,
+++        Some(expected_file_id),
+++        before_tree_write,
+++    )
+++}
+++
+++fn recompose_sandbox_aces(
+++    path: &str,
+++    sandbox_sid: &str,
+++    set: SbAceSet,
+++    force_propagation: bool,
+++    expected_file_id: Option<&[u8]>,
+++    before_tree_write: &mut dyn FnMut() -> Result<()>,
+++) -> Result<()> {
++     let sid = LocalPsid::from_string(sandbox_sid)
++         .with_context(|| format!("parse sandbox SID '{sandbox_sid}'"))?;
++-    let sid_bytes = sid.as_bytes();
++-    // 1. Read the current DACL and its protection state. `sd` owns
++-    //    the buffer `old`/`keep` point into; it's freed after step
++-    //    4's write.
++-    let (sd, old) =
++-        read_file_dacl(canonical_path).with_context(|| format!("recompose '{canonical_path}'"))?;
++-    let protected =
++-        sd_dacl_protected(&sd).with_context(|| format!("recompose '{canonical_path}'"))?;
++-    // 2. Collect surviving explicit ACEs (drop inherited and any
++-    //    explicit ACE whose SID == sandbox_sid — allow AND deny).
++-    let kept = filter_aces(old, |hdr, body| {
++-        hdr.AceFlags & INHERITED_ACE == 0 && !ace_sid_is(body, sid_bytes)
++-    })?;
++-    // 3. Build fresh ACL: set's entries (deny-first canonical order)
++-    //    then surviving explicit ACEs.
++-    let new = rebuild_acl(kept.2, &set.head_aces(sid.as_psid()), &kept, &[])?;
++-    // 4. Write back, preserving the DACL's protection state:
++-    //    UNPROTECTED so the kernel re-derives inherited ACEs from the
++-    //    parent, PROTECTED when inheritance was severed before we
++-    //    touched the path (see doc comment).
++-    let prot = if protected {
++-        Protection::Protected
++-    } else {
++-        Protection::Unprotected
+++    mutate_dacl(
+++        path,
+++        expected_file_id,
+++        force_propagation,
+++        before_tree_write,
+++        |old| {
+++            let kept = filter_aces(old, |hdr, body| {
+++                hdr.AceFlags & INHERITED_ACE == 0 && !ace_sid_is(body, sid.as_bytes())
+++            })?;
+++            rebuild_acl(kept.2, &set.head_aces(sid.as_psid()), &kept, &[])
+++        },
+++    )
+++}
+++
+++/// Retire explicit allows for an account whose absence has been established
+++/// by the caller. Denies, other principals and inherited entries remain.
+++/// An unfinished descendant cleanup can request propagation on replay.
+++pub fn remove_sandbox_allow_aces(
+++    path: &str,
+++    absent_sid: &str,
+++    expected_file_id: &[u8],
+++    repair_propagation: bool,
+++) -> Result<()> {
+++    remove_sandbox_allow_aces_with_tree_intent(
+++        path,
+++        absent_sid,
+++        expected_file_id,
+++        repair_propagation,
+++        &mut || Ok(()),
+++    )
+++}
+++
+++/// Retired-allow cleanup with durable intent recorded immediately before a
+++/// descendant refresh, after opening and validating the security handle.
+++pub fn remove_sandbox_allow_aces_with_tree_intent(
+++    path: &str,
+++    absent_sid: &str,
+++    expected_file_id: &[u8],
+++    repair_propagation: bool,
+++    before_tree_write: &mut dyn FnMut() -> Result<()>,
+++) -> Result<()> {
+++    let sid = LocalPsid::from_string(absent_sid).context("parse retired sandbox SID")?;
+++    mutate_dacl(
+++        path,
+++        Some(expected_file_id),
+++        repair_propagation,
+++        before_tree_write,
+++        |old| {
+++            let kept = filter_aces(old, |hdr, body| {
+++                hdr.AceFlags & INHERITED_ACE == 0 && !allow_ace_sid_is(hdr, body, sid.as_bytes())
+++            })?;
+++            rebuild_acl(kept.2, &[], &kept, &[])
+++        },
+++    )
+++}
+++
+++fn allow_ace_sid_is(hdr: &ACE_HEADER, body: &[u8], sid: &[u8]) -> bool {
+++    let offset = match hdr.AceType {
+++        0 | 9 => ACE_FIXED,
+++        5 | 11 => {
+++            let Some(flags) = body.get(8..12) else {
+++                return false;
+++            };
+++            let flags = u32::from_le_bytes(flags.try_into().unwrap());
+++            12 + if flags & 1 != 0 { 16 } else { 0 } + if flags & 2 != 0 { 16 } else { 0 }
+++        }
+++        _ => return false,
++     };
++-    write_file_dacl(canonical_path, new.as_ptr(), prot)
++-        .with_context(|| format!("recompose '{canonical_path}'"))
+++    body.get(offset..offset + sid.len()) == Some(sid)
+++}
+++
+++fn mutate_dacl(
+++    path: &str,
+++    expected_file_id: Option<&[u8]>,
+++    force_propagation: bool,
+++    before_tree_write: &mut dyn FnMut() -> Result<()>,
+++    compose: impl Fn(*mut ACL) -> Result<BuiltAcl>,
+++) -> Result<()> {
+++    let handle = open_local_dacl(path).with_context(|| format!("recompose '{path}'"))?;
+++    let identity = crate::path_id::file_id_from_handle(handle.0)?;
+++    if expected_file_id.is_some_and(|expected| expected != identity.as_bytes()) {
+++        bail!("ACL target identity changed");
+++    }
+++    let (sd, old) = read_local_dacl(&handle)?;
+++    let new = compose(old)?;
+++    if !force_propagation && explicit_aces(old, true)? == explicit_aces(new.as_ptr(), true)? {
+++        if explicit_aces(old, false)? == explicit_aces(new.as_ptr(), false)? {
+++            return Ok(());
+++        }
+++        return write_composed_dacl(&handle, old, &new, dacl_control(&sd)?)
+++            .with_context(|| format!("recompose '{path}'"));
+++    }
+++    // A maximum-access handle suppresses propagation. Reopen with explicit
+++    // security rights, refuse object substitution, then reread and compose
+++    // on that same handle before allowing the descendant refresh.
+++    let tree = open_dacl(path, true)?;
+++    if crate::path_id::file_id_from_handle(tree.0)? != identity {
+++        bail!("ACL target identity changed");
+++    }
+++    let (sd, old) = read_local_dacl(&tree)?;
+++    let new = compose(old)?;
+++    before_tree_write()?;
+++    write_composed_dacl(&tree, old, &new, dacl_control(&sd)?)
+++        .with_context(|| format!("recompose '{path}'"))
++ }
++
++ /// Whether `canonical_path` carries an EXPLICIT `(OI)(CI)` deny ACE
++@@ -886,6 +1115,10 @@ mod tests {
++     /// revision 2, GENERIC_ALL on each. Regression for the
++     /// `KeptAces`/`rebuild_acl` chokepoint: a sizing or revision
++     /// bug here breaks the sandbox-user desktop attach (R1 hang).
+++    fn sd_dacl_protected(sd: &OwnedSd) -> Result<bool> {
+++        Ok(dacl_control(sd)? & SE_DACL_PROTECTED.0 != 0)
+++    }
+++
++     #[test]
++     fn isolated_desk_dacl_shape() {
++         let d = build_allow_dacl(&[
++@@ -935,7 +1168,7 @@ mod tests {
++             Allow(SID_SYSTEM, Mask::FILE_ALL, OICI),
++         ])
++         .unwrap();
++-        write_file_dacl(path, lockdown.as_ptr(), Protection::Protected).unwrap();
+++        write_protected_file_dacl(path, lockdown.as_ptr()).unwrap();
++         let (sd, _) = read_file_dacl(path).unwrap();
++         assert!(sd_dacl_protected(&sd).unwrap(), "setup: DACL protected");
++
++@@ -962,9 +1195,7 @@ mod tests {
++         // The common case keeps its contract: an unprotected dir
++         // stays unprotected across the same round-trip, and its
++         // inherited ACEs (the parent's OICI lockdown entries
++-        // propagate to it) really are re-derived by the
++-        // `UNPROTECTED_` write-back — not merely "protection bit
++-        // still clear".
+++        // propagate to it) remain inherited after recomposition.
++         let plain = dir.join("plain");
++         std::fs::create_dir_all(&plain).unwrap();
++         let plain_path = plain.to_str().unwrap();
++@@ -978,12 +1209,329 @@ mod tests {
++         let (aces, ..) = filter_aces(dacl, |hdr, _| hdr.AceFlags & INHERITED_ACE != 0).unwrap();
++         assert!(
++             !aces.is_empty(),
++-            "inherited ACEs re-derived on the unprotected dir"
+++            "inherited ACEs retained on the unprotected dir"
++         );
++
++         std::fs::remove_dir_all(&dir).ok();
++     }
++
+++    #[test]
+++    fn pending_replay_finishes_legacy_parent_descendant_cleanup() {
+++        const SANDBOX_SID: &str = "S-1-5-32-546";
+++        let dir = std::env::temp_dir().join(format!(
+++            "srtwin-pending-parent-{}-{}",
+++            std::process::id(),
+++            std::time::SystemTime::now()
+++                .duration_since(std::time::UNIX_EPOCH)
+++                .unwrap()
+++                .as_nanos()
+++        ));
+++        std::fs::create_dir(&dir).unwrap();
+++        let child = dir.join("child");
+++        std::fs::create_dir(&child).unwrap();
+++        let path = dir.to_str().unwrap();
+++        let owner = crate::sid::current_user_sid().unwrap();
+++        set_path_dacl_from_sddl(
+++            path,
+++            &format!("D:P(D;OICI;0x40;;;{SANDBOX_SID})(A;OICI;FA;;;{owner})(A;OICI;FA;;;SY)"),
+++            "legacy fixture",
+++        )
+++        .unwrap();
+++        let sid = LocalPsid::from_string(SANDBOX_SID).unwrap();
+++        let inherited_guard_count = || {
+++            let (_sd, acl) = read_file_dacl(child.to_str().unwrap()).unwrap();
+++            filter_aces(acl, |hdr, body| {
+++                hdr.AceFlags & INHERITED_ACE != 0 && ace_sid_is(body, sid.as_bytes())
+++            })
+++            .unwrap()
+++            .0
+++            .len()
+++        };
+++        assert_eq!(
+++            inherited_guard_count(),
+++            1,
+++            "legacy fixture did not propagate"
+++        );
+++        let set = SbAceSet {
+++            deny_fdc: true,
+++            ..Default::default()
+++        };
+++        // Model an interrupted tree operation: the root was converted but
+++        // an existing child still carries the former inherited guard.
+++        let handle = open_local_dacl(path).unwrap();
+++        let (sd, old) = read_local_dacl(&handle).unwrap();
+++        let kept = filter_aces(old, |hdr, body| {
+++            hdr.AceFlags & INHERITED_ACE == 0 && !ace_sid_is(body, sid.as_bytes())
+++        })
+++        .unwrap();
+++        let new = rebuild_acl(kept.2, &set.head_aces(sid.as_psid()), &kept, &[]).unwrap();
+++        write_composed_dacl(&handle, old, &new, dacl_control(&sd).unwrap()).unwrap();
+++        assert_eq!(
+++            inherited_guard_count(),
+++            1,
+++            "fixture unexpectedly propagated"
+++        );
+++        apply_sandbox_aces(path, SANDBOX_SID, set).unwrap();
+++        assert_eq!(inherited_guard_count(), 1, "ordinary no-op walked children");
+++        let identity = crate::path_id::capture_file_id(path).unwrap().as_bytes();
+++        let mut tree_intents = 0;
+++        assert!(
+++            apply_sandbox_aces_for_identity_with_tree_intent(
+++                path,
+++                SANDBOX_SID,
+++                set,
+++                true,
+++                &identity,
+++                &mut || {
+++                    tree_intents += 1;
+++                    bail!("tree intent fixture failure")
+++                },
+++            )
+++            .is_err()
+++        );
+++        assert_eq!(tree_intents, 1);
+++        assert_eq!(
+++            inherited_guard_count(),
+++            1,
+++            "failed intent still wrote descendants"
+++        );
+++        apply_sandbox_aces_for_identity_with_tree_intent(
+++            path,
+++            SANDBOX_SID,
+++            set,
+++            true,
+++            &identity,
+++            &mut || {
+++                tree_intents += 1;
+++                Ok(())
+++            },
+++        )
+++        .unwrap();
+++        assert_eq!(tree_intents, 2);
+++        assert_eq!(
+++            inherited_guard_count(),
+++            0,
+++            "pending replay left a stale guard"
+++        );
+++        std::fs::remove_dir_all(dir).unwrap();
+++    }
+++
+++    #[test]
+++    fn object_only_replay_has_no_tree_intent_or_sibling_refresh() {
+++        const SANDBOX_SID: &str = "S-1-5-32-546";
+++        let dir = std::env::temp_dir().join(format!(
+++            "srtwin-object-replay-{}-{}",
+++            std::process::id(),
+++            std::time::SystemTime::now()
+++                .duration_since(std::time::UNIX_EPOCH)
+++                .unwrap()
+++                .as_nanos()
+++        ));
+++        std::fs::create_dir(&dir).unwrap();
+++        let parent = dir.join("parent");
+++        let donor = dir.join("donor");
+++        let moved = parent.join("moved");
+++        std::fs::create_dir(&parent).unwrap();
+++        std::fs::create_dir(&donor).unwrap();
+++        let owner = crate::sid::current_user_sid().unwrap();
+++        set_path_dacl_from_sddl(
+++            donor.to_str().unwrap(),
+++            &format!("D:P(A;OICI;FR;;;AN)(A;OICI;FA;;;{owner})(A;OICI;FA;;;SY)"),
+++            "moved sibling fixture",
+++        )
+++        .unwrap();
+++        std::fs::create_dir(donor.join("moved")).unwrap();
+++        std::fs::write(donor.join("moved/sentinel"), "keep").unwrap();
+++        std::fs::rename(donor.join("moved"), &moved).unwrap();
+++        let snapshot = |path: &std::path::Path| {
+++            let (sd, acl) = read_file_dacl(path.to_str().unwrap()).unwrap();
+++            let mut bytes = Vec::new();
+++            filter_aces(acl, |_, body| {
+++                bytes.push(body.to_vec());
+++                false
+++            })
+++            .unwrap();
+++            (dacl_control(&sd).unwrap(), bytes)
+++        };
+++        let original = snapshot(&moved);
+++        let file_original = snapshot(&moved.join("sentinel"));
+++        let anonymous = LocalPsid::from_string("S-1-5-7").unwrap();
+++        assert!(
+++            original
+++                .1
+++                .iter()
+++                .any(|body| ace_sid_is(body, anonymous.as_bytes()))
+++        );
+++        let path = parent.to_str().unwrap();
+++        let identity = crate::path_id::capture_file_id(path).unwrap().as_bytes();
+++        let set = SbAceSet {
+++            deny_fdc: true,
+++            ..Default::default()
+++        };
+++        let mut tree_intent = false;
+++        apply_sandbox_aces_for_identity_with_tree_intent(
+++            path,
+++            SANDBOX_SID,
+++            set,
+++            false,
+++            &identity,
+++            &mut || {
+++                tree_intent = true;
+++                Ok(())
+++            },
+++        )
+++        .unwrap();
+++        assert!(!tree_intent, "object-only apply recorded descendant intent");
+++        // Model a crash after the local write but before clearing its journal.
+++        apply_sandbox_aces_for_identity_with_tree_intent(
+++            path,
+++            SANDBOX_SID,
+++            set,
+++            tree_intent,
+++            &identity,
+++            &mut || panic!("object-only replay selected descendant refresh"),
+++        )
+++        .unwrap();
+++        assert_eq!(snapshot(&moved), original);
+++        assert_eq!(snapshot(&moved.join("sentinel")), file_original);
+++        std::fs::remove_dir_all(dir).unwrap();
+++    }
+++
+++    #[test]
+++    fn retired_allow_cleanup_preserves_denies_and_recovers_descendants() {
+++        const RETIRED_SID: &str = "S-1-5-32-546";
+++        let dir = std::env::temp_dir().join(format!(
+++            "srtwin-retired-allow-{}-{}",
+++            std::process::id(),
+++            std::time::SystemTime::now()
+++                .duration_since(std::time::UNIX_EPOCH)
+++                .unwrap()
+++                .as_nanos()
+++        ));
+++        std::fs::create_dir(&dir).unwrap();
+++        let child = dir.join("child");
+++        std::fs::create_dir(&child).unwrap();
+++        let path = dir.to_str().unwrap();
+++        let owner = crate::sid::current_user_sid().unwrap();
+++        let initial = format!(
+++            "D:P(D;;0x2;;;{owner})(D;OICI;0x40;;;{RETIRED_SID})(A;OICI;FR;;;{RETIRED_SID})(A;OICI;FA;;;{owner})(A;OICI;FA;;;SY)"
+++        );
+++        set_path_dacl_from_sddl(path, &initial, "retired fixture").unwrap();
+++        let identity = crate::path_id::capture_file_id(path).unwrap().as_bytes();
+++        let retired = LocalPsid::from_string(RETIRED_SID).unwrap();
+++        let count = |path: &str, kind: u8| {
+++            let (_sd, acl) = read_file_dacl(path).unwrap();
+++            filter_aces(acl, |hdr, body| {
+++                hdr.AceType == kind && ace_sid_is(body, retired.as_bytes())
+++            })
+++            .unwrap()
+++            .0
+++            .len()
+++        };
+++        let owner_denied = || {
+++            assert_eq!(
+++                std::fs::write(dir.join("owner-write-denied"), "blocked")
+++                    .unwrap_err()
+++                    .kind(),
+++                std::io::ErrorKind::PermissionDenied
+++            );
+++        };
+++        owner_denied();
+++        assert_eq!(count(child.to_str().unwrap(), 0), 1);
+++        remove_sandbox_allow_aces(path, RETIRED_SID, &identity, false).unwrap();
+++        assert_eq!(count(path, 0), 0);
+++        assert_eq!(count(path, 1), 1, "retired principal deny was removed");
+++        assert_eq!(count(child.to_str().unwrap(), 0), 0);
+++        assert_eq!(count(child.to_str().unwrap(), 1), 1);
+++        owner_denied();
+++        assert!(sd_dacl_protected(&read_file_dacl(path).unwrap().0).unwrap());
+++
+++        set_path_dacl_from_sddl(path, &initial, "retired fixture reset").unwrap();
+++        let handle = open_local_dacl(path).unwrap();
+++        let (sd, old) = read_local_dacl(&handle).unwrap();
+++        let kept = filter_aces(old, |hdr, body| {
+++            hdr.AceFlags & INHERITED_ACE == 0
+++                && !(hdr.AceType == 0 && ace_sid_is(body, retired.as_bytes()))
+++        })
+++        .unwrap();
+++        let new = rebuild_acl(kept.2, &[], &kept, &[]).unwrap();
+++        write_composed_dacl(&handle, old, &new, dacl_control(&sd).unwrap()).unwrap();
+++        assert_eq!(count(child.to_str().unwrap(), 0), 1);
+++        remove_sandbox_allow_aces(path, RETIRED_SID, &identity, false).unwrap();
+++        assert_eq!(count(child.to_str().unwrap(), 0), 1);
+++        remove_sandbox_allow_aces(path, RETIRED_SID, &identity, true).unwrap();
+++        assert_eq!(count(child.to_str().unwrap(), 0), 0);
+++        assert_eq!(count(path, 1), 1);
+++        assert_eq!(count(child.to_str().unwrap(), 1), 1);
+++        owner_denied();
+++        std::fs::remove_dir_all(dir).unwrap();
+++    }
+++
+++    #[test]
+++    fn identity_bound_acl_changes_refuse_replaced_and_foreign_objects() {
+++        const SANDBOX_SID: &str = "S-1-5-32-546";
+++        let dir = std::env::temp_dir().join(format!(
+++            "srtwin-identity-acl-{}-{}",
+++            std::process::id(),
+++            std::time::SystemTime::now()
+++                .duration_since(std::time::UNIX_EPOCH)
+++                .unwrap()
+++                .as_nanos()
+++        ));
+++        std::fs::create_dir(&dir).unwrap();
+++        let target = dir.join("target");
+++        let original = dir.join("original");
+++        std::fs::create_dir(&target).unwrap();
+++        let path = target.to_str().unwrap();
+++        let identity = crate::path_id::capture_file_id(path).unwrap().as_bytes();
+++        apply_sandbox_aces(
+++            path,
+++            SANDBOX_SID,
+++            SbAceSet {
+++                grant: Some(GrantMask::ReadOnly),
+++                ..Default::default()
+++            },
+++        )
+++        .unwrap();
+++        std::fs::rename(&target, &original).unwrap();
+++        std::fs::create_dir(&target).unwrap();
+++        let (_before, acl) = read_file_dacl(path).unwrap();
+++        let explicit = explicit_aces(acl, false).unwrap();
+++        assert!(remove_sandbox_allow_aces(path, SANDBOX_SID, &identity, false).is_err());
+++        assert!(remove_sandbox_allow_aces(path, SANDBOX_SID, &identity, true).is_err());
+++        assert!(
+++            apply_sandbox_aces_for_identity(
+++                path,
+++                SANDBOX_SID,
+++                SbAceSet {
+++                    deny_fdc: true,
+++                    ..Default::default()
+++                },
+++                false,
+++                &identity,
+++            )
+++            .is_err()
+++        );
+++        let (_after, acl) = read_file_dacl(path).unwrap();
+++        assert_eq!(explicit_aces(acl, false).unwrap(), explicit);
+++        let current = crate::path_id::capture_file_id(path).unwrap().as_bytes();
+++        let (_original_sd, original_acl) = read_file_dacl(original.to_str().unwrap()).unwrap();
+++        let original_explicit = explicit_aces(original_acl, false).unwrap();
+++        assert!(
+++            remove_sandbox_allow_aces(original.to_str().unwrap(), SANDBOX_SID, &current, false)
+++                .is_err()
+++        );
+++        let (_after_original_sd, original_acl) =
+++            read_file_dacl(original.to_str().unwrap()).unwrap();
+++        assert_eq!(
+++            explicit_aces(original_acl, false).unwrap(),
+++            original_explicit
+++        );
+++        remove_sandbox_allow_aces(original.to_str().unwrap(), SANDBOX_SID, &identity, false)
+++            .unwrap();
+++        std::fs::remove_dir_all(dir).unwrap();
+++    }
+++
++     #[test]
++     fn mask_consts_regression() {
++         let m = Mask::MODIFY_NO_FDC;
++diff --git a/vendor/srt-win-src/src/path_id.rs b/vendor/srt-win-src/src/path_id.rs
++index 00d63d724..56cc65a8d 100644
++--- a/vendor/srt-win-src/src/path_id.rs
+++++ b/vendor/srt-win-src/src/path_id.rs
++@@ -426,7 +426,7 @@ impl FileId {
++ }
++
++ /// `FILE_ID_INFO` of an already-open handle.
++-fn file_id_from_handle(h: HANDLE) -> Result<FileId> {
+++pub(crate) fn file_id_from_handle(h: HANDLE) -> Result<FileId> {
++     use windows::Win32::Storage::FileSystem::{
++         FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
++     };
++diff --git a/vendor/srt-win-src/tests/acl_parent_scope.rs b/vendor/srt-win-src/tests/acl_parent_scope.rs
++new file mode 100644
++index 000000000..43cc25668
++--- /dev/null
+++++ b/vendor/srt-win-src/tests/acl_parent_scope.rs
++@@ -0,0 +1,597 @@
+++//! Parent deletion protection must not spread over unrelated sibling trees.
+++//! All ACL changes are confined to a fresh owned fixture. No sandbox account,
+++//! elevation, WFP installation or machine-wide state is needed.
+++#![cfg(windows)]
+++
+++use std::path::{Path, PathBuf};
+++use std::sync::atomic::{AtomicU64, Ordering};
+++use std::time::{SystemTime, UNIX_EPOCH};
+++
+++use srt_win::acl::{
+++    DenyMask, GrantMask, Mask, SbAceSet, apply_sandbox_aces, set_path_dacl_from_sddl,
+++};
+++use srt_win::sid::LocalPsid;
+++use srt_win::util::{OwnedSd, from_pwstr, local_free, pcwstr, wstr};
+++use windows::Win32::Security::Authorization::{
+++    ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+++};
+++use windows::Win32::Security::{
+++    ACL, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, GetAce, OWNER_SECURITY_INFORMATION,
+++    PSECURITY_DESCRIPTOR,
+++};
+++
+++const TEST_SID: &str = "S-1-5-32-546"; // Guests, never the runner's own identity.
+++
+++// Exercise the pinned native entry point used by state recomposition.
+++fn apply_session_aces(path: &str, sid: &str, set: SbAceSet) -> anyhow::Result<()> {
+++    apply_sandbox_aces(path, sid, set)
+++}
+++
+++struct Fixture(PathBuf);
+++
+++impl Fixture {
+++    fn new() -> Self {
+++        static NEXT: AtomicU64 = AtomicU64::new(0);
+++        let path = std::env::temp_dir().join(format!(
+++            "srt-acl-parent-{}-{}-{}",
+++            std::process::id(),
+++            SystemTime::now()
+++                .duration_since(UNIX_EPOCH)
+++                .unwrap()
+++                .as_nanos(),
+++            NEXT.fetch_add(1, Ordering::Relaxed),
+++        ));
+++        std::fs::create_dir(&path).unwrap();
+++        Self(std::fs::canonicalize(path).unwrap())
+++    }
+++}
+++
+++impl Drop for Fixture {
+++    fn drop(&mut self) {
+++        // Only the directory created by this fixture, never a caller-supplied
+++        // path; do not follow a replacement root reparse point on cleanup.
+++        if std::fs::canonicalize(&self.0).ok().as_ref() == Some(&self.0) {
+++            std::fs::remove_dir_all(&self.0).unwrap();
+++        }
+++    }
+++}
+++
+++fn sandbox_aces(path: &Path) -> Vec<(u8, u8, u32)> {
+++    let name = wstr(path.to_str().unwrap());
+++    let sid = LocalPsid::from_string(TEST_SID).unwrap();
+++    let mut sd = PSECURITY_DESCRIPTOR::default();
+++    let mut acl: *mut ACL = std::ptr::null_mut();
+++    unsafe {
+++        GetNamedSecurityInfoW(
+++            pcwstr(&name),
+++            SE_FILE_OBJECT,
+++            DACL_SECURITY_INFORMATION,
+++            None,
+++            None,
+++            Some(&mut acl),
+++            None,
+++            &mut sd,
+++        )
+++        .ok()
+++        .unwrap();
+++    }
+++    let _sd = OwnedSd::from_raw(sd);
+++    let mut result = Vec::new();
+++    if !acl.is_null() {
+++        for i in 0..unsafe { (*acl).AceCount } {
+++            let mut ace = std::ptr::null_mut();
+++            unsafe { GetAce(acl, u32::from(i), &mut ace) }.unwrap();
+++            let header = unsafe { &*(ace as *const windows::Win32::Security::ACE_HEADER) };
+++            let bytes =
+++                unsafe { std::slice::from_raw_parts(ace as *const u8, header.AceSize as usize) };
+++            if bytes.get(8..8 + sid.as_bytes().len()) == Some(sid.as_bytes()) {
+++                result.push((
+++                    header.AceType,
+++                    header.AceFlags,
+++                    u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+++                ));
+++            }
+++        }
+++    }
+++    result
+++}
+++
+++fn snapshot(path: &Path) -> String {
+++    let name = wstr(path.to_str().unwrap());
+++    let flags = OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+++    let mut raw = PSECURITY_DESCRIPTOR::default();
+++    unsafe {
+++        GetNamedSecurityInfoW(
+++            pcwstr(&name),
+++            SE_FILE_OBJECT,
+++            flags,
+++            None,
+++            None,
+++            None,
+++            None,
+++            &mut raw,
+++        )
+++    }
+++    .ok()
+++    .unwrap();
+++    let _owned = OwnedSd::from_raw(raw);
+++    let mut text = windows::core::PWSTR::null();
+++    unsafe { ConvertSecurityDescriptorToStringSecurityDescriptorW(raw, 1, flags, &mut text, None) }
+++        .unwrap();
+++    let result = from_pwstr(text);
+++    local_free(text.0.cast());
+++    result
+++}
+++
+++fn set_fixture_dacl(path: &Path, extra: &str) {
+++    let owner = srt_win::sid::current_user_sid().unwrap();
+++    set_path_dacl_from_sddl(
+++        path.to_str().unwrap(),
+++        &format!("D:P{extra}(A;OICI;FA;;;{owner})(A;OICI;FA;;;SY)"),
+++        "fixture setup",
+++    )
+++    .unwrap();
+++}
+++
+++#[test]
+++fn parent_fdc_is_object_only_and_round_trips() {
+++    let fixture = Fixture::new();
+++    let sibling = fixture.0.join("unrelated");
+++    std::fs::create_dir(&sibling).unwrap();
+++    let existing = sibling.join("existing.txt");
+++    std::fs::write(&existing, "keep").unwrap();
+++    let before = sandbox_aces(&sibling);
+++    let original = snapshot(&fixture.0);
+++    let sibling_original = snapshot(&sibling);
+++    apply_session_aces(
+++        fixture.0.to_str().unwrap(),
+++        TEST_SID,
+++        SbAceSet {
+++            deny_fdc: true,
+++            ..Default::default()
+++        },
+++    )
+++    .unwrap();
+++    assert_eq!(
+++        sandbox_aces(&fixture.0),
+++        vec![(1, 0, Mask::FILE_DELETE_CHILD.bits())]
+++    );
+++    assert_eq!(
+++        sandbox_aces(&sibling),
+++        before,
+++        "parent-only deny leaked to sibling"
+++    );
+++    assert!(sandbox_aces(&existing).is_empty());
+++    let future = sibling.join("future.txt");
+++    std::fs::write(&future, "keep").unwrap();
+++    assert!(sandbox_aces(&future).is_empty());
+++    apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++    assert!(sandbox_aces(&fixture.0).is_empty());
+++    assert_eq!(sandbox_aces(&sibling), before);
+++    assert_eq!(
+++        snapshot(&fixture.0),
+++        original,
+++        "parent descriptor did not round-trip"
+++    );
+++    assert_eq!(
+++        snapshot(&sibling),
+++        sibling_original,
+++        "unrelated descriptor changed"
+++    );
+++}
+++
+++// A moved directory retains inherited entries from its former parent until a
+++// propagating write reaches it. This detects a real walk even when normal
+++// siblings would end up with byte-identical descriptors after propagation.
+++#[test]
+++fn parent_guard_does_not_rewrite_a_moved_sibling() {
+++    for grant in [None, Some(GrantMask::ReadOnly)] {
+++        let fixture = Fixture::new();
+++        let parent = fixture.0.join("parent");
+++        let donor = fixture.0.join("donor");
+++        let moved = parent.join("moved");
+++        std::fs::create_dir(&parent).unwrap();
+++        std::fs::create_dir(&donor).unwrap();
+++        let unguarded = SbAceSet {
+++            grant,
+++            ..Default::default()
+++        };
+++        apply_session_aces(parent.to_str().unwrap(), TEST_SID, unguarded).unwrap();
+++        set_fixture_dacl(&donor, "(A;OICI;FR;;;AN)");
+++        std::fs::create_dir(donor.join("moved")).unwrap();
+++        std::fs::write(donor.join("moved/file.txt"), "sentinel").unwrap();
+++        std::fs::rename(donor.join("moved"), &moved).unwrap();
+++        let original = snapshot(&moved);
+++        let file_original = snapshot(&moved.join("file.txt"));
+++        assert!(
+++            original.contains(";;;AN)"),
+++            "setup: no inherited donor entry"
+++        );
+++        let guarded = SbAceSet {
+++            deny_fdc: true,
+++            ..unguarded
+++        };
+++        for set in [guarded, unguarded] {
+++            apply_session_aces(parent.to_str().unwrap(), TEST_SID, set).unwrap();
+++            assert_eq!(
+++                snapshot(&moved),
+++                original,
+++                "unrelated directory was rewritten"
+++            );
+++            assert_eq!(snapshot(&moved.join("file.txt")), file_original);
+++            apply_session_aces(parent.to_str().unwrap(), TEST_SID, set).unwrap();
+++            assert_eq!(snapshot(&moved), original, "reapply rewrote sibling");
+++        }
+++        apply_session_aces(parent.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++    }
+++}
+++
+++#[test]
+++fn denied_tree_keeps_descendant_delete_child_protection() {
+++    let fixture = Fixture::new();
+++    let denied = fixture.0.join("denied");
+++    let nested = denied.join("nested");
+++    std::fs::create_dir_all(&nested).unwrap();
+++    for mask in [DenyMask::WriteDeny, DenyMask::ReadDeny] {
+++        apply_session_aces(
+++            denied.to_str().unwrap(),
+++            TEST_SID,
+++            SbAceSet {
+++                deny: Some(mask),
+++                ..Default::default()
+++            },
+++        )
+++        .unwrap();
+++        for path in [&denied, &nested] {
+++            assert!(sandbox_aces(path).iter().any(|&(kind, _, bits)|
+++                kind == 1 && bits & Mask::FILE_DELETE_CHILD.bits() != 0),
+++                "denied tree lost FILE_DELETE_CHILD protection: {mask:?}");
+++        }
+++        apply_session_aces(denied.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++        assert!(sandbox_aces(&nested).is_empty());
+++    }
+++}
+++
+++#[test]
+++fn object_aces_preserve_protection_and_other_principals() {
+++    let fixture = Fixture::new();
+++    set_fixture_dacl(&fixture.0, "(D;OICI;0x2;;;AN)(A;OICI;FR;;;BU)");
+++    let child = fixture.0.join("protected-child");
+++    std::fs::create_dir(&child).unwrap();
+++    set_fixture_dacl(&child, "(A;;FR;;;BU)");
+++    let original = snapshot(&fixture.0);
+++    let child_original = snapshot(&child);
+++    for set in [
+++        SbAceSet {
+++            deny_fdc: true,
+++            ..Default::default()
+++        },
+++        SbAceSet {
+++            deny_delete: true,
+++            ..Default::default()
+++        },
+++        SbAceSet {
+++            deny_fdc: true,
+++            deny_delete: true,
+++            ..Default::default()
+++        },
+++    ] {
+++        apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, set).unwrap();
+++        assert!(snapshot(&fixture.0).contains("D:P"), "protection bit lost");
+++        apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++        assert_eq!(snapshot(&fixture.0), original);
+++        assert_eq!(snapshot(&child), child_original);
+++    }
+++}
+++
+++#[test]
+++fn legacy_parent_fdc_is_removed_from_existing_descendants() {
+++    for keep_parent in [false, true] {
+++        let fixture = Fixture::new();
+++        let child = fixture.0.join("child");
+++        std::fs::create_dir(&child).unwrap();
+++        set_fixture_dacl(&fixture.0, &format!("(D;OICI;0x40;;;{TEST_SID})"));
+++        assert!(
+++            !sandbox_aces(&child).is_empty(),
+++            "legacy setup did not propagate"
+++        );
+++        apply_session_aces(
+++            fixture.0.to_str().unwrap(),
+++            TEST_SID,
+++            SbAceSet {
+++                deny_fdc: keep_parent,
+++                ..Default::default()
+++            },
+++        )
+++        .unwrap();
+++        assert!(
+++            sandbox_aces(&child).is_empty(),
+++            "stale legacy inherited FDC survived"
+++        );
+++        assert_eq!(sandbox_aces(&fixture.0).len(), usize::from(keep_parent));
+++        apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++    }
+++}
+++
+++#[test]
+++fn grant_and_deny_removal_still_propagate_and_preserve_inherited_grants() {
+++    let fixture = Fixture::new();
+++    let parent = fixture.0.join("parent");
+++    let nested = parent.join("nested");
+++    std::fs::create_dir_all(&nested).unwrap();
+++    let grant = SbAceSet {
+++        grant: Some(GrantMask::Modify),
+++        ..Default::default()
+++    };
+++    apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, grant).unwrap();
+++    let inherited = sandbox_aces(&parent);
+++    assert!(
+++        inherited
+++            .iter()
+++            .any(|&(kind, flags, _)| kind == 0 && flags & 0x10 != 0)
+++    );
+++    for set in [
+++        SbAceSet {
+++            deny_fdc: true,
+++            ..Default::default()
+++        },
+++        SbAceSet {
+++            deny: Some(DenyMask::WriteDeny),
+++            ..Default::default()
+++        },
+++    ] {
+++        apply_session_aces(parent.to_str().unwrap(), TEST_SID, set).unwrap();
+++        apply_session_aces(parent.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++        assert_eq!(sandbox_aces(&parent), inherited, "inherited grant removed");
+++        assert!(!sandbox_aces(&nested).iter().any(|&(kind, _, _)| kind == 1));
+++    }
+++    apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++    assert!(sandbox_aces(&parent).is_empty());
+++    assert!(
+++        sandbox_aces(&nested).is_empty(),
+++        "stale grant survived revoke"
+++    );
+++}
+++
+++#[test]
+++fn object_ace_reapply_repairs_drift() {
+++    let fixture = Fixture::new();
+++    let set = SbAceSet {
+++        deny_fdc: true,
+++        ..Default::default()
+++    };
+++    apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, set).unwrap();
+++    set_fixture_dacl(&fixture.0, ""); // Model a host-side ACL reset.
+++    assert!(sandbox_aces(&fixture.0).is_empty());
+++    apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, set).unwrap();
+++    assert_eq!(
+++        sandbox_aces(&fixture.0),
+++        vec![(1, 0, Mask::FILE_DELETE_CHILD.bits())]
+++    );
+++    apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, set).unwrap();
+++    assert_eq!(
+++        sandbox_aces(&fixture.0).len(),
+++        1,
+++        "reapply duplicated the ACE"
+++    );
+++}
+++
+++#[test]
+++fn parent_fdc_keeps_inherited_denies_inherited_while_held() {
+++    let fixture = Fixture::new();
+++    let parent = fixture.0.join("parent");
+++    std::fs::create_dir(&parent).unwrap();
+++    apply_session_aces(
+++        fixture.0.to_str().unwrap(),
+++        TEST_SID,
+++        SbAceSet {
+++            deny: Some(DenyMask::WriteDeny),
+++            ..Default::default()
+++        },
+++    )
+++    .unwrap();
+++    let inherited = sandbox_aces(&parent);
+++    assert!(inherited.iter().all(|&(_, flags, _)| flags & 0x10 != 0));
+++    for _ in 0..3 {
+++        apply_session_aces(
+++            parent.to_str().unwrap(),
+++            TEST_SID,
+++            SbAceSet {
+++                deny_fdc: true,
+++                ..Default::default()
+++            },
+++        )
+++        .unwrap();
+++        let mut expected = vec![(1, 0, Mask::FILE_DELETE_CHILD.bits())];
+++        expected.extend_from_slice(&inherited);
+++        assert_eq!(
+++            sandbox_aces(&parent),
+++            expected,
+++            "inherited deny became explicit"
+++        );
+++    }
+++    apply_session_aces(parent.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++    assert_eq!(sandbox_aces(&parent), inherited);
+++    apply_session_aces(fixture.0.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++}
+++
+++// Exercise real kernel opens/deletes/renames without provisioning another
+++// account: the normal token pass has the runner's access, the restricting-SID
+++// pass encounters TEST_SID denies and Everyone allows. This is an ACL test
+++// token, not a replacement for the production sandbox-user token.
+++struct Impersonation;
+++impl Impersonation {
+++    fn begin() -> Self {
+++        use srt_win::util::OwnedHandle;
+++        use windows::Win32::Foundation::HANDLE;
+++        use windows::Win32::Security::{
+++            CreateRestrictedToken, DISABLE_MAX_PRIVILEGE, ImpersonateLoggedOnUser,
+++            SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_QUERY,
+++        };
+++        use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+++        let mut raw = HANDLE::default();
+++        unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY, &mut raw) }
+++            .unwrap();
+++        let original = OwnedHandle(raw);
+++        let sandbox = LocalPsid::from_string(TEST_SID).unwrap();
+++        let everyone = LocalPsid::from_string("S-1-1-0").unwrap();
+++        let restricting = [
+++            SID_AND_ATTRIBUTES {
+++                Sid: sandbox.as_psid(),
+++                Attributes: 0,
+++            },
+++            SID_AND_ATTRIBUTES {
+++                Sid: everyone.as_psid(),
+++                Attributes: 0,
+++            },
+++        ];
+++        let mut raw = HANDLE::default();
+++        unsafe {
+++            CreateRestrictedToken(
+++                original.raw(),
+++                DISABLE_MAX_PRIVILEGE,
+++                None,
+++                None,
+++                Some(&restricting),
+++                &mut raw,
+++            )
+++        }
+++        .unwrap();
+++        let restricted = OwnedHandle(raw);
+++        unsafe { ImpersonateLoggedOnUser(restricted.raw()) }.unwrap();
+++        Self
+++    }
+++}
+++impl Drop for Impersonation {
+++    fn drop(&mut self) {
+++        if unsafe { windows::Win32::Security::RevertToSelf() }.is_err() {
+++            std::process::abort();
+++        }
+++    }
+++}
+++
+++fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
+++    use windows::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MoveFileExW};
+++    let source = wstr(source.to_str().unwrap());
+++    let destination = wstr(destination.to_str().unwrap());
+++    unsafe {
+++        MoveFileExW(
+++            pcwstr(&source),
+++            pcwstr(&destination),
+++            MOVEFILE_REPLACE_EXISTING,
+++        )
+++    }
+++    .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))
+++}
+++
+++#[test]
+++fn denied_targets_cannot_be_deleted_renamed_or_replaced_via_parent_fdc() {
+++    for mask in [DenyMask::WriteDeny, DenyMask::ReadDeny] {
+++        let fixture = Fixture::new();
+++        set_fixture_dacl(&fixture.0, "(A;OICI;FA;;;WD)");
+++        let allowed = fixture.0.join("allowed.txt");
+++        let denied = fixture.0.join("denied.txt");
+++        let denied_dir = fixture.0.join("denied-dir");
+++        let nested = denied_dir.join("nested.txt");
+++        let future = denied_dir.join("future.txt");
+++        let replacement = fixture.0.join("replacement.txt");
+++        std::fs::write(&allowed, "allowed").unwrap();
+++        std::fs::write(&denied, "denied").unwrap();
+++        std::fs::create_dir(&denied_dir).unwrap();
+++        std::fs::write(&nested, "nested").unwrap();
+++        std::fs::write(&replacement, "control").unwrap();
+++        {
+++            let _impersonation = Impersonation::begin();
+++            // Positive controls establish real kernel access for this principal.
+++            std::fs::rename(&allowed, fixture.0.join("renamed.txt")).unwrap();
+++            std::fs::rename(fixture.0.join("renamed.txt"), &allowed).unwrap();
+++            replace_file(&replacement, &denied).unwrap();
+++            std::fs::write(&denied, "control").unwrap();
+++        }
+++        let deny = SbAceSet {
+++            deny: Some(mask),
+++            ..Default::default()
+++        };
+++        apply_session_aces(denied.to_str().unwrap(), TEST_SID, deny).unwrap();
+++        apply_session_aces(denied_dir.to_str().unwrap(), TEST_SID, deny).unwrap();
+++        std::fs::write(&future, "future").unwrap();
+++        apply_session_aces(
+++            fixture.0.to_str().unwrap(),
+++            TEST_SID,
+++            SbAceSet {
+++                deny_fdc: true,
+++                ..Default::default()
+++            },
+++        )
+++        .unwrap();
+++        // The fixture owner retains reads, writes, renames, replacements and
+++        // deletion while the other principal's denies remain installed.
+++        std::fs::write(&denied, "owner write").unwrap();
+++        std::fs::rename(&denied, fixture.0.join("owner-moved.txt")).unwrap();
+++        std::fs::rename(fixture.0.join("owner-moved.txt"), &denied).unwrap();
+++        std::fs::write(&replacement, "control").unwrap();
+++        replace_file(&replacement, &denied).unwrap();
+++        // Replacement changes file identity, so converge the replacement too.
+++        apply_session_aces(denied.to_str().unwrap(), TEST_SID, deny).unwrap();
+++        std::fs::write(&replacement, "forbidden replacement").unwrap();
+++        {
+++            let _impersonation = Impersonation::begin();
+++            match mask {
+++                DenyMask::WriteDeny => {
+++                    assert_eq!(std::fs::read_to_string(&denied).unwrap(), "control")
+++                }
+++                DenyMask::ReadDeny => assert_eq!(
+++                    std::fs::read(&denied).unwrap_err().kind(),
+++                    std::io::ErrorKind::PermissionDenied
+++                ),
+++            }
+++            assert_eq!(
+++                std::fs::write(&denied, "forbidden").unwrap_err().kind(),
+++                std::io::ErrorKind::PermissionDenied
+++            );
+++            for path in [&denied, &nested, &future] {
+++                assert_eq!(
+++                    std::fs::remove_file(path).unwrap_err().kind(),
+++                    std::io::ErrorKind::PermissionDenied,
+++                    "delete must be denied by permissions"
+++                );
+++                assert_eq!(
+++                    std::fs::rename(path, path.with_extension("moved"))
+++                        .unwrap_err()
+++                        .kind(),
+++                    std::io::ErrorKind::PermissionDenied,
+++                    "rename must be denied by permissions"
+++                );
+++                assert_eq!(
+++                    replace_file(&replacement, path).unwrap_err().kind(),
+++                    std::io::ErrorKind::PermissionDenied,
+++                    "replacement must be denied by permissions"
+++                );
+++            }
+++            assert_eq!(
+++                std::fs::rename(&denied_dir, fixture.0.join("moved-dir"))
+++                    .unwrap_err()
+++                    .kind(),
+++                std::io::ErrorKind::PermissionDenied
+++            );
+++            // The parent-only guard does not suppress sibling DELETE rights.
+++            std::fs::write(&allowed, "sibling write").unwrap();
+++            std::fs::rename(&allowed, fixture.0.join("allowed-renamed.txt")).unwrap();
+++            std::fs::remove_file(fixture.0.join("allowed-renamed.txt")).unwrap();
+++        }
+++        assert_eq!(std::fs::read_to_string(&denied).unwrap(), "control");
+++        assert_eq!(std::fs::read_to_string(&nested).unwrap(), "nested");
+++        assert_eq!(std::fs::read_to_string(&future).unwrap(), "future");
+++        // Owner deletion succeeds with the denies still present.
+++        std::fs::remove_file(&denied).unwrap();
+++        for path in [&denied_dir, &fixture.0] {
+++            apply_session_aces(path.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++        }
+++        {
+++            let _impersonation = Impersonation::begin();
+++            std::fs::remove_file(&nested).unwrap();
+++            std::fs::remove_file(&future).unwrap();
+++            std::fs::remove_dir(&denied_dir).unwrap();
+++        }
+++    }
+++}

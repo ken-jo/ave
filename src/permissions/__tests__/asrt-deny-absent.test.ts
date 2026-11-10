@@ -451,6 +451,20 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     } finally { held.release(); }
   });
 
+  it("refuses a directory write deny whose inheritable mask lacks internal delete-child protection", async () => {
+    captureRuntime();
+    const grant = join(root, "missing-child-protection");
+    const target = join(grant, "protected");
+    mkdirSync(target, { recursive: true });
+    await initializeAsrtSandbox({ denyWrite: [target] });
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(() => ({
+      denyMask: 0x10116, inheritableMask: 0x10116, parentMask: 0x40, directory: true,
+    })));
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
+      .rejects.toThrow(/verification/);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
   it.each([
     { denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false },
     { denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: 0, parentMask: 0, directory: false },

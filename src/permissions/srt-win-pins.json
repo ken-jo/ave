@@ -4,5 +4,12 @@
   "sha256": {
     "x64": "484d9e5c77475cd87be3ab9733fb1cdd1cdea71288001b4750d99ae67b84e865",
     "arm64": "60e511e0c23230e26c77203ea58ccaa4b715de8726e1e745b8682d0b64eae28d"
-  }
+  },
+  "source": {
+    "revision": "626a59671ee2be556d70a290a8036224be996193",
+    "url": "https://api.github.com/repos/anthropics/sandbox-runtime/tarball/626a59671ee2be556d70a290a8036224be996193",
+    "sha256": "e6661095aa66a8947215a9d341e610f5155f65e3ade79e166a56a8e78a430767"
+  },
+  "nativePatchSha256": "136b073295ce61bc1f1e760ff097209f5c16431d3584d512ba6c17aa90885c5f",
+  "rustToolchain": "1.98.1"
 }

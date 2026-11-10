@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { guardedNodeOptions } from "./lib/document-consumer-node-options.mjs";
 
 const require = createRequire(import.meta.url);
+require("./prepare-srt-win-receipts.cjs").prepareSrtWinReceipts();
 const FORWARDED_SIGNALS = Object.freeze(["SIGINT", "SIGTERM"]);
 const DEFAULT_NORMALIZER_PATH = fileURLToPath(
   new URL("./normalize-electron-node-runtime.mjs", import.meta.url),

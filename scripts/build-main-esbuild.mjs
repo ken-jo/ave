@@ -5,6 +5,8 @@
 // stay outside the bundle because they either ship native bindings, are
 // provided by Electron at runtime, must share a singleton across plugins, or
 // need real node_modules paths at runtime.
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { build, context } from "esbuild";
 import { appendFileSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -32,6 +34,11 @@ const outfile = resolve(outdir, "main.js");
 const chunksDir = resolve(outdir, "chunks");
 const manifestPath = resolve(outdir, "bundle-manifest.json");
 const watchMode = process.argv.includes("--watch");
+const require = createRequire(import.meta.url);
+require("./prepare-srt-win-receipts.cjs").prepareSrtWinReceipts();
+if (process.platform === "win32") {
+  execFileSync(process.execPath, [resolve(repoRoot, "scripts/build-srt-win.mjs")], { stdio: "inherit" });
+}
 await buildSkillScripts();
 if (!mxcVerificationBuild()) rmSync(resolve(outdir, "mxc-packaged-probe.js"), { force: true });
 
@@ -159,6 +166,7 @@ if (watchMode) {
     absWorkingDir: repoRoot,
   });
   bundleManifest.mxcVerificationBuild = mxcVerificationBuild();
+  bundleManifest.srtWinReceiptsSha256 = require("./lib/srt-win-integrity.cjs").assertSrtWinReceiptModule();
   writeFileSync(manifestPath, `${JSON.stringify(bundleManifest, null, 2)}\n`, "utf8");
   process.stdout.write(`${formatMainBundleBudget(bundleMeasurement)}\n`);
 
