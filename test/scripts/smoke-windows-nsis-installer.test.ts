@@ -120,15 +120,16 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(() => assertLimitedUninstallResult(null)).toThrow();
   });
 
-  it("runs genuine uninstall through the owner's linked filtered token", () => {
+  it("runs genuine uninstall through the live filtered owner's primary token", () => {
     const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
     const body = smoke.slice(smoke.indexOf("async function uninstallAndVerify("), smoke.indexOf("export function assertLimitedUninstallResult("));
     expect(body).toContain("await runLimitedUninstaller(machineInstall, args, timeoutMs)");
     expect(body).toContain("await assertUninstalledSurface(machineInstall)");
     expect(body).not.toContain("await runProcess(machineInstall.uninstaller");
     const launcher = readRepoFile("scripts/lib/run-limited-windows-process.ps1");
-    expect(launcher).toContain("GetTokenInformation(token, 19, out linked");
-    expect(launcher).toContain("DuplicateTokenEx(linked");
+    expect(launcher).toContain("OpenProcess(0x1000, false, ownerProcessId)");
+    expect(launcher).toContain("OpenProcessToken(owner, 0x000B, out token)");
+    expect(launcher).not.toContain("DuplicateTokenEx");
     expect(launcher).toContain("if ($admin) { throw");
     expect(launcher).toContain("if (-not $medium) { throw");
     expect(launcher).toContain("exit $process.ExitCode");

@@ -35,8 +35,8 @@ if ($LimitedChild) {
   exit $process.ExitCode
 }
 
-# Use the owner's actual linked filtered token. Hand-filtering a built-in
-# administrator token does not create a usable UAC elevation relationship.
+# Use the primary token of the still-running filtered owner bootstrap.
+# A linked-token query does not grant ordinary administrators a primary token.
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -49,25 +49,28 @@ public static class LimitedProcess {
     public short showWindow, reserved2; public IntPtr reservedPointer, input, output, error;
   }
   [StructLayout(LayoutKind.Sequential)] struct ProcessInformation { public IntPtr process, thread; public uint processId, threadId; }
-  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint processId);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
   [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
-  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int informationClass, out IntPtr information, uint length, out uint returned);
-  [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateTokenEx(IntPtr token, uint access, IntPtr attributes, int impersonation, int type, out IntPtr duplicate);
   [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string application, StringBuilder commandLine, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInformation process);
-  static void Check(bool success) { if (!success) throw new Win32Exception(Marshal.GetLastWin32Error()); }
-  public static uint Run(string application, string arguments, string directory, uint timeout) {
-    IntPtr token = IntPtr.Zero, linked = IntPtr.Zero, restricted = IntPtr.Zero;
+  static void Check(bool success, string operation) { if (!success) throw new Win32Exception(Marshal.GetLastWin32Error(), operation); }
+  public static uint Run(string application, string arguments, string directory, uint timeout, uint ownerProcessId) {
+    IntPtr owner = IntPtr.Zero, token = IntPtr.Zero;
     var process = new ProcessInformation();
     try {
-      Check(OpenProcessToken(GetCurrentProcess(), 0x000F01FF, out token));
-      uint returned;
-      Check(GetTokenInformation(token, 19, out linked, (uint)IntPtr.Size, out returned));
-      Check(DuplicateTokenEx(linked, 0x02000000, IntPtr.Zero, 2, 1, out restricted));
+      owner = OpenProcess(0x1000, false, ownerProcessId);
+      Check(owner != IntPtr.Zero, "Open filtered owner process");
+      Check(OpenProcessToken(owner, 0x000B, out token), "Open filtered owner primary token");
+      using (var identity = new System.Security.Principal.WindowsIdentity(token)) {
+        if (!identity.User.Equals(System.Security.Principal.WindowsIdentity.GetCurrent().User) ||
+            new System.Security.Principal.WindowsPrincipal(identity).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator)) {
+          throw new InvalidOperationException("The owner token has the wrong SID or elevation");
+        }
+      }
       var startup = new StartupInfo { cb = Marshal.SizeOf(typeof(StartupInfo)) };
-      Check(CreateProcessWithTokenW(restricted, 0, application, new StringBuilder("\"" + application + "\" " + arguments), 0x08000000, IntPtr.Zero, directory, ref startup, out process));
+      Check(CreateProcessWithTokenW(token, 0, application, new StringBuilder("\"" + application + "\" " + arguments), 0x08000000, IntPtr.Zero, directory, ref startup, out process), "Create filtered owner process");
       if (WaitForSingleObject(process.process, timeout) != 0) {
         using (var killer = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo {
           FileName = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "taskkill.exe"),
@@ -75,13 +78,12 @@ public static class LimitedProcess {
         })) { killer.WaitForExit(); }
         throw new TimeoutException("The restricted launcher timed out");
       }
-      uint code; Check(GetExitCodeProcess(process.process, out code)); return code;
+      uint code; Check(GetExitCodeProcess(process.process, out code), "Read filtered child exit"); return code;
     } finally {
       if (process.thread != IntPtr.Zero) CloseHandle(process.thread);
       if (process.process != IntPtr.Zero) CloseHandle(process.process);
-      if (restricted != IntPtr.Zero) CloseHandle(restricted);
-      if (linked != IntPtr.Zero) CloseHandle(linked);
       if (token != IntPtr.Zero) CloseHandle(token);
+      if (owner != IntPtr.Zero) CloseHandle(owner);
     }
   }
 }
@@ -94,7 +96,8 @@ $powershell = Join-Path $PSHOME 'powershell.exe'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -LimitedChild -FilePath "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -ReportPath "{4}" -DeadlineUnixMs {5} -ExpectedUserSid {6}' -f $PSCommandPath, $FilePath, $ArgumentsBase64, $WorkingDirectory, $ReportPath, $DeadlineUnixMs, $sid
 $remaining = [uint32][Math]::Max(1, $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - 5000)
-$code = [LimitedProcess]::Run($powershell, $command, $WorkingDirectory, $remaining)
+if (-not $env:AVE_WINDOWS_SMOKE_FILTERED_PID) { throw 'The filtered owner bootstrap is not available' }
+$code = [LimitedProcess]::Run($powershell, $command, $WorkingDirectory, $remaining, [uint32]$env:AVE_WINDOWS_SMOKE_FILTERED_PID)
 if (-not (Test-Path -LiteralPath $ReportPath)) { throw "The restricted launcher produced no report (exit $code)" }
 Get-Content -LiteralPath $ReportPath -Raw
 exit $code

@@ -48,7 +48,7 @@ if (!process.argv.includes("--owner")) {
       assert.equal(observed.mediumIntegrity, true);
       assert.equal(observed.userSid, process.env.AVE_WINDOWS_SMOKE_OWNER_SID);
       assert.equal(observed.exitCode, expectedExit);
-      process.stdout.write(`[windows-owner-flow] verified actual linked-token exit ${expectedExit}: ${JSON.stringify(observed)}\n`);
+      process.stdout.write(`[windows-owner-flow] verified actual filtered-owner exit ${expectedExit}: ${JSON.stringify(observed)}\n`);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
