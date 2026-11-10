@@ -264,6 +264,54 @@ describe("native browser trusted user pointer routing", () => {
     expect(vi.mocked(deps.userFocus).mock.calls).toEqual([[state.webContentsId, true], [state.webContentsId]]);
   });
 
+  it("delivers left-down, right-down, right-up and left-up to the same page", async () => {
+    const state = await create();
+    await present(state);
+    const inputs = [
+      pointer(state, { button: "left", modifiers: ["leftbuttondown"] }),
+      pointer(state, { button: "right", modifiers: ["leftbuttondown", "rightbuttondown"] }),
+      pointer(state, { type: "mouseUp", button: "right", modifiers: ["leftbuttondown"] }),
+      pointer(state, { type: "mouseUp", button: "left" }),
+    ];
+
+    expect(inputs.map(input => host.input(1, input))).toEqual([true, true, true, true]);
+    expect(nativePage().sendInputEvent.mock.calls.map(([event]) => [event.type, event.button])).toEqual([
+      ["mouseDown", "left"],
+      ["mouseDown", "right"],
+      ["mouseUp", "right"],
+      ["mouseUp", "left"],
+    ]);
+    expect(deps.inputStateChanged).not.toHaveBeenCalled();
+    expect(host.input(1, pointer(state, { type: "mouseUp" }))).toBe(false);
+  });
+
+  it.each(["blur", "park"] as const)("cancels all held buttons on %s with the latest press sequence", async reason => {
+    const state = await create();
+    await present(state);
+    const first = pointer(state, { modifiers: ["leftbuttondown"] });
+    const second = pointer(state, { button: "right", modifiers: ["leftbuttondown", "rightbuttondown"] });
+    expect(host.input(1, first)).toBe(true);
+    expect(host.input(1, second)).toBe(true);
+
+    if (reason === "blur") owner.emit("blur");
+    else {
+      await host.request(1, { action: "present", tabId: state.tabId, webContentsId: state.webContentsId,
+        epoch: state.epoch, sequence: 2, bounds: null });
+      await present(state, 3);
+    }
+
+    expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "cancel", tabId: state.tabId,
+      webContentsId: state.webContentsId, epoch: state.epoch, sequence: second.sequence });
+    expect(host.input(1, pointer(state, { type: "mouseUp", button: "right", modifiers: ["leftbuttondown"] }))).toBe(false);
+    expect(host.input(1, pointer(state, { type: "mouseUp", button: "left" }))).toBe(false);
+    expect(nativePage().sendInputEvent).toHaveBeenCalledTimes(2);
+
+    expect(host.input(1, pointer(state))).toBe(true);
+    expect(host.input(1, { ...first, type: "mouseUp" })).toBe(false);
+    expect(host.input(1, pointer(state, { type: "mouseUp", epoch: state.epoch + 1 }))).toBe(false);
+    expect(host.input(1, pointer(state, { type: "mouseUp" }))).toBe(true);
+  });
+
   it("clears capture when parking and rejects a release after reacquisition", async () => {
     const state = await create();
     await present(state);

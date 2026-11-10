@@ -99,7 +99,7 @@ function customPageCursor(entry: Surface, image?: NativeImage, scale?: number, s
 export class BrowserNativeSurfaceHost {
   private readonly surfaces = new Map<string, Surface>();
   private readonly owners = new Map<number, () => void>();
-  private readonly gestures = new Map<number, { entry: Surface; epoch: number; sequence: number; button: BrowserNativeInput["button"] }>();
+  private readonly gestures = new Map<number, { entry: Surface; epoch: number; sequence: number; buttons: Set<BrowserNativeInput["button"]> }>();
   private readonly inputSequences = new Map<number, number>();
   private nextEpoch = 0;
   private nextRevision = 0;
@@ -113,8 +113,11 @@ export class BrowserNativeSurfaceHost {
     if (input.sequence <= (this.inputSequences.get(windowId) ?? 0)) return false;
     this.inputSequences.set(windowId, input.sequence);
     const heldButton = input.modifiers.some(modifier => modifier === "leftbuttondown" || modifier === "middlebuttondown" || modifier === "rightbuttondown");
-    if (input.type === "mouseDown" || input.type === "mouseMove" && !heldButton) this.clearGesture(windowId);
     const entry = this.surfaces.get(surfaceKey(windowId, input.tabId));
+    const captured = this.gestures.get(windowId);
+    if (input.type === "mouseDown" && (!captured || captured.entry !== entry || captured.entry.contentsId !== input.webContentsId
+      || captured.epoch !== input.epoch || captured.buttons.has(input.button))
+      || input.type === "mouseMove" && !heldButton) this.clearGesture(windowId);
     if (!entry || !this.current(entry) || !entry.bound || !entry.attached || !this.ownerVisible(entry.owner)
       || entry.contentsId !== input.webContentsId || entry.epoch !== input.epoch || !entry.placement?.bounds) return this.rejectInput(windowId, input);
     const gesture = this.gestures.get(windowId);
@@ -133,14 +136,19 @@ export class BrowserNativeSurfaceHost {
     if (input.type === "mouseDown" || input.type === "mouseWheel") {
       if (!inside) return this.rejectInput(windowId, input);
     } else if (input.type === "mouseUp") {
-      if (gesture?.button !== input.button) return this.rejectInput(windowId, input);
+      if (!gesture?.buttons.has(input.button)) return this.rejectInput(windowId, input);
     } else if (input.type !== "mouseLeave" && !inside && !gesture) return this.rejectInput(windowId, input);
     const event: MouseInputEvent = {
       type: input.type, x: x - origin.x, y: y - origin.y, button: input.button,
       clickCount: input.clickCount, modifiers: input.modifiers,
     };
     try {
-      if (input.type === "mouseDown") this.gestures.set(windowId, { entry, epoch: entry.epoch, sequence: input.sequence, button: input.button });
+      if (input.type === "mouseDown") {
+        if (gesture) {
+          gesture.buttons.add(input.button);
+          gesture.sequence = input.sequence;
+        } else this.gestures.set(windowId, { entry, epoch: entry.epoch, sequence: input.sequence, buttons: new Set([input.button]) });
+      }
       if (input.type === "mouseDown" || input.type === "mouseWheel") {
         if (!entry.owner.isFocused() && !isBackgroundE2eRuntime()) return this.rejectInput(windowId, input);
         this.deps.userFocus(entry.contentsId, true);
@@ -153,7 +161,10 @@ export class BrowserNativeSurfaceHost {
       } else {
         entry.contents.sendInputEvent(event);
       }
-      if (input.type === "mouseUp") this.gestures.delete(windowId);
+      if (input.type === "mouseUp" && gesture) {
+        gesture.buttons.delete(input.button);
+        if (gesture.buttons.size === 0) this.gestures.delete(windowId);
+      }
       return true;
     } catch {
       this.clearGesture(windowId);
