@@ -90,6 +90,16 @@ afterEach(async () => {
 });
 
 describe("Windows isolation after proxy startup", () => {
+  it("reconciles durable ownership even when the new base deny list is empty", async () => {
+    writeFileSync(releasePath, "0");
+    const config = fullConfig();
+    config.filesystem.denyRead = [];
+    config.windows = { ...config.windows, persistentDenyOwner: "ave" };
+    await SandboxManager.initializeWindowsIsolation(config);
+    expect(calls()).toEqual(["recover", "stamp"]);
+    await SandboxManager.reset();
+    expect(calls()).not.toContain("forget-denies");
+  });
   it("keeps proxy startup and the event loop independent of a pending stamp, then upgrades without rebinding", async () => {
     const proxyPort = SandboxManager.getProxyPort();
     pending = SandboxManager.initializeWindowsIsolation(fullConfig());

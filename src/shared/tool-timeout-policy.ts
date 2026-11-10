@@ -29,6 +29,8 @@ export const TOOL_TIMEOUT_POLICY = {
   windowsAclHostStartupMs: 120_000,
   // Bound each serial native-location ACL check so a stalled host releases queued admissions before the global ceiling.
   windowsAclRequestMs: 15_000,
+  // Keep native stamp/teardown within the existing mutation budget; pending intent survives expiry.
+  windowsAclMutationMs: 60_000,
   // Bound policy delivery even when the container launcher never connects.
   mxcRequestTransportMs: 15_000,
   // Exact installed extension runtime/request readiness must settle before a holder is admitted.

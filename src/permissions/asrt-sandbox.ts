@@ -10,7 +10,8 @@ import { hostScriptWriteDenyPaths } from "../main/host-script-runtime.js";
 import { containsGlobChars, containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { existingWindowsGrants, pinWindowsFilesystemConfig, windowsPinnedPaths } from "./windows-stamp-targets.js";
 import { assertWindowsGrantGrammar, pinWindowsGrantTargets } from "./windows-grant-targets.js";
-import { expandWindowsFsPaths, setWindowsAclRecoveryListener, type WindowsAclRecoveryReport } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { expandWindowsFsPaths, forgetWindowsDenyStampsAsync, resolveSrtWin, setWindowsAclRecoveryListener, type WindowsAclRecoveryReport } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { readAsrtSignalReleaseClaim } from "./asrt-signal-ownership.js";
 import { getSrtWinArchitecture, markSrtWinRuntimeReleased, markSrtWinRuntimeReleasePending, prepareSrtWinExecutable, srtWinPrivateDirectories } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
@@ -1911,6 +1912,7 @@ export function buildSandboxConfig(
   const windows: (WindowsConfig & { externalConfinement?: "embedder" }) | undefined =
     process.platform === "win32"
       ? {
+          persistentDenyOwner: "ave",
           ...(trustedSettings.windows?.externalConfinement === true
             ? { externalConfinement: "embedder" as const }
             : {}),
@@ -3118,6 +3120,14 @@ export async function resetAsrtSandbox(): Promise<void> {
 export async function releaseAsrtSandboxForExit(): Promise<void> {
   if (!active) return;
   await resetAsrtSandbox();
+}
+
+/** Explicit disable removes durable base denies after this host's live holds are released. */
+export async function teardownPersistentWindowsDenyStamps(): Promise<void> {
+  if (process.platform !== "win32") return;
+  if (active) await resetAsrtSandbox();
+  const srtWin = resolveSrtWin({ path: getVerifiedSrtWinExePath() });
+  await forgetWindowsDenyStampsAsync({ persistentOwner: "ave", srtWin, timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclMutationMs });
 }
 
 // Introspection: whether the current platform supports ASRT sandboxing. Pass-through to `SandboxManager.isSupportedPlatform`.

@@ -455,6 +455,14 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
         }
       }
     } else {
+      if (process.platform === "win32") {
+        const { teardownPersistentWindowsDenyStamps } = await import("../../permissions/asrt-sandbox.js");
+        try {
+          await teardownPersistentWindowsDenyStamps();
+        } catch (error) {
+          log.warn(`boot: persistent sandbox deny cleanup is incomplete; disable cleanup will retry next boot: ${errorMessage(error)}`);
+        }
+      }
       if (process.platform === "darwin") {
         log.info(
     "boot: OS tool sandbox gated off (enable via Settings → Permissions, or AVE_SANDBOX_ENABLED=1 for shells / " +

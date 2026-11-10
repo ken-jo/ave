@@ -248,6 +248,14 @@ the installed package.
     to full denies, and preserves propagation for inheritable policy changes
     and legacy cleanup. Native builds verify fixed source and patch inputs,
     then embed their exact binary receipts in the host bundle.
+
+16. Durable deny ownership. Base lists reconcile by owner, principal and target
+    identity; unchanged completed sets attach live holds without ACL writes.
+    Delta and teardown intent is durable before effects, while active holders
+    retain their obligations. Recovery repairs only actual interrupted tree
+    writes. Explicit disable and uninstall remove durable ownership; ordinary
+    reset and exit release only live holds. Principal replacement cannot
+    repurpose the owner's or another account's access entries.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
@@ -1624,7 +1632,7 @@ index 0000000000000000000000000000000000000000..344c83b28b06e2ab293471df4935b228
 +    res.end(failure.message + '\n');
 +}
 diff --git a/dist/sandbox/sandbox-config.d.ts b/dist/sandbox/sandbox-config.d.ts
-index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf68d4b71b9 100644
+index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..695a7f571111ffbf0c7ee03d577031c6edfec596 100644
 --- a/dist/sandbox/sandbox-config.d.ts
 +++ b/dist/sandbox/sandbox-config.d.ts
 @@ -43,14 +43,17 @@ declare const ParentProxyConfigSchema: z.ZodObject<{
@@ -1679,7 +1687,31 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
      } | undefined;
  }>;
  /**
-@@ -1014,14 +1022,17 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -901,6 +909,7 @@ export declare const SrtWinConfigSchema: z.ZodObject<{
+  * `.extend()`/`.shape` it.
+  */
+ export declare const WindowsConfigSchema: z.ZodObject<{
++    persistentDenyOwner: z.ZodOptional<z.ZodString>;
+     sandboxUser: z.ZodOptional<z.ZodString>;
+     sublayerGuid: z.ZodOptional<z.ZodString>;
+     wfpSublayerGuid: z.ZodOptional<z.ZodString>;
+@@ -913,6 +922,7 @@ export declare const WindowsConfigSchema: z.ZodObject<{
+         path: string;
+     }>>;
+ }, "strip", z.ZodTypeAny, {
++    persistentDenyOwner?: string | undefined;
+     sandboxUser?: string | undefined;
+     sublayerGuid?: string | undefined;
+     wfpSublayerGuid?: string | undefined;
+@@ -921,6 +931,7 @@ export declare const WindowsConfigSchema: z.ZodObject<{
+         path: string;
+     } | undefined;
+ }, {
++    persistentDenyOwner?: string | undefined;
+     sandboxUser?: string | undefined;
+     sublayerGuid?: string | undefined;
+     wfpSublayerGuid?: string | undefined;
+@@ -1014,14 +1025,17 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http: z.ZodOptional<z.ZodString>;
              https: z.ZodOptional<z.ZodString>;
              noProxy: z.ZodOptional<z.ZodString>;
@@ -1697,7 +1729,7 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          }>>;
      }, "strip", z.ZodTypeAny, {
          allowedDomains: string[];
-@@ -1057,6 +1068,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1057,6 +1071,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1705,7 +1737,7 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      }, {
          allowedDomains: string[];
-@@ -1092,6 +1104,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1092,6 +1107,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1713,7 +1745,37 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      }>;
      filesystem: z.ZodObject<{
-@@ -1499,6 +1512,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1429,7 +1445,8 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+     socatPath: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
+     javaAgentJarPath: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
+     windows: z.ZodOptional<z.ZodObject<{
+-        sandboxUser: z.ZodOptional<z.ZodString>;
++        persistentDenyOwner: z.ZodOptional<z.ZodString>;
++    sandboxUser: z.ZodOptional<z.ZodString>;
+         sublayerGuid: z.ZodOptional<z.ZodString>;
+         wfpSublayerGuid: z.ZodOptional<z.ZodString>;
+         proxyPortRange: z.ZodOptional<z.ZodEffects<z.ZodTuple<[z.ZodNumber, z.ZodNumber], null>, [number, number], [number, number]>>;
+@@ -1441,7 +1458,8 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             path: string;
+         }>>;
+     }, "strip", z.ZodTypeAny, {
+-        sandboxUser?: string | undefined;
++        persistentDenyOwner?: string | undefined;
++    sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+         proxyPortRange?: [number, number] | undefined;
+@@ -1449,7 +1467,8 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+             path: string;
+         } | undefined;
+     }, {
+-        sandboxUser?: string | undefined;
++        persistentDenyOwner?: string | undefined;
++    sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+         proxyPortRange?: [number, number] | undefined;
+@@ -1499,6 +1518,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1721,7 +1783,17 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      };
      filesystem: {
-@@ -1619,6 +1633,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1522,7 +1542,8 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+         })[] | undefined;
+     };
+     windows?: {
+-        sandboxUser?: string | undefined;
++        persistentDenyOwner?: string | undefined;
++    sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+         proxyPortRange?: [number, number] | undefined;
+@@ -1619,6 +1640,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1729,7 +1801,17 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      };
      filesystem: {
-@@ -1739,6 +1754,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1642,7 +1664,8 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+         })[] | undefined;
+     };
+     windows?: {
+-        sandboxUser?: string | undefined;
++        persistentDenyOwner?: string | undefined;
++    sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+         proxyPortRange?: [number, number] | undefined;
+@@ -1739,6 +1762,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1737,7 +1819,17 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      };
      filesystem: {
-@@ -1859,6 +1875,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+@@ -1762,7 +1786,8 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+         })[] | undefined;
+     };
+     windows?: {
+-        sandboxUser?: string | undefined;
++        persistentDenyOwner?: string | undefined;
++    sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+         proxyPortRange?: [number, number] | undefined;
+@@ -1859,6 +1884,7 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
              http?: string | undefined;
              https?: string | undefined;
              noProxy?: string | undefined;
@@ -1745,8 +1837,18 @@ index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf6
          } | undefined;
      };
      filesystem: {
+@@ -1882,7 +1908,8 @@ export declare const SandboxRuntimeConfigSchema: z.ZodEffects<z.ZodObject<{
+         })[] | undefined;
+     };
+     windows?: {
+-        sandboxUser?: string | undefined;
++        persistentDenyOwner?: string | undefined;
++    sandboxUser?: string | undefined;
+         sublayerGuid?: string | undefined;
+         wfpSublayerGuid?: string | undefined;
+         proxyPortRange?: [number, number] | undefined;
 diff --git a/dist/sandbox/sandbox-config.js b/dist/sandbox/sandbox-config.js
-index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa57eb7a2b 100644
+index d52e0f809e13d5515ab80fb52fe437eccff778f6..9d701db190bf717b4b953a95c39e5b0798110d79 100644
 --- a/dist/sandbox/sandbox-config.js
 +++ b/dist/sandbox/sandbox-config.js
 @@ -110,6 +110,12 @@ const ParentProxyConfigSchema = z.object({
@@ -1762,6 +1864,14 @@ index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa
  });
  /**
   * Schema for the access mode of a declared credential source.
+@@ -891,6 +897,7 @@ export const SrtWinConfigSchema = z.object({
+  * `.extend()`/`.shape` it.
+  */
+ export const WindowsConfigSchema = z.object({
++    persistentDenyOwner: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).optional().describe('Stable owner of deny stamps retained between sessions.'),
+     sandboxUser: z
+         .string()
+         .min(1)
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
 index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..c3c74469dbcd4156baaa6a1d8be38bdb64bb2241 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
@@ -1961,7 +2071,7 @@ index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..c3c74469dbcd4156baaa6a1d8be38bdb
 +export declare function setWindowsIsolationForTesting(srtWin: { exe: string; prependArgs: string[] } | undefined): void;
  //# sourceMappingURL=sandbox-manager.d.ts.map
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a988449215cce 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..9e61e2878faa9f52b216f14d30e0f2a6175fbd83 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -1,3 +1,4 @@
@@ -3462,7 +3572,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
  // ============================================================================
  // Public Module Functions (will be exported via namespace)
  // ============================================================================
-@@ -604,6 +1878,222 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
+@@ -604,6 +1878,223 @@ async function initialize(runtimeConfig, sandboxAskCallback, enableLogMonitor =
          throw error;
      }
  }
@@ -3621,8 +3731,9 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
 +            });
 +            assertCurrent();
 +        }
-+        if (acc.denyRead.length > 0 || acc.denyWrite.length > 0) {
++        if (runtimeConfig.windows?.persistentDenyOwner !== undefined || acc.denyRead.length > 0 || acc.denyWrite.length > 0) {
 +            await stampWindowsAclAsync({
++                persistentOwner: runtimeConfig.windows?.persistentDenyOwner,
 +                sandboxUserSid: sb,
 +                denyRead: acc.denyRead,
 +                denyWrite: acc.denyWrite,
@@ -3685,7 +3796,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
  async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonitor) {
      // Return if already initializing
      if (initializationPromise) {
-@@ -616,7 +2106,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -616,7 +2107,12 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // Resolve parent/upstream proxy from config or HTTP_PROXY env before we
      // start our own listeners (which will later shadow those vars in the child).
      parentProxy = resolveParentProxy(runtimeConfig.network.parentProxy);
@@ -3698,7 +3809,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
          logForDebugging(`Parent proxy configured: http=${redactUrl(parentProxy.httpUrl)} ` +
              `https=${redactUrl(parentProxy.httpsUrl)}`);
      }
-@@ -705,171 +2200,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
+@@ -705,171 +2201,18 @@ async function initializeSteps(runtimeConfig, sandboxAskCallback, enableLogMonit
      // sandboxed child can be spawned. Doing this at initialize() (not
      // wrap-time) means the host gets a single actionable error before
      // any per-exec work happens, instead of exit-15 on every command.
@@ -3882,7 +3993,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
      }
      // Initialize network infrastructure
      initializationPromise = (async () => {
-@@ -992,6 +2334,12 @@ function checkDependenciesCommon(ripgrepConfig) {
+@@ -992,6 +2335,12 @@ function checkDependenciesCommon(ripgrepConfig) {
          errors.push(...linuxDeps.errors);
          warnings.push(...linuxDeps.warnings);
      }
@@ -3895,7 +4006,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
      else if (platform === 'windows') {
          let srtWin;
          try {
-@@ -1515,6 +2863,9 @@ async function waitToWalk(signal) {
+@@ -1515,6 +2864,9 @@ async function waitToWalk(signal) {
      };
  }
  async function wrapWithSandbox(command, binShell, customConfig, abortSignal, options) {
@@ -3905,7 +4016,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
      return wrapWithSandboxAgain(0, command, binShell, customConfig, abortSignal, options);
  }
  /** {@link wrapWithSandbox}, having started over `restarts` times. */
-@@ -1710,15 +3061,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1710,15 +3062,18 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
      const allowNestedUserNamespaces = customConfig?.allowNestedUserNamespaces ?? config?.allowNestedUserNamespaces;
      const gitSafeDirectories = getGitSafeDirectories(customConfig);
      switch (platform) {
@@ -3927,7 +4038,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
                  proxyAuthToken: needsNetworkProxy ? proxyAuthToken : undefined,
                  caCertPath: mitmCA?.trustBundlePath,
                  javaAgentJarPath: needsNetworkProxy ? javaAgentJarPath : undefined,
-@@ -1728,29 +3082,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1728,29 +3083,37 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  setEnvVars: credentialRestrictions.setEnvVars,
                  maskedFileBinds: credentialRestrictions.maskedFileBinds,
                  degradeToDenyPaths: credentialRestrictions.degradeToDenyPaths,
@@ -3970,7 +4081,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
                      : undefined,
                  httpProxyPort: needsNetworkProxy
                      ? managerContext?.httpProxyPort
-@@ -1769,7 +3131,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1769,7 +3132,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                  maskedFileStoreDir: credentialRestrictions.maskedFileStoreDir,
                  enableWeakerNestedSandbox: getEnableWeakerNestedSandbox(),
                  allowNestedUserNamespaces,
@@ -3979,7 +4090,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
                  binShell,
                  ripgrepConfig: getRipgrepConfig(),
                  mandatoryDenySearchDepth: getMandatoryDenySearchDepth(),
-@@ -1786,6 +3148,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1786,6 +3149,7 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
                      return startOver();
                  throw err;
              });
@@ -3987,7 +4098,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
          case 'windows':
              // Windows wraps to an argv array, not a shell string. Forcing
              // callers through wrapWithSandboxArgv() means they spawn with
-@@ -1821,7 +3184,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
+@@ -1821,7 +3185,16 @@ async function wrapWithSandboxOnce(walkEnded, restarts, command, binShell, custo
   *   `process.cwd()`. Currently unused on macOS/Linux.
   */
  async function wrapWithSandboxArgv(command, binShell, customConfig, abortSignal, cwd, options) {
@@ -4004,7 +4115,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
      if (platform === 'windows') {
          const hasNetworkConfig = customConfig?.network?.allowedDomains !== undefined ||
              config?.network?.allowedDomains !== undefined;
-@@ -1950,7 +3322,7 @@ function getConfig() {
+@@ -1950,7 +3323,7 @@ function getConfig() {
   *
   * **Network/allowlist changes are a live swap**: the running
   * mux proxy reads `config.network.allowedDomains` /
@@ -4013,7 +4124,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
   * reassigning `config` here takes effect on the next connection
   * with no proxy rebind and no port change — on every platform,
   * including Windows. This is what lets a host enable/deny domains
-@@ -1989,6 +3361,7 @@ function updateConfig(newConfig) {
+@@ -1989,6 +3362,7 @@ function updateConfig(newConfig) {
      // effect only on re-initialize. This keeps the state consistent for the
      // next initialize() call.
      parentProxy = resolveParentProxy(newConfig.network.parentProxy);
@@ -4021,7 +4132,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
      logForDebugging('Sandbox configuration updated');
  }
  /**
-@@ -2113,7 +3486,30 @@ function forceCloseHttpServer(server) {
+@@ -2113,7 +3487,30 @@ function forceCloseHttpServer(server) {
          });
      });
  }
@@ -4053,7 +4164,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
      // Windows: release this session's sandbox-user ACEs. Best-effort
      // — log anomalies rather than throw, so teardown always
      // completes. Leftover ACEs are recoverable later via
-@@ -2123,28 +3519,54 @@ async function reset() {
+@@ -2123,28 +3520,54 @@ async function reset() {
          // Captured at initialize() — the SAME binary the grants/stamps
          // were applied with, immune to `config` mutation between.
          const srtWin = srtWinSpawn;
@@ -4127,7 +4238,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
      // windowsWfpVerified is NOT cleared — per-process, not per-session.
      // Clean up any leftover bwrap mount points. Force past the
      // active-sandbox counter — reset() means the session is over.
-@@ -2222,6 +3644,8 @@ async function reset() {
+@@ -2222,6 +3645,8 @@ async function reset() {
      managerContext = undefined;
      initializationPromise = undefined;
      parentProxy = undefined;
@@ -4136,7 +4247,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
      resolvedAddressGuard = createResolvedAddressGuard();
      mitmCA = undefined;
      javaAgentJarPath = undefined;
-@@ -2229,7 +3653,37 @@ async function reset() {
+@@ -2229,7 +3654,37 @@ async function reset() {
      awsPairRegistry.clear();
      commandTextsByKey.clear();
      commandNetworkListsByKey.clear();
@@ -4174,7 +4285,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
  }
  function getSandboxViolationStore() {
      return sandboxViolationStore;
-@@ -2314,6 +3768,7 @@ function getLinuxGlobPatternWarnings() {
+@@ -2314,6 +3769,7 @@ function getLinuxGlobPatternWarnings() {
   */
  export const SandboxManager = {
      initialize,
@@ -4182,7 +4293,7 @@ index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..24085352174d9c9afb59e9e47c4a9884
      isSupportedPlatform,
      isSandboxingEnabled,
      checkDependencies,
-@@ -2336,6 +3791,12 @@ export const SandboxManager = {
+@@ -2336,6 +3792,12 @@ export const SandboxManager = {
      wrapWithSandboxArgv,
      registerCommandNetworkLists,
      unregisterCommandNetworkLists,
@@ -4435,14 +4546,29 @@ index 760a10b1d1c475a7636ff78092d3c9daaafe7335..a7a39777c3584689fc7efd44e8f298e1
              if (!clientGone) {
                  try {
 diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sandbox-utils.d.ts
-index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..1f134dceedbfda1f7021a8783f150cb76134412e 100644
+index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..a9f2e55c0ad42395e06441507013fefe98822166 100644
 --- a/dist/sandbox/windows-sandbox-utils.d.ts
 +++ b/dist/sandbox/windows-sandbox-utils.d.ts
-@@ -861,6 +861,23 @@ export interface WindowsAclStampOptions {
+@@ -833,6 +833,8 @@ export interface MappedDriveCwdError extends WindowsSandboxError {
+  */
+ export declare function parseWindowsSandboxError(stderr: string): MappedDriveCwdError | undefined;
+ export interface WindowsAclStampOptions {
++    /** Reconcile this owner's durable base denies and attach the live holder. */
++    persistentOwner?: string;
+     /** Paths the sandboxed child must not read. */
+     denyRead: readonly string[];
+     /** Paths the sandboxed child must not write (read stays allowed). */
+@@ -861,6 +863,29 @@ export interface WindowsAclStampOptions {
   *   to release whatever WAS stamped.
   */
  export declare function stampWindowsAcl(opts: WindowsAclStampOptions): void;
 +export declare function stampWindowsAclAsync(opts: WindowsAclStampOptions): Promise<void>;
++/** Remove the owner's durable denies; live holders keep their own protection. */
++export declare function forgetWindowsDenyStampsAsync(opts: {
++    timeoutMs: number;
++    persistentOwner: string;
++    srtWin?: SrtWinSpawn;
++}): Promise<readonly { path: string; status: string }[]>;
 +/** Ave patch (recovery report): counts from one `srt-win acl recover` run. */
 +export interface WindowsAclRecoveryReport {
 +    /** Dead holder processes whose holds were pruned. */
@@ -4462,7 +4588,7 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..1f134dceedbfda1f7021a8783f150cb7
  /**
   * Per-path outcome from `srt-win acl restore --json` /
   * `revoke --json`. The status set is intentionally loose: the
-@@ -884,7 +901,16 @@ export declare function restoreWindowsAcl(opts: {
+@@ -884,7 +909,16 @@ export declare function restoreWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -4479,7 +4605,7 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..1f134dceedbfda1f7021a8783f150cb7
  export interface WindowsAclGrantOptions {
      /** Paths to grant `MODIFY_NO_FDC` on (the working tree, `allowWrite`). */
      write: readonly string[];
-@@ -909,6 +935,7 @@ export interface WindowsAclGrantOptions {
+@@ -909,6 +943,7 @@ export interface WindowsAclGrantOptions {
   *   {@link revokeWindowsAcl} to release whatever WAS granted.
   */
  export declare function grantWindowsAcl(opts: WindowsAclGrantOptions): void;
@@ -4487,7 +4613,7 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..1f134dceedbfda1f7021a8783f150cb7
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -918,7 +945,16 @@ export declare function revokeWindowsAcl(opts: {
+@@ -918,7 +953,16 @@ export declare function revokeWindowsAcl(opts: {
      sandboxUserSid: string;
      holderPid?: number;
      srtWin?: SrtWinSpawn;
@@ -4505,7 +4631,7 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..1f134dceedbfda1f7021a8783f150cb7
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 540c56635e4c5b1b78997f0ec4185fe9d9968806..871f693732e1cf859dfaa0aab5f34cbb859dfec9 100644
+index 540c56635e4c5b1b78997f0ec4185fe9d9968806..467d6ec0ffc7dd2f672fef8a9894c91df8e5f767 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
 @@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
@@ -4536,10 +4662,19 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..871f693732e1cf859dfaa0aab5f34cbb
              timeoutMs: 30000,
              srtWin: opts.srtWin,
          });
-@@ -1197,6 +1209,64 @@ export function stampWindowsAcl(opts) {
-             `: ${r.stderr || r.stdout}`);
-     }
- }
+@@ -1189,6 +1201,29 @@ export function stampWindowsAcl(opts) {
+         `${holder}`,
+         '--sandbox-user-sid',
+         opts.sandboxUserSid,
++        ...(opts.persistentOwner === undefined ? [] : ['--persistent-owner', opts.persistentOwner]),
++    ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
++    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status}: ${r.stderr || r.stdout}`);
++    if (r.status !== 0) {
++        throw new WindowsSandboxError('acl_stamp_failed', `srt-win acl stamp exited ${r.status} ` +
++            (r.status === 2 ? '(partial — some inputs skipped)' : '(failed)') +
++            `: ${r.stderr || r.stdout}`);
++    }
++}
 +export async function stampWindowsAclAsync(opts) {
 +    const holder = opts.holderPid ?? process.pid;
 +    const stdin = JSON.stringify({
@@ -4553,13 +4688,25 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..871f693732e1cf859dfaa0aab5f34cbb
 +        `${holder}`,
 +        '--sandbox-user-sid',
 +        opts.sandboxUserSid,
-+    ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
-+    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status}: ${r.stderr || r.stdout}`);
-+    if (r.status !== 0) {
-+        throw new WindowsSandboxError('acl_stamp_failed', `srt-win acl stamp exited ${r.status} ` +
-+            (r.status === 2 ? '(partial — some inputs skipped)' : '(failed)') +
-+            `: ${r.stderr || r.stdout}`);
++        ...(opts.persistentOwner === undefined ? [] : ['--persistent-owner', opts.persistentOwner]),
+     ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
+     logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status}: ${r.stderr || r.stdout}`);
+     if (r.status !== 0) {
+@@ -1197,6 +1232,55 @@ export function stampWindowsAcl(opts) {
+             `: ${r.stderr || r.stdout}`);
+     }
+ }
++/** Remove durable deny ownership without removing live session holds. */
++export async function forgetWindowsDenyStampsAsync(opts) {
++    const entries = await runSrtWinJsonAsync(['acl', 'forget-denies', '--persistent-owner', opts.persistentOwner, '--json'], { timeoutMs: opts.timeoutMs, srtWin: opts.srtWin });
++    if (!Array.isArray(entries) || entries.some(entry => typeof entry?.path !== 'string' || typeof entry?.status !== 'string')) {
++        throw new WindowsSandboxError('srt_win_bad_json', 'Invalid persistent deny teardown result', 'acl');
 +    }
++    const completed = new Set(['revoked', 'stillHeld', 'downgraded', 'relocated', 'noRow', 'restored', 'alreadyOriginal', 'mismatch', 'missing']);
++    if (entries.some(entry => !completed.has(entry.status))) {
++        throw new WindowsSandboxError('acl_release_failed', 'Persistent deny teardown is incomplete', 'acl');
++    }
++    return entries;
 +}
 +// Ave patch (recovery report): the embedder's listener for crash-recovery
 +// counts, set with setWindowsAclRecoveryListener.
@@ -4601,7 +4748,7 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..871f693732e1cf859dfaa0aab5f34cbb
  /**
   * Release this holder's deny ACEs and remove the sandbox-user ACE
   * on any path whose refcount falls to zero. Best-effort (does not
-@@ -1221,6 +1291,47 @@ export function restoreWindowsAcl(opts) {
+@@ -1221,6 +1305,47 @@ export function restoreWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -4649,7 +4796,7 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..871f693732e1cf859dfaa0aab5f34cbb
          if (!r.ok) {
              logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
                  `outcomes preserved): ${r.stderr}`, { level: 'error' });
-@@ -1266,6 +1377,22 @@ export function grantWindowsAcl(opts) {
+@@ -1266,6 +1391,22 @@ export function grantWindowsAcl(opts) {
          throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
      }
  }
@@ -4672,7 +4819,7 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..871f693732e1cf859dfaa0aab5f34cbb
  /**
   * Release this holder's grants and remove the sandbox-user ACE on
   * any path whose refcount falls to zero. Best-effort (does not
-@@ -1283,6 +1410,34 @@ export function revokeWindowsAcl(opts) {
+@@ -1283,6 +1424,34 @@ export function revokeWindowsAcl(opts) {
              opts.sandboxUserSid,
              '--json',
          ], { timeoutMs: 60000, srtWin: opts.srtWin });
@@ -4709,10 +4856,10 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..871f693732e1cf859dfaa0aab5f34cbb
          }
 diff --git a/vendor/srt-win/persistent-denies.patch b/vendor/srt-win/persistent-denies.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..f578c0cb941901b5f10acaebb054c8fcec0966f9
+index 0000000000000000000000000000000000000000..646db6b01b44c6124087be2e065e4bc3e33bf89b
 --- /dev/null
 +++ b/vendor/srt-win/persistent-denies.patch
-@@ -0,0 +1,1489 @@
+@@ -0,0 +1,3345 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
 +index 0efb5956f..c9b72c409 100644
 +--- a/vendor/srt-win-src/src/acl.rs
@@ -5586,6 +5733,203 @@ index 0000000000000000000000000000000000000000..f578c0cb941901b5f10acaebb054c8fc
 +     #[test]
 +     fn mask_consts_regression() {
 +         let m = Mask::MODIFY_NO_FDC;
++diff --git a/vendor/srt-win-src/src/cli.rs b/vendor/srt-win-src/src/cli.rs
++index 677f89568..e7e203195 100644
++--- a/vendor/srt-win-src/src/cli.rs
+++++ b/vendor/srt-win-src/src/cli.rs
++@@ -149,6 +149,9 @@ enum Cmd {
++         /// unit).
++         #[arg(long)]
++         keep_user: bool,
+++        /// Original token identity carried through the internal elevation hop.
+++        #[arg(long, hide = true)]
+++        uninstall_initiating_sid: Option<String>,
++     },
++     /// Print `{user: <user-status>, wfp: <wfp-status>}` as one line
++     /// of JSON — the same objects `user status` and `wfp status`
++@@ -298,6 +301,9 @@ enum AclCmd {
++         /// (`srt-win user status` → `marker_user_sid`).
++         #[arg(long)]
++         sandbox_user_sid: String,
+++        /// Reconcile this owner's durable base denies and retain a live hold.
+++        #[arg(long)]
+++        persistent_owner: Option<String>,
++     },
++     /// Read `{read:[…], write:[…]}` from stdin and add an
++     /// inheritable `(OI)(CI)` ALLOW ACE for `--sandbox-user-sid` on
++@@ -344,6 +350,13 @@ enum AclCmd {
++         #[arg(long)]
++         json: bool,
++     },
+++    /// Remove this owner's durable denies, retaining live session obligations.
+++    ForgetDenies {
+++        #[arg(long)]
+++        persistent_owner: String,
+++        #[arg(long)]
+++        json: bool,
+++    },
++     /// Run crash-recovery only: prune dead holders, drop any
++     /// orphaned sandbox-user ACEs.
++     Recover {
++@@ -948,10 +961,38 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++         Cmd::Uninstall {
++             sublayer_guid,
++             keep_user,
+++            uninstall_initiating_sid,
++         } => {
++-            if let Some(code) = maybe_self_elevate(args)? {
+++            let mut elevation_args = args.to_vec();
+++            if !keep_user {
+++                let initiating_sid = srt_win::sid::current_user_sid()?;
+++                if let Err(error) = validate_uninstall_identity(
+++                    uninstall_initiating_sid.as_deref(),
+++                    &initiating_sid,
+++                ) {
+++                    eprintln!("srt-win: {error:#}");
+++                    std::process::exit(EXIT_UNINSTALL_ACCOUNT_CHANGED);
+++                }
+++                if uninstall_initiating_sid.is_none() {
+++                    elevation_args.push("--uninstall-initiating-sid".into());
+++                    elevation_args.push(initiating_sid.into());
+++                }
+++            }
+++            if let Some(code) = maybe_self_elevate(&elevation_args)? {
+++                if code == EXIT_UNINSTALL_ACCOUNT_CHANGED {
+++                    eprintln!(
+++                        "srt-win: uninstall elevation changed account; run acl forget-denies from the original account before administrator uninstall"
+++                    );
+++                }
++                 std::process::exit(code);
++             }
+++            if !keep_user {
+++                // Same-token identity was checked before any state or machine
+++                // change. Cross-account elevation must clean the original store
+++                // explicitly instead of silently selecting an admin profile.
+++                srt_win::install::clear_persistent_denies()
+++                    .context("remove durable denies before sandbox account deletion")?;
+++            }
++             let sl = resolve_sublayer(&sublayer_guid)?;
++             let n = wfp::uninstall_filters(&sl)?;
++             // Read setup up front: the ambient cleanup and the
++@@ -1138,6 +1179,7 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                 AclCmd::Stamp {
++                     holder_pid,
++                     sandbox_user_sid,
+++                    persistent_owner,
++                 },
++         } => {
++             // Deny is an additive DENY ACE for the sandbox user
++@@ -1165,7 +1207,16 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                     for (p, e) in &at.bad_inputs {
++                         eprintln!("srt-win: skipped: '{p}': {e}");
++                     }
++-                    let (w, f) = db.apply_aces(&sandbox_user_sid, &at.targets)?;
+++                    if persistent_owner.is_some() && !at.bad_inputs.is_empty() {
+++                        return Err(anyhow!("persistent deny inputs could not all be admitted"));
+++                    }
+++                    let (w, f) = match &persistent_owner {
+++                        Some(owner) => {
+++                            db.reconcile_persistent_denies(owner, &sandbox_user_sid, &at.targets)?
+++                        }
+++                        None => db.apply_aces(&sandbox_user_sid, &at.targets)?,
+++                    };
+++
++                     Ok((at, w, f))
++                 })?;
++             let AceTargets {
++@@ -1209,6 +1260,28 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++                 std::process::exit(2);
++             }
++         }
+++        Cmd::Acl {
+++            sub:
+++                AclCmd::ForgetDenies {
+++                    persistent_owner,
+++                    json,
+++                },
+++        } => {
+++            let (entries, _) = srt_win::state_db::with_init_lock(
+++                srt_win::state_db::HolderPid(std::process::id()),
+++                false,
+++                |db| db.forget_persistent_denies(Some(&persistent_owner)),
+++            )?;
+++            if json {
+++                let rows: Vec<_> = entries
+++                    .into_iter()
+++                    .map(|(path, status)| serde_json::json!({"path": path, "status": status}))
+++                    .collect();
+++                println!("{}", serde_json::to_string(&rows)?);
+++            } else {
+++                eprintln!("srt-win: durable deny owner forgotten");
+++            }
+++        }
++         Cmd::Acl {
++             sub:
++                 AclCmd::Grant {
++@@ -1591,6 +1664,17 @@ fn run(cli: Cli, args: &[OsString]) -> anyhow::Result<()> {
++     Ok(())
++ }
++
+++const EXIT_UNINSTALL_ACCOUNT_CHANGED: i32 = 15;
+++
+++fn validate_uninstall_identity(origin: Option<&str>, current: &str) -> anyhow::Result<()> {
+++    if origin.is_some_and(|origin| origin != current) {
+++        return Err(anyhow::anyhow!(
+++            "uninstall elevation changed account; run acl forget-denies from the original account before administrator uninstall"
+++        ));
+++    }
+++    Ok(())
+++}
+++
++ fn is_elevated() -> anyhow::Result<bool> {
++     use anyhow::Context;
++     use std::ffi::c_void;
++@@ -1874,4 +1958,13 @@ mod tests {
++             ]
++         );
++     }
+++    #[test]
+++    fn uninstall_identity_refuses_account_switch_before_cleanup() {
+++        assert!(
+++            validate_uninstall_identity(Some("S-1-5-21-1-2-3-1001"), "S-1-5-21-1-2-3-1002")
+++                .is_err()
+++        );
+++        validate_uninstall_identity(Some("S-1-5-21-1-2-3-1001"), "S-1-5-21-1-2-3-1001").unwrap();
+++        validate_uninstall_identity(None, "S-1-5-21-1-2-3-1001").unwrap();
+++    }
++ }
++diff --git a/vendor/srt-win-src/src/install.rs b/vendor/srt-win-src/src/install.rs
++index 93aabb52e..3c8779314 100644
++--- a/vendor/srt-win-src/src/install.rs
+++++ b/vendor/srt-win-src/src/install.rs
++@@ -477,3 +477,15 @@ pub fn clear_setup() -> Result<()> {
++     }
++     Ok(())
++ }
+++
+++/// Remove all durable owners in this user's protected state before account
+++/// deletion. A failed ACL removal leaves its intent journal and aborts teardown.
+++pub fn clear_persistent_denies() -> Result<()> {
+++    state_db::with_init_lock(state_db::HolderPid(std::process::id()), false, |db| {
+++        db.ensure_no_live_holders()?;
+++        db.forget_persistent_denies(None)?;
+++
+++        Ok(())
+++    })?;
+++    Ok(())
+++}
++diff --git a/vendor/srt-win-src/src/lib.rs b/vendor/srt-win-src/src/lib.rs
++index 2021803cf..0f21cca3b 100644
++--- a/vendor/srt-win-src/src/lib.rs
+++++ b/vendor/srt-win-src/src/lib.rs
++@@ -29,6 +29,7 @@ pub mod winsta;
++ pub mod acl;
++ pub mod ambient;
++ pub mod path_id;
+++pub mod persistent_denies;
++ pub mod reg;
++ pub mod state_db;
++
 +diff --git a/vendor/srt-win-src/src/path_id.rs b/vendor/srt-win-src/src/path_id.rs
 +index 00d63d724..56cc65a8d 100644
 +--- a/vendor/srt-win-src/src/path_id.rs
@@ -5599,6 +5943,1665 @@ index 0000000000000000000000000000000000000000..f578c0cb941901b5f10acaebb054c8fc
 +     use windows::Win32::Storage::FileSystem::{
 +         FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
 +     };
++diff --git a/vendor/srt-win-src/src/persistent_denies.rs b/vendor/srt-win-src/src/persistent_denies.rs
++new file mode 100644
++index 000000000..c45d96351
++--- /dev/null
+++++ b/vendor/srt-win-src/src/persistent_denies.rs
++@@ -0,0 +1,1268 @@
+++//! Durable deny intent and replayable ACL deltas in the protected session DB.
+++//!
+++//! A desired-set transaction records both durable rows and live holder edges,
+++//! then journals only objects whose effective permissions changed. The journal
+++//! is removed after the ACL writer succeeds, so recovery retries interrupted
+++//! additions and removals without rewriting completed objects.
+++
+++use anyhow::{Context, Result, bail};
+++use rusqlite::{Connection, OptionalExtension, params};
+++use std::collections::BTreeMap;
+++
+++use crate::acl::SbAce;
+++use crate::path_id::{self, FileId};
+++use crate::state_db::{self, AceWitness, Locked};
+++
+++pub(crate) const SCHEMA: &str = r#"
+++CREATE TABLE IF NOT EXISTS persistent_deny_principal (
+++  singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+++  sandbox_sid TEXT NOT NULL
+++);
+++CREATE TABLE IF NOT EXISTS persistent_deny_owners (
+++  owner TEXT PRIMARY KEY,
+++  sandbox_sid TEXT NOT NULL
+++);
+++CREATE TABLE IF NOT EXISTS persistent_denies (
+++  owner TEXT NOT NULL REFERENCES persistent_deny_owners(owner) ON DELETE CASCADE,
+++  canonical_path TEXT NOT NULL,
+++  kind TEXT NOT NULL,
+++  file_id BLOB NOT NULL,
+++  mask TEXT NOT NULL,
+++  PRIMARY KEY(owner, canonical_path, kind)
+++);
+++CREATE TABLE IF NOT EXISTS pending_retired_grants (
+++  canonical_path TEXT NOT NULL,
+++  file_id BLOB NOT NULL,
+++  sandbox_sid TEXT NOT NULL,
+++  attempted INTEGER NOT NULL DEFAULT 0,
+++  tree_write INTEGER NOT NULL DEFAULT 0,
+++  completed INTEGER NOT NULL DEFAULT 0,
+++  PRIMARY KEY(canonical_path, file_id, sandbox_sid)
+++);
+++CREATE TABLE IF NOT EXISTS pending_deny_acl (
+++  canonical_path TEXT NOT NULL,
+++  file_id BLOB NOT NULL,
+++  sandbox_sid TEXT NOT NULL,
+++  attempted INTEGER NOT NULL DEFAULT 0,
+++  tree_write INTEGER NOT NULL DEFAULT 0,
+++  PRIMARY KEY(canonical_path, file_id, sandbox_sid)
+++);
+++"#;
+++
+++#[derive(Clone, Debug, PartialEq, Eq)]
+++struct Target {
+++    path: String,
+++    file_id: Vec<u8>,
+++    ace: SbAce,
+++}
+++
+++type Object = (String, Vec<u8>);
+++type Effective = BTreeMap<Object, BTreeMap<String, String>>;
+++
+++fn validate_owner(owner: &str) -> Result<()> {
+++    if owner.is_empty()
+++        || owner.len() > 64
+++        || !owner
+++            .bytes()
+++            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+++    {
+++        bail!("invalid persistent deny owner");
+++    }
+++    Ok(())
+++}
+++
+++/// The administrator-owned setup record, not a caller or saved DB SID,
+++/// supplies the only principal that can receive an ACL mutation.
+++pub(crate) fn trusted_sid() -> Result<String> {
+++    let setup = crate::install::read_setup()?.context("sandbox setup is unavailable")?;
+++    let actual = crate::sid::lookup_account_sid(&setup.sandbox_user)?;
+++    if actual != setup.sandbox_user_sid
+++        || actual == crate::sid::current_user_sid()?
+++        || !crate::sam::is_member_of(&setup.sandbox_group_sid, &actual)?
+++    {
+++        bail!("sandbox principal validation failed");
+++    }
+++    Ok(actual)
+++}
+++
+++fn retire_old_principals_with(
+++    conn: &Connection,
+++    current: &str,
+++    absent: impl Fn(&str) -> Result<bool>,
+++    alive: impl Fn(u32, i64) -> bool,
+++    mut remove_grant: impl FnMut(&str, &[u8], &str, bool, &mut dyn FnMut() -> Result<()>) -> Result<()>,
+++) -> Result<()> {
+++    let old: Vec<String> = state_db::query_vec(
+++        conn,
+++        "SELECT sandbox_sid FROM persistent_deny_owners UNION SELECT sandbox_sid FROM pending_deny_acl UNION SELECT sandbox_sid FROM persistent_deny_principal UNION SELECT sandbox_sid FROM pending_retired_grants",
+++        [],
+++        |r| r.get(0),
+++    )?;
+++    let mixed = old.iter().any(|sid| sid == current);
+++    let stale: Vec<_> = old.into_iter().filter(|sid| sid != current).collect();
+++    for sid in &stale {
+++        if !absent(sid)? {
+++            bail!(
+++                "previous sandbox principal is still mapped or unverifiable; persistent denies retained"
+++            );
+++        }
+++    }
+++    if stale.is_empty() {
+++        return Ok(());
+++    }
+++    if mixed {
+++        bail!("mixed sandbox principals require explicit cleanup; all state retained");
+++    }
+++    let brokers: Vec<(u32, i64)> = state_db::query_vec(
+++        conn,
+++        "SELECT pid, process_create_time FROM brokers",
+++        [],
+++        |r| Ok((r.get(0)?, r.get(1)?)),
+++    )?;
+++    if brokers
+++        .into_iter()
+++        .any(|(pid, created)| alive(pid, created))
+++    {
+++        bail!("previous sandbox holder is live or unverifiable; principal state retained");
+++    }
+++    let grants: Vec<(String, Vec<u8>)> = state_db::query_vec(
+++        conn,
+++        "SELECT canonical_path, file_id FROM working_aces WHERE kind = 'grant'",
+++        [],
+++        |r| Ok((r.get(0)?, r.get(1)?)),
+++    )?;
+++    for sid in &stale {
+++        for (path, id) in &grants {
+++            conn.execute("INSERT OR IGNORE INTO pending_retired_grants(canonical_path, file_id, sandbox_sid) VALUES (?1, ?2, ?3)",
+++                params![path, id, sid])?;
+++        }
+++    }
+++    let pending: Vec<(String, Vec<u8>, String, bool)> = state_db::query_vec(
+++        conn,
+++        "SELECT canonical_path, file_id, sandbox_sid, tree_write FROM pending_retired_grants WHERE completed = 0 ORDER BY canonical_path",
+++        [],
+++        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+++    )?;
+++    for (path, id, old_sid, tree_repair) in pending {
+++        if !stale.contains(&old_sid) {
+++            bail!("retired grant principal does not match retired state");
+++        }
+++        conn.execute("UPDATE pending_retired_grants SET attempted = 1 WHERE canonical_path = ?1 AND file_id = ?2 AND sandbox_sid = ?3",
+++            params![path, id, old_sid])?;
+++        let mut before_tree_write = || {
+++            conn.execute("UPDATE pending_retired_grants SET tree_write = 1 WHERE canonical_path = ?1 AND file_id = ?2 AND sandbox_sid = ?3",
+++                params![path, id, old_sid])?;
+++            Ok(())
+++        };
+++        remove_grant(&path, &id, &old_sid, tree_repair, &mut before_tree_write)
+++            .context("retired sandbox grant cleanup remains pending")?;
+++        conn.execute("UPDATE pending_retired_grants SET completed = 1 WHERE canonical_path = ?1 AND file_id = ?2 AND sandbox_sid = ?3",
+++            params![path, id, old_sid])?;
+++    }
+++    let tx = conn.unchecked_transaction()?;
+++    for sid in &stale {
+++        tx.execute(
+++            "DELETE FROM persistent_deny_owners WHERE sandbox_sid = ?1",
+++            [sid],
+++        )?;
+++        tx.execute("DELETE FROM pending_deny_acl WHERE sandbox_sid = ?1", [sid])?;
+++        tx.execute(
+++            "DELETE FROM pending_retired_grants WHERE sandbox_sid = ?1",
+++            [sid],
+++        )?;
+++    }
+++    // The former account is absent and every recorded holder is dead. Keep
+++    // conservative old deny ACEs; never reuse path-keyed rows for a replacement.
+++    tx.execute("DELETE FROM ace_holders", [])?;
+++    tx.execute("DELETE FROM working_aces", [])?;
+++    tx.execute("DELETE FROM brokers", [])?;
+++    tx.execute("DELETE FROM persistent_deny_principal", [])?;
+++    tx.execute(
+++        "INSERT INTO persistent_deny_principal VALUES (1, ?1)",
+++        [current],
+++    )?;
+++    tx.commit()?;
+++    eprintln!(
+++        "srt-win: retired absent sandbox principal state after holder exit; old deny ACEs retained"
+++    );
+++    Ok(())
+++}
+++
+++/// Check caller-supplied principals whenever durable state participates in an
+++/// ordinary stamp or release operation.
+++pub(crate) fn validate_supplied(conn: &Connection, sid: &str) -> Result<()> {
+++    let present: bool = conn.query_row(
+++        "SELECT EXISTS(SELECT 1 FROM persistent_deny_owners) \
+++        OR EXISTS(SELECT 1 FROM pending_deny_acl) OR EXISTS(SELECT 1 FROM pending_retired_grants) OR EXISTS(SELECT 1 FROM persistent_deny_principal)",
+++        [],
+++        |r| r.get(0),
+++    )?;
+++    if present {
+++        if trusted_sid()? != sid {
+++            bail!("supplied sandbox principal does not match setup");
+++        }
+++        prepare_principal(conn, sid)?;
+++    }
+++    Ok(())
+++}
+++
+++/// Effective ACE signature for avoiding writes when only holder edges change.
+++pub(crate) fn signature(
+++    conn: &Connection,
+++    path: &str,
+++    id: &[u8],
+++) -> Result<Option<BTreeMap<String, String>>> {
+++    let rows: Vec<(String, String)> = state_db::query_vec(
+++        conn,
+++        "SELECT kind, mask FROM working_aces WHERE canonical_path = ?1 AND file_id = ?2 UNION ALL \
+++         SELECT kind, mask FROM persistent_denies WHERE canonical_path = ?1 AND file_id = ?2",
+++        params![path, id],
+++        |r| Ok((r.get(0)?, r.get(1)?)),
+++    )?;
+++    let mut out: BTreeMap<String, String> = BTreeMap::new();
+++    for (kind, mask) in rows {
+++        let ace = SbAce::parse(&kind, &mask)?;
+++        let ace = out
+++            .get(&kind)
+++            .map(|m| SbAce::parse(&kind, m))
+++            .transpose()?
+++            .map_or(ace, |prior| prior.max(ace));
+++        out.insert(kind, ace.as_str().to_owned());
+++    }
+++    Ok((!out.is_empty()).then_some(out))
+++}
+++
+++fn prepare_principal(conn: &Connection, sid: &str) -> Result<()> {
+++    retire_old_principals_with(
+++        conn,
+++        sid,
+++        |old| Ok(crate::sid::sid_account_exists(old)? == crate::sid::SidExistence::Unmapped),
+++        state_db::is_process_alive,
+++        |path, bytes, old_sid, repair, before_tree_write| {
+++            if let Some(actual) = resolve_pending_object(path, bytes)? {
+++                crate::acl::remove_sandbox_allow_aces_with_tree_intent(
+++                    &actual,
+++                    old_sid,
+++                    bytes,
+++                    repair,
+++                    before_tree_write,
+++                )?;
+++            }
+++            Ok(())
+++        },
+++    )
+++}
+++
+++fn snapshot(conn: &Connection) -> Result<Effective> {
+++    let rows: Vec<(String, Vec<u8>, String, String)> = state_db::query_vec(
+++        conn,
+++        "SELECT canonical_path, file_id, kind, mask FROM working_aces UNION ALL \
+++         SELECT canonical_path, file_id, kind, mask FROM persistent_denies",
+++        [],
+++        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+++    )?;
+++    let mut out: Effective = BTreeMap::new();
+++    for (path, file_id, kind, mask) in rows {
+++        let kinds = out.entry((path, file_id)).or_default();
+++        let ace = SbAce::parse(&kind, &mask)?;
+++        let effective = match kinds.get(&kind) {
+++            Some(prior) => SbAce::parse(&kind, prior)?.max(ace),
+++            None => ace,
+++        };
+++        kinds.insert(kind, effective.as_str().to_owned());
+++    }
+++    Ok(out)
+++}
+++
+++fn journal_delta(conn: &Connection, before: &Effective, sid: &str) -> Result<()> {
+++    let after = snapshot(conn)?;
+++    for object in before.keys().chain(after.keys()) {
+++        if before.get(object) != after.get(object) {
+++            conn.execute(
+++                "INSERT OR IGNORE INTO pending_deny_acl \
+++                (canonical_path, file_id, sandbox_sid) VALUES (?1, ?2, ?3)",
+++                params![object.0, object.1, sid],
+++            )?;
+++        }
+++    }
+++    Ok(())
+++}
+++
+++/// Record a live-holder transition in the durable lane before disk mutation.
+++/// Caller keeps this in the same transaction as the working-row update.
+++pub(crate) fn journal_holder_change(
+++    conn: &Connection,
+++    path: &str,
+++    id: &[u8],
+++    before: &Option<BTreeMap<String, String>>,
+++    sid: &str,
+++) -> Result<bool> {
+++    let bound: bool = conn.query_row(
+++        "SELECT EXISTS(SELECT 1 FROM persistent_deny_principal)",
+++        [],
+++        |r| r.get(0),
+++    )?;
+++    if !bound || before == &signature(conn, path, id)? {
+++        return Ok(false);
+++    }
+++    conn.execute("INSERT OR IGNORE INTO pending_deny_acl(canonical_path, file_id, sandbox_sid) VALUES (?1, ?2, ?3)",
+++        params![path, id, sid])?;
+++    Ok(true)
+++}
+++
+++fn targets_with(
+++    inputs: &[(String, SbAce)],
+++    capture: impl Fn(&str) -> Result<(FileId, u32, bool)>,
+++) -> Result<Vec<Target>> {
+++    let mut rows: BTreeMap<(String, String), Target> = BTreeMap::new();
+++    for (path, ace) in inputs {
+++        if matches!(ace, SbAce::Grant(_)) {
+++            bail!("persistent deny cannot grant access");
+++        }
+++        let mut expanded = vec![(path.clone(), *ace)];
+++        if matches!(ace, SbAce::Deny(_) | SbAce::DenyDelete)
+++            && let Some(parent) = path_id::canonical_parent_of(path)
+++        {
+++            expanded.push((parent, SbAce::DenyFdc));
+++        }
+++        for (path, ace) in expanded {
+++            let (id, links, is_dir) = capture(&path)?;
+++            if matches!(ace, SbAce::Deny(_)) && !is_dir && links > 1 {
+++                bail!("persistent deny refused on a file with multiple hardlinks");
+++            }
+++            let key = (path.clone(), ace.kind().to_owned());
+++            let ace = rows.get(&key).map_or(ace, |prior| prior.ace.max(ace));
+++            rows.insert(
+++                key,
+++                Target {
+++                    path,
+++                    file_id: id.as_bytes().to_vec(),
+++                    ace,
+++                },
+++            );
+++        }
+++    }
+++    Ok(rows.into_values().collect())
+++}
+++
+++fn reconcile_rows(
+++    conn: &Connection,
+++    pid: u32,
+++    owner: &str,
+++    sid: &str,
+++    targets: &[Target],
+++) -> Result<()> {
+++    validate_owner(owner)?;
+++    let before = snapshot(conn)?;
+++    // A live hold refers to the original file object. Do not overwrite its
+++    // identity with a replacement at the same spelling.
+++    for target in targets {
+++        let ids: Vec<Vec<u8>> = state_db::query_vec(
+++            conn,
+++            "SELECT file_id FROM working_aces WHERE canonical_path = ?1",
+++            [&target.path],
+++            |r| r.get(0),
+++        )?;
+++        if ids.iter().any(|id| id != &target.file_id) {
+++            bail!("persistent deny target was substituted while still held");
+++        }
+++    }
+++    let tx = conn.unchecked_transaction()?;
+++    tx.execute("INSERT INTO persistent_deny_principal VALUES (1, ?1) ON CONFLICT(singleton) DO UPDATE SET sandbox_sid = excluded.sandbox_sid", [sid])?;
+++    tx.execute(
+++        "INSERT INTO persistent_deny_owners(owner, sandbox_sid) VALUES (?1, ?2) \
+++        ON CONFLICT(owner) DO UPDATE SET sandbox_sid = excluded.sandbox_sid",
+++        params![owner, sid],
+++    )?;
+++    tx.execute("DELETE FROM persistent_denies WHERE owner = ?1", [owner])?;
+++    for target in targets {
+++        tx.execute(
+++            "INSERT INTO persistent_denies(owner, canonical_path, kind, file_id, mask) \
+++            VALUES (?1, ?2, ?3, ?4, ?5)",
+++            params![
+++                owner,
+++                target.path,
+++                target.ace.kind(),
+++                target.file_id,
+++                target.ace.as_str()
+++            ],
+++        )?;
+++        let held: Option<String> = tx
+++            .query_row(
+++                "SELECT want_mask FROM ace_holders \
+++            WHERE canonical_path = ?1 AND kind = ?2 AND pid = ?3",
+++                params![target.path, target.ace.kind(), pid as i64],
+++                |r| r.get(0),
+++            )
+++            .optional()?;
+++        let held = held
+++            .map(|mask| SbAce::parse(target.ace.kind(), &mask))
+++            .transpose()?
+++            .map_or(target.ace, |ace| ace.max(target.ace));
+++        tx.execute(
+++            "INSERT INTO ace_holders(canonical_path, kind, pid, want_mask) VALUES (?1, ?2, ?3, ?4) \
+++            ON CONFLICT(canonical_path, kind, pid) DO UPDATE SET want_mask = excluded.want_mask",
+++            params![target.path, target.ace.kind(), pid as i64, held.as_str()],
+++        )?;
+++        let masks: Vec<String> = state_db::query_vec(
+++            &tx,
+++            "SELECT want_mask FROM ace_holders WHERE canonical_path = ?1 AND kind = ?2",
+++            params![target.path, target.ace.kind()],
+++            |r| r.get(0),
+++        )?;
+++        let mut effective = target.ace;
+++        for mask in masks {
+++            effective = effective.max(SbAce::parse(target.ace.kind(), &mask)?);
+++        }
+++        tx.execute("INSERT INTO working_aces(canonical_path, kind, file_id, mask) VALUES (?1, ?2, ?3, ?4) \
+++            ON CONFLICT(canonical_path, kind) DO UPDATE SET file_id = excluded.file_id, mask = excluded.mask",
+++            params![target.path, target.ace.kind(), target.file_id, effective.as_str()])?;
+++    }
+++    journal_delta(&tx, &before, sid)?;
+++    tx.commit()?;
+++    Ok(())
+++}
+++
+++fn replay_with(
+++    conn: &Connection,
+++    sid: &str,
+++    mut write: impl FnMut(&str, &[u8], bool, &mut dyn FnMut() -> Result<()>) -> Result<()>,
+++) -> Result<Vec<String>> {
+++    let pending: Vec<(String, Vec<u8>, String, bool)> = state_db::query_vec(
+++        conn,
+++        "SELECT canonical_path, file_id, sandbox_sid, tree_write FROM pending_deny_acl ORDER BY canonical_path",
+++        [],
+++        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+++    )?;
+++    let mut out = Vec::new();
+++    let mut failures = Vec::new();
+++    for (path, id, recorded_sid, tree_repair) in pending {
+++        if recorded_sid != sid {
+++            bail!("pending deny principal does not match trusted sandbox principal");
+++        }
+++        // An attempted local write does not authorize tree propagation. Only
+++        // the pinned writer's callback can record an actual tree commit intent.
+++        conn.execute("UPDATE pending_deny_acl SET attempted = 1 WHERE canonical_path = ?1 AND file_id = ?2 AND sandbox_sid = ?3",
+++            params![path, id, sid])?;
+++        let mut before_tree_write = || {
+++            conn.execute("UPDATE pending_deny_acl SET tree_write = 1 WHERE canonical_path = ?1 AND file_id = ?2 AND sandbox_sid = ?3",
+++                params![path, id, sid])?;
+++            Ok(())
+++        };
+++        match write(&path, &id, tree_repair, &mut before_tree_write) {
+++            Ok(()) => {
+++                conn.execute("DELETE FROM pending_deny_acl WHERE canonical_path = ?1 AND file_id = ?2 AND sandbox_sid = ?3",
+++                    params![path, id, sid])?;
+++                out.push(path);
+++            }
+++            Err(error) => failures.push(format!("{path}: {error:#}")),
+++        }
+++    }
+++    if !failures.is_empty() {
+++        bail!(
+++            "persistent deny ACL changes pending: {}",
+++            failures.join("; ")
+++        );
+++    }
+++    Ok(out)
+++}
+++
+++/// A failed best-effort relocation is not proof of deletion. Confirm absence
+++/// with an identity open so disconnected volumes and denied metadata remain
+++/// retryable instead of silently discarding a removal intent.
+++fn confirm_object_absent(expected: FileId) -> Result<bool> {
+++    use windows::Win32::Storage::FileSystem::{
+++        CreateFileW, ExtendedFileIdType, FILE_FLAG_BACKUP_SEMANTICS, FILE_ID_128,
+++        FILE_ID_DESCRIPTOR, FILE_ID_DESCRIPTOR_0, FILE_SHARE_DELETE, FILE_SHARE_READ,
+++        FILE_SHARE_WRITE, OPEN_EXISTING, OpenFileById,
+++    };
+++    for drive in b'A'..=b'Z' {
+++        let root = format!(r"\\?\{}:\", drive as char);
+++        let Ok(id) = path_id::capture_file_id(&root) else {
+++            continue;
+++        };
+++        if id.volume_serial != expected.volume_serial {
+++            continue;
+++        }
+++        let wide = crate::util::wstr(&root);
+++        let volume = crate::util::OwnedHandle(
+++            unsafe {
+++                CreateFileW(
+++                    crate::util::pcwstr(&wide),
+++                    0,
+++                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+++                    None,
+++                    OPEN_EXISTING,
+++                    FILE_FLAG_BACKUP_SEMANTICS,
+++                    None,
+++                )
+++            }
+++            .context("open pending deny volume")?,
+++        );
+++        let descriptor = FILE_ID_DESCRIPTOR {
+++            dwSize: std::mem::size_of::<FILE_ID_DESCRIPTOR>() as u32,
+++            Type: ExtendedFileIdType,
+++            Anonymous: FILE_ID_DESCRIPTOR_0 {
+++                ExtendedFileId: FILE_ID_128 {
+++                    Identifier: expected.id128,
+++                },
+++            },
+++        };
+++        return match unsafe {
+++            OpenFileById(
+++                volume.raw(),
+++                &descriptor,
+++                0,
+++                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+++                None,
+++                FILE_FLAG_BACKUP_SEMANTICS,
+++            )
+++        } {
+++            Ok(handle) => {
+++                drop(crate::util::OwnedHandle(handle));
+++                Ok(false)
+++            }
+++            Err(error) => {
+++                let error = anyhow::Error::from(error);
+++                if path_id::is_not_found(&error) {
+++                    Ok(true)
+++                } else {
+++                    Err(error).context("verify pending deny object absence")
+++                }
+++            }
+++        };
+++    }
+++    bail!("pending deny object volume is unavailable");
+++}
+++
+++fn resolve_pending_object(path: &str, bytes: &[u8]) -> Result<Option<String>> {
+++    let expected = FileId::from_bytes(bytes)?;
+++    let actual = match path_id::capture_file_id(path) {
+++        Ok(id) if id == expected => Some(path.to_owned()),
+++        Ok(_) => path_id::locate_by_file_id(&expected),
+++        Err(error) if path_id::is_not_found(&error) => path_id::locate_by_file_id(&expected),
+++        Err(error) => return Err(error).context("open pending ACL target"),
+++    };
+++    if actual.is_none() && !confirm_object_absent(expected)? {
+++        bail!("pending ACL object could not be relocated");
+++    }
+++    if let Some(actual) = &actual
+++        && path_id::capture_file_id(actual)? != expected
+++    {
+++        bail!("pending ACL target identity changed");
+++    }
+++    Ok(actual)
+++}
+++
+++pub(crate) fn apply_pending(conn: &Connection, sid: &str) -> Result<Vec<String>> {
+++    replay_with(conn, sid, |path, bytes, repair, before_tree_write| {
+++        if let Some(actual) = resolve_pending_object(path, bytes)? {
+++            state_db::recompose_identity(
+++                conn,
+++                path,
+++                &actual,
+++                bytes,
+++                sid,
+++                repair,
+++                before_tree_write,
+++            )?;
+++        }
+++        Ok(())
+++    })
+++}
+++
+++pub(crate) fn recover(conn: &Connection) -> Result<()> {
+++    let present: bool = conn.query_row(
+++        "SELECT EXISTS(SELECT 1 FROM persistent_deny_owners) \
+++        OR EXISTS(SELECT 1 FROM pending_deny_acl) OR EXISTS(SELECT 1 FROM pending_retired_grants) OR (EXISTS(SELECT 1 FROM persistent_deny_principal) AND EXISTS(SELECT 1 FROM working_aces))",
+++        [],
+++        |r| r.get(0),
+++    )?;
+++    if !present {
+++        return Ok(());
+++    }
+++    let sid = trusted_sid()?;
+++    prepare_principal(conn, &sid)?;
+++    apply_pending(conn, &sid)?;
+++    Ok(())
+++}
+++
+++pub(crate) fn reconcile(
+++    db: &Locked,
+++    owner: &str,
+++    supplied_sid: &str,
+++    inputs: &[(String, SbAce)],
+++) -> Result<(Vec<AceWitness>, usize)> {
+++    validate_owner(owner)?;
+++    let sid = trusted_sid()?;
+++    if supplied_sid != sid {
+++        bail!("supplied sandbox principal does not match setup");
+++    }
+++    prepare_principal(&db.conn, &sid)?;
+++    let targets = targets_with(inputs, path_id::capture_id_and_links)?;
+++    db.register_broker()?;
+++    let before = snapshot(&db.conn)?;
+++    let holds: Vec<(String, String)> = state_db::query_vec(
+++        &db.conn,
+++        "SELECT canonical_path, kind FROM ace_holders WHERE pid = ?1",
+++        [db.holder_pid.0],
+++        |r| Ok((r.get(0)?, r.get(1)?)),
+++    )?;
+++    reconcile_rows(&db.conn, db.holder_pid.0, owner, &sid, &targets)?;
+++    apply_pending(&db.conn, &sid)?;
+++    Ok((
+++        targets
+++            .into_iter()
+++            .map(|t| AceWitness {
+++                already: before
+++                    .get(&(t.path.clone(), t.file_id))
+++                    .is_some_and(|kinds| kinds.contains_key(t.ace.kind())),
+++                holder_added: !holds.contains(&(t.path.clone(), t.ace.kind().to_owned())),
+++                canon: t.path,
+++                ace: t.ace,
+++                _sealed: (),
+++            })
+++            .collect(),
+++        0,
+++    ))
+++}
+++
+++fn forget_rows(conn: &Connection, owner: Option<&str>, sid: &str) -> Result<()> {
+++    if let Some(owner) = owner {
+++        validate_owner(owner)?;
+++    }
+++    let before = snapshot(conn)?;
+++    let tx = conn.unchecked_transaction()?;
+++    match owner {
+++        Some(owner) => {
+++            tx.execute(
+++                "DELETE FROM persistent_deny_owners WHERE owner = ?1",
+++                [owner],
+++            )?;
+++        }
+++        None => {
+++            tx.execute("DELETE FROM persistent_deny_owners", [])?;
+++        }
+++    }
+++    journal_delta(&tx, &before, sid)?;
+++    tx.commit()?;
+++    Ok(())
+++}
+++
+++pub(crate) fn forget(db: &Locked, owner: Option<&str>) -> Result<Vec<(String, String)>> {
+++    let present: bool = db.conn.query_row("SELECT EXISTS(SELECT 1 FROM persistent_deny_owners) OR EXISTS(SELECT 1 FROM pending_deny_acl) OR EXISTS(SELECT 1 FROM pending_retired_grants)", [], |r| r.get(0))?;
+++    if !present {
+++        return Ok(Vec::new());
+++    }
+++    let sid = trusted_sid()?;
+++    prepare_principal(&db.conn, &sid)?;
+++    let paths: Vec<String> = state_db::query_vec(
+++        &db.conn,
+++        "SELECT DISTINCT canonical_path FROM persistent_denies WHERE ?1 IS NULL OR owner = ?1",
+++        [owner],
+++        |r| r.get(0),
+++    )?;
+++    forget_rows(&db.conn, owner, &sid)?;
+++    apply_pending(&db.conn, &sid)?;
+++    let after = snapshot(&db.conn)?;
+++    Ok(paths
+++        .into_iter()
+++        .map(|path| {
+++            let held = after.keys().any(|(p, _)| p == &path);
+++            (path, if held { "stillHeld" } else { "revoked" }.to_owned())
+++        })
+++        .collect())
+++}
+++
+++/// Fold only rows for this verified principal and this exact object identity.
+++pub(crate) fn rows_at(
+++    conn: &Connection,
+++    path: &str,
+++    id: &[u8],
+++    sid: &str,
+++) -> Result<Vec<(String, String)>> {
+++    let rows = state_db::query_vec(
+++        conn,
+++        "SELECT d.kind, d.mask FROM persistent_denies d JOIN persistent_deny_owners o ON o.owner = d.owner \
+++         WHERE d.canonical_path = ?1 AND d.file_id = ?2 AND o.sandbox_sid = ?3",
+++        params![path, id, sid],
+++        |r| Ok((r.get(0)?, r.get(1)?)),
+++    )?;
+++    Ok(rows)
+++}
+++
+++#[cfg(test)]
+++mod tests {
+++    use super::*;
+++    use crate::acl::DenyMask;
+++    use std::cell::Cell;
+++
+++    const SID: &str = "S-1-5-21-101-202-303-1001";
+++    const OLD_SID: &str = "S-1-5-21-101-202-303-1002";
+++
+++    fn retire_old(
+++        conn: &Connection,
+++        sid: &str,
+++        absent: impl Fn(&str) -> Result<bool>,
+++    ) -> Result<()> {
+++        retire_old_principals_with(conn, sid, absent, |_, _| false, |_, _, _, _, _| Ok(()))
+++    }
+++
+++    fn database() -> Connection {
+++        let conn = state_db::open_db_at(
+++            std::path::Path::new(":memory:"),
+++            state_db::SESSION_SCHEMA_SQL,
+++            state_db::SESSION_SCHEMA_VERSION,
+++        )
+++        .unwrap();
+++        for pid in [11, 12] {
+++            conn.execute("INSERT INTO brokers VALUES (?1, 1, 1)", [pid])
+++                .unwrap();
+++        }
+++        conn
+++    }
+++
+++    fn target(path: &str, ace: SbAce) -> Target {
+++        Target {
+++            path: path.to_owned(),
+++            file_id: vec![1; 24],
+++            ace,
+++        }
+++    }
+++
+++    fn read(path: &str) -> Target {
+++        target(path, SbAce::Deny(DenyMask::ReadDeny))
+++    }
+++    fn write(path: &str) -> Target {
+++        target(path, SbAce::Deny(DenyMask::WriteDeny))
+++    }
+++
+++    fn pending(conn: &Connection) -> i64 {
+++        conn.query_row("SELECT count(*) FROM pending_deny_acl", [], |r| r.get(0))
+++            .unwrap()
+++    }
+++
+++    fn flush(conn: &Connection) -> Vec<String> {
+++        let mut paths = Vec::new();
+++        replay_with(conn, SID, |path, _, _, _| {
+++            paths.push(path.to_owned());
+++            Ok(())
+++        })
+++        .unwrap();
+++        paths
+++    }
+++
+++    fn release_rows(conn: &Connection, pid: i64) {
+++        conn.execute("DELETE FROM brokers WHERE pid = ?1", [pid])
+++            .unwrap();
+++        // The production recovery deletes orphan working rows after pruning.
+++        conn.execute(
+++            "DELETE FROM working_aces WHERE NOT EXISTS (SELECT 1 FROM ace_holders h \
+++            WHERE h.canonical_path = working_aces.canonical_path AND h.kind = working_aces.kind)",
+++            [],
+++        )
+++        .unwrap();
+++    }
+++
+++    #[test]
+++    fn first_call_applies_and_identical_second_call_writes_nothing() {
+++        let conn = database();
+++        let targets = [
+++            read(r"C:\fixture\secret"),
+++            target(r"C:\fixture", SbAce::DenyFdc),
+++        ];
+++        reconcile_rows(&conn, 11, "ave", SID, &targets).unwrap();
+++        assert_eq!(flush(&conn).len(), 2);
+++        reconcile_rows(&conn, 11, "ave", SID, &targets).unwrap();
+++        assert!(flush(&conn).is_empty());
+++        assert_eq!(snapshot(&conn).unwrap().len(), 2);
+++    }
+++
+++    #[test]
+++    fn second_live_holder_attaches_without_acl_writes() {
+++        let conn = database();
+++        let targets = [read(r"C:\fixture\secret")];
+++        reconcile_rows(&conn, 11, "ave", SID, &targets).unwrap();
+++        flush(&conn);
+++        reconcile_rows(&conn, 12, "ave", SID, &targets).unwrap();
+++        assert!(flush(&conn).is_empty());
+++        assert_eq!(
+++            conn.query_row("SELECT count(*) FROM ace_holders", [], |r| r
+++                .get::<_, i64>(0))
+++                .unwrap(),
+++            2
+++        );
+++    }
+++
+++    #[test]
+++    fn owner_removal_keeps_live_session_obligations() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(r"C:\fixture\secret")]).unwrap();
+++        flush(&conn);
+++        reconcile_rows(&conn, 12, "ave", SID, &[]).unwrap();
+++        assert!(flush(&conn).is_empty());
+++        assert_eq!(snapshot(&conn).unwrap().len(), 1);
+++        release_rows(&conn, 11);
+++        assert!(snapshot(&conn).unwrap().is_empty());
+++    }
+++
+++    #[test]
+++    fn complete_durable_rows_survive_last_holder_and_recovery() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(r"C:\fixture\secret")]).unwrap();
+++        flush(&conn);
+++        release_rows(&conn, 11);
+++        assert_eq!(snapshot(&conn).unwrap().len(), 1);
+++        assert!(flush(&conn).is_empty());
+++    }
+++
+++    #[test]
+++    fn delta_adds_only_new_target_and_preserves_existing() {
+++        let conn = database();
+++        let a = read(r"C:\fixture\a");
+++        let b = read(r"C:\fixture\b");
+++        reconcile_rows(&conn, 11, "ave", SID, std::slice::from_ref(&a)).unwrap();
+++        flush(&conn);
+++        reconcile_rows(&conn, 11, "ave", SID, &[a, b.clone()]).unwrap();
+++        assert_eq!(flush(&conn), vec![b.path]);
+++    }
+++
+++    #[test]
+++    fn delta_removal_queues_only_retired_object_after_holders_exit() {
+++        let conn = database();
+++        let a = read(r"C:\fixture\a");
+++        let b = read(r"C:\fixture\b");
+++        reconcile_rows(&conn, 11, "ave", SID, &[a.clone(), b.clone()]).unwrap();
+++        flush(&conn);
+++        release_rows(&conn, 11);
+++        reconcile_rows(&conn, 12, "ave", SID, &[a]).unwrap();
+++        assert_eq!(flush(&conn), vec![b.path]);
+++    }
+++
+++    #[test]
+++    fn same_holder_cannot_lower_a_live_sessions_prior_obligation() {
+++        let conn = database();
+++        let path = r"C:\fixture\secret";
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(path)]).unwrap();
+++        flush(&conn);
+++        reconcile_rows(&conn, 11, "ave", SID, &[write(path)]).unwrap();
+++        assert!(flush(&conn).is_empty());
+++        let effective = snapshot(&conn).unwrap();
+++        assert_eq!(
+++            effective[&(path.to_owned(), vec![1; 24])]["deny"],
+++            "denyRead"
+++        );
+++    }
+++
+++    #[test]
+++    fn interrupted_add_replays_once_and_completed_objects_are_not_rewritten() {
+++        let conn = database();
+++        reconcile_rows(
+++            &conn,
+++            11,
+++            "ave",
+++            SID,
+++            &[read(r"C:\fixture\a"), read(r"C:\fixture\b")],
+++        )
+++        .unwrap();
+++        let writes = Cell::new(0);
+++        assert!(
+++            replay_with(&conn, SID, |path, _, _, _| {
+++                writes.set(writes.get() + 1);
+++                if path.ends_with('b') {
+++                    bail!("interrupted write");
+++                }
+++                Ok(())
+++            })
+++            .is_err()
+++        );
+++        assert_eq!(writes.get(), 2);
+++        assert_eq!(pending(&conn), 1);
+++        assert_eq!(flush(&conn), vec![r"C:\fixture\b"]);
+++        assert_eq!(pending(&conn), 0);
+++    }
+++
+++    #[test]
+++    fn interrupted_teardown_retains_retryable_journal() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(r"C:\fixture\secret")]).unwrap();
+++        flush(&conn);
+++        release_rows(&conn, 11);
+++        forget_rows(&conn, Some("ave"), SID).unwrap();
+++        assert!(replay_with(&conn, SID, |_, _, _, _| bail!("ACL write denied")).is_err());
+++        assert_eq!(pending(&conn), 1);
+++        assert!(snapshot(&conn).unwrap().is_empty());
+++        assert_eq!(flush(&conn).len(), 1);
+++        assert_eq!(pending(&conn), 0);
+++    }
+++
+++    #[test]
+++    fn explicit_teardown_preserves_live_holder_and_other_owner() {
+++        let conn = database();
+++        let path = r"C:\fixture\secret";
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(path)]).unwrap();
+++        flush(&conn);
+++        reconcile_rows(&conn, 12, "second", SID, &[write(path)]).unwrap();
+++        flush(&conn);
+++        forget_rows(&conn, Some("ave"), SID).unwrap();
+++        assert!(flush(&conn).is_empty());
+++        assert_eq!(
+++            conn.query_row("SELECT count(*) FROM persistent_deny_owners", [], |r| r
+++                .get::<_, i64>(0))
+++                .unwrap(),
+++            1
+++        );
+++        assert_eq!(snapshot(&conn).unwrap().len(), 1);
+++    }
+++
+++    #[test]
+++    fn all_owner_teardown_removes_all_durable_rows() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(r"C:\fixture\a")]).unwrap();
+++        reconcile_rows(&conn, 12, "second", SID, &[read(r"C:\fixture\b")]).unwrap();
+++        flush(&conn);
+++        release_rows(&conn, 11);
+++        release_rows(&conn, 12);
+++        forget_rows(&conn, None, SID).unwrap();
+++        assert_eq!(flush(&conn).len(), 2);
+++        assert!(snapshot(&conn).unwrap().is_empty());
+++    }
+++
+++    #[test]
+++    fn mapped_or_uncertain_old_principal_cannot_be_used_or_retired() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", OLD_SID, &[read(r"C:\fixture\secret")]).unwrap();
+++        assert!(retire_old(&conn, SID, |_| Ok(false)).is_err());
+++        assert_eq!(snapshot(&conn).unwrap().len(), 1);
+++        assert!(
+++            replay_with(&conn, SID, |_, _, _, _| panic!(
+++                "untrusted SID reached writer"
+++            ))
+++            .is_err()
+++        );
+++    }
+++
+++    #[test]
+++    fn absent_old_principal_invalidates_cache_and_replacement_restamps() {
+++        let conn = database();
+++        let targets = [read(r"C:\fixture\secret")];
+++        reconcile_rows(&conn, 11, "ave", OLD_SID, &targets).unwrap();
+++        retire_old(&conn, SID, |old| {
+++            assert_eq!(old, OLD_SID);
+++            Ok(true)
+++        })
+++        .unwrap();
+++        conn.execute("INSERT INTO brokers VALUES (12, 1, 1)", [])
+++            .unwrap();
+++        reconcile_rows(&conn, 12, "ave", SID, &targets).unwrap();
+++        assert_eq!(flush(&conn).len(), 1);
+++    }
+++
+++    #[test]
+++    fn target_or_parent_identity_change_is_a_delta_after_holders_exit() {
+++        let conn = database();
+++        let original = read(r"C:\fixture\secret");
+++        reconcile_rows(&conn, 11, "ave", SID, std::slice::from_ref(&original)).unwrap();
+++        flush(&conn);
+++        release_rows(&conn, 11);
+++        let mut replacement = original;
+++        replacement.file_id = vec![2; 24];
+++        reconcile_rows(&conn, 12, "ave", SID, &[replacement]).unwrap();
+++        assert_eq!(
+++            pending(&conn),
+++            2,
+++            "old object cleanup and new object stamp are separate intents"
+++        );
+++    }
+++
+++    #[test]
+++    fn substituted_live_object_is_rejected_before_mutating_intent() {
+++        let conn = database();
+++        let original = read(r"C:\fixture\secret");
+++        reconcile_rows(&conn, 11, "ave", SID, std::slice::from_ref(&original)).unwrap();
+++        flush(&conn);
+++        let before = snapshot(&conn).unwrap();
+++        let mut replacement = original;
+++        replacement.file_id = vec![2; 24];
+++        assert!(reconcile_rows(&conn, 12, "ave", SID, &[replacement]).is_err());
+++        assert_eq!(snapshot(&conn).unwrap(), before);
+++        assert_eq!(pending(&conn), 0);
+++    }
+++
+++    #[test]
+++    fn invalid_owner_is_rejected_before_state_changes() {
+++        let conn = database();
+++        for owner in ["", "../ave", "AVE", "ave owner"] {
+++            assert!(reconcile_rows(&conn, 11, owner, SID, &[]).is_err());
+++        }
+++        assert!(snapshot(&conn).unwrap().is_empty());
+++    }
+++
+++    #[test]
+++    fn grants_are_rejected_and_hardlinked_deny_targets_are_refused() {
+++        let input = [(
+++            r"C:\fixture\secret".to_owned(),
+++            SbAce::Deny(DenyMask::ReadDeny),
+++        )];
+++        assert!(
+++            targets_with(&input, |_| Ok((
+++                FileId::from_bytes(&[1; 24]).unwrap(),
+++                2,
+++                false
+++            )))
+++            .is_err()
+++        );
+++        let grants = [(
+++            r"C:\fixture\secret".to_owned(),
+++            SbAce::Grant(crate::acl::GrantMask::ReadOnly),
+++        )];
+++        assert!(targets_with(&grants, |_| panic!("grant reached identity probe")).is_err());
+++    }
+++
+++    #[test]
+++    fn additive_schema_preserves_existing_transient_holds() {
+++        let conn = database();
+++        conn.execute(
+++            "INSERT INTO ace_holders VALUES ('fixture', 'deny', 11, 'denyRead')",
+++            [],
+++        )
+++        .unwrap();
+++        conn.execute_batch(SCHEMA).unwrap();
+++        assert_eq!(
+++            conn.query_row("SELECT count(*) FROM ace_holders", [], |r| r
+++                .get::<_, i64>(0))
+++                .unwrap(),
+++            1
+++        );
+++        assert_eq!(
+++            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
+++                .unwrap(),
+++            8
+++        );
+++    }
+++    #[test]
+++    fn interrupted_object_only_attempt_replays_without_tree_propagation() {
+++        let conn = database();
+++        reconcile_rows(
+++            &conn,
+++            11,
+++            "ave",
+++            SID,
+++            &[target(r"C:\fixture", SbAce::DenyFdc)],
+++        )
+++        .unwrap();
+++        assert!(
+++            replay_with(&conn, SID, |_, _, repair, _| {
+++                assert!(!repair);
+++                bail!("interrupted local parent write")
+++            })
+++            .is_err()
+++        );
+++        replay_with(&conn, SID, |_, _, repair, _| {
+++            assert!(
+++                !repair,
+++                "a local attempt never authorizes descendant propagation"
+++            );
+++            Ok(())
+++        })
+++        .unwrap();
+++        assert_eq!(pending(&conn), 0);
+++    }
+++
+++    #[test]
+++    fn recorded_tree_commit_requests_propagation_repair_on_replay() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", SID, &[read(r"C:\fixture\secret")]).unwrap();
+++        assert!(
+++            replay_with(&conn, SID, |_, _, repair, before_tree_write| {
+++                assert!(!repair);
+++                before_tree_write()?;
+++                bail!("interrupted actual tree write")
+++            })
+++            .is_err()
+++        );
+++        replay_with(&conn, SID, |_, _, repair, _| {
+++            assert!(
+++                repair,
+++                "a recorded tree commit must finish descendant propagation"
+++            );
+++            Ok(())
+++        })
+++        .unwrap();
+++        assert_eq!(pending(&conn), 0);
+++    }
+++    #[test]
+++    fn native_fixture_stamp_recover_and_teardown_preserve_owner_access() {
+++        let conn = database();
+++        let fixture = std::env::temp_dir().join(format!(
+++            "srt-persistent-denies-{}-{}",
+++            std::process::id(),
+++            std::time::SystemTime::now()
+++                .duration_since(std::time::UNIX_EPOCH)
+++                .unwrap()
+++                .as_nanos()
+++        ));
+++        std::fs::create_dir_all(&fixture).unwrap();
+++        let file = fixture.join("secret.txt");
+++        std::fs::write(&file, "fixture-content").unwrap();
+++        let (path, _) = path_id::canonicalize_path(file.to_str().unwrap()).unwrap();
+++        let targets = targets_with(
+++            &[(path.clone(), SbAce::Deny(DenyMask::ReadDeny))],
+++            path_id::capture_id_and_links,
+++        )
+++        .unwrap();
+++        reconcile_rows(&conn, 11, "ave", SID, &targets).unwrap();
+++        apply_pending(&conn, SID).unwrap();
+++        assert!(crate::acl::sandbox_deny_present(&path, SID).unwrap());
+++        release_rows(&conn, 11);
+++        assert!(apply_pending(&conn, SID).unwrap().is_empty());
+++        assert!(crate::acl::sandbox_deny_present(&path, SID).unwrap());
+++        assert_eq!(std::fs::read_to_string(&file).unwrap(), "fixture-content");
+++        forget_rows(&conn, None, SID).unwrap();
+++        apply_pending(&conn, SID).unwrap();
+++        assert!(!crate::acl::sandbox_deny_present(&path, SID).unwrap());
+++        assert_eq!(std::fs::read_to_string(&file).unwrap(), "fixture-content");
+++        std::fs::remove_dir_all(&fixture).unwrap();
+++    }
+++    #[test]
+++    fn live_or_uncertain_old_holder_blocks_principal_retirement() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", OLD_SID, &[read(r"C:\fixture\secret")]).unwrap();
+++        let before = snapshot(&conn).unwrap();
+++        assert!(
+++            retire_old_principals_with(
+++                &conn,
+++                SID,
+++                |_| Ok(true),
+++                |_, _| true,
+++                |_, _, _, _, _| panic!("live holder reached cleanup")
+++            )
+++            .is_err()
+++        );
+++        assert_eq!(snapshot(&conn).unwrap(), before);
+++    }
+++
+++    #[test]
+++    fn mixed_principal_state_is_retained_without_dropping_current_holders() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", OLD_SID, &[read(r"C:\fixture\old")]).unwrap();
+++        conn.execute(
+++            "INSERT INTO persistent_deny_owners VALUES ('current', ?1)",
+++            [SID],
+++        )
+++        .unwrap();
+++        let before = snapshot(&conn).unwrap();
+++        assert!(retire_old(&conn, SID, |_| Ok(true)).is_err());
+++        assert_eq!(snapshot(&conn).unwrap(), before);
+++        assert_eq!(
+++            conn.query_row("SELECT count(*) FROM brokers", [], |r| r.get::<_, i64>(0))
+++                .unwrap(),
+++            2
+++        );
+++    }
+++
+++    #[test]
+++    fn old_grant_cleanup_is_journaled_and_retried_before_state_retirement() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", OLD_SID, &[]).unwrap();
+++        for path in [r"C:\fixture\a", r"C:\fixture\b"] {
+++            conn.execute(
+++                "INSERT INTO working_aces VALUES (?1, 'grant', ?2, 'modify')",
+++                params![path, vec![1u8; 24]],
+++            )
+++            .unwrap();
+++        }
+++        let mut first_writes = Vec::new();
+++        assert!(
+++            retire_old_principals_with(
+++                &conn,
+++                SID,
+++                |_| Ok(true),
+++                |_, _| false,
+++                |path, _, old_sid, repair, before_tree_write| {
+++                    assert_eq!(old_sid, OLD_SID);
+++                    assert!(!repair);
+++                    before_tree_write()?;
+++                    first_writes.push(path.to_owned());
+++                    if path.ends_with('b') {
+++                        bail!("interrupted grant removal");
+++                    }
+++                    Ok(())
+++                }
+++            )
+++            .is_err()
+++        );
+++        assert_eq!(first_writes.len(), 2);
+++        assert_eq!(
+++            conn.query_row("SELECT count(*) FROM working_aces", [], |r| r
+++                .get::<_, i64>(0))
+++                .unwrap(),
+++            2
+++        );
+++        let mut retry_writes = Vec::new();
+++        retire_old_principals_with(
+++            &conn,
+++            SID,
+++            |_| Ok(true),
+++            |_, _| false,
+++            |path, _, _, repair, _| {
+++                assert!(repair);
+++                retry_writes.push(path.to_owned());
+++                Ok(())
+++            },
+++        )
+++        .unwrap();
+++        assert_eq!(retry_writes, vec![r"C:\fixture\b"]);
+++        assert!(snapshot(&conn).unwrap().is_empty());
+++        assert_eq!(
+++            conn.query_row("SELECT count(*) FROM pending_retired_grants", [], |r| r
+++                .get::<_, i64>(0))
+++                .unwrap(),
+++            0
+++        );
+++    }
+++
+++    #[test]
+++    fn explicit_forget_retains_principal_binding_for_live_transient_rows() {
+++        let conn = database();
+++        reconcile_rows(&conn, 11, "ave", OLD_SID, &[read(r"C:\fixture\secret")]).unwrap();
+++        forget_rows(&conn, None, OLD_SID).unwrap();
+++        assert!(
+++            retire_old_principals_with(
+++                &conn,
+++                SID,
+++                |_| Ok(true),
+++                |_, _| true,
+++                |_, _, _, _, _| Ok(())
+++            )
+++            .is_err()
+++        );
+++        assert_eq!(
+++            conn.query_row(
+++                "SELECT sandbox_sid FROM persistent_deny_principal",
+++                [],
+++                |r| r.get::<_, String>(0)
+++            )
+++            .unwrap(),
+++            OLD_SID
+++        );
+++    }
+++    #[test]
+++    fn interrupted_last_holder_release_keeps_retryable_removal_intent() {
+++        let conn = database();
+++        let row = read(r"C:\fixture\secret");
+++        reconcile_rows(&conn, 11, "ave", SID, std::slice::from_ref(&row)).unwrap();
+++        flush(&conn);
+++        forget_rows(&conn, Some("ave"), SID).unwrap();
+++        assert_eq!(pending(&conn), 0, "live hold defers the actual removal");
+++        let before = signature(&conn, &row.path, &row.file_id).unwrap();
+++        let tx = conn.unchecked_transaction().unwrap();
+++        tx.execute("DELETE FROM ace_holders", []).unwrap();
+++        tx.execute("DELETE FROM working_aces", []).unwrap();
+++        assert!(journal_holder_change(&tx, &row.path, &row.file_id, &before, SID).unwrap());
+++        tx.commit().unwrap();
+++        assert!(replay_with(&conn, SID, |_, _, _, _| bail!("interrupted removal")).is_err());
+++        assert_eq!(pending(&conn), 1);
+++        assert_eq!(flush(&conn), vec![row.path]);
+++    }
+++}
++diff --git a/vendor/srt-win-src/src/state_db.rs b/vendor/srt-win-src/src/state_db.rs
++index d3778f4e6..3f3ecb128 100644
++--- a/vendor/srt-win-src/src/state_db.rs
+++++ b/vendor/srt-win-src/src/state_db.rs
++@@ -72,9 +72,9 @@ impl std::str::FromStr for HolderPid {
++ }
++
++ /// Per-user session DB (brokers / ace_holders / working_aces).
++-const SESSION_SCHEMA_VERSION: i64 = 8;
+++pub(crate) const SESSION_SCHEMA_VERSION: i64 = 8;
++
++-const SESSION_SCHEMA_SQL: &str = r#"
+++pub(crate) const SESSION_SCHEMA_SQL: &str = r#"
++ CREATE TABLE IF NOT EXISTS brokers (
++   pid                 INTEGER PRIMARY KEY,
++   process_create_time INTEGER NOT NULL,
++@@ -304,7 +304,7 @@ pub const KIND_GRANT: &[&str] = &["grant"];
++ /// `prepare → query_map → collect` with one error context. Shared
++ /// by every "list of T from one query" site so error plumbing is
++ /// edited once.
++-fn query_vec<T, P: rusqlite::Params>(
+++pub(crate) fn query_vec<T, P: rusqlite::Params>(
++     conn: &Connection,
++     sql: &str,
++     p: P,
++@@ -474,16 +474,19 @@ pub(crate) fn open_db_at(
++     }
++     let conn = Connection::open(path).with_context(|| format!("sqlite open {}", path.display()))?;
++     // WAL = concurrent readers + single writer + crash safety.
++-    // `synchronous=NORMAL` is the recommended companion for WAL and
++-    // is durable across power loss. busy_timeout is belt-and-braces
+++    // FULL sync makes committed deny intent durable before the ACL writer
+++    // runs, including across power loss. busy_timeout is belt-and-braces
++     // — the named mutex already serializes whole operations across
++     // brokers, but a brief contention inside one process (tests)
++     // shouldn't error.
++     conn.pragma_update(None, "journal_mode", "WAL")?;
++-    conn.pragma_update(None, "synchronous", "NORMAL")?;
+++    conn.pragma_update(None, "synchronous", "FULL")?;
++     conn.pragma_update(None, "foreign_keys", "ON")?;
++     conn.pragma_update(None, "busy_timeout", 5000)?;
++     conn.execute_batch(schema_sql).context("apply schema")?;
+++    if schema_version == SESSION_SCHEMA_VERSION {
+++        conn.execute_batch(crate::persistent_denies::SCHEMA)?;
+++    }
++     conn.pragma_update(None, "user_version", schema_version)?;
++     Ok(conn)
++ }
++@@ -557,6 +560,7 @@ pub fn with_init_lock<R>(
++ fn locked_recovered(force_recover: bool) -> Result<(InitMutex, Connection, RecoveryReport)> {
++     let mutex = InitMutex::acquire()?;
++     let conn = open_db()?;
+++    crate::persistent_denies::recover(&conn)?;
++     let report = crash_recovery(&conn, force_recover)?;
++     Ok((mutex, conn, report))
++ }
++@@ -572,8 +576,8 @@ fn locked_recovered(force_recover: bool) -> Result<(InitMutex, Connection, Recov
++ /// means a stamp persists until that process exits (or explicitly
++ /// restores), and refcount / crash-recovery track the real session.
++ pub struct Locked {
++-    conn: Connection,
++-    holder_pid: HolderPid,
+++    pub(crate) conn: Connection,
+++    pub(crate) holder_pid: HolderPid,
++ }
++
++ impl Locked {
++@@ -671,6 +675,7 @@ impl Locked {
++         sandbox_sid: &str,
++         targets: &[(String, SbAce)],
++     ) -> Result<(Vec<AceWitness>, usize)> {
+++        crate::persistent_denies::validate_supplied(&self.conn, sandbox_sid)?;
++         self.with_broker_registration(sandbox_sid, |db| {
++             let mut witnesses = Vec::with_capacity(targets.len());
++             let mut failed = 0usize;
++@@ -834,6 +839,7 @@ impl Locked {
++     /// best-effort `locate_by_file_id` and revoke at the moved path
++     /// so the sandbox user does not keep stale access.
++     fn release_one_ace(&self, canon: &str, kind: &str, sandbox_sid: &str) -> Result<AceRelease> {
+++        let tx = self.conn.unchecked_transaction()?;
++         self.conn
++             .prepare_cached(
++                 "DELETE FROM ace_holders WHERE canonical_path = ?1 \
++@@ -850,8 +856,10 @@ impl Locked {
++             .query_row(params![canon, kind], |r| Ok((r.get(0)?, r.get(1)?)))
++             .optional()?;
++         let Some((fid, stored)) = row else {
+++            tx.commit()?;
++             return Ok(AceRelease::NoRow);
++         };
+++        let before = crate::persistent_denies::signature(&self.conn, canon, &fid)?;
++         let new_eff = self.effective_ace(canon, kind)?;
++         // Row update first (record-first), then converge disk.
++         match new_eff {
++@@ -872,10 +880,28 @@ impl Locked {
++                 )
++                 .context("DELETE working_aces")?,
++         };
+++        let journaled = crate::persistent_denies::journal_holder_change(
+++            &tx,
+++            canon,
+++            &fid,
+++            &before,
+++            sandbox_sid,
+++        )?;
+++        tx.commit()?;
+++        if journaled {
+++            crate::persistent_denies::apply_pending(&self.conn, sandbox_sid)?;
+++            return Ok(match new_eff {
+++                Some(e) if e.as_str() == stored => AceRelease::StillHeld,
+++                Some(_) => AceRelease::Downgraded,
+++                None => AceRelease::Revoked,
+++            });
+++        }
++         let want_id = FileId::from_bytes(&fid)?;
++         match identity_gate(canon, want_id) {
++             IdGate::Match => {
++-                recompose_at(&self.conn, canon, sandbox_sid)?;
+++                if before != crate::persistent_denies::signature(&self.conn, canon, &fid)? {
+++                    recompose_at(&self.conn, canon, sandbox_sid)?;
+++                }
++                 Ok(match new_eff {
++                     Some(e) if e.as_str() == stored => AceRelease::StillHeld,
++                     Some(_) => AceRelease::Downgraded,
++@@ -950,6 +976,7 @@ impl Locked {
++         sandbox_sid: &str,
++         kinds: &[&str],
++     ) -> Result<(Vec<(String, AceRelease)>, usize)> {
+++        crate::persistent_denies::validate_supplied(&self.conn, sandbox_sid)?;
++         let holds = self.my_ace_holds(Some(kinds))?;
++         let mut out = Vec::with_capacity(holds.len());
++         let mut failed = 0usize;
++@@ -975,6 +1002,40 @@ impl Locked {
++         Ok((out, failed))
++     }
++
+++    /// Reconcile an owner's durable deny set and attach this live holder.
+++    pub fn reconcile_persistent_denies(
+++        &self,
+++        owner: &str,
+++        sandbox_sid: &str,
+++        targets: &[(String, SbAce)],
+++    ) -> Result<(Vec<AceWitness>, usize)> {
+++        crate::persistent_denies::reconcile(self, owner, sandbox_sid, targets)
+++    }
+++
+++    /// Account removal cannot invalidate permissions still held by a live or
+++    /// uncertain process. Empty registered brokers carry no obligation.
+++    pub(crate) fn ensure_no_live_holders(&self) -> Result<()> {
+++        let holders: Vec<(u32, i64)> = query_vec(
+++            &self.conn,
+++            "SELECT b.pid, b.process_create_time FROM brokers b WHERE EXISTS \
+++             (SELECT 1 FROM ace_holders h WHERE h.pid = b.pid)",
+++            [],
+++            |row| Ok((row.get(0)?, row.get(1)?)),
+++        )?;
+++        if holders
+++            .into_iter()
+++            .any(|(pid, created)| is_process_alive(pid, created))
+++        {
+++            bail!("sandbox holders are live or unverifiable; stop them before uninstall");
+++        }
+++        Ok(())
+++    }
+++
+++    /// Explicitly remove one owner's durable denies, preserving live holds.
+++    pub fn forget_persistent_denies(&self, owner: Option<&str>) -> Result<Vec<(String, String)>> {
+++        crate::persistent_denies::forget(self, owner)
+++    }
+++
++     /// Record a placeholder component `acl stamp` is about to
++     /// create (see the `placeholders` table comment). Idempotent
++     /// (`INSERT OR IGNORE`); called intent-first — before the
++@@ -1019,33 +1080,78 @@ impl Locked {
++ /// here so a path with both a grant AND a deny (or a parent that is
++ /// both granted and `deny_fdc`'d) is handled consistently.
++ fn recompose_at(conn: &Connection, canon: &str, sandbox_sid: &str) -> Result<()> {
++-    let rows: Vec<(String, String)> = query_vec(
+++    let id = path_id::capture_file_id(canon)?;
+++    recompose_identity(
++         conn,
++-        "SELECT kind, mask FROM working_aces \
++-         WHERE canonical_path = ?1",
++-        params![canon],
+++        canon,
+++        canon,
+++        &id.as_bytes(),
+++        sandbox_sid,
+++        false,
+++        &mut || Ok(()),
+++    )
+++}
+++
+++/// Recompose the recorded object, including durable intent, at its current path.
+++/// The caller verifies the identity before a relocated object's ACL is touched.
+++pub(crate) fn recompose_identity(
+++    conn: &Connection,
+++    source: &str,
+++    actual: &str,
+++    file_id: &[u8],
+++    sandbox_sid: &str,
+++    repair_propagation: bool,
+++    before_tree_write: &mut dyn FnMut() -> Result<()>,
+++) -> Result<()> {
+++    let mut rows: Vec<(String, String)> = query_vec(
+++        conn,
+++        "SELECT kind, mask FROM working_aces WHERE canonical_path = ?1 AND file_id = ?2",
+++        params![source, file_id],
++         |r| Ok((r.get(0)?, r.get(1)?)),
++     )?;
+++    rows.extend(crate::persistent_denies::rows_at(
+++        conn,
+++        source,
+++        file_id,
+++        sandbox_sid,
+++    )?);
++     let mut set = acl::SbAceSet::default();
++-    for (k, m) in &rows {
++-        match SbAce::parse(k, m)? {
++-            SbAce::Grant(g) => set.grant = Some(g),
++-            SbAce::Deny(d) => set.deny = Some(d),
+++    for (kind, mask) in rows {
+++        match SbAce::parse(&kind, &mask)? {
+++            SbAce::Grant(grant) => {
+++                set.grant = Some(set.grant.map_or(grant, |old| {
+++                    match SbAce::Grant(old).max(SbAce::Grant(grant)) {
+++                        SbAce::Grant(value) => value,
+++                        _ => unreachable!(),
+++                    }
+++                }))
+++            }
+++            SbAce::Deny(deny) => {
+++                set.deny =
+++                    Some(set.deny.map_or(
+++                        deny,
+++                        |old| match SbAce::Deny(old).max(SbAce::Deny(deny)) {
+++                            SbAce::Deny(value) => value,
+++                            _ => unreachable!(),
+++                        },
+++                    ))
+++            }
++             SbAce::DenyFdc => set.deny_fdc = true,
++             SbAce::DenyDelete => set.deny_delete = true,
++         }
++     }
++-    // Install-time ambient write-deny (HKLM AmbientDenies) folds
++-    // into every converge on the path, so session release/recovery
++-    // cannot strip it. WriteDeny is the floor: a session's wider
++-    // ReadDeny wins while its row is held, and the floor returns on
++-    // release. The registry value is admin-written (HKLM\SOFTWARE
++-    // default DACL), so the list is trustworthy as read.
++-    if crate::install::ambient_deny_recorded(canon) {
+++    if crate::install::ambient_deny_recorded(actual) {
++         set.deny.get_or_insert(acl::DenyMask::WriteDeny);
++     }
++-    acl::apply_sandbox_aces(canon, sandbox_sid, set)
++-        .with_context(|| format!("recompose '{canon}' ({set:?})"))
+++    acl::apply_sandbox_aces_for_identity_with_tree_intent(
+++        actual,
+++        sandbox_sid,
+++        set,
+++        repair_propagation,
+++        file_id,
+++        before_tree_write,
+++    )
+++    .with_context(|| format!("recompose '{actual}' ({set:?})"))
++ }
++
++ /// Sealed proof that [`Locked::apply_aces`] converged `canon` to
++@@ -1059,7 +1165,7 @@ pub struct AceWitness {
++     /// A row already existed (another holder, or a re-apply).
++     pub already: bool,
++     pub holder_added: bool,
++-    _sealed: (),
+++    pub(crate) _sealed: (),
++ }
++
++ /// Per-path outcome of [`Locked::release_aces`].
++@@ -1163,15 +1269,28 @@ fn crash_recovery(conn: &Connection, force: bool) -> Result<RecoveryReport> {
++             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
++         )?;
++         for (canon, kind, fid) in orphan_aces {
+++            let tx = conn.unchecked_transaction()?;
+++            let before = crate::persistent_denies::signature(conn, &canon, &fid)?;
++             conn.execute(
++                 "DELETE FROM working_aces \
++                  WHERE canonical_path = ?1 AND kind = ?2",
++                 params![&canon, &kind],
++             )
++             .context("DELETE working_aces (orphan)")?;
+++            let journaled =
+++                crate::persistent_denies::journal_holder_change(&tx, &canon, &fid, &before, &sb)?;
+++            tx.commit()?;
+++            if journaled {
+++                crate::persistent_denies::apply_pending(conn, &sb)?;
+++                report.aces_revoked += 1;
+++                continue;
+++            }
++             let want = FileId::from_bytes(&fid)?;
++             match identity_gate(&canon, want) {
++                 IdGate::Match => {
+++                    if before == crate::persistent_denies::signature(conn, &canon, &fid)? {
+++                        continue;
+++                    }
++                     if let Err(e) = recompose_at(conn, &canon, &sb) {
++                         eprintln!(
++                             "srt-win: orphaned {kind} '{canon}': \
++@@ -1224,7 +1343,7 @@ fn identity_gate(path: &str, expect: FileId) -> IdGate {
++
++ /// True if `pid` refers to a live process whose CreationTime
++ /// matches `expected_create_filetime`. PID-recycle guard.
++-fn is_process_alive(pid: u32, expected_create_filetime: i64) -> bool {
+++pub(crate) fn is_process_alive(pid: u32, expected_create_filetime: i64) -> bool {
++     if pid == std::process::id() {
++         // Don't reap ourselves even if the stored CreationTime is
++         // somehow stale.
++@@ -1420,4 +1539,68 @@ mod tests {
++         // PID 0x7FFF_FFFE is well above any plausible live PID.
++         assert!(!is_process_alive(0x7FFF_FFFE, 0));
++     }
+++    #[test]
+++    fn holder_release_keeps_durable_deny_on_native_fixture() {
+++        with_mem_db(|db| {
+++            const SANDBOX_SID: &str = "S-1-5-21-101-202-303-1001";
+++            let fixture = std::env::temp_dir().join(format!(
+++                "srt-durable-release-{}-{}",
+++                std::process::id(),
+++                unix_now()
+++            ));
+++            std::fs::create_dir_all(&fixture).unwrap();
+++            let (path, _) = path_id::canonicalize_path(fixture.to_str().unwrap()).unwrap();
+++            let id = path_id::capture_file_id(&path).unwrap();
+++            db.conn
+++                .execute(
+++                    "INSERT INTO persistent_deny_owners VALUES ('ave', ?1)",
+++                    [SANDBOX_SID],
+++                )
+++                .unwrap();
+++            db.conn
+++                .execute(
+++                    "INSERT INTO persistent_denies VALUES ('ave', ?1, 'deny', ?2, 'denyWrite')",
+++                    params![path, id.as_bytes().as_slice()],
+++                )
+++                .unwrap();
+++            db.register_broker().unwrap();
+++            let _witness = db
+++                .ensure_ace(&path, SbAce::Deny(acl::DenyMask::WriteDeny), SANDBOX_SID)
+++                .unwrap();
+++            db.release_one_ace(&path, "deny", SANDBOX_SID).unwrap();
+++            assert!(acl::sandbox_deny_present(&path, SANDBOX_SID).unwrap());
+++            assert!(db.my_ace_holds(None).unwrap().is_empty());
+++            let _witness = db
+++                .ensure_ace(&path, SbAce::Deny(acl::DenyMask::WriteDeny), SANDBOX_SID)
+++                .unwrap();
+++            db.conn
+++                .execute("DELETE FROM persistent_deny_owners", [])
+++                .unwrap();
+++            db.conn
+++                .execute(
+++                    "INSERT INTO persistent_deny_principal VALUES (1, ?1)",
+++                    [SANDBOX_SID],
+++                )
+++                .unwrap();
+++            db.release_one_ace(&path, "deny", SANDBOX_SID).unwrap();
+++            assert!(!acl::sandbox_deny_present(&path, SANDBOX_SID).unwrap());
+++            std::fs::remove_dir_all(&fixture).unwrap();
+++        });
+++    }
+++    #[test]
+++    fn account_removal_refuses_live_holds_and_accepts_empty_broker() {
+++        with_mem_db(|db| {
+++            db.register_broker().unwrap();
+++            db.ensure_no_live_holders().unwrap();
+++            db.conn
+++                .execute(
+++                    "INSERT INTO ace_holders VALUES ('fixture', 'deny', ?1, 'denyRead')",
+++                    [db.holder_pid.0],
+++                )
+++                .unwrap();
+++            assert!(db.ensure_no_live_holders().is_err());
+++            db.conn.execute("DELETE FROM ace_holders", []).unwrap();
+++            db.ensure_no_live_holders().unwrap();
+++        });
+++    }
++ }
 +diff --git a/vendor/srt-win-src/tests/acl_parent_scope.rs b/vendor/srt-win-src/tests/acl_parent_scope.rs
 +new file mode 100644
 +index 000000000..43cc25668

@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   checkDeps: vi.fn(),
   detectMxc: vi.fn(),
   startProbe: vi.fn(),
+  teardownDenies: vi.fn(),
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
@@ -56,6 +57,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     isAsrtLinuxRuntimeProbeError: () => false,
     isAsrtMacRuntimeProbeError: () => false,
     closeAllEgressConnections: () => 0,
+    teardownPersistentWindowsDenyStamps: h.teardownDenies,
   };
 });
 
@@ -141,6 +143,21 @@ it("degrades before initializing the extension backend when private-directory pr
 });
 
 describe("initSandboxGate — Windows MXC substrate", () => {
+  it("removes durable deny ownership when both confinement scopes are disabled", async () => {
+    await initSandboxGate(harness.context(false, false));
+    expect(h.teardownDenies).toHaveBeenCalledOnce();
+    expect(h.initialize).not.toHaveBeenCalled();
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "skip", reason: "gate-off" });
+  });
+
+  it("reports incomplete disable cleanup and leaves the next boot able to retry", async () => {
+    h.teardownDenies.mockRejectedValueOnce(new Error("Cleanup unavailable"));
+    await initSandboxGate(harness.context(false, false));
+    expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining("disable cleanup will retry next boot"));
+    await initSandboxGate(harness.context(false, false));
+    expect(h.teardownDenies).toHaveBeenCalledTimes(2);
+  });
+
   it.each([["slow", MXC_OK, "mxc"], ["hung", MXC_OLD, "approved-host"]] as const)("reaches ready while a %s ACL stamp remains pending", async (_delay, mxc, shells) => {
     h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
     h.detectMxc.mockResolvedValue(mxc);
