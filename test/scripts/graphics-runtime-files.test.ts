@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { writeImageRuntimePackage } from "../../src/__tests__/support/image-runtime-package.js";
 import { writeCanvasRuntimePackage, writePageRuntimeResources } from "../../src/__tests__/support/page-runtime-package.js";
 import { writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
+import SRT_WIN_BUILD_RECEIPTS from "../../src/permissions/generated/srt-win-build-receipts.js";
 
 const require = createRequire(import.meta.url);
 const packageHook = require("../../scripts/electron-after-pack.cjs") as (
@@ -30,7 +31,11 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
       return nextLoad(url, options);
     }});
     try {
-      await createRequire(import.meta.url)(process.argv[3])(context);
+      const require = createRequire(import.meta.url);
+      const verifier = require(process.argv[4]);
+      const verify = verifier.assertSrtWinVendor;
+      verifier.assertSrtWinVendor = (vendor, arches) => verify(vendor, arches, JSON.parse(process.env.AVE_TEST_SRT_RECEIPTS));
+      await require(process.argv[3])(context);
       console.log(JSON.stringify({ passed: true }));
     } catch (error) {
       console.log(JSON.stringify({ name: error.name, message: error.message }));
@@ -38,8 +43,9 @@ async function afterPack(context: Awaited<ReturnType<typeof createPackage>>["con
     }
   `;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", script, JSON.stringify(context),
-    join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs")], {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8",
+    join(context.appOutDir, "resources", "fixture-sdk-pins.json"), require.resolve("../../scripts/electron-after-pack.cjs"),
+    require.resolve("../../scripts/lib/srt-win-integrity.cjs")], {
+    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1", AVE_TEST_SRT_RECEIPTS: JSON.stringify(SRT_WIN_BUILD_RECEIPTS) }, encoding: "utf8",
   });
   if (result.error) throw result.error;
   const observation = JSON.parse(result.stdout);
@@ -88,6 +94,7 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
     if (platform === "win32") {
       const runtimeRoot = dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json"));
       putFile(vendorPath, readFileSync(join(runtimeRoot, "vendor", "srt-win", "x64", "srt-win.exe")));
+      putFile(join(dirname(vendorPath), "build-receipt.json"), JSON.stringify(SRT_WIN_BUILD_RECEIPTS.x64));
     }
     chmodSync(vendorPath, 0o755);
   }

@@ -1,7 +1,8 @@
 const { execFileSync } = require("node:child_process");
 const { join } = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { assertSrtWinVendor } = require("./lib/srt-win-integrity.cjs");
+const { readFileSync } = require("node:fs");
+const { assertSrtWinVendor, assertSrtWinReceiptModule } = require("./lib/srt-win-integrity.cjs");
 module.exports = async function beforePack(context) {
   const { assertMxcVerificationPayload } = await import("./lib/mxc-verification-build.mjs");
   assertMxcVerificationPayload(join(context.packager.projectDir, "dist", "src", "main"));
@@ -12,6 +13,8 @@ module.exports = async function beforePack(context) {
   const { windowsPowerShellEnv } = await import("./lib/windows-powershell-env.mjs");
   const arch = { 1: "x64", 3: "arm64" }[context.arch];
   if (!arch) throw new Error(`Unsupported Windows job launcher architecture: ${context.arch}`);
+  const manifest = JSON.parse(readFileSync(join(context.packager.projectDir, "dist", "src", "main", "bundle-manifest.json")));
+  if (manifest.srtWinReceiptsSha256 !== assertSrtWinReceiptModule()) throw new Error("Windows helper receipts changed after bundling");
   assertSrtWinVendor(join(context.packager.projectDir, "node_modules", "@anthropic-ai", "sandbox-runtime", "vendor"));
   for (const helper of ["job", "path-kind"]) {
     execFileSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File",

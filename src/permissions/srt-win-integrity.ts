@@ -7,6 +7,7 @@ import { basename, dirname, join } from "node:path";
 import { writeExitDiagnostic } from "../shared/exit-diagnostic.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
+import SRT_WIN_BUILD_RECEIPTS from "./generated/srt-win-build-receipts.js";
 import SRT_WIN_PINS from "./srt-win-pins.json" with { type: "json" };
 
 export class SrtWinIntegrityError extends Error {
@@ -17,9 +18,12 @@ export class SrtWinIntegrityError extends Error {
 }
 
 export function assertSrtWinDigest(bytes: Uint8Array, arch: string): void {
-  const pins: Readonly<Record<string, string>> = SRT_WIN_PINS.sha256;
-  const expected = Object.hasOwn(pins, arch) ? pins[arch] : undefined;
-  if (!expected || createHash("sha256").update(bytes).digest("hex") !== expected) {
+  const receipt = Object.hasOwn(SRT_WIN_BUILD_RECEIPTS, arch) ? SRT_WIN_BUILD_RECEIPTS[arch] : undefined;
+  const target = arch === "x64" ? "x86_64-pc-windows-msvc" : arch === "arm64" ? "aarch64-pc-windows-msvc" : undefined;
+  if (!receipt || !target || receipt.schemaVersion !== 1 ||
+      receipt.sourceRevision !== SRT_WIN_PINS.source.revision || receipt.sourceArchiveSha256 !== SRT_WIN_PINS.source.sha256 ||
+      receipt.nativePatchSha256 !== SRT_WIN_PINS.nativePatchSha256 || receipt.rustToolchain !== SRT_WIN_PINS.rustToolchain ||
+      receipt.target !== target || createHash("sha256").update(bytes).digest("hex") !== receipt.binarySha256) {
     throw new SrtWinIntegrityError("srt-win-integrity-mismatch");
   }
 }
