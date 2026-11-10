@@ -136,6 +136,7 @@ $sid = $null
 $code = 1
 $failure = $null
 $cleanupErrors = @()
+$profileOwner = $null
 $OutputDirectory = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ('ave-smoke-owner-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
 try {
@@ -157,9 +158,11 @@ try {
   $ownerScript = Join-Path $OutputDirectory 'owner.ps1'
   Copy-Item -LiteralPath $PSCommandPath -Destination $ownerScript
   $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$name", $password)
+  . (Join-Path $PSScriptRoot 'windows-user-profile.ps1')
+  $profileOwner = New-Object DisposableUserProfile($name, $env:COMPUTERNAME, $credential.GetNetworkCredential().Password)
   $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OwnerBootstrap -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6} -SmokeEnvironmentBase64 {7}' -f $ownerScript, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $sid, $DeadlineUnixMs, $SmokeEnvironmentBase64
   Write-Output "[windows-installer-smoke] temporary split-token owner: $sid; original runner: $($identity.User.Value)"
-  $child = Start-Process -FilePath $powershell -ArgumentList $command -Credential $credential -LoadUserProfile -WorkingDirectory $OutputDirectory -PassThru -RedirectStandardOutput (Join-Path $OutputDirectory 'bootstrap-stdout.log') -RedirectStandardError (Join-Path $OutputDirectory 'bootstrap-stderr.log')
+  $child = Start-Process -FilePath $powershell -ArgumentList $command -Credential $credential -LoadUserProfile:$false -WorkingDirectory $OutputDirectory -PassThru -RedirectStandardOutput (Join-Path $OutputDirectory 'bootstrap-stdout.log') -RedirectStandardError (Join-Path $OutputDirectory 'bootstrap-stderr.log')
   $code = Wait-OwnerProcess $child 5000
   if (-not (Test-Path -LiteralPath (Join-Path $OutputDirectory 'stdout.log'))) { throw 'The temporary owner produced no smoke output' }
 } catch {
@@ -192,6 +195,9 @@ try {
         if (-not [object]::Equals($saved[$name], $restored.GetValue($name, $null))) { throw "The original policy value was not restored: $name" }
       }
     } finally { $restored.Dispose() }
+  } catch { $cleanupErrors += $_.Exception.Message }
+  try {
+    if ($profileOwner) { $profileOwner.Dispose() }
   } catch { $cleanupErrors += $_.Exception.Message }
   try {
     if ($sid) {

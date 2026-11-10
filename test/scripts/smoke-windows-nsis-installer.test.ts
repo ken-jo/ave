@@ -142,7 +142,8 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(owner).toContain("$report.exitCode = $process.ExitCode");
     expect(owner).toContain("$env:RUNNER_ENVIRONMENT -ne 'github-hosted'");
     expect(owner).toContain("New-LocalUser -Name $name");
-    expect(owner).toContain("-Credential $credential -LoadUserProfile");
+    expect(owner).toContain("-Credential $credential -LoadUserProfile:$false");
+    expect(owner).toContain("$profileOwner.Dispose()");
     expect(owner).toContain("if ($admin) { throw 'The owner bootstrap did not receive a filtered token' }");
     expect(owner).toContain("-Verb RunAs");
     expect(owner).toContain("finally {");
