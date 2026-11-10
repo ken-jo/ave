@@ -428,6 +428,9 @@ export class BrowserNativeSurfaceHost {
     const hidden = () => park(false);
     const blurred = () => { this.clearGesture(windowId); };
     const reloaded = () => { this.inputSequences.delete(windowId); park(true); };
+    const navigating = (_event: unknown, _url: string, inPlace: boolean, mainFrame: boolean) => {
+      if (mainFrame && !inPlace) reloaded();
+    };
     const shown = () => {
       for (const entry of this.surfaces.values()) if (entry.owner === owner && entry.bound && entry.placement) this.place(entry, entry.placement);
     };
@@ -439,7 +442,7 @@ export class BrowserNativeSurfaceHost {
     owner.on("restore", shown);
     owner.once("closed", closed);
     ownerContents.on("render-process-gone", reloaded);
-    ownerContents.on("did-start-loading", reloaded);
+    ownerContents.on("did-start-navigation", navigating);
     this.owners.set(windowId, () => {
       owner.removeListener("hide", hidden);
       owner.removeListener("blur", blurred);
@@ -448,7 +451,7 @@ export class BrowserNativeSurfaceHost {
       owner.removeListener("restore", shown);
       owner.removeListener("closed", closed);
       ownerContents.removeListener("render-process-gone", reloaded);
-      ownerContents.removeListener("did-start-loading", reloaded);
+      ownerContents.removeListener("did-start-navigation", navigating);
     });
   }
 

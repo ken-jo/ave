@@ -387,7 +387,7 @@ describe("native browser trusted user pointer routing", () => {
     }
     if (reason === "reject") expect(host.input(1, pointer(state, { type: "mouseUp", button: "right" }))).toBe(false);
     if (reason === "new-down") expect(host.input(1, pointer(state))).toBe(true);
-    if (reason === "reload") owner.contents.emit("did-start-loading");
+    if (reason === "reload") owner.contents.emit("did-start-navigation", {}, "http://localhost/", false, true);
     if (reason === "close") await host.request(1, { action: "close", tabId: state.tabId, webContentsId: state.webContentsId });
     expect(deps.inputStateChanged).toHaveBeenCalledExactlyOnceWith(1, { type: "cancel", tabId: state.tabId,
       webContentsId: state.webContentsId, epoch: state.epoch, sequence: down.sequence });
@@ -745,10 +745,40 @@ describe("native browser pane presentation", () => {
     expect(nativePage().loadURL).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["render-process-gone", "did-start-loading"])("invalidates old placements after host %s", async event => {
+  it("retains native presentation and epoch through subframe loading and same-document UI navigation", async () => {
     const state = await create();
     await present(state);
-    owner.contents.emit(event);
+    const children = [...ownerChildren()];
+    const bounds = pageView().getBounds();
+    vi.mocked(deps.changed).mockClear();
+    owner.contents.emit("did-start-loading");
+    owner.contents.emit("did-start-navigation", {}, "http://localhost/frame", false, false);
+    owner.contents.emit("did-start-navigation", {}, "http://localhost/#panel", true, true);
+    expect(ownerChildren()).toEqual(children);
+    expect(pageView().getBounds()).toEqual(bounds);
+    expect(deps.changed).not.toHaveBeenCalled();
+    expect(await present(state, 2)).toMatchObject({ ok: true, surface: { epoch: state.epoch, visible: true } });
+  });
+
+  it("retains a hidden page's latest placement through subframe loading until its owner is shown", async () => {
+    const state = await create();
+    await present(state);
+    owner.visible = false;
+    owner.emit("hide");
+    owner.contents.emit("did-start-loading");
+    owner.contents.emit("did-start-navigation", {}, "http://localhost/frame", false, false);
+    owner.visible = true;
+    owner.emit("show");
+    expect(ownerChildren()).toHaveLength(1);
+    expect(pageView().getBounds()).toEqual({ x: 0, y: 0, width: 800, height: 600 });
+    expect(await present(state, 2)).toMatchObject({ ok: true, surface: { epoch: state.epoch, visible: true } });
+  });
+
+  it.each(["render-process-gone", "main-frame-navigation"])("invalidates old placements after host %s", async event => {
+    const state = await create();
+    await present(state);
+    if (event === "main-frame-navigation") owner.contents.emit("did-start-navigation", {}, "http://localhost/", false, true);
+    else owner.contents.emit(event);
     expect(ownerChildren()).toEqual([]);
     expect(await present(state, 2)).toEqual({ ok: false, error: "stale-surface" });
     owner.emit("show");
