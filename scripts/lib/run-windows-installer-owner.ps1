@@ -5,10 +5,22 @@ param(
   [Parameter(Mandatory = $true)][long]$DeadlineUnixMs,
   [string]$OutputDirectory,
   [string]$ExpectedUserSid,
+  [string]$SmokeEnvironmentBase64,
   [switch]$OwnerBootstrap,
   [switch]$ElevatedOwner
 )
 $ErrorActionPreference = 'Stop'
+$smokeEnvironmentNames = @('GITHUB_ACTIONS', 'RUNNER_ENVIRONMENT', 'AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE', 'AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE')
+if ($OwnerBootstrap -or $ElevatedOwner) {
+  # Alternate-credential startup constructs a new environment. Transfer only
+  # the explicit disposable-smoke authorization, never the runner's secrets.
+  $smokeEnvironment = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($SmokeEnvironmentBase64)) | ConvertFrom-Json
+  foreach ($name in $smokeEnvironmentNames) { [Environment]::SetEnvironmentVariable($name, $smokeEnvironment.$name, 'Process') }
+} else {
+  $smokeEnvironment = @{}
+  foreach ($name in $smokeEnvironmentNames) { $smokeEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+  $SmokeEnvironmentBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($smokeEnvironment | ConvertTo-Json -Compress)))
+}
 if ($env:AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE -ne '1' -or $env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
   throw 'The owner-profile harness requires an explicitly authorized hosted disposable runner'
 }
@@ -71,7 +83,7 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
     exit $LASTEXITCODE
   }
   if ($admin) { throw 'The owner bootstrap did not receive a filtered token' }
-  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ElevatedOwner -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6}' -f $PSCommandPath, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $ExpectedUserSid, $DeadlineUnixMs
+  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ElevatedOwner -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6} -SmokeEnvironmentBase64 {7}' -f $PSCommandPath, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $ExpectedUserSid, $DeadlineUnixMs, $SmokeEnvironmentBase64
   $child = Start-Process -FilePath $powershell -ArgumentList $command -Verb RunAs -WorkingDirectory $OutputDirectory -PassThru
   $code = Wait-OwnerProcess $child 10000
   exit $code
@@ -108,7 +120,7 @@ try {
   $ownerScript = Join-Path $OutputDirectory 'owner.ps1'
   Copy-Item -LiteralPath $PSCommandPath -Destination $ownerScript
   $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$name", $password)
-  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OwnerBootstrap -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6}' -f $ownerScript, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $sid, $DeadlineUnixMs
+  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OwnerBootstrap -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6} -SmokeEnvironmentBase64 {7}' -f $ownerScript, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $sid, $DeadlineUnixMs, $SmokeEnvironmentBase64
   Write-Output "[windows-installer-smoke] temporary split-token owner: $sid; original runner: $($identity.User.Value)"
   $child = Start-Process -FilePath $powershell -ArgumentList $command -Credential $credential -LoadUserProfile -WorkingDirectory $OutputDirectory -PassThru -RedirectStandardOutput (Join-Path $OutputDirectory 'bootstrap-stdout.log') -RedirectStandardError (Join-Path $OutputDirectory 'bootstrap-stderr.log')
   $code = Wait-OwnerProcess $child 5000
