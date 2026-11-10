@@ -6,6 +6,7 @@ param(
   [string]$OutputDirectory,
   [string]$ExpectedUserSid,
   [string]$SmokeEnvironmentBase64,
+  [int]$FilteredOwnerProcessId,
   [switch]$OwnerBootstrap,
   [switch]$ElevatedOwner
 )
@@ -45,7 +46,6 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
   if ($identity.User.Value -ne $ExpectedUserSid -or $ExpectedUserSid.EndsWith('-500')) {
     throw 'The smoke owner is not the temporary split-token account'
   }
-  # Alternate-credential process creation inherits the caller's environment.
   # Resolve all profile paths from the loaded identity before elevating again.
   $env:USERPROFILE = [Environment]::GetFolderPath('UserProfile')
   $registeredProfile = [Environment]::ExpandEnvironmentVariables((Get-ItemPropertyValue "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$ExpectedUserSid" ProfileImagePath))
@@ -75,6 +75,8 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
   @{ userSid = $identity.User.Value; administrator = $admin; profile = $env:USERPROFILE; hiveVerified = $true } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $OutputDirectory $evidenceName) -Encoding UTF8
   if ($ElevatedOwner) {
     if (-not $admin) { throw 'The smoke owner did not elevate' }
+    if ($FilteredOwnerProcessId -le 0) { throw 'The filtered owner process is missing' }
+    $env:AVE_WINDOWS_SMOKE_FILTERED_PID = [string]$FilteredOwnerProcessId
     $arguments = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ArgumentsBase64)) | ConvertFrom-Json
     Set-Location -LiteralPath $WorkingDirectory
     $ErrorActionPreference = 'Continue'
@@ -84,7 +86,8 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
     exit $LASTEXITCODE
   }
   if ($admin) { throw 'The owner bootstrap did not receive a filtered token' }
-  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ElevatedOwner -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6} -SmokeEnvironmentBase64 {7}' -f $PSCommandPath, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $ExpectedUserSid, $DeadlineUnixMs, $SmokeEnvironmentBase64
+  if (((& whoami.exe /groups /fo csv /nh) -match 'S-1-16-8192').Count -ne 1) { throw 'The owner bootstrap is not at medium integrity' }
+  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ElevatedOwner -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6} -SmokeEnvironmentBase64 {7} -FilteredOwnerProcessId {8}' -f $PSCommandPath, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $ExpectedUserSid, $DeadlineUnixMs, $SmokeEnvironmentBase64, $PID
   $child = Start-Process -FilePath $powershell -ArgumentList $command -Verb RunAs -WorkingDirectory $OutputDirectory -PassThru
   $code = Wait-OwnerProcess $child 10000
   exit $code
@@ -137,7 +140,7 @@ try {
       if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw }
     } catch { $cleanupErrors += "Could not read ${file}: $($_.Exception.Message)" }
   }
-  if ($user -and ($code -ne 0 -or $failure)) {
+  if ($user) {
     try {
       & taskkill.exe /F /T /FI "USERNAME eq $env:COMPUTERNAME\$($user.Name)" /IM '*' | Out-Null
       if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 128) { throw 'Could not stop the temporary owner process trees' }
@@ -162,6 +165,11 @@ try {
   try {
     if ($sid) {
       $ownerProfile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'"
+      while ($ownerProfile -and $ownerProfile.Loaded -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $DeadlineUnixMs) {
+        Start-Sleep -Milliseconds 100
+        $ownerProfile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'"
+      }
+      if ($ownerProfile -and $ownerProfile.Loaded) { throw 'The temporary owner profile did not unload before cleanup' }
       if ($ownerProfile) { $ownerProfile | Remove-CimInstance }
     }
   } catch { $cleanupErrors += $_.Exception.Message }
