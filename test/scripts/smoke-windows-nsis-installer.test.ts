@@ -120,26 +120,26 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(() => assertLimitedUninstallResult(null)).toThrow();
   });
 
-  it("runs genuine uninstall through the live filtered owner's primary token", () => {
+  it("runs genuine uninstall from the retained filtered owner process", () => {
     const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
     const body = smoke.slice(smoke.indexOf("async function uninstallAndVerify("), smoke.indexOf("export function assertLimitedUninstallResult("));
     expect(body).toContain("await runLimitedUninstaller(machineInstall, args, timeoutMs)");
     expect(body).toContain("await assertUninstalledSurface(machineInstall)");
     expect(body).not.toContain("await runProcess(machineInstall.uninstaller");
     const launcher = readRepoFile("scripts/lib/run-limited-windows-process.ps1");
-    expect(launcher).toContain("OpenProcess(0x1000, false, ownerProcessId)");
-    expect(launcher).toContain("OpenProcessToken(owner, 0x000B, out token)");
-    expect(launcher).not.toContain("DuplicateTokenEx");
-    expect(launcher).toContain("if ($admin) { throw");
-    expect(launcher).toContain("if (-not $medium) { throw");
-    expect(launcher).toContain("exit $process.ExitCode");
-    expect(launcher).toContain("$start.UseShellExecute = $false");
-    expect(launcher).toContain("$identity.User.Value -ne $ExpectedUserSid");
+    expect(launcher).toContain("$env:AVE_WINDOWS_SMOKE_OWNER_DIRECTORY");
+    expect(launcher).toContain("if ($null -eq $report.exitCode) { throw");
+    expect(launcher).toContain("exit $report.exitCode");
     expect(smoke).toContain("copyFileSync(machineInstall.uninstaller, worker)");
     expect(smoke).toMatch(/const workerArgs = \[\.\.\.args, `_\?=\$\{machineInstall\.installDir\}`\]/);
     expect(smoke).toContain('"-FilePath", worker');
     expect(smoke).toContain("Buffer.from(JSON.stringify(workerArgs))");
     const owner = readRepoFile("scripts/lib/run-windows-installer-owner.ps1");
+    expect(owner).toContain("if ($OwnerBootstrap) { Invoke-OwnerRequests }");
+    expect(owner).toContain("if ($admin -or $request.userSid -ne $identity.User.Value) { throw");
+    expect(owner).toContain("if (-not $report.mediumIntegrity) { throw");
+    expect(owner).toContain("$start.UseShellExecute = $false");
+    expect(owner).toContain("$report.exitCode = $process.ExitCode");
     expect(owner).toContain("$env:RUNNER_ENVIRONMENT -ne 'github-hosted'");
     expect(owner).toContain("New-LocalUser -Name $name");
     expect(owner).toContain("-Credential $credential -LoadUserProfile");
