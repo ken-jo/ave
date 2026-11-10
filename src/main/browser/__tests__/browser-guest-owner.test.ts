@@ -55,6 +55,31 @@ describe("browser page owner window", () => {
     expect(native.fromWebContents).not.toHaveBeenCalled();
   });
 
+  it("uses a registered popup's own 1x display while its parent remains on a 2x display", () => {
+    const parentBounds = { x: 1600, y: 0, width: 1000, height: 700 };
+    const popupBounds = { x: 0, y: 0, width: 600, height: 500 };
+    const parentWindow = { id: 7, getBounds: () => parentBounds };
+    const popupWindow = { id: 8, getBounds: () => popupBounds };
+    const parent = {
+      id: 85, isDestroyed: () => false, getURL: () => "https://parent.example/", getTitle: () => "Parent",
+    } as WebContents;
+    const popup = { id: 86, isDestroyed: () => false } as WebContents;
+    browserTabRegistry.guestAttached(parent, parentWindow.id, { kind: "native-view" });
+    expect(browserTabRegistry.bindTab(parentWindow.id, { tabId: "browser:parent", webContentsId: parent.id })).toEqual({ ok: true });
+    expect(browserTabRegistry.registerPopup(parent.id, popup, { select: () => true, close: () => {} })).toBe("tab-2");
+    expect(browserTabRegistry.guestWindowId(popup.id)).toBe(parentWindow.id);
+    native.windows = [parentWindow];
+    native.fromWebContents.mockImplementation(contents => contents === popup ? popupWindow : null);
+    native.getDisplayMatching.mockImplementation(bounds => ({ scaleFactor: bounds === parentBounds ? 2 : 1 }));
+
+    expect.soft(browserGuestOwnerWindow(popup)).toBe(popupWindow);
+    expect.soft(browserCapturePixelRatio(popup)).toBe(1);
+    expect(native.getDisplayMatching).toHaveBeenCalledWith(popupBounds);
+    expect(browserCapturePixelRatio(parent)).toBe(2);
+    expect(native.getDisplayMatching).toHaveBeenLastCalledWith(parentBounds);
+    expect(native.getPrimaryDisplay).not.toHaveBeenCalled();
+  });
+
   it("resolves an unmanaged embedded page through its host", () => {
     const host = { id: 90 };
     const page = { id: 83, hostWebContents: host } as WebContents;
