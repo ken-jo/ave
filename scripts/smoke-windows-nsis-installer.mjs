@@ -2275,6 +2275,8 @@ async function runLimitedUninstaller(machineInstall, args, timeoutMs) {
     // about the worker. _?= disables that extra fork and must be last/unquoted.
     const worker = join(reportRoot, basename(machineInstall.uninstaller));
     copyFileSync(machineInstall.uninstaller, worker);
+    const launcher = join(reportRoot, "limited.ps1");
+    copyFileSync(fileURLToPath(new URL("./lib/run-limited-windows-process.ps1", import.meta.url)), launcher);
     const workerArgs = [...args, `_?=${machineInstall.installDir}`];
     const parent = await runPowerShellJson(buildPowerShellScript([
       "$identity = [Security.Principal.WindowsIdentity]::GetCurrent()",
@@ -2287,7 +2289,7 @@ async function runLimitedUninstaller(machineInstall, args, timeoutMs) {
       powershellExecutable(),
       [
         "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-        "-File", fileURLToPath(new URL("./lib/run-limited-windows-process.ps1", import.meta.url)),
+        "-File", launcher,
         "-FilePath", worker,
         "-ArgumentsBase64", Buffer.from(JSON.stringify(workerArgs)).toString("base64"),
         "-WorkingDirectory", tmpdir(),
