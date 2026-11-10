@@ -149,6 +149,7 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(owner).toContain("finally {");
     expect(owner).toContain("Remove-LocalUser -SID $user.SID");
     expect(owner).toContain("$ownerProfile | Remove-CimInstance");
+    expect(owner).toContain("$laneCode = Wait-OwnerProcess $lane 5000");
     expect(owner).toContain("-Value $saved[$name]");
     expect(owner).toMatch(/\/grant "\*\$\{sid\}:\(OI\)\(CI\)F"/);
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
