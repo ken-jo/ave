@@ -142,14 +142,12 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(owner).toContain("$report.exitCode = $process.ExitCode");
     expect(owner).toContain("$env:RUNNER_ENVIRONMENT -ne 'github-hosted'");
     expect(owner).toContain("New-LocalUser -Name $name");
-    expect(owner).toContain("-Credential $credential -LoadUserProfile:$false");
-    expect(owner).toContain("$profileOwner.Dispose()");
+    expect(owner).toContain("-Credential $credential -LoadUserProfile");
     expect(owner).toContain("if ($admin) { throw 'The owner bootstrap did not receive a filtered token' }");
     expect(owner).toContain("-Verb RunAs");
     expect(owner).toContain("finally {");
     expect(owner).toContain("Remove-LocalUser -SID $user.SID");
-    expect(owner).toContain("$ownerProfile | Remove-CimInstance");
-    expect(owner).toContain("$laneCode = Wait-OwnerProcess $lane 5000");
+    expect(owner).toContain("profile storage ends with the hosted VM");
     expect(owner).toContain("-Value $saved[$name]");
     expect(owner).toMatch(/\/grant "\*\$\{sid\}:\(OI\)\(CI\)F"/);
     const workflow = readRepoFile(".github/workflows/build-installers.yml");

@@ -6,8 +6,6 @@ param(
   [string]$OutputDirectory,
   [string]$ExpectedUserSid,
   [string]$SmokeEnvironmentBase64,
-  [string]$CleanupStatePath,
-  [switch]$OwnerLane,
   [switch]$OwnerBootstrap,
   [switch]$ElevatedOwner
 )
@@ -128,97 +126,6 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
 
 if (-not $admin) { throw 'The disposable runner must be elevated' }
 $policyPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
-if (-not $OwnerLane) {
-  # Delete the profile only after the process that loaded it has exited.
-  # This also closes its cached registry/provider references before deletion.
-  $CleanupStatePath = Join-Path $env:TEMP ('ave-owner-cleanup-' + [Guid]::NewGuid().ToString('N') + '.json')
-  $start = New-Object Diagnostics.ProcessStartInfo
-  $start.FileName = $powershell
-  $start.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OwnerLane -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -DeadlineUnixMs {4} -CleanupStatePath "{5}"' -f $PSCommandPath, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $DeadlineUnixMs, $CleanupStatePath
-  $start.UseShellExecute = $false
-  $lane = [Diagnostics.Process]::Start($start)
-  $laneId = $lane.Id
-  $laneCode = 1
-  $laneFailure = $null
-  $laneExited = $false
-  $cleanupErrors = @()
-  try { $laneCode = Wait-OwnerProcess $lane 5000; $laneExited = $true }
-  catch {
-    $laneFailure = $_
-    try {
-      $survivor = Get-Process -Id $laneId -ErrorAction SilentlyContinue
-      if ($survivor) {
-        & taskkill.exe /PID $laneId /T /F | Out-Null
-        $remaining = [int][Math]::Max(1, $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
-        $laneExited = $survivor.WaitForExit($remaining)
-        $survivor.Dispose()
-      } else { $laneExited = $true }
-    } catch { $cleanupErrors += $_.Exception.Message }
-  }
-  finally {
-    if (Test-Path -LiteralPath $CleanupStatePath) {
-      try {
-        $state = Get-Content -LiteralPath $CleanupStatePath -Raw | ConvertFrom-Json
-        $saved = @{}
-        foreach ($property in $state.policy.PSObject.Properties) { $saved[$property.Name] = $property.Value }
-        foreach ($name in $saved.Keys) {
-          try {
-            if ($null -eq $saved[$name]) {
-              if ($null -ne (Get-ItemProperty -LiteralPath $policyPath).PSObject.Properties[$name]) { Remove-ItemProperty -LiteralPath $policyPath -Name $name }
-            } else { New-ItemProperty -LiteralPath $policyPath -Name $name -Value $saved[$name] -PropertyType DWord -Force | Out-Null }
-          } catch { $cleanupErrors += $_.Exception.Message }
-        }
-        try {
-          $restored = Get-Item -LiteralPath $policyPath
-          try {
-            foreach ($name in $saved.Keys) {
-              $actual = $restored.GetValue($name, $null)
-              if (($null -eq $saved[$name]) -ne ($null -eq $actual) -or ($null -ne $actual -and [long]$saved[$name] -ne [long]$actual)) { throw "The original policy value was not restored: $name" }
-            }
-          } finally { $restored.Dispose() }
-        } catch { $cleanupErrors += $_.Exception.Message }
-        if (-not $state.sid -and $state.name -match '^AveSmoke-[a-f0-9]{8}$') {
-          $created = Get-LocalUser -Name $state.name -ErrorAction SilentlyContinue
-          if ($created) { $state.sid = $created.SID.Value }
-        }
-        if ($state.sid) {
-          if ($state.sid -notmatch '^S-1-5-21-[0-9-]+$' -or $state.sid -eq $identity.User.Value -or $state.name -notmatch '^AveSmoke-[a-f0-9]{8}$') { throw 'The profile cleanup identity is invalid' }
-          try {
-            & taskkill.exe /F /T /FI "USERNAME eq $env:COMPUTERNAME\$($state.name)" /IM '*' | Out-Null
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 128) { throw 'Could not stop the temporary owner process trees' }
-          } catch { $cleanupErrors += $_.Exception.Message }
-          try {
-            if (-not $laneExited) { throw 'The owner loader did not exit before profile cleanup' }
-            $ownerProfile = Get-CimInstance Win32_UserProfile -Filter "SID='$($state.sid)'"
-            while ($ownerProfile -and $ownerProfile.Loaded -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $DeadlineUnixMs) {
-              Start-Sleep -Milliseconds 100
-              $ownerProfile = Get-CimInstance Win32_UserProfile -Filter "SID='$($state.sid)'"
-            }
-            if ($ownerProfile -and $ownerProfile.Loaded) { throw 'The owner profile stayed loaded after its loader exited' }
-            if ($ownerProfile) { $ownerProfile | Remove-CimInstance }
-            if (Get-CimInstance Win32_UserProfile -Filter "SID='$($state.sid)'") { throw 'The owner profile survived deletion' }
-          } catch { $cleanupErrors += $_.Exception.Message }
-          try {
-            $user = Get-LocalUser | Where-Object { $_.SID.Value -eq $state.sid }
-            if ($user) { Remove-LocalUser -SID $user.SID }
-            if (Get-LocalUser | Where-Object { $_.SID.Value -eq $state.sid }) { throw 'The temporary owner account survived cleanup' }
-          } catch { $cleanupErrors += $_.Exception.Message }
-        }
-        if ($state.outputDirectory) {
-          $directory = [IO.Path]::GetFullPath($state.outputDirectory)
-          if (-not [string]::Equals([IO.Path]::GetDirectoryName($directory), [Environment]::GetFolderPath('CommonApplicationData'), [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($directory) -notmatch '^ave-smoke-owner-[a-f0-9]{32}$') { throw 'The owner report cleanup path is invalid' }
-          Remove-Item -LiteralPath $directory -Recurse -Force
-        }
-      } catch { $cleanupErrors += $_.Exception.Message }
-      finally { try { Remove-Item -LiteralPath $CleanupStatePath -Force } catch { $cleanupErrors += $_.Exception.Message } }
-    }
-  }
-  if ($cleanupErrors.Count -gt 0) { throw "Owner cleanup failed: $($cleanupErrors -join '; '); smoke exit: $laneCode; smoke failure: $laneFailure" }
-  if ($laneFailure) { throw $laneFailure }
-  Write-Output '[windows-installer-smoke] temporary owner account/profile absent and original UAC prompt policies restored'
-  exit $laneCode
-}
-if (-not $CleanupStatePath) { throw 'The owner lane requires a profile cleanup record' }
 if ((Get-ItemPropertyValue $policyPath EnableLUA) -ne 1) { throw 'Split-token smoke requires UAC enabled' }
 $policy = Get-Item -LiteralPath $policyPath
 $saved = @{}
@@ -229,23 +136,16 @@ $sid = $null
 $code = 1
 $failure = $null
 $cleanupErrors = @()
-$profileOwner = $null
-$ownerName = 'AveSmoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
-if (Get-LocalUser -Name $ownerName -ErrorAction SilentlyContinue) { throw 'The temporary owner account name already exists' }
 $OutputDirectory = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) ('ave-smoke-owner-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $OutputDirectory | Out-Null
-@{ sid = $null; name = $ownerName; policy = $saved; outputDirectory = $OutputDirectory } | ConvertTo-Json -Depth 3 -Compress | Set-Content -LiteralPath ($CleanupStatePath + '.tmp') -Encoding UTF8
-Move-Item -LiteralPath ($CleanupStatePath + '.tmp') -Destination $CleanupStatePath -Force
 try {
   # Consent is automatic only for this disposable test. UAC itself remains on;
   # both policy values are restored even when startup or uninstall fails.
   foreach ($name in $saved.Keys) { New-ItemProperty -LiteralPath $policyPath -Name $name -Value 0 -PropertyType DWord -Force | Out-Null }
-  $name = $ownerName
+  $name = 'AveSmoke-' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
   $password = ConvertTo-SecureString ('Aa9!' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
   $user = New-LocalUser -Name $name -Password $password -AccountNeverExpires -PasswordNeverExpires
   $sid = $user.SID.Value
-  @{ sid = $sid; name = $name; policy = $saved; outputDirectory = $OutputDirectory } | ConvertTo-Json -Depth 3 -Compress | Set-Content -LiteralPath ($CleanupStatePath + '.tmp') -Encoding UTF8
-  Move-Item -LiteralPath ($CleanupStatePath + '.tmp') -Destination $CleanupStatePath -Force
   $administrators = (Get-LocalGroup -SID 'S-1-5-32-544').Name
   Add-LocalGroupMember -Group $administrators -Member $user
   & icacls.exe $OutputDirectory /grant "*${sid}:(OI)(CI)F" | Out-Null
@@ -257,11 +157,9 @@ try {
   $ownerScript = Join-Path $OutputDirectory 'owner.ps1'
   Copy-Item -LiteralPath $PSCommandPath -Destination $ownerScript
   $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$name", $password)
-  . (Join-Path $PSScriptRoot 'windows-user-profile.ps1')
-  $profileOwner = New-Object DisposableUserProfile($name, $env:COMPUTERNAME, $credential.GetNetworkCredential().Password)
   $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OwnerBootstrap -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6} -SmokeEnvironmentBase64 {7}' -f $ownerScript, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $sid, $DeadlineUnixMs, $SmokeEnvironmentBase64
   Write-Output "[windows-installer-smoke] temporary split-token owner: $sid; original runner: $($identity.User.Value)"
-  $child = Start-Process -FilePath $powershell -ArgumentList $command -Credential $credential -LoadUserProfile:$false -WorkingDirectory $OutputDirectory -PassThru -RedirectStandardOutput (Join-Path $OutputDirectory 'bootstrap-stdout.log') -RedirectStandardError (Join-Path $OutputDirectory 'bootstrap-stderr.log')
+  $child = Start-Process -FilePath $powershell -ArgumentList $command -Credential $credential -LoadUserProfile -WorkingDirectory $OutputDirectory -PassThru -RedirectStandardOutput (Join-Path $OutputDirectory 'bootstrap-stdout.log') -RedirectStandardError (Join-Path $OutputDirectory 'bootstrap-stderr.log')
   $code = Wait-OwnerProcess $child 5000
   if (-not (Test-Path -LiteralPath (Join-Path $OutputDirectory 'stdout.log'))) { throw 'The temporary owner produced no smoke output' }
 } catch {
@@ -279,10 +177,32 @@ try {
       if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 128) { throw 'Could not stop the temporary owner process trees' }
     } catch { $cleanupErrors += $_.Exception.Message }
   }
+  foreach ($name in $saved.Keys) {
+    try {
+      if ($null -eq $saved[$name]) {
+        if ($null -ne (Get-ItemProperty -LiteralPath $policyPath).PSObject.Properties[$name]) { Remove-ItemProperty -LiteralPath $policyPath -Name $name }
+      }
+      else { New-ItemProperty -LiteralPath $policyPath -Name $name -Value $saved[$name] -PropertyType DWord -Force | Out-Null }
+    } catch { $cleanupErrors += $_.Exception.Message }
+  }
   try {
-    if ($profileOwner) { $profileOwner.Dispose() }
+    $restored = Get-Item -LiteralPath $policyPath
+    try {
+      foreach ($name in $saved.Keys) {
+        if (-not [object]::Equals($saved[$name], $restored.GetValue($name, $null))) { throw "The original policy value was not restored: $name" }
+      }
+    } finally { $restored.Dispose() }
   } catch { $cleanupErrors += $_.Exception.Message }
+  # Loaded profile storage is scoped to the disposable hosted VM.
+  # Verify account removal and policy restoration here; app data assertions
+  # run before this teardown and remain independent of the VM lifecycle.
+  try { if ($user) { Remove-LocalUser -SID $user.SID } } catch { $cleanupErrors += $_.Exception.Message }
+  try {
+    if ($sid -and (@(Get-LocalUser | Where-Object { $_.SID.Value -eq $sid })).Count -ne 0) { throw 'The temporary owner account survived cleanup' }
+  } catch { $cleanupErrors += $_.Exception.Message }
+  try { Remove-Item -LiteralPath $OutputDirectory -Recurse -Force } catch { $cleanupErrors += $_.Exception.Message }
 }
 if ($cleanupErrors.Count -gt 0) { throw "Owner cleanup failed: $($cleanupErrors -join '; '); smoke exit: $code; smoke failure: $failure" }
+Write-Output '[windows-installer-smoke] temporary owner account absent and original UAC prompt policies restored; profile storage ends with the hosted VM'
 if ($failure) { throw $failure }
 exit $code
