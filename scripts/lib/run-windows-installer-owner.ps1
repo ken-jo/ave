@@ -17,6 +17,9 @@ $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 $admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $powershell = Join-Path $PSHOME 'powershell.exe'
 function Wait-OwnerProcess($process, [int]$reserveMs) {
+  # Retain the native handle before waiting: redirected process objects can
+  # otherwise lose their exit status when the child closes.
+  $retainedHandle = $process.Handle
   $remaining = [int][Math]::Max(1, $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $reserveMs)
   if (-not $process.WaitForExit($remaining)) { throw 'The owner-profile smoke exceeded its deadline' }
   $process.Refresh()
@@ -109,14 +112,16 @@ try {
   Write-Output "[windows-installer-smoke] temporary split-token owner: $sid; original runner: $($identity.User.Value)"
   $child = Start-Process -FilePath $powershell -ArgumentList $command -Credential $credential -LoadUserProfile -WorkingDirectory $OutputDirectory -PassThru -RedirectStandardOutput (Join-Path $OutputDirectory 'bootstrap-stdout.log') -RedirectStandardError (Join-Path $OutputDirectory 'bootstrap-stderr.log')
   $code = Wait-OwnerProcess $child 5000
-  foreach ($file in @('stdout.log', 'stderr.log', 'bootstrap-stdout.log', 'bootstrap-stderr.log', 'filtered-owner.json', 'elevated-owner.json')) {
-    $path = Join-Path $OutputDirectory $file
-    if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw }
-  }
   if (-not (Test-Path -LiteralPath (Join-Path $OutputDirectory 'stdout.log'))) { throw 'The temporary owner produced no smoke output' }
 } catch {
   $failure = $_
 } finally {
+  foreach ($file in @('stdout.log', 'stderr.log', 'bootstrap-stdout.log', 'bootstrap-stderr.log', 'filtered-owner.json', 'elevated-owner.json')) {
+    try {
+      $path = Join-Path $OutputDirectory $file
+      if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw }
+    } catch { $cleanupErrors += "Could not read ${file}: $($_.Exception.Message)" }
+  }
   if ($user -and ($code -ne 0 -or $failure)) {
     try {
       & taskkill.exe /F /T /FI "USERNAME eq $env:COMPUTERNAME\$($user.Name)" /IM '*' | Out-Null
