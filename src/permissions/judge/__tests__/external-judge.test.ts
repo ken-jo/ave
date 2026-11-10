@@ -1,9 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter, once } from "node:events";
-import type { ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, type ChildProcess } from "node:child_process";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { maskSensitiveData } from "../../../audit/dlp-filter.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { JudgeFailure } from "../judge-contract.js";
@@ -124,11 +125,50 @@ describe("ExternalJudge — url transport", () => {
 
 describe.skipIf(process.platform === "win32")("ExternalJudge — command transport", () => {
   const dirs: string[] = [];
+  const originalTrack = trackManagedChildProcess;
+  const children: Array<{
+    child: ChildProcess;
+    closed: Promise<void>;
+    disposed: Promise<void>;
+    restore: () => void;
+  }> = [];
+  let restoreTracking: (() => void) | undefined;
+
+  beforeEach(async () => {
+    const tracking = vi.spyOn(await import("../../../main/managed-child-processes.js"), "trackManagedChildProcess");
+    restoreTracking = () => tracking.mockRestore();
+    tracking.mockImplementation((child, options) => {
+      const closed = new Promise<void>(resolve => {
+        child.once("close", () => resolve());
+      });
+      const previousErrors = new Set(child.listeners("error"));
+      const dispose = originalTrack(child, options);
+      const errorListener = child.listeners("error").find(listener => !previousErrors.has(listener));
+      if (!errorListener) throw new Error("Tracker error listener was not registered");
+      const originalOff = child.off.bind(child);
+      const off = vi.spyOn(child, "off");
+      // Registry disposal deletes its entry before explicitly removing this listener.
+      // Observing off also distinguishes disposal from once's automatic removal on error.
+      const disposed = new Promise<void>(resolve => {
+        off.mockImplementation((event, listener) => {
+          const result = originalOff(event, listener);
+          if (event === "error" && listener === errorListener) resolve();
+          return result;
+        });
+      });
+      children.push({ child, closed, disposed, restore: () => off.mockRestore() });
+      return dispose;
+    });
+  });
+
   afterEach(async () => {
+    const owned = children.splice(0);
     try {
-      // A canceled call can reject before its process group has been disposed.
-      await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(0), { timeout: 5_000, interval: 50 });
+      await Promise.all(owned.flatMap(({ closed, disposed }) => [closed, disposed]));
+      expect(getManagedChildProcessCount()).toBe(0);
     } finally {
+      for (const child of owned) child.restore();
+      restoreTracking?.();
       for (const dir of dirs.splice(0)) await cleanupTmpDir(dir);
     }
   });
@@ -140,6 +180,12 @@ describe.skipIf(process.platform === "win32")("ExternalJudge — command transpo
     writeFileSync(path, `#!/bin/sh\n${body}\n`);
     chmodSync(path, 0o755);
     return { path, dir };
+  }
+
+  function pipeScript(body: string): { path: string; dir: string } {
+    const command = script(body);
+    execFileSync("mkfifo", [join(command.dir, "hold")]);
+    return command;
   }
 
   it("sends redacted JSON on stdin without a shell and parses stdout", async () => {
@@ -189,65 +235,97 @@ describe.skipIf(process.platform === "win32")("ExternalJudge — command transpo
     expect((err as JudgeFailure).diagnostics?.stderr).toContain("model crashed");
   });
 
+  it("waits for disposal separately from a closed child whose group is retained", async () => {
+    const childPid = 1_000_000_000;
+    const child = Object.assign(new EventEmitter(), { pid: childPid }) as ChildProcess;
+    const originalKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) =>
+      pid === -childPid && signal === 0 ? true : originalKill(pid, signal));
+    const dispose = trackManagedChildProcess(child, { label: "retained-judge", killProcessGroup: true });
+    try {
+      const current = children.at(-1);
+      if (!current) throw new Error("Judge child was not tracked");
+      let disposed = false;
+      void current.disposed.then(() => { disposed = true; });
+      child.emit("close", 0, null);
+      await current.closed;
+      expect(disposed).toBe(false);
+      expect(getManagedChildProcessCount()).toBe(1);
+      dispose();
+      await current.disposed;
+      expect(disposed).toBe(true);
+      expect(getManagedChildProcessCount()).toBe(0);
+    } finally {
+      dispose();
+      kill.mockRestore();
+    }
+  });
+
   it("abort kills the whole process group", async () => {
-    const { path, dir } = script(`cat >/dev/null\nsleep 30 &\necho $! > "$(dirname "$0")/child.pid"\nwait`);
+    const { path } = pipeScript('cat >/dev/null\ncat "$(dirname "$0")/hold" &\nprintf \'%s\\n\' "$!"\nwait');
     const controller = new AbortController();
     const pending = new ExternalJudge({ command: [path] }).judge(judgeRequest(), controller.signal);
-    const pidFile = join(dir, "child.pid");
-    // The redirection creates the file before echo writes it; wait for a positive PID.
-    const grandchild = await vi.waitFor(() => {
-      const pid = Number(existsSync(pidFile) ? readFileSync(pidFile, "utf8").trim() : "");
-      expect(Number.isInteger(pid) && pid > 0).toBe(true);
-      return pid;
-    }, { timeout: 2_000 });
-    controller.abort(new Error("stop"));
-    await expect(pending).rejects.toThrow("stop");
-    let alive = true;
-    for (let i = 0; i < 50 && alive; i++) {
-      try {
-        process.kill(grandchild, 0);
-        await new Promise((r) => setTimeout(r, 20));
-      } catch {
-        alive = false;
-      }
+    const current = children.at(-1);
+    if (!current?.child.stdout) throw new Error("Judge output is unavailable");
+    const output = createInterface({ input: current.child.stdout });
+    try {
+      const [line] = await Promise.race([
+        once(output, "line"),
+        current.closed.then(() => { throw new Error("Judge exited before its child was ready"); }),
+      ]);
+      const grandchild = Number(line);
+      expect(Number.isInteger(grandchild) && grandchild > 0).toBe(true);
+      expect(process.kill(grandchild, 0)).toBe(true);
+      controller.abort(new Error("stop"));
+      await expect(pending).rejects.toThrow("stop");
+      await Promise.all([current.closed, current.disposed]);
+      expect(() => process.kill(grandchild, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
+    } finally {
+      controller.abort();
+      output.close();
     }
-    expect(alive).toBe(false);
   });
 
   it("tracks the judge process as a managed child until it is gone", async () => {
     expect(getManagedChildProcessCount()).toBe(0);
     // An earlier group's disposal can finish while this judge is running.
     const earlier = new EventEmitter();
-    const disposeEarlier = trackManagedChildProcess(earlier as ChildProcess, { label: "previous-judge" });
-    const tracked = vi.spyOn(await import("../../../main/managed-child-processes.js"), "trackManagedChildProcess");
+    const disposeEarlier = originalTrack(earlier as ChildProcess, { label: "previous-judge" });
     const controller = new AbortController();
     try {
-      const slow = script("cat >/dev/null\nexec sleep 30");
+      const slow = pipeScript('cat >/dev/null\nexec cat "$(dirname "$0")/hold"');
       expect(getManagedChildProcessCount()).toBe(1);
       const pending = new ExternalJudge({ command: [slow.path] }).judge(judgeRequest(), controller.signal);
       expect(getManagedChildProcessCount()).toBe(2);
-      const current = tracked.mock.calls[0]?.[0];
+      const current = children.at(-1);
       if (!current) throw new Error("Judge child was not tracked");
-      const closed = once(current, "close");
       earlier.emit("exit", 0, null);
       expect(getManagedChildProcessCount()).toBe(1);
       controller.abort(new Error("stop"));
       await expect(pending).rejects.toThrow("stop");
-      await closed;
-      await vi.waitFor(() => expect(getManagedChildProcessCount()).toBe(0), { timeout: 5_000, interval: 50 });
+      await Promise.all([current.closed, current.disposed]);
+      expect(getManagedChildProcessCount()).toBe(0);
     } finally {
       controller.abort();
       disposeEarlier();
-      tracked.mockRestore();
     }
   });
 
   it("abort kills the process", async () => {
-    const slow = script("cat >/dev/null\nsleep 30");
+    const slow = pipeScript('cat >/dev/null\nexec cat "$(dirname "$0")/hold"');
     const controller = new AbortController();
     const pending = new ExternalJudge({ command: [slow.path] }).judge(judgeRequest(), controller.signal);
-    setTimeout(() => controller.abort(new Error("stop")), 50);
-    await expect(pending).rejects.toThrow("stop");
+    const current = children.at(-1);
+    if (!current) throw new Error("Judge child was not tracked");
+    try {
+      await once(current.child, "spawn");
+      controller.abort(new Error("stop"));
+      await expect(pending).rejects.toThrow("stop");
+      await Promise.all([current.closed, current.disposed]);
+      expect(current.child.signalCode).toBe("SIGKILL");
+    } finally {
+      controller.abort();
+    }
   });
 });
 
