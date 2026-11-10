@@ -77,6 +77,8 @@ export interface SessionListRow {
   running?: boolean;
   attention?: boolean;
   hasChildren?: boolean;
+  /** Archived row retained as required branch context while archived rows are hidden. */
+  context?: boolean;
 }
 
 /** Request all kinds at the IPC ceiling; renderer lookup remains capped while engine lookup sees all sessions. */

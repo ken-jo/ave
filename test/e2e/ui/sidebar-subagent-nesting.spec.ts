@@ -185,6 +185,23 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
     await expect(running).toHaveAttribute("data-responding", "true");
     await expect(running).toHaveAttribute("aria-level", String(Number(await parent.getAttribute("aria-level")) + 1));
     await page.screenshot({ path: testInfo.outputPath("nesting-running.png") });
+    await page.evaluate(async (sessionId) => {
+      const updated = await window.aveApi.chatSessionUpdate({ sessionId, archived: true });
+      if (!updated.ok) throw new Error("Could not archive the running branch parent");
+      window.dispatchEvent(new Event("online"));
+    }, parentId);
+    await expect(parent).toHaveAttribute("data-archived", "true");
+    await expect(parent).toHaveAttribute("data-session-context", "true");
+    await expect(running).toHaveAttribute("data-responding", "true");
+    await expect(running).toHaveAttribute("aria-level", String(Number(await parent.getAttribute("aria-level")) + 1));
+    await page.screenshot({ path: testInfo.outputPath("nesting-archived-context.png") });
+    await page.evaluate(async (sessionId) => {
+      const updated = await window.aveApi.chatSessionUpdate({ sessionId, archived: false });
+      if (!updated.ok) throw new Error("Could not restore the running branch parent");
+      window.dispatchEvent(new Event("online"));
+    }, parentId);
+    await expect(parent).not.toHaveAttribute("data-archived");
+    await expect(parent).not.toHaveAttribute("data-session-context");
     finish(childResponse);
     heldChild = undefined;
     await expect(running).not.toHaveAttribute("data-responding");

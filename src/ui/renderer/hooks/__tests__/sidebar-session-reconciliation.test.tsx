@@ -91,3 +91,25 @@ it("keeps a main-projected running branch visible in selected-project and all-pr
     } finally { rendered.unmount(); }
   }
 });
+
+it("renders an archived ancestor returned as context above its running child", () => {
+  const archivedParent = { ...parent, archivedAt: "2026-11-10T00:00:00Z", context: true };
+  const conversationActions: ConversationRowActions = {
+    isArchived: (id) => id === parent.id, isUnread: () => false, isResponding: (id) => id === child.id,
+    onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn(),
+  };
+  const rendered = render(<I18nProvider locale="en" setLocale={() => {}}><TooltipProvider><SidebarPreviewProvider>
+    <ProjectTree selectedProject={PROJECT} projects={[PROJECT]}
+      projectName={(project) => project.projectName} isProjectExpanded={() => true} onSetProjectExpanded={vi.fn()}
+      addFlow={{ pendingWarning: null, addProject: vi.fn(async () => {}), confirmAddProject: vi.fn(async () => {}), cancelPendingFolder: vi.fn() }}
+      sessions={[archivedParent, child]} hiddenRoots={{}} hasArchived surfaces={[]} bindingsLoaded currentSessionId="elsewhere"
+      conversationSurfaceVisible conversationActions={conversationActions} onRemoveProject={vi.fn()} suggestionsPendingCount={0} />
+  </SidebarPreviewProvider></TooltipProvider></I18nProvider>);
+  const parentRow = rendered.getByTestId(`sidebar-row-session-${parent.id}`);
+  const childRow = rendered.getByTestId(`sidebar-row-session-${child.id}`);
+  expect(parentRow).toHaveAttribute("data-archived", "true");
+  expect(parentRow).toHaveAttribute("data-session-context", "true");
+  expect(parentRow).toHaveAttribute("aria-expanded", "true");
+  expect(Number(childRow.getAttribute("aria-level"))).toBe(Number(parentRow.getAttribute("aria-level")) + 1);
+  expect(childRow).toHaveAttribute("data-responding", "true");
+});

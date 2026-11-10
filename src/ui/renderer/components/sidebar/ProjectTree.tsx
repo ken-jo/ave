@@ -228,6 +228,7 @@ function SessionRow({
           : "text-muted-foreground hover:bg-muted hover:text-foreground",
       ].join(" ")}
       data-archived={archived ? "true" : undefined}
+      data-session-context={session.context ? "true" : undefined}
       data-unread={unread ? "true" : undefined}
       data-responding={responding ? "true" : undefined}
       style={treeIndentStyle(tree.level)}
@@ -561,22 +562,17 @@ export function ProjectTree({
   const keyActions = useRef(new Map<string, RowKeyActions>());
 
   const isSessionPinned = (sessionId: string) => Boolean(isSessionStarred?.(sessionId));
-  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt) || Boolean(conversationActions?.isArchived(session.id));
+  const isSessionArchived = (session: SessionSummary) => Boolean(session.archivedAt);
   const paneSurfaceOf = (session: SessionSummary) => session.family === "side-chat"
     ? surfaces.find((surface) => surface.tabId === session.paneTabId && surface.boundSessionIds.includes(session.id))
     : undefined;
-  // The global list cannot establish that a pane ended from a window-local absence. Wait for host bindings and omit
-  // unarchived pane chats not held by this window.
-  const listableSessions = sessions.filter((session) => session.family !== "side-chat" || !session.paneTabId
-    || (bindingsLoaded && (Boolean(session.archivedAt) || Boolean(paneSurfaceOf(session)))));
-  const hasArchivedSessions = hasArchived || listableSessions.some(isSessionArchived);
-  const shownSessions = listableSessions.filter((session) => showArchived || !isSessionArchived(session));
+  const hasArchivedSessions = hasArchived || sessions.some(isSessionArchived);
   const paneSessionEntries = new Map<string, Extract<TreeEntry, { kind: "session" }>>();
   const sessionRoot = new Map(sessions.map((session) => [session.id, session.projectRoot]));
   const surfaceRoot = (surface: SidebarSurface) => surface.projectRoot ?? (surface.sessionId ? sessionRoot.get(surface.sessionId) : undefined);
   const now = Date.now();
   const entriesOf = (project: ProjectIdentity): TreeEntry[] => nestSessionEntries(treeEntries({
-    sessions: shownSessions.filter((session) => belongsToProject(session.projectRoot, project, projects)),
+    sessions: sessions.filter((session) => belongsToProject(session.projectRoot, project, projects)),
     surfaces: surfaces.filter((surface) => belongsToProject(surfaceRoot(surface), project, projects) && (visibleSurfaceIds === undefined || visibleSurfaceIds.includes(surface.tabId))),
     isPinned: isSessionPinned,
     surfaceAt: (tabId) => surfaceUsedAt(tabId, now),
@@ -617,7 +613,7 @@ export function ProjectTree({
         for (const child of entry.children ?? []) emit(child, entryLevel + 1);
       }
       if (entry.kind !== "surface") return;
-      for (const session of shownSessions.filter((each) => paneSurfaceOf(each)?.tabId === entry.surface.tabId)) {
+      for (const session of sessions.filter((each) => paneSurfaceOf(each)?.tabId === entry.surface.tabId)) {
         const paneEntry = paneSessionEntries.get(session.id);
         if (!paneEntry) continue;
         lines.push({ type: "pane-chat", key: paneEntry.key, entry: paneEntry, level: entryLevel + 1 });
@@ -784,6 +780,7 @@ export function ProjectTree({
           family={session.family}
           pendingAnswer={pendingAnswerSessionIds?.has(session.id) ?? false}
           responding={conversationActions?.isResponding(session.id)}
+          archived={isSessionArchived(session)}
           {...(open ? { onOpenFamilyRow: open } : {})}
           onOpenMenu={(event) => openNativeContextMenu(event, "conversation", familyMenu)}
           t={t}

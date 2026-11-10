@@ -1400,8 +1400,11 @@ ownership substitute.
 
 Only a `main` row carries the main store's actions. Every other family is
 read-only in the list — open, and nothing else: no rename, archive, pin, delete
-or drag, because those actions target ordinary conversations in the main store. Archived conversations keep their existing
-behaviour; archiving hides a row, and a family never did.
+or drag, because those actions target ordinary conversations in the main store.
+Main hides archived branches unless they are selected or contain a running or
+attention session. Required archived ancestors carry `context: true` and keep
+their archived styling. The renderer draws every returned row and partitions
+the projection into project and pane groups.
 
 A side chat records the conversation it was started beside as its
 `originSessionId`, written by the host on the turn that first gives the side

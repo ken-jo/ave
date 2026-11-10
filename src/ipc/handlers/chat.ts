@@ -709,12 +709,24 @@ function sidebarSessionRows(
     return root;
   };
   const active = new Map(activity.map((state) => [state.sessionId, state]));
-  const retainedRoots = new Set(activity.filter((state) => state.running || state.attention).map((state) => rootOf(state.sessionId)));
-  if (query.selectedSessionId) retainedRoots.add(rootOf(query.selectedSessionId));
+  const retained = new Set(activity.filter((state) => state.running || state.attention).map((state) => state.sessionId));
+  if (query.selectedSessionId) retained.add(query.selectedSessionId);
+  for (const id of retained) {
+    const parent = parentOf.get(id);
+    if (parent) retained.add(parent);
+  }
+  const retainedRoots = new Set([...retained].map(rootOf));
+  const isArchiveVisible = (id: string): boolean => {
+    if (query.showArchived || retained.has(id)) return true;
+    for (let current: string | undefined = id; current !== undefined; current = parentOf.get(current)) {
+      if (byId.get(current)?.archivedAt) return false;
+    }
+    return true;
+  };
   const retainedSurfaces = new Set([...retainedRoots].map((id) => paneSurfaces.get(id)));
   const pinned = new Set(query.pinnedSessionIds);
   const roots = [
-    ...rows.filter((row) => !parentOf.has(row.id) && !paneSurfaces.has(row.id) && (query.showArchived || !row.archivedAt || retainedRoots.has(row.id)))
+    ...rows.filter((row) => !parentOf.has(row.id) && !paneSurfaces.has(row.id) && isArchiveVisible(row.id))
       .map((row) => ({ ...row, surface: false, pinned: pinned.has(row.id) })),
     ...(query.surfaces ?? []).map((surface) => ({ ...surface, surface: true, pinned: false })),
   ].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.modifiedAt.localeCompare(a.modifiedAt) || Number(a.surface) - Number(b.surface) || b.id.localeCompare(a.id));
@@ -738,8 +750,9 @@ function sidebarSessionRows(
   }
   const parents = deps.getSubAgentRunner?.()?.listSubAgentSessionParents() ?? [];
   return {
-    rows: rows.filter((row) => visible.has(rootOf(row.id)) || visibleSurfaceIds.includes(paneSurfaces.get(rootOf(row.id)) ?? "")).map((row) => ({
+    rows: rows.filter((row) => isArchiveVisible(row.id) && (visible.has(rootOf(row.id)) || visibleSurfaceIds.includes(paneSurfaces.get(rootOf(row.id)) ?? ""))).map((row) => ({
       ...row,
+      context: !query.showArchived && Boolean(row.archivedAt),
       running: active.get(row.id)?.running ?? false,
       attention: active.get(row.id)?.attention ?? false,
       hasChildren: parents.some((child) => child.originSessionId === row.id && (child.projectRoot === undefined && row.projectRoot === undefined || projectRootEquals(child.projectRoot, row.projectRoot))),

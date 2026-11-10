@@ -604,8 +604,47 @@ describe("authoritative sidebar projection", () => {
       memoryManager: { sessions: { listSessionsPage: () => roots, getSessionListEntry: (id: string) => roots.find((row) => row.id === id) ?? null } },
       getSubAgentRunner: () => runner,
     } as unknown as IpcDeps;
-    return { deps, listChildren, stop: () => { active = false; }, waitForAnswer: () => { active = false; attention = true; }, deleteParent: () => { roots = roots.filter((row) => row.id !== root.id); }, addRoot: (entry: typeof root) => { roots.push(entry); } };
+    return {
+      deps,
+      listChildren,
+      stop: () => { active = false; attention = false; },
+      waitForAnswer: () => { active = false; attention = true; },
+      deleteParent: () => { roots = roots.filter((row) => row.id !== root.id); },
+      addRoot: (entry: typeof root) => { roots.push(entry); },
+      archiveParent: () => { roots = roots.map((row) => row.id === root.id ? { ...row, archivedAt: "2026-11-10T00:00:00Z" } : row); },
+    };
   }
+
+  it.each(["running", "attention"])("retains an archived parent as context for its %s child", async (state) => {
+    const { deps, archiveParent, waitForAnswer, stop } = fixture();
+    archiveParent();
+    if (state === "attention") waitForAnswer();
+    const options = { families: ["main", "subagent"], limit: 100, sidebar: { rootLimit: 6, expandedParentIds: [], showArchived: false } };
+    const active = await handleChatSessions(deps, options);
+    expect(active.sidebar?.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: root.id, archivedAt: "2026-11-10T00:00:00Z", context: true }),
+      expect.objectContaining({ id: child.id, [state]: true }),
+    ]));
+    expect(active.sidebar?.hasArchived).toBe(true);
+    stop();
+    const completed = await handleChatSessions(deps, options);
+    expect(completed.sidebar?.rows.some((row) => row.id === root.id)).toBe(false);
+    const shown = await handleChatSessions(deps, { ...options, sidebar: { ...options.sidebar, rootLimit: 100, showArchived: true } });
+    expect(shown.sidebar?.rows.find((row) => row.id === root.id)).toMatchObject({ archivedAt: "2026-11-10T00:00:00Z", context: false });
+  });
+
+  it("decides archived descendant visibility in the main projection", async () => {
+    const archivedChild = { ...child, archivedAt: "2026-11-10T00:00:00Z" };
+    const deps = {
+      conversationLoop: { getSessionId: () => root.id },
+      memoryManager: { sessions: { listSessionsPage: () => [root], getSessionListEntry: () => root } },
+      getSubAgentRunner: () => ({ listSubAgentSessions: () => [archivedChild], getSessionActivitySnapshot: () => ({ sessions: [] }), listSubAgentSessionParents: () => [{ originSessionId: root.id }] }),
+    } as unknown as IpcDeps;
+    const options = { families: ["main", "subagent"], sidebar: { rootLimit: 20, expandedParentIds: [] } };
+    expect((await handleChatSessions(deps, options)).sidebar?.rows.map((row) => row.id)).toEqual([root.id]);
+    const shown = await handleChatSessions(deps, { ...options, sidebar: { ...options.sidebar, showArchived: true } });
+    expect(shown.sidebar?.rows.map((row) => row.id)).toEqual(expect.arrayContaining([root.id, child.id]));
+  });
 
   it.each([6, 20])("keeps active ancestry outside the %i visible roots and stamps activity in the same response", async (rootLimit) => {
     const { deps } = fixture();
