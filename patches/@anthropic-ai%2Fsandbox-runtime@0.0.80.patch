@@ -4438,7 +4438,7 @@ index 760a10b1d1c475a7636ff78092d3c9daaafe7335..a7a39777c3584689fc7efd44e8f298e1
              if (!clientGone) {
                  try {
 diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sandbox-utils.d.ts
-index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..7aecb1c0bde8ee39dd5748aa23ca74097df9fb35 100644
+index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..0b3820ece171a70e326d6f7eca1691862e4c7aa3 100644
 --- a/dist/sandbox/windows-sandbox-utils.d.ts
 +++ b/dist/sandbox/windows-sandbox-utils.d.ts
 @@ -847,7 +847,7 @@ export interface WindowsAclStampOptions {
@@ -4517,7 +4517,7 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..7aecb1c0bde8ee39dd5748aa23ca7409
   * Build the spawn descriptor for running `command` inside the Windows
   * sandbox: an `argv` array plus the `env` to spawn it with.
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 540c56635e4c5b1b78997f0ec4185fe9d9968806..df1c3af28113485ae182355ff25b46fe465aea1b 100644
+index 540c56635e4c5b1b78997f0ec4185fe9d9968806..9ebe9c3c6b6e11fb49f521d620c960e0c0219778 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
 @@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
@@ -4760,12 +4760,12 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..df1c3af28113485ae182355ff25b46fe
          }
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28a44082b0
+index 0000000000000000000000000000000000000000..77e8f3caf603cc844540fe33c64f16b4f79886a3
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,1478 @@
+@@ -0,0 +1,1627 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
-+index 0efb5956f..12619ba88 100644
++index 0efb5956f..a6e9f5477 100644
 +--- a/vendor/srt-win-src/src/acl.rs
 ++++ b/vendor/srt-win-src/src/acl.rs
 +@@ -9,7 +9,7 @@
@@ -4840,16 +4840,33 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 +             None,
 +             None,
 +             Some(acl),
-+@@ -392,6 +378,155 @@ pub(crate) fn write_file_dacl(path: &str, acl: *const ACL, p: Protection) -> Res
++@@ -392,6 +378,172 @@ pub(crate) fn write_file_dacl(path: &str, acl: *const ACL, p: Protection) -> Res
 +     win32_ok(r, &format!("SetNamedSecurityInfoW('{path}')"))
 + }
 +
-++/// Open the object once for descriptor reads and local writes. Requesting
-++/// maximum access also prevents security APIs from propagating through the
-++/// handle; a local parent guard must never walk unrelated descendants.
+++/// Pin files with security-only access so active images remain stampable.
+++/// Directories retain a maximum-access handle to prevent a local parent guard
+++/// from propagating. Determine the kind and verify any reopen on pinned objects.
 ++fn open_local_dacl(path: &str) -> Result<crate::util::OwnedHandle> {
+++    use windows::Win32::Storage::FileSystem::{
+++        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, GetFileInformationByHandle,
+++    };
 ++    use windows::Win32::System::SystemServices::MAXIMUM_ALLOWED;
-++    open_security_no_follow(path, MAXIMUM_ALLOWED)
+++    let handle = open_security_no_follow(path, Mask::READ_CONTROL.bits() | Mask::WRITE_DAC.bits())?;
+++    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+++    unsafe { GetFileInformationByHandle(handle.0, &mut info) }
+++        .context("GetFileInformationByHandle(local dacl)")?;
+++    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0 {
+++        return Ok(handle);
+++    }
+++    let directory = open_security_no_follow(path, MAXIMUM_ALLOWED)?;
+++    if crate::path_id::file_id_from_handle(directory.0)?
+++        != crate::path_id::file_id_from_handle(handle.0)?
+++    {
+++        bail!("ACL target identity changed");
+++    }
+++    drop(handle);
+++    Ok(directory)
 ++}
 ++
 ++fn open_tree_dacl(
@@ -4996,7 +5013,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 + /// `(kept ACE ptrs+sizes, Σ kept sizes, source AclRevision)`.
 + pub(crate) type KeptAces = (Vec<(*const c_void, u16)>, usize, ACE_REVISION);
 +
-+@@ -507,7 +642,7 @@ pub fn set_path_dacl_from_sddl(path: &str, sddl: &str, label: &str) -> Result<()
++@@ -507,7 +659,7 @@ pub fn set_path_dacl_from_sddl(path: &str, sddl: &str, label: &str) -> Result<()
 +     if !present.as_bool() || dacl.is_null() {
 +         bail!("{label}: SDDL '{sddl}' yielded no DACL");
 +     }
@@ -5005,7 +5022,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 + }
 +
 + /// Open `path` for security-descriptor writes with NO-FOLLOW
-+@@ -521,6 +656,13 @@ pub fn set_path_dacl_from_sddl(path: &str, sddl: &str, label: &str) -> Result<()
++@@ -521,6 +673,13 @@ pub fn set_path_dacl_from_sddl(path: &str, sddl: &str, label: &str) -> Result<()
 + /// and the returned HANDLE is what the security writes below
 + /// operate on — validate-then-use on the same object, not a name.
 + pub fn open_for_security_no_follow(path: &str) -> Result<crate::util::OwnedHandle> {
@@ -5019,7 +5036,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 +     use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
 +     use windows::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION;
 +     use windows::Win32::Storage::FileSystem::{
-+@@ -532,7 +674,7 @@ pub fn open_for_security_no_follow(path: &str) -> Result<crate::util::OwnedHandl
++@@ -532,7 +691,7 @@ pub fn open_for_security_no_follow(path: &str) -> Result<crate::util::OwnedHandl
 +     let h = unsafe {
 +         CreateFileW(
 +             pcwstr(&w),
@@ -5028,7 +5045,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 +             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 +             None,
 +             OPEN_EXISTING,
-+@@ -620,7 +762,7 @@ pub fn set_handle_dacl_from_sddl(
++@@ -620,7 +779,7 @@ pub fn set_handle_dacl_from_sddl(
 + // ALLOW ACE for the sandbox user's SID on a path (typically the
 + // working-tree root) so the child can read/write there; `acl stamp
 + // --sandbox-user-sid` adds an explicit DENY ACE on a path (and a
@@ -5037,7 +5054,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 + // can NOT read/write/delete it even when an inherited
 + // `BUILTIN\Users` ACE would otherwise allow. Both are ADDITIVE
 + // (the path keeps its own explicit ACEs and inheritance);
-+@@ -650,14 +792,14 @@ pub enum DenyMask {
++@@ -650,14 +809,14 @@ pub enum DenyMask {
 + /// One explicit ACE the sandbox user holds on a path. The
 + /// separate-user FS model is entirely additive: `acl grant` adds
 + /// ALLOW ACEs, `acl stamp --sandbox-user-sid` adds DENY ACEs (plus
@@ -5054,7 +5071,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 +     /// of every denied target so the sandbox user cannot `del`/`ren`
 +     /// it via parent-FDC even when the parent carries an inherited
 +     /// `BUILTIN\Users:(F)` (which the sandbox user, a Users member,
-+@@ -767,19 +909,28 @@ pub struct SbAceSet {
++@@ -767,19 +926,28 @@ pub struct SbAceSet {
 +
 + impl SbAceSet {
 +     /// The set's entries as [`NewAce`]s for `sid`, in canonical
@@ -5088,7 +5105,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 +         }
 +         if let Some(m) = self.grant {
 +             v.push(NewAce::Allow(sid, m.bits(), OICI));
-+@@ -791,14 +942,12 @@ impl SbAceSet {
++@@ -791,14 +959,12 @@ impl SbAceSet {
 + /// Converge `canonical_path`'s explicit ACEs for `sandbox_sid` to
 + /// exactly `set`. Idempotent — every existing explicit ACE for the
 + /// SID (allow AND deny) is dropped, then `set`'s entries are
@@ -5109,7 +5126,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 + /// silently re-enable inheritance, and neither revoke nor restore
 + /// could undo that — the parent's inheritable ACEs (e.g. a data-drive
 + /// root's `Authenticated Users:(M)`) would durably re-open a path its
-+@@ -816,32 +965,44 @@ impl SbAceSet {
++@@ -816,32 +982,44 @@ impl SbAceSet {
 + pub fn apply_sandbox_aces(canonical_path: &str, sandbox_sid: &str, set: SbAceSet) -> Result<()> {
 +     let sid = LocalPsid::from_string(sandbox_sid)
 +         .with_context(|| format!("parse sandbox SID '{sandbox_sid}'"))?;
@@ -5179,7 +5196,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 +         .with_context(|| format!("recompose '{canonical_path}'"))
 + }
 +
-+@@ -935,7 +1096,7 @@ mod tests {
++@@ -935,7 +1113,7 @@ mod tests {
 +             Allow(SID_SYSTEM, Mask::FILE_ALL, OICI),
 +         ])
 +         .unwrap();
@@ -5188,7 +5205,7 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 +         let (sd, _) = read_file_dacl(path).unwrap();
 +         assert!(sd_dacl_protected(&sd).unwrap(), "setup: DACL protected");
 +
-+@@ -997,4 +1158,190 @@ mod tests {
++@@ -997,4 +1175,196 @@ mod tests {
 +         assert_ne!(ow.bits(), 0);
 +         assert_eq!(ow.bits() & Mask::WRITE_DAC.bits(), 0);
 +     }
@@ -5240,7 +5257,13 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 ++                            .is_empty(),
 ++                            "matrix fixture already contains the test principal"
 ++                        );
-++                        let mut original = Some(open_local_dacl(path).unwrap());
+++                        let mut original = Some(
+++                            open_security_no_follow(
+++                                path,
+++                                windows::Win32::System::SystemServices::MAXIMUM_ALLOWED,
+++                            )
+++                            .unwrap(),
+++                        );
 ++                        let identity =
 ++                            crate::path_id::file_id_from_handle(original.as_ref().unwrap().0)
 ++                                .unwrap();
@@ -5520,10 +5543,10 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 +         let ct = process_create_time(unsafe { GetCurrentProcess() }).unwrap();
 +diff --git a/vendor/srt-win-src/tests/acl_parent_scope.rs b/vendor/srt-win-src/tests/acl_parent_scope.rs
 +new file mode 100644
-+index 000000000..f58261212
++index 000000000..d8d53f266
 +--- /dev/null
 ++++ b/vendor/srt-win-src/tests/acl_parent_scope.rs
-+@@ -0,0 +1,718 @@
++@@ -0,0 +1,844 @@
 ++//! Parent deletion protection must not spread over unrelated sibling trees.
 ++//! All ACL changes are confined to a fresh owned fixture. No sandbox account,
 ++//! elevation, WFP installation or machine-wide state is needed.
@@ -6241,4 +6264,130 @@ index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28
 ++            std::fs::remove_dir(&denied_dir).unwrap();
 ++        }
 ++    }
+++}
+++
+++#[test]
+++fn running_image_can_be_stamped_and_restored() {
+++    use srt_win::util::OwnedHandle;
+++    use std::io::{BufRead, BufReader, Write};
+++    use std::process::{Child, Command, Stdio};
+++    use windows::Win32::Foundation::ERROR_SHARING_VIOLATION;
+++    use windows::Win32::Storage::FileSystem::{
+++        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+++        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+++    };
+++    use windows::Win32::System::SystemServices::MAXIMUM_ALLOWED;
+++
+++    struct RunningImage(Child);
+++    impl Drop for RunningImage {
+++        fn drop(&mut self) {
+++            let _ = self.0.kill();
+++            let _ = self.0.wait();
+++        }
+++    }
+++
+++    let fixture = Fixture::new();
+++    set_fixture_dacl(&fixture.0, "");
+++    let image = fixture.0.join("running-image.exe");
+++    let command_image = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+++        .join("System32")
+++        .join("cmd.exe");
+++    std::fs::copy(command_image, &image).unwrap();
+++    let original = snapshot(&image);
+++    let mut running = RunningImage(
+++        Command::new(&image)
+++            .args(["/d", "/q", "/c", "echo image-ready&set /p release="])
+++            .stdin(Stdio::piped())
+++            .stdout(Stdio::piped())
+++            .stderr(Stdio::inherit())
+++            .spawn()
+++            .unwrap(),
+++    );
+++    let mut output = BufReader::new(running.0.stdout.take().unwrap());
+++    let mut ready = String::new();
+++    output.read_line(&mut ready).unwrap();
+++    assert_eq!(ready.trim(), "image-ready");
+++    assert!(running.0.try_wait().unwrap().is_none());
+++
+++    // A live image rejects data-write access requested through maximum access.
+++    // Prove that exact failure independently before exercising the ACL entry point.
+++    let name = wstr(image.to_str().unwrap());
+++    let maximum = unsafe {
+++        CreateFileW(
+++            pcwstr(&name),
+++            MAXIMUM_ALLOWED,
+++            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+++            None,
+++            OPEN_EXISTING,
+++            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+++            None,
+++        )
+++    };
+++    let error = match maximum {
+++        Ok(handle) => {
+++            drop(OwnedHandle(handle));
+++            panic!("live image unexpectedly accepted maximum access");
+++        }
+++        Err(error) => error,
+++    };
+++    assert_eq!(
+++        error.code(),
+++        windows::core::HRESULT::from_win32(ERROR_SHARING_VIOLATION.0),
+++        "maximum-access control did not reproduce the image sharing violation"
+++    );
+++
+++    eprintln!(
+++        "running-image control: raw_maximum_access={:?} process_alive=true",
+++        error.code()
+++    );
+++    apply_sandbox_aces(
+++        fixture.0.to_str().unwrap(),
+++        TEST_SID,
+++        SbAceSet {
+++            deny_fdc: true,
+++            ..Default::default()
+++        },
+++    )
+++    .unwrap();
+++    for mask in [DenyMask::WriteDeny, DenyMask::ReadDeny] {
+++        apply_sandbox_aces(
+++            image.to_str().unwrap(),
+++            TEST_SID,
+++            SbAceSet {
+++                deny: Some(mask),
+++                ..Default::default()
+++            },
+++        )
+++        .unwrap();
+++        let expected = match mask {
+++            DenyMask::WriteDeny => Mask::FILE_GENERIC_WRITE
+++                .with(Mask::DELETE)
+++                .with(Mask::FILE_WRITE_ATTRIBUTES)
+++                .with(Mask::FILE_DELETE_CHILD)
+++                .without(Mask::SYNCHRONIZE)
+++                .without(Mask::READ_CONTROL)
+++                .bits(),
+++            DenyMask::ReadDeny => Mask::FILE_ALL.bits(),
+++        };
+++        assert!(
+++            sandbox_aces(&image)
+++                .iter()
+++                .any(|&(kind, _, bits)| kind == 1 && bits == expected),
+++            "live image did not receive its complete deny mask"
+++        );
+++        assert!(running.0.try_wait().unwrap().is_none());
+++        apply_sandbox_aces(image.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++        assert_eq!(snapshot(&image), original, "live image ACL did not restore");
+++        assert!(running.0.try_wait().unwrap().is_none());
+++        eprintln!("running-image ACL: mask={mask:?} apply=OK restore=OK process_alive=true");
+++    }
+++    apply_sandbox_aces(fixture.0.to_str().unwrap(), TEST_SID, SbAceSet::default()).unwrap();
+++    running
+++        .0
+++        .stdin
+++        .take()
+++        .unwrap()
+++        .write_all(b"release\r\n")
+++        .unwrap();
+++    assert!(running.0.wait().unwrap().success());
 ++}
