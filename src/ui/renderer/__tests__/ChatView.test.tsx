@@ -598,12 +598,15 @@ describe("ChatView", () => {
       expect(container.querySelector('[data-testid="permission-review-status-card"]')).not.toBeNull();
     });
 
+    const errorMessage = "오류가 발생했습니다: reviewer failed";
     await act(async () => {
-      emitChatStream({ type: "error", error: "reviewer failed" });
+      emitChatStream({ type: "error", error: errorMessage, systemNotice: "stream-error" });
     });
 
     await waitFor(() => {
-      expect(container.textContent).toContain("오류: reviewer failed");
+      const bodies = container.querySelectorAll('[data-testid="assistant-message-body"]');
+      expect(bodies).toHaveLength(1);
+      expect(bodies[0]?.textContent).toBe(errorMessage);
     });
 
     // A settled error is grouped for inspection, but it is not a completed turn. The verdict remains available after expanding
