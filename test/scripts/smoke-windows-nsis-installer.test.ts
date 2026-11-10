@@ -120,17 +120,15 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(() => assertLimitedUninstallResult(null)).toThrow();
   });
 
-  it("runs genuine uninstall through a verified restricted primary token", () => {
+  it("runs genuine uninstall through the owner's linked filtered token", () => {
     const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
     const body = smoke.slice(smoke.indexOf("async function uninstallAndVerify("), smoke.indexOf("export function assertLimitedUninstallResult("));
     expect(body).toContain("await runLimitedUninstaller(machineInstall, args, timeoutMs)");
     expect(body).toContain("await assertUninstalledSurface(machineInstall)");
     expect(body).not.toContain("await runProcess(machineInstall.uninstaller");
     const launcher = readRepoFile("scripts/lib/run-limited-windows-process.ps1");
-    expect(launcher).toContain("CreateRestrictedToken(token, 1, 1");
-    expect(launcher).toContain('ConvertStringSidToSid("S-1-5-32-544"');
-    expect(launcher).toContain('ConvertStringSidToSid("S-1-16-8192"');
-    expect(launcher).toContain("SetTokenInformation(restricted, 25");
+    expect(launcher).toContain("GetTokenInformation(token, 19, out linked");
+    expect(launcher).toContain("DuplicateTokenEx(linked");
     expect(launcher).toContain("if ($admin) { throw");
     expect(launcher).toContain("if (-not $medium) { throw");
     expect(launcher).toContain("exit $process.ExitCode");
@@ -140,6 +138,16 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(smoke).toMatch(/const workerArgs = \[\.\.\.args, `_\?=\$\{machineInstall\.installDir\}`\]/);
     expect(smoke).toContain('"-FilePath", worker');
     expect(smoke).toContain("Buffer.from(JSON.stringify(workerArgs))");
+    const owner = readRepoFile("scripts/lib/run-windows-installer-owner.ps1");
+    expect(owner).toContain("$env:RUNNER_ENVIRONMENT -ne 'github-hosted'");
+    expect(owner).toContain("New-LocalUser -Name $name");
+    expect(owner).toContain("-Credential $credential -LoadUserProfile");
+    expect(owner).toContain("if ($admin) { throw 'The owner bootstrap did not receive a filtered token' }");
+    expect(owner).toContain("-Verb RunAs");
+    expect(owner).toContain("finally {");
+    expect(owner).toContain("Remove-LocalUser -SID $user.SID");
+    expect(owner).toContain("$profile | Remove-CimInstance");
+    expect(owner).toContain("-Value $saved[$name]");
   });
 
   it("checks owned keys in both hives without fixture cleanup masking an empty root", () => {
@@ -445,6 +453,7 @@ describe("Windows NSIS installer smoke contracts", () => {
         foreignProtocolFixture: FOREIGN_PROTOCOL_FIXTURE_SCRIPT,
         ownedProtocolFixture: OWNED_PROTOCOL_FIXTURE_SCRIPT,
         limitedProcessLauncher: readRepoFile("scripts/lib/run-limited-windows-process.ps1"),
+        ownerProfileLauncher: readRepoFile("scripts/lib/run-windows-installer-owner.ps1"),
         notificationCleanup: readRepoFile(
           "build/uninstall-windows-notification-artifacts.ps1",
         ),

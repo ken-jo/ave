@@ -35,16 +35,14 @@ if ($LimitedChild) {
   exit $process.ExitCode
 }
 
-# A hosted runner may have no linked token because consent is disabled. Build a
-# restricted primary token explicitly, denying the administrators SID and all
-# optional privileges. The child verifies its effective membership before launch.
+# Use the owner's actual linked filtered token. Hand-filtering a built-in
+# administrator token does not create a usable UAC elevation relationship.
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
 public static class LimitedProcess {
-  [StructLayout(LayoutKind.Sequential)] struct SidAndAttributes { public IntPtr Sid; public uint Attributes; }
   [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo {
     public int cb; public string reserved; public string desktop; public string title;
     public int x, y, xSize, ySize, xCountChars, yCountChars, fillAttribute, flags;
@@ -56,24 +54,18 @@ public static class LimitedProcess {
   [DllImport("kernel32.dll", SetLastError = true)] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
-  [DllImport("advapi32.dll", SetLastError = true)] static extern bool CreateRestrictedToken(IntPtr token, uint flags, uint disableCount, ref SidAndAttributes disable, uint deleteCount, IntPtr delete, uint restrictCount, IntPtr restrict, out IntPtr restricted);
-  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool ConvertStringSidToSid(string value, out IntPtr sid);
-  [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr token, int informationClass, ref SidAndAttributes information, uint length);
-  [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
-  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int informationClass, out IntPtr information, uint length, out uint returned);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool DuplicateTokenEx(IntPtr token, uint access, IntPtr attributes, int impersonation, int type, out IntPtr duplicate);
   [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string application, StringBuilder commandLine, uint flags, IntPtr environment, string directory, ref StartupInfo startup, out ProcessInformation process);
   static void Check(bool success) { if (!success) throw new Win32Exception(Marshal.GetLastWin32Error()); }
   public static uint Run(string application, string arguments, string directory, uint timeout) {
-    IntPtr token = IntPtr.Zero, restricted = IntPtr.Zero, sid = IntPtr.Zero, mediumSid = IntPtr.Zero;
+    IntPtr token = IntPtr.Zero, linked = IntPtr.Zero, restricted = IntPtr.Zero;
     var process = new ProcessInformation();
     try {
       Check(OpenProcessToken(GetCurrentProcess(), 0x000F01FF, out token));
-      Check(ConvertStringSidToSid("S-1-5-32-544", out sid));
-      var disable = new SidAndAttributes { Sid = sid };
-      Check(CreateRestrictedToken(token, 1, 1, ref disable, 0, IntPtr.Zero, 0, IntPtr.Zero, out restricted));
-      Check(ConvertStringSidToSid("S-1-16-8192", out mediumSid));
-      var label = new SidAndAttributes { Sid = mediumSid, Attributes = 0x20 };
-      Check(SetTokenInformation(restricted, 25, ref label, (uint)Marshal.SizeOf(typeof(SidAndAttributes)) + GetLengthSid(mediumSid)));
+      uint returned;
+      Check(GetTokenInformation(token, 19, out linked, (uint)IntPtr.Size, out returned));
+      Check(DuplicateTokenEx(linked, 0x02000000, IntPtr.Zero, 2, 1, out restricted));
       var startup = new StartupInfo { cb = Marshal.SizeOf(typeof(StartupInfo)) };
       Check(CreateProcessWithTokenW(restricted, 0, application, new StringBuilder("\"" + application + "\" " + arguments), 0x08000000, IntPtr.Zero, directory, ref startup, out process));
       if (WaitForSingleObject(process.process, timeout) != 0) {
@@ -88,9 +80,8 @@ public static class LimitedProcess {
       if (process.thread != IntPtr.Zero) CloseHandle(process.thread);
       if (process.process != IntPtr.Zero) CloseHandle(process.process);
       if (restricted != IntPtr.Zero) CloseHandle(restricted);
+      if (linked != IntPtr.Zero) CloseHandle(linked);
       if (token != IntPtr.Zero) CloseHandle(token);
-      if (sid != IntPtr.Zero) LocalFree(sid);
-      if (mediumSid != IntPtr.Zero) LocalFree(mediumSid);
     }
   }
 }
