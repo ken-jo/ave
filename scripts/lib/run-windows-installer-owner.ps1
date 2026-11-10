@@ -6,7 +6,6 @@ param(
   [string]$OutputDirectory,
   [string]$ExpectedUserSid,
   [string]$SmokeEnvironmentBase64,
-  [int]$FilteredOwnerProcessId,
   [switch]$OwnerBootstrap,
   [switch]$ElevatedOwner
 )
@@ -29,12 +28,45 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 $admin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $powershell = Join-Path $PSHOME 'powershell.exe'
+function Invoke-OwnerRequests {
+  foreach ($file in @(Get-ChildItem -LiteralPath $OutputDirectory -Filter '*.request.json' -File)) {
+    $responsePath = $file.FullName + '.response'
+    $process = $null
+    $report = @{ administrator = $admin; userSid = $identity.User.Value; mediumIntegrity = $false; exitCode = $null }
+    try {
+      $request = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+      Remove-Item -LiteralPath $file.FullName
+      if ($admin -or $request.userSid -ne $identity.User.Value) { throw 'The filtered launch has the wrong owner or elevation' }
+      $report.mediumIntegrity = ((& whoami.exe /groups /fo csv /nh) -match 'S-1-16-8192').Count -eq 1
+      if (-not $report.mediumIntegrity) { throw 'The launch owner is not at medium integrity' }
+      $deadline = [Math]::Min([long]$request.deadlineUnixMs, $DeadlineUnixMs) - 10000
+      $remaining = [int]($deadline - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+      if ($remaining -le 0) { throw 'The filtered owner request expired before launch' }
+      $start = New-Object Diagnostics.ProcessStartInfo
+      $start.FileName = $request.filePath
+      $start.Arguments = $request.arguments
+      $start.WorkingDirectory = $request.workingDirectory
+      $start.UseShellExecute = $false
+      $process = [Diagnostics.Process]::Start($start)
+      if (-not $process.WaitForExit($remaining)) {
+        & taskkill.exe /PID $process.Id /T /F | Out-Null
+        throw 'The filtered owner child exceeded its deadline'
+      }
+      $report.exitCode = $process.ExitCode
+    } catch { $report.error = $_.Exception.Message }
+    finally { if ($process) { $process.Dispose() } }
+    $report | ConvertTo-Json -Compress | Set-Content -LiteralPath ($responsePath + '.tmp') -Encoding UTF8
+    Move-Item -LiteralPath ($responsePath + '.tmp') -Destination $responsePath
+  }
+}
 function Wait-OwnerProcess($process, [int]$reserveMs) {
   # Retain the native handle before waiting: redirected process objects can
   # otherwise lose their exit status when the child closes.
   $retainedHandle = $process.Handle
-  $remaining = [int][Math]::Max(1, $DeadlineUnixMs - [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $reserveMs)
-  if (-not $process.WaitForExit($remaining)) { throw 'The owner-profile smoke exceeded its deadline' }
+  while (-not $process.WaitForExit(100)) {
+    if ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -ge ($DeadlineUnixMs - $reserveMs)) { throw 'The owner-profile smoke exceeded its deadline' }
+    if ($OwnerBootstrap) { Invoke-OwnerRequests }
+  }
   $process.Refresh()
   $result = $process.ExitCode
   $process.Dispose()
@@ -75,8 +107,7 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
   @{ userSid = $identity.User.Value; administrator = $admin; profile = $env:USERPROFILE; hiveVerified = $true } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $OutputDirectory $evidenceName) -Encoding UTF8
   if ($ElevatedOwner) {
     if (-not $admin) { throw 'The smoke owner did not elevate' }
-    if ($FilteredOwnerProcessId -le 0) { throw 'The filtered owner process is missing' }
-    $env:AVE_WINDOWS_SMOKE_FILTERED_PID = [string]$FilteredOwnerProcessId
+    $env:AVE_WINDOWS_SMOKE_OWNER_DIRECTORY = $OutputDirectory
     $arguments = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ArgumentsBase64)) | ConvertFrom-Json
     Set-Location -LiteralPath $WorkingDirectory
     $ErrorActionPreference = 'Continue'
@@ -87,7 +118,7 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
   }
   if ($admin) { throw 'The owner bootstrap did not receive a filtered token' }
   if (((& whoami.exe /groups /fo csv /nh) -match 'S-1-16-8192').Count -ne 1) { throw 'The owner bootstrap is not at medium integrity' }
-  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ElevatedOwner -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6} -SmokeEnvironmentBase64 {7} -FilteredOwnerProcessId {8}' -f $PSCommandPath, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $ExpectedUserSid, $DeadlineUnixMs, $SmokeEnvironmentBase64, $PID
+  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ElevatedOwner -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6} -SmokeEnvironmentBase64 {7}' -f $PSCommandPath, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $ExpectedUserSid, $DeadlineUnixMs, $SmokeEnvironmentBase64
   $child = Start-Process -FilePath $powershell -ArgumentList $command -Verb RunAs -WorkingDirectory $OutputDirectory -PassThru
   $code = Wait-OwnerProcess $child 10000
   exit $code
@@ -165,11 +196,15 @@ try {
   try {
     if ($sid) {
       $ownerProfile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'"
+      if ($ownerProfile) { Write-Output ('[owner-profile-cleanup] ' + ($ownerProfile | Select-Object SID, Loaded, RefCount | ConvertTo-Json -Compress)) }
       while ($ownerProfile -and $ownerProfile.Loaded -and [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() -lt $DeadlineUnixMs) {
         Start-Sleep -Milliseconds 100
         $ownerProfile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'"
       }
-      if ($ownerProfile -and $ownerProfile.Loaded) { throw 'The temporary owner profile did not unload before cleanup' }
+      if ($ownerProfile -and $ownerProfile.Loaded) {
+        Get-WinEvent -FilterHashtable @{ LogName = 'Application'; ProviderName = 'Microsoft-Windows-User Profiles Service' } -MaxEvents 5 -ErrorAction SilentlyContinue | Select-Object TimeCreated, Id, Message | Format-List | Out-String | Write-Output
+        throw 'The temporary owner profile did not unload before cleanup'
+      }
       if ($ownerProfile) { $ownerProfile | Remove-CimInstance }
     }
   } catch { $cleanupErrors += $_.Exception.Message }
