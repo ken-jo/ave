@@ -1076,10 +1076,8 @@ function aveHomeReadBoundaryRoots(): string[] {
   });
 }
 
-// The roots denied as one directory. On Windows a root directly beneath the OS profile is not: a stamp also denies FILE_DELETE_CHILD
-// inheritably on the target's parent, and on the profile root that propagates through the whole profile and exceeds the init timeout
-// (why windowsDenyTargets filters profile-child read denies). Such a home denies its top-level children instead, so the parent stamp
-// lands on the home. The grant ceiling still covers every root.
+// Profile-child homes retain the decision tree's top-level-child projection instead of a root directory deny.
+// Every composition snapshots those children; the grant ceiling still covers every home root.
 function aveHomeReadBoundaryDirectoryRoots(): string[] {
   return aveHomeReadBoundaryRoots().filter((root) => !isWindowsProfileChild(root));
 }
