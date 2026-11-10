@@ -247,6 +247,10 @@ the installed package.
     delete-child guards on their own object and adds inheritable delete-child
     protection to full denies. Verified handles preserve identity and control
     while full subtree changes retain their existing propagation behavior.
+
+16. Stamp timing observations. Debug output records planned targets and their
+    parents before the native call, its total elapsed time, and measured native
+    per-operation durations for full denies and parent guards.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
@@ -612,7 +616,7 @@ index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18
      socksSocketPath?: string;
      httpProxyPort?: number;
 diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
-index b3acba671fe6356ad5d9e187ca13753f345f931b..37148f95320768342b2dd8837b75ead011f7f96d 100644
+index b3acba671fe6356ad5d9e187ca13753f345f931b..64fcebe2402a63e030dbcfe371ce3a6ef3ab319f 100644
 --- a/dist/sandbox/linux-sandbox-utils.js
 +++ b/dist/sandbox/linux-sandbox-utils.js
 @@ -260,11 +260,11 @@ function makeableMountPoint(dest, wanted) {
@@ -4434,7 +4438,7 @@ index 760a10b1d1c475a7636ff78092d3c9daaafe7335..a7a39777c3584689fc7efd44e8f298e1
              if (!clientGone) {
                  try {
 diff --git a/dist/sandbox/windows-sandbox-utils.d.ts b/dist/sandbox/windows-sandbox-utils.d.ts
-index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..51e136b39bff646d2177eddc49b5274a9b94586a 100644
+index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..7aecb1c0bde8ee39dd5748aa23ca74097df9fb35 100644
 --- a/dist/sandbox/windows-sandbox-utils.d.ts
 +++ b/dist/sandbox/windows-sandbox-utils.d.ts
 @@ -847,7 +847,7 @@ export interface WindowsAclStampOptions {
@@ -4446,11 +4450,105 @@ index 65b8eefe56ba9e7d4c68ba07ac9576948f4f4870..51e136b39bff646d2177eddc49b5274a
   * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
   * srt-win's `working_aces` table.
   *
+@@ -861,6 +861,23 @@ export interface WindowsAclStampOptions {
+  *   to release whatever WAS stamped.
+  */
+ export declare function stampWindowsAcl(opts: WindowsAclStampOptions): void;
++export declare function stampWindowsAclAsync(opts: WindowsAclStampOptions): Promise<void>;
++/** Ave patch (recovery report): counts from one `srt-win acl recover` run. */
++export interface WindowsAclRecoveryReport {
++    /** Dead holder processes whose holds were pruned. */
++    deadBrokers: number;
++    /** Orphaned sandbox-user ACEs revoked. */
++    acesRevoked: number;
++}
++/** Ave patch (recovery report): receive each recoverWindowsAcl() result (undefined removes it). */
++export declare function setWindowsAclRecoveryListener(listener: ((report: WindowsAclRecoveryReport) => void) | undefined): void;
++/** Ave patch (recovery report): run srt-win's crash recovery and report its counts. @throws on exit ≠ 0. */
++export declare function recoverWindowsAcl(opts: {
++    srtWin?: SrtWinSpawn;
++}): WindowsAclRecoveryReport;
++export declare function recoverWindowsAclAsync(opts: {
++    srtWin?: SrtWinSpawn;
++}): Promise<WindowsAclRecoveryReport>;
+ /**
+  * Per-path outcome from `srt-win acl restore --json` /
+  * `revoke --json`. The status set is intentionally loose: the
+@@ -884,7 +901,16 @@ export declare function restoreWindowsAcl(opts: {
+     sandboxUserSid: string;
+     holderPid?: number;
+     srtWin?: SrtWinSpawn;
++    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
++    onExit?: (ok: boolean) => void;
+ }): WindowsAclAceOutcome[] | undefined;
++export declare function restoreWindowsAclAsync(opts: {
++    sandboxUserSid: string;
++    holderPid?: number;
++    srtWin?: SrtWinSpawn;
++    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
++    onExit?: (ok: boolean) => void;
++}): Promise<WindowsAclAceOutcome[] | undefined>;
+ export interface WindowsAclGrantOptions {
+     /** Paths to grant `MODIFY_NO_FDC` on (the working tree, `allowWrite`). */
+     write: readonly string[];
+@@ -909,6 +935,7 @@ export interface WindowsAclGrantOptions {
+  *   {@link revokeWindowsAcl} to release whatever WAS granted.
+  */
+ export declare function grantWindowsAcl(opts: WindowsAclGrantOptions): void;
++export declare function grantWindowsAclAsync(opts: WindowsAclGrantOptions): Promise<void>;
+ /**
+  * Release this holder's grants and remove the sandbox-user ACE on
+  * any path whose refcount falls to zero. Best-effort (does not
+@@ -918,7 +945,16 @@ export declare function revokeWindowsAcl(opts: {
+     sandboxUserSid: string;
+     holderPid?: number;
+     srtWin?: SrtWinSpawn;
++    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
++    onExit?: (ok: boolean) => void;
+ }): WindowsAclAceOutcome[] | undefined;
++export declare function revokeWindowsAclAsync(opts: {
++    sandboxUserSid: string;
++    holderPid?: number;
++    srtWin?: SrtWinSpawn;
++    /** Ave patch: told whether srt-win exited 0; a path it could not release is left out of the outcomes. */
++    onExit?: (ok: boolean) => void;
++}): Promise<WindowsAclAceOutcome[] | undefined>;
+ /**
+  * Build the spawn descriptor for running `command` inside the Windows
+  * sandbox: an `argv` array plus the `env` to spawn it with.
 diff --git a/dist/sandbox/windows-sandbox-utils.js b/dist/sandbox/windows-sandbox-utils.js
-index 540c56635e4c5b1b78997f0ec4185fe9d9968806..cc1de8d5f0154a7f1233aa7ee2f027e4c66d2122 100644
+index 540c56635e4c5b1b78997f0ec4185fe9d9968806..df1c3af28113485ae182355ff25b46fe465aea1b 100644
 --- a/dist/sandbox/windows-sandbox-utils.js
 +++ b/dist/sandbox/windows-sandbox-utils.js
-@@ -1163,7 +1163,7 @@ export function parseWindowsSandboxError(stderr) {
+@@ -312,6 +312,18 @@ function runSrtWinJsonAllowFail(args, opts) {
+     }
+     return { ok: r.status === 0, json, stderr: r.stderr };
+ }
++async function runSrtWinJsonAllowFailAsync(args, opts) {
++    const r = await runSrtWinAsync(args, opts);
++    let json;
++    try {
++        json = JSON.parse(r.stdout);
++    }
++    catch (e) {
++        throw new WindowsSandboxError('srt_win_bad_json', `srt-win ${args.join(' ')}: unparseable JSON output ` +
++            `${JSON.stringify(r.stdout)}: ${e.message}`, args[0]);
++    }
++    return { ok: r.status === 0, json, stderr: r.stderr };
++}
+ function wfpStatusArgs(sublayerGuid) {
+     const args = ['wfp', 'status'];
+     if (sublayerGuid)
+@@ -449,7 +461,7 @@ export async function verifyWindowsWfpEgress(opts = {}) {
+         // 30s: first call after install may create the sandbox user's
+         // profile (LOGON_WITH_PROFILE) via CreateProcessWithLogonW, and
+         // the runner allows itself 2s to connect (runner.rs).
+-        const r = runSrtWin(['wfp', 'verify', '--target', target], {
++        const r = await runSrtWinAsync(['wfp', 'verify', '--target', target], {
+             timeoutMs: 30000,
+             srtWin: opts.srtWin,
+         });
+@@ -1163,7 +1175,7 @@ export function parseWindowsSandboxError(stderr) {
  /**
   * Apply the file-deny ACE set for one host session: an additive
   * `(D;OICI;mask;;;<sb-SID>)` on the target plus a
@@ -4459,12 +4557,213 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..cc1de8d5f0154a7f1233aa7ee2f027e4
   * PROTECTED rewrite, no SD snapshot. Idempotent and refcounted via
   * srt-win's `working_aces` table.
   *
+@@ -1176,7 +1188,19 @@ export function parseWindowsSandboxError(stderr) {
+  *   2, so on throw the caller should call {@link restoreWindowsAcl}
+  *   to release whatever WAS stamped.
+  */
++function logWindowsStampTargets(opts) {
++    if (!process.env.SRT_DEBUG) return;
++    const rows = [['denyRead', opts.denyRead], ['denyWrite', opts.denyWrite]].flatMap(([kind, targets]) =>
++        targets.map(target => {
++            const paths = path.win32.isAbsolute(target) ? path.win32 : path;
++            const resolved = paths.resolve(target);
++            return { path: resolved, parent: paths.dirname(resolved), kind };
++        }));
++    logForDebugging(`[Sandbox Windows] acl stamp targets=${JSON.stringify(rows)}`);
++}
+ export function stampWindowsAcl(opts) {
++    logWindowsStampTargets(opts);
++    const started = performance.now();
+     const holder = opts.holderPid ?? process.pid;
+     const stdin = JSON.stringify({
+         denyRead: opts.denyRead,
+@@ -1190,13 +1214,73 @@ export function stampWindowsAcl(opts) {
+         '--sandbox-user-sid',
+         opts.sandboxUserSid,
+     ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
+-    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status}: ${r.stderr || r.stdout}`);
++    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status} elapsedMs=${(performance.now() - started).toFixed(2)}: ${r.stderr || r.stdout}`);
++    if (r.status !== 0) {
++        throw new WindowsSandboxError('acl_stamp_failed', `srt-win acl stamp exited ${r.status} ` +
++            (r.status === 2 ? '(partial — some inputs skipped)' : '(failed)') +
++            `: ${r.stderr || r.stdout}`);
++    }
++}
++export async function stampWindowsAclAsync(opts) {
++    logWindowsStampTargets(opts);
++    const started = performance.now();
++    const holder = opts.holderPid ?? process.pid;
++    const stdin = JSON.stringify({
++        denyRead: opts.denyRead,
++        denyWrite: opts.denyWrite,
++    });
++    const r = await runSrtWinAsync([
++        'acl',
++        'stamp',
++        '--holder-pid',
++        `${holder}`,
++        '--sandbox-user-sid',
++        opts.sandboxUserSid,
++    ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
++    logForDebugging(`[Sandbox Windows] acl stamp exit=${r.status} elapsedMs=${(performance.now() - started).toFixed(2)}: ${r.stderr || r.stdout}`);
+     if (r.status !== 0) {
+         throw new WindowsSandboxError('acl_stamp_failed', `srt-win acl stamp exited ${r.status} ` +
+             (r.status === 2 ? '(partial — some inputs skipped)' : '(failed)') +
+             `: ${r.stderr || r.stdout}`);
+     }
+ }
++// Ave patch (recovery report): the embedder's listener for crash-recovery
++// counts, set with setWindowsAclRecoveryListener.
++let windowsAclRecoveryListener;
++/**
++ * Ave patch (recovery report): receive the counts of each
++ * recoverWindowsAcl() run (undefined removes the listener).
++ */
++export function setWindowsAclRecoveryListener(listener) {
++    windowsAclRecoveryListener = listener;
++}
++/**
++ * Ave patch (recovery report): run srt-win's crash recovery on its own
++ * (`acl recover --json`, which prints `{deadBrokers, acesRevoked}`;
++ * vendor/srt-win-src/src/cli.rs AclCmd::Recover at v0.0.80) and hand the
++ * counts to the embedder's listener. Without it, recovery is reported
++ * only in the stderr of whichever acl command ran it first.
++ *
++ * @throws on exit ≠ 0 or unparseable output.
++ */
++export function recoverWindowsAcl(opts) {
++    const report = runSrtWinJson(['acl', 'recover', '--json'], { timeoutMs: 60000, srtWin: opts.srtWin });
++    const counts = { deadBrokers: Number(report.deadBrokers), acesRevoked: Number(report.acesRevoked) };
++    if (!Number.isInteger(counts.deadBrokers) || !Number.isInteger(counts.acesRevoked)) {
++        throw new WindowsSandboxError('srt_win_bad_json', `srt-win acl recover: unexpected report ${JSON.stringify(report)}`, 'acl');
++    }
++    windowsAclRecoveryListener?.(counts);
++    return counts;
++}
++export async function recoverWindowsAclAsync(opts) {
++    const report = await runSrtWinJsonAsync(['acl', 'recover', '--json'], { timeoutMs: 60000, srtWin: opts.srtWin });
++    const counts = { deadBrokers: Number(report.deadBrokers), acesRevoked: Number(report.acesRevoked) };
++    if (!Number.isInteger(counts.deadBrokers) || !Number.isInteger(counts.acesRevoked)) {
++        throw new WindowsSandboxError('srt_win_bad_json', `srt-win acl recover: unexpected report ${JSON.stringify(report)}`, 'acl');
++    }
++    windowsAclRecoveryListener?.(counts);
++    return counts;
++}
+ /**
+  * Release this holder's deny ACEs and remove the sandbox-user ACE
+  * on any path whose refcount falls to zero. Best-effort (does not
+@@ -1221,6 +1305,47 @@ export function restoreWindowsAcl(opts) {
+             opts.sandboxUserSid,
+             '--json',
+         ], { timeoutMs: 60000, srtWin: opts.srtWin });
++        // Ave patch (ACL release outcome): srt-win exits non-zero when a
++        // path could not be released and leaves that path out of the JSON.
++        opts.onExit?.(r.ok);
++        if (!r.ok) {
++            logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
++                `outcomes preserved): ${r.stderr}`, { level: 'error' });
++        }
++        // Pre- same-user-removal builds emit `{paths, parents}`; post-
++        // emit a flat array. Flatten either so reset()'s logging loop
++        // is shape-agnostic across the transition.
++        return Array.isArray(r.json)
++            ? r.json
++            : [...(r.json.paths ?? []), ...(r.json.parents ?? [])];
++    }
++    catch (e) {
++        logForDebugging(`[Sandbox Windows] acl restore: ${e.message}`, {
++            level: 'error',
++        });
++        return undefined;
++    }
++}
++export async function restoreWindowsAclAsync(opts) {
++    const holder = opts.holderPid ?? process.pid;
++    // Don't let a teardown helper throw — the caller's reset() must
++    // complete. runSrtWinJsonAllowFail parses stdout before checking
++    // the exit code, so a non-zero exit with the per-path JSON intact
++    // still surfaces every entry to reset()'s loop. Only spawn-fail
++    // / unparseable output throws → log and return undefined.
++    try {
++        const r = await runSrtWinJsonAllowFailAsync([
++            'acl',
++            'restore',
++            '--holder-pid',
++            `${holder}`,
++            '--sandbox-user-sid',
++            opts.sandboxUserSid,
++            '--json',
++        ], { timeoutMs: 60000, srtWin: opts.srtWin });
++        // Ave patch (ACL release outcome): srt-win exits non-zero when a
++        // path could not be released and leaves that path out of the JSON.
++        opts.onExit?.(r.ok);
+         if (!r.ok) {
+             logForDebugging(`[Sandbox Windows] acl restore exited non-zero (per-path ` +
+                 `outcomes preserved): ${r.stderr}`, { level: 'error' });
+@@ -1266,6 +1391,22 @@ export function grantWindowsAcl(opts) {
+         throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
+     }
+ }
++export async function grantWindowsAclAsync(opts) {
++    const holder = opts.holderPid ?? process.pid;
++    const stdin = JSON.stringify({ read: opts.read, write: opts.write });
++    const r = await runSrtWinAsync([
++        'acl',
++        'grant',
++        '--holder-pid',
++        `${holder}`,
++        '--sandbox-user-sid',
++        opts.sandboxUserSid,
++    ], { timeoutMs: 60000, stdin, srtWin: opts.srtWin });
++    logForDebugging(`[Sandbox Windows] acl grant exit=${r.status}: ${r.stderr || r.stdout}`);
++    if (r.status !== 0) {
++        throw new WindowsSandboxError('acl_grant_failed', `srt-win acl grant exited ${r.status}: ${r.stderr || r.stdout}`);
++    }
++}
+ /**
+  * Release this holder's grants and remove the sandbox-user ACE on
+  * any path whose refcount falls to zero. Best-effort (does not
+@@ -1283,6 +1424,34 @@ export function revokeWindowsAcl(opts) {
+             opts.sandboxUserSid,
+             '--json',
+         ], { timeoutMs: 60000, srtWin: opts.srtWin });
++        // Ave patch (ACL release outcome): see restoreWindowsAcl.
++        opts.onExit?.(r.ok);
++        if (!r.ok) {
++            logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
++        }
++        return r.json;
++    }
++    catch (e) {
++        logForDebugging(`[Sandbox Windows] acl revoke: ${e.message}`, {
++            level: 'error',
++        });
++        return undefined;
++    }
++}
++export async function revokeWindowsAclAsync(opts) {
++    const holder = opts.holderPid ?? process.pid;
++    try {
++        const r = await runSrtWinJsonAllowFailAsync([
++            'acl',
++            'revoke',
++            '--holder-pid',
++            `${holder}`,
++            '--sandbox-user-sid',
++            opts.sandboxUserSid,
++            '--json',
++        ], { timeoutMs: 60000, srtWin: opts.srtWin });
++        // Ave patch (ACL release outcome): see restoreWindowsAcl.
++        opts.onExit?.(r.ok);
+         if (!r.ok) {
+             logForDebugging(`[Sandbox Windows] acl revoke exited non-zero: ${r.stderr}`, { level: 'error' });
+         }
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..33e7210c1831aa0d9e9fe3377f012e739402680a
+index 0000000000000000000000000000000000000000..28b59421f8d400ff1045b92159662f28a44082b0
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,1444 @@
+@@ -0,0 +1,1478 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
 +index 0efb5956f..12619ba88 100644
 +--- a/vendor/srt-win-src/src/acl.rs
@@ -5094,10 +5393,44 @@ index 0000000000000000000000000000000000000000..33e7210c1831aa0d9e9fe3377f012e73
 +         FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx,
 +     };
 +diff --git a/vendor/srt-win-src/src/state_db.rs b/vendor/srt-win-src/src/state_db.rs
-+index d3778f4e6..7f697791d 100644
++index d3778f4e6..a5cf42180 100644
 +--- a/vendor/srt-win-src/src/state_db.rs
 ++++ b/vendor/srt-win-src/src/state_db.rs
-+@@ -1406,6 +1406,87 @@ mod tests {
++@@ -46,7 +46,7 @@
++ use anyhow::{Context, Result, anyhow, bail};
++ use rusqlite::{Connection, OptionalExtension, params};
++ use std::path::PathBuf;
++-use std::time::{SystemTime, UNIX_EPOCH};
+++use std::time::{Instant, SystemTime, UNIX_EPOCH};
++ use windows::Win32::Foundation::{FILETIME, HANDLE, WAIT_OBJECT_0};
++ use windows::Win32::System::Threading::{
++     GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
++@@ -675,7 +675,23 @@ impl Locked {
++             let mut witnesses = Vec::with_capacity(targets.len());
++             let mut failed = 0usize;
++             let mut one = |canon: &str, ace: SbAce| -> bool {
++-                match db.ensure_ace(canon, ace, sandbox_sid) {
+++                let started = Instant::now();
+++                let result = db.ensure_ace(canon, ace, sandbox_sid);
+++                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+++                if std::env::var_os("SRT_DEBUG").is_some_and(|value| !value.is_empty())
+++                    && matches!(ace, SbAce::Deny(_) | SbAce::DenyFdc | SbAce::DenyDelete)
+++                {
+++                    eprintln!(
+++                        "{}",
+++                        serde_json::json!({
+++                            "path": canon,
+++                            "parent": path_id::canonical_parent_of(canon),
+++                            "kind": ace.as_str(),
+++                            "elapsedMs": elapsed_ms,
+++                        })
+++                    );
+++                }
+++                match result {
++                     Ok(w) => {
++                         witnesses.push(w);
++                         true
++@@ -1406,6 +1422,87 @@ mod tests {
 +         });
 +     }
 +

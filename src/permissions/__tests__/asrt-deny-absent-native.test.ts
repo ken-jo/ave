@@ -1,6 +1,6 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
@@ -15,7 +15,7 @@ import { win32SystemBinary } from "../../shared/ave-home.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
-import { restoreWindowsAcl, stampWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { recoverWindowsAcl, restoreWindowsAcl, stampWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { readWindowsDenyAcls } from "../windows-deny-acl.js";
 
 useVerifiedAveHomePrivacy();
@@ -326,6 +326,80 @@ describe.runIf(process.platform === "win32")("Windows private helper deny lifeti
     } finally {
       if (held.exitCode === null && held.signalCode === null) { held.kill(); await exited; }
       restoreWindowsAcl({ sandboxUserSid: sid, srtWin, holderPid });
+      restoreWindowsAcl({ sandboxUserSid: sid, srtWin });
+    }
+  }, 60_000);
+
+  it.each(["moved", "deleted"])("recovers a transient deny after its object is %s", async disposition => {
+    const { sid, srtWin } = helper();
+    const target = join(container, "lifecycle", "target");
+    const moved = join(container, "lifecycle", "moved");
+    mkdirSync(target, { recursive: true });
+    const held = spawn(win32SystemBinary("more.com"), [], { env: windowsPowerShellEnv(), windowsHide: true, stdio: "pipe" });
+    const exited = once(held, "exit");
+    if (!held.pid) throw new Error("Native holder did not start");
+    const holderPid = held.pid;
+    try {
+      stampWindowsAcl({ sandboxUserSid: sid, srtWin, holderPid, denyRead: [], denyWrite: [target] });
+      expect(readWindowsDenyAcls([target], sid)[0]?.denyMask).not.toBe(0);
+      if (disposition === "moved") {
+        renameSync(target, moved);
+        mkdirSync(target);
+        expect(readWindowsDenyAcls([target], sid)[0]?.denyMask).toBe(0);
+      } else {
+        rmSync(target, { recursive: true });
+      }
+      held.kill();
+      await exited;
+      const report = recoverWindowsAcl({ srtWin });
+      expect(report.deadBrokers).toBeGreaterThanOrEqual(1);
+      expect(report.acesRevoked).toBeGreaterThanOrEqual(2);
+      if (disposition === "moved") {
+        expect(readWindowsDenyAcls([moved], sid)[0]?.denyMask).not.toBe(0);
+        expect(readWindowsDenyAcls([target], sid)[0]?.denyMask).toBe(0);
+      } else {
+        expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+      }
+      expect(descriptor(dirname(target))).not.toContain(sid);
+    } finally {
+      if (held.exitCode === null && held.signalCode === null) { held.kill(); await exited; }
+      restoreWindowsAcl({ sandboxUserSid: sid, srtWin, holderPid });
+    }
+  }, 60_000);
+
+  it("emits individual native deny timings only while debugging is enabled", () => {
+    const { sid, srtWin } = helper();
+    const target = join(container, "timing", "target");
+    mkdirSync(target, { recursive: true });
+    const args = [...srtWin.prependArgs, "acl", "stamp", "--holder-pid", String(process.pid), "--sandbox-user-sid", sid];
+    const input = JSON.stringify({ denyRead: [], denyWrite: [target] });
+    const records = (stderr: string) => stderr.split("\n").filter(line => line.trim().startsWith("{")).map(line => JSON.parse(line));
+    try {
+      const enabled = spawnSync(srtWin.exe, args, { input, encoding: "utf8", windowsHide: true, env: { ...process.env, SRT_DEBUG: "1" } });
+      expect(enabled.error).toBeUndefined();
+      expect(enabled.status).toBe(0);
+      const timings = records(enabled.stderr);
+      expect(timings).toHaveLength(2);
+      expect(timings.map(row => row.kind)).toEqual(["denyWrite", "fdc"]);
+      const key = (path: string) => path.replace(/^\\\\\?\\/, "").toLowerCase();
+      expect(key(timings[0].path)).toBe(key(target));
+      expect(key(timings[0].parent)).toBe(key(dirname(target)));
+      expect(key(timings[1].path)).toBe(key(dirname(target)));
+      expect(key(timings[1].parent)).toBe(key(dirname(dirname(target))));
+      for (const row of timings) {
+        expect(Object.keys(row).sort()).toEqual(["elapsedMs", "kind", "parent", "path"]);
+        expect(Number.isFinite(row.elapsedMs)).toBe(true);
+        expect(row.elapsedMs).toBeGreaterThanOrEqual(0);
+      }
+      // Independent DACL evidence proves these records came from real effects.
+      expect(readWindowsDenyAcls([target], sid)[0]?.denyMask).not.toBe(0);
+      expect(readWindowsDenyAcls([target], sid)[0]?.parentMask).toBe(0x40);
+      const disabled = spawnSync(srtWin.exe, args, { input, encoding: "utf8", windowsHide: true, env: { ...process.env, SRT_DEBUG: "" } });
+      expect(disabled.error).toBeUndefined();
+      expect(disabled.status).toBe(0);
+      expect(records(disabled.stderr)).toEqual([]);
+      expect(readWindowsDenyAcls([target], sid)[0]?.denyMask).not.toBe(0);
+    } finally {
       restoreWindowsAcl({ sandboxUserSid: sid, srtWin });
     }
   }, 60_000);
