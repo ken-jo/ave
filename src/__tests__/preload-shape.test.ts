@@ -24,6 +24,7 @@ const mockInvoke = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
 const mockUserActivation = { isActive: false };
+Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("file:///Applications/Ave.app/dist/index.html") });
 
 vi.mock("../preload/browser-native-input.js", () => ({ installBrowserNativeInput: vi.fn() }));
 

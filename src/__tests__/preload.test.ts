@@ -15,6 +15,7 @@ const mockSend = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
 const mockUserActivation = { isActive: false };
+Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("file:///Applications/Ave.app/dist/index.html") });
 
 vi.mock("../preload/browser-native-input.js", () => ({ installBrowserNativeInput: vi.fn() }));
 const originalDebugStreamEnv = process.env.VITE_DEBUG_STREAM;
@@ -82,6 +83,25 @@ describe("preload — plugin webview asset URLs", () => {
     delete process.env.AVE_DEV;
     delete process.env.AVE_E2E;
     delete process.env.AVE_DEV_CONSOLE;
+  });
+
+  it("keeps a provisional blank document unprivileged until the app document loads", async () => {
+    const location = globalThis.location;
+    try {
+      Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("about:blank") });
+      await import("../preload.js");
+      expect(exposed.size).toBe(0);
+      expect(mockSendSync).not.toHaveBeenCalled();
+      expect(mockInvoke).not.toHaveBeenCalled();
+      expect(mockOn).not.toHaveBeenCalled();
+      Object.defineProperty(globalThis, "location", { configurable: true, value: location });
+      vi.resetModules();
+      await loadAveApi();
+      expect(exposed.has("aveApi")).toBe(true);
+      expect(mockSendSync).toHaveBeenCalledExactlyOnceWith(CHANNELS.settings.initialAppearance);
+    } finally {
+      Object.defineProperty(globalThis, "location", { configurable: true, value: location });
+    }
   });
 
   it("registers history listeners before readiness and disables replay only after the last unsubscribe", async () => {
