@@ -22,7 +22,8 @@ export function createMainWindowHost(options: BaseWindowConstructorOptions, pref
     ...preloadPreferences("preload"),
     webviewTag: true,
   } });
-  ui.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+  const contents = ui.webContents;
+  contents.on("will-attach-webview", (event, webPreferences, params) => {
     const attach = configureMainWindowWebviewAttach({
       event,
       webPreferences: webPreferences as Record<string, unknown>,
@@ -33,7 +34,7 @@ export function createMainWindowHost(options: BaseWindowConstructorOptions, pref
     }
   });
   ui.setBackgroundColor("#00000000");
-  installUiMembers(window, ui.webContents);
+  installUiMembers(window, contents);
   uiViews.set(window, ui);
   window.contentView.addChildView(ui);
   const resize = (): void => {
@@ -44,9 +45,9 @@ export function createMainWindowHost(options: BaseWindowConstructorOptions, pref
   window.on("resize", resize);
   window.on("closed", () => {
     uiViews.delete(window);
-    if (!ui.webContents.isDestroyed()) ui.webContents.close();
+    if (!contents.isDestroyed()) contents.close();
   });
-  ui.webContents.once("destroyed", () => {
+  contents.once("destroyed", () => {
     if (!window.isDestroyed()) window.destroy();
   });
   return window;

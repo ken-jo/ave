@@ -11,6 +11,8 @@ const native = await vi.hoisted(async () => {
   }
   class View {
     readonly children: View[] = [];
+    nativeClosed = false;
+    closeNativeView() { this.nativeClosed = true; for (const child of this.children) child.closeNativeView(); }
     readonly setBackgroundColor = vi.fn();
     readonly setBounds = vi.fn();
     addChildView(view: View) {
@@ -26,10 +28,11 @@ const native = await vi.hoisted(async () => {
     constructor(readonly options: unknown) { super(); }
     getContentBounds() { return this.bounds; }
     isDestroyed() { return this.destroyed; }
-    destroy() { this.destroyed = true; this.emit("closed"); }
+    destroy() { this.destroyed = true; this.contentView.closeNativeView(); this.emit("closed"); }
   }
   class ContentsView extends View {
-    readonly webContents = new Contents();
+    private readonly contents = new Contents();
+    get webContents(): Contents { return this.nativeClosed ? undefined as unknown as Contents : this.contents; }
     constructor(readonly options: unknown) { super(); }
   }
   return { Window, View, ContentsView };
@@ -110,8 +113,9 @@ describe("main window composition", () => {
     expect(contents.listenerCount("destroyed")).toBe(1);
   });
   it("disposes its document on forced native teardown", () => {
-    const window = create(), contents = ui(window).webContents;
+    const window = create(), view = ui(window), contents = view.webContents;
     window.destroy();
+    expect(view.webContents).toBeUndefined();
     expect(contents.close).toHaveBeenCalledWith();
     expect(() => closeMainWindowUi(window)).toThrow("Main window UI view unavailable");
   });
