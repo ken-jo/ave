@@ -3,6 +3,7 @@ import { createElement, useCallback, useEffect, useRef, useState, useSyncExterna
 import { createPortal } from "react-dom";
 import { BROWSER_NATIVE_HOLE_ATTRIBUTE } from "../../../shared/browser-native-input.js";
 import { registerNativePageBranch } from "../preview/native-page-branches.js";
+import { applyChatTranscriptUnderlayClips, chatTranscriptUnderlaysFor } from "../preview/chat-transcript-underlays.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
@@ -181,6 +182,7 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
   const occluderList: Box[] = [];
   for (const element of getWebSurfaceOccluders()) occluderBoxes(element, occluderList);
   let visibleCount = 0;
+  const transcriptHoles = new Map<HTMLElement, { frame: Box; holes: Box[] }>();
   for (const [tabId, entry] of placed) {
     const slot = getWebSurfaceSlot(tabId);
     const boxes = slot ? visibleBox(slot) : null;
@@ -250,6 +252,16 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
   for (const [tabId, entry] of nativePlaced) {
     const slot = getWebSurfaceSlot(tabId);
     const boxes = slot ? visibleBox(slot) : null;
+    if (slot && boxes) {
+      for (const stage of chatTranscriptUnderlaysFor(slot)) {
+        const frame = stage.getBoundingClientRect();
+        const hole = intersect(frame, boxes.visible);
+        if (isEmpty(hole)) continue;
+        const clipping: { frame: Box; holes: Box[] } = transcriptHoles.get(stage) ?? { frame, holes: [] };
+        clipping.holes.push(hole);
+        transcriptHoles.set(stage, clipping);
+      }
+    }
     const key = boxes ? JSON.stringify(boxes) : "parked";
     if (boxes) visibleCount++;
     if (key === entry.requestedKey) continue;
@@ -271,6 +283,7 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
       if (!accepted) entry.requestedKey = "";
     });
   }
+  applyChatTranscriptUnderlayClips(new Map([...transcriptHoles].map(([stage, { frame, holes }]) => [stage, clipPathFor(frame, holes)])));
   return { visible: visibleCount, moved };
 }
 
@@ -411,6 +424,7 @@ function NativePageLifecycle({ api, surface }: { api: BrowserTabsApi; surface: W
       mounted = false;
       if (placement && nativePlaced.get(surface.tabId) === placement) {
         nativePlaced.delete(surface.tabId);
+        requestWebSurfaceLayout();
         void requestNativeBrowserSurface(api, { action: "present", tabId: surface.tabId,
           webContentsId: placement.surface.webContentsId, epoch: placement.surface.epoch,
           sequence: ++placement.sequence, bounds: null });
@@ -507,6 +521,7 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
       window.clearInterval(idle);
       if (rafId !== 0) cancelAnimationFrame(rafId);
       rafId = 0;
+      applyChatTranscriptUnderlayClips(new Map());
     };
   }, []);
 

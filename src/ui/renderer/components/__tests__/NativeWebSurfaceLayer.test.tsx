@@ -2,6 +2,7 @@
 import { ok } from "node:assert/strict";
 import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { createPortal } from "react-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AveApi } from "../../types.js";
 import type { BrowserNativeSurfaceResult } from "../../../../shared/browser-native-surface.js";
@@ -10,6 +11,7 @@ import { nativeSurfaceFixture } from "../../../../__tests__/support/native-brows
 import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../../hooks/use-browser-navigation.js";
 import { committedWebSurfaceLocation, nativeWebSurfaceState, publishLiveWebTabs, setNativeBrowserTabIds, setNativeWebSurfaceState, withdrawLiveWebTabs, webSurfaceFavicon, beginSurfaceDrag, endSurfaceDrag, registerWebSurfaceOccluder } from "../../preview/web-surfaces.js";
 import { BROWSER_NATIVE_HOLE_ATTRIBUTE } from "../../../../shared/browser-native-input.js";
+import { registerChatTranscriptUnderlay } from "../../preview/chat-transcript-underlays.js";
 import { PaneFrame } from "../PaneFrame.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { WebSurfaceLayer, WebSurfaceSlot, placeWebSurfaces } from "../WebSurfaceLayer.js";
@@ -39,6 +41,56 @@ function Navigation() {
   return <button type="button" onClick={() => navigateBrowserSurface(surface, "back")}>{navigation.title}:{navigation.url}:{String(navigation.canGoBack)}</button>;
 }
 describe("native page presentation", () => {
+  it("clips only the originating transcript beneath a portaled page and clears the clip when parked", async () => {
+    const fixture = nativeSurfaceFixture();
+    publishLiveWebTabs(source, new Set(["browser:native"]));
+    const chat = document.createElement("div");
+    const transcript = document.createElement("div");
+    const composer = document.createElement("textarea");
+    const decision = document.createElement("button");
+    chat.append(transcript, composer, decision);
+    const panelHost = document.createElement("div");
+    panelHost.style.overflowX = "visible";
+    panelHost.style.overflowY = "visible";
+    document.body.append(chat, panelHost);
+    const foreignChat = document.createElement("div");
+    document.body.append(foreignChat);
+    const release = registerChatTranscriptUnderlay(panelHost, transcript);
+    const releaseForeign = registerChatTranscriptUnderlay(foreignChat, foreignChat);
+    Object.defineProperty(transcript, "getBoundingClientRect", { configurable: true,
+      value: () => ({ left: 0, top: 0, right: 1000, bottom: 600 }) });
+    Object.defineProperty(foreignChat, "getBoundingClientRect", { configurable: true,
+      value: () => ({ left: 0, top: 0, right: 1000, bottom: 600 }) });
+    const view = render(<>{createPortal(<WebSurfaceSlot tabId="browser:native" url="about:blank" bindRequestId="request:new" location="side-panel" />, panelHost)}
+      <WebSurfaceLayer api={{ browserTabs: fixture.api } as AveApi} /></>);
+    try {
+      await act(async () => {});
+      const slot = slotBox();
+      await act(async () => { placeWebSurfaces(); });
+      expect(transcript.style.clipPath).toBe('path(evenodd, "M0 0H1000V600H0ZM10 20H650V500H10Z")');
+      expect(foreignChat.style.clipPath).toBe("");
+      expect(composer.style.clipPath).toBe("");
+      expect(decision.style.clipPath).toBe("");
+      expect(slot.style.clipPath).toBe("");
+      expect(screen.getByTestId("chat-side-panel-browser-native").style.clipPath).toBe("");
+      expect(fixture.states.get("browser:native")?.visible).toBe(true);
+      slot.style.visibility = "hidden";
+      await act(async () => { placeWebSurfaces(); });
+      expect(transcript.style.clipPath).toBe("");
+      slot.style.visibility = "visible";
+      await act(async () => { placeWebSurfaces(); });
+      expect(transcript.style.clipPath).not.toBe("");
+      view.unmount();
+      expect(transcript.style.clipPath).toBe("");
+    } finally {
+      view.unmount();
+      release();
+      releaseForeign();
+      chat.remove();
+      panelHost.remove();
+      foreignChat.remove();
+    }
+  });
   it("creates an agent page without an embedded guest, presents without focus, and retains it through slot moves", async () => {
     const fixture = nativeSurfaceFixture();
     publishLiveWebTabs(source, new Set(["browser:native"]));
