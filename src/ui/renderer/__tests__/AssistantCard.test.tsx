@@ -128,13 +128,29 @@ describe("AssistantCard — live vs restored systemNotice (Issue #2113)", () => 
     return root!;
   }
 
+  it.each([
+    ["context-error", false],
+    ["stream-error", false],
+    ["operation-error", false],
+    ["context-error", true],
+    ["stream-error", true],
+    ["operation-error", true],
+  ] as const)("uses an opaque card surface for %s with restored=%s", (systemNotice, restored) => {
+    const { container } = renderCard(makeEntry({
+      text: "Model unavailable",
+      systemNotice,
+      restored,
+    }));
+    expect(cardRoot(container)).toHaveClass("bg-card");
+  });
+
   it("renders a live stream-error banner with destructive styling and no restored badge", () => {
     const { container } = renderCard(
       makeEntry({ text: "응답 스트림이 끊겼습니다.", systemNotice: "stream-error" }),
     );
     const card = cardRoot(container);
     expect(card.className).toContain("border-destructive");
-    expect(card.className).toContain("bg-destructive");
+    expect(card).toHaveClass("bg-card");
     expect(
       container.querySelector("[data-testid='assistant-restored-notice-badge']"),
     ).toBeNull();
@@ -192,7 +208,7 @@ describe("AssistantCard — live vs restored systemNotice (Issue #2113)", () => 
     // one on session reload.
     expect(card.className).not.toContain("destructive");
     expect(card.className).toContain("border-border");
-    expect(card.className).toContain("bg-muted");
+    expect(card).toHaveClass("bg-card");
     const badge = container.querySelector(
       "[data-testid='assistant-restored-notice-badge']",
     );

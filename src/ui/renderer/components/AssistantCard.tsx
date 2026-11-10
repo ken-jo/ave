@@ -82,9 +82,9 @@ function AssistantCardImpl({
     <div
       className={
         isRestoredNotice
-          ? "group relative min-w-0 w-full max-w-full overflow-visible rounded-lg border border-border/(--opacity-medium) bg-muted/(--opacity-subtle) p-3 text-sm ave-anim-message-in"
+          ? "group relative min-w-0 w-full max-w-full overflow-visible rounded-lg border border-border/(--opacity-medium) bg-card p-3 text-sm ave-anim-message-in"
           : isSystemNotice
-            ? "group relative min-w-0 w-full max-w-full overflow-visible rounded-lg border border-destructive/(--opacity-medium) bg-destructive/(--opacity-faint) p-3 text-sm shadow-sm ave-anim-message-in"
+            ? "group relative min-w-0 w-full max-w-full overflow-visible rounded-lg border border-destructive/(--opacity-medium) bg-card p-3 text-sm shadow-sm ave-anim-message-in"
             : "group relative min-w-0 w-full max-w-full overflow-visible py-1 text-sm ave-anim-message-in"
       }
     >

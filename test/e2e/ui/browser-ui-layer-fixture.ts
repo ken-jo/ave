@@ -15,6 +15,8 @@ export async function launchUiLayerFixture(width: number, options: {
   const model = "native-ui-layer-fixture";
   const fallbackModel = "native-ui-layer-backup";
   let fallbackPending = false;
+  let modelFailure: { status: 404 | 501; message: string } | undefined;
+  const modelFailures: Array<{ status: number; message: string; model: string }> = [];
   let url = "";
   let phase = 0;
   let tabId = "";
@@ -62,6 +64,13 @@ export async function launchUiLayerFixture(width: number, options: {
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (modelFailure && body.model === model) {
+      modelFailures.push({ ...modelFailure, model: body.model });
+      response.writeHead(modelFailure.status, { "content-type": "application/json", "retry-after": "0" }).end(JSON.stringify({
+        error: { type: "invalid_request_error", code: "model_not_found", message: modelFailure.message },
+      }));
+      return;
+    }
     if (fallbackPending && body.model === model) {
       response.writeHead(503, { "content-type": "application/json", "retry-after": "0" }).end(JSON.stringify({
         error: { message: "Model temporarily unavailable" },
@@ -161,6 +170,14 @@ export async function launchUiLayerFixture(width: number, options: {
       app, page, host, url, targetId, rendererTabId, composer, control, readPage,
       toolReady: () => continuation !== undefined,
       toolResults: () => [...results],
+      modelFailures: () => [...modelFailures],
+      failAfterPageClick: (message: string, status: 404 | 501 = 404) => {
+        assert(continuation, "The fixture must hold a model response before failing a subsequent request");
+        modelFailure = { message, status };
+        continuation("browser_click", { tabId, ref: buttonRef });
+        continuation = undefined;
+        finish = undefined;
+      },
       queueNextTurnTool: (name: string, args: Record<string, unknown>) => {
         assert(!queuedTurn, "A fixture turn is already queued");
         const receipt = ++nextTurnReceipt;

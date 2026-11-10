@@ -952,6 +952,32 @@
       ]
     },
     {
+      "group": "system-alert-layout",
+      "testFile": "test/e2e/ui/browser-ui-system-alert.spec.ts",
+      "testTitle": "system alert stays within its owning chat column at 1360x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/system-alert-green.log",
+      "resultLine": "✓  3 [background] › test/e2e/ui/browser-ui-system-alert.spec.ts:8:5 › system alert stays within its owning chat column at 1360x800 (5.5s)",
+      "sourceRevision": "b072a18a9c9bed83c8b67227fb0e53e5d6b3226f",
+      "sourceContext": "The helper records HEAD; actual dirty source status/diff hash and source/bundle hashes are retained in the capture proof.",
+      "evidenceFiles": [
+        "system-alert-layout-1360.png"
+      ]
+    },
+    {
+      "group": "system-alert-layout",
+      "testFile": "test/e2e/ui/browser-ui-system-alert.spec.ts",
+      "testTitle": "system alert stays within its owning chat column at 900x800",
+      "result": "passed",
+      "sourceRun": "test-results/ui-layer/system-alert-green.log",
+      "resultLine": "✓  4 [background] › test/e2e/ui/browser-ui-system-alert.spec.ts:8:5 › system alert stays within its owning chat column at 900x800 (5.2s)",
+      "sourceRevision": "b072a18a9c9bed83c8b67227fb0e53e5d6b3226f",
+      "sourceContext": "The helper records HEAD; actual dirty source status/diff hash and source/bundle hashes are retained in the capture proof.",
+      "evidenceFiles": [
+        "system-alert-layout-900.png"
+      ]
+    },
+    {
       "group": "composition",
       "testFile": "test/e2e/ui/browser-ui-toast.spec.ts",
       "testTitle": "real model fallback notice stays above the native page at 1360x800",
@@ -1071,6 +1097,7 @@
     "preserved-browser": 11,
     "capture-regression": 8,
     "composition": 38,
+    "system-alert-layout": 2,
     "focus-control": 6,
     "incoming-main-compatibility": 1
   },
@@ -1167,5 +1194,242 @@
       ]
     }
   },
-  "currentNativeFailures": 0
+  "currentNativeFailures": 0,
+  "systemAlertCorrections": {
+    "layout": {
+      "result": "passed",
+      "selectedCases": 2,
+      "sourceRun": "test-results/ui-layer/system-alert-green.log",
+      "sourceLogSha256": "ca8e8cd4520ef6ec34a7f612323a4ff0181f4cb2fa87aba531d998259fc43dc8",
+      "passingLines": [
+        "✓  3 [background] › test/e2e/ui/browser-ui-system-alert.spec.ts:8:5 › system alert stays within its owning chat column at 1360x800 (5.5s)",
+        "✓  4 [background] › test/e2e/ui/browser-ui-system-alert.spec.ts:8:5 › system alert stays within its owning chat column at 900x800 (5.2s)"
+      ],
+      "red": {
+        "sourceRun": "test-results/ui-layer/system-alert-red.log",
+        "sourceLogSha256": "1dce8a02449b24a1fc327790fd2ef66e4aac905726c584a235672abf4008020f",
+        "selectedFailureLines": [
+          "✘  1 [background] › test/e2e/ui/browser-ui-system-alert.spec.ts:162:5 › system alert stays within its owning chat column at 1360x800 (8.3s)",
+          "✘  3 [background] › test/e2e/ui/browser-ui-system-alert.spec.ts:162:5 › system alert stays within its owning chat column at 900x800 (9.3s)"
+        ]
+      },
+      "unit": {
+        "sourceRun": "test-results/ui-layer/system-alert-surface-green.log",
+        "sourceLogSha256": "8a00da10af14e644fcafb9054b088fc943bb4a4e2653c6a55dd0afac8b484b19",
+        "resultLines": [
+          "Test Files  3 passed (3)",
+          "Tests  78 passed (78)"
+        ]
+      },
+      "observations": [
+        {
+          "width": 1360,
+          "before": {
+            "cardRGBA": [
+              196,
+              20,
+              39,
+              13
+            ],
+            "outsideElements": 0,
+            "outsideText": 0,
+            "cardBounds": {
+              "x": 319,
+              "y": 209.3192901611328,
+              "width": 550,
+              "height": 75.49998474121094,
+              "top": 209.3192901611328,
+              "right": 869,
+              "bottom": 284.81927490234375,
+              "left": 319
+            },
+            "columnBounds": {
+              "x": 305,
+              "y": 77,
+              "width": 578,
+              "height": 710,
+              "top": 77,
+              "right": 883,
+              "bottom": 787,
+              "left": 305
+            },
+            "pageBounds": {
+              "x": 891,
+              "y": 166.5,
+              "width": 448,
+              "height": 608.5,
+              "top": 166.5,
+              "right": 1339,
+              "bottom": 775,
+              "left": 891
+            }
+          },
+          "after": {
+            "cardRGBA": [
+              249,
+              249,
+              249,
+              255
+            ],
+            "cardPixel": [
+              249,
+              249,
+              249,
+              255
+            ],
+            "pagePixel": [
+              180,
+              0,
+              200,
+              255
+            ],
+            "outsideElements": 0,
+            "outsideText": 0,
+            "cardBounds": {
+              "x": 319,
+              "y": 208.5,
+              "width": 550,
+              "height": 75.5,
+              "top": 208.5,
+              "right": 869,
+              "bottom": 284,
+              "left": 319
+            },
+            "columnBounds": {
+              "x": 305,
+              "y": 77,
+              "width": 578,
+              "height": 710,
+              "top": 77,
+              "right": 883,
+              "bottom": 787,
+              "left": 305
+            },
+            "pageBounds": {
+              "x": 891,
+              "y": 166.5,
+              "width": 448,
+              "height": 608.5,
+              "top": 166.5,
+              "right": 1339,
+              "bottom": 775,
+              "left": 891
+            },
+            "focus": {
+              "active": true,
+              "blurs": 0
+            }
+          },
+          "evidenceFile": "system-alert-layout-1360.png",
+          "sourceRevision": "b072a18a9c9bed83c8b67227fb0e53e5d6b3226f",
+          "dirtySourceStatus": " M src/engine/turn/__tests__/stream-collector.test.ts\n M src/engine/turn/stream-collector.ts\n M src/ui/renderer/__tests__/AssistantCard.test.tsx\n M src/ui/renderer/components/AssistantCard.tsx\n M src/ui/renderer/hooks/__tests__/use-chat-state-compact-scenarios.test.tsx\n M src/ui/renderer/hooks/use-chat-state.ts\n M src/ui/renderer/hooks/use-side-chat.ts\n?? src/ui/renderer/hooks/__tests__/stream-error-message.test.tsx\n",
+          "sourceDiffSha256": "98b8c50377211ab7046f5652ee045f75a4ebed0635f725b4ef4c38733bf74e22"
+        },
+        {
+          "width": 900,
+          "before": {
+            "cardRGBA": [
+              196,
+              20,
+              39,
+              13
+            ],
+            "outsideElements": 0,
+            "outsideText": 0,
+            "cardBounds": {
+              "x": 319,
+              "y": 213.50315856933594,
+              "width": 554,
+              "height": 75.50001525878906,
+              "top": 213.50315856933594,
+              "right": 873,
+              "bottom": 289.003173828125,
+              "left": 319
+            },
+            "columnBounds": {
+              "x": 305,
+              "y": 77,
+              "width": 582,
+              "height": 710,
+              "top": 77,
+              "right": 887,
+              "bottom": 787,
+              "left": 305
+            },
+            "pageBounds": {
+              "x": 431,
+              "y": 166.5,
+              "width": 448,
+              "height": 495,
+              "top": 166.5,
+              "right": 879,
+              "bottom": 661.5,
+              "left": 431
+            }
+          },
+          "after": {
+            "cardRGBA": [
+              249,
+              249,
+              249,
+              255
+            ],
+            "cardPixel": [
+              249,
+              249,
+              249,
+              255
+            ],
+            "pagePixel": [
+              180,
+              0,
+              200,
+              255
+            ],
+            "outsideElements": 0,
+            "outsideText": 0,
+            "cardBounds": {
+              "x": 319,
+              "y": 208.5,
+              "width": 554,
+              "height": 75.5,
+              "top": 208.5,
+              "right": 873,
+              "bottom": 284,
+              "left": 319
+            },
+            "columnBounds": {
+              "x": 305,
+              "y": 77,
+              "width": 582,
+              "height": 710,
+              "top": 77,
+              "right": 887,
+              "bottom": 787,
+              "left": 305
+            },
+            "pageBounds": {
+              "x": 431,
+              "y": 166.5,
+              "width": 448,
+              "height": 495,
+              "top": 166.5,
+              "right": 879,
+              "bottom": 661.5,
+              "left": 431
+            },
+            "focus": {
+              "active": true,
+              "blurs": 0
+            }
+          },
+          "evidenceFile": "system-alert-layout-900.png",
+          "sourceRevision": "b072a18a9c9bed83c8b67227fb0e53e5d6b3226f",
+          "dirtySourceStatus": " M src/engine/turn/__tests__/stream-collector.test.ts\n M src/engine/turn/stream-collector.ts\n M src/ui/renderer/__tests__/AssistantCard.test.tsx\n M src/ui/renderer/components/AssistantCard.tsx\n M src/ui/renderer/hooks/__tests__/use-chat-state-compact-scenarios.test.tsx\n M src/ui/renderer/hooks/use-chat-state.ts\n M src/ui/renderer/hooks/use-side-chat.ts\n?? src/ui/renderer/hooks/__tests__/stream-error-message.test.tsx\n",
+          "sourceDiffSha256": "98b8c50377211ab7046f5652ee045f75a4ebed0635f725b4ef4c38733bf74e22"
+        }
+      ],
+      "note": "The red run already had zero column-crossing visible descendants/text. The reproduced surface defect was alpha13/255; this item does not claim to have fixed an observed column-overflow defect."
+    }
+  }
 }
