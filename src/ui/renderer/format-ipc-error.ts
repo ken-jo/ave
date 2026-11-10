@@ -171,6 +171,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "attachment-not-restorable": "formatIpcError.attachmentNotRestorable",
   "invalid-session-id": "formatIpcError.invalidSessionId",
   "invalid-origin-session-id": "formatIpcError.invalidOriginSessionId",
+  "invalid-read-scope": "formatIpcError.invalidRequest",
   "origin-session-not-active": "formatIpcError.originSessionNotActive",
   "invalid-child-session-id": "formatIpcError.invalidChildSessionId",
   "sub-agent-reference-not-found": "formatIpcError.subAgentReferenceNotFound",

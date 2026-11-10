@@ -1108,6 +1108,7 @@ describe("Sidebar conversation row actions", () => {
     state.unread.add("sess-1");
     const { getByTestId, showNativeContextMenu, restore } = renderSidebar({
       conversationActions: asActions(state),
+      sessions: [sessionRow({ id: "sess-1", archivedAt: "2026-11-10T00:00:00Z", modifiedAt: new Date().toISOString() })],
     });
     fireEvent.click(getByTestId("sidebar-toggle-archived"));
     fireEvent.click(getByTestId("sidebar-session-menu-sess-1"));
@@ -1150,15 +1151,22 @@ describe("Sidebar conversation row actions", () => {
     }
   });
 
-  it("hides archived conversations until the archive toggle is used", () => {
+  it("requests archived conversations from main when the archive toggle is used", async () => {
     const state = rowState();
     state.archived.add("sess-1");
-    const { getByTestId, queryByTestId, restore } = renderSidebar({
+    const onSessionListOptionsChange = vi.fn();
+    const { getByTestId, queryByTestId, rerenderSidebar, restore } = renderSidebar({
       conversationActions: asActions(state),
+      sessions: [], hasArchived: true, onSessionListOptionsChange,
+    });
+    onSessionListOptionsChange.mockImplementationOnce(async (options) => {
+      expect(options.showArchived).toBe(true);
+      await Promise.resolve();
+      rerenderSidebar({ sessions: [sessionRow({ id: "sess-1", archivedAt: "2026-11-10T00:00:00Z", modifiedAt: new Date().toISOString() })] });
     });
     expect(queryByTestId("sidebar-session-sess-1")).toBeNull();
     fireEvent.click(getByTestId("sidebar-toggle-archived"));
-    expect(queryByTestId("sidebar-session-sess-1")).not.toBeNull();
+    await waitFor(() => expect(queryByTestId("sidebar-session-sess-1")).not.toBeNull());
     restore();
   });
 
@@ -1436,20 +1444,30 @@ describe("Sidebar project tree paging", () => {
     }));
   }
 
-  it("shows a project's first twenty rows, counting its terminals and pages, and opens the rest from the last row", () => {
-    const conversations = manyConversations(22, "일반");
+  it("requests the next main-projected page with conversation roots and surfaces", async () => {
+    const conversations = manyConversations(22, "일반", inDefault.selectedProject);
     const mainSurfaces: MainSurface[] = [1, 2, 3].map((ordinal) => (
       { tabId: `terminal:0000000a-${ordinal}`, kind: "terminal", ordinal, url: null, projectRoot: DEFAULT_ROOT }
     ));
-    const { getByTestId, queryByTestId, container, restore } = renderSidebar({ ...inDefault, sessions: conversations, mainSurfaces, currentSessionId: "일반-0" });
+    const onSessionListOptionsChange = vi.fn();
+    const { getByTestId, queryByTestId, container, rerenderSidebar, restore } = renderSidebar({
+      ...inDefault, sessions: conversations.slice(0, 17), hiddenRoots: { [DEFAULT_ROOT]: 5 },
+      onSessionListOptionsChange, mainSurfaces, currentSessionId: "일반-0",
+    });
+    onSessionListOptionsChange.mockImplementationOnce(async () => {
+      await Promise.resolve();
+      rerenderSidebar({ sessions: conversations, hiddenRoots: {} });
+    });
     try {
       const rows = () => container.querySelectorAll('[role="treeitem"]:not([data-tree-key^="more:"])').length;
       expect(rows()).toBe(20);
+      expect(countRenderedRows(conversations, queryByTestId)).toBe(17);
       const more = getByTestId("sidebar-tree-more-project");
       expect(more.getAttribute("role")).toBe("treeitem");
       expect(more.textContent).toBe("이전 항목 5개 더 보기");
       fireEvent.click(more);
-      expect(rows()).toBe(25);
+      expect(onSessionListOptionsChange.mock.calls.at(-1)?.[0]?.rootLimits?.[DEFAULT_ROOT]).toBe(40);
+      await waitFor(() => expect(rows()).toBe(25));
       expect(countRenderedRows(conversations, queryByTestId)).toBe(22);
       expect(queryByTestId("sidebar-tree-more-project")).toBeNull();
     } finally {
@@ -1468,12 +1486,17 @@ describe("Sidebar project tree paging", () => {
     }
   });
 
-  it("pages the rows that survive the archive filter", () => {
-    const conversations = manyConversations(24, "보관");
+  it("pages the rows that survive the archive filter", async () => {
+    const conversations = manyConversations(24, "보관", inDefault.selectedProject);
     const archived = new Set(["보관-1", "보관-3", "보관-5"]);
-    const { getByTestId, queryByTestId, restore } = renderSidebar({
+    const visible = conversations.filter((session) => !archived.has(session.id));
+    const onSessionListOptionsChange = vi.fn();
+    const { getByTestId, queryByTestId, rerenderSidebar, restore } = renderSidebar({
       ...inDefault,
-      sessions: conversations,
+      sessions: visible.slice(0, 20),
+      hiddenRoots: { [DEFAULT_ROOT]: 1 },
+      hasArchived: true,
+      onSessionListOptionsChange,
       currentSessionId: "보관-0",
       conversationActions: {
         isArchived: (id: string) => archived.has(id),
@@ -1487,19 +1510,26 @@ describe("Sidebar project tree paging", () => {
         onDelete: vi.fn(),
       },
     });
+    onSessionListOptionsChange.mockImplementationOnce(async (options) => {
+      expect(options.showArchived).toBe(true);
+      await Promise.resolve();
+      rerenderSidebar({ sessions: conversations.slice(0, 20), hiddenRoots: { [DEFAULT_ROOT]: 4 } });
+    });
     try {
       // A page is a page of rows the reader can SEE: archived rows leave the list before it is paged.
       expect(countRenderedRows(conversations, queryByTestId)).toBe(20);
       expect(queryByTestId("sidebar-session-보관-1")).toBeNull();
       expect(getByTestId("sidebar-tree-more-project").textContent).toBe("이전 항목 1개 더 보기");
       fireEvent.click(getByTestId("sidebar-toggle-archived"));
+      await waitFor(() => expect(getByTestId("sidebar-session-보관-1")).toBeVisible());
+      expect(countRenderedRows(conversations, queryByTestId)).toBe(20);
       expect(getByTestId("sidebar-tree-more-project").textContent).toBe("이전 항목 4개 더 보기");
     } finally {
       restore();
     }
   });
 
-  it("gives each all-projects group its own page of six and a row that opens the rest", () => {
+  it("gives each all-projects group its own page of six and a row that opens the rest", async () => {
     const THIRD_ROOT = "C:\\Users\\example\\workspace\\ave-project\\third-app";
     const conversations = [
       ...manyConversations(9, "프로젝트", { projectRoot: OTHER_ROOT, projectName: "other-app" }),
@@ -1507,8 +1537,11 @@ describe("Sidebar project tree paging", () => {
     ];
     const otherRows = conversations.filter((session) => session.projectRoot === OTHER_ROOT);
     const thirdRows = conversations.filter((session) => session.projectRoot === THIRD_ROOT);
-    const { getByTestId, queryByTestId, restore } = renderSidebar({
-      sessions: conversations,
+    const onSessionListOptionsChange = vi.fn();
+    const { getByTestId, queryByTestId, rerenderSidebar, restore } = renderSidebar({
+      sessions: [...otherRows.slice(0, 6), ...thirdRows.slice(0, 6)],
+      hiddenRoots: { [OTHER_ROOT]: 3, [THIRD_ROOT]: 3 },
+      onSessionListOptionsChange,
       currentSessionId: "프로젝트-0",
       projects: [
         { projectRoot: DEFAULT_ROOT, projectName: "ave", isDefault: true },
@@ -1516,13 +1549,18 @@ describe("Sidebar project tree paging", () => {
         { projectRoot: THIRD_ROOT, projectName: "third-app" },
       ],
     });
+    onSessionListOptionsChange.mockImplementationOnce(async (options) => {
+      expect(options.rootLimits[OTHER_ROOT]).toBe(12);
+      await Promise.resolve();
+      rerenderSidebar({ sessions: [...otherRows, ...thirdRows.slice(0, 6)], hiddenRoots: { [THIRD_ROOT]: 3 } });
+    });
     const moreId = "sidebar-tree-more-C-Users-example-workspace-ave-project-other-app";
     try {
       expect(countRenderedRows(otherRows, queryByTestId)).toBe(6);
       expect(countRenderedRows(thirdRows, queryByTestId)).toBe(6);
       expect(getByTestId(moreId).textContent).toBe("이전 항목 3개 더 보기");
       fireEvent.click(getByTestId(moreId));
-      expect(countRenderedRows(otherRows, queryByTestId)).toBe(9);
+      await waitFor(() => expect(countRenderedRows(otherRows, queryByTestId)).toBe(9));
       expect(queryByTestId(moreId)).toBeNull();
       // One group opening says nothing about its neighbours.
       expect(countRenderedRows(thirdRows, queryByTestId)).toBe(6);
@@ -1771,10 +1809,12 @@ describe("Sidebar — every conversation family", () => {
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
     const { getByTestId, getAllByTestId, onLoadSession, restore } = renderSidebar({
-      sessions: [{ ...sideChatRow, paneTabId: tabId, projectRoot: root }],
+      sessions: [{ ...sideChatRow, paneTabId: tabId, projectRoot: root },
+        sessionRow({ id: "pane-child", title: "Delegated research", modifiedAt: new Date().toISOString(), family: "subagent", sessionKind: "subagent", originSessionId: sideChatRow.id, projectRoot: root })],
       projects: [{ projectRoot: root, projectName: "Pane project" }],
       mainSurfaces: [{ tabId, kind, ordinal: 1, url: null, projectRoot: root }],
       onOpenSideChat, onOpenPaneChat,
+      conversationActions: { isArchived: () => false, isUnread: () => false, isResponding: (id) => id === "pane-child", onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() },
     }, { browserTabs });
     try {
       await waitFor(() => expect(getByTestId("sidebar-surface-chats-" + tabId).contains(getByTestId("sidebar-session-side-1"))).toBe(true));
@@ -1783,6 +1823,10 @@ describe("Sidebar — every conversation family", () => {
       // The pane chat sits one level under its surface's row, right after it.
       expect(getByTestId("sidebar-surface-tree-" + tabId).nextElementSibling).toBe(getByTestId("sidebar-surface-chats-" + tabId));
       expect(getByTestId("sidebar-row-session-side-1").getAttribute("aria-level")).toBe("3");
+      expect(getByTestId("sidebar-row-session-side-1")).toHaveAttribute("aria-expanded", "true");
+      expect(getByTestId("sidebar-row-session-pane-child")).toHaveAttribute("aria-level", "4");
+      expect(getByTestId(`sidebar-surface-chats-${tabId}`)).toContainElement(getByTestId("sidebar-row-session-pane-child"));
+      expect(getAllByTestId("sidebar-row-session-pane-child")).toHaveLength(1);
       fireEvent.click(getByTestId("sidebar-session-side-1"));
       expect(onOpenPaneChat).toHaveBeenCalledWith(tabId);
       expect(onOpenSideChat).not.toHaveBeenCalled();
@@ -1859,7 +1903,16 @@ describe("Sidebar — every conversation family", () => {
       id: `paged-${index + 1}`, title: `대화 ${index + 1}`, projectRoot: root,
       modifiedAt: new Date(Date.now() - (index + 1) * 60 * 1000).toISOString(),
     }));
-    const { getByTestId, restore } = renderSidebar({ sessions: chats, projects: [{ projectRoot: root, projectName: "Paged" }] });
+    const onSessionListOptionsChange = vi.fn();
+    const { getByTestId, rerenderSidebar, restore } = renderSidebar({
+      sessions: chats.slice(0, 6), hiddenRoots: { [root]: 2 }, onSessionListOptionsChange,
+      projects: [{ projectRoot: root, projectName: "Paged" }],
+    });
+    onSessionListOptionsChange.mockImplementationOnce(async (options) => {
+      expect(options.rootLimits[root]).toBe(12);
+      await Promise.resolve();
+      rerenderSidebar({ sessions: chats, hiddenRoots: {} });
+    });
     const guidesOf = (row: Element) => [...row.querySelectorAll<HTMLElement>("[data-tree-guide]")].map((guide) => guide.dataset.treeGuide);
     const moreRow = () => document.querySelector(`[data-tree-key="more:group:${root}"]`);
     try {
@@ -1922,22 +1975,23 @@ describe("Sidebar — every conversation family", () => {
       getSessionBindings: () => snapshot,
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
-    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }] }, { browserTabs });
+    const view = renderSidebar({ sessions: [], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }] }, { browserTabs });
     try {
       expect(view.queryByText("이전 터미널 채팅")).toBeNull();
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
       await act(async () => resolveBindings({ revision: 1, nativeBrowserTabIds: [], bindings: [{ sessionId: sideChatRow.id, browserTabIds: [], terminalTabIds: [tabId] }] }));
+      view.rerenderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }] });
       expect(view.getByTestId("sidebar-surface-chats-" + tabId).contains(view.getByTestId("sidebar-session-side-1"))).toBe(true);
       expect(view.queryByText("이전 터미널 채팅")).toBeNull();
     } finally { view.restore(); }
   });
 
-  it("omits a globally listed unarchived pane chat outside this window instead of calling it former", async () => {
+  it("renders the empty main projection for an out-of-window pane chat without former provenance", async () => {
     const browserTabs = {
       getSessionBindings: vi.fn(async () => ({ revision: 1, nativeBrowserTabIds: [], bindings: [] })),
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
-    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: "terminal:other-window" }] }, { browserTabs });
+    const view = renderSidebar({ sessions: [] }, { browserTabs });
     try {
       await act(async () => {});
       expect(view.queryByText("이전 터미널 채팅")).toBeNull();
@@ -1952,16 +2006,23 @@ describe("Sidebar — every conversation family", () => {
       getSessionBindings: async () => ({ revision: 1, nativeBrowserTabIds: [], bindings: [] }),
       onSessionBindingsChanged: () => () => {},
     } as unknown as AveApi["browserTabs"];
-    const view = renderSidebar({ sessions: [{ ...sideChatRow, projectRoot: root, paneTabId: "terminal:closed", archivedAt: "2026-10-29T00:00:00Z" }], projects: [{ projectRoot: root, projectName: "Closed pane project" }], onOpenSideChat }, { browserTabs });
+    const onSessionListOptionsChange = vi.fn();
+    const archivedRow = { ...sideChatRow, projectRoot: root, paneTabId: "terminal:closed", archivedAt: "2026-10-29T00:00:00Z" };
+    const view = renderSidebar({ sessions: [], hasArchived: true, onSessionListOptionsChange, projects: [{ projectRoot: root, projectName: "Closed pane project" }], onOpenSideChat }, { browserTabs });
     try {
       await act(async () => {});
+      onSessionListOptionsChange.mockImplementation(async (options) => {
+        await Promise.resolve();
+        view.rerenderSidebar({ sessions: options.showArchived ? [archivedRow] : [] });
+      });
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
       fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
+      await waitFor(() => expect(view.getByTestId("sidebar-session-side-1")).toBeVisible());
       expect(view.getByTestId("sidebar-sections").textContent).toContain("이전 터미널 채팅");
       fireEvent.click(view.getByTestId("sidebar-session-side-1"));
       expect(onOpenSideChat).toHaveBeenCalledWith("side-1", "sess-1");
       fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
-      expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
+      await waitFor(() => expect(view.queryByTestId("sidebar-session-side-1")).toBeNull());
     } finally { view.restore(); }
   });
 
@@ -1978,16 +2039,24 @@ describe("Sidebar — every conversation family", () => {
     const session: SessionSummary = { ...sideChatRow, paneTabId: tabId };
     const conversationActions = { isArchived: () => Boolean(session.archivedAt), isUnread: () => false, isResponding: () => false,
       onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() };
-    const view = renderSidebar({ sessions: [session], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }], onOpenSideChat, onOpenPaneChat, conversationActions }, { browserTabs, locale });
+    const onSessionListOptionsChange = vi.fn();
+    const view = renderSidebar({ sessions: [session], onSessionListOptionsChange, mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }], onOpenSideChat, onOpenPaneChat, conversationActions }, { browserTabs, locale });
     try {
       await waitFor(() => view.getByTestId("sidebar-surface-chats-" + tabId));
       act(() => {
         session.archivedAt = "2026-10-29T00:00:00Z";
         update({ revision: 2, nativeBrowserTabIds: [], bindings: [] });
       });
+      view.rerenderSidebar({ sessions: [], hasArchived: true });
+      onSessionListOptionsChange.mockImplementationOnce(async (options) => {
+        expect(options.showArchived).toBe(true);
+        await Promise.resolve();
+        view.rerenderSidebar({ sessions: [session] });
+      });
       expect(view.queryByTestId("sidebar-surface-chats-" + tabId)).toBeNull();
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
       fireEvent.click(view.getByTestId("sidebar-toggle-archived"));
+      await waitFor(() => expect(view.getByTestId("sidebar-session-side-1")).toBeVisible());
       expect(view.getByTestId(DEFAULT_GROUP).textContent).toContain(locale === "ko" ? "이전 터미널 채팅" : "Former terminal chat");
       expect(view.getByTestId("sidebar-surface-tree-" + tabId).contains(view.getByTestId("sidebar-session-side-1"))).toBe(false);
       fireEvent.click(view.getByTestId("sidebar-session-side-1"));
@@ -1999,11 +2068,13 @@ describe("Sidebar — every conversation family", () => {
   it("omits a renderer-only pane claim without a host binding", () => {
     const tabId = "terminal:unbound";
     const onOpenPaneChat = vi.fn();
-    const view = renderSidebar({ sessions: [{ ...sideChatRow, paneTabId: tabId }], mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }], onOpenPaneChat });
+    const onSessionListOptionsChange = vi.fn();
+    const view = renderSidebar({ sessions: [], onSessionListOptionsChange, mainSurfaces: [{ tabId, kind: "terminal", ordinal: 1, url: null, projectRoot: "/ws" }], onOpenPaneChat });
     try {
       expect(view.queryByTestId("sidebar-surface-chats-" + tabId)).toBeNull();
       expect(view.queryByTestId("sidebar-session-side-1")).toBeNull();
       expect(onOpenPaneChat).not.toHaveBeenCalled();
+      expect(onSessionListOptionsChange.mock.calls.at(-1)?.[0]?.surfaces).toEqual([expect.objectContaining({ id: tabId, boundSessionIds: [] })]);
     } finally { view.restore(); }
   });
 
@@ -2468,4 +2539,58 @@ describe("Sidebar project tree (cases 05, 18, 19, 20)", () => {
       restore();
     }
   });
+});
+
+it.each(["ko", "en"] as const)("nests child rows with localized controls and the existing arrow navigation (%s)", (locale) => {
+  const onOpenSubAgent = vi.fn();
+  const parent = sessionRow({ id: "parent", title: "Parent", modifiedAt: new Date().toISOString() });
+  const child = sessionRow({ id: "child", title: "Child", family: "subagent", sessionKind: "subagent", originSessionId: "parent", modifiedAt: new Date().toISOString() });
+  const view = renderSidebar({ sessions: [child, parent], currentSessionId: "elsewhere", onOpenSubAgent }, { locale });
+  try {
+    const row = view.getByTestId("sidebar-row-session-parent");
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    expect(view.queryByTestId("sidebar-row-session-child")).toBeNull();
+    const toggle = view.getByTestId("sidebar-session-toggle-parent");
+    expect(toggle.getAttribute("aria-label")).not.toContain("sidebar.");
+    fireEvent.click(toggle);
+    const childRow = view.getByTestId("sidebar-row-session-child");
+    expect(Number(childRow.getAttribute("aria-level"))).toBe(Number(row.getAttribute("aria-level")) + 1);
+    act(() => row.focus());
+    fireEvent.keyDown(row, { key: "ArrowRight" });
+    expect(childRow).toHaveFocus();
+    fireEvent.keyDown(childRow, { key: "Enter" });
+    expect(onOpenSubAgent).toHaveBeenCalledWith(child);
+    fireEvent.keyDown(childRow, { key: "ArrowLeft" });
+    expect(row).toHaveFocus();
+    fireEvent.keyDown(row, { key: "ArrowLeft" });
+    expect(view.queryByTestId("sidebar-row-session-child")).toBeNull();
+    view.rerenderSidebar({ activeSubAgentSessionId: "child" });
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    expect(view.getByTestId("sidebar-row-session-child")).toHaveAttribute("aria-selected", "true");
+    view.rerenderSidebar({ activeSubAgentSessionId: undefined, conversationActions: { isArchived: () => false, isUnread: () => false, isResponding: (id) => id === child.id, onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() } });
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    view.rerenderSidebar({ sessions: [child, parent], conversationActions: { isArchived: () => false, isUnread: () => false, isResponding: () => false, onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn() } });
+    expect(row).toHaveAttribute("aria-expanded", "false");
+  } finally { cleanup(); view.restore(); }
+});
+
+it.each([false, true])("keeps a branching parent's status and pending badge outside the expander (working=%s)", (working) => {
+  const parent = sessionRow({ id: "status-parent", title: "Parent", modifiedAt: new Date().toISOString() });
+  const child = sessionRow({ id: "status-child", title: "Child", modifiedAt: new Date().toISOString(), family: "subagent", sessionKind: "subagent", originSessionId: parent.id });
+  const view = renderSidebar({ sessions: [parent, child], currentSessionId: parent.id,
+    pendingAnswerSessionIds: new Set([parent.id]),
+    conversationActions: {
+      isArchived: () => false, isUnread: () => false, isResponding: (id) => working && id === parent.id,
+      onRename: vi.fn(), onSetArchived: vi.fn(), onSetUnread: vi.fn(), onShare: vi.fn(), onCopy: vi.fn(), onDelete: vi.fn(),
+    },
+  });
+  try {
+    const expander = view.getByTestId(`sidebar-session-toggle-${parent.id}`);
+    const status = view.getByTestId(working ? `sidebar-session-responding-${parent.id}` : `sidebar-conversation-glyph-${parent.id}`);
+    const badge = view.getByTestId(`sidebar-pending-answer-${parent.id}`);
+    expect(status.closest(".invisible")).toBeNull();
+    expect(badge.closest(".invisible")).toBeNull();
+    expect(expander).not.toContainElement(status);
+    expect(expander.parentElement).not.toBe(status.parentElement);
+  } finally { cleanup(); view.restore(); }
 });

@@ -1186,6 +1186,7 @@ export function buildInternalApiSurface() {
     return () => ipcRenderer.removeListener(CHANNELS.sessionGoal.changed, listener);
   },
 
+
   // agent_spawn; sub-agent lifecycle event stream
   onAgentSpawnEvent: (
     handler: (event: AgentSpawnEvent<ChatEntry>) => void,

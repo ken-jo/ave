@@ -10,7 +10,16 @@ export interface SubAgentSuspension {
 
 export type SubAgentRunStatus = "running" | "waiting" | "done" | "error" | "interrupted";
 
-/** Keep lifecycle fixtures typed to this shared contract so required taskState cannot disappear through record-shaped adapters. */
+export interface SessionActivity {
+  sessionId: string;
+  running: boolean;
+  attention: boolean;
+}
+
+export interface SessionActivitySnapshot {
+  sessions: SessionActivity[];
+}
+
 export interface AgentSpawnEvent<TEntry = unknown> {
   spawnId: string;
   /** Every frame requires its parent session ID; tiles receive all frames and must filter to their own conversation. */
