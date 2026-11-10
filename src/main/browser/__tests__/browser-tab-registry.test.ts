@@ -59,6 +59,42 @@ afterEach(() => {
 
 describe("BrowserTabRegistry", () => {
 
+  it("allows native editing menus only after actual user takeover of a live presented page", async () => {
+    const { registry, ops } = setup();
+    const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });
+    const requestId = ops.at(-1)?.request.requestId;
+    if (!requestId) throw new Error("Missing native creation request");
+    const guest = new FakeGuest(499, "about:blank");
+    guest.focused = true;
+    registry.guestAttached(guest, 1, { kind: "native-view" });
+    registry.bindTab(1, { tabId: "native-page", webContentsId: guest.id, requestId, parked: false });
+    const opened = await opening;
+    if (!opened.ok) throw new Error("Missing independent page");
+    const tab = registry.liveTab(opened.tabId);
+    if (!tab) throw new Error("Missing independent page binding");
+    expect(tab.controlMode).toBe("agent-active");
+    expect(registry.allowsNativeContextMenu(guest.id)).toBe(false);
+    registry.endTurnControl(ACTOR.sessionId, "finished-turn");
+    expect(tab.controlMode).toBe("human");
+    expect(registry.allowsNativeContextMenu(guest.id)).toBe(false);
+    registry.userFocus(guest.id, true);
+    expect(tab.controlMode).toBe("human-paused");
+    expect(registry.allowsNativeContextMenu(guest.id)).toBe(true);
+    registry.bindTab(1, { tabId: "native-page", webContentsId: guest.id, parked: true });
+    expect(registry.allowsNativeContextMenu(guest.id)).toBe(false);
+    registry.bindTab(1, { tabId: "native-page", webContentsId: guest.id, parked: false });
+    expect(registry.allowsNativeContextMenu(guest.id)).toBe(true);
+    expect(registry.resume(1, "native-page")).toBe(true);
+    expect(registry.allowsNativeContextMenu(guest.id)).toBe(false);
+    guest.destroyed = true;
+    expect(registry.allowsNativeContextMenu(guest.id)).toBe(false);
+    expect(registry.allowsNativeContextMenu(999)).toBe(false);
+    const embedded = new FakeGuest(498);
+    registry.guestAttached(embedded, 1);
+    registry.bindTab(1, { tabId: "embedded-page", webContentsId: embedded.id, parked: false });
+    expect(registry.allowsNativeContextMenu(embedded.id)).toBe(false);
+  });
+
   it("coalesces duplicate human pause receipts while preserving explicit stop invalidation", async () => {
     const { registry, ops, control } = setup();
     const opening = registry.requestTabOp(1, { op: "new", url: "https://a.example/", actor: ACTOR });

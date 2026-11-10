@@ -482,6 +482,13 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return this.attached.get(guestId)?.kind === "native-view";
   }
 
+  allowsNativeContextMenu(guestId: number): boolean {
+    const entry = this.attached.get(guestId);
+    if (entry?.kind !== "native-view" || entry.parked !== false || entry.guest.isDestroyed()) return false;
+    return [...this.tabs.values()].some(tab => tab.windowId === entry.windowId && tab.guest === entry.guest
+      && tab.controlMode === "human-paused");
+  }
+
   authorizeNativeSurface(windowId: number, rendererTabId: string, requestId?: string): boolean {
     this.restoreBindings(windowId);
     const key = windowTabKey(windowId, rendererTabId);
