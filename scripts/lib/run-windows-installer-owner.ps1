@@ -39,6 +39,7 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
   $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
   $env:HOME = $env:USERPROFILE
   $env:AVE_HOME = Join-Path $env:USERPROFILE '.ave'
+  $env:AVE_WINDOWS_SMOKE_OWNER_SID = $ExpectedUserSid
   $env:HOMEDRIVE = [IO.Path]::GetPathRoot($env:USERPROFILE).TrimEnd('\')
   $env:HOMEPATH = $env:USERPROFILE.Substring($env:HOMEDRIVE.Length)
   $env:TEMP = Join-Path $env:LOCALAPPDATA 'Temp'
@@ -68,7 +69,7 @@ if ($OwnerBootstrap -or $ElevatedOwner) {
   }
   if ($admin) { throw 'The owner bootstrap did not receive a filtered token' }
   $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ElevatedOwner -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6}' -f $PSCommandPath, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $ExpectedUserSid, $DeadlineUnixMs
-  $child = Start-Process -FilePath $powershell -ArgumentList $command -Verb RunAs -WorkingDirectory $WorkingDirectory -PassThru
+  $child = Start-Process -FilePath $powershell -ArgumentList $command -Verb RunAs -WorkingDirectory $OutputDirectory -PassThru
   $code = Wait-OwnerProcess $child 10000
   exit $code
 }
@@ -97,12 +98,16 @@ try {
   $sid = $user.SID.Value
   $administrators = (Get-LocalGroup -SID 'S-1-5-32-544').Name
   Add-LocalGroupMember -Group $administrators -Member $user
-  & icacls.exe $OutputDirectory /grant "${sid}:(OI)(CI)F" | Out-Null
+  & icacls.exe $OutputDirectory /grant "*${sid}:(OI)(CI)F" | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Could not grant the temporary owner its report directory' }
+  # The filtered bootstrap needs only this staged script, not access to the
+  # runner account's workspace. The elevated owner opens the checkout later.
+  $ownerScript = Join-Path $OutputDirectory 'owner.ps1'
+  Copy-Item -LiteralPath $PSCommandPath -Destination $ownerScript
   $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$name", $password)
-  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OwnerBootstrap -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6}' -f $PSCommandPath, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $sid, $DeadlineUnixMs
+  $command = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -OwnerBootstrap -NodeExecutable "{1}" -ArgumentsBase64 {2} -WorkingDirectory "{3}" -OutputDirectory "{4}" -ExpectedUserSid {5} -DeadlineUnixMs {6}' -f $ownerScript, $NodeExecutable, $ArgumentsBase64, $WorkingDirectory, $OutputDirectory, $sid, $DeadlineUnixMs
   Write-Output "[windows-installer-smoke] temporary split-token owner: $sid; original runner: $($identity.User.Value)"
-  $child = Start-Process -FilePath $powershell -ArgumentList $command -Credential $credential -LoadUserProfile -WorkingDirectory $WorkingDirectory -PassThru -RedirectStandardOutput (Join-Path $OutputDirectory 'bootstrap-stdout.log') -RedirectStandardError (Join-Path $OutputDirectory 'bootstrap-stderr.log')
+  $child = Start-Process -FilePath $powershell -ArgumentList $command -Credential $credential -LoadUserProfile -WorkingDirectory $OutputDirectory -PassThru -RedirectStandardOutput (Join-Path $OutputDirectory 'bootstrap-stdout.log') -RedirectStandardError (Join-Path $OutputDirectory 'bootstrap-stderr.log')
   $code = Wait-OwnerProcess $child 5000
   foreach ($file in @('stdout.log', 'stderr.log', 'bootstrap-stdout.log', 'bootstrap-stderr.log', 'filtered-owner.json', 'elevated-owner.json')) {
     $path = Join-Path $OutputDirectory $file
@@ -114,7 +119,7 @@ try {
 } finally {
   if ($user -and ($code -ne 0 -or $failure)) {
     try {
-      & taskkill.exe /F /T /FI "USERNAME eq $env:COMPUTERNAME\$($user.Name)" | Out-Null
+      & taskkill.exe /F /T /FI "USERNAME eq $env:COMPUTERNAME\$($user.Name)" /IM '*' | Out-Null
       if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 128) { throw 'Could not stop the temporary owner process trees' }
     } catch { $cleanupErrors += $_.Exception.Message }
   }
@@ -136,8 +141,8 @@ try {
   } catch { $cleanupErrors += $_.Exception.Message }
   try {
     if ($sid) {
-      $profile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'"
-      if ($profile) { $profile | Remove-CimInstance }
+      $ownerProfile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'"
+      if ($ownerProfile) { $ownerProfile | Remove-CimInstance }
     }
   } catch { $cleanupErrors += $_.Exception.Message }
   try { if ($user) { Remove-LocalUser -SID $user.SID } } catch { $cleanupErrors += $_.Exception.Message }

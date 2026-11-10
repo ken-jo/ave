@@ -146,8 +146,14 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(owner).toContain("-Verb RunAs");
     expect(owner).toContain("finally {");
     expect(owner).toContain("Remove-LocalUser -SID $user.SID");
-    expect(owner).toContain("$profile | Remove-CimInstance");
+    expect(owner).toContain("$ownerProfile | Remove-CimInstance");
     expect(owner).toContain("-Value $saved[$name]");
+    expect(owner).toMatch(/\/grant "\*\$\{sid\}:\(OI\)\(CI\)F"/);
+    const workflow = readRepoFile(".github/workflows/build-installers.yml");
+    const preflight = workflow.indexOf("name: Verify native owner token flow");
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(preflight).toBeLessThan(workflow.indexOf("name: Install dependencies"));
+    expect(workflow).toContain("run: node test/scripts/probes/windows-owner-flow.mjs");
   });
 
   it("checks owned keys in both hives without fixture cleanup masking an empty root", () => {
@@ -1888,7 +1894,8 @@ describe("Windows NSIS installer smoke contracts", () => {
       "AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}",
     );
     expect(workflow).not.toContain("--skip-windows-installer-smoke");
-    expect(workflow.match(/^ {10}AVE_ALLOW_(DISPOSABLE_WINDOWS_INSTALLER|DESTRUCTIVE_UNINSTALL)_SMOKE: .*$/gmu)).toHaveLength(2);
+    expect(workflow.match(/^ {6}AVE_ALLOW_(DISPOSABLE_WINDOWS_INSTALLER|DESTRUCTIVE_UNINSTALL)_SMOKE: .*$/gmu)).toHaveLength(2);
+    expect(workflow).toMatch(/name: Verify native owner token flow\n\s+if: matrix\.target == 'win'\n\s+run: node test\/scripts\/probes\/windows-owner-flow\.mjs/);
 
     const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
     expect(smoke).toContain('"AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE"');

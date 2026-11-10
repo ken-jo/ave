@@ -131,6 +131,10 @@ jobs:
       # home; keep it in the workspace, where the cache step below saves it.
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
+      # Both native owner preflight and installer teardown mutate only the
+      # disposable hosted Windows job. Other matrix entries receive no grant.
+      AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}
+      AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -220,6 +224,9 @@ jobs:
             test "$(x86_64-linux-gnu-gcc -dumpmachine)" = x86_64-linux-gnu
           fi
           dpkg-query -W -f='${Package} ${Version} ${Architecture}\n' "${tools[@]#*:}" 2>/dev/null | sort -u || true
+      - name: Verify native owner token flow
+        if: matrix.target == 'win'
+        run: node test/scripts/probes/windows-owner-flow.mjs
       - name: Install dependencies
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -300,13 +307,6 @@ jobs:
           steps.launch.outputs.run == 'true'
           && (matrix.target != 'mac' || steps.build.outputs.skip_sign != 'true')
         shell: bash
-        env:
-          # Explicitly authorize machine-wide mutation on the disposable
-          # Windows runner, then verify both preservation and full cleanup.
-          AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}
-          # Hosted Windows runners are disposable, so the installer smoke can
-          # verify both /KEEP_APP_DATA preservation and the full uninstall cleanup.
-          AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}
         run: |
           set -euo pipefail
           if [ "${{ matrix.target }}" = "linux" ]; then
