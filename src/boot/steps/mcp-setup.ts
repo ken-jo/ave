@@ -25,7 +25,7 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
     bootAuditLogger,
     mcpInputResolverFactory,
     // Resolve the window manager at emit time; it is installed after boot context creation.
-    createMcpServerDisconnectedSink(),
+    createMcpServerDisconnectedSink({ getAllWindows: () => ctx.host.desktop?.getAppWindows() ?? [] }),
     ctx.settingsService,
     {
       redirectCatchers: new AuthRedirectCatchers(),

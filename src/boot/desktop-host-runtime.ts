@@ -1,12 +1,14 @@
-import { app, BrowserWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
+import { closeMainWindowDocuments } from "../main/main-window-host.js";
+import { app, BaseWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
 import { desktopSecretEncryption } from "../main/desktop-secret-encryption.js";
 import { browserCapturePixelRatio } from "../main/browser/browser-capture-desktop.js";
+import { browserGuestOwnerWindow } from "../main/browser/browser-guest-owner.js";
 import { join } from "node:path";
 import { createDesktopNetworkFetch } from "./steps/desktop-network-fetch.js";
 import { prepareDesktopRelease } from "./steps/desktop-release.js";
 import { adaptPowerMonitor } from "../main/idle-scheduler.js";
 import { getAppWindows } from "../main/main-window.js";
-import { isAppShutdownStarted, findSessionMainWindowContents, findTerminalMainWindowContents, getMainWindows, mainWindowForContents, getPrimaryMainWindow } from "../main/app-state.js";
+import { isAppShutdownStarted, findSessionMainWindowContents, findTerminalMainWindowContents, getMainWindows, getPrimaryMainWindow } from "../main/app-state.js";
 import { isAppUpdateInstallRequested } from "../main/app-update-install-intent.js";
 import { unregisterAllGlobalShortcuts } from "../main/global-shortcuts.js";
 import { openAuthWindow, clearAuthPartition, openOAuthInAuthWindow } from "../main/auth-window-service.js";
@@ -44,7 +46,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       hasSingleInstanceLock: () => app.hasSingleInstanceLock(),
       getAppWindows,
       openOAuthLogin: openLogin,
-      getFocusedWindow: () => BrowserWindow.getFocusedWindow(),
+      getFocusedWindow: () => BaseWindow.getFocusedWindow(),
       findSessionSurface: findSessionMainWindowContents,
       findTerminalSurface: findTerminalMainWindowContents,
       getAuthPartition: (partition) => session.fromPartition(partition),
@@ -64,7 +66,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       initializeNotificationPresenter: () => Notification.isSupported(),
       notificationOptions: {
         isReady: () => app.isReady(),
-        isAnyWindowFocused: () => BrowserWindow.getAllWindows().some((window) => !window.isDestroyed() && window.isFocused()),
+        isAnyWindowFocused: () => BaseWindow.getAllWindows().some((window) => !window.isDestroyed() && window.isFocused()),
         notificationFactory: (options) => {
           const notification = new Notification(options);
           return { show: () => notification.show(), on: (event, handler) => notification.on(event, handler) };
@@ -83,8 +85,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
         return owner.isDestroyed() || request.signal.aborted || selection.canceled ? null : selection.filePaths;
       },
       browserGuestContentOrigin: (guest) => {
-        const host = guest.hostWebContents;
-        const window = host && !host.isDestroyed() ? mainWindowForContents(host) : BrowserWindow.fromWebContents(guest);
+        const window = browserGuestOwnerWindow(guest);
         if (!window || window.isDestroyed()) return null;
         const bounds = window.getContentBounds();
         return { x: bounds.x, y: bounds.y, windowId: window.id };
@@ -99,6 +100,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
         unregisterAllGlobalShortcuts();
         peekFloatingDock()?.shutdown();
       },
+      closeDocuments: (signal) => closeMainWindowDocuments(getAppWindows(), signal),
     },
   };
   const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath));

@@ -6,6 +6,9 @@ const exposed = new Map<string, unknown>();
 const mockInvoke = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
+Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("file:///Applications/Ave.app/dist/index.html") });
+
+vi.mock("../preload/browser-native-input.js", () => ({ installBrowserNativeInput: vi.fn() }));
 const mockSendSync = vi.fn((channel: string) => {
   if (channel !== CHANNELS.settings.initialAppearance) throw new Error(`Unexpected sync channel: ${channel}`);
   return { ok: true, appearance: DEFAULT_APPEARANCE, glass: "unsupported" };

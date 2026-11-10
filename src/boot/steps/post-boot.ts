@@ -1,7 +1,8 @@
+import type { MainWindow } from "../../main/main-window-host.js";
 import type { BootHost } from "../host-runtime.js";
 import type { TelemetryService } from "../../main/telemetry.js";
 import type { PluginTelemetryClient } from "../../telemetry/client.js";
-import type { BrowserWindow } from "electron";
+
 import type { SettingsService } from "../../data/settings-store.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { MarketplaceAnnouncement } from "../../shared/marketplace-announcements.js";
@@ -25,7 +26,7 @@ export interface ReleasePrepOutput {
 }
 
 export interface ReleasePrepInput {
-  mainWindow: BrowserWindow | null;
+  mainWindow: MainWindow | null;
   settingsService: SettingsService;
   bootAuditLogger: AuditLogger;
   /** The host's outbound transport — both telemetry uploads run on it. */
@@ -45,7 +46,7 @@ export function wireReleasePrep(input: ReleasePrepInput, host: BootHost): Releas
 }
 
 export interface AnnouncementCheckInput {
-  getMainWindow: () => BrowserWindow | null;
+  getMainWindow: () => MainWindow | null;
   settingsService: SettingsService;
   listAnnouncements: () => Promise<MarketplaceAnnouncement[]>;
   intervalMs?: number;
@@ -152,7 +153,7 @@ export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
       void runAnnouncementCheck();
       return;
     }
-    const webContents = win.webContents as BrowserWindow["webContents"] & {
+    const webContents = win.webContents as MainWindow["webContents"] & {
       getURL?: () => string;
       isLoading?: () => boolean;
       once?: (event: "did-finish-load", listener: () => void) => void;

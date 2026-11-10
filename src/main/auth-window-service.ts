@@ -3,7 +3,7 @@ import { rememberPluginAuthPartition } from "./plugin-auth-partition-tracker.js"
 export { wirePluginAuthPartitionPersistence, seedPluginAuthPartitions, rememberPluginAuthPartition, getTrackedPluginAuthPartitions, forgetTrackedPluginAuthPartitions } from "./plugin-auth-partition-tracker.js";
 // The host owns login-window lifecycle; plugins supply completion patterns and cookie-domain allowlists.
 import { randomBytes } from "node:crypto";
-import { BrowserWindow, dialog, screen, session, shell, type Cookie, type Session, type WebContents } from "electron";
+import { BrowserWindow, type BaseWindow, dialog, screen, session, shell, type Cookie, type Session, type WebContents } from "electron";
 import { attachAuthWindowContent, authWindowChromeOptions, buildAuthWindowShellHtml, installAuthSessionPermissions, type AuthNavigationFailure } from "./auth-window-content.js";
 export { buildAuthWindowShellHtml } from "./auth-window-content.js";
 import { AuthWindowEndedError, isOAuthBrowserRefusal, requiresSystemBrowser } from "./oauth-login.js";
@@ -208,19 +208,19 @@ function extractCompletionTarget(url: string): string {
 
 // Open the target URL, wait until a completion pattern is reached, then collect cookies. The window is always closed. Rejects if the user closes it early.
 export function openAuthWindow(
-  parent: BrowserWindow,
+  parent: BaseWindow,
   options: OpenAuthWindowOptions & { returnFinalUrl: true },
 ): Promise<OpenAuthWindowResult>;
 export function openAuthWindow(
-  parent: BrowserWindow,
+  parent: BaseWindow,
   options: OpenAuthWindowOptions & { returnFinalUrl?: false | undefined },
 ): Promise<AuthCookie[]>;
 export function openAuthWindow(
-  parent: BrowserWindow,
+  parent: BaseWindow,
   options: OpenAuthWindowOptions,
 ): Promise<AuthCookie[] | OpenAuthWindowResult>;
 export async function openAuthWindow(
-  parent: BrowserWindow,
+  parent: BaseWindow,
   options: OpenAuthWindowOptions,
 ): Promise<AuthCookie[] | OpenAuthWindowResult> {
   return openAuthWindowInternal(parent, options);
@@ -228,7 +228,7 @@ export async function openAuthWindow(
 
 /** OAuth uses the same isolated shell; only the host listener can complete it. */
 export async function openOAuthInAuthWindow(
-  parent: BrowserWindow,
+  parent: BaseWindow,
   url: string,
   options: OAuthLoginOptions,
 ): Promise<void> {
@@ -247,14 +247,14 @@ export async function openOAuthInAuthWindow(
   }
 }
 
-async function announceSystemBrowserLogin(parent: BrowserWindow, url: string): Promise<void> {
+async function announceSystemBrowserLogin(parent: BaseWindow, url: string): Promise<void> {
   void dialog.showMessageBox(parent, {
     type: "info", title: t("oauthWindow.title"), message: t("oauthWindow.systemBrowser"),
   }).catch(() => undefined);
   await shell.openExternal(url);
 }
 
-async function openSystemBrowserLogin(parent: BrowserWindow, url: string, options: OAuthLoginOptions): Promise<void> {
+async function openSystemBrowserLogin(parent: BaseWindow, url: string, options: OAuthLoginOptions): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -270,7 +270,7 @@ async function openSystemBrowserLogin(parent: BrowserWindow, url: string, option
 }
 
 async function openAuthWindowInternal(
-  parent: BrowserWindow,
+  parent: BaseWindow,
   options: OpenAuthWindowOptions,
   oauth?: OAuthLoginOptions,
 ): Promise<AuthCookie[] | OpenAuthWindowResult> {

@@ -1,3 +1,4 @@
+import { nativeSurfaceFixture } from "../../../../__tests__/support/native-browser-surface.js";
 import { ThemeWrapper } from "./mcp-app-test-helpers.js";
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
@@ -59,7 +60,7 @@ function emitLastNativeContextCommand(command: NativeContextMenuAction["command"
   nativeContextActionHandler?.({ requestId: payload.requestId, command });
 }
 
-function api(): AveApi {
+function api(native = nativeSurfaceFixture()): AveApi {
   return {
     openExternalUrl: vi.fn(async () => ({ ok: true })),
     chatGetVerbatimToolResult: vi.fn(async () => null),
@@ -69,6 +70,9 @@ function api(): AveApi {
     getSettings: vi.fn(async () => ({}) as never),
     updateSettings: vi.fn(async () => ({ ok: true }) as never),
     browserTabs: {
+      ...native.api,
+      getSessionBindings: async () => ({ revision: 0, bindings: [], nativeBrowserTabIds: [] }),
+      onSessionBindingsChanged: () => () => {},
       bindTab: vi.fn(async () => ({ ok: true })),
       stop: vi.fn(async () => ({ ok: true })),
       onTabOp: vi.fn(() => () => undefined),
@@ -93,7 +97,8 @@ function api(): AveApi {
  * harness and loses the state a test is checking survives.
  */
 /** One api for the layer across rerenders; these tests do not bind guests. */
-const layerApi = api();
+const layerNative = nativeSurfaceFixture();
+const layerApi = api(layerNative);
 
 function withPanelProviders(ui: ReactElement) {
   return (
@@ -197,18 +202,22 @@ function HarnessPanel({
   );
 }
 
-it("updates a bootstrap agent tab label from committed navigation and page titles without reloading", async () => {
-  renderPanel(<HarnessPanel api={api()} sessionId="parent" targets={[]} files={[]} initialSelectedId={null} initialAgentTab />);
-  const guest = document.querySelector("webview") as HTMLElement;
+it("updates a bootstrap agent tab label from native navigation and page titles without reloading", async () => {
+  const native = layerNative;
+  renderPanel(<HarnessPanel api={api(native)} sessionId="parent" targets={[]} files={[]} initialSelectedId={null} initialAgentTab />);
+  await act(async () => {});
+  const page = screen.getByTestId("chat-side-panel-browser-native");
+  const tabId = page.dataset.tabId;
+  if (!tabId) throw new Error("Page identity is missing");
   expect(screen.getByRole("tab", { name: /about:blank/ })).toBeInTheDocument();
-  act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://example.com/", isMainFrame: true })); });
+  act(() => { native.publish(tabId, { url: "https://example.com/" }); });
   expect(screen.getByRole("tab", { name: /example.com/ })).toBeInTheDocument();
-  act(() => { guest.dispatchEvent(Object.assign(new Event("page-title-updated"), { title: "Example page" })); });
+  act(() => { native.publish(tabId, { title: "Example page" }); });
   expect(screen.getByRole("tab", { name: /Example page/ })).toBeInTheDocument();
-  act(() => { guest.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://other.example/", isMainFrame: true })); });
+  act(() => { native.publish(tabId, { url: "https://other.example/", title: "" }); });
   expect(screen.getByRole("tab", { name: /other.example/ })).toBeInTheDocument();
-  expect(document.querySelector("webview")).toBe(guest);
-  expect(guest.getAttribute("src")).toBe("about:blank");
+  expect(screen.getByTestId("chat-side-panel-browser-native")).toBe(page);
+  expect(native.nativeSurface.mock.calls.some(([r]) => r.action === "navigate")).toBe(false);
 });
 
 function renderChildTranscript(apiMock: AveApi, overrides: Partial<SubAgentSpawn> = {}) {
@@ -648,6 +657,7 @@ describe("ChatSidePanel", () => {
     }];
     renderPanel(<HarnessPanel api={api()} sessionId="session-1" targets={targets} files={[]} initialSelectedId={null} />);
     addTabViaMenu("browser");
+    await act(async () => {});
     const webview = document.querySelector('[data-testid="chat-side-panel-browser-webview"]') as HTMLElement
       & { getURL?: () => string; getTitle?: () => string; canGoBack?: () => boolean; canGoForward?: () => boolean };
     const addressInput = screen.getByTestId("chat-side-panel-browser-address") as HTMLInputElement;
@@ -673,6 +683,7 @@ describe("ChatSidePanel", () => {
     }];
     renderPanel(<HarnessPanel api={api()} sessionId="session-1" targets={targets} files={[]} initialSelectedId={null} />);
     addTabViaMenu("browser");
+    await act(async () => {});
     const webview = document.querySelector('[data-testid="chat-side-panel-browser-webview"]') as HTMLElement
       & { goBack?: () => void };
     let guestUrl = "https://example.com/docs";
@@ -748,7 +759,7 @@ describe("ChatSidePanel", () => {
     expect(webview.getAttribute("src")).toBe("https://google.com/");
   });
 
-  it("lists the conversation's pages on the empty landing, and opens a picked one in a tab", () => {
+  it("lists the conversation's pages on the empty landing, and opens a picked one in a tab", async () => {
     const targets: ChatPreviewTarget[] = [
       {
         id: "html-1",
@@ -779,7 +790,7 @@ describe("ChatSidePanel", () => {
       expect.stringContaining("Artifact dashboard"),
     ]);
     expect(rows[0]!.textContent).toContain("결과에서");
-    fireEvent.click(rows[0]!);
+    await act(async () => { fireEvent.click(rows[0]!); });
     // A browser content tab, its page a web surface.
     expect(screen.queryByTestId("chat-side-panel-launcher")).toBeNull();
     expect(document.querySelector('[data-testid="chat-side-panel-browser-webview"]')?.getAttribute("src")).toBe("https://example.com/docs");

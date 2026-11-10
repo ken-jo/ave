@@ -63,6 +63,7 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
     browserAgentPreview: { decodePng: unavailable, record: unavailable },
     prepareRelease: () => ({}),
     beforeShutdown: () => {},
+    closeDocuments: async () => {},
     ...overrides,
   };
 }

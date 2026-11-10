@@ -1,4 +1,4 @@
-import type { BrowserWindow, WebContents } from "electron";
+import type { WebContents } from "electron";
 import { errorMessage } from "../shared/error-message.js";
 
 export interface SafeSendLogger {
@@ -27,7 +27,7 @@ export function sendToWebContents(
 }
 
 export function sendToWindow(
-  win: BrowserWindow | null | undefined,
+  win: { isDestroyed(): boolean; readonly webContents: WebContents } | null | undefined,
   channel: string,
   payload: unknown,
   logger?: SafeSendLogger,

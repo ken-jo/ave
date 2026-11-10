@@ -1,5 +1,6 @@
+import type { MainWindow } from "../main/main-window-host.js";
 // Reuse safe-send for destroyed windows and send races so one failed delivery cannot block peers.
-import type { BrowserWindow } from "electron";
+
 import { sendToWindow, type SafeSendLogger } from "./safe-send.js";
 import type { IpcDeps } from "./types.js";
 
@@ -21,7 +22,7 @@ export interface FanOutOptions {
 
 // Return successful delivery count; null, destroyed, and raced windows are skipped.
 export function fanOutToAllWindows(
-  windows: Array<BrowserWindow | null | undefined>,
+  windows: Array<MainWindow | null | undefined>,
   channel: string,
   payload: unknown,
   options: FanOutOptions = {},
@@ -48,7 +49,7 @@ export function fanOutToAllWindows(
 
 function appRendererWindows(
   deps: Pick<IpcDeps, "getAppWindows" | "getMainWindow">,
-): Array<BrowserWindow | null | undefined> {
+): Array<MainWindow | null | undefined> {
   return deps.getAppWindows?.() ?? [deps.getMainWindow()];
 }
 

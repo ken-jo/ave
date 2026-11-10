@@ -1,5 +1,6 @@
+import type { MainWindow } from "../../../main/main-window-host.js";
 /** Read runtime and loopback bindings through getters; both are assigned after callback construction. */
-import type { BrowserWindow } from "electron";
+
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
@@ -14,11 +15,11 @@ import type { PluginBundleLifecycleHandler } from "../../../plugins/plugin-bundl
 const log = createLogger("ave");
 
 export interface LifecycleDeps {
-  getAppWindows: () => BrowserWindow[];
+  getAppWindows: () => MainWindow[];
   getAlertsService: () => import("../../../alerts/service.js").AlertsService | undefined;
   lateBinding: LateBindingRefs;
-  getMainWindow?: () => BrowserWindow | null;
-  mainWindow: BrowserWindow | null;
+  getMainWindow?: () => MainWindow | null;
+  mainWindow: MainWindow | null;
   pythonRuntime?: PythonRuntimeBootstrapper;
   getBundleLifecycle: () => PluginBundleLifecycleHandler | undefined;
 }

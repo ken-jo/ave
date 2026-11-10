@@ -91,6 +91,10 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // ── Browser tabs (agent browser tools) ──
   "bad-request": "formatIpcError.invalidRequest",
   "no-such-tab": "formatIpcError.notFound",
+  "guest-not-hosted": "formatIpcError.browserPageUnavailable",
+  "native-surface-unavailable": "formatIpcError.browserPageUnavailable",
+  "stale-surface": "formatIpcError.browserPageChanged",
+  "invalid-native-browser-surface": "formatIpcError.browserPageInvalidResponse",
   "not-resumable": "formatIpcError.notResumable",
   "a2a-remote-disabled": "formatIpcError.remoteA2aDisabled",
   "a2a-remote-start-failed": "formatIpcError.remoteA2aStartFailed",

@@ -1,7 +1,8 @@
+import type { MainWindow } from "./main-window-host.js";
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // Host lifecycle events enter window notification history; unfocused events additionally use OS delivery. Requests use their cards in-app.
 // Audit metadata only, never body text; test mode and pre-ready calls have no side effects.
-import type { ActivationArguments, BrowserWindow, WebContents } from "electron";
+import type { ActivationArguments, WebContents } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { createLogger } from "../lib/logger.js";
@@ -84,8 +85,8 @@ type NotificationActivationRegistration = (
 export interface NotificationServiceOptions {
   // Read the OS notification master at delivery time for turn-end cues.
   isOsNotificationsEnabled?: () => boolean;
-  // Live BrowserWindow getter. Service tolerates null (e.g. window closed).
-  getMainWindow: () => BrowserWindow | null;
+  // Live MainWindow getter. Service tolerates null (e.g. window closed).
+  getMainWindow: () => MainWindow | null;
   auditLogger?: AuditLogger;
   // Test injection — by default the service uses Electron's Notification constructor and `app.isReady()`. Tests pass stubs to avoid loading Electron at all.
   notificationFactory?: (opts: {
@@ -130,7 +131,7 @@ function unavailableNotificationFactory(): never {
 }
 
 export class NotificationService {
-  private readonly getMainWindow: () => BrowserWindow | null;
+  private readonly getMainWindow: () => MainWindow | null;
   private readonly auditLogger?: AuditLogger;
   private readonly notificationFactory: NonNullable<NotificationServiceOptions["notificationFactory"]>;
   private readonly isOsNotificationsEnabled: () => boolean;
@@ -323,7 +324,7 @@ export class NotificationService {
   }
 
   // The main window can show an in-app toast (alive and not minimized, so the user can see it) and some Ave window has focus.
-  private canShowToast(win: BrowserWindow | null): boolean {
+  private canShowToast(win: MainWindow | null): boolean {
     const mainAlive = win !== null && !win.isDestroyed() && !win.isMinimized();
     return mainAlive && this.isAnyWindowFocused();
   }

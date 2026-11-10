@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { BrowserWindow, WebContents } from "electron";
+import type { MainWindow } from "../../main-window-host.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWorkspaceServiceDeps } from "../browser-workspace.js";
 
@@ -76,6 +77,7 @@ class Window extends EventEmitter {
 }
 const asGuest = (guest: Guest) => guest as unknown as WebContents;
 const asWindow = (window: Window) => window as unknown as BrowserWindow;
+const asMainWindow = (window: Window) => window as unknown as MainWindow;
 
 beforeEach(() => { vi.clearAllMocks(); native.windows = []; native.deps = null; native.template = []; });
 afterEach(() => { disposeBrowserWorkspaceService(); browserTabRegistry.__reset(); vi.useRealTimers(); });
@@ -94,7 +96,7 @@ async function ownedPage(window: Window) {
   browserTabRegistry.bindTab(window.id, { tabId: "page", webContentsId: guest.id, requestId });
   await pending;
   guest.url = "https://site.example/";
-  observeBrowserWorkspaceGuest(asGuest(guest), asWindow(window));
+  observeBrowserWorkspaceGuest(asGuest(guest), asMainWindow(window));
   return guest;
 }
 
@@ -118,8 +120,8 @@ describe("browser workspace desktop composition", () => {
     const window = owner();
     const guest = new Guest(71);
     const existing = vi.fn(); guest.on("did-navigate", existing);
-    observeBrowserWorkspaceGuest(asGuest(guest), asWindow(window));
-    observeBrowserWorkspaceGuest(asGuest(guest), asWindow(window));
+    observeBrowserWorkspaceGuest(asGuest(guest), asMainWindow(window));
+    observeBrowserWorkspaceGuest(asGuest(guest), asMainWindow(window));
     expect(workspace.observeGuest).toHaveBeenCalledTimes(1);
     guest.emit("did-navigate");
     expect(existing).toHaveBeenCalledOnce();
@@ -148,14 +150,14 @@ describe("browser workspace desktop composition", () => {
   it("disposes a destroyed guest by its captured identity and permits a replacement", () => {
     const window = owner();
     const guest = new Guest(71);
-    observeBrowserWorkspaceGuest(asGuest(guest), asWindow(window));
+    observeBrowserWorkspaceGuest(asGuest(guest), asMainWindow(window));
     const stopObserving = workspace.observeGuest.mock.results[0]!.value;
     guest.destroyed = true;
     expect(() => guest.id).toThrow(TypeError);
     expect(() => guest.emit("destroyed")).not.toThrow();
     expect(stopObserving).toHaveBeenCalledOnce();
     const replacement = new Guest(71);
-    observeBrowserWorkspaceGuest(asGuest(replacement), asWindow(window));
+    observeBrowserWorkspaceGuest(asGuest(replacement), asMainWindow(window));
     expect(workspace.observeGuest).toHaveBeenCalledTimes(2);
     expect(browserWorkspaceGuestWindowId(asGuest(replacement))).toBe(1);
   });
@@ -179,8 +181,8 @@ describe("browser workspace desktop composition", () => {
   it("rejects unowned guests and fully disposes before any workspace snapshot was requested", () => {
     const window = owner();
     const guest = new Guest(71);
-    expect(() => observeBrowserWorkspaceGuest(asGuest(guest), asWindow(new Window(2, new Guest(2))))).toThrow("browser-guest-owner-mismatch");
-    observeBrowserWorkspaceGuest(asGuest(guest), asWindow(window));
+    expect(() => observeBrowserWorkspaceGuest(asGuest(guest), asMainWindow(new Window(2, new Guest(2))))).toThrow("browser-guest-owner-mismatch");
+    observeBrowserWorkspaceGuest(asGuest(guest), asMainWindow(window));
     disposeBrowserWorkspaceService();
     expect(workspace.disposeWindow).toHaveBeenCalledWith(1);
     expect(workspace.dispose).toHaveBeenCalledOnce();
@@ -193,8 +195,8 @@ describe("native popup desktop controls", () => {
     const window = owner();
     const opener = await ownedPage(window);
     const popup = new Window(2, new Guest(72));
-    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asWindow(window))!;
-    observeBrowserWorkspaceGuest(asGuest(popup.webContents), asWindow(window));
+    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asMainWindow(window))!;
+    observeBrowserWorkspaceGuest(asGuest(popup.webContents), asMainWindow(window));
     expect(browserTabRegistry.liveTab(handle)).toMatchObject({ rendererTabId: null, windowId: 1, targetKind: "popup" });
     await expect(browserTabRegistry.requestTabOp(1, { op: "select", tabId: handle, actor: { sessionId: "parent" } })).resolves.toEqual({ ok: true, tabId: handle });
     expect(popup.isFocused() && popup.webContents.isFocused()).toBe(true);
@@ -225,7 +227,7 @@ describe("native popup desktop controls", () => {
     const opener = await ownedPage(window);
     const popupGuest = new Guest(72);
     const popup = new Window(2, popupGuest);
-    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asWindow(window))!;
+    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asMainWindow(window))!;
     await expect(browserTabRegistry.requestTabOp(window.id, { op: "close", tabId: handle })).resolves.toEqual({ ok: true, tabId: handle });
     expect(() => popup.webContents).toThrow("Object has been destroyed");
     expect(browserTabRegistry.liveTab(handle)).toBeUndefined();
@@ -241,7 +243,7 @@ describe("native popup desktop controls", () => {
     const popupGuest = new Guest(72);
     popupGuest.focus = () => undefined;
     const popup = new Window(2, popupGuest);
-    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asWindow(window))!;
+    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asMainWindow(window))!;
     const focusListeners = popupGuest.listeners("focus");
     const destructionListeners = popupGuest.listeners("destroyed");
     const selected = browserTabRegistry.requestTabOp(window.id, { op: "select", tabId: handle });
@@ -261,7 +263,7 @@ describe("native popup desktop controls", () => {
     const opener = await ownedPage(window);
     const popup = new Window(2, new Guest(72));
     popup.webContents.focus = () => undefined;
-    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asWindow(window))!;
+    const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asMainWindow(window))!;
     const selected = browserTabRegistry.requestTabOp(1, { op: "select", tabId: handle });
     await vi.advanceTimersByTimeAsync(750);
     await expect(selected).resolves.toEqual({ ok: false, error: "native-operation-failed" });

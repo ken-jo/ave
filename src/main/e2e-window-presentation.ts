@@ -1,4 +1,4 @@
-import type { BrowserWindow, WebContents } from "electron";
+import type { BaseWindow, WebContents } from "electron";
 import { getIsPackaged, isConfigured, isE2eTestRuntime, isPackagedElectronProcess } from "../boot/dev-flags.js";
 
 export function isBackgroundE2eRuntime(): boolean {
@@ -6,7 +6,7 @@ export function isBackgroundE2eRuntime(): boolean {
   return !packaged && isE2eTestRuntime() && process.env.AVE_NATIVE_FIXTURE_MODE !== "foreground";
 }
 
-export function showWindowForRuntime(window: BrowserWindow): void {
+export function showWindowForRuntime(window: BaseWindow): void {
   if (isBackgroundE2eRuntime()) window.showInactive();
   else window.show();
 }

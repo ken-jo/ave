@@ -12,13 +12,17 @@ vi.mock("../../../main/browser/browser-workspace-desktop.js", () => ({
 
 vi.mock("electron", () => ({
   ipcMain: {
+    on: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
+      handlers.set(channel, fn);
+    }),
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
     }),
   },
 }));
 
-const windowSender = { id: 500 };
+const windowFrame = { url: "file:///Applications/Ave.app/dist/index.html" };
+const windowSender = { id: 500, mainFrame: windowFrame };
 vi.mock("../../../main/app-state.js", () => ({
   getMainWindows: () => [],
   getPrimaryMainWindow: () => null,
@@ -27,9 +31,10 @@ vi.mock("../../../main/app-state.js", () => ({
 
 const { registerBrowserHandlers, parseActiveSurface } = await import("../browser.js");
 const { browserTabRegistry } = await import("../../../main/browser/browser-tab-registry.js");
+const { BrowserNativeSurfaceHost } = await import("../../../main/browser/browser-native-surfaces.js");
 
 function fromWindow(): IpcMainInvokeEvent {
-  return { ...hostFrameEvent(), sender: windowSender } as unknown as IpcMainInvokeEvent;
+  return { ...hostFrameEvent(), sender: windowSender, senderFrame: windowFrame } as unknown as IpcMainInvokeEvent;
 }
 
 function invoke(channel: string, event: IpcMainInvokeEvent, payload: unknown): unknown {
@@ -51,8 +56,24 @@ afterEach(() => {
 });
 
 describe("browser IPC", () => {
+  it("routes private pointer input only from the owning top-level UI with a validated envelope", () => {
+    const input = vi.spyOn(BrowserNativeSurfaceHost.prototype, "input").mockReturnValue(true);
+    const payload = { tabId: "native", webContentsId: 43, epoch: 2, sequence: 1, type: "mouseDown", x: 100, y: 150,
+      button: "left", clickCount: 1, modifiers: [] };
+    try {
+      invoke(CHANNELS.browser.nativeInput, isolatedAppFrameEvent(), payload);
+      invoke(CHANNELS.browser.nativeInput, hostFrameEvent(), payload);
+      invoke(CHANNELS.browser.nativeInput, { ...fromWindow(), senderFrame: { url: windowFrame.url } } as unknown as IpcMainInvokeEvent, payload);
+      invoke(CHANNELS.browser.nativeInput, fromWindow(), { ...payload, ownerWindowId: 8 });
+      invoke(CHANNELS.browser.nativeInput, fromWindow(), { ...payload, type: "keyDown" });
+      expect(input).not.toHaveBeenCalled();
+      invoke(CHANNELS.browser.nativeInput, fromWindow(), payload);
+      expect(input).toHaveBeenCalledExactlyOnceWith(7, payload);
+    } finally { input.mockRestore(); }
+  });
+
   it("refuses a non-host frame on every invoke", () => {
-    for (const channel of [CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.browser.pause, CHANNELS.browser.resume, CHANNELS.browser.getState,
+    for (const channel of [CHANNELS.browser.nativeSurface, CHANNELS.browser.bindTab, CHANNELS.browser.stop, CHANNELS.browser.pause, CHANNELS.browser.resume, CHANNELS.browser.getState,
       CHANNELS.browser.getSessionBindings, CHANNELS.surface.setActive]) {
       expect(invoke(channel, isolatedAppFrameEvent(), {})).toMatchObject({ ok: false, error: "unauthorized-frame" });
     }
@@ -63,6 +84,17 @@ describe("browser IPC", () => {
     invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "browser:1", webContentsId: 41 });
     expect(invoke(CHANNELS.browser.getState, fromWindow(), undefined)).toMatchObject({ tabs: [expect.objectContaining({ rendererTabId: "browser:1" })] });
     expect(invoke(CHANNELS.browser.getState, fromWindow(), {})).toEqual({ ok: false, error: "bad-request" });
+  });
+
+  it("rejects malformed native requests and renderer rebinding of an independent page", () => {
+    expect(invoke(CHANNELS.browser.nativeSurface, fromWindow(), { action: "create", tabId: "native", windowId: 8 }))
+      .toEqual({ ok: false, error: "bad-request" });
+    expect(invoke(CHANNELS.browser.nativeSurface, hostFrameEvent(), { action: "create", tabId: "native" }))
+      .toEqual({ ok: false, error: "bad-request" });
+    browserTabRegistry.guestAttached({ id: 43, isDestroyed: () => false, getURL: () => "about:blank", getTitle: () => "" } as never, 7, { kind: "native-view" });
+    expect(invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "native", webContentsId: 43, parked: false }))
+      .toEqual({ ok: false, error: "guest-not-hosted" });
+    expect(browserTabRegistry.listTabs(7)).toEqual([]);
   });
 
   it("queries only session bindings of the sender window", () => {

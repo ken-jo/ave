@@ -1674,19 +1674,29 @@ Once a drop is dispatched, a lost acknowledgement means its effect is unknown:
 the error must warn against automatic repetition. Cleanup cannot make that
 uncertainty a retry-safe failure or a proven success.
 
-For visible keyboard effects, host-owned focus resolves the same active embedded
-tab through its stored renderer ID and preserves the exact guest, document,
+Agent-origin actions on independent native pages use page-local focus emulation
+whether visible or parked; they never borrow native keyboard focus. Parked
+independent pages require no renderer focus receipt or restoration. Page-local
+focus requires an exact main-document node; a null native focused frame is
+accepted only under that proof, and a different frame fails. User entry into a
+presented independent page records takeover before native focus and refuses
+parked pages or hidden owning windows. Actual user focus also invalidates agent
+control; agent-marked actions do not become user takeover. User navigation,
+back, forward and reload invalidate control before navigating.
+
+The retained user-page webview host keeps its existing focus rules. For visible
+keyboard effects, host-owned focus resolves the same active embedded tab
+through its stored renderer ID and preserves the exact guest, document,
 generation, and lease across awaits. Trusted renderer focus is only a request;
 native guest focus and `focusedFrame === mainFrame` must be observed. Parked
-agent guests never take native focus or receive real keyboard events. Their
-page-local focus emulation requires an exact main-document node; a null native
-focused frame is accepted only under that proof, and a different frame fails.
-Before hiding a visible guest, the renderer waits for main to block keyboard
-delivery and return native focus. Showing precedes clearing parking. Native
-select changes use a fixed isolated function on the exact enabled main-document
-control, with final option/value and accessibility checks. Popups retain native
-selection and focus checks. All guest, document, generation and lease guards
-remain authoritative.
+webviews do not receive real keyboard events. Before hiding a visible webview,
+the renderer waits for main to block keyboard delivery and return native focus;
+showing precedes clearing parking. Native select changes use a fixed isolated
+function on the exact enabled main-document control, with final option/value
+and accessibility checks. Popups retain native selection and focus checks. All
+guest, document, generation and lease guards remain authoritative. The
+[browser lifetime contract](architecture.md#browser-control-and-tab-lifetime)
+owns host selection, retention and presentation.
 
 Acquiring a lease keeps the already-approved control generation stable. A
 page-input action can finish through navigation only after a confirmed final

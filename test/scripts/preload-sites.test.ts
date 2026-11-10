@@ -1010,7 +1010,7 @@ describe("preload sites follow the preload table", () => {
       "window src/main/audio-capture-surface.ts audioCaptureWindowPreload",
       "window src/main/floating-dock-surface.ts floatingDockPreload",
       "window src/main/link-window-service.ts preload",
-      "window src/main/main-window.ts preload",
+      "window src/main/main-window-host.ts preload",
     ]);
     const used = new Set(real.sites.map((site) => site.id));
     expect(Object.keys(TABLE).filter((id) => !used.has(id))).toEqual([]);
@@ -1018,7 +1018,7 @@ describe("preload sites follow the preload table", () => {
       "src/main/auth-window-service.ts configureAuthWebviewAttach",
       "src/main/floating-dock-surface.ts configureMcpAppWebviewAttach",
       "src/main/link-window-service.ts inline: strips the preload, sandbox true",
-      "src/main/main-window.ts configureMainWindowWebviewAttach",
+      "src/main/main-window-host.ts configureMainWindowWebviewAttach",
     ]);
     expect(real.sites.filter((site) => site.kind === "window" && site.id === null).map((site) => site.file).sort()).toEqual([
       "src/ipc/domains/window.ts",
@@ -1027,6 +1027,7 @@ describe("preload sites follow the preload table", () => {
       "src/main/auth-window-content.ts",
       "src/main/auth-window-content.ts",
       "src/main/auth-window-service.ts",
+      "src/main/browser/browser-native-surfaces.ts",
     ]);
   });
 

@@ -11,9 +11,12 @@ function fixture() {
   const frame = {};
   const window = { id: 1, isVisible: () => true, isMinimized: () => false, isFocused: () => false,
     isModal: () => true, getParentWindow: () => ({ id: 2 }),
-    webContents: { isFocused: () => false, focusedFrame: frame, mainFrame: frame } };
-  const native = { focusedWindowId: null, windows: [{ id: 1, visible: true, minimized: false, focused: false, modal: true, parentId: 2, contentsFocused: false, mainFrameFocused: true }] };
-  const evaluate = vi.fn(async (reader: (context: unknown) => unknown) => reader({ BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [window] } }));
+    webContents: { id: 11, isFocused: () => false, focusedFrame: frame, mainFrame: frame } };
+  const native = { focusedWindowId: null, windows: [{ id: 1, visible: true, minimized: false, focused: false, modal: true, parentId: 2, chromeId: 11, contentsFocused: false, mainFrameFocused: true }] };
+  const evaluate = vi.fn(async (reader: (context: unknown) => unknown) => reader({
+    BaseWindow: { getFocusedWindow: () => null, getAllWindows: () => [window] },
+    webContents: { getAllWebContents: () => [window.webContents] },
+  }));
   const app = { evaluate, process: () => ({ pid: 1234 }) } as unknown as ElectronApplication;
   const attach = vi.fn<TestInfo["attach"]>(async () => {});
   return { app, evaluate, attach, native };

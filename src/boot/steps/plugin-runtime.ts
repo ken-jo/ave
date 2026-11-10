@@ -1,8 +1,11 @@
+import { createMcpServerDisconnectedSink } from "../../mcp/mcp-server-disconnect-sink.js";
+import type { BaseWindow } from "electron";
+import type { MainWindow } from "../../main/main-window-host.js";
 import type { BootHost } from "../host-runtime.js";
 import type { HostFetchTransport } from "../../main/host-fetch-guard.js";
 import { noteConfinedProcessesMayRun } from "../../lib/confined-process-phase.js";
 /** Construct the runtime before activation; loop-dependent callers are late-bound after conversation setup. */
-import type { BrowserWindow } from "electron";
+
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
@@ -108,22 +111,22 @@ export interface InitPluginRuntimeInput {
   pythonPath: string | undefined;
   pythonRuntime?: PythonRuntimeBootstrapper;
   bootAuditLogger: AuditLogger;
-  mainWindow: BrowserWindow | null;
+  mainWindow: MainWindow | null;
   /** Use OS proxy and trust-store routing for gated hostFetch; transport exists at boot. */
   networkFetch: HostFetchTransport;
-  getMainWindow?: () => BrowserWindow | null;
+  getMainWindow?: () => MainWindow | null;
   openAuthWindowService: (
-    parent: BrowserWindow,
+    parent: BaseWindow,
     opts: OpenAuthWindowBaseOptions & { returnFinalUrl?: boolean },
   ) => Promise<AuthWindowCookie[] | OpenAuthWindowFinalUrlResult>;
   /** In-app link viewing has no auth cookie or completion-pattern behavior. */
   openLinkWindowService: (
-    parent: BrowserWindow,
+    parent: BaseWindow,
     opts: { url: string; windowTitle?: string; persistPartition?: string },
   ) => Promise<void>;
   /** Open inside the caller’s auth partition to reuse its sign-in cookies. */
   openAuthPartitionViewerService: (
-    parent: BrowserWindow,
+    parent: BaseWindow,
     opts: import("../../main/auth-partition-viewer-service.js").OpenAuthPartitionViewerOptions,
   ) => Promise<void>;
   /** Clear only the caller’s auth partitions after user sign-out. */
@@ -327,7 +330,9 @@ export async function initPluginRuntime(
   });
 
   // Bind loopback management before startAll fires activation callbacks.
-  loopbackManager = new PluginLoopbackManager(pluginRuntime, toolRegistry);
+  loopbackManager = new PluginLoopbackManager(pluginRuntime, toolRegistry, createMcpServerDisconnectedSink({
+    getAllWindows: () => input.host.desktop?.getAppWindows() ?? [],
+  }));
 
   const preStartPhase = new PluginRuntimePreStartPhase();
   const startPluginsOnce = async (): Promise<void> => {
@@ -388,4 +393,4 @@ export async function initPluginRuntime(
   };
 }
 
-export type { BrowserWindow };
+export type { MainWindow };

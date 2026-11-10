@@ -17,7 +17,7 @@ export function BrowserSurfaceTools({ api, tabId, onOpenUrl, composerGroupId }: 
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const panelId = useId();
-  return <div className="shrink-0 border-b">
+  return <div className="shrink-0 border-b" data-native-page-chrome="background">
     <div className="flex h-7 min-w-0 items-center gap-1" data-testid="browser-control-toolbar">
     {api.browserWorkspace && api.browserTabs ? <Button type="button" variant="ghost" size="sm" className="h-7 shrink-0 gap-1 px-2 text-xs"
       onClick={() => setOpen((shown) => !shown)} aria-expanded={open} aria-controls={panelId}

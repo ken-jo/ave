@@ -103,6 +103,16 @@ describe("main.ts — headless exec branch", () => {
     expect(servicesGuard).toBeGreaterThan(hooks);
   });
 
+  it("records application quit before an early bootstrap return so the native exit-code bridge can run", () => {
+    const handler = mainSource.indexOf('app.on("before-quit"');
+    const body = mainSource.slice(handler, mainSource.indexOf("\n});", handler));
+    const intent = body.indexOf("setAppQuitRequested(true)");
+    expect(intent).toBeGreaterThanOrEqual(0);
+    expect(intent).toBeLessThan(body.indexOf("runShutdownHooks()"));
+    expect(intent).toBeLessThan(body.indexOf("if (!getServices()"));
+    expect(windowSource).toContain("isAppQuitRequested() && !getServices()");
+  });
+
   it("carries the chosen exit code through will-quit, after before-quit cleanup", () => {
     const handler = mainSource.indexOf('app.on("will-quit"');
     expect(handler).toBeGreaterThanOrEqual(0);
@@ -175,7 +185,7 @@ describe("main-window.ts — headless creation allocates no window", () => {
     const guard = body.indexOf("if (options.headless) return null;");
     const preload = body.indexOf('preloadPreferences("preload")');
     const assetCheck = body.indexOf("existsSync(hostPreload.preload)");
-    const window = body.indexOf("new BrowserWindow(");
+    const window = body.indexOf("createMainWindowHost(");
     expect(guard).toBeGreaterThanOrEqual(0);
     expect(preload).toBeGreaterThan(guard);
     expect(assetCheck).toBeGreaterThan(preload);

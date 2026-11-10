@@ -1105,6 +1105,7 @@ export function ChatSidePanel({
         stripDropActive && "bg-primary/(--opacity-subtle) ring-2 ring-inset ring-primary",
       )}
       data-testid="chat-side-panel-tab-strip"
+      data-native-page-chrome="card"
       data-drop-target={stripDropActive ? "true" : undefined}
       // A pane's terminal or page, dragged by its header, lands in these tabs.
       {...(canMoveSurfaces ? {

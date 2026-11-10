@@ -1,0 +1,249 @@
+{
+  "sourceRevision": "63cd6a2601c2641fac69d40443f5319231a28a91",
+  "sourceClean": true,
+  "sourceDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "width": 900,
+  "height": 800,
+  "keyboardSource": "global-x11-key-events",
+  "commands": [
+    [
+      "windowraise",
+      "4194307"
+    ],
+    [
+      "windowfocus",
+      "--sync",
+      "4194307"
+    ],
+    [
+      "mousemove",
+      "--sync",
+      "596",
+      "690"
+    ],
+    [
+      "click",
+      "1"
+    ],
+    [
+      "type",
+      "--clearmodifiers",
+      "--delay",
+      "4",
+      "--",
+      "HOSTDRAFT"
+    ],
+    [
+      "getwindowfocus"
+    ],
+    [
+      "getwindowfocus"
+    ],
+    [
+      "type",
+      "--clearmodifiers",
+      "--delay",
+      "4",
+      "--",
+      "AFTERAGENT"
+    ],
+    [
+      "mousemove",
+      "--sync",
+      "565",
+      "349"
+    ],
+    [
+      "click",
+      "1"
+    ],
+    [
+      "type",
+      "--clearmodifiers",
+      "--delay",
+      "4",
+      "--",
+      "PAGEKEYS"
+    ],
+    [
+      "getwindowfocus"
+    ],
+    [
+      "getwindowfocus"
+    ]
+  ],
+  "samples": [
+    {
+      "phase": "before-presented-agent-click",
+      "osWindow": "4194307",
+      "native": {
+        "id": 2,
+        "type": "window",
+        "embedded": false,
+        "attached": true,
+        "focused": false,
+        "mainFrameFocused": true,
+        "ownerFocused": true,
+        "focusedContentsId": 1,
+        "hostFrame": 1,
+        "focusedHostFrame": 1
+      },
+      "page": {
+        "clicks": 0,
+        "trusted": false,
+        "activation": false,
+        "wheels": 0,
+        "keys": [],
+        "value": "",
+        "heldMoves": 0,
+        "unsolicitedUps": 0,
+        "pageDown": false,
+        "scrollY": 0
+      },
+      "composer": {
+        "value": "HOSTDRAFT",
+        "active": true,
+        "documentFocused": true,
+        "blurs": 0
+      }
+    },
+    {
+      "phase": "after-presented-agent-click",
+      "osWindow": "4194307",
+      "native": {
+        "id": 2,
+        "type": "window",
+        "embedded": false,
+        "attached": true,
+        "focused": false,
+        "mainFrameFocused": true,
+        "ownerFocused": true,
+        "focusedContentsId": 1,
+        "hostFrame": 1,
+        "focusedHostFrame": 1
+      },
+      "page": {
+        "clicks": 1,
+        "trusted": true,
+        "activation": true,
+        "wheels": 0,
+        "keys": [],
+        "value": "",
+        "heldMoves": 0,
+        "unsolicitedUps": 0,
+        "pageDown": false,
+        "scrollY": 0
+      },
+      "composer": {
+        "value": "HOSTDRAFT",
+        "active": true,
+        "documentFocused": true,
+        "blurs": 0
+      }
+    },
+    {
+      "phase": "after-os-page-key-request",
+      "osWindow": "4194307",
+      "native": {
+        "id": 2,
+        "type": "window",
+        "embedded": false,
+        "attached": true,
+        "focused": true,
+        "mainFrameFocused": true,
+        "ownerFocused": true,
+        "focusedContentsId": 2,
+        "hostFrame": 1,
+        "focusedHostFrame": 1
+      },
+      "page": {
+        "clicks": 1,
+        "trusted": true,
+        "activation": true,
+        "wheels": 0,
+        "keys": [
+          "Shift",
+          "P",
+          "Shift",
+          "A",
+          "Shift",
+          "G",
+          "Shift",
+          "E",
+          "Shift",
+          "K",
+          "Shift",
+          "E",
+          "Shift",
+          "Y",
+          "Shift",
+          "S"
+        ],
+        "value": "PAGEKEYS",
+        "heldMoves": 0,
+        "unsolicitedUps": 0,
+        "pageDown": false,
+        "inputTrusted": true,
+        "scrollY": 0
+      },
+      "composer": {
+        "value": "HOSTDRAFTAFTERAGENT",
+        "active": true,
+        "documentFocused": true,
+        "blurs": 0
+      }
+    },
+    {
+      "phase": "after-user-os-typing",
+      "osWindow": "4194307",
+      "native": {
+        "id": 2,
+        "type": "window",
+        "embedded": false,
+        "attached": true,
+        "focused": true,
+        "mainFrameFocused": true,
+        "ownerFocused": true,
+        "focusedContentsId": 2,
+        "hostFrame": 1,
+        "focusedHostFrame": 1
+      },
+      "page": {
+        "clicks": 1,
+        "trusted": true,
+        "activation": true,
+        "wheels": 0,
+        "keys": [
+          "Shift",
+          "P",
+          "Shift",
+          "A",
+          "Shift",
+          "G",
+          "Shift",
+          "E",
+          "Shift",
+          "K",
+          "Shift",
+          "E",
+          "Shift",
+          "Y",
+          "Shift",
+          "S"
+        ],
+        "value": "PAGEKEYS",
+        "heldMoves": 0,
+        "unsolicitedUps": 0,
+        "pageDown": false,
+        "inputTrusted": true,
+        "scrollY": 0
+      },
+      "composer": {
+        "value": "HOSTDRAFTAFTERAGENT",
+        "active": true,
+        "documentFocused": true,
+        "blurs": 0
+      }
+    }
+  ]
+}

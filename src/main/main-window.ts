@@ -1,4 +1,8 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, screen, shell, type IpcMainEvent, type WebContents } from "electron";
+import { resolveAppearanceScheme } from "../ui/renderer/theme/resolve-theme.js";
+import { onEvent } from "../boot/types.js";
+import type { SafeThemePayload } from "../shared/host-theme-replay.js";
+import { app, ipcMain, nativeTheme, screen, shell, type IpcMainEvent, type WebContents } from "electron";
+import { createMainWindowHost, closeMainWindowUi, type MainWindow } from "./main-window-host.js";
 import { zoomLevelToZoomFactor } from "../shared/app-zoom.js";
 import { isBackgroundE2eRuntime } from "./e2e-window-presentation.js";
 import { bindAppWindowZoom } from "./app-zoom.js";
@@ -11,7 +15,6 @@ import { mainDir } from "./main-paths.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { attachSideBrowserWebview, isSideBrowserContents } from "./side-browser-webview.js";
 import { trackBrowserGuest } from "./browser/browser-guest-tracking.js";
-import { configureMainWindowWebviewAttach } from "./webview-attach.js";
 import { getCommonChromeOptions, getMainWindowGlassOptions, mainWindowGlassEnabled, mainWindowGlassMaterial, syncNativeThemeSource } from "./window-chrome.js";
 import { registerWindowEventListeners } from "./window-event-listeners.js";
 import type { InitialAppearanceResult, InitialGlassState } from "../shared/initial-appearance.js";
@@ -33,6 +36,7 @@ import {
   getPrimaryMainWindow,
   getServices,
   getTray,
+  isAppQuitRequested,
   isAppShutdownCompleted,
   isAppShutdownStarted,
   isRendererReloadReady,
@@ -119,7 +123,7 @@ function registerInitialAppearance(): void {
 // `null` for a headless run.
 export function createWindow(
   options: { showBootstrapSplash?: boolean; headless?: boolean } = {},
-): BrowserWindow | null {
+): MainWindow | null {
   // One-shot runs have no desktop surface and must not allocate a renderer.
   if (options.headless) return null;
   registerInitialAppearance();
@@ -135,31 +139,32 @@ export function createWindow(
   // The material this OS can draw, whatever the switch says.
   const glassMaterial = mainWindowGlassMaterial(process.platform, release());
   const glass = mainWindowGlassEnabled(glassMaterial, nativeTheme.prefersReducedTransparency);
-  const win = new BrowserWindow({
+  const win = createMainWindowHost({
     ...initialMainWindowBounds(),
     minWidth: MAIN_WINDOW_MIN_WIDTH,
     minHeight: MAIN_WINDOW_MIN_HEIGHT,
     show: !isBackgroundE2eRuntime(),
+    focusable: !isBackgroundE2eRuntime(),
     icon: resolveAppIconPath(),
+    title: app.name,
     autoHideMenuBar: false,
     // Cross-platform titlebar — see `src/main/window-chrome.ts` for the full rationale. The helper unifies main / settings / link / auth.
     ...getCommonChromeOptions(),
     // macOS / Windows 11 22H2+: the system material under the renderer's tint. See `window-chrome.ts` for why `transparent` stays off.
     ...getMainWindowGlassOptions(glass ? glassMaterial : null),
-    webPreferences: {
-      zoomFactor: zoomLevelToZoomFactor(appearance.zoomLevel ?? 0),
-      contextIsolation: true,
-      nodeIntegration: false,
-      // The host preload and its sandbox (false: it needs Node built-ins), from the one table.
-      ...hostPreload,
-      // render_html tool renders LLM-produced HTML inside an Electron <webview>. The webview runs on its own webContents / OS process so a malicious or
-      // runaway payload (e.g. `while(true){}`) can't freeze the main UI. The <webview> tag is gated by webPreferences.webviewTag.
-      webviewTag: true,
-    },
+    ...(!glass ? { backgroundColor: resolveAppearanceScheme(appearance, nativeTheme.shouldUseDarkColors).terminal.background } : {}),
+  }, {
+    zoomFactor: zoomLevelToZoomFactor(appearance.zoomLevel ?? 0),
   });
   glassStates.set(win.webContents, glass ? "on" : glassMaterial === null ? "unsupported" : "reduced");
   registerMainWindow(win, nextMainWindowRole());
   bindAppWindowZoom(win);
+  // Native gaps use the same resolved ground as the app document; the UI view stays transparent.
+  const unsubscribeTheme = onEvent("host.theme.changed", (payload) => {
+    const background = (payload as SafeThemePayload).tokens?.["--ave-bg"];
+    if (!glass && background && !win.isDestroyed()) win.setBackgroundColor(background);
+  });
+  win.once("closed", unsubscribeTheme);
   // Read now: a closed window's id is what its terminals are recorded under.
   const windowId = win.id;
   // Point-to-point sends (menu actions, dialogs) follow the window in use.
@@ -171,16 +176,21 @@ export function createWindow(
   // Development debugging is provided by the renderer-side eruda console (AVE_DEV_CONSOLE=1). Do not auto-open native Chromium DevTools: it changes the
   // runtime viewport and makes UI regressions look different from the real app window.
 
-  win.once("ready-to-show", () => {
-    log.info("window ready-to-show");
+  win.webContents.once("did-finish-load", () => {
+    log.info("window document ready");
     showMainWindow(win);
   });
   win.on("close", (event) => {
+    if (win.isDestroyed()) return;
     if (isAppUpdateInstallRequested()) return;
-    if (isAppShutdownStarted() || isAppShutdownCompleted() || !getTray() || win.isDestroyed()) return;
+    const closeDocument = (): void => { event.preventDefault(); closeMainWindowUi(win); };
+    // Final quit must continue synchronously; closed disposes the explicit UI document.
+    if (isAppShutdownCompleted() || isAppQuitRequested() && !getServices()) return;
+    if (isAppShutdownStarted()) { event.preventDefault(); return; }
+    if (!getTray()) { closeDocument(); return; }
     // With another main window still open, closing this one closes it for real: only the last remaining window follows the close-button preference (hide to
     // tray / quit), so extra windows never pile up as hidden zombies and closing one window never quits the others.
-    if (getMainWindows().some((other) => other !== win)) return;
+    if (getMainWindows().some((other) => other !== win)) { closeDocument(); return; }
     // hide-to-tray keeps background work alive; it is also the early-boot and missing-system-settings default.
     const behavior = getServices()?.settingsService.getAll().system?.closeBehavior ?? "hide-to-tray";
     if (behavior === "quit") {
@@ -221,17 +231,6 @@ export function createWindow(
     }
   });
 
-  win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
-    // Plugin frames, MCP app frames and the side browser each have a guard that sets the guest's preferences in main; a guest no guard owns is refused.
-    const attach = configureMainWindowWebviewAttach({
-      event,
-      webPreferences: webPreferences as Record<string, unknown>,
-      params: params as unknown as Record<string, string>,
-    });
-    if (attach.result === "blocked" || attach.result === "refused") {
-      log.warn({ src: params.src, partition: params.partition, owner: attach.owner }, "blocked webview attach");
-    }
-  });
   // Track only guests admitted by a partition guard, then bind by webContents ID; URLs cannot identify duplicate tabs.
   win.webContents.on("did-attach-webview", (_event, contents) => {
     if (!isSideBrowserContents(contents)) return;
@@ -291,7 +290,7 @@ export function createWindow(
   return win;
 }
 
-export async function loadMainInterface(win: BrowserWindow, reason: string) {
+export async function loadMainInterface(win: MainWindow, reason: string) {
   if (win.isDestroyed()) return;
   try {
     // A secondary window's renderer is told so through the document URL (the primary loads the bare index, exactly as before multi-window). Crash recovery
@@ -309,7 +308,7 @@ export async function loadMainInterface(win: BrowserWindow, reason: string) {
   }
 }
 
-export function showMainWindow(win: BrowserWindow): void {
+export function showMainWindow(win: MainWindow): void {
   if (win.isDestroyed()) return;
   if (win.isMinimized()) win.restore();
   if (isBackgroundE2eRuntime()) {
@@ -318,11 +317,12 @@ export function showMainWindow(win: BrowserWindow): void {
   }
   win.show();
   win.focus();
+  win.webContents.focus();
   win.moveTop();
 }
 
 // Raise hidden or unfocused windows; hide only a visible focused window so the first shortcut press always brings the app forward.
-export function toggleMainWindowVisibility(win: BrowserWindow): "shown" | "hidden" {
+export function toggleMainWindowVisibility(win: MainWindow): "shown" | "hidden" {
   if (win.isDestroyed()) return "shown";
   const visibleAndFocused = win.isVisible() && !win.isMinimized() && win.isFocused();
   if (visibleAndFocused) {
@@ -334,6 +334,6 @@ export function toggleMainWindowVisibility(win: BrowserWindow): "shown" | "hidde
 }
 
 // Every open main window — the broadcast target set (see `app-state.ts`).
-export function getAppWindows(): BrowserWindow[] {
+export function getAppWindows(): MainWindow[] {
   return getMainWindows();
 }

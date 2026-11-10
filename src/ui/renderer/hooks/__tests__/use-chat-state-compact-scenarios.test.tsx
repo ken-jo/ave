@@ -255,7 +255,7 @@ describe("useChatState — compact lifecycle scenarios", () => {
     const assistant = result.current.entries.at(-1);
     expect(assistant).toMatchObject({
       kind: "assistant",
-      text: "오류: Resource not found",
+      text: "Resource not found",
       systemNotice: "stream-error",
     });
   });

@@ -1,5 +1,7 @@
-/** Reparenting or remounting a webview reloads its guest, so tabs move slots while guests stay in the window layer. Hiding
- * a slot preserves its guest; removing the live tab destroys it. */
+import type { BrowserNativeSurfaceState } from "../../../shared/browser-native-surface.js";
+import { guestFaviconSource } from "./favicon-source.js";
+
+/** Page lifetime follows the tab across slots. Native pages are owned by main; user webviews remain in the window layer. */
 export interface WebSurface {
   tabId: string;
   /** The url the guest was last pointed at by the host (not its live url). */
@@ -11,11 +13,16 @@ export interface WebSurface {
    * moved to a pane) does not clear it.
    */
   bindRequestId?: string;
+  host?: "webview" | "native";
 }
 
 let surfaces: readonly WebSurface[] = [];
 const slots = new Map<string, HTMLElement>();
 const webviews = new Map<string, HTMLElement>();
+const nativeElements = new Map<string, HTMLElement>();
+const nativeStates = new Map<string, BrowserNativeSurfaceState>();
+let nativeTabIds: ReadonlySet<string> | null = null;
+const retirementListeners = new Set<(tabId: string) => void>();
 const liveSources = new Map<symbol, ReadonlySet<string>>();
 const occluders = new Set<HTMLElement>();
 let dragActive = false;
@@ -71,13 +78,64 @@ export function getWebSurfaces(): readonly WebSurface[] {
   return surfaces;
 }
 
+/** Resolve host identity before a restored page can construct a user webview. */
+export function setNativeBrowserTabIds(ids: readonly string[] | null): void {
+  nativeTabIds = ids === null ? null : new Set(ids);
+  const next = surfaces.map((surface) => {
+    const host = surface.host ?? (surface.bindRequestId !== undefined || nativeTabIds?.has(surface.tabId)
+      ? "native" : nativeTabIds === null ? undefined : "webview");
+    return host === surface.host ? surface : { ...surface, host };
+  });
+  if (next.every((surface, index) => surface === surfaces[index])) return;
+  surfaces = next;
+  emit();
+}
+
+export function nativeWebSurfaceState(tabId: string): BrowserNativeSurfaceState | null {
+  return nativeStates.get(tabId) ?? null;
+}
+
+/** Main revisions and presentation epochs reject late snapshots from a replaced native surface. */
+export function setNativeWebSurfaceState(tabId: string, state: BrowserNativeSurfaceState | null): void {
+  const previous = nativeStates.get(tabId);
+  if (state === null) {
+    if (!nativeStates.delete(tabId)) return;
+  } else {
+    if (!surfaces.some((surface) => surface.tabId === tabId && surface.host === "native")) return;
+    if (previous && (state.epoch < previous.epoch || state.epoch === previous.epoch && state.revision < previous.revision)) return;
+    nativeStates.set(tabId, state);
+    noteWebSurfaceLocation(tabId, state.url);
+    noteWebSurfaceTitle(tabId, state.title);
+    noteWebSurfaceFavicon(tabId, guestFaviconSource(state.favicon));
+  }
+  emit();
+}
+
+export function setNativeWebSurfaceElement(tabId: string, element: HTMLElement | null): void {
+  if (element) nativeElements.set(tabId, element);
+  else nativeElements.delete(tabId);
+  emit();
+}
+
+/** The page viewport element is geometry only for a native surface and the actual guest for a user webview. */
+export function getWebSurfaceViewportElement(tabId: string): HTMLElement | null {
+  return nativeElements.get(tabId) ?? webviews.get(tabId) ?? null;
+}
+
+export function subscribeWebSurfaceRetirement(listener: (tabId: string) => void): () => void {
+  retirementListeners.add(listener);
+  return () => retirementListeners.delete(listener);
+}
+
 /** Point the tab's guest at `url`, creating the entry on first use. The same url is a no-op; a different one navigates the
  * existing guest. */
 export function setWebSurfaceUrl(tabId: string, url: string, bindRequestId?: string): void {
   const existing = surfaces.find((surface) => surface.tabId === tabId);
   const requestId = bindRequestId ?? existing?.bindRequestId;
   if (existing?.url === url && existing.bindRequestId === requestId) return;
-  const next: WebSurface = requestId === undefined ? { tabId, url } : { tabId, url, bindRequestId: requestId };
+  const host = existing?.host ?? (requestId !== undefined || nativeTabIds?.has(tabId) ? "native" : nativeTabIds === null ? undefined : "webview");
+  const next: WebSurface = { tabId, url, ...(requestId === undefined ? {} : { bindRequestId: requestId }),
+    ...(host === undefined ? {} : { host }) };
   surfaces = existing
     ? surfaces.map((surface) => (surface.tabId === tabId ? next : surface))
     : [...surfaces, next];
@@ -205,11 +263,14 @@ function scheduleReconcile(): void {
     const next = surfaces.filter((surface) => live.has(surface.tabId));
     if (next.length === surfaces.length) return;
     for (const surface of surfaces) if (!live.has(surface.tabId)) {
+      for (const listener of retirementListeners) listener(surface.tabId);
       locations.delete(surface.tabId);
       titles.delete(surface.tabId);
       favicons.delete(surface.tabId);
       awakeTabs.delete(surface.tabId);
       observedHiddenTabs.delete(surface.tabId);
+      nativeStates.delete(surface.tabId);
+      nativeElements.delete(surface.tabId);
     }
     surfaces = next;
     emit();

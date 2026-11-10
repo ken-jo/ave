@@ -4,6 +4,7 @@ import type { EventEmitter } from "node:events";
 import { TOOL_TIMEOUT_POLICY } from "../../../src/shared/tool-timeout-policy.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildLlmSettings, launchSeededElectron, teardownSeededElectron, setWindowSize } from "./seeded-electron.js";
+import { browserHostIdentity, browserTargetId, inspectBrowserTarget } from "./browser-native-target.js";
 
 type PreviewLifecycleEntry = { kind: "start" | "stop" | "navigation-start" | "navigation-commit"; ts: number; url?: string; error?: string };
 
@@ -105,7 +106,11 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [],
       launchEnv: { AVE_NATIVE_FIXTURE_MODE: "foreground" },
       launchArgs: ["--use-mock-keychain", `--force-device-scale-factor=${deviceScale}`] });
-    await ctx.app.evaluate(({ app, BrowserWindow }, { delayHitMs, edits }) => {
+    const host = await browserHostIdentity(ctx.app, ctx.page);
+    await ctx.app.evaluate(({ app, BaseWindow, webContents }, { delayHitMs, edits, windowId, chromeId }) => {
+      const owner = BaseWindow.fromId(windowId);
+      const chrome = webContents.fromId(chromeId);
+      if (!owner || !chrome || Reflect.get(owner, "webContents") !== chrome) throw new Error("Native foreground owner unavailable");
       const capture = globalThis as unknown as { clickMeasurements: unknown[]; pointerEchoes: unknown[]; destructionPeaks: Record<string, number>; listenerWarnings: string[]; previewLifecycle: PreviewLifecycleEntry[] };
       capture.clickMeasurements = [];
       capture.pointerEchoes = [];
@@ -114,14 +119,13 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
       capture.previewLifecycle = [];
       process.on("warning", warning => { if (warning.name === "MaxListenersExceededWarning") capture.listenerWarnings.push(warning.message); });
       app.on("web-contents-created", (_event, contents) => {
-        if (contents.getType() !== "webview") return;
         const id = String(contents.id);
         capture.destructionPeaks[id] = contents.listenerCount("destroyed");
         (contents as unknown as EventEmitter).on("newListener", (event: string | symbol) => {
           if (event === "destroyed") capture.destructionPeaks[id] = Math.max(capture.destructionPeaks[id] ?? 0, contents.listenerCount("destroyed") + 1);
         });
         contents.on("input-event", (_event, input) => {
-          if (input.type === "mouseMove") capture.pointerEchoes.push({ input, guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor() });
+          if (input.type === "mouseMove") capture.pointerEchoes.push({ input, guestZoom: contents.getZoomFactor(), hostZoom: chrome.getZoomFactor() });
         });
         contents.on("did-start-navigation", (_event, url, inPlace, mainFrame) => {
           if (mainFrame && !inPlace) capture.previewLifecycle.push({ kind: "navigation-start", ts: Date.now(), url });
@@ -152,7 +156,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
           if (edits && method === "Input.dispatchTouchEvent" && params.type === "touchStart") {
             const result = await send(method, params);
             // A user can start editing after the press begins, before its completion handoff.
-            await contents.hostWebContents?.mainFrame.executeJavaScript(`(() => {
+            await chrome.mainFrame.executeJavaScript(`(() => {
               window.parkedEditProbe = { blurs: 0 };
               const editor = document.createElement("input");
               editor.dataset.testid = "parked-edit-probe";
@@ -173,21 +177,18 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
           if (!foregroundPrepared) {
             foregroundPrepared = true;
             app.focus({ steal: true });
-            const owningWindow = BrowserWindow.fromWebContents(contents.hostWebContents ?? contents);
-            if (!owningWindow) throw new Error("Native foreground window unavailable");
-            owningWindow.focus();
+            owner.focus();
             const deadline = Date.now() + 1_000;
-            while (!owningWindow.isFocused() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
-            if (!owningWindow.isFocused()) throw new Error("Native foreground precondition unavailable");
+            while (!owner.isFocused() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+            if (!owner.isFocused()) throw new Error("Native foreground precondition unavailable");
           }
-          const geometry = async () => ({ ts: Date.now(), guestZoom: contents.getZoomFactor(), hostZoom: contents.hostWebContents?.getZoomFactor(),
-            focused: !contents.hostWebContents || BrowserWindow.fromWebContents(contents.hostWebContents)?.isFocused() !== false
-              && contents.hostWebContents.focusedFrame !== contents.hostWebContents.mainFrame,
-            rootViewFocused: contents.isFocused(), hostViewFocused: contents.hostWebContents?.isFocused(),
-            windowFocused: BrowserWindow.fromWebContents(contents.hostWebContents ?? contents)?.isFocused(),
-            hostFrame: contents.hostWebContents?.focusedFrame?.frameTreeNodeId, hostMainFrame: contents.hostWebContents?.mainFrame.frameTreeNodeId,
+          const geometry = async () => ({ ts: Date.now(), guestZoom: contents.getZoomFactor(), hostZoom: chrome.getZoomFactor(),
+            focused: webContents.getFocusedWebContents()?.id === contents.id,
+            rootViewFocused: contents.isFocused(), hostViewFocused: chrome.isFocused(),
+            windowFocused: owner.isFocused(),
+            hostFrame: chrome.focusedFrame?.frameTreeNodeId, hostMainFrame: chrome.mainFrame.frameTreeNodeId,
             throttled: contents.getBackgroundThrottling(),
-            editor: await contents.hostWebContents?.mainFrame.executeJavaScript("({ blurs: window.parkedEditProbe?.blurs, draft: document.querySelector('[data-testid=parked-edit-probe]')?.value })"),
+            editor: await chrome.mainFrame.executeJavaScript("({ blurs: window.parkedEditProbe?.blurs, draft: document.querySelector('[data-testid=parked-edit-probe]')?.value })"),
             layout: await send("Page.getLayoutMetrics"),
             box: nodeId === undefined ? null : await send("DOM.getBoxModel", { backendNodeId: nodeId }),
             viewport: await send("Runtime.evaluate", { expression: "({ width: innerWidth, height: innerHeight, deviceScale: devicePixelRatio, scrollX, scrollY, visibility: document.visibilityState })", returnByValue: true }),
@@ -202,16 +203,16 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
           }
         };
       });
-    }, { delayHitMs: previewShown ? 0 : TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs + 250, edits: editsAtHandoff });
+    }, { delayHitMs: previewShown ? 0 : TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs + 250, edits: editsAtHandoff, windowId: host.windowId, chromeId: host.chromeId });
     await setWindowSize(ctx.app, 1200, 800);
-    const hostFactor = await ctx.app.evaluate(({ BrowserWindow }, factor) => {
-      const window = BrowserWindow.getAllWindows().find(candidate => candidate.isVisible());
-      if (!window) throw new Error("App zoom target unavailable");
-      window.webContents.setZoomFactor(factor);
-      return window.webContents.getZoomFactor();
-    }, appZoom);
+    const hostFactor = await ctx.app.evaluate(({ webContents }, input) => {
+      const chrome = webContents.fromId(input.chromeId);
+      if (!chrome) throw new Error("App zoom target unavailable");
+      chrome.setZoomFactor(input.factor);
+      return chrome.getZoomFactor();
+    }, { chromeId: host.chromeId, factor: appZoom });
     expect(hostFactor).toBeCloseTo(appZoom);
-    const { page } = ctx;
+    const { app, page } = ctx;
     const panelToggle = page.getByTestId(TEST_IDS.panePanelToggle);
     await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
     await page.evaluate(async () => {
@@ -254,7 +255,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
         expect(capture).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "frame", tabId })]));
         console.log("Static parked preview messages", capture);
         await test.info().attach("static-preview-messages.json", { body: JSON.stringify(capture), contentType: "application/json" });
-        const guests = await ctx.app.evaluate(async ({ webContents }) => Promise.all(webContents.getAllWebContents().filter(contents => contents.getType() === "webview").map(async contents => ({ url: contents.getURL(), focused: contents.isFocused(), layout: await contents.executeJavaScript("({ visibility: document.visibilityState, width: innerWidth, height: innerHeight })") }))));
+        const guests = await ctx.app.evaluate(async ({ webContents }, url) => Promise.all(webContents.getAllWebContents().filter(contents => contents.getURL() === url).map(async contents => ({ url: contents.getURL(), type: contents.getType(), embedded: Boolean(contents.hostWebContents), focused: contents.isFocused(), layout: await contents.executeJavaScript("({ visibility: document.visibilityState, width: innerWidth, height: innerHeight })") }))), firstUrl);
         console.log("Static parked guest layout", guests);
         await test.info().attach("static-preview-guests.json", { body: JSON.stringify(guests), contentType: "application/json" });
       }
@@ -266,20 +267,25 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
       for (const level of [1, 2]) {
         const updated = await page.evaluate(level => window.aveApi.updateSettings({ appearance: { zoomLevel: level } }), level);
         expect(updated).toMatchObject({ appearance: { zoomLevel: level } });
-        const factors = await ctx.app.evaluate(({ BrowserWindow, webContents }, url) => ({
-          host: BrowserWindow.getAllWindows().find(window => window.isVisible())?.webContents.getZoomFactor(),
-          guest: webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL() === url)?.getZoomFactor(),
-        }), firstUrl);
+        const factors = await ctx.app.evaluate(({ webContents }, input) => ({
+          host: webContents.fromId(input.chromeId)?.getZoomFactor(),
+          guest: webContents.getAllWebContents().find(contents => contents.getURL() === input.url)?.getZoomFactor(),
+        }), { chromeId: host.chromeId, url: firstUrl });
         expect(factors.host).toBeCloseTo(1.2 ** level);
         expect(factors.guest).toBeCloseTo(guestZoom);
       }
-      await ctx.app.evaluate(({ BrowserWindow }, factor) => BrowserWindow.getAllWindows().find(window => window.isVisible())?.webContents.setZoomFactor(factor), appZoom);
+      await ctx.app.evaluate(({ webContents }, input) => webContents.fromId(input.chromeId)?.setZoomFactor(input.factor), { chromeId: host.chromeId, factor: appZoom });
     }
-    const parkedLayout = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, frames: [...document.querySelectorAll<HTMLElement>('[data-testid="web-surface-frame"]')].map(frame => ({ rect: frame.getBoundingClientRect().toJSON(), visibility: getComputedStyle(frame).visibility, opacity: getComputedStyle(frame).opacity, pointerEvents: getComputedStyle(frame).pointerEvents })) }));
-    expect(parkedLayout.frames).toEqual([expect.objectContaining({ pointerEvents: "none" })]);
-    expect(parkedLayout.frames[0]?.rect.width).toBeCloseTo(1024, 1);
-    expect(parkedLayout.frames[0]?.rect.height).toBeCloseTo(768, 1);
-    if (previewShown) expect(parkedLayout.frames[0]).toMatchObject({ opacity: "0", visibility: "visible" });
+    const nativeId = await browserTargetId(ctx.app, firstUrl);
+    const parkedLayout = await ctx.app.evaluate(async ({ webContents }, id) => {
+      const target = webContents.fromId(id);
+      if (!target) throw new Error("Parked native page unavailable");
+      return target.executeJavaScript("({width:innerWidth,height:innerHeight,visibility:document.visibilityState})");
+    }, nativeId);
+    expect(await inspectBrowserTarget(ctx.app, host.windowId, firstUrl)).toMatchObject({ id: nativeId, type: "window", embedded: false, attached: false });
+    expect(Math.abs(parkedLayout.width * guestZoom - 1024)).toBeLessThanOrEqual(guestZoom);
+    expect(Math.abs(parkedLayout.height * guestZoom - 768)).toBeLessThanOrEqual(guestZoom);
+    if (previewShown) expect(parkedLayout.visibility).toBe("visible");
     await test.info().attach("parked-placement.json", { body: JSON.stringify(parkedLayout), contentType: "application/json" });
     expect(clickRef).toMatch(/^e\d+$/);
     releaseNavigation?.();
@@ -343,24 +349,27 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     await panelToggle.click();
     if (!afterEnd?.rendererTabId) throw new Error("Retained browser slot unavailable");
     await page.locator(`[role="presentation"][data-tab-id="${afterEnd.rendererTabId}"]`).getByRole("tab").click();
-    const retainedFrame = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${afterEnd.rendererTabId}"]`);
+    const retainedFrame = page.locator(`[data-testid="chat-side-panel-browser-native"][data-tab-id="${afterEnd.rendererTabId}"]`);
     await expect(retainedFrame).toHaveCSS("visibility", "visible");
-    await expect(retainedFrame).toHaveCSS("opacity", "1");
+    await expect.poll(async () => (await inspectBrowserTarget(app, host.windowId, secondUrl)).attached).toBe(true);
     await expect(page.getByTestId("agent-browser-control-badge")).toHaveCount(0);
     await expect(page.getByTestId("chat-side-panel-tab-agent-controlled")).toHaveCount(0);
-    const retained = await ctx.app.evaluate(({ webContents }, url) => webContents.getAllWebContents().filter(contents => contents.getType() === "webview" && contents.getURL() === url).map(contents => ({ id: contents.id, url: contents.getURL(), destroyed: contents.isDestroyed() })), secondUrl);
+    const retained = await ctx.app.evaluate(({ webContents }, url) => webContents.getAllWebContents().filter(contents => contents.getURL() === url).map(contents => ({ id: contents.id, url: contents.getURL(), destroyed: contents.isDestroyed() })), secondUrl);
     expect(retained).toHaveLength(1);
-    expect(retained[0]).toMatchObject({ url: secondUrl, destroyed: false });
-    // The same native-frame measurement must detect a real user focus transfer.
-    const visibleBox = await retainedFrame.boundingBox();
-    if (!visibleBox) throw new Error("Visible browser focus control unavailable");
-    await page.mouse.click(visibleBox.x + 60, visibleBox.y + 60);
+    expect(retained[0]).toMatchObject({ id: nativeId, url: secondUrl, destroyed: false });
+    // Explicit trusted-chrome focus must move actual native ownership to the visible page.
+    const focused = await page.evaluate(async target => {
+      const tabs = window.aveApi.browserTabs;
+      if (!tabs) throw new Error("Native browser focus API unavailable");
+      return tabs.nativeSurface({ action: "focus", tabId: target.rendererTabId, webContentsId: target.id });
+    }, { rendererTabId: afterEnd.rendererTabId, id: nativeId });
+    expect(focused.ok).toBe(true);
     const running = ctx;
     const keyboardTarget = () => running.app.evaluate(({ webContents }, url) => {
-      const guest = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL() === url);
-      const host = guest?.hostWebContents;
-      if (!guest || !host) throw new Error("Native keyboard target unavailable");
-      return { focused: host.focusedFrame !== host.mainFrame, guestFrame: host.focusedFrame === guest.mainFrame };
+      const guest = webContents.getAllWebContents().find(contents => contents.getURL() === url);
+      if (!guest) throw new Error("Native keyboard target unavailable");
+      const focused = webContents.getFocusedWebContents()?.id === guest.id;
+      return { focused, guestFrame: focused && guest.focusedFrame === guest.mainFrame };
     }, secondUrl);
     await expect.poll(keyboardTarget).toEqual({ focused: true, guestFrame: true });
     await page.getByTestId("chat-side-panel-close").click();
@@ -378,14 +387,14 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
       state.backgroundEditBlurs = 0;
       editor.addEventListener("blur", () => { state.backgroundEditBlurs++; });
     });
-    await ctx.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.isVisible())?.blur());
+    await ctx.app.evaluate(({ BaseWindow }, windowId) => BaseWindow.fromId(windowId)?.blur(), host.windowId);
     const backgroundBefore = await page.evaluate(() => ({ blurs: (window as unknown as { backgroundEditBlurs: number }).backgroundEditBlurs,
       active: document.activeElement?.getAttribute("data-testid"), value: (document.activeElement as HTMLInputElement)?.value }));
     const binding = await page.evaluate(args => window.aveApi.browserTabs?.bindTab(args), {
       tabId: afterEnd.rendererTabId, webContentsId: inactiveGuest.id, parked: true,
     });
     expect(binding).toEqual({ ok: true });
-    expect(await ctx.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find(window => window.isVisible())?.isFocused())).toBe(false);
+    expect(await ctx.app.evaluate(({ BaseWindow }, windowId) => BaseWindow.fromId(windowId)?.isFocused(), host.windowId)).toBe(false);
     expect(await page.evaluate(() => ({ blurs: (window as unknown as { backgroundEditBlurs: number }).backgroundEditBlurs,
       active: document.activeElement?.getAttribute("data-testid"), value: (document.activeElement as HTMLInputElement)?.value })))
       .toEqual(backgroundBefore);

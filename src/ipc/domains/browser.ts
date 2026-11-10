@@ -9,6 +9,11 @@ import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { disposeBrowserWorkspaceService, getBrowserWorkspaceService, refreshBrowserPopupControl } from "../../main/browser/browser-workspace-desktop.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
 import { registerBrowserWorkspaceHandlers } from "./browser-workspace.js";
+import { BrowserNativeSurfaceHost } from "../../main/browser/browser-native-surfaces.js";
+import { attachSideBrowserWebview } from "../../main/side-browser-webview.js";
+import { trackBrowserGuest } from "../../main/browser/browser-guest-tracking.js";
+import { parseBrowserNativeSurfaceRequest, type BrowserNativeSurfaceResult } from "../../shared/browser-native-surface.js";
+import { parseBrowserNativeInput } from "../../shared/browser-native-input.js";
 import type {
   BrowserTabStopRequest,
   ActiveWorkspaceSurface,
@@ -20,6 +25,7 @@ const log = createLogger("browser-ipc");
 
 const MAX_TAB_ID_LENGTH = 200;
 let cleanupRegistered = false;
+let nativeSurfaces: BrowserNativeSurfaceHost | undefined;
 
 function asTabId(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 && value.length <= MAX_TAB_ID_LENGTH ? value : null;
@@ -38,9 +44,51 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
   if (!cleanupRegistered) {
     registerShutdownHook("browser-workspace", disposeBrowserWorkspaceService);
+    registerShutdownHook("browser-native-surfaces", () => nativeSurfaces?.dispose());
     cleanupRegistered = true;
   }
   registerBrowserWorkspaceHandlers(deps, getBrowserWorkspaceService());
+  nativeSurfaces ??= new BrowserNativeSurfaceHost({
+    windowForId: (windowId) => getMainWindows().find(window => window.id === windowId && !window.isDestroyed()),
+    authorizeCreate: (windowId, tabId, requestId) => browserTabRegistry.authorizeNativeSurface(windowId, tabId, requestId),
+    attach: (contents, owner) => {
+      trackBrowserGuest(contents, owner.id, { kind: "native-view" });
+      attachSideBrowserWebview(contents, owner);
+    },
+    bind: (windowId, request) => browserTabRegistry.bindTab(windowId, request),
+    changed: (windowId, surface, tabId) => {
+      const owner = getMainWindows().find(window => window.id === windowId && !window.isDestroyed());
+      sendToWindow(owner, CHANNELS.browser.nativeSurfaceChanged, { tabId, surface }, log);
+    },
+    inputStateChanged: (windowId, state) => {
+      const owner = getMainWindows().find(window => window.id === windowId && !window.isDestroyed());
+      sendToWindow(owner, CHANNELS.browser.nativeInputState, state, log);
+    },
+    userFocus: (guestId, explicit) => browserTabRegistry.userFocus(guestId, explicit),
+    userNavigate: (windowId, tabId) => { browserTabRegistry.stop(windowId, tabId); },
+  });
+  const surfaces = nativeSurfaces;
+
+  ipcMain.on(CHANNELS.browser.nativeInput, (event, payload: unknown) => {
+    const owner = mainWindowForContents(event.sender);
+    if (!validateHostRendererSender(event) || !owner || !event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
+      auditUnauthorized(auditLogger, CHANNELS.browser.nativeInput, event);
+      return;
+    }
+    const input = parseBrowserNativeInput(payload);
+    if (input) surfaces.input(owner.id, input);
+  });
+
+  ipcMain.handle(CHANNELS.browser.nativeSurface, (event, payload: unknown): Promise<BrowserNativeSurfaceResult> | BrowserNativeSurfaceResult => {
+    if (!validateHostRendererSender(event)) {
+      auditUnauthorized(auditLogger, CHANNELS.browser.nativeSurface, event);
+      return { ok: false, error: "unauthorized-frame" };
+    }
+    const owner = mainWindowForContents(event.sender);
+    const request = parseBrowserNativeSurfaceRequest(payload);
+    if (!owner || !request) return { ok: false, error: "bad-request" };
+    return surfaces.request(owner.id, request);
+  });
 
   browserTabRegistry.setBindingPersistence({
     savedWindowId: () => getPrimaryMainWindow()?.id,
@@ -95,6 +143,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
     ) {
       return { ok: false, error: "bad-request" };
     }
+    if (browserTabRegistry.isIndependentGuest(webContentsId)) return { ok: false, error: "guest-not-hosted" };
     return browserTabRegistry.bindTab(win.id, {
       tabId,
       webContentsId,

@@ -1,6 +1,5 @@
 // Reconcile shortcuts at boot and settings changes; report registration conflicts and release every accelerator during shutdown.
 import { globalShortcut } from "electron";
-import type { BrowserWindow } from "electron";
 import { createLogger } from "../lib/logger.js";
 import { fixedShortcutOwner, nativeAcceleratorIdentity, normalizeAccelerator, shortcutPlatformOf, type ShortcutSettings } from "../shared/shortcuts.js";
 import { getMainWindow, getServices } from "./app-state.js";
@@ -26,7 +25,7 @@ export interface GlobalShortcutsDeps {
 function defaultOnToggle(): void {
   const win = getMainWindow();
   if (win && !win.isDestroyed()) {
-    toggleMainWindowVisibility(win as BrowserWindow);
+    toggleMainWindowVisibility(win);
     return;
   }
   // No live window — recreate + show (shared tray/menu entry point).

@@ -220,6 +220,7 @@ export async function launchSeededElectron(opts: {
   homePrefix?: string;
   launchEnv?: LaunchEnv;
   launchArgs?: readonly string[];
+  prepareHome?: (aveHome: string) => void | Promise<void>;
 }): Promise<SeededElectronContext> {
   const sessionId = opts.sessionId ?? "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const userDataDir = mkdtempSync(
@@ -267,6 +268,7 @@ export async function launchSeededElectron(opts: {
       "utf-8",
     );
 
+    await opts.prepareHome?.(aveHome);
     app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox", ...(opts.launchArgs ?? [])],
       env: buildIsolatedElectronEnv({
@@ -388,14 +390,16 @@ export async function setWindowSize(
   if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
     throw new Error(`Invalid window content size: ${w}x${h}`);
   }
-  const { windowId, workArea, workAreaContentLimit } = await app.evaluate(({ BrowserWindow, screen }, size) => {
-    const windows = BrowserWindow.getAllWindows().filter(
+  const { windowId, chromeId, workArea, workAreaContentLimit } = await app.evaluate(({ BaseWindow, webContents, screen }, size) => {
+    const windows = BaseWindow.getAllWindows().filter(
       (window) => !window.isDestroyed(),
     );
     const target = windows.sort(
       (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
     )[0];
     if (!target) throw new Error("No main window to resize");
+    const chrome = webContents.getAllWebContents().find(contents => contents === Reflect.get(target, "webContents"));
+    if (!chrome || chrome.isDestroyed()) throw new Error("Main window UI is unavailable");
     const bounds = target.getBounds();
     const content = target.getContentBounds();
     const outerWidth = size.w + bounds.width - content.width;
@@ -408,26 +412,28 @@ export async function setWindowSize(
     target.setPosition(workArea.x, workArea.y);
     target.setContentSize(size.w, size.h);
     const workAreaContentLimit = [workArea.width - (bounds.width - content.width), workArea.height - (bounds.height - content.height)];
-    return { windowId: target.id, workArea, workAreaContentLimit };
+    return { windowId: target.id, chromeId: chrome.id, workArea, workAreaContentLimit };
   }, { w, h });
   let actual: { content: number[]; renderer: { width: number; height: number } } | undefined;
   // Renderer CSS pixels and native content pixels agree only at zoom factor 1.
   try {
     await expect.poll(async () => {
       actual = undefined;
-      const measured = await app.evaluate(async ({ BrowserWindow }, id) => {
-        const target = BrowserWindow.fromId(id);
+      const measured = await app.evaluate(async ({ BaseWindow, webContents }, identity) => {
+        const target = BaseWindow.fromId(identity.windowId);
         if (!target || target.isDestroyed()) throw new Error("Main window closed during resize");
+        const chrome = webContents.fromId(identity.chromeId);
+        if (!chrome || chrome.isDestroyed() || Reflect.get(target, "webContents") !== chrome) throw new Error("Main window UI changed during resize");
         const content = target.getContentSize();
         let timer: ReturnType<typeof setTimeout> | undefined;
         const renderer = await Promise.race([
-          target.webContents.executeJavaScript("({ width: window.innerWidth, height: window.innerHeight })") as Promise<{ width: number; height: number }>,
+          chrome.executeJavaScript("({ width: window.innerWidth, height: window.innerHeight })") as Promise<{ width: number; height: number }>,
           new Promise<never>((_resolve, reject) => {
             timer = setTimeout(() => reject(new Error("Renderer size probe timed out")), 1_000);
           }),
         ]).finally(() => clearTimeout(timer));
         return { content, renderer };
-      }, windowId);
+      }, { windowId, chromeId });
       actual = measured;
       return Math.abs(measured.renderer.width - w) <= 1
         && Math.abs(measured.renderer.height - h) <= 1

@@ -47,7 +47,11 @@ describe("native focus test selection", () => {
 
   it("keeps native focus coverage runnable on a virtual desktop", () => {
     const workflow = readFileSync(new URL("../../.github/workflows/e2e-os-focus.yml", import.meta.url), "utf8");
-    expect(workflow).toContain("xvfb-run -a bun run test:ui-e2e:os-focus");
+    expect(workflow).toContain("xvfb-run -a -s '-screen 0 1600x1000x24'");
+    expect(workflow).toContain("openbox > test-results/native-os-focus/window-manager.log");
+    expect(workflow).toContain("PLAYWRIGHT_JSON_OUTPUT_NAME: $" + "{{ github.workspace }}/ave/test-results/native-os-focus/results.json");
+    expect(workflow).toContain("bun run test:ui-e2e:os-focus");
+    expect(workflow).toContain("--retries=0");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("schedule:");
   });

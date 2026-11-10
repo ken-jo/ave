@@ -11,7 +11,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
 import { BUILTIN_VIEW_ICONS, BUILTIN_LABEL_KEYS } from "../utils/view-location.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
-import { useGuestNavigation, useWebSurfaceGuest, type GuestElement, type GuestNavigation } from "../hooks/use-browser-navigation.js";
+import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation, type BrowserSurface, type GuestNavigation } from "../hooks/use-browser-navigation.js";
 import type { MainSurface } from "../preview/main-surfaces.js";
 import { HEADER_BUTTON_CLASS, PaneFrame, usePanePanelSlot } from "./PaneFrame.js";
 import { DockedPanelColumn, useDockedPanelMotion, WorkPanelCard } from "./DockedWorkPanel.js";
@@ -57,7 +57,7 @@ function WebPanelBody({
   api: AveApi;
   surface: MainSurface;
   paneId: string;
-  guest: GuestElement | null;
+  guest: BrowserSurface | null;
   navigation: GuestNavigation;
   onNavigate: (url: string) => void;
 }) {
@@ -95,15 +95,16 @@ function WebPanelBody({
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="web-panel" data-tab-id={surface.tabId}>
       <form
+        data-native-page-chrome="card"
         className="flex shrink-0 items-center gap-1 border-b border-border/(--opacity-half) px-2 py-1"
         onSubmit={(event) => {
           event.preventDefault();
           submit();
         }}
       >
-        {navButton(t("mainPanels.back"), <ArrowLeft className="h-3.5 w-3.5" />, () => navigateAsUser(() => guest?.goBack()), !navigation.canGoBack, "web-panel-back")}
-        {navButton(t("mainPanels.forward"), <ArrowRight className="h-3.5 w-3.5" />, () => navigateAsUser(() => guest?.goForward()), !navigation.canGoForward, "web-panel-forward")}
-        {navButton(t("mainPanels.reload"), <RotateCw className="h-3.5 w-3.5" />, () => navigateAsUser(() => guest?.reload()), !guest || !shownUrl, "web-panel-reload")}
+        {navButton(t("mainPanels.back"), <ArrowLeft className="h-3.5 w-3.5" />, () => navigateAsUser(() => navigateBrowserSurface(guest, "back")), !navigation.canGoBack, "web-panel-back")}
+        {navButton(t("mainPanels.forward"), <ArrowRight className="h-3.5 w-3.5" />, () => navigateAsUser(() => navigateBrowserSurface(guest, "forward")), !navigation.canGoForward, "web-panel-forward")}
+        {navButton(t("mainPanels.reload"), <RotateCw className="h-3.5 w-3.5" />, () => navigateAsUser(() => navigateBrowserSurface(guest, "reload")), !guest || !shownUrl, "web-panel-reload")}
         <Globe className="ml-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         <Input
           data-testid="web-panel-address"
@@ -129,7 +130,7 @@ function WebPanelBody({
       <BrowserSurfaceTools api={api} tabId={surface.tabId} onOpenUrl={(url) => navigateAsUser(() => onNavigate(url))} />
       <BrowserObservationLiveStrip tabId={surface.tabId} />
       {error ? (
-        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-testid="web-panel-address-error">{error}</div>
+        <div className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-native-page-chrome="background" data-testid="web-panel-address-error">{error}</div>
       ) : null}
       {surface.url ? (
         <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`}
@@ -272,7 +273,7 @@ export function SurfacePane({
   const view = surface.kind === "terminal" ? "terminal" : "web";
   const Icon = BUILTIN_VIEW_ICONS[view];
   const kindLabel = t(BUILTIN_LABEL_KEYS[view]);
-  const guest = useWebSurfaceGuest(surface.tabId);
+  const guest = useBrowserSurface(surface.tabId);
   const navigation = useGuestNavigation(surface.kind === "browser" ? guest : null);
   const label = `${kindLabel} ${surface.ordinal}`;
   const title = surface.kind === "terminal" ? label : webPanelTitle(navigation, surface.url, label);

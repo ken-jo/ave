@@ -1,7 +1,7 @@
 import { isBackgroundE2eRuntime, showWindowForRuntime } from "./e2e-window-presentation.js";
 // Reuses the calling plugin’s auth partition without exposing cookies or a host bridge. Enforce manifest domains on navigation and redirects; deny
 // popups and downloads from the credential-bearing session.
-import { BrowserWindow, session as electronSession } from "electron";
+import { BrowserWindow, type BaseWindow, session as electronSession } from "electron";
 
 import {
   applyPersistentBrowserUserAgent,
@@ -37,8 +37,8 @@ export interface OpenAuthPartitionViewerOptions {
   allowedHosts: string[];
   // Window chrome label. Default falls back to the URL hostname.
   windowTitle?: string;
-  // Parent BrowserWindow for OS-level Z-order.
-  parent?: BrowserWindow | null;
+  // Parent native window for OS-level Z-order.
+  parent?: BaseWindow | null;
   // Audit sink — host log + future telemetry.
   audit?: (event: AuthPartitionViewerAuditEvent) => void;
 }

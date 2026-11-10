@@ -2,23 +2,28 @@ import { expect, type TestInfo } from "@playwright/test";
 import type { ElectronApplication } from "playwright";
 import { build } from "esbuild";
 import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createSharedElectronTest } from "./shared-electron.js";
 import { closeNativeFixture, launchNativeFixture, nativeFixturePaths } from "./native-fixture-runtime.js";
-import { buildIsolatedElectronEnv, launchElectron, setWindowSize } from "./seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, REPO_ROOT, setWindowSize } from "./seeded-electron.js";
 import type { BrowserScreenshotOptions } from "../../../src/shared/browser-capture.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./browser-capture-native/contract.js";
+import { browserTargetId, inspectBrowserTarget } from "./browser-native-target.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(HERE, "browser-capture-native");
 const test = createSharedElectronTest<ElectronApplication>({
   launch: async (_key, workerInfo) => {
+    const temporaryRoot = await fs.realpath(tmpdir());
+    if (temporaryRoot === "/private/tmp" || temporaryRoot.startsWith("/private/tmp/")) throw new Error("Capture fixture requires an external temporary directory");
     const app = await launchNativeFixture("ave-browser-capture-", async ({ runtime, assets }) => {
       const home = join(runtime, "home");
-      const mainOut = join(assets, "main.mjs");
+      const mainOut = join(assets, "host", "src", "main", "main.js");
       await fs.mkdir(home, { recursive: true });
-      await build({ entryPoints: [join(FIXTURE, "preload.ts")], outfile: join(assets, "preload.cjs"), bundle: true, format: "cjs", platform: "node", external: ["electron"], logLevel: "silent" });
+      await fs.mkdir(dirname(mainOut), { recursive: true });
+      await fs.copyFile(join(REPO_ROOT, "dist", "src", "preload.cjs"), join(assets, "host", "src", "preload.cjs"));
       await build({ entryPoints: [join(FIXTURE, "renderer.tsx")], outfile: join(assets, "renderer.js"), bundle: true, format: "iife", platform: "browser", jsx: "automatic", define: { "process.env.NODE_ENV": '"test"' }, logLevel: "silent" });
       await build({ entryPoints: [join(FIXTURE, "main.ts")], outfile: mainOut, bundle: true, format: "esm", platform: "node", target: "es2022", external: ["electron", "@napi-rs/canvas"],
         banner: { js: "import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);" }, logLevel: "silent" });
@@ -45,14 +50,20 @@ const test = createSharedElectronTest<ElectronApplication>({
   },
   assertClean: async (app) => {
     await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.assertClean());
-    expect(await app.evaluate(async ({ BrowserWindow, webContents }) => {
-      const windows = BrowserWindow.getAllWindows();
-      const guests = webContents.getAllWebContents().filter((contents) => contents.getType() === "webview");
+    expect(await app.evaluate(async ({ BaseWindow, webContents }) => {
+      const windows = BaseWindow.getAllWindows();
+      const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+      const owner = BaseWindow.fromId(fixture.windowId);
+      if (!owner) throw new Error("Capture fixture owner is unavailable");
+      const chrome = webContents.getAllWebContents().find(contents => contents === Reflect.get(owner, "webContents"));
+      if (!chrome) throw new Error("Capture fixture UI is unavailable");
+      const guests = webContents.getAllWebContents().filter(contents => contents.getType() === "window" && contents.id !== chrome.id);
       const guest = guests[0];
       return { windows: windows.length, guests: guests.length, visible: windows[0]?.isVisible(), focused: windows.some(window => window.isFocused()),
+        independent: guest?.id === fixture.targetId && !guest.hostWebContents,
         zoom: guest?.getZoomFactor(), page: await guest?.executeJavaScript("({x:scrollX,y:scrollY,storage:localStorage.length,session:sessionStorage.length,url:location.pathname})"),
         cookies: (await guest?.session.cookies.get({}))?.length };
-    })).toEqual({ windows: 1, guests: 1, visible: true, focused: false, zoom: 1,
+    })).toEqual({ windows: 1, guests: 1, visible: true, focused: false, independent: true, zoom: 1,
       page: { x: 0, y: 0, storage: 0, session: 0, url: "/page" }, cookies: 0 });
     const page = await app.firstWindow();
     await expect(page.locator("#slot")).toBeVisible();
@@ -109,17 +120,23 @@ test("native capture build assets stay inside the invocation output", async ({ s
 });
 
 async function layout(app: ElectronApplication) {
-  const native = await app.evaluate(({ BrowserWindow, webContents }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
-    if (!window || !guest) throw new Error("Capture fixture native layout is unavailable");
-    return { bounds: window.getContentBounds(), zoom: guest.getZoomFactor() };
+  const target = await app.evaluate(() => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    return { windowId: fixture.windowId, targetId: fixture.targetId, pageUrl: fixture.pageUrl };
   });
-  const guest = await app.evaluate(async ({ webContents }) => {
-    const contents = webContents.getAllWebContents().find((entry) => entry.getType() === "webview");
+  expect(await browserTargetId(app, target.pageUrl)).toBe(target.targetId);
+  const native = await app.evaluate(({ BaseWindow, webContents }, target) => {
+    const window = BaseWindow.fromId(target.windowId);
+    const guest = webContents.fromId(target.targetId);
+    if (!window || !guest) throw new Error("Capture fixture native layout is unavailable");
+    return { bounds: window.getContentBounds(), zoom: guest.getZoomFactor(), type: guest.getType(), embedded: Boolean(guest.hostWebContents) };
+  }, target);
+  expect(native).toMatchObject({ type: "window", embedded: false });
+  const guest = await app.evaluate(async ({ webContents }, id) => {
+    const contents = webContents.fromId(id);
     if (!contents) throw new Error("Capture fixture guest is unavailable");
     return contents.executeJavaScript("({width:visualViewport.width,height:visualViewport.height,x:scrollX,y:scrollY})");
-  });
+  }, target.targetId);
   return { native, guest, slot: await (await app.firstWindow()).locator("#slot").boundingBox() };
 }
 
@@ -128,7 +145,8 @@ for (const zoom of [1, 1.25]) {
     let before: Awaited<ReturnType<typeof layout>> | undefined;
     try {
       await app.evaluate(async ({ webContents }, zoom) => {
-        const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+        const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+      const guest = webContents.fromId(fixture.targetId);
         if (!guest) throw new Error("Capture fixture guest is unavailable");
         guest.setZoomFactor(zoom);
         await guest.executeJavaScript("scrollTo(0,123)");
@@ -156,7 +174,8 @@ for (const zoom of [1, 1.25]) {
 for (const zoom of [1, 1.25]) {
   test(`native ref capture keeps the element CSS size at zoom ${zoom}`, async ({ sharedApp: app }, testInfo) => {
     await app.evaluate(async ({ webContents }, zoom) => {
-      const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+      const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+      const guest = webContents.fromId(fixture.targetId);
       if (!guest) throw new Error("Capture fixture guest is unavailable");
       guest.setZoomFactor(zoom);
       await guest.executeJavaScript("scrollTo(0,20)");
@@ -177,43 +196,50 @@ for (const zoom of [1, 1.25]) {
 
 test("native parked agent tab wakes for full-page capture without selecting its slot", async ({ sharedApp: app }, testInfo) => {
   const host = await app.firstWindow();
+  const target = await app.evaluate(() => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    return { windowId: fixture.windowId, targetId: fixture.targetId, pageUrl: fixture.pageUrl };
+  });
   await host.locator("#slot").evaluate((element) => { element.style.display = "none"; });
-  const frame = host.getByTestId("web-surface-frame");
-  await expect.poll(() => frame.evaluate((element) => getComputedStyle(element).visibility), { timeout: 15_000 }).toBe("hidden");
+  await expect.poll(async () => (await inspectBrowserTarget(app, target.windowId, target.pageUrl)).attached, { timeout: 15_000 }).toBe(false);
   const result = await capture(app, { fullPage: true });
   expect(result.dimensions.height).toBeGreaterThan(result.viewport.height * 2);
   expect(result.dimensions).toEqual({ width: result.viewport.width, height: result.content.height });
   expectFixtureBands(result);
   await expect(host.locator("#slot")).toBeHidden();
-  await expect(frame).toHaveAttribute("aria-hidden", "true");
+  expect(await inspectBrowserTarget(app, target.windowId, target.pageUrl)).toMatchObject({ id: target.targetId, attached: false });
   await attachImage(testInfo, "parked-full-page-capture", result);
 });
 
 test("native parked agent tab captures its viewport and returns to sleep", async ({ sharedApp: app }, testInfo) => {
   const backgroundThrottled = () => app.evaluate(({ webContents }) => {
-    const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    const guest = webContents.fromId(fixture.targetId);
     if (!guest) throw new Error("Capture fixture guest is unavailable");
     return guest.getBackgroundThrottling();
   });
   // Exercise restoration from a throttled baseline; background test guests start unthrottled.
   await app.evaluate(({ webContents }) => {
-    const guest = webContents.getAllWebContents().find((contents) => contents.getType() === "webview");
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    const guest = webContents.fromId(fixture.targetId);
     if (!guest) throw new Error("Capture fixture guest is unavailable");
     guest.setBackgroundThrottling(true);
   });
   expect(await backgroundThrottled()).toBe(true);
   const host = await app.firstWindow();
+  const target = await app.evaluate(() => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    return { windowId: fixture.windowId, targetId: fixture.targetId, pageUrl: fixture.pageUrl };
+  });
   await host.locator("#slot").evaluate((element) => { element.style.display = "none"; });
-  const frame = host.getByTestId("web-surface-frame");
-  await expect.poll(() => frame.evaluate((element) => getComputedStyle(element).visibility), { timeout: 15_000 }).toBe("hidden");
+  await expect.poll(async () => (await inspectBrowserTarget(app, target.windowId, target.pageUrl)).attached, { timeout: 15_000 }).toBe(false);
   const result = await capture(app, {});
   expect(await backgroundThrottled()).toBe(false);
   expect(result.dimensions).toEqual(result.viewport);
   expect(result.truncated).toBe(false);
   await expect(host.locator("#slot")).toBeHidden();
-  await expect(frame).toHaveAttribute("aria-hidden", "true");
-  await expect(frame).toHaveAttribute("inert", "");
+  expect(await inspectBrowserTarget(app, target.windowId, target.pageUrl)).toMatchObject({ id: target.targetId, attached: false });
   await attachImage(testInfo, "parked-viewport-capture", result);
-  await expect.poll(() => frame.evaluate((element) => getComputedStyle(element).visibility), { timeout: 5_000 }).toBe("hidden");
+  await expect.poll(async () => (await inspectBrowserTarget(app, target.windowId, target.pageUrl)).attached, { timeout: 5_000 }).toBe(false);
   await expect.poll(backgroundThrottled, { timeout: 5_000 }).toBe(true);
 });

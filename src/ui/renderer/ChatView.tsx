@@ -42,6 +42,7 @@ import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./previ
 import { forgetActiveSurface } from "./preview/active-surface.js";
 import { savedSurfaceOf } from "./preview/main-layout-snapshot.js";
 import { webSurfaceLocation } from "./preview/web-surfaces.js";
+import { registerChatTranscriptUnderlay } from "./preview/chat-transcript-underlays.js";
 import { attachToComposer, registerComposerTarget } from "./preview/composer-targets.js";
 import { closeBrowserTab, registerBrowserTabHost, useBrowserControlState } from "./preview/agent-browser-bridge.js";
 import { SIDE_PANEL_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
@@ -329,6 +330,12 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
   const panelSlot = usePanePanelSlot();
   const inFrame = panelSlot !== null;
   const panelHost = panelSlot?.panel ?? null;
+  const transcriptStageRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const host = inFrame ? panelHost : chatViewRootElement;
+    const stage = transcriptStageRef.current;
+    return host && stage ? registerChatTranscriptUnderlay(host, stage) : undefined;
+  }, [inFrame, panelHost, chatViewRootElement]);
   const tileElement = panelSlot?.tile ?? null;
   const { width: containerWidth, isNarrow } = useContainerNarrow(inFrame ? tileElement : chatViewRootElement);
   const columns = chatColumnsLayout(containerWidth, thumbnailOpen, sidePanelOpen, sidePanelWidth, isNarrow);
@@ -856,7 +863,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
         data-testid="chat-main-column"
       >
 
-      <div className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
+      <div ref={transcriptStageRef} data-testid="chat-transcript-stage" className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">
       <div className="grid h-full min-h-0 min-w-0 grid-cols-1">
       <div className="relative min-h-0 min-w-0 overflow-hidden">
       {/* Checkpoint view-mode banner — sticky at the top of the chat scroll area */}

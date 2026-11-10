@@ -1,10 +1,11 @@
+import type { MainWindow } from "./main-window-host.js";
 // Prepare Python lazily when a plugin needs a non-ready runtime. Lockfiles must ship inside the installed plugin; never resolve through sibling source checkouts.
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isResolvedPathWithin } from "../plugins/plugin-storage-containment.js";
-import type { BrowserWindow } from "electron";
+
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
 import { resolvePluginPaths } from "../plugins/plugin-paths.js";
@@ -138,7 +139,7 @@ export function uvProxyEnvFromPacResolutions(
 export class PythonRuntimeBootstrapper {
   // Resolved once — see {@link PythonRuntimeBootstrapper.uvEgressEnv}.
   private uvEgressEnvOnce: Promise<Record<string, string>> | null = null;
-  private mainWindow: BrowserWindow | null = null;
+  private mainWindow: MainWindow | null = null;
 
   constructor(private readonly options: PythonRuntimeBootstrapperOptions = {}) {}
 
@@ -170,7 +171,7 @@ export class PythonRuntimeBootstrapper {
     return path.join(this.venvDir(), ".ready");
   }
 
-  async ensureReady(mainWindow: BrowserWindow | null): Promise<RuntimeResult> {
+  async ensureReady(mainWindow: MainWindow | null): Promise<RuntimeResult> {
     this.mainWindow = mainWindow;
     this.getCurrentUvTarget();
     const pythonPath = this.getPythonPath();
@@ -186,7 +187,7 @@ export class PythonRuntimeBootstrapper {
   // plugins do not turn install into a Python bootstrap attempt.
   async ensureReadyForPluginManifest(
     manifestPath: string,
-    mainWindow: BrowserWindow | null,
+    mainWindow: MainWindow | null,
     onStatus?: (status: PythonRuntimeBootstrapStatus) => void,
   ): Promise<RuntimeResult | null> {
     const lockFileName = this.options.lockFileName ?? LOCK_FILE_RESOURCE_NAME;

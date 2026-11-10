@@ -1,7 +1,7 @@
 // Picking a path identifies user intent without widening the filesystem envelope; writes still require an existing grant. The host owns the native
 // dialog and its title identifies the requesting plugin.
 import { dialog } from "electron";
-import type { BrowserWindow } from "electron";
+import type { BaseWindow } from "electron";
 import { t } from "../../i18n/index.js";
 
 // What one plugin gets back. A cancel is an ANSWER, not a failure.
@@ -15,7 +15,7 @@ export interface PickFoldersResult {
 // What the picker needs from the host it runs in.
 export interface PickFoldersDeps {
   // The window the sheet attaches to, or `null` for an unparented dialog.
-  readonly parentWindow: () => BrowserWindow | null;
+  readonly parentWindow: () => BaseWindow | null;
 }
 
 // Refuse a second chooser per plugin instead of queuing or replacing the user’s active dialog.

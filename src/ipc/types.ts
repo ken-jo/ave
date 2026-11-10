@@ -1,4 +1,5 @@
-import type { BrowserWindow } from "electron";
+import type { MainWindow } from "../main/main-window-host.js";
+
 import type { AppServices } from "../boot/types.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "../main/conversation-command-port.js";
@@ -7,8 +8,8 @@ import type { TelegramConnectionService } from "../main/telegram-connection-serv
 import type { TailnetObserverConfigService } from "../main/tailnet-observer-config-service.js";
 
 export type IpcDeps = AppServices & {
-  getMainWindow: () => BrowserWindow | null;
-  getAppWindows?: () => Array<BrowserWindow | null | undefined>;
+  getMainWindow: () => MainWindow | null;
+  getAppWindows?: () => Array<MainWindow | null | undefined>;
   // Production surfaces share one host-owned lease and event runtime; focused single-transport tests may omit it.
   conversationSurfaceRuntime?: ConversationSurfaceRuntime;
   // Production surfaces share one command entrypoint; only focused domain tests may omit it.

@@ -1,5 +1,6 @@
 /** Main owns tab authority; renderer-issued ids are unique per window and omit UI placement. */
 import { hasOnlyKeys, isRecord } from "./is-record.js";
+import type { BrowserNativeSurfaceChanged, BrowserNativeSurfaceRequest, BrowserNativeSurfaceResult } from "./browser-native-surface.js";
 
 type WorkspaceSurfaceKind = "browser" | "terminal";
 
@@ -111,11 +112,14 @@ interface SessionTabBinding {
 export interface SessionTabBindingsState {
   readonly revision: number;
   readonly bindings: readonly SessionTabBinding[];
+  readonly nativeBrowserTabIds: readonly string[];
 }
 
 export function parseSessionTabBindingsState(value: unknown): SessionTabBindingsState | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["revision", "bindings"])
-    || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !Array.isArray(value.bindings)) return null;
+  if (!isRecord(value) || !hasOnlyKeys(value, ["revision", "bindings", "nativeBrowserTabIds"])
+    || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 || !Array.isArray(value.bindings)
+    || !Array.isArray(value.nativeBrowserTabIds) || !value.nativeBrowserTabIds.every(id => typeof id === "string" && id.length > 0)
+    || new Set(value.nativeBrowserTabIds).size !== value.nativeBrowserTabIds.length) return null;
   const sessions = new Set<string>();
   const bindings: SessionTabBinding[] = [];
   for (const item of value.bindings) {
@@ -127,7 +131,7 @@ export function parseSessionTabBindingsState(value: unknown): SessionTabBindings
     sessions.add(item.sessionId);
     bindings.push({ sessionId: item.sessionId, browserTabIds: [...item.browserTabIds], terminalTabIds: [...item.terminalTabIds] });
   }
-  return { revision: value.revision as number, bindings };
+  return { revision: value.revision as number, bindings, nativeBrowserTabIds: [...value.nativeBrowserTabIds] as string[] };
 }
 
 export interface BrowserControlLease {
@@ -161,6 +165,8 @@ export interface BrowserTabControlState {
 
 /** Trusted window chrome only; page content never receives this API. */
 export interface BrowserTabsApi {
+  nativeSurface(request: BrowserNativeSurfaceRequest): Promise<BrowserNativeSurfaceResult>;
+  onNativeSurfaceChanged(handler: (state: BrowserNativeSurfaceChanged) => void): () => void;
   bindTab(request: BrowserTabBindRequest): Promise<BrowserTabBindResult>;
   completeFocus(requestId: string, restored: boolean): Promise<{ ok: boolean }>;
   /** Report that a `new` op naming `inTabId` could not be loaded into that page, so main answers the agent at once. */

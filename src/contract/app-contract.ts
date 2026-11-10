@@ -737,6 +737,10 @@ export const CHANNELS = {
   // that hosts the guest may do it (validateHostRendererSender + host check in
   // main). Wire types: shared/browser-surface.ts.
   browser: {
+    nativeInput: "ave:browser:native-input",
+    nativeInputState: "ave:browser:native-input-state",
+    nativeSurface: "ave:browser:native-surface",
+    nativeSurfaceChanged: "ave:browser:native-surface-changed",
     bindTab: "ave:browser:bind-tab", // invoke renderer→main  tab id ↔ guest webContents id
     completeFocus: "ave:browser:complete-focus",
     refuseTabOp: "ave:browser:refuse-tab-op", // invoke renderer→main  an inTabId page could not be loaded

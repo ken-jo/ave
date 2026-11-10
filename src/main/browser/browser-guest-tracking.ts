@@ -36,7 +36,7 @@ export function preserveBrowserGuestZoom(change: () => void): void {
   }
 }
 
-export function trackBrowserGuest(contents: WebContents, windowId: number): void {
+export function trackBrowserGuest(contents: WebContents, windowId: number, host?: { readonly kind: "native-view" }): void {
   if (trackedGuests.has(contents)) return;
   trackedGuests.set(contents, windowId);
   const restoreZoom = () => contents.setZoomFactor(siteFactors(contents).get(siteKey(contents)) ?? 1);
@@ -44,7 +44,7 @@ export function trackBrowserGuest(contents: WebContents, windowId: number): void
   contents.on("did-navigate", restoreZoom);
   contents.on("did-finish-load", restoreZoom);
   const guestId = contents.id;
-  browserTabRegistry.guestAttached(contents, windowId);
+  browserTabRegistry.guestAttached(contents, windowId, host);
   contents.on("focus", () => browserTabRegistry.restoreParkedGuestFocus(guestId));
   contents.on("before-input-event", (event, input) => {
     if (browserTabRegistry.isParkedKeyboardInput(guestId, input)) {

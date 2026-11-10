@@ -18,7 +18,7 @@ vi.mock("electron", () => ({
       handlers.set(channel, fn);
     }),
   },
-  BrowserWindow: {
+  BaseWindow: {
     getFocusedWindow: vi.fn(() => null),
   },
   dialog: {

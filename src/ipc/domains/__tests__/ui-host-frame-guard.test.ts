@@ -8,6 +8,7 @@ const NATIVE_CHANNEL = "ave:ui:native-context-menu";
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const popup = vi.fn();
 const fakeWindow = { isDestroyed: () => false };
+const registeredUiContents = new Set<unknown>();
 
 vi.mock("electron", () => ({
   ipcMain: {
@@ -15,16 +16,22 @@ vi.mock("electron", () => ({
       handlers.set(channel, fn);
     }),
   },
-  BrowserWindow: { fromWebContents: vi.fn(() => fakeWindow) },
+  BrowserWindow: { fromWebContents: vi.fn(() => null) },
   Menu: { buildFromTemplate: vi.fn(() => ({ popup })) },
+}));
+
+vi.mock("../../../main/app-state.js", () => ({
+  mainWindowForContents: (contents: unknown) => registeredUiContents.has(contents) ? fakeWindow : null,
 }));
 
 vi.mock("../../../i18n/index.js", () => ({ t: (key: string) => key }));
 
 function uiEvent(frameUrl: string) {
+  const sender = { getURL: () => frameUrl, isDestroyed: () => false, send: vi.fn() };
+  registeredUiContents.add(sender);
   return {
     senderFrame: { url: frameUrl },
-    sender: { getURL: () => frameUrl, isDestroyed: () => false, send: vi.fn() },
+    sender,
   };
 }
 
@@ -45,6 +52,7 @@ const nativePayload = {
 
 async function setup() {
   handlers.clear();
+  registeredUiContents.clear();
   vi.clearAllMocks();
   const { registerUiHandlers } = await import("../ui.js");
   registerUiHandlers({ auditLogger: { log: vi.fn() } } as never);
@@ -85,6 +93,20 @@ describe("UI context-menu channels — host renderer frames only", () => {
     const host = "file:///dist/src/index.html";
     expect(invoke(DYNAMIC_CHANNEL, host, dynamicPayload)).toEqual({ ok: true });
     expect(popup).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an unregistered renderer even when its document URL matches the host", () => {
+    const event = uiEvent("file:///dist/src/index.html");
+    registeredUiContents.delete(event.sender);
+    expect(invokeRegisteredHandlerWithEvent(handlers, DYNAMIC_CHANNEL, event, dynamicPayload)).toEqual({
+      ok: false,
+      error: "unauthorized-frame",
+    });
+    expect(invokeRegisteredHandlerWithEvent(handlers, NATIVE_CHANNEL, event, nativePayload)).toEqual({
+      ok: false,
+      error: "unauthorized-frame",
+    });
+    expect(popup).not.toHaveBeenCalled();
   });
 
   it("refuses a remote origin frame", () => {

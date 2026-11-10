@@ -89,8 +89,10 @@ for (const fixture of DOCUMENT_FIXTURES) test(`returns main-document readiness a
     })();
     await expect(page.getByTestId("chat-main-column").getByText("Usable document confirmed.", { exact: true })).toBeVisible({ timeout: 60_000 });
     const guest = await ctx.app.evaluate(({ webContents }, url) => {
-      const page = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL() === url);
-      return page ? { url: page.getURL(), loading: page.isLoading(), title: page.getTitle() } : null;
+      const targets = webContents.getAllWebContents().filter(contents => contents.getURL() === url);
+      const [page] = targets;
+      if (targets.length !== 1 || !page) throw new Error(`Expected one readiness target, found ${targets.length}`);
+      return { url: page.getURL(), loading: page.isLoading(), title: page.getTitle(), type: page.getType(), embedded: Boolean(page.hostWebContents) };
     }, `${baseUrl}/document?navigated`);
     console.log("Native document readiness measurements", JSON.stringify({ measurements, guest }));
     await test.info().attach("document-readiness.json", { body: JSON.stringify({ measurements, guest }, null, 2), contentType: "application/json" });
@@ -107,7 +109,7 @@ for (const fixture of DOCUMENT_FIXTURES) test(`returns main-document readiness a
       if (fixture.vendor) expect(row.header.challenge).toEqual({ vendor: fixture.vendor, hint: "The user can solve it in the web panel." });
       else expect(row.header).not.toHaveProperty("challenge");
     }
-    expect(guest).toMatchObject({ url: `${baseUrl}/document?navigated`, loading: true, title: fixture.title });
+    expect(guest).toMatchObject({ url: `${baseUrl}/document?navigated`, loading: true, title: fixture.title, type: "window", embedded: false });
     await expect(page.getByTestId(TEST_IDS.panePanelToggle)).toHaveAttribute("aria-pressed", "false");
   } finally {
     approving = false;

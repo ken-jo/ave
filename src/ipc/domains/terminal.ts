@@ -1,3 +1,4 @@
+import { mainWindowForContents } from "../../main/app-state.js";
 import { BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
@@ -25,7 +26,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     fanOutToAllWindows(targets, channel, payload, { logger: log });
   });
   const senderWindowId = (event: IpcMainInvokeEvent): number | null => {
-    const window = BrowserWindow.fromWebContents(event.sender);
+    const window = (mainWindowForContents(event.sender) ?? BrowserWindow.fromWebContents(event.sender));
     return window && !window.isDestroyed() ? window.id : null;
   };
   const authorized = (event: IpcMainInvokeEvent, channel: string): boolean => {
@@ -122,7 +123,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
   ipcMain.handle(CHANNELS.terminal.fileReviews, async (event, payload) => {
     if (!authorized(event, CHANNELS.terminal.fileReviews)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
     const liveOwner = (): boolean => {
-      const window = BrowserWindow.fromWebContents(event.sender);
+      const window = (mainWindowForContents(event.sender) ?? BrowserWindow.fromWebContents(event.sender));
       return !!window && !window.isDestroyed() && !event.sender.isDestroyed()
         && event.senderFrame === event.sender.mainFrame
         && (deps.getAppWindows?.() ?? [deps.getMainWindow()]).some(owner => owner === window && owner.webContents === event.sender);

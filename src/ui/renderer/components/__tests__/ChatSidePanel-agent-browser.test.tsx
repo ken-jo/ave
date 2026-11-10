@@ -14,6 +14,8 @@ import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
 import { UrlDocumentViewer } from "../ChatSidePanelPreview.js";
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
+import { nativeSurfaceFixture } from "../../../../__tests__/support/native-browser-surface.js";
+import { committedWebSurfaceLocation, setNativeBrowserTabIds } from "../../preview/web-surfaces.js";
 import { clearActiveSurface, useReportActiveSurface } from "../../preview/active-surface.js";
 
 /** The window's active-surface report to main, mounted once as App mounts it. */
@@ -26,6 +28,7 @@ import { __resetBrowserTabBridgeForTest, registerBrowserTabHost } from "../../pr
 
 /** Keep hidden page guests alive in WebSurfaceLayer and let main own agent-control status and navigation records. */
 function makeApi() {
+  const native = nativeSurfaceFixture();
   let controlHandler: ((state: BrowserTabControlState) => void) | null = null;
   const api = {
     openExternalUrl: vi.fn(async () => ({ ok: true })),
@@ -33,6 +36,7 @@ function makeApi() {
     updateSettings: vi.fn(async () => ({ ok: true }) as never),
     setActiveSurface: vi.fn(async () => ({ ok: true as const })),
     browserTabs: {
+      ...native.api,
       bindTab: vi.fn(async () => ({ ok: true as const })),
       stop: vi.fn(async () => ({ ok: true as const })),
       pause: vi.fn(async () => ({ ok: true as const })),
@@ -47,12 +51,20 @@ function makeApi() {
       }),
     },
   } as unknown as AveApi;
-  return { api, emitControl: (state: BrowserTabControlState) => controlHandler?.(state) };
+  return { api, native, emitControl: (state: BrowserTabControlState) => controlHandler?.(state) };
 }
 
 let store: WorkspaceTabsStore | null = null;
+function openNativeAgentTab(url: string, requestId: string): string {
+  if (!store) throw new Error("Workspace tabs are unavailable");
+  const tabId = store.openAgentBrowserTab(url, requestId, true, "s1");
+  if (!tabId) throw new Error("Agent page did not open");
+  return tabId;
+}
+
 let previousWindowAve: unknown;
 beforeEach(() => {
+  setNativeBrowserTabIds([]);
   previousWindowAve = window.ave;
   (window as unknown as { ave: unknown }).ave = makeMockAveNamespace().ns;
 });
@@ -123,83 +135,79 @@ describe("ChatSidePanel agent browser", () => {
     expect(screen.getByTestId("chat-side-panel-browser-webview")).toHaveAttribute("src", "https://a.example/user-chosen");
   });
 
-  it("binds a request-bound blank guest and keeps it mounted after navigation and tab switches", async () => {
-    const { api } = makeApi();
+  it("creates a request-bound blank native page and retains it after navigation and tab switches", async () => {
+    const { api, native } = makeApi();
     render(<Harness api={api} />);
-    let tabId: string | null = null;
-    act(() => {
-      tabId = store!.openAgentBrowserTab("about:blank", "browser-op-blank", true, "s1");
-    });
-    expect(tabId).not.toBeNull();
-    const webview = screen.getByTestId("chat-side-panel-browser-webview") as HTMLElement & { getWebContentsId?: () => number };
-    expect(webview).toHaveAttribute("src", "about:blank");
+    let tabId = "";
+    await act(async () => { tabId = openNativeAgentTab("about:blank", "browser-op-blank"); });
+    const page = screen.getByTestId("chat-side-panel-browser-native");
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const openExternal = within(viewer).getByRole("button");
     expect(openExternal).toBeDisabled();
-    webview.getWebContentsId = () => 42;
-    act(() => webview.dispatchEvent(new Event("did-attach")));
-    await waitFor(() => expect(api.browserTabs!.bindTab).toHaveBeenCalledWith({ tabId, webContentsId: 42, requestId: "browser-op-blank", parked: true }));
+    expect(native.nativeSurface).toHaveBeenCalledWith({ action: "create", tabId, requestId: "browser-op-blank" });
+    expect(native.nativeSurface.mock.calls.some(([r]) => r.action === "navigate")).toBe(false);
     act(() => {
-      webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/approved" }));
+      native.publish(tabId, { url: "https://a.example/approved" });
       store!.openPinned({ source: "browser", url: "https://b.example/" });
     });
-    act(() => store!.setActiveTabId(tabId!));
+    act(() => store!.setActiveTabId(tabId));
     expect(within(viewer).getByText("https://a.example/approved")).toBeInTheDocument();
-    expect(openExternal).toBeEnabled();
     fireEvent.click(openExternal);
     expect(api.openExternalUrl).toHaveBeenCalledWith("https://a.example/approved");
-    expect(screen.getAllByTestId("chat-side-panel-browser-webview")[0]).toBe(webview);
-    expect(webview).toHaveAttribute("src", "about:blank");
+    expect(screen.getByTestId("chat-side-panel-browser-native")).toBe(page);
     expect(store!.tabs.find((tab) => tab.id === tabId)?.content).toEqual({ source: "browser", url: "about:blank" });
   });
 
-  it.each(["javascript:alert(1)", "data:text/html,<script>1</script>", "https://user:pass@a.example/", "a.example/no-scheme", "about:blank"])("disables external opening after an invalid committed guest URL (%s)", (url) => {
-    const { api } = makeApi();
+  it.each(["javascript:alert(1)", "data:text/html,<script>1</script>", "https://user:pass@a.example/", "a.example/no-scheme", "about:blank"])("disables external opening after an invalid committed native URL (%s)", async (url) => {
+    const { api, native } = makeApi();
     render(<Harness api={api} />);
-    act(() => {
-      store!.openAgentBrowserTab("about:blank", "browser-op-observed", true, "s1");
-    });
+    let tabId = "";
+    await act(async () => { tabId = openNativeAgentTab("about:blank", "browser-op-observed"); });
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
-    const webview = screen.getByTestId("chat-side-panel-browser-webview");
+    const page = screen.getByTestId("chat-side-panel-browser-native");
     const openExternal = within(viewer).getByRole("button");
-    act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/committed" })));
+    act(() => { native.publish(tabId, { url: "https://a.example/committed" }); });
     expect(openExternal).toBeEnabled();
-    act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url })));
+    act(() => { native.publish(tabId, { url }); });
     expect(openExternal).toBeDisabled();
     fireEvent.click(openExternal);
     expect(api.openExternalUrl).not.toHaveBeenCalled();
-    expect(screen.getByTestId("chat-side-panel-browser-webview")).toBe(webview);
-    expect(webview).toHaveAttribute("src", "about:blank");
+    expect(screen.getByTestId("chat-side-panel-browser-native")).toBe(page);
   });
 
-  it("tracks only main-frame in-page URL changes without reloading the bootstrap guest", () => {
+  it("tracks only main-frame in-page URL changes without reloading a user guest", async () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
-    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-in-page", true, "s1"));
+    await act(async () => { store!.openPinned({ source: "browser", url: "https://a.example/bootstrap" }); });
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/page" })));
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://a.example/page#section", isMainFrame: true })));
-    expect(within(viewer).getByText("https://a.example/page#section")).toBeInTheDocument();
+    const tabId = webview.dataset.tabId;
+    if (!tabId) throw new Error("Page identity is missing");
+    expect(committedWebSurfaceLocation(tabId)).toBe("https://a.example/page#section");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate-in-page"), { url: "https://frame.example/", isMainFrame: false })));
-    expect(within(viewer).getByText("https://a.example/page#section")).toBeInTheDocument();
+    expect(committedWebSurfaceLocation(tabId)).toBe("https://a.example/page#section");
     fireEvent.click(within(viewer).getByRole("button"));
-    expect(api.openExternalUrl).toHaveBeenCalledWith("https://a.example/page#section");
-    expect(webview).toHaveAttribute("src", "about:blank");
+    expect(api.openExternalUrl).toHaveBeenCalledWith("https://a.example/bootstrap");
+    expect(webview).toHaveAttribute("src", "https://a.example/bootstrap");
   });
 
-  it("discards a previously observed URL when the bootstrap guest reattaches", () => {
+  it("discards a previously observed URL when a user guest reattaches", async () => {
     const { api } = makeApi();
     render(<Harness api={api} />);
-    act(() => store!.openAgentBrowserTab("about:blank", "browser-op-reattach", true, "s1"));
+    await act(async () => { store!.openPinned({ source: "browser", url: "https://a.example/bootstrap" }); });
     const viewer = screen.getByTestId("chat-side-panel-url-viewer");
     const webview = screen.getByTestId("chat-side-panel-browser-webview");
     const openExternal = within(viewer).getByRole("button");
     act(() => webview.dispatchEvent(Object.assign(new Event("did-navigate"), { url: "https://a.example/previous" })));
     expect(openExternal).toBeEnabled();
     act(() => webview.dispatchEvent(new Event("did-attach")));
-    expect(openExternal).toBeDisabled();
-    expect(within(viewer).getByText("about:blank")).toBeInTheDocument();
+    const tabId = webview.dataset.tabId;
+    if (!tabId) throw new Error("Page identity is missing");
+    expect(committedWebSurfaceLocation(tabId)).toBeNull();
+    expect(openExternal).toBeEnabled();
+    expect(within(viewer).getByText("https://a.example/bootstrap")).toBeInTheDocument();
   });
 
   it.each([
@@ -241,13 +249,15 @@ describe("ChatSidePanel agent browser", () => {
     act(() => {
       store!.openPinned({ source: "browser", url: "https://b.example/" });
     });
+    await act(async () => {});
     expect(agentTabId).not.toBeNull();
 
     const hosts = screen.getAllByTestId("chat-side-panel-browser-tab-host");
     expect(hosts.map((host) => host.getAttribute("data-tab-id"))).toEqual([agentTabId, expect.any(String)]);
     expect(hosts[0]).toHaveAttribute("aria-hidden", "true");
     expect(hosts[1]).not.toHaveAttribute("aria-hidden");
-    expect(screen.getAllByTestId("chat-side-panel-browser-webview")).toHaveLength(2);
+    expect(screen.getAllByTestId("chat-side-panel-browser-webview")).toHaveLength(1);
+    expect(screen.getByTestId("chat-side-panel-browser-native")).toBeInTheDocument();
 
     act(() => emitControl(browserControlFixture([agentTabId!])));
     const badge = screen.getByTestId("agent-browser-control-badge");
@@ -283,28 +293,15 @@ describe("ChatSidePanel agent browser", () => {
     await waitFor(() => expect(api.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId }));
   });
 
-  it("binds an agent tab with its request id, retrying until main has seen the guest attach", async () => {
-    const { api } = makeApi();
-    const bindTab = api.browserTabs!.bindTab as ReturnType<typeof vi.fn>;
-    bindTab
-      .mockResolvedValueOnce({ ok: false, error: "guest-not-live" })
-      .mockResolvedValueOnce({ ok: false, error: "guest-not-live" })
-      .mockResolvedValue({ ok: true });
+  it("constructs an agent page directly in the native host without a renderer guest bind", async () => {
+    const { api, native } = makeApi();
     render(<Harness api={api} />);
-    let tabId: string | null = null;
-    act(() => {
-      tabId = store!.openAgentBrowserTab("https://a.example/", "browser-op-3", true, "s1");
-    });
-    const webview = screen.getByTestId("chat-side-panel-browser-webview") as HTMLElement & { getWebContentsId?: () => number };
-    webview.getWebContentsId = () => 42;
-    act(() => {
-      webview.dispatchEvent(new Event("did-attach"));
-    });
-    const bindings = () => bindTab.mock.calls.map(([request]) => request).filter(request => request.requestId === "browser-op-3");
-    await waitFor(() => expect(bindings()).toHaveLength(3));
-    expect(bindings().at(-1)).toEqual({ tabId, webContentsId: 42, requestId: "browser-op-3", parked: true });
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(bindings()).toHaveLength(3);
+    let tabId = "";
+    await act(async () => { tabId = openNativeAgentTab("https://a.example/", "browser-op-3"); });
+    expect(native.nativeSurface.mock.calls.filter(([r]) => r.action === "create")).toEqual([[{ action: "create", tabId, requestId: "browser-op-3" }]]);
+    expect(api.browserTabs!.bindTab).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("chat-side-panel-browser-webview")).toBeNull();
+    expect(native.nativeSurface.mock.calls.some(([r]) => r.action === "navigate")).toBe(false);
   });
 
   it("refuses an unsafe url for an agent tab", () => {

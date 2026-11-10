@@ -1,4 +1,4 @@
-import { type BrowserWindow, session, type WebContents } from "electron";
+import { type BaseWindow, session, type WebContents } from "electron";
 import { browserTabRegistry } from "../../../src/main/browser/browser-tab-registry.js";
 
 export async function clearNativeBrowserStorage(partitionName: string): Promise<void> {
@@ -8,7 +8,7 @@ export async function clearNativeBrowserStorage(partitionName: string): Promise<
   }));
 }
 
-export function assertNativeBrowserState(window: BrowserWindow, guest: WebContents, rendererTabId: string): void {
+export function assertNativeBrowserState(window: BaseWindow, guest: WebContents, rendererTabId: string): void {
   if (browserTabRegistry.controlState(window.id).tabs.length !== 1) {
     throw new Error("Browser fixture tab registry is dirty");
   }

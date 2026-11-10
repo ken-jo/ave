@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: "30 18 * * *"
   workflow_dispatch:
+    inputs:
+      keyboard-takeover-only:
+        description: Run only the native keyboard takeover regression
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -24,8 +29,30 @@ jobs:
         with:
           bun-version-file: ave/.bun-version
       - run: bun install --frozen-lockfile
+      - name: Install native pointer and keyboard tools
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y xdotool openbox
       - run: bun run build
-      - run: xvfb-run -a bun run test:ui-e2e:os-focus
+      - name: Verify native keyboard routing on a virtual desktop
+        env:
+          AVE_E2E_OS_FOCUS: "1"
+          KEYBOARD_TAKEOVER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.keyboard-takeover-only }}
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/ave/test-results/native-os-focus/results.json
+        run: |
+          set -euo pipefail
+          task_home=$(mktemp -d "$RUNNER_TEMP/native-keyboard-home.XXXXXX")
+          mkdir -p "$task_home/tmp" test-results/native-os-focus
+          export HOME="$task_home" AVE_HOME="$task_home/.ave" TMPDIR="$task_home/tmp"
+          xvfb-run -a -s '-screen 0 1600x1000x24' bash <<'SH'
+          set -euo pipefail
+          openbox > test-results/native-os-focus/window-manager.log 2>&1 &
+          manager_pid=$!
+          trap 'kill "$manager_pid" 2>/dev/null || true' EXIT
+          if [ "$KEYBOARD_TAKEOVER_ONLY" = "true" ]; then
+            bun run test:ui-e2e:os-focus ui/browser-ui-keyboard-takeover.spec.ts --retries=0 --reporter=list,json --output=test-results/native-os-focus/cases
+          else
+            bun run test:ui-e2e:os-focus --retries=0 --reporter=list,json --output=test-results/native-os-focus/cases
+          fi
+          SH
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

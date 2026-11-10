@@ -24,6 +24,9 @@ const mockInvoke = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
 const mockUserActivation = { isActive: false };
+Object.defineProperty(globalThis, "location", { configurable: true, value: new URL("file:///Applications/Ave.app/dist/index.html") });
+
+vi.mock("../preload/browser-native-input.js", () => ({ installBrowserNativeInput: vi.fn() }));
 
 // Named exports only — mirrors the named-import shape in preload.ts.
 vi.mock("electron", () => ({
@@ -309,7 +312,9 @@ describe("preload contextBridge world shape lock", () => {
             "completeFocus",
             "getSessionBindings",
             "getState",
+            "nativeSurface",
             "onControl",
+            "onNativeSurfaceChanged",
             "onSessionBindingsChanged",
             "onTabOp",
             "pause",

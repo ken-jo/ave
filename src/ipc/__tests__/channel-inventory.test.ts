@@ -306,6 +306,8 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:browser:complete-focus",
         "ave:browser:get-session-bindings",
         "ave:browser:get-state",
+        "ave:browser:native-input",
+        "ave:browser:native-surface",
         "ave:browser:pause",
         "ave:browser:refuse-tab-op",
         "ave:browser:resume",

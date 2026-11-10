@@ -1552,6 +1552,65 @@ through the tool releases its association and reports that the page was retained
 User chrome close destroys the actual tab; window/app shutdown releases its
 resources.
 
+Agent-created pages use independent `WebContentsView` hosts from their initial
+blank document. Main owns their lifetime in
+[`browser-native-surfaces.ts`](../../src/main/browser/browser-native-surfaces.ts);
+user-opened pages retain the embedded webview host. Both hosts use the same
+registry identity, side-browser session, sandbox, navigation admission, site
+capabilities, downloads, history, page actions and capture services. Creation
+requires a current pending agent-tab request or a restored durable creator
+binding; renderer metadata alone cannot authorize it. The blank page is bound
+and parked before an ordinary browser tool admits and loads the requested site.
+The app UI view's provisional `about:blank` document initializes neither the
+host API nor appearance readers; its navigated app document receives a fresh
+preload. A provisional document therefore cannot act as application chrome.
+
+An independent page stays alive and rendering while detached, retaining its
+last nonzero viewport. Presentation attaches that same page through a clipping
+container in its actual owning window. Parking first receives the registry's
+acknowledgement, then detaches the page and container. Pane movement, renderer
+remounts, and owning-window resize or hide preserve page identity. A remount
+reacquires a presentation epoch rather than replacing the document; stale
+epochs and placement sequences cannot reattach an old mount. Renderer component
+cleanup only parks the page. Explicit tab close, true surface retirement, or
+owning-window close destroys it. Serialization and capture density resolve the
+registry's logical owner window, independently of temporary native attachment.
+
+The main window's app document is a transparent `WebContentsView` above the
+independent page views. [`main-window-host.ts`](../../src/main/main-window-host.ts)
+owns this `BaseWindow` composition, its explicit UI `webContents`, resizing,
+close lifecycle and native focus. Attaching a page keeps the app document
+topmost. The renderer places a page sentinel inside its actual pane slot and
+keeps the ancestor branch transparent there; chrome, cards, menus and dialogs
+paint normally above the live page. Pane clipping enforces pane boundaries,
+while overlays and host drag retain the attached live page. During host resize,
+the page stays attached and its viewport follows the pane bounds.
+When a floating page crosses its own conversation transcript, only that
+registered panel host's transcript paint is excluded beneath the page hole.
+Decisions, composer, unrelated transcripts and the live page are separate
+surfaces; the exclusion does not clip the page or the app's overlays.
+
+The app document receives UI input. Private preload capture forwards only
+trusted pointer events whose topmost DOM hit is an explicit native-page hole;
+an overlay intercepts its own area through ordinary DOM hit testing. Main
+validates the registered top-level UI sender, attached page identity,
+presentation epoch and monotonically increasing pointer sequence before
+translating host coordinates with UI zoom. Pointer down records user takeover
+and focuses the page; wheel input records takeover without changing focus.
+Passive hover and leave update the page without takeover or focus. A gesture
+keeps its original down identity through release; cancellation from main clears
+only that matching capture, so a late cancellation cannot clear a newer one.
+Detachment, presentation replacement, loss of focus or rejected delivery end
+stale capture. Host UI drags never become page gestures. Page cursor updates
+apply to the matching hole through an allowed CSS cursor set. Valid bounded
+custom cursor images retain their logical size and hotspot after native scale
+conversion; invalid or oversized data uses the automatic cursor. This path is
+unavailable to agent actions.
+Keyboard and IME events stay out of pointer forwarding; explicit user page
+entry uses native focus. The
+[composition acceptance record](../development/browser-ui-layer-acceptance.md)
+separates code checks, composed-window evidence and OS focus coverage.
+
 At model-turn end, the host clears that turn's live browser presentation and
 returns its idle owned tabs to human control without clearing creator identity,
 opener provenance or the retained guest. Human-paused tabs keep their explicit
@@ -1573,43 +1632,64 @@ and sandbox; they can have a tool handle without a renderer tab slot. Popups
 start with user permission provenance. Discovery or focus does not inherit the
 opener's origin approval or remove sensitive-field restrictions.
 
-Tool `tabId` values are main-issued handles, while embedded chrome identifies
+Tool `tabId` values are main-issued handles, while browser chrome identifies
 slots with `rendererTabId`. `BrowserTabsApi.stop`, `pause`, and `resume` accept
-only embedded renderer IDs. These IDs are distinct from main-issued tool handles,
-and the browser workspace library/find/zoom/preview API targets embedded slots only.
+only renderer IDs. These IDs are distinct from main-issued tool handles. The
+browser workspace library/find/zoom/preview API addresses the same slots for
+both page hosts; a native descriptor carries main-issued page identity rather
+than imitating webview methods.
 
-Focusing an embedded page uses a main-owned `focus` operation addressed only by its stored
-renderer ID. It requires a visible owning window, that window's active embedded
-tab, and unchanged guest, document, control generation, and lease across awaits.
-Trusted renderer chrome focuses only the connected visible webview. Completion
-requires actual native guest focus for visible pages; keyboard actions independently require
-`focusedFrame === mainFrame`. Parked agent guests never borrow native focus. Their
-renderer-reported display state is distinct from the last-selected surface hint. Before hiding a visible guest, the renderer waits for main to acknowledge parking; main installs keyboard blocking and removes native guest focus before replying. A failed acknowledgement leaves the guest visible. Showing paints the surface before clearing parking. The host
-blocks unmarked native keyboard events to parked guests and returns accidental focus to
-visible chrome. Page-local focus emulation during an action does not route OS input
-to that page, and is released with its action receipt. A null native focused frame
-is accepted only after the exact focused node was proved part of the main document;
-an actual different focused frame remains refused. A renderer acknowledgement alone is insufficient.
-Popups require their registered native focus callback and observed native focus.
+Agent-origin actions on independent pages use page-local focus emulation even
+when the page is visible. They never borrow native keyboard focus. Parked
+independent-page input records its exact control lease without capturing or
+restoring a renderer focus receipt. Page-local focus does not route OS keyboard
+input to the page and ends with its action receipt. The exact focused node must
+belong to the main document; a null native focused frame is accepted only under
+that proof, and a different focused frame remains refused. Guest, document,
+control-generation and lease checks remain authoritative.
 
-Parked input records its exact control lease without capturing a renderer focus
-receipt. A protocol touch or field focus can change the native keyboard frame
-without changing the embedder active element. Parked input therefore reasserts
-the current host frame after those dispatches and awaits renderer acknowledgement
-before continuing, while keeping page-local focus emulation. Parked restoration
-never calls DOM blur or refocus on an active editor; remembered controls are used only when the body
-or no element is active. The native owning window and renderer document must
-both hold foreground focus before a handoff, so another app remains foreground.
-Main then verifies that native keyboard routing has left that guest while the
-window is focused. An embedded child
-view can report its root view as focused; keyboard ownership is measured through
-the owning host's focused frame, not that shared view bit. Visible embedded input captures
-that receipt before borrowing focus. If a previous host control disappears or can
-no longer accept focus, restoration tries usable remembered host controls; it
-still refuses a replaced or hidden previous guest and preserves deliberate user
-focus movement. Painting activity belongs to the physical guest across action
-adapter instances. Only its final participant may start the idle grace or restore
-the guest's original throttling state.
+User entry into a presented independent page uses a main-owned focus operation.
+It refuses parked pages and hidden owning windows, records user takeover before
+focusing the page, and does not activate a background application. Actual user
+focus on the page also pauses agent mutation; agent-marked action scopes do not
+count as user focus. User navigation, back, forward and reload invalidate agent
+control before navigating. Page navigation invalidates its document/control
+state only for a main-frame transition; a child-frame load cannot masquerade as
+page navigation or revoke the active action. Development tools remain a user action.
+
+Native edit-menu admission for an independent page requires the registry's
+`human-paused` takeover state, an attached page, and actual native focus on both
+the page and its visible owning window.
+[`native-edit-context-menu.ts`](../../src/main/native-edit-context-menu.ts)
+resolves the page's origin from the owning `View` hierarchy and translates the
+page-local menu position once. Permission guards and coordinate unit tests do
+not establish OS menu placement or foreground input coverage.
+
+The retained user-page webview host keeps its existing focus and parking rules.
+Its main-owned `focus` operation resolves the stored renderer ID, visible owning
+window and active embedded tab, preserving guest, document, control generation
+and lease across awaits. Trusted renderer chrome focuses only the connected
+visible webview. Visible-page completion requires actual native guest focus;
+keyboard actions independently require `focusedFrame === mainFrame`. Popups
+require their registered native focus callback and observed native focus.
+Before hiding a visible webview, the renderer waits for main to acknowledge
+parking after blocking keyboard input and removing native guest focus. A failed
+acknowledgement leaves it visible; showing paints it before clearing parking.
+Unmarked native keyboard input to parked guests is blocked, and accidental
+focus returns to visible chrome.
+
+Parked webview input retains page-local focus emulation, then reasserts the
+current host frame after protocol touch or field focus and awaits the renderer
+acknowledgement. Restoration never blurs or refocuses an active editor;
+remembered controls are used only when the body or no element is active. The
+owning window and renderer document must both hold foreground focus before a
+handoff. Main verifies keyboard ownership through the owning host's focused
+frame, rather than a child view's shared root-focus bit. Visible embedded input
+captures a renderer receipt before borrowing focus. Restoration tries usable
+remembered host controls when the old control disappears, refuses a replaced or
+hidden previous guest, and preserves deliberate user focus movement. Painting
+activity belongs to the physical guest across action adapters; only its final
+participant may start the idle grace or restore original throttling.
 
 Managed guest owners share one native destruction subscription. The dispatcher
 indexes guest IDs with physical identity guards; each owner has an independent

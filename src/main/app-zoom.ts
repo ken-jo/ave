@@ -1,4 +1,5 @@
-import type { BrowserWindow } from "electron";
+import type { MainWindow } from "./main-window-host.js";
+
 import { MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, nextZoomLevel, normalizeZoomLevel, type ZoomCommand } from "../shared/app-zoom.js";
 import { getMainWindows, getServices } from "./app-state.js";
 import { createLogger } from "../lib/logger.js";
@@ -8,7 +9,7 @@ import { preserveBrowserGuestZoom } from "./browser/browser-guest-tracking.js";
 const log = createLogger("app-zoom");
 let broadcastSettings: (() => Promise<void>) | undefined;
 let pending: Promise<void> = Promise.resolve();
-let wheelBatch: { window: BrowserWindow; levels: number[] } | undefined;
+let wheelBatch: { window: MainWindow; levels: number[] } | undefined;
 
 export function configureAppZoom(onSettingsApplied: () => Promise<void>): void {
   broadcastSettings = onSettingsApplied;
@@ -45,7 +46,7 @@ export function applyAppZoomLevel(level: number | undefined): void {
   });
 }
 
-export function bindAppWindowZoom(win: BrowserWindow): void {
+export function bindAppWindowZoom(win: MainWindow): void {
   const restoreLevel = () => preserveBrowserGuestZoom(() => win.webContents.setZoomLevel(normalizeZoomLevel(getServices()?.settingsService.get("appearance").zoomLevel)));
   win.webContents.on("did-navigate", restoreLevel);
   win.webContents.on("did-finish-load", restoreLevel);

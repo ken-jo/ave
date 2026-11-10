@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { CHANNELS } from "../contract/app-contract.js";
 import { createRequire } from "node:module";
 import { app, shell } from "electron";
-import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from "electron";
+import type { BaseWindow, IpcMain, IpcMainInvokeEvent } from "electron";
 import type { AuditLogger } from "../audit/audit-logger.js";
 import { auditUnauthorized, validateHostRendererSender } from "../ipc/gated.js";
 import { createLogger } from "../lib/logger.js";
@@ -23,9 +23,9 @@ const _require = createRequire(import.meta.url);
 
 export interface AutoUpdaterDeps {
   // Read all live main windows per broadcast; the boot window may close while others remain.
-  getWindows: () => BrowserWindow[];
+  getWindows: () => Array<BaseWindow & { readonly webContents: import("electron").WebContents }>;
   // The window the install confirmation is parented to — the one in use — or null.
-  getDialogParent: () => BrowserWindow | null;
+  getDialogParent: () => BaseWindow | null;
   auditLogger: AuditLogger;
   // Settings accessor — re-read on every tick so user can toggle at runtime.
   isEnabled: () => boolean;
@@ -347,7 +347,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     }
     try {
       const electron = _require("electron") as {
-        dialog?: { showMessageBox?: (window: BrowserWindow | undefined, opts: unknown) => Promise<{ response: number }> };
+        dialog?: { showMessageBox?: (window: BaseWindow | undefined, opts: unknown) => Promise<{ response: number }> };
       };
       if (typeof electron.dialog?.showMessageBox !== "function") {
         return { confirmed: false };

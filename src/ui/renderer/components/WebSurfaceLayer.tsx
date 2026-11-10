@@ -1,11 +1,18 @@
-/** Portal guests to body so transforms cannot capture fixed positioning; clip slots around occluders and stay below
- * popovers. Measure moving slots during layout changes. */
+/** Embedded pages retain their body layer; native pages stay below UI holes in their actual pane slots. */
 import { createElement, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
+import { BROWSER_NATIVE_HOLE_ATTRIBUTE } from "../../../shared/browser-native-input.js";
+import { registerNativePageBranch } from "../preview/native-page-branches.js";
+import { applyChatTranscriptUnderlayClips, chatTranscriptUnderlaysFor } from "../preview/chat-transcript-underlays.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { bindGuestToTab, reportGuestParking } from "../preview/agent-browser-bridge.js";
+import type { BrowserNativeSurfaceState } from "../../../shared/browser-native-surface.js";
+import type { BrowserTabsApi } from "../../../shared/browser-surface.js";
+import { useSessionTabBindings } from "../preview/session-browser-tabs.js";
+import { commandNativeBrowserSurface, connectNativeBrowserSurfaces, createNativeBrowserSurface,
+  requestNativeBrowserSurface } from "../preview/native-browser-surfaces.js";
 import type { AveApi } from "../types.js";
 import {
   getWebSurfaceOccluders,
@@ -26,6 +33,9 @@ import {
   subscribeWebSurfaceLayout,
   subscribeWebSurfaces,
   requestWebSurfaceLayout,
+  setNativeBrowserTabIds,
+  setNativeWebSurfaceElement,
+  nativeWebSurfaceState,
   type WebSurface,
 } from "../preview/web-surfaces.js";
 
@@ -141,6 +151,14 @@ interface Placed {
 
 const placed = new Map<string, Placed>();
 
+interface NativePlacement {
+  api: BrowserTabsApi;
+  surface: BrowserNativeSurfaceState;
+  sequence: number;
+  requestedKey: string;
+}
+const nativePlaced = new Map<string, NativePlacement>();
+
 let dragApplied = false;
 
 function reportPlacementParking(tabId: string, entry: Placed, parked: boolean): void {
@@ -164,6 +182,7 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
   const occluderList: Box[] = [];
   for (const element of getWebSurfaceOccluders()) occluderBoxes(element, occluderList);
   let visibleCount = 0;
+  const transcriptHoles = new Map<HTMLElement, { frame: Box; holes: Box[] }>();
   for (const [tabId, entry] of placed) {
     const slot = getWebSurfaceSlot(tabId);
     const boxes = slot ? visibleBox(slot) : null;
@@ -230,6 +249,41 @@ export function placeWebSurfaces(): { visible: number; moved: number } {
     if (!parked) reportPlacementParking(tabId, entry, false);
     entry.key = key;
   }
+  for (const [tabId, entry] of nativePlaced) {
+    const slot = getWebSurfaceSlot(tabId);
+    const boxes = slot ? visibleBox(slot) : null;
+    if (slot && boxes) {
+      for (const stage of chatTranscriptUnderlaysFor(slot)) {
+        const frame = stage.getBoundingClientRect();
+        const hole = intersect(frame, boxes.visible);
+        if (isEmpty(hole)) continue;
+        const clipping: { frame: Box; holes: Box[] } = transcriptHoles.get(stage) ?? { frame, holes: [] };
+        clipping.holes.push(hole);
+        transcriptHoles.set(stage, clipping);
+      }
+    }
+    const key = boxes ? JSON.stringify(boxes) : "parked";
+    if (boxes) visibleCount++;
+    if (key === entry.requestedKey) continue;
+    entry.requestedKey = key;
+    const sequence = ++entry.sequence;
+    moved++;
+    void requestNativeBrowserSurface(entry.api, {
+      action: "present", tabId, webContentsId: entry.surface.webContentsId, epoch: entry.surface.epoch, sequence,
+      bounds: boxes ? {
+        x: boxes.slot.left, y: boxes.slot.top, width: boxes.slot.right - boxes.slot.left, height: boxes.slot.bottom - boxes.slot.top,
+      } : null,
+      ...(boxes ? {
+        clipBounds: { x: boxes.visible.left, y: boxes.visible.top,
+          width: boxes.visible.right - boxes.visible.left, height: boxes.visible.bottom - boxes.visible.top },
+        borderRadius: Number.parseFloat(boxes.radius) || 0,
+      } : {}),
+    }).then((accepted) => {
+      if (nativePlaced.get(tabId) !== entry || entry.sequence !== sequence) return;
+      if (!accepted) entry.requestedKey = "";
+    });
+  }
+  applyChatTranscriptUnderlayClips(new Map([...transcriptHoles].map(([stage, { frame, holes }]) => [stage, clipPathFor(frame, holes)])));
   return { visible: visibleCount, moved };
 }
 
@@ -340,8 +394,83 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
   );
 }
 
+function NativePageLifecycle({ api, surface }: { api: BrowserTabsApi; surface: WebSurface }) {
+  const [binding, setBinding] = useState<BrowserNativeSurfaceState | null>(null);
+  const targetUrl = useRef(surface.url);
+  const requestedUrl = useRef(surface.url);
+  useEffect(() => { targetUrl.current = surface.url; }, [surface.url]);
+  useEffect(() => {
+    let mounted = true;
+    let placement: NativePlacement | undefined;
+    void createNativeBrowserSurface(api, surface.tabId, surface.bindRequestId).then((acquisition) => {
+      if (!acquisition) return;
+      const { surface: created } = acquisition;
+      if (!mounted) {
+        void requestNativeBrowserSurface(api, { action: "present", tabId: surface.tabId,
+          webContentsId: created.webContentsId, epoch: created.epoch, sequence: 1, bounds: null });
+        return;
+      }
+      placement = { api, surface: created, sequence: 0, requestedKey: "" };
+      nativePlaced.set(surface.tabId, placement);
+      setBinding(created);
+      if (acquisition.initialNavigation && surface.bindRequestId === undefined && targetUrl.current !== created.url) {
+        requestedUrl.current = targetUrl.current;
+        void requestNativeBrowserSurface(api, { action: "navigate", tabId: surface.tabId,
+          webContentsId: created.webContentsId, url: targetUrl.current });
+      }
+      requestWebSurfaceLayout();
+    }).catch((error: unknown) => console.warn("Native browser creation failed.", error));
+    return () => {
+      mounted = false;
+      if (placement && nativePlaced.get(surface.tabId) === placement) {
+        nativePlaced.delete(surface.tabId);
+        requestWebSurfaceLayout();
+        void requestNativeBrowserSurface(api, { action: "present", tabId: surface.tabId,
+          webContentsId: placement.surface.webContentsId, epoch: placement.surface.epoch,
+          sequence: ++placement.sequence, bounds: null });
+      }
+    };
+  }, [api, surface.tabId, surface.bindRequestId]);
+  useEffect(() => {
+    if (!binding || requestedUrl.current === surface.url) return;
+    requestedUrl.current = surface.url;
+    void requestNativeBrowserSurface(api, { action: "navigate", tabId: surface.tabId,
+      webContentsId: binding.webContentsId, url: surface.url });
+  }, [api, binding, surface.tabId, surface.url]);
+  return null;
+}
+
+function NativePageSentinel({ surface }: { surface: BrowserNativeSurfaceState }) {
+  const { t } = useTranslation();
+  const [element, setElement] = useState<HTMLButtonElement | null>(null);
+  const attach = useCallback((node: HTMLButtonElement | null) => {
+    setElement(node);
+    setNativeWebSurfaceElement(surface.tabId, node);
+  }, [surface.tabId]);
+  useEffect(() => {
+    const slot = element?.parentElement;
+    return surface.visible && slot ? registerNativePageBranch(slot) : undefined;
+  }, [element, surface.visible]);
+  return <button ref={attach} type="button" aria-label={t("browserWorkspace.title")}
+    {...(surface.visible ? { [BROWSER_NATIVE_HOLE_ATTRIBUTE]: JSON.stringify({ tabId: surface.tabId,
+      webContentsId: surface.webContentsId, epoch: surface.epoch }) } : {})}
+    data-testid="chat-side-panel-browser-native" data-tab-id={surface.tabId}
+    onFocus={() => { void commandNativeBrowserSurface(surface.tabId, "focus"); }}
+    style={{ position: "absolute", inset: 0, width: "100%", height: "100%", border: 0, padding: 0, background: "transparent",
+      visibility: surface.visible ? "visible" : "hidden", pointerEvents: "auto" }} />;
+}
+
 export function WebSurfaceLayer({ api }: { api: AveApi }) {
   const surfaces = useSyncExternalStore(subscribeWebSurfaces, getWebSurfaces);
+  const bindings = useSessionTabBindings(api.browserTabs);
+  useEffect(() => {
+    setNativeBrowserTabIds(bindings?.nativeBrowserTabIds ?? null);
+  }, [bindings]);
+  useEffect(() => {
+    if (!api.browserTabs) return undefined;
+    return connectNativeBrowserSurfaces(api.browserTabs);
+  }, [api.browserTabs]);
+  useEffect(() => () => setNativeBrowserTabIds(null), []);
 
   useEffect(() => {
     const unsubscribe = subscribeWebSurfaceLayout(kick);
@@ -376,7 +505,7 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
     window.addEventListener("drop", onDragEnd, true);
     window.addEventListener("pointermove", onPointerMove, true);
     const idle = window.setInterval(() => {
-      if (placed.size > 0) placeWebSurfaces();
+      if (placed.size > 0 || nativePlaced.size > 0) placeWebSurfaces();
     }, IDLE_CHECK_MS);
     return () => {
       unsubscribe();
@@ -392,6 +521,7 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
       window.clearInterval(idle);
       if (rafId !== 0) cancelAnimationFrame(rafId);
       rafId = 0;
+      applyChatTranscriptUnderlayClips(new Map());
     };
   }, []);
 
@@ -400,7 +530,9 @@ export function WebSurfaceLayer({ api }: { api: AveApi }) {
       data-testid="web-surface-layer"
       style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: WEB_SURFACE_LAYER_Z }}
     >
-      {surfaces.map((surface) => <GuestFrame key={surface.tabId} api={api} surface={surface} />)}
+      {surfaces.map((surface) => surface.host === "native"
+        ? api.browserTabs ? <NativePageLifecycle key={surface.tabId} api={api.browserTabs} surface={surface} /> : null
+        : surface.host === "webview" ? <GuestFrame key={surface.tabId} api={api} surface={surface} /> : null)}
     </div>,
     document.body,
   );
@@ -431,6 +563,7 @@ export function WebSurfaceSlot({
   const { t } = useTranslation();
   const mount = useSurfaceMount(tabId, location);
   const [element, setElement] = useState<HTMLDivElement | null>(null);
+  const native = useSyncExternalStore(subscribeWebSurfaces, () => mount.owned ? nativeWebSurfaceState(tabId) : null);
 
   useEffect(() => {
     if (mount.owned) setWebSurfaceUrl(tabId, url, bindRequestId);
@@ -449,7 +582,9 @@ export function WebSurfaceSlot({
       data-testid="web-surface-slot"
       data-tab-id={tabId}
       data-owned={mount.owned ? "true" : "false"}
+      data-surface-host={native ? "native" : undefined}
     >
+      {native ? <NativePageSentinel surface={native} /> : null}
       {mount.owned ? null : (
         <div
           className="flex h-full items-center justify-center p-4 text-center text-sm text-muted-foreground"

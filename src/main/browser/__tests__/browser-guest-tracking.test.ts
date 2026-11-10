@@ -45,7 +45,7 @@ describe("native browser guest tracking", () => {
   it("forwards raw mouse receipts once with original coordinates while ignoring their normalized copies", () => {
     const contents = guest();
     trackBrowserGuest(contents as unknown as WebContents, 3);
-    expect(registry.guestAttached).toHaveBeenCalledWith(contents, 3);
+    expect(registry.guestAttached).toHaveBeenCalledWith(contents, 3, undefined);
     const input = { type: "keyDown", _modifiers: 1 << 23 };
     contents.emit("before-input-event", {}, input);
     contents.emit("before-mouse-event", {}, { type: "mouseMove", _modifiers: 0 });

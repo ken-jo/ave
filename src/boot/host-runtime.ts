@@ -1,4 +1,5 @@
-import type { BrowserWindow, Session, WebContents } from "electron";
+import type { MainWindow } from "../main/main-window-host.js";
+import type { BaseWindow, Session, WebContents } from "electron";
 import type { SecretEncryption } from "../data/secret-document-store.js";
 import type { AudioCaptureSurface } from "../main/audio-capture.js";
 import type { FloatingDockSurface } from "../main/floating-dock.js";
@@ -16,9 +17,9 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   "openAuthWindowService" | "openLinkWindowService" | "openAuthPartitionViewerService"
   | "clearAuthPartitionService" | "shellOpenExternal"> {
   hasSingleInstanceLock(): boolean;
-  getAppWindows(): BrowserWindow[];
+  getAppWindows(): MainWindow[];
   openOAuthLogin: OpenOAuthLogin;
-  getFocusedWindow(): BrowserWindow | null;
+  getFocusedWindow(): BaseWindow | null;
   /** The live renderer hosting this exact session, or null when it is unhosted. */
   findSessionSurface(sessionId: string | undefined): WebContents | null;
   /** The live terminal tab owner's renderer, or null; never fall back to another window. */
@@ -31,7 +32,7 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   powerMonitor: PowerMonitorLike;
   createAudioCaptureSurface(): AudioCaptureSurface;
   createFloatingDockSurface(settings: import("../data/settings-store.js").SettingsService): FloatingDockSurface;
-  pickFolders(pluginId: string, parent: () => BrowserWindow | null): Promise<{ canceled: boolean; folders: readonly string[] }>;
+  pickFolders(pluginId: string, parent: () => BaseWindow | null): Promise<{ canceled: boolean; folders: readonly string[] }>;
   pickBrowserUploadFiles(request: BrowserUploadPickerRequest): Promise<readonly string[] | null>;
   browserGuestContentOrigin(guest: WebContents): { x: number; y: number; windowId: number } | null;
   browserCapturePixelRatio(guest: WebContents): number;
@@ -39,6 +40,7 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   browserAgentPreview: AgentPreviewHost;
   prepareRelease(input: ReleasePrepInput): ReleasePrepOutput;
   beforeShutdown(): void;
+  closeDocuments(signal: AbortSignal): Promise<void>;
 }
 
 /** Runtime services required before any host state or outbound connection exists. */
@@ -66,7 +68,7 @@ export function requireDesktopHost(host: Pick<BootHost, "desktop">): DesktopHost
 /** Resolve each prompt against live windows: session owner, then active main window, or null when headless. */
 export function promptSurfaceResolver(
   host: Pick<BootHost, "desktop">,
-  getMainWindow: () => Pick<BrowserWindow, "webContents"> | null,
+  getMainWindow: () => Pick<MainWindow, "webContents"> | null,
 ): (sessionId: string | undefined, terminalTabId?: string) => WebContents | null {
   return (sessionId, terminalTabId) => {
     if (terminalTabId !== undefined) return host.desktop?.findTerminalSurface(terminalTabId) ?? null;

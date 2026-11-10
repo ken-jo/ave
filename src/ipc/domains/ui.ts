@@ -1,4 +1,5 @@
-import { BrowserWindow, Menu, ipcMain, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from "electron";
+import { mainWindowForContents } from "../../main/app-state.js";
+import { BrowserWindow, Menu, ipcMain, type BaseWindow, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from "electron";
 import {
   NATIVE_CONTEXT_MENU_COMMANDS,
   NATIVE_CONTEXT_MENU_COMMANDS_BY_KIND,
@@ -173,9 +174,9 @@ function normalizeNativePayload(value: unknown): NativeContextMenuPayload | null
   return { requestId, x, y, kind: typedKind, commands };
 }
 
-function hostWindowForUiEvent(event: IpcMainInvokeEvent): BrowserWindow | null {
+function hostWindowForUiEvent(event: IpcMainInvokeEvent): BaseWindow | null {
   if (!validateHostRendererSender(event)) return null;
-  const window = BrowserWindow.fromWebContents(event.sender);
+  const window = (mainWindowForContents(event.sender) ?? BrowserWindow.fromWebContents(event.sender));
   if (!window || window.isDestroyed()) return null;
 
   const rawUrl = event.senderFrame?.url ?? "";

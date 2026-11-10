@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpOAuthDependencies } from "../../mcp/mcp-oauth.js";
 
-const capture = vi.hoisted(() => ({ args: [] as unknown[] }));
+const capture = vi.hoisted(() => ({ args: [] as unknown[], sink: undefined as { getAllWindows(): unknown[] } | undefined }));
 vi.mock("../../mcp/mcp-manager.js", () => ({
   McpManager: class {
     constructor(...args: unknown[]) { capture.args = args; }
@@ -11,12 +11,12 @@ vi.mock("../../mcp/mcp-manager.js", () => ({
 }));
 vi.mock("../../mcp/mcp-governance.js", () => ({ McpGovernance: class { startPolicyRefresh() {} } }));
 vi.mock("../../mcp/mcp-elicitation-resolver.js", () => ({ createElicitationResolverFactory: () => undefined }));
-vi.mock("../../mcp/mcp-server-disconnect-sink.js", () => ({ createMcpServerDisconnectedSink: () => undefined }));
+vi.mock("../../mcp/mcp-server-disconnect-sink.js", () => ({ createMcpServerDisconnectedSink: (deps: { getAllWindows(): unknown[] }) => { capture.sink = deps; return undefined; } }));
 
 import { setupMcp } from "../steps/mcp-setup.js";
 import type { BootContext } from "../context.js";
 
-beforeEach(() => { capture.args = []; });
+beforeEach(() => { capture.args = []; capture.sink = undefined; });
 
 async function wiring(encrypted = true) {
   const settings = {
@@ -26,18 +26,27 @@ async function wiring(encrypted = true) {
     setSecret: vi.fn(async () => {}),
     deleteSecret: vi.fn(async () => {}),
   };
+  const windows: unknown[] = [];
   const hostFetch = vi.fn();
   const shellOpenExternal = vi.fn(async () => {});
   const openOAuthLogin = vi.fn(async (_url: string, _login: import("../../main/oauth-login.js").OAuthLoginOptions) => {});
   const context = {
     settingsService: settings, singleHopNetworkFetch: hostFetch,
-    host: { desktop: { shellOpenExternal, openOAuthLogin } },
+    host: { desktop: { shellOpenExternal, openOAuthLogin, getAppWindows: () => windows } },
   } as unknown as BootContext;
   await setupMcp(context);
-  return { settings, hostFetch, shellOpenExternal, openOAuthLogin, oauth: capture.args[8] as McpOAuthDependencies };
+  return { windows, settings, hostFetch, shellOpenExternal, openOAuthLogin, oauth: capture.args[8] as McpOAuthDependencies };
 }
 
 describe("remote authorization boot boundaries", () => {
+  it("resolves disconnect recipients through live app ownership", async () => {
+    const { windows } = await wiring();
+    expect(capture.sink?.getAllWindows()).toEqual([]);
+    const main = { id: 17, webContents: { id: 23 } };
+    windows.push(main);
+    expect(capture.sink?.getAllWindows()).toEqual([main]);
+  });
+
   it("uses the host egress transport and rejects legacy plaintext secret reads", async () => {
     const { settings, hostFetch, oauth } = await wiring();
     expect(capture.args[2]).toBe(hostFetch);

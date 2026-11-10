@@ -408,7 +408,7 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         setEntries((p) =>
           setAssistantError(
             p,
-            t("useChatState.errorPrefix", { error: ev.error || t("useChatState.unknownError") }),
+            ev.error || t("useChatState.unknownError"),
             thought,
             ev.systemNotice,
           ),
