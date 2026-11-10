@@ -141,6 +141,107 @@ it("degrades before initializing the extension backend when private-directory pr
 });
 
 describe("initSandboxGate — Windows MXC substrate", () => {
+  it.each([["slow", MXC_OK, "mxc"], ["hung", MXC_OLD, "approved-host"]] as const)("reaches ready while a %s ACL stamp remains pending", async (_delay, mxc, shells) => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(mxc);
+    let finishStamp!: () => void;
+    const stamp = new Promise<void>(resolve => { finishStamp = resolve; });
+    h.initialize.mockImplementation(async settings => {
+      if (!settings.windows?.backgroundInitialization) await stamp;
+      return { windowsIsolation: stamp.then(() => ({ status: "ready" })), isCurrent: () => true };
+    });
+    let ready = false;
+    const boot = initSandboxGate(harness.context(true, true)).then(() => { ready = true; });
+    try {
+      await vi.waitFor(() => expect(ready).toBe(true));
+      await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells, extensions: "none" }));
+      const plan = getHostShellExecutionPlan();
+      expect(plan).toMatchObject(shells === "mxc"
+        ? { mode: "asrt", substrate: "mxc", sandboxed: true }
+        : { mode: "plain", substrate: "none", sandboxed: false, requiresExplicitUserApproval: true });
+      if (shells !== "mxc") {
+        expect(decidePermission({
+          tool: { name: "powershell", source: "builtin", kind: "shell" }, mode: "strict", headless: false,
+          shell: { sandboxed: plan.sandboxed, readOnlyProven: true, unproven: false, destructive: false },
+        })).toMatchObject({ outcome: "ask" });
+      }
+      expect(detectSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
+      expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
+      expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
+    } finally {
+      finishStamp();
+      await boot;
+    }
+  });
+
+  it("upgrades subsequent extension plans after a late stamp succeeds", async () => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    let finishStamp!: (result: { status: "ready" }) => void;
+    h.initialize.mockResolvedValue({ windowsIsolation: new Promise(resolve => { finishStamp = resolve; }), isCurrent: () => true });
+
+    await initSandboxGate(harness.context(true, true));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
+    const pendingPlan = getHostShellExecutionPlan();
+    finishStamp({ status: "ready" });
+
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "srt-win" }));
+    expect(detectSandboxCapability().confines).toEqual({ filesystem: true, process: false, network: true });
+    expect(detectPluginWorkerSandboxCapability().kind).toBe("asrt");
+    expect(pendingPlan).toMatchObject({ substrate: "mxc", sandboxed: true });
+    expect(h.initialize).toHaveBeenCalledOnce();
+  });
+
+  it.each(["failed", "timed out after 60000ms"])("keeps the degraded route and diagnostic after a late stamp %s", async failure => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    let finishStamp!: (result: { status: "failed"; error: Error }) => void;
+    h.initialize.mockResolvedValue({ windowsIsolation: new Promise(resolve => { finishStamp = resolve; }), isCurrent: () => true });
+
+    await initSandboxGate(harness.context(true, true));
+    finishStamp({ status: "failed", error: new Error(`srt-win acl stamp ${failure}`) });
+
+    await vi.waitFor(() => expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`srt-win acl stamp ${failure}`)));
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" });
+    expect(detectPluginWorkerSandboxCapability().kind).toBe("none");
+    expect(detectSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
+    expect(getSandboxBootOutcome()).toMatchObject({ reason: "activate-windows-mxc-proxy-only", causes: ["init-failed"] });
+    expect(h.initialize).toHaveBeenCalledOnce();
+  });
+
+  it("publishes the unavailable startup diagnostic after late failure without containers", async () => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OLD);
+    let finishStamp!: (result: { status: "failed"; error: Error }) => void;
+    h.initialize.mockResolvedValue({ windowsIsolation: new Promise(resolve => { finishStamp = resolve; }), isCurrent: () => true });
+
+    await initSandboxGate(harness.context(true, true));
+    finishStamp({ status: "failed", error: new Error("srt-win acl stamp failed") });
+
+    await vi.waitFor(() => expect(getSandboxBootOutcome()).toMatchObject({
+      action: "degrade", reason: "degrade-windows-init-failed", causes: ["init-failed"],
+    }));
+    expect(getHostShellExecutionPlan()).toMatchObject({ sandboxed: false, requiresExplicitUserApproval: true });
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none", shells: "approved-host" });
+  });
+
+  it.each(["ready", "failed"] as const)("ignores a stale %s stamp result after its session ends", async status => {
+    h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    let finishStamp!: (result: { status: "ready" } | { status: "failed"; error: Error }) => void;
+    let current = true;
+    h.initialize.mockResolvedValue({ windowsIsolation: new Promise(resolve => { finishStamp = resolve; }), isCurrent: () => current });
+    await initSandboxGate(harness.context(true, true));
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
+    const outcome = getSandboxBootOutcome();
+    finishStamp(status === "ready" ? { status } : { status, error: new Error("retired stamp") });
+    current = false;
+    await Promise.resolve();
+    expect(getSandboxBootOutcome()).toBe(outcome);
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ extensions: "none" });
+    expect(detectSandboxCapability().confines).toEqual({ filesystem: false, process: false, network: false });
+  });
+
   it("MXC without srt-win: starts ASRT as the proxy only and runs agent shells in containers", async () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);
@@ -169,7 +270,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
 
     await initSandboxGate(harness.context(true, true));
 
-    expect(h.initialize.mock.calls[0]?.[0]).not.toHaveProperty("windows");
+    expect(h.initialize.mock.calls[0]?.[0]).toHaveProperty("windows.backgroundInitialization", true);
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "deps-present" });
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "srt-win" }));
     expect(getHostShellExecutionPlan().substrate).toBe("mxc");
@@ -321,7 +422,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     await initSandboxGate(harness.context(true, true));
 
     expect(h.initialize).toHaveBeenCalledTimes(2);
-    expect(h.initialize.mock.calls[0]?.[0]).not.toHaveProperty("windows");
+    expect(h.initialize.mock.calls[0]?.[0]).toHaveProperty("windows.backgroundInitialization", true);
     expect(h.initialize.mock.calls[1]?.[0]).toMatchObject({ windows: { externalConfinement: true } });
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));

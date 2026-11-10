@@ -61,6 +61,12 @@ function rollsBackWindowsAclOnFailedInitialize(source: string): boolean {
     ) {
       return true;
     }
+    const options = body.match(/const\s+([A-Za-z_$][\w$]*)\s*=\s*\{\s*sandboxUserSid\s*:/)?.[1];
+    if (options !== undefined
+      && new RegExp(String.raw`await revokeWindowsAclAsync\(\s*${options}\s*\)`).test(body)
+      && new RegExp(String.raw`await restoreWindowsAclAsync\(\s*${options}\s*\)`).test(body)) {
+      return true;
+    }
   }
   return false;
 }
@@ -822,8 +828,8 @@ describe("asrt-windows-support adapter", () => {
   it("pins Windows filesystem ACL readiness to ASRT initialize fail-closed behavior", () => {
     const source = readAsrtSandboxManagerSource();
     // Applied at all — whitespace-tolerant, because the argument formatting is the bundler's choice and not a behaviour we are pinning.
-    expect(source).toMatch(/grantWindowsAcl\(\s*\{/);
-    expect(source).toMatch(/stampWindowsAcl\(\s*\{/);
+    expect(source).toMatch(/await grantWindowsAclAsync\(\s*\{/);
+    expect(source).toMatch(/await stampWindowsAclAsync\(\s*\{/);
     // And released again when initialization fails. This is the assertion the test is named for; see the helper for why locating the block matters.
     expect(rollsBackWindowsAclOnFailedInitialize(source)).toBe(true);
   });
@@ -882,7 +888,7 @@ describe("asrt-windows-support adapter", () => {
       expect(rollsBackWindowsAclOnFailedInitialize(source)).toBe(true);
 
       const stripped = source.replaceAll(
-        /^[^\n]*(?:revoke|restore)WindowsAcl\(\s*\{\s*sandboxUserSid[^\n]*\n/gm,
+        /^[^\n]*(?:revoke|restore)WindowsAcl(?:Async)?\([^\n]*\n/gm,
         "",
       );
       // Non-vacuous: a strip that matched nothing would make the assertion below true for the wrong reason.

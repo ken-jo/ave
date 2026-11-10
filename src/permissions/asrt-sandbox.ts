@@ -195,7 +195,9 @@ export interface TrustedSandboxSettings {
   // Windows-only sandbox settings (srt-win network backend). TRUSTED-ONLY — the proxy port range must agree with what the install flow WFP-permits. `proxyPortRange`: the loopback PERMIT range srt-win's egress proxy binds. Defaults to DEFAULT_WINDOWS_PROXY_PORT_RANGE when omitted (which is also what the install WFP-permits by default), so the proxy bind range always matches the WFP rule. Set explicitly only when an enterprise install used a non-default range. Has no effect off win32.
   readonly windows?: {
     readonly proxyPortRange?: readonly [number, number];
-    // Run only the proxy on Windows: srt-win's account, WFP fence and session ACLs are neither required nor touched, and every srt-win wrap refuses (the carried ASRT patch, part 6). Set by boot only where Microsoft Execution Containers carry the agent shells and srt-win is not ready (`mxc-windows.ts`); plugin processes then have no confinement substrate and isPluginWorkerConfinementActive reports false.
+    /** Start the proxy first and prepare session isolation concurrently. */
+    readonly backgroundInitialization?: boolean;
+    // Start the proxy for commands confined by another substrate. Native wraps refuse and confinement gates stay off in this mode.
     readonly externalConfinement?: boolean;
   };
   // The REAL Electron `app.getPath("userData")` for this process, threaded in from a TRUSTED main-process caller (boot.ts) that CAN import `electron`. When present: this EXACT path is denied (handles `--user-data-dir`, XDG_CONFIG_HOME, and future productName changes correctly). When absent: getDefaultSensitiveReadDenyPaths falls back to a per-platform os.homedir + literal derivation so there is always SOME coverage even without the threaded value (e.g. the mcp-client wrap path). do NOT derive this from plugin manifests, project config, or any untrusted source — only from `electron.app.getPath("userData")` in the main process.
@@ -2203,11 +2205,21 @@ function checkWindowsSandboxStampTargets(filesystem: Partial<FilesystemConfig> |
   checkSandboxStampTargets(targets);
 }
 
+export type WindowsIsolationResult =
+  | { readonly status: "ready" }
+  | { readonly status: "failed"; readonly error: unknown }
+  | { readonly status: "cancelled" };
+
+export interface AsrtSandboxInitialization {
+  readonly windowsIsolation?: Promise<WindowsIsolationResult>;
+  readonly isCurrent: () => boolean;
+}
+
 export async function initializeAsrtSandbox(
   trustedSettings: TrustedSandboxSettings,
   askCb?: SandboxAskCallback,
   enableLogMonitor = false,
-): Promise<void> {
+): Promise<AsrtSandboxInitialization> {
   if (trustedSettings.windows?.externalConfinement !== true) {
     assertAveHomePrivacyForConfinement();
   }
@@ -2218,9 +2230,17 @@ export async function initializeAsrtSandbox(
     );
   }
   const SandboxManager = await loadSandboxManager();
+  const backgroundInitialization = process.platform === "win32"
+    && trustedSettings.windows?.backgroundInitialization === true
+    && trustedSettings.windows.externalConfinement !== true;
+  const initialSettings = backgroundInitialization
+    ? { ...trustedSettings, windows: { ...trustedSettings.windows, externalConfinement: true } }
+    : trustedSettings;
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
-  _baseTrustedSettings = trustedSettings;
+  _baseTrustedSettings = initialSettings;
   sandboxSession = { windowsLiveGrants: new Map(), windowsLiveGrantCount: 0, windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
+  const session = sandboxSession;
+  let fullConfig: SandboxRuntimeConfig;
   windowsProfileReadDenyWarnings.clear();
   windowsReadDenyWarnings.clear();
   windowsAbsentDenyWarnings.clear();
@@ -2230,6 +2250,7 @@ export async function initializeAsrtSandbox(
     useAppOwnedSandboxTempRoot();
     _baseReadDenyEvidence = await gatherWindowsReadDenyEvidence(trustedSettings);
     const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
+    fullConfig = config;
     assertNoLocalBinding(config);
     noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
     // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
@@ -2241,7 +2262,10 @@ export async function initializeAsrtSandbox(
     checkWindowsSandboxStampTargets(config.filesystem);
     // From here the runtime may stamp ACEs that only its reset, spawning the private helper copy, releases.
     markSrtWinRuntimeReleasePending();
-    await SandboxManager.initialize(config, askCb, enableLogMonitor);
+    const initialConfig = backgroundInitialization
+      ? { ...config, windows: { ...config.windows, externalConfinement: "embedder" as const } }
+      : config;
+    await SandboxManager.initialize(initialConfig, askCb, enableLogMonitor);
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.
     await verifyAsrtRuntime(SandboxManager);
   } catch (error) {
@@ -2249,9 +2273,22 @@ export async function initializeAsrtSandbox(
     throw error;
   }
   windowsExternalConfinement =
-    process.platform === "win32" && trustedSettings.windows?.externalConfinement === true;
+    process.platform === "win32" && initialSettings.windows?.externalConfinement === true;
   loadedSandboxManagerForRelease = SandboxManager;
   active = true;
+  const isCurrent = (): boolean => active && sandboxSession === session;
+  if (!backgroundInitialization) return { isCurrent };
+  const windowsIsolation = SandboxManager.initializeWindowsIsolation(fullConfig).then(
+    (): WindowsIsolationResult => {
+      if (!isCurrent()) return { status: "cancelled" };
+      _baseTrustedSettings = trustedSettings;
+      windowsExternalConfinement = false;
+      return { status: "ready" };
+    },
+    (error: unknown): WindowsIsolationResult =>
+      !isCurrent() ? { status: "cancelled" } : { status: "failed", error },
+  );
+  return { windowsIsolation, isCurrent };
 }
 
 // Probe dependencies asynchronously with the explicit verified binary path; missing dependencies must fail the active boot gate rather than silently claim isolation.
