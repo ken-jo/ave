@@ -90,6 +90,7 @@ import {
   isAppShutdownCompleted,
   isAppShutdownStarted,
   isPendingRendererReload,
+  setAppQuitRequested,
   setPendingAveUri,
   setRendererReloadReady,
   setServices,
@@ -746,6 +747,7 @@ app.on("will-quit", (event) => {
 // hook instead of a listener of its own, so this count does not grow with the
 // service graph and Electron's `App` never crosses Node's listener ceiling.
 app.on("before-quit", (event) => {
+  setAppQuitRequested(true);
   // Hooks run first and unconditionally. Eight of them were prepended
   // listeners, which fired ahead of this handler; all of them fired on quits
   // where the guards below return early.

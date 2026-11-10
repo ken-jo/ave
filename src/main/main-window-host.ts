@@ -23,7 +23,7 @@ export function createMainWindowHost(options: BaseWindowConstructorOptions, pref
     webviewTag: true,
   } });
   const contents = ui.webContents;
-  contents.on("will-attach-webview", (event, webPreferences, params) => {
+  ui.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const attach = configureMainWindowWebviewAttach({
       event,
       webPreferences: webPreferences as Record<string, unknown>,

@@ -62,10 +62,12 @@ const electronMock = vi.hoisted(() => {
     isMinimized() { return this.minimized; }
     isVisible() { return this.visible; }
     isAlwaysOnTop() { return false; }
+    lastClosePrevented = false;
     // What Electron does when nothing prevented `close`.
     close() {
       let prevented = false;
       this.emit("close", { preventDefault: () => { prevented = true; } });
+      this.lastClosePrevented = prevented;
       if (prevented) return this.destroyed;
       this.destroyed = true;
       this.emit("closed");
@@ -171,6 +173,7 @@ describe("main windows", () => {
   });
   beforeEach(() => {
     appState.resetMainWindowsForTests();
+    appState.setAppQuitRequested(false);
     appState.setTray({ setContextMenu: vi.fn() } as never);
     appState.setServices(null);
     electronMock.savedAppearance = undefined;
@@ -197,6 +200,25 @@ describe("main windows", () => {
     appState.setAppShutdownCompleted(true);
     try { expect(window.close()).toBe(true); }
     finally { appState.setAppShutdownStarted(false); appState.setAppShutdownCompleted(false); }
+  });
+
+  it("allows an application quit before services and the tray exist to reach native will-quit", () => {
+    const window = open();
+    appState.setServices(null);
+    appState.setTray(null);
+    appState.setAppQuitRequested(true);
+    try {
+      expect(window.close()).toBe(true);
+      expect(window.lastClosePrevented).toBe(false);
+    } finally { appState.setAppQuitRequested(false); }
+  });
+
+  it("still asks the document to unload when the user closes a window during bootstrap", () => {
+    const window = open();
+    appState.setServices(null);
+    appState.setTray(null);
+    expect(window.close()).toBe(true);
+    expect(window.lastClosePrevented).toBe(true);
   });
 
   it("holds the native close while application cleanup is still running", () => {
