@@ -548,11 +548,31 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
     }
   }
   const writes: WindowsDirectoryDacl[] = protect ? protectWindowsDirectories(paths, claimableRuntimeRoot, repairRoot) : paths.map(path => ({ path }));
+  const protectedRows = new Map<number, WindowsDaclFacts>();
+  let protectedReadError: string | undefined;
+  if (protect) {
+    const pending = paths.map((path, index) => ({ path, index, write: writes[index] })).filter(({ write }) => write && !("error" in write));
+    if (pending.length) {
+      try {
+        const rows = readWindowsDacls(pending.map(({ path }) => resolve(path)));
+        pending.forEach(({ index }, position) => {
+          const row = rows[position];
+          if (!row) throw new Error("Directory DACL read-back is missing");
+          protectedRows.set(index, row);
+        });
+      } catch (error) {
+        // Native batches return no partial facts; every unread descriptor must fail closed.
+        protectedReadError = (error as Error).message;
+      }
+    }
+  }
   return paths.map((path, index) => {
     const write = writes[index]!;
     if ("error" in write) return write;
     try {
-      const row = readWindowsDacls([resolve(path)])[0]!;
+      if (protectedReadError !== undefined) throw new Error(protectedReadError);
+      const row = protect ? protectedRows.get(index) : readWindowsDacls([resolve(path)])[0];
+      if (!row) throw new Error("Directory DACL read-back is missing");
       if (!row.exists || !row.directory) return { path, category: "directory-failed", error: "Path is not a directory" };
       const descriptor = { ...write, ...directoryDescriptor(path, row) };
       return protect && index === 0 && !("error" in descriptor) ? { ...descriptor, ...workspaceFacts(path) } : descriptor;
