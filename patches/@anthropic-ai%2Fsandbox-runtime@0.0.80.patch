@@ -4760,12 +4760,12 @@ index 540c56635e4c5b1b78997f0ec4185fe9d9968806..9ebe9c3c6b6e11fb49f521d620c960e0
          }
 diff --git a/vendor/srt-win/object-only-parent-guard.patch b/vendor/srt-win/object-only-parent-guard.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..873ae99de0195845242d75d4b769794625b5757c
+index 0000000000000000000000000000000000000000..5fc20f4e9ea062656aac152a3d17dfc1eb3f1641
 --- /dev/null
 +++ b/vendor/srt-win/object-only-parent-guard.patch
-@@ -0,0 +1,1873 @@
+@@ -0,0 +1,2161 @@
 +diff --git a/vendor/srt-win-src/src/acl.rs b/vendor/srt-win-src/src/acl.rs
-+index 0efb5956f..35cc65a17 100644
++index 0efb5956f..2cba4b41e 100644
 +--- a/vendor/srt-win-src/src/acl.rs
 ++++ b/vendor/srt-win-src/src/acl.rs
 +@@ -9,7 +9,7 @@
@@ -4844,14 +4844,13 @@ index 0000000000000000000000000000000000000000..873ae99de0195845242d75d4b7697946
 +     win32_ok(r, &format!("SetNamedSecurityInfoW('{path}')"))
 + }
 +
-++/// Pin files with security-only access so active images remain stampable.
-++/// Directories retain a maximum-access handle to prevent a local parent guard
-++/// from propagating. Determine the kind and verify any reopen on pinned objects.
+++/// Pin files and directories with security-only access. A directory held as a
+++/// process's current working directory may not share deletion access. Verify
+++/// any directory reopen without requesting unrelated data or deletion rights.
 ++fn open_local_dacl(path: &str) -> Result<crate::util::OwnedHandle> {
 ++    use windows::Win32::Storage::FileSystem::{
 ++        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, GetFileInformationByHandle,
 ++    };
-++    use windows::Win32::System::SystemServices::MAXIMUM_ALLOWED;
 ++    let handle = open_security_no_follow(path, Mask::READ_CONTROL.bits() | Mask::WRITE_DAC.bits())?;
 ++    let mut info = BY_HANDLE_FILE_INFORMATION::default();
 ++    unsafe { GetFileInformationByHandle(handle.0, &mut info) }
@@ -4859,7 +4858,8 @@ index 0000000000000000000000000000000000000000..873ae99de0195845242d75d4b7697946
 ++    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0 {
 ++        return Ok(handle);
 ++    }
-++    let directory = open_security_no_follow(path, MAXIMUM_ALLOWED)?;
+++    let directory =
+++        open_security_no_follow(path, Mask::READ_CONTROL.bits() | Mask::WRITE_DAC.bits())?;
 ++    if crate::path_id::file_id_from_handle(directory.0)?
 ++        != crate::path_id::file_id_from_handle(handle.0)?
 ++    {
@@ -5174,8 +5174,8 @@ index 0000000000000000000000000000000000000000..873ae99de0195845242d75d4b7697946
 ++        return write_composed_dacl(&handle, old, &new, dacl_control(&sd)?)
 ++            .with_context(|| format!("recompose '{canonical_path}'"));
 ++    }
-++    // Maximum-access handles suppress descendant propagation. Pin the same
-++    // object through a narrower no-follow handle, then release the extra handle.
+++    // Reopen with the access needed for descendant refresh, pinning the same
+++    // object by identity before releasing the extra security-only handle.
 ++    let identity = crate::path_id::file_id_from_handle(handle.0)?;
 ++    let tree = open_tree_dacl(canonical_path, &handle)?;
 ++    if crate::path_id::file_id_from_handle(tree.0)? != identity {
@@ -5546,10 +5546,10 @@ index 0000000000000000000000000000000000000000..873ae99de0195845242d75d4b7697946
 +         let ct = process_create_time(unsafe { GetCurrentProcess() }).unwrap();
 +diff --git a/vendor/srt-win-src/tests/acl_parent_scope.rs b/vendor/srt-win-src/tests/acl_parent_scope.rs
 +new file mode 100644
-+index 000000000..a577d6548
++index 000000000..76ecbf488
 +--- /dev/null
 ++++ b/vendor/srt-win-src/tests/acl_parent_scope.rs
-+@@ -0,0 +1,1087 @@
++@@ -0,0 +1,1375 @@
 ++//! Parent deletion protection must not spread over unrelated sibling trees.
 ++//! All ACL changes are confined to a fresh owned fixture. No sandbox account,
 ++//! elevation, WFP installation or machine-wide state is needed.
@@ -6636,4 +6636,292 @@ index 0000000000000000000000000000000000000000..873ae99de0195845242d75d4b7697946
 ++        .write_all(b"release\r\n")
 ++        .unwrap();
 ++    assert!(holder_b.0.wait().unwrap().success());
+++}
+++
+++#[test]
+++fn cwd_held_parent_allows_child_stamp_and_restore() {
+++    use srt_win::util::OwnedHandle;
+++    use std::io::{BufRead, BufReader, Write};
+++    use std::os::windows::process::CommandExt;
+++    use std::process::{Child, Command, Stdio};
+++    use windows::Win32::Foundation::ERROR_SHARING_VIOLATION;
+++    use windows::Win32::Storage::FileSystem::{
+++        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_INFO,
+++        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileIdInfo,
+++        GetFileInformationByHandleEx, OPEN_EXISTING,
+++    };
+++    use windows::Win32::System::SystemServices::MAXIMUM_ALLOWED;
+++    use windows::Win32::System::Threading::CREATE_NO_WINDOW;
+++
+++    struct CwdProcess(Child);
+++    impl Drop for CwdProcess {
+++        fn drop(&mut self) {
+++            let _ = self.0.kill();
+++            let _ = self.0.wait();
+++        }
+++    }
+++
+++    let fixture = Fixture::new();
+++    set_fixture_dacl(&fixture.0, "(A;OICI;FA;;;WD)");
+++    let parent = fixture.0.join("parent");
+++    std::fs::create_dir(&parent).unwrap();
+++    let target = parent.join("denied.txt");
+++    let sentinel = parent.join("cwd-sentinel.txt");
+++    std::fs::write(&target, "protected fixture").unwrap();
+++    std::fs::write(&sentinel, "holder-cwd-intact\r\n").unwrap();
+++    let parent_before = snapshot(&parent);
+++    let target_before = snapshot(&target);
+++    let sentinel_before = snapshot(&sentinel);
+++    let parent_id = srt_win::path_id::capture_file_id(parent.to_str().unwrap()).unwrap();
+++    let parent_name = wstr(parent.to_str().unwrap());
+++    let security_access = Mask::READ_CONTROL.bits() | Mask::WRITE_DAC.bits();
+++    let conflicting_access = [MAXIMUM_ALLOWED, security_access | Mask::DELETE.bits()];
+++    let open_parent = |access| unsafe {
+++        CreateFileW(
+++            pcwstr(&parent_name),
+++            access,
+++            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+++            None,
+++            OPEN_EXISTING,
+++            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+++            None,
+++        )
+++    };
+++    for access in conflicting_access {
+++        drop(OwnedHandle(open_parent(access).unwrap()));
+++    }
+++
+++    let command_image = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+++        .join("System32")
+++        .join("cmd.exe");
+++    let mut holder = CwdProcess(
+++        Command::new(command_image)
+++            .args([
+++                "/d",
+++                "/q",
+++                "/c",
+++                "echo cwd-ready&cd&set /p phase=&type cwd-sentinel.txt&set /p phase=&type cwd-sentinel.txt&set /p release=",
+++            ])
+++            .current_dir(srt_win::path_id::strip_extended_prefix(
+++                parent.to_str().unwrap(),
+++            ))
+++            .creation_flags(CREATE_NO_WINDOW.0)
+++            .stdin(Stdio::piped())
+++            .stdout(Stdio::piped())
+++            .stderr(Stdio::inherit())
+++            .spawn()
+++            .unwrap(),
+++    );
+++    let mut output = BufReader::new(holder.0.stdout.take().unwrap());
+++    let mut ready = String::new();
+++    output.read_line(&mut ready).unwrap();
+++    assert_eq!(ready.trim(), "cwd-ready");
+++    let mut actual_cwd = String::new();
+++    output.read_line(&mut actual_cwd).unwrap();
+++    assert_eq!(std::fs::canonicalize(actual_cwd.trim()).unwrap(), parent);
+++    assert!(holder.0.try_wait().unwrap().is_none());
+++
+++    for access in conflicting_access {
+++        let error = match open_parent(access) {
+++            Ok(handle) => {
+++                drop(OwnedHandle(handle));
+++                panic!("CWD-held directory unexpectedly accepted access {access:#x}");
+++            }
+++            Err(error) => error,
+++        };
+++        assert_eq!(
+++            error.code(),
+++            windows::core::HRESULT::from_win32(ERROR_SHARING_VIOLATION.0),
+++            "CWD control failed for a reason other than sharing"
+++        );
+++        eprintln!(
+++            "CWD sharing control: access={access:#x} error={:?} holder_alive=true",
+++            error.code()
+++        );
+++    }
+++    {
+++        let handle = OwnedHandle(open_parent(security_access).unwrap());
+++        let mut info = FILE_ID_INFO::default();
+++        unsafe {
+++            GetFileInformationByHandleEx(
+++                handle.raw(),
+++                FileIdInfo,
+++                (&mut info as *mut FILE_ID_INFO).cast(),
+++                std::mem::size_of::<FILE_ID_INFO>() as u32,
+++            )
+++        }
+++        .unwrap();
+++        assert_eq!(info.VolumeSerialNumber, parent_id.volume_serial);
+++        assert_eq!(info.FileId.Identifier, parent_id.id128);
+++        eprintln!("CWD sharing control: security_only=OK identity=matched");
+++    }
+++    {
+++        let _impersonation = Impersonation::begin();
+++        assert_eq!(
+++            std::fs::read_to_string(&target).unwrap(),
+++            "protected fixture"
+++        );
+++    }
+++
+++    let session = fixture.0.join("session");
+++    let run_acl = |action: &str, denied: &Path| {
+++        let mut helper = Command::new(env!("CARGO_BIN_EXE_srt-win"));
+++        helper
+++            .args([
+++                "acl",
+++                action,
+++                "--holder-pid",
+++                &std::process::id().to_string(),
+++                "--sandbox-user-sid",
+++                TEST_SID,
+++            ])
+++            .env("HOME", &session)
+++            .env("USERPROFILE", &session)
+++            .env("AVE_HOME", session.join("ave"))
+++            .env("LOCALAPPDATA", session.join("local"))
+++            .env("ProgramData", session.join("machine"))
+++            .env("SRT_DEBUG", "1")
+++            .stdin(Stdio::piped())
+++            .stdout(Stdio::piped())
+++            .stderr(Stdio::piped());
+++        let mut helper = helper.spawn().unwrap();
+++        if action == "stamp" {
+++            let request = serde_json::json!({"denyRead": [denied.to_str().unwrap()]});
+++            helper
+++                .stdin
+++                .take()
+++                .unwrap()
+++                .write_all(request.to_string().as_bytes())
+++                .unwrap();
+++        } else {
+++            drop(helper.stdin.take());
+++        }
+++        let result = helper.wait_with_output().unwrap();
+++        let error = String::from_utf8_lossy(&result.stderr);
+++        eprintln!("CWD-held ACL {action}: {error}");
+++        assert!(
+++            result.status.success(),
+++            "child stamp or restore failed while parent is a process CWD: action={action} status={} stderr={error}",
+++            result.status
+++        );
+++    };
+++    run_acl("stamp", &target);
+++    assert!(holder.0.try_wait().unwrap().is_none());
+++    assert_eq!(
+++        sandbox_aces(&parent),
+++        vec![(1, 0, Mask::FILE_DELETE_CHILD.bits())],
+++        "CWD-held parent must receive its object-only guard"
+++    );
+++    let target_aces = sandbox_aces(&target);
+++    eprintln!("CWD-held child file ACEs: {target_aces:?}");
+++    assert_eq!(
+++        target_aces,
+++        vec![(1, 0, Mask::FILE_ALL.bits())],
+++        "child file must carry exactly its effective full deny"
+++    );
+++    assert_eq!(snapshot(&sentinel), sentinel_before);
+++    {
+++        let _impersonation = Impersonation::begin();
+++        assert_eq!(
+++            std::fs::read(&target).unwrap_err().kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++        assert_eq!(
+++            std::fs::remove_file(&target).unwrap_err().kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++        assert_eq!(
+++            std::fs::rename(&target, target.with_extension("moved"))
+++                .unwrap_err()
+++                .kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++        assert_eq!(
+++            std::fs::read_to_string(&sentinel).unwrap(),
+++            "holder-cwd-intact\r\n"
+++        );
+++    }
+++    holder
+++        .0
+++        .stdin
+++        .as_mut()
+++        .unwrap()
+++        .write_all(b"phase\r\n")
+++        .unwrap();
+++    let mut sentinel_read = String::new();
+++    output.read_line(&mut sentinel_read).unwrap();
+++    assert_eq!(sentinel_read.trim(), "holder-cwd-intact");
+++    assert!(holder.0.try_wait().unwrap().is_none());
+++    run_acl("restore", &target);
+++    assert!(holder.0.try_wait().unwrap().is_none());
+++    assert_eq!(snapshot(&parent), parent_before);
+++    assert_eq!(snapshot(&target), target_before);
+++    {
+++        let _impersonation = Impersonation::begin();
+++        assert_eq!(
+++            std::fs::read_to_string(&target).unwrap(),
+++            "protected fixture"
+++        );
+++    }
+++    eprintln!("CWD-held child stamp: deny=effective restore=OK holder_alive=true");
+++
+++    // The same verified open is also used when the CWD itself is a full deny.
+++    run_acl("stamp", &parent);
+++    assert!(holder.0.try_wait().unwrap().is_none());
+++    let directory_aces = sandbox_aces(&parent);
+++    let descendant_aces = sandbox_aces(&target);
+++    eprintln!("CWD-held directory ACEs: root={directory_aces:?} child_file={descendant_aces:?}");
+++    assert_eq!(
+++        directory_aces,
+++        vec![(1, 3, Mask::FILE_ALL.bits())],
+++        "directory must carry exactly its inheritable full deny"
+++    );
+++    assert_eq!(
+++        descendant_aces,
+++        vec![(1, 0x10, Mask::FILE_ALL.bits())],
+++        "descendant file must carry exactly the inherited effective full deny"
+++    );
+++    {
+++        let _impersonation = Impersonation::begin();
+++        assert_eq!(
+++            std::fs::read(&sentinel).unwrap_err().kind(),
+++            std::io::ErrorKind::PermissionDenied
+++        );
+++    }
+++    holder
+++        .0
+++        .stdin
+++        .as_mut()
+++        .unwrap()
+++        .write_all(b"phase\r\n")
+++        .unwrap();
+++    sentinel_read.clear();
+++    output.read_line(&mut sentinel_read).unwrap();
+++    assert_eq!(sentinel_read.trim(), "holder-cwd-intact");
+++    assert!(holder.0.try_wait().unwrap().is_none());
+++    run_acl("restore", &parent);
+++    assert!(holder.0.try_wait().unwrap().is_none());
+++    assert_eq!(snapshot(&parent), parent_before);
+++    assert_eq!(snapshot(&target), target_before);
+++    assert_eq!(snapshot(&sentinel), sentinel_before);
+++    {
+++        let _impersonation = Impersonation::begin();
+++        assert_eq!(
+++            std::fs::read_to_string(&target).unwrap(),
+++            "protected fixture"
+++        );
+++    }
+++    eprintln!("CWD-held directory stamp: deny=effective restore=OK holder_alive=true");
+++    holder
+++        .0
+++        .stdin
+++        .take()
+++        .unwrap()
+++        .write_all(b"release\r\n")
+++        .unwrap();
+++    assert!(holder.0.wait().unwrap().success());
+++    for access in conflicting_access {
+++        drop(OwnedHandle(open_parent(access).unwrap()));
+++    }
+++    eprintln!("CWD sharing control: holder_exit=OK conflicting_access=OK");
 ++}

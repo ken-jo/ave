@@ -8,6 +8,14 @@ The [permission decision tree](../architecture/permission-decision-tree.md) rema
 
 Stamps remain transient under the existing state schema, holder lifetime, restore and crash recovery. This scope excludes durable deny ownership, a journal, reconciliation and identity relocation. Retain `NativeDB` and the existing 60-second ACL command ceiling.
 
+## Directory sharing
+
+Local ACL opens request `READ_CONTROL | WRITE_DAC` (`0x00060000`), including the identity-verified directory reopen. A process using the directory as its CWD can hold it without delete sharing, so requesting `DELETE` through `MAXIMUM_ALLOWED` would make the guard fail. Both no-follow opens and their volume/file identity comparison bind the update to the verified object. Required-open errors fail the operation.
+
+The other opens in the patched ACL and identity helpers use security rights plus `FILE_LIST_DIRECTORY` for descendant refresh, `WRITE_OWNER` for protected-store ownership, or zero access for metadata. The remaining `MAXIMUM_ALLOWED` and explicit `DELETE` opens are native test controls. ACE deny masks and `FILE_SHARE_DELETE` describe different permissions from the requested handle access.
+
+Collect profile-parent `fdc` durations after a complete successful stamp and verify restore with the CWD holder still alive. Successful real-host guard timing remains to be measured.
+
 ## Peer three-boot procedure
 
 Run on a disposable Windows test host with the [Windows source prerequisites](../guides/windows-setup.md#1-prerequisites), plus `rustup`, `cargo`, `tar.exe` and the C++ compiler/linker and SDK for both native targets. The build selects the toolchain in `src/permissions/srt-win-pins.json`; this procedure requires Bun 1.4.4. Close all prior Ave hosts and development watchers before starting. Use the same Windows account and one unchanged isolated `HOME`, `USERPROFILE`, `AVE_HOME` and `AVE_USER_DATA_DIR` for installation, build and all three boots. Do not delete `NativeDB`, reset ACLs, change the sandbox account, reinstall or recreate the isolated directories between boots. Quit each boot normally before the next so holder measurements do not overlap.
