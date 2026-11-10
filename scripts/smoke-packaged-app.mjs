@@ -13,6 +13,7 @@ import {
 } from "./lib/electron-launch-options.mjs";
 import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs";
 import { assertNoWindowsProtocolClaim } from "./lib/windows-protocol-cleanup.mjs";
+import { windowsPowerShellEnv } from "./lib/windows-powershell-env.mjs";
 import {
   launchSucceeded,
   readProductionLogsSince,
@@ -357,17 +358,27 @@ async function launchSmoke(executable, timeoutMs) {
 async function runWindowsInstallerSmoke(releaseDir, timeoutMs) {
   const script = resolve(root, "scripts", "smoke-windows-nsis-installer.mjs");
   process.stdout.write("[packaged-smoke] running Windows NSIS setup smoke\n");
+  const smokeArgs = [script, "--release-dir", releaseDir, "--launch-timeout-ms", String(timeoutMs)];
+  const hosted = process.env.GITHUB_ACTIONS === "true";
+  const command = hosted
+    ? join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    : process.execPath;
+  const args = hosted ? [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", resolve(root, "scripts", "lib", "run-windows-installer-owner.ps1"),
+    "-NodeExecutable", process.execPath,
+    "-ArgumentsBase64", Buffer.from(JSON.stringify(smokeArgs)).toString("base64"),
+    "-WorkingDirectory", root,
+    // Bound the complete two-pass owner harness using the existing install,
+    // uninstall and postcondition budgets; individual operation limits stay fixed.
+    "-DeadlineUnixMs", String(Date.now() + 2 * (180_000 + 120_000 + 30_000) + timeoutMs),
+  ] : smokeArgs;
 
   return await new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [
-      script,
-      "--release-dir",
-      releaseDir,
-      "--launch-timeout-ms",
-      String(timeoutMs),
-    ], {
+    const child = spawn(command, args, {
       stdio: "inherit",
       windowsHide: true,
+      env: hosted ? windowsPowerShellEnv() : process.env,
     });
     child.on("error", reject);
     child.on("exit", (code, signal) => {
