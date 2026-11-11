@@ -96,7 +96,8 @@ describe.runIf(nativePlatform)("proxy deny attribution (native)", () => {
       process.env.PATH = [first, second].join(delimiter);
       expect(whichSync("shell-fixture")).toBe(executable);
       expect(whichSync(executable)).toBe(executable);
-      expect(whichSync(`./${relative(process.cwd(), executable)}`)).toBe(executable);
+      const relativeExecutable = `./${relative(process.cwd(), executable)}`;
+      expect(whichSync(relativeExecutable)).toBe(`${process.cwd()}/${relativeExecutable}`);
       chmodSync(shadow, 0o700);
       expect(whichSync("shell-fixture")).toBe(shadow);
       chmodSync(executable, 0o600);
@@ -107,6 +108,37 @@ describe.runIf(nativePlatform)("proxy deny attribution (native)", () => {
       expect(whichSync("directory-shell")).toBeNull();
       expect(whichSync("absent-shell")).toBeNull();
       expect(whichSync("")).toBeNull();
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await cleanupTmpDir(cwd);
+    }
+  });
+
+  it.each(["physical", "lexical"] as const)("preserves symlink parent traversal when only the %s executable exists", async (location) => {
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "egress-wrapper-traversal-")));
+    const previousPath = process.env.PATH;
+    try {
+      const physical = join(cwd, "physical");
+      const target = join(physical, "current");
+      mkdirSync(target, { recursive: true });
+      symlinkSync(target, join(cwd, "link"));
+      const executable = join(location === "physical" ? physical : cwd, "version", "bin", "shell-fixture");
+      mkdirSync(join(executable, ".."), { recursive: true });
+      writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+      const directory = `${cwd}/link/../version/bin`;
+      const candidate = `${directory}/shell-fixture`;
+      const present = location === "physical";
+      expect(existsSync(candidate)).toBe(present);
+      if (present) expect(realpathSync.native(candidate)).toBe(executable);
+      expect(whichSync(candidate)).toBe(present ? candidate : null);
+      process.env.PATH = directory;
+      expect(whichSync("shell-fixture")).toBe(present ? candidate : null);
+      const relativeDirectory = `${relative(process.cwd(), cwd)}/link/../version/bin`;
+      process.env.PATH = relativeDirectory;
+      expect(whichSync("shell-fixture")).toBe(present ? `${process.cwd()}/${relativeDirectory}/shell-fixture` : null);
+      const relativeCandidate = `./${relativeDirectory}/shell-fixture`;
+      expect(whichSync(relativeCandidate)).toBe(present ? `${process.cwd()}/${relativeCandidate}` : null);
     } finally {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;

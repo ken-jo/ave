@@ -8096,7 +8096,7 @@ diff --git a/dist/utils/which.js b/dist/utils/which.js
 @@ -1,7 +1,9 @@
  import { spawnSync } from 'node:child_process';
 +import { accessSync, constants, statSync } from 'node:fs';
-+import { delimiter, resolve } from 'node:path';
++import { delimiter, isAbsolute } from 'node:path';
  /**
   * Find the path to an executable, similar to the `which` command.
 - * Uses Bun.which when running in Bun, falls back to spawnSync for Node.js.
@@ -8104,21 +8104,23 @@ diff --git a/dist/utils/which.js b/dist/utils/which.js
   *
   * @param bin - The name of the executable to find
   * @returns The full path to the executable, or null if not found
-@@ -11,7 +13,24 @@
+@@ -11,7 +13,26 @@
      if (typeof globalThis.Bun !== 'undefined') {
          return globalThis.Bun.which(bin);
      }
 -    // Fallback to Node.js implementation
 +    if (process.platform !== 'win32') {
 +        if (!bin) return null;
++        // Keep dot segments until the filesystem has followed preceding links.
 +        const candidates = bin.includes('/')
-+            ? [resolve(bin)]
-+            : (process.env.PATH ?? '/usr/bin:/bin').split(delimiter).map(dir => resolve(dir, bin));
++            ? [bin]
++            : (process.env.PATH ?? '/usr/bin:/bin').split(delimiter).map(dir => `${dir || '.'}/${bin}`);
 +        for (const candidate of candidates) {
++            const fullPath = isAbsolute(candidate) ? candidate : `${process.cwd()}/${candidate}`;
 +            try {
-+                if (!statSync(candidate).isFile()) continue;
-+                accessSync(candidate, constants.X_OK);
-+                return candidate;
++                if (!statSync(fullPath).isFile()) continue;
++                accessSync(fullPath, constants.X_OK);
++                return fullPath;
 +            }
 +            catch {
 +                // Missing, inaccessible and non-executable candidates do not shadow later entries.
