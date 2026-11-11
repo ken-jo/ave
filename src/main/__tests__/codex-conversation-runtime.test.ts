@@ -23,6 +23,7 @@ import {
   type CodexConversationRuntimeOptions,
 } from "../codex-conversation-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import { advanceFakeClock, waitOnRealClock } from "../../__tests__/support/fake-clock-wait.js";
 beforeEach(() => {
   vi.stubEnv("SystemRoot", "C:\\Windows");
@@ -44,7 +45,8 @@ import { createStepTracer } from "../../engine/telemetry/tracing.js";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, NATIVE_PROBE_HEAVY_TIMEOUT_MS, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { createPrivateDirectory } from "../codex-executable-location.js";
-import { verifyCodexExecutableArtifact, type CodexExecutableArtifact } from "../codex-executable-artifact.js";
+import * as executableArtifacts from "../codex-executable-artifact.js";
+import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 
@@ -267,7 +269,7 @@ describe("native RPC timeout context", () => {
     const home = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-native-admission-"));
     try {
       if (process.platform !== "win32") normalizeFixtureAncestorPermissions(home);
-      await verifyCodexExecutableArtifact(await codexExecutableArtifactFixture(home));
+      await executableArtifacts.verifyCodexExecutableArtifact(await codexExecutableArtifactFixture(home));
     } finally {
       await cleanupTmpDir(home);
     }
@@ -2080,44 +2082,48 @@ describe("CodexConversationRuntime", () => {
 
     expect(onDynamicToolCall).not.toHaveBeenCalled();
   });
-  it("does not start a Codex thread or turn when aborted during initialization", async () => {
-    let initializeRequest: JsonRecord | undefined;
-    const harness = await createHarness((message) => {
-      if (message.method === "initialize") initializeRequest = message;
-    });
-    const abortController = new AbortController();
-    const pendingTurn = harness.runtime.startTurn({
-      text: "cancel during startup",
-      abortSignal: abortController.signal,
-    });
+  it.each(["initialize", "thread/start"] as const)(
+    "does not advance startup when aborted during %s after delayed executable verification",
+    async (operation) => {
+      vi.useFakeTimers();
+      const verifyingExecutable = deferred<void>();
+      const releaseRuntime = deferred<void>();
+      const requestReceived = deferred<JsonRecord>();
+      const verifyArtifact = executableArtifacts.verifyCodexExecutableArtifact;
+      vi.spyOn(executableArtifacts, "verifyCodexExecutableArtifact").mockImplementation(async (...args) => {
+        verifyingExecutable.resolve();
+        await releaseRuntime.promise;
+        return verifyArtifact(...args);
+      });
+      const harness = await createHarness((message, current) => {
+        if (message.method === operation) requestReceived.resolve(message);
+        else if (message.method === "initialize") reply(current.child, requestId(message), {});
+      });
+      const abortController = new AbortController();
+      const pendingTurn = harness.runtime.startTurn({
+        text: "cancel during startup",
+        abortSignal: abortController.signal,
+      });
+      // Observe startup failure immediately, including while waiting for the request.
+      const requestReady = Promise.race([
+        requestReceived.promise,
+        pendingTurn.then(() => { throw new Error("Unexpected turn completion before startup request"); }),
+      ]);
+      void requestReady.catch(() => undefined);
 
-    await vi.waitFor(() => expect(initializeRequest).toBeDefined(), NATIVE_LOCATION_WAIT);
-    abortController.abort();
-    if (!initializeRequest) throw new Error("missing-initialize-request");
-    reply(harness.child, requestId(initializeRequest), {});
+      await Promise.race([verifyingExecutable.promise, requestReady]);
+      // Hold verification past the former polling deadline without sleeping or adding load.
+      await vi.advanceTimersByTimeAsync(NATIVE_LOCATION_WAIT.timeout + 1);
+      expect(harness.spawnCalls).toHaveLength(0);
+      releaseRuntime.resolve();
+      const request = await requestReady;
+      abortController.abort();
+      reply(harness.child, requestId(request), operation === "initialize" ? {} : { thread: { id: "thread-1" } });
 
-    await expect(pendingTurn).rejects.toMatchObject({ name: "AbortError" });
-    expect(methodMessages(harness, "thread/start")).toHaveLength(0);
-    expect(methodMessages(harness, "turn/start")).toHaveLength(0);
-  });
-
-  it("does not start a Codex turn when aborted while creating its thread", async () => {
-    let threadStartRequest: JsonRecord | undefined;
-    const harness = await createInitializedHarness((message) => {
-      if (message.method === "thread/start") threadStartRequest = message;
-    });
-    const abortController = new AbortController();
-    const pendingTurn = harness.runtime.startTurn({
-      text: "cancel during thread setup",
-      abortSignal: abortController.signal,
-    });
-
-    await vi.waitFor(() => expect(threadStartRequest).toBeDefined(), NATIVE_LOCATION_WAIT);
-    abortController.abort();
-    if (!threadStartRequest) throw new Error("missing-thread-start-request");
-    reply(harness.child, requestId(threadStartRequest), { thread: { id: "thread-1" } });
-
-    await expect(pendingTurn).rejects.toMatchObject({ name: "AbortError" });
-    expect(methodMessages(harness, "turn/start")).toHaveLength(0);
-  });
+      await expect(pendingTurn).rejects.toMatchObject({ name: "AbortError" });
+      expect(methodMessages(harness, "thread/start")).toHaveLength(operation === "initialize" ? 0 : 1);
+      expect(methodMessages(harness, "turn/start")).toHaveLength(0);
+      expect(harness.runtime.isTurnActive()).toBe(false);
+    },
+  );
 });
