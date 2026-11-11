@@ -941,11 +941,19 @@ Important rules:
   history. Measurement does not consume an instruction's execution allowance.
 - Long histories are compacted through the structured compact path rather than
   silent truncation.
-- Manual compaction accepts focus instructions. An optional compaction model
-  defaults to the originating conversation's current model and retains its
-  authentication route. An explicit selection is scoped to its provider,
-  endpoint and preset; switching routes leaves that selection inactive. Summary
-  input also respects the selected model's own context budget.
+- Manual compaction accepts focus instructions. Compaction runs as a hidden
+  one-shot system subagent instance. An unset model follows the originating
+  conversation's model and authentication route at invocation. An explicit vendor
+  and model selects its own connected route through the shared system subagent
+  resolver used by permission review, independently of the chat runtime. Summary
+  input respects that route's context budget. An unavailable selection fails
+  compaction visibly and retains the original history. Legacy route-bound
+  choices migrate only when their configured vendor and route can be identified
+  exactly. Unresolved choices remain visible as unavailable in settings until replaced.
+- System subagents perform internal summarization, permission review and decision
+  work as provider instances. They have no user-facing session, session-history
+  entry, subagent panel row or transcript agent card. Compaction commits its result
+  through the originating conversation's existing transcript boundary.
 - A round that stops at `end_turn` with reasoning but no visible text and no
   tool call does not end the turn: the loop re-prompts it a bounded number of
   times before returning, because that reasoning states the action the model
