@@ -95,14 +95,11 @@ FunctionEnd
 !define AVE_NSIS_PER_MACHINE_MARKER ".ave-nsis-per-machine-v1"
 !define AVE_NOTIFICATION_CLEANUP_SCRIPT "uninstall-windows-notification-artifacts.ps1"
 
-; electron-builder's stock app-running box says "Click OK to close it" under
-; OK/Cancel buttons. Ask a question instead so the buttons match. A LangString
-; override is not reliable: messages.nsh and this include are emitted by
-; concurrent tasks, and a duplicate LangString fails makensis -WX (6030).
-; customCheckAppRunning is the supported hook; it replaces _CHECK_APP_RUNNING
-; from app-builder-lib 26.18.0 allowOnlyOneInstallerInstance.nsh, which then
-; skips its own getProcessInfo include and $pid. Korean and English are
-; explicit; other installer languages fall back to English.
+; The stock app-running box says "Click OK to close it" under OK/Cancel
+; buttons; ask a question instead so the buttons match. customCheckAppRunning
+; replaces _CHECK_APP_RUNNING from allowOnlyOneInstallerInstance.nsh, which
+; then skips its own getProcessInfo include and $pid. A duplicate LangString
+; override fails makensis -WX (6030). Other languages fall back to English.
 !include "getProcessInfo.nsh"
 Var pid
 
