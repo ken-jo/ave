@@ -278,9 +278,11 @@ async function runPackagedAppOnce(executable, timeoutMs, env, label) {
 
     child.stdout?.on("data", (chunk) => {
       output = appendOutput(output, chunk);
+      process.stdout.write(chunk);
     });
     child.stderr?.on("data", (chunk) => {
       output = appendOutput(output, chunk);
+      process.stderr.write(chunk);
     });
     child.on("error", (err) => {
       clearTimeout(timer);
