@@ -71,7 +71,10 @@ const run = (mode: string) => runBash([script, mode], mode === "verify" && env.C
 describe("runtime archive cache", () => {
   it("refuses to fetch without the fixture curl", () => {
     rmSync(join(root, "bin", "curl"));
-    expect(() => run("verify")).toThrow("fixture curl was bypassed");
+    const result = runBash([script, "verify"]);
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain("fixture curl is not first on PATH");
+    expect(existsSync(join(root, "bun-download"))).toBe(false);
     expect(existsSync(join(root, "fetches"))).toBe(false);
   });
 
