@@ -258,9 +258,33 @@ describe("pinned 0.0.80 fallback", () => {
 });
 
 describe("user hook follows its admitted host-shell plan", () => {
+  it("does not restore an admitted user hook after shell consent is switched off and on", async () => {
+    const capability = await vi.importActual<typeof import("../../permissions/sandbox-capability.js")>("../../permissions/sandbox-capability.js");
+    try {
+      capability.setShellSandboxRequestedAtBoot(true);
+      capability.setActiveSandboxCapability(windowsProxyOnlyCapability());
+      const input: WindowsSandboxPlanInputs = { shellRequested: true, shellLocalNetworkAccess: true,
+        workerRequested: true, srtWinReady: false, windowsBuild: null, mxc: { state: "available" } };
+      capability.setWindowsSandboxSubstrate(windowsSubstrateFor(input, "proxy-only"), mxcShellCapability());
+      const plan = capability.getHostShellExecutionPlan();
+      const options = admitUnder(plan);
+      capability.setWindowsShellLocalNetworkAccess(false);
+      capability.setWindowsShellLocalNetworkAccess(true);
+      state.shellPlan = capability.getHostShellExecutionPlan();
+      const result = await runOneHookScript(userHook(["powershell.exe", "-File", "C:\\hooks\\check.ps1"]), PAYLOAD, options);
+      expect(result).toMatchObject({ decision: "deny", reason: "hook shell execution policy changed during approval" });
+      expect(state.holderSpawn).not.toHaveBeenCalled();
+      expect(state.legacySpawn).not.toHaveBeenCalled();
+    } finally {
+      capability.__resetActiveSandboxCapabilityForTest();
+      capability.__resetSandboxRequestedAtBootForTest();
+      capability.__resetWindowsSandboxSubstrateForTest();
+    }
+  });
+
   it("keeps a pending container hook approval across a late extension isolation promotion", async () => {
     const capability = await vi.importActual<typeof import("../../permissions/sandbox-capability.js")>("../../permissions/sandbox-capability.js");
-    const input: WindowsSandboxPlanInputs = { shellRequested: true, workerRequested: true, srtWinReady: true,
+    const input: WindowsSandboxPlanInputs = { shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, srtWinReady: true,
       windowsBuild: null, mxc: { state: "available" } };
     const approved = deferred<void>();
     const entered = deferred<void>();

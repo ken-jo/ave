@@ -88,6 +88,10 @@ let _bootOutcome: SandboxBootOutcome | null = null;
 let _sandboxGatePendingAtBoot = false;
 let _windowsSubstrate: SandboxWindowsSubstrateInfo | null = null;
 let _mxcShellCapability: SandboxCapability | undefined;
+let windowsShellLocalNetworkAccessEnabled = false;
+let windowsShellLocalNetworkRevision = 0;
+const windowsShellPlanRevisions = new WeakMap<HostShellExecutionPlan, number>();
+let windowsShellStartProbe: (() => void) | undefined;
 let _statusChangeListener: (() => void) | undefined;
 
 // The one observer of status-snapshot changes: the desktop IPC layer, which turns each change into a renderer hint so a
@@ -110,6 +114,7 @@ const recordIssuedHostShellExecutionPlan = claimHostShellExecutionPlanIssuer(get
 // Issue a fixture plan under the live generation, or a given one. @internal — tests only.
 export function __issueHostShellExecutionPlanForTest(plan: HostShellExecutionPlan, generation = getSandboxGeneration()): HostShellExecutionPlan {
   recordIssuedHostShellExecutionPlan(plan, generation);
+  windowsShellPlanRevisions.set(plan, windowsShellLocalNetworkRevision);
   return plan;
 }
 
@@ -186,10 +191,14 @@ export function setWindowsSandboxSubstrate(
   if (info.shells === "mxc" && mxcShellCapability === undefined) {
     throw new Error("setWindowsSandboxSubstrate: shells run in MXC but no MXC shell capability was given");
   }
-  if (info.shells !== "mxc" && mxcShellCapability !== undefined) {
+  if (info.shells !== "mxc" && mxcShellCapability !== undefined &&
+      !(info.shells === "approved-host" && info.mxc.state === "available" && !info.shellLocalNetworkAccess)) {
     throw new Error("setWindowsSandboxSubstrate: an MXC shell capability needs shells: \"mxc\"");
   }
   if (info.extensionPlan !== undefined) assertSandboxWindowsExtensionPlan(info.extensionPlan);
+  if (typeof info.shellLocalNetworkAccess !== "boolean" || (info.shells === "mxc" && !info.shellLocalNetworkAccess)) {
+    throw new Error("Invalid Windows shell local-network consent");
+  }
   if (!["mxc", "approved-host", "none"].includes(info.shells) || !["mxc", "srt-win", "none"].includes(info.extensions)
       || info.shellEgressIdentity !== (info.shells === "mxc" ? "kernel-channel" : "shared")) {
     throw new Error("setWindowsSandboxSubstrate: invalid substrate or shell egress identity");
@@ -218,6 +227,8 @@ export function setWindowsSandboxSubstrate(
     ...(extensionPlan ? { extensionPlan } : {}),
   });
   _mxcShellCapability = mxcShellCapability === undefined ? undefined : Object.freeze({ ...mxcShellCapability });
+  if (windowsShellLocalNetworkAccessEnabled !== info.shellLocalNetworkAccess) windowsShellLocalNetworkRevision += 1;
+  windowsShellLocalNetworkAccessEnabled = info.shellLocalNetworkAccess;
   _sandboxGeneration += 1;
   notifySandboxStatusChanged();
 }
@@ -233,6 +244,46 @@ export function getWindowsSandboxSubstrate(): SandboxWindowsSubstrateInfo | null
   return _windowsSubstrate;
 }
 
+/** Apply saved shell consent to the next command, preserving the separate extension plan. */
+export function setWindowsShellLocalNetworkAccess(enabled: boolean): void {
+  if (windowsShellLocalNetworkAccessEnabled === enabled) return;
+  windowsShellLocalNetworkAccessEnabled = enabled;
+  windowsShellLocalNetworkRevision += 1;
+  if (_windowsSubstrate !== null) {
+    const shells = _windowsSubstrate.shells === "none" ? "none"
+      : enabled && _windowsSubstrate.mxc.state === "available" && _mxcShellCapability !== undefined ? "mxc" : "approved-host";
+    _windowsSubstrate = Object.freeze({ ..._windowsSubstrate, shellLocalNetworkAccess: enabled,
+      shells, shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared" });
+  }
+  _sandboxGeneration += 1;
+  notifySandboxStatusChanged();
+  if (enabled) windowsShellStartProbe?.();
+}
+
+export function isWindowsShellLocalNetworkAccessAllowed(): boolean {
+  return windowsShellLocalNetworkAccessEnabled;
+}
+
+/** Bind shell consent to durable feature commits, including writes with later post-save failures. */
+export function bindWindowsShellLocalNetworkAccess(settings: {
+  getPersisted(key: "features"): { windowsShellLocalNetworkAccess?: boolean } | undefined;
+  onChanged(key: "features", listener: () => void): () => void;
+}): () => void {
+  const apply = (): void => setWindowsShellLocalNetworkAccess(settings.getPersisted("features")?.windowsShellLocalNetworkAccess === true);
+  apply();
+  return settings.onChanged("features", apply);
+}
+
+/** A consent change revokes prior shell admissions even if consent is enabled again. */
+export function isWindowsShellConsentCurrent(plan: HostShellExecutionPlan): boolean {
+  return windowsShellPlanRevisions.get(plan) === windowsShellLocalNetworkRevision;
+}
+
+/** Boot owns the deferred real start probe; enabling shell consent starts it without a restart. */
+export function setWindowsShellStartProbe(probe: (() => void) | undefined): void {
+  windowsShellStartProbe = probe;
+}
+
 /** Selected extension plan; absent records confer no MXC authority. Per-process markers remain mandatory. */
 export function getWindowsExtensionBackendPlan(): SandboxWindowsExtensionPlan | undefined {
   return _windowsSubstrate?.extensionPlan;
@@ -240,7 +291,7 @@ export function getWindowsExtensionBackendPlan(): SandboxWindowsExtensionPlan | 
 
 // The capability of a Bash/PowerShell tool command launched in an MXC container, or undefined when that route is not live: MXC carries the shells this boot, the shell sandbox was requested, and the process-wide ASRT runtime (whose proxy the containers reach) is still published.
 export function detectMxcShellCapability(): SandboxCapability | undefined {
-  if (_mxcShellCapability === undefined || !_shellSandboxRequestedAtBoot) return undefined;
+  if (!windowsShellLocalNetworkAccessEnabled || _mxcShellCapability === undefined || !_shellSandboxRequestedAtBoot) return undefined;
   if (_activeCapability?.kind !== "asrt") return undefined;
   return _mxcShellCapability;
 }
@@ -250,6 +301,9 @@ export function __resetWindowsSandboxSubstrateForTest(): void {
   if (_windowsSubstrate !== null || _mxcShellCapability !== undefined) _sandboxGeneration += 1;
   _windowsSubstrate = null;
   _mxcShellCapability = undefined;
+  windowsShellLocalNetworkAccessEnabled = false;
+  windowsShellLocalNetworkRevision += 1;
+  windowsShellStartProbe = undefined;
 }
 
 // @internal — test teardown only.
@@ -328,6 +382,7 @@ export function getHostShellExecutionPlan(executionMode: HostShellExecutionReque
     unavailableSandboxRequiresAsk: isAveHomeBoundaryUnverifiedAtBoot(),
   });
   recordIssuedHostShellExecutionPlan(plan, generation);
+  windowsShellPlanRevisions.set(plan, windowsShellLocalNetworkRevision);
   return plan;
 }
 

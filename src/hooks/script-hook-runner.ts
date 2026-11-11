@@ -38,7 +38,7 @@ import { resolveScriptAnchor } from "./hook-config-trust.js";
 import { resolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
-import { getHostShellExecutionPlan, isIssuedHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
+import { getHostShellExecutionPlan, isIssuedHostShellExecutionPlan, isWindowsShellConsentCurrent } from "../permissions/sandbox-capability.js";
 import { getHostShellExecutionPlanAuditProjection, getHostShellExecutionPlanCacheIdentity, type HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
 import {
   assertExtensionStartAllowed, cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive,
@@ -96,6 +96,7 @@ function hashCommandArgv(command: string[]): string {
 
 function isHookShellPlanCurrent(plan: HostShellExecutionPlan): boolean {
   if (!isIssuedHostShellExecutionPlan(plan)) return false;
+  if (plan.substrate === "mxc" && !isWindowsShellConsentCurrent(plan)) return false;
   const current = getHostShellExecutionPlan(plan.executionRequest);
   return getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(plan))
     === getHostShellExecutionPlanCacheIdentity(getHostShellExecutionPlanAuditProjection(current));

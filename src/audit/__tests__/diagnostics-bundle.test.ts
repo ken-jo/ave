@@ -11,6 +11,7 @@ import {
   pickRedactedSettings,
   listCrashDumps,
 } from "../diagnostics-bundle.js";
+import { planWindowsSandbox } from "../../boot/steps/windows-sandbox-plan.js";
 import type { AppSettings } from "../../data/settings-store.js";
 
 let tmp: string;
@@ -213,6 +214,21 @@ describe("buildDiagnosticsBundle — PII / secret exclusion", () => {
     const { allText } = unzipToText(await build({ auditLogger: logger }));
     expect(allText).not.toContain("pii@leak.com");
     expect(allText).not.toContain("010-9999-8888");
+  });
+});
+
+describe("buildDiagnosticsBundle — effective Windows shell route", () => {
+  it.each([false, true])("records the effective route when local-network consent is %s", async consent => {
+    const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
+      shellLocalNetworkAccess: consent, mxc: { state: "available" }, windowsBuild: null, srtWinReady: false });
+    const zip = new AdmZip(await build({ windowsSandbox: substrate }));
+    const status = zip.getEntry("sandbox-status.json");
+    const manifest = zip.getEntry("manifest.json");
+    if (!status || !manifest) throw new Error("Diagnostics status entries are missing");
+    const saved = JSON.parse(status.getData().toString("utf8"));
+    expect(saved).toEqual({ shellLocalNetworkAccess: consent, shells: consent ? "mxc" : "approved-host",
+      mxc: { state: "available" }, shellEgressIdentity: consent ? "kernel-channel" : "shared", extensions: "none" });
+    expect(JSON.parse(manifest.getData().toString("utf8")).contents).toContain("sandbox-status.json");
   });
 });
 

@@ -47,7 +47,7 @@ describe.runIf(process.platform === "win32")("MXC link traversal into a denied p
       // Anchor the credential floor to a fixture home: the stamp guard refuses real-account deny targets.
       vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([join(directory, "policy-home")]);
       await initializeAsrtSandbox({ allowedDomains: [], windows: { externalConfinement: true } });
-      const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
+      const { substrate } = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: false,
         mxc: { state: "available" }, windowsBuild: started.windowsBuild, srtWinReady: false });
       setWindowsSandboxSubstrate(substrate, mxcShellCapability());
       setActiveSandboxCapability(windowsProxyOnlyCapability(substrate));

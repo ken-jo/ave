@@ -175,6 +175,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // Request OS confinement by default on supported desktop platforms; container-backed shell isolation is available on win32.
     // Stored user values override this default. Settings activation degrades visibly when unavailable; explicit AVE_SANDBOX_ENABLED=1 activation stays fail-closed on macOS/Linux.
     osToolSandbox: process.platform === "darwin" || process.platform === "linux" || process.platform === "win32",
+    windowsShellLocalNetworkAccess: false,
     // Plugin-worker confinement: plugin workers, out-of-process plugin children, plugin script hooks and external MCP stdio servers run under ASRT exactly when this is on, whatever the shell sandbox above says. Its own setting (owner
     // 2026-10-16) so that the shell sandbox default can be on without confining workers whose manifests under-declare the domains they reach. OFF everywhere; `loadSettings` derives it from a stored `osToolSandbox: true` when a file predates the split.
     pluginWorkerConfinement: false,

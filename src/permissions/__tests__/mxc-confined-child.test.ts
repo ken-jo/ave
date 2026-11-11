@@ -298,7 +298,7 @@ describe("live holder writable roots for adapters", () => {
 });
 
 describe("plan identity across substrate republication", () => {
-  const inputs: WindowsSandboxPlanInputs = { shellRequested: true, workerRequested: true, mxc: { state: "checking" },
+  const inputs: WindowsSandboxPlanInputs = { shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: { state: "checking" },
     extensionMxc: { state: "available" }, windowsBuild: "26100", srtWinReady: false };
 
   it.each(["available", "unavailable"] as const)("lets a live MXC parent admit children after the shell probe settles %s", async (settledState) => {

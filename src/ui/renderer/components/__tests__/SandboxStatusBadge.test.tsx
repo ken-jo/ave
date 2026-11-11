@@ -121,7 +121,7 @@ describe("SandboxStatusBadge — extension backend", () => {
     return {
       ...capability({ active: true }),
       windowsSubstrate: {
-        mxc: { state: "available" }, windowsBuild: "10.0.26300", srtWinReady: selectedBackend === "srt-win", shells: "mxc",
+      mxc: { state: "available" }, windowsBuild: "10.0.26300", srtWinReady: selectedBackend === "srt-win", shells: "mxc", shellLocalNetworkAccess: true,
         extensions: selectedBackend, extensionPlan, shellEgressIdentity: "kernel-channel", extensionEgressIdentity: extensionPlan.egressIdentity,
       },
     };
@@ -166,7 +166,7 @@ describe("SandboxStatusBadge — extension backend", () => {
 describe("SandboxStatusBadge — Windows MXC check settling after boot", () => {
   beforeEach(() => setLocale("ko"));
   const substrate = (mxc: "checking" | "available") => ({
-    mxc: { state: mxc }, windowsBuild: "10.0.26300", srtWinReady: false,
+      mxc: { state: mxc }, windowsBuild: "10.0.26300", srtWinReady: false, shellLocalNetworkAccess: true,
     shells: mxc === "available" ? "mxc" : "approved-host", extensions: "none",
     shellEgressIdentity: mxc === "available" ? "kernel-channel" : "shared", extensionEgressIdentity: "shared",
   }) as NonNullable<SandboxCapabilityInfo["windowsSubstrate"]>;
@@ -188,6 +188,14 @@ describe("SandboxStatusBadge — Windows MXC check settling after boot", () => {
     const { capability: live, statusQueryFailed } = useSandboxCapability(permission);
     return <SandboxStatusBadge capability={live} statusQueryFailed={statusQueryFailed} />;
   }
+
+  it.each(["en", "ko"] as const)("does not claim a deferred probe is running with consent off in %s", locale => {
+    setLocale(locale);
+    render(<SandboxStatusBadge capability={{ ...checking,
+      windowsSubstrate: { ...substrate("checking"), shellLocalNetworkAccess: false } }} />);
+    expect(screen.queryByTestId("sandbox-checking-status")).not.toBeInTheDocument();
+    expect(screen.getByTestId("sandbox-off-status")).toBeInTheDocument();
+  });
 
   it("shows the check as in progress rather than as the sandbox being off", () => {
     expect(checking.shellExecutionPlan?.fallbackReason).toBe("windows-partial-shell-acl-unsafe");
