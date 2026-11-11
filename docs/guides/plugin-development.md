@@ -19,19 +19,18 @@ Every extension package needs a `plugin.json` manifest. The Host owns the canoni
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
 authoring contract in `src/plugins/public-contract.ts`. Copy the public types
 from an Ave git ref into `contract/`. The current protocol-5 schema is in the repository at
-`schemas/plugin-host-protocol/5/protocol.schema.json`. Published extensions for
-currently released hosts declare
-`extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
-`requires.minAppVersion: "0.14.0"`. The retired `@ave/plugin-sdk` package is not a
+`schemas/plugin-host-protocol/5/protocol.schema.json`. Extensions targeting Ave
+0.15.0 declare
+`extensions["ai.agent-connector.ave"].requires.hostProtocol: "5"` and
+`requires.minAppVersion: "0.15.0"`. The retired `@ave/plugin-sdk` package is not a
 contract source.
 
-**Upcoming, unreleased:** protocol 5 requires host-validated loopback OAuth state
-and a declared worker control mode (stdio control v1 or output-only). Protocol 4 was
-never released; released hosts move from 3 straight to 5. This development build
-serves 5, but released hosts still serve 3. Keep published
-packages on protocol 3 until the coordinated release. The future app version is
-owned by release preparation; protocol negotiation, rather than a guessed
-`minAppVersion`, determines whether a host can run the new contract.
+**Ave 0.15.0 is the first protocol-5 release.** It requires host-validated loopback
+OAuth state and a declared worker control mode (stdio control v1 or output-only).
+Protocol 4 was never released; hosts move from 3 straight to 5. Publish updated
+protocol-5 replacements for protocol-3 extensions with the coordinated 0.15.0
+release. Protocol negotiation determines whether a host can run the contract,
+independently of `minAppVersion`.
 
 Official extensions live in the official marketplace monorepo
 `ken-jo/agent-marketplace` under `plugins/<name>/source/` (hello-world,
@@ -118,10 +117,9 @@ whose `entryPath` is the resolved absolute path of `command`. Its rules:
   `NODE_`, `PYTHON`, `UV_`, `PIP_`, `HTTPS_PROXY` and `SSL_CERT_`. Set such a
   variable from your own launcher inside the process instead. The program
   starts from the host's minimal environment, not the user's.
-- For released hosts, use `requires.hostProtocol: "3"` and a minimum app
-  version of `0.14.0`. The separate process-entry floor remains `0.13.0`.
-  Protocol 5 is unreleased and negotiates availability independently of a
-  numeric app floor.
+- For Ave 0.15.0, use `requires.hostProtocol: "5"` and
+  `requires.minAppVersion: "0.15.0"`. The separate process-entry floor remains
+  `0.13.0`; protocol negotiation is independent of that numeric app floor.
 
 Three refusals apply to a `process` extension, each with what to do:
 
@@ -135,7 +133,7 @@ Three refusals apply to a `process` extension, each with what to do:
   `ave-package.json` does not publish the extension the way a `process` entry
   requires. Its `platforms` must be listed without `win32`, its `artifact` must
   pin a `release` or an `archive` by `sha256` and declare no `tree`, and its
-  `minAppVersion` must be `0.14.0` or newer for released protocol 3 (above the
+  `minAppVersion` must be `0.15.0` or newer for protocol 5 (above the
   `process` floor of `0.13.0`). The message names the field; the
   marketplace's owner fixes it.
 - `process-entry-unconfined`: the program runs only inside the OS Tool Sandbox
@@ -176,12 +174,10 @@ does not maintain a generated TypeScript protocol client.
 
 ### Loopback OAuth with PKCE
 
-**Upcoming protocol 5; not available in released protocol-3 hosts.** The example
-below targets the unreleased contract. Keep published packages on protocol 3
-until the app release ships. For private testing, use a separate unpublished
-package with `requires.hostProtocol: "5"` and retain the minimum app version
-needed by its existing features; do not infer a new minimum from the candidate
-schema path. Protocol-3 packages cannot activate in this protocol-5-only build.
+**Available in Ave 0.15.0 with protocol 5.** The example below targets that
+contract. Declare `requires.hostProtocol: "5"` and
+`requires.minAppVersion: "0.15.0"`. Protocol-3 packages cannot activate in Ave
+0.15.0; older protocol-3 hosts cannot activate protocol-5 packages.
 
 The host owns the redirect listener and its state. `authRedirect.open()` returns
 `{ handle, redirectUri, state }`; send that state unchanged, alongside a fresh
@@ -220,9 +216,9 @@ settling the waiter. The first valid callback consumes the state; replays fail.
 rejects on timeout or close. An error response must be handled before any code
 exchange. A later `wait()` reads the same validated result, never a new callback.
 
-When protocol 5 ships, re-vendor the public types, manifest schema, protocol
-schema and worker control schema from that app release tag. Set the manifest and package descriptor
-to `hostProtocol: "5"` and the actual first supporting app version, and update each
+When the `v0.15.0` tag exists, re-vendor the public types, manifest schema,
+protocol schema and worker control schema from it. Set the manifest and package
+descriptor to `hostProtocol: "5"` and `minAppVersion: "0.15.0"`, and update each
 OAuth library adapter to use the host's state. If a library owns state, use its
 supported state option, or exchange the host-validated code directly with the
 same attempt's PKCE verifier; never disable host validation.
@@ -231,7 +227,7 @@ an updated package; released protocol-3 hosts continue to require the old contra
 
 ### Delegated workers
 
-**Upcoming protocol 5; not available in released protocol-3 hosts.** A worker
+**Available in Ave 0.15.0 with protocol 5.** A worker
 started with `api.spawnWorker` talks to its plugin over its own stdin, stdout and
 stderr; there is no socket, port or `udsArgName`. Declare one `control` mode:
 
@@ -284,9 +280,8 @@ contract, app-only long polling, clipboard permissions and staged messages.
 The retired `embedded-module` and `embedded-page` kinds are rejected with an
 explicit manifest error. There is no module mount function or `avePlugin`
 view bridge and no compatibility path for previously released plugin UIs.
-Republish the plugin against the new protocol-5 contract before loading it.
-Protocol 5 changes in place while unreleased; do not infer an app release from
-the protocol number.
+Republish the plugin against the protocol-5 contract for Ave 0.15.0 before
+loading it, with `requires.minAppVersion: "0.15.0"`.
 
 ### Panel Width
 

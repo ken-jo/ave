@@ -5,26 +5,23 @@ record are generic stand-ins for plugins that are no longer part of this project
 
 The code packages described here are called extensions in user-facing copy.
 
-**Released contract.** Released hosts serve protocol `"3"`, introduced by
-0.14.0. Published plugins for that released host declare
+**Released contract.** Ave 0.15.0 is the first release to serve protocol `"5"`
+and serves it exclusively (`HOST_PROTOCOL_VERSION`,
+`src/plugins/isolation/host-api-wire.ts`). Extensions targeting it declare
+`requires.hostProtocol: "5"` and `requires.minAppVersion: "0.15.0"`.
+Ave 0.14.0 serves protocol `"3"`; extensions for that host retain
 `requires.hostProtocol: "3"` and `requires.minAppVersion: "0.14.0"`.
-
-**Unreleased contract.** This development build serves protocol `"5"` only
-(`HOST_PROTOCOL_VERSION`, `src/plugins/isolation/host-api-wire.ts`).
 Protocol 5 keeps protocol 4's host-generated state on plugin loopback OAuth
 callbacks (§3.3.1) and replaces delegated-worker control sockets with worker stdio
-control v1 (§3.3.2). Protocol 4 was never released. The owner decision of
-2026-11-02 holds the next app release for this change, so released hosts move
-from protocol 3 straight to protocol 5 in one cutover; protocol 4 is not served
-beside it. The app release version is selected by release preparation,
-independently of the protocol major. No first published app version is recorded
-for protocol 5; `requires.hostProtocol` negotiation determines support, and
-released protocol-3 hosts reject protocol-5 packages before activation regardless
-of `minAppVersion`. Its schema and wire fixtures live under
+control v1 (§3.3.2). Protocol 4 was never released. Following the owner decision
+of 2026-11-02, Ave 0.15.0 moves from protocol 3 straight to protocol 5 in one
+cutover; protocol 4 is not served beside it. `requires.hostProtocol` negotiation
+determines support, and older protocol-3 hosts reject protocol-5 packages before
+activation regardless of `minAppVersion`. Its schema and wire fixtures live under
 `schemas/plugin-host-protocol/5/` and
 `src/plugins/isolation/__tests__/fixtures/host-protocol/5/`.
 
-The unreleased protocol 5 surface also removes unused lifecycle, discovery,
+The protocol 5 surface also removes unused lifecycle, discovery,
 logging, proposal and approval members. Diagnostics use stderr; host shutdown
 closes stdin before the existing termination escalation. Extension events reach
 only the emitting extension’s UI, and manifest cross-extension event grants are
@@ -42,8 +39,8 @@ frozen at its original public URL. Neither v0.14.1 nor v0.14.2 existed as a
 release tag.
 The v5 JSON schema, generator, and parity test remain. Section 6.1 describes the
 current schema policy; the older publication plans below are historical.
-Publish protocol-5 plugin replacements with the coordinated app release and
-its actual minimum app version.
+Publish protocol-5 plugin replacements with the coordinated 0.15.0 app release
+and `requires.minAppVersion: "0.15.0"`.
 
 Status: design, decided; the wire step ([§9.4](../history/plugin-hostapi-protocol-migration.md#94-the-wire-step-implementation-plan)) is implemented on `main`; the Lease step
 ([§9.1](../history/plugin-hostapi-protocol-migration.md#91-steps), §4.1, [§9.5](../history/plugin-hostapi-protocol-migration.md#95-the-lease-release-target-alerts-integration-and-publication-sequence-decisions-8-and-19)) was amended on 2026-09-27 with decisions 8-26 (§13), in two rounds
@@ -772,10 +769,10 @@ This changes an existing method's required behavior: a plugin-generated state
 that protocol 3 accepted now fails. Under §3.2 and §3.3 this was **protocol 4**,
 not an optional capability on 3; protocol 5 (§3.3.2) carries it unchanged. A capability list names methods and does not
 select different state semantics for the same method. No state-free branch or
-compatibility shim is served. An unreleased protocol has no numeric app-version
-floor; negotiation of `requires.hostProtocol` is authoritative. Candidate schema
-version segments do not imply released support. Release preparation records the
-first published app version when the protocol ships.
+compatibility shim is served. Ave 0.15.0 is the first protocol-5 release;
+extensions declare `requires.minAppVersion: "0.15.0"` alongside
+`requires.hostProtocol: "5"`. Protocol negotiation remains authoritative; a
+schema version segment alone does not establish host support.
 The 2026-10-27 owner decision authorizes preparing this boundary now; it does not declare replacement plugin packages published.
 The replacement testing and publication gates in [§9.3](../history/plugin-hostapi-protocol-migration.md#93-removal-condition-for-the-in-process-path) and [§9.5](../history/plugin-hostapi-protocol-migration.md#95-the-lease-release-target-alerts-integration-and-publication-sequence-decisions-8-and-19) still apply before
 an app release is published: test candidates against the boundary commit, vendor
@@ -1700,7 +1697,7 @@ signed contract bundle publisher. The released v0.14.0 protocol-3 schema stays
 frozen at its original public URL, preserving its `$id`. The unreleased
 `5/v0.14.2` copy is removed. Future schema generation has no web publication
 promise. The v0.14.0 contract bundle stays on object storage. Plugin tooling
-must switch to copying public types from an Ave git ref before protocol 5 ships.
+must switch to copying public types from the `v0.15.0` git ref once the tag exists.
 Historical publication plans later in this document are superseded by this decision.
 
 ### 6.2 Typed clients
