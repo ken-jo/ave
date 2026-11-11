@@ -99,6 +99,7 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [selection, setSelection] = useState<AreaSelection | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cancelSelection = useCallback(() => setSelection(null), []);
 
@@ -138,13 +139,15 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
   return <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy}
+        <Button ref={triggerRef} type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy}
           data-testid="browser-capture-menu"><Camera className="h-3.5 w-3.5" aria-hidden="true" />{t("browserCapture.capture")}</Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" onCloseAutoFocus={(event) => {
-        // The mounted dialog owns initial focus; a delayed menu close must preserve later focus choices.
-        if (!overlayRef.current) return;
-        event.preventDefault();
+        // A canceled dialog can leave focus on another control before this deferred callback runs.
+        const activeElement = document.activeElement;
+        if (overlayRef.current || (activeElement && activeElement !== document.body && activeElement !== triggerRef.current)) {
+          event.preventDefault();
+        }
       }}>
         <DropdownMenuItem data-testid="browser-capture-viewport" onSelect={() => void startCapture("viewport")}>{t("browserCapture.viewport")}</DropdownMenuItem>
         <DropdownMenuItem data-testid="browser-capture-full-page" onSelect={() => void startCapture("full-page")}>{t("browserCapture.fullPage")}</DropdownMenuItem>
