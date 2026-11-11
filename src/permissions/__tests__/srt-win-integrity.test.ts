@@ -7,14 +7,10 @@ import { basename, dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
+import { hasNativeSrtWinBuildReceipt, readSrtWinTestInput, selectSrtWinTestReceipts } from "../../__tests__/support/srt-win-build-receipts.js";
 import BUILD_RECEIPTS from "../generated/srt-win-build-receipts.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, getSrtWinArchitecture, prepareSrtWinExecutable, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
-
-vi.mock("../generated/srt-win-build-receipts.js", async () => {
-  const { upstreamSrtWinReceiptFixtures } = await import("../../__tests__/support/srt-win-build-receipts.js");
-  return { default: upstreamSrtWinReceiptFixtures() };
-});
 
 const require = createRequire(import.meta.url);
 const { assertSrtWinVendor: assertVendor, readUpstreamSrtWinInput } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
@@ -26,7 +22,7 @@ const vendor = mkdtempSync(join(tmpdir(), "ave-srt-vendor-fixture-"));
 for (const arch of ["x64", "arm64"]) {
   const directory = join(vendor, "srt-win", arch);
   mkdirSync(directory, { recursive: true });
-  writeFileSync(join(directory, "srt-win.exe"), readUpstreamSrtWinInput(originalVendor, arch));
+  writeFileSync(join(directory, "srt-win.exe"), readSrtWinTestInput(arch));
   writeFileSync(join(directory, "build-receipt.json"), JSON.stringify(BUILD_RECEIPTS[arch]));
 }
 const assertSrtWinVendor = (path: string, arches?: string[]): void => assertVendor(path, arches, BUILD_RECEIPTS);
@@ -45,6 +41,40 @@ afterEach(() => {
 });
 
 describe("Windows helper integrity", () => {
+  it("selects generated receipts before adjacent receipts and verifies their bytes", () => {
+    expect(selectSrtWinTestReceipts(BUILD_RECEIPTS, vendor)).toEqual(BUILD_RECEIPTS);
+    expect(() => selectSrtWinTestReceipts({
+      ...BUILD_RECEIPTS, x64: { ...BUILD_RECEIPTS.x64, binarySha256: "0".repeat(64) },
+    }, vendor)).toThrow("Test helper receipt does not match installed bytes: x64");
+  });
+
+  it("uses validated adjacent receipts when generated entries are absent", () => {
+    expect(selectSrtWinTestReceipts({}, vendor)).toEqual(BUILD_RECEIPTS);
+    const path = join(vendor, "srt-win", "x64", "build-receipt.json");
+    const receipt = readFileSync(path);
+    try {
+      writeFileSync(path, JSON.stringify({ ...BUILD_RECEIPTS.x64, nativePatchSha256: "0".repeat(64) }));
+      expect(() => selectSrtWinTestReceipts({}, vendor)).toThrow("srt-win-integrity-mismatch");
+      expect(selectSrtWinTestReceipts(BUILD_RECEIPTS, vendor)).toEqual(BUILD_RECEIPTS);
+    } finally { writeFileSync(path, receipt); }
+  });
+
+  it("pairs missing receipts with upstream bytes and refuses changed bytes", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-srt-upstream-test-"));
+    directories.push(directory);
+    for (const arch of ["x64", "arm64"]) {
+      const target = join(directory, "srt-win", arch);
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(target, "srt-win.exe"), readUpstreamSrtWinInput(originalVendor, arch));
+    }
+    const selected = selectSrtWinTestReceipts({}, directory);
+    for (const arch of ["x64", "arm64"]) {
+      expect(selected[arch].binarySha256).toBe(require("../srt-win-pins.json").sha256[arch]);
+    }
+    writeFileSync(join(directory, "srt-win", "x64", "srt-win.exe"), "changed");
+    expect(() => selectSrtWinTestReceipts({}, directory)).toThrow("Test helper receipt does not match installed bytes: x64");
+  });
+
   it("refuses upstream bytes when the compiled receipt map is empty", async () => {
     vi.resetModules();
     vi.doMock("../generated/srt-win-build-receipts.js", () => ({ default: {} }));
@@ -544,7 +574,7 @@ describe("Windows helper integrity", () => {
     }
   });
 
-  it.skipIf(process.platform !== "win32")("executes the private snapshot when the checked source is swapped before spawn", () => {
+  it.skipIf(process.platform !== "win32" || !hasNativeSrtWinBuildReceipt())("executes the private snapshot when the checked source is swapped before spawn", () => {
     const { source, bytes } = fixture();
     const executable = prepareSrtWinExecutable(source);
     directories.push(dirname(dirname(executable)));
