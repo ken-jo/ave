@@ -7,9 +7,10 @@ import { installMockAveApi, makeMockAveNamespace, mockJudgeGet, type MockAveApi 
 import { deferred } from "../../../../../test/renderer/helpers.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { llmModelListCacheKey, type LlmModelListCache, type LlmModelListResult } from "../../../../shared/llm-model-list.js";
-import type {
-  MarketplaceInstalledProviderPreset,
-  MarketplaceProviderModelDiscoveryPolicy,
+import {
+  marketplaceProviderPresetSecretKey,
+  type MarketplaceInstalledProviderPreset,
+  type MarketplaceProviderModelDiscoveryPolicy,
 } from "../../../../shared/marketplace-package-assets.js";
 import type { SubscriptionProviderView } from "../SubscriptionProvidersSection.js";
 import { subscriptionRuntimeDescriptor } from "../../../../shared/subscription-runtime.js";
@@ -26,6 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SettingsService } from "../../../../data/settings-store.js";
 import { cleanupTmpDir } from "../../../../__tests__/support/tmp-dir-teardown.js";
+import type { SystemSubagentModelRef } from "../../../../shared/system-subagent-model.js";
 
 const useSubscriptionProvidersMock = vi.hoisted(() => vi.fn());
 
@@ -47,6 +49,19 @@ const NO_PRESETS: readonly MarketplaceInstalledProviderPreset[] = [];
 
 /** The endpoint the custom provider is configured with. */
 const CUSTOM_ENDPOINT = "http://localhost:30000/v1";
+
+const SUMMARY_MODEL = {
+  vendor: "claude", model: "summary-model",
+  route: { vendor: "claude", baseUrl: "https://summary.example.test/v1", credentialScope: "llm.apiKey.claude" },
+} satisfies SystemSubagentModelRef;
+
+const PRESET_SUMMARY_MODEL = {
+  vendor: "openai-compatible", model: "summary-model",
+  route: {
+    vendor: "openai-compatible", baseUrl: "https://preset.example.test/v1", credentialScope: marketplaceProviderPresetSecretKey("preset-summary"),
+    marketplaceProviderPresetId: "preset-summary",
+  },
+} satisfies SystemSubagentModelRef;
 
 function preset(
   providerId: string,
@@ -189,7 +204,7 @@ function storedKeysFor(...providerIds: string[]) {
 }
 
 interface Profile {
-  compactionModelSelection?: { vendor: "openai" | "claude"; model: string } | null;
+  compactionModelSelection?: SystemSubagentModelRef | null;
   compactionModel?: string;
   compactionModelRoute?: string;
   provider?: string;
@@ -564,14 +579,14 @@ describe("LlmTab provider cards", () => {
     fireEvent.click(option);
   }
 
-  function offerCompactionModels() {
+  function offerCompactionModels(models: SystemSubagentModelRef[] = [SUMMARY_MODEL]) {
     const readSnapshot = mockJudgeGet();
     window.ave.permission.judgeGet = vi.fn(async () => {
       const snapshot = await readSnapshot();
       return {
         ...snapshot,
         settings: { ...snapshot.settings, model: null },
-        modelOptions: [{ vendor: "claude" as const, model: "summary-model" }],
+        modelOptions: models,
       };
     });
   }
@@ -606,7 +621,7 @@ describe("LlmTab provider cards", () => {
     expect(screen.getByTestId("compaction-model")).toHaveTextContent(t("compactionSettings.currentModel"));
     await pickCompactionModel("summary-model");
     fireEvent.click(screen.getByTestId("compaction-model-save"));
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: { vendor: "claude", model: "summary-model" } } }));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: SUMMARY_MODEL } }));
     await pickCompactionModel(t("compactionSettings.currentModel"));
     fireEvent.click(screen.getByTestId("compaction-model-save"));
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: null } }));
@@ -618,6 +633,76 @@ describe("LlmTab provider cards", () => {
     expect(screen.getByTestId("compaction-model")).toHaveTextContent("missing-summary");
     expect(await screen.findByTestId("compaction-model-unavailable")).toHaveTextContent(t("compactionSettings.selectedUnavailable"));
     expect(screen.getByTestId("compaction-model-save")).toBeDisabled();
+  });
+
+  it("keeps the saved compaction destination when only the chat provider changes", async () => {
+    const { api } = profileApi({ provider: "openai-compatible", compactionModelSelection: PRESET_SUMMARY_MODEL });
+    offerCompactionModels([PRESET_SUMMARY_MODEL]);
+    await renderTab(api);
+    expect(await screen.findByTestId("compaction-model-destination")).toHaveTextContent("https://preset.example.test/v1");
+    await act(async () => { await api.updateSettings({ llm: { provider: "openai" } }); });
+    expect(screen.getByTestId("compaction-model")).toHaveTextContent("summary-model");
+    expect(screen.getByTestId("compaction-model-destination")).toHaveTextContent("https://preset.example.test/v1");
+    expect(screen.queryByTestId("compaction-model-unavailable")).toBeNull();
+    expect(screen.getByTestId("compaction-model-save")).toBeDisabled();
+  });
+
+  it("saves the exact destination when separate routes offer the same model", async () => {
+    const alternate = {
+      ...PRESET_SUMMARY_MODEL,
+      route: {
+        ...PRESET_SUMMARY_MODEL.route, baseUrl: "https://alternate.example.test/v1",
+        marketplaceProviderPresetId: "alternate-summary", credentialScope: marketplaceProviderPresetSecretKey("alternate-summary"),
+      },
+    };
+    const { api } = profileApi({});
+    offerCompactionModels([PRESET_SUMMARY_MODEL, alternate]);
+    await renderTab(api);
+    await pickCompactionModel("alternate.example.test");
+    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: alternate } }));
+    expect(screen.getByTestId("compaction-model-destination")).toHaveTextContent("https://alternate.example.test/v1");
+    expect(screen.queryByText(alternate.route.credentialScope)).toBeNull();
+  });
+
+  it("keeps a saved endpoint unavailable when another endpoint offers the same model", async () => {
+    const changed = { ...PRESET_SUMMARY_MODEL, route: { ...PRESET_SUMMARY_MODEL.route, baseUrl: "https://changed.example.test/v1" } };
+    const { api } = profileApi({ compactionModelSelection: PRESET_SUMMARY_MODEL });
+    offerCompactionModels([changed]);
+    await renderTab(api);
+    expect(await screen.findByTestId("compaction-model-unavailable")).toBeVisible();
+    expect(screen.getByTestId("compaction-model-destination")).toHaveTextContent("https://preset.example.test/v1");
+    await pickCompactionModel("changed.example.test");
+    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: changed } }));
+    await waitFor(() => expect(screen.queryByTestId("compaction-model-unavailable")).toBeNull());
+  });
+
+  it("shows the endpoint without URL credentials or query parameters", async () => {
+    const selected = {
+      ...SUMMARY_MODEL,
+      route: { ...SUMMARY_MODEL.route, baseUrl: "https://account:private-password@summary.example.test/v1?token=private-token#fragment" },
+    };
+    const { api } = profileApi({ compactionModelSelection: selected });
+    offerCompactionModels([selected]);
+    await renderTab(api);
+    expect(await screen.findByTestId("compaction-model-destination")).toHaveTextContent("https://summary.example.test/v1");
+    expect(document.body.textContent).not.toContain("private-password");
+    expect(document.body.textContent).not.toContain("private-token");
+  });
+
+  it("shows the configured project and location for a project-authenticated route", async () => {
+    const selected = {
+      vendor: "vertex-ai" as const, model: "summary-model",
+      route: {
+        vendor: "vertex-ai" as const, baseUrl: "", credentialScope: "llm.apiKey.vertex-ai",
+        vertexProject: "summary-project", vertexLocation: "us-central1",
+      },
+    };
+    const { api } = profileApi({ compactionModelSelection: selected });
+    offerCompactionModels([selected]);
+    await renderTab(api);
+    expect(await screen.findByTestId("compaction-model-destination")).toHaveTextContent("summary-project / us-central1");
   });
 
   it("keeps an unresolved legacy compaction choice visible until replaced", async () => {

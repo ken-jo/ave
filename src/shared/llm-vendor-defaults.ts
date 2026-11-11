@@ -45,6 +45,10 @@ export const OPENAI_COMPATIBLE_PRESET_VENDOR_IDS = [
 export type OpenAICompatiblePresetVendor =
   (typeof OPENAI_COMPATIBLE_PRESET_VENDOR_IDS)[number];
 
+export function llmVendorSecretKey(vendor: LLMVendor): string {
+  return `llm.apiKey.${vendor}`;
+}
+
 export interface OpenAICompatibleVendorPreset {
   label: string;
   apiKeyPlaceholder: string;

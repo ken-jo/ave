@@ -943,13 +943,16 @@ Important rules:
   silent truncation.
 - Manual compaction accepts focus instructions. Compaction runs as a hidden
   one-shot system subagent instance. An unset model follows the originating
-  conversation's model and authentication route at invocation. An explicit vendor
-  and model selects its own connected route through the shared system subagent
-  resolver used by permission review, independently of the chat runtime. Summary
+  conversation's model and authentication route at invocation. An explicit model
+  stores its vendor, preset, endpoint, credential namespace and project routing.
+  The shared system subagent resolver used by permission review validates that
+  saved identity independently of the chat runtime. A changed or disconnected
+  destination remains unavailable until the user chooses it again. Summary
   input respects that route's context budget. An unavailable selection fails
   compaction visibly and retains the original history. Legacy route-bound
-  choices migrate only when their configured vendor and route can be identified
-  exactly. Unresolved choices remain visible as unavailable in settings until replaced.
+  choices retain their historical endpoint and credential identity during
+  migration. Selections without sufficient destination identity remain visible
+  as unavailable in settings until replaced.
 - System subagents perform internal summarization, permission review and decision
   work as provider instances. They have no user-facing session, session-history
   entry, subagent panel row or transcript agent card. Compaction commits its result

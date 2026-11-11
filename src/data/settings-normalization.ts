@@ -521,7 +521,9 @@ export function mergeLlmPatch(
     : "compactionModel" in partial ? undefined : base.compactionModelSelection;
   if (selection !== undefined) {
     if (isCompactionModelSelection(selection)) {
-      normalized.compactionModelSelection = selection ? { vendor: selection.vendor, model: selection.model.trim() } : null;
+      normalized.compactionModelSelection = selection ? {
+        vendor: selection.vendor, model: selection.model.trim(), ...(selection.route ? { route: { ...selection.route } } : {}),
+      } : null;
       normalized.compactionModel = "";
       normalized.compactionModelRoute = "";
     } else {

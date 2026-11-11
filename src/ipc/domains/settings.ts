@@ -66,6 +66,7 @@ import { errorMessage } from "../../shared/error-message.js";
 import { isOwnerAwayAutoSkipMinutes } from "../../shared/owner-away-permission.js";
 import { readJudgeStoredModels, type StoredJudgeModelRef } from "../../permissions/permission-settings-store.js";
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
+import { systemSubagentCurrentRouteIdentity } from "../../engine/system-subagent-route.js";
 import { isProcessingDisplayLevel } from "../../shared/processing-display-level.js";
 import { mainWindowForContents, getPrimaryMainWindow } from "../../main/app-state.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
@@ -155,24 +156,26 @@ function activeLlmIdentity(
   const block = llm.vendors?.[provider];
   const stored = readJudgeStoredModels();
   const reviewerModel = stored.reviewer;
-  const reviewerVendor = reviewerModel?.vendor;
-  const reviewerBlock = reviewerVendor && reviewerVendor !== provider ? llm.vendors?.[reviewerVendor] : undefined;
   const catalog = judgeModelCatalogFrom({ ...llm, installedProviderPresets: installedProviderPresets ?? [] });
-  const offered = (ref: StoredJudgeModelRef) => catalog.optionsFor(ref.vendor).includes(ref.model);
+  const offered = (ref: StoredJudgeModelRef) => catalog.optionsFor(ref.vendor, ref.route).includes(ref.model);
+  const routeState = (ref: StoredJudgeModelRef) => {
+    const preset = installedProviderPresets?.find((entry) => entry.providerId === ref.route?.marketplaceProviderPresetId);
+    return {
+      saved: ref.route ?? null,
+      current: systemSubagentCurrentRouteIdentity(llm, installedProviderPresets, ref.vendor, ref.route?.marketplaceProviderPresetId),
+      configuredModel: ref.vendor !== provider ? llm.vendors?.[ref.vendor]?.model ?? null : null,
+      presetPolicy: preset ? {
+        requiresApiKey: preset.requiresApiKey,
+        capabilities: preset.capabilities ?? null,
+        trust: preset.trust ?? null,
+      } : null,
+    };
+  };
   return JSON.stringify({
-    ...(reviewerModel ? { reviewerModelAvailable: offered(reviewerModel) } : {}),
+    ...(reviewerModel ? { reviewerModelAvailable: offered(reviewerModel), reviewerRoute: routeState(reviewerModel) } : {}),
     ...(stored.stages.some((stage) => stage !== null) ? {
       stageModelsAvailable: stored.stages.map((stage) => stage === null ? null : offered(stage)),
-    } : {}),
-    ...(reviewerVendor && reviewerVendor !== provider ? {
-      reviewerRoute: {
-        vendor: reviewerVendor,
-        model: reviewerBlock?.model ?? null,
-        baseUrl: reviewerBlock?.baseUrl ?? null,
-        wire: reviewerBlock?.wire ?? null,
-        vertexProject: reviewerBlock?.vertexProject ?? null,
-        vertexLocation: reviewerBlock?.vertexLocation ?? null,
-      },
+      stageModelRoutes: stored.stages.map((stage) => stage === null ? null : routeState(stage)),
     } : {}),
     provider,
     retiredProvider: llm.retiredProvider ?? null,

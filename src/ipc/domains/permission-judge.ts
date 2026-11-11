@@ -5,10 +5,11 @@ import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shar
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
 import { getLlmVendorSettings, llmRouteModel } from "../../shared/llm-vendor-defaults.js";
 import type { PermissionJudgeReadResult, PermissionJudgeSnapshot, PermissionJudgeWriteResult } from "../../shared/permission-judge-settings.js";
-import { JudgeSettingsError } from "../../permissions/judge/judge-settings.js";
+import { JudgeSettingsError, normalizeJudgeSettings, type JudgeModelCatalog, type JudgeModelRef } from "../../permissions/judge/judge-settings.js";
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
-import { readJudgeSettings, setJudgeSettingsPersist, type JudgeSettingsWriteReceipt } from "../../permissions/permission-settings-store.js";
+import { readJudgeSettings, readJudgeStoredModels, setJudgeSettingsPersist, type JudgeSettingsWriteReceipt } from "../../permissions/permission-settings-store.js";
 import { systemSubagentModelOptions } from "../../engine/system-subagent-route.js";
+import { sameSystemSubagentModel } from "../../shared/system-subagent-model.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import type { AppSettings } from "../../data/settings-store.js";
@@ -30,8 +31,35 @@ async function snapshot(deps: IpcDeps): Promise<PermissionJudgeSnapshot> {
     storedChainRejected: chainRejected === true,
     chatModel: activeChatModelLabel(llm),
     reviewerModelUnavailable: modelRejected === true || (selected !== null &&
-      !modelOptions.some((option) => option.vendor === selected.vendor && option.model === selected.model)),
+      !modelOptions.some((option) => sameSystemSubagentModel(option, selected))),
   };
+}
+
+function validateChangedModelRoutes(
+  patch: unknown,
+  catalog: JudgeModelCatalog,
+  modelOptions: JudgeModelRef[],
+): void {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return;
+  const update = patch as Record<string, unknown>;
+  const previous = readJudgeStoredModels();
+  const validateModel = (raw: unknown, existing: Array<JudgeModelRef | null>) => {
+    if (raw === undefined || raw === null) return;
+    const parsed = normalizeJudgeSettings({ model: raw }, catalog);
+    const model = parsed.settings.model ?? parsed.rejectedModel;
+    if (model && existing.some((old) => old && sameSystemSubagentModel(old, model))) return;
+    if (!model?.route || !modelOptions.some((option) => sameSystemSubagentModel(option, model))) {
+      throw new JudgeSettingsError("Selected system model route is unavailable");
+    }
+  };
+  if (Object.hasOwn(update, "model")) validateModel(update.model, [previous.reviewer]);
+  if (Array.isArray(update.chain)) {
+    for (const stage of update.chain) {
+      if (stage && typeof stage === "object") {
+        validateModel((stage as Record<string, unknown>).model, previous.stages);
+      }
+    }
+  }
 }
 
 /** The route an unset reviewer model follows: the active chat model. */
@@ -73,6 +101,8 @@ export function registerPermissionJudgeHandlers(deps: IpcDeps): void {
       });
       let receipt: JudgeSettingsWriteReceipt;
       try {
+        const modelOptions = await systemSubagentModelOptions(deps.settingsService);
+        validateChangedModelRoutes(settings, catalog, modelOptions);
         receipt = await setJudgeSettingsPersist(settings, undefined, catalog);
       } catch (error) {
         if (error instanceof JudgeSettingsError) return { ok: false, error: "invalid-judge-settings" };

@@ -330,7 +330,7 @@ export function settingsFilePath(userDataPath: string): string {
 
 /** Read lazy vendor blocks through getLlmVendorSettings; provider defaults govern sampling and stale controls drop on write. */
 export interface LLMSettings {
-  /** A hidden summarizer uses this provider/model. Null follows the current chat model. */
+  /** Saved summarizer destination and model. Null follows the current chat model. */
   compactionModelSelection?: JudgeModelRef | null;
   /** Legacy model id retained only when its stored route cannot be migrated. */
   compactionModel?: string;
@@ -990,7 +990,8 @@ export class SettingsService {
       : [];
     if (partial.llm) {
       if (Object.hasOwn(partial.llm, "compactionModelSelection")
-        && !isCompactionModelSelection(partial.llm.compactionModelSelection)) {
+        && (!isCompactionModelSelection(partial.llm.compactionModelSelection)
+          || (partial.llm.compactionModelSelection !== null && !partial.llm.compactionModelSelection?.route))) {
         throw new Error("Invalid compaction model selection");
       }
       const nextLlm = mergeLlmPatch(

@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempDirFile } from "../../__tests__/test-helpers.js";
 import { judgeModelCatalogFrom } from "../judge/judge-model-catalog.js";
-import { readJudgeSettings, readPermissionSettings, setJudgeSettingsPersist } from "../permission-settings-store.js";
+import { readJudgeSettings, readJudgeStoredModels, readPermissionSettings, setJudgeSettingsPersist } from "../permission-settings-store.js";
 
 const fixture = useTempDirFile("ave-judge-settings-", "settings.json");
 const readFailure = vi.hoisted(() => ({ path: undefined as string | undefined }));
@@ -70,6 +70,26 @@ describe("judge settings persistence", () => {
     expect(picked.settings.model).toEqual({ vendor: "openai-compatible", model: "team/reviewer" });
     await setJudgeSettingsPersist({ model: null }, path, catalog);
     expect(JSON.parse(readFileSync(path, "utf8")).permissions.judge.model).toBeNull();
+  });
+
+  it("preserves route identity in stored reviewer and stage references", async () => {
+    const { path } = fixture();
+    const model = {
+      vendor: "openai-compatible" as const,
+      model: "team/reviewer",
+      route: {
+        vendor: "openai-compatible" as const,
+        baseUrl: "https://models.example.test/v1",
+        credentialScope: "llm.apiKey.openai-compatible",
+        wire: "openai-chat" as const,
+      },
+    };
+    const catalog = { optionsFor: () => [model.model] };
+    await setJudgeSettingsPersist({ model, chain: [{ provider: "builtin-llm", model }] }, path, catalog);
+    expect(readJudgeStoredModels(path)).toEqual({ reviewer: model, stages: [model] });
+    expect(readJudgeSettings(path, catalog).settings).toMatchObject({ model, chain: [{ model }] });
+    await setJudgeSettingsPersist({ mode: "active" }, path, catalog);
+    expect(JSON.parse(readFileSync(path, "utf8")).permissions.judge).toMatchObject({ model, chain: [{ model }] });
   });
 
   it("keeps an unavailable reviewer model through a save that does not replace it", async () => {

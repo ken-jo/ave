@@ -2,14 +2,13 @@
 import { sendToWindow } from "../../ipc/safe-send.js";
 import { broadcastPermissionConfigChangedFromHost } from "../permission-config-broadcast.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
-import { secretKeyFor } from "../../engine/llm/provider-factory.js";
 import { createSystemSubagentProviderPlan } from "../../engine/system-subagent-route.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
+import type { SystemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
 import {
   getLlmVendorSettings,
   llmRouteModel,
 } from "../../shared/llm-vendor-defaults.js";
-import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { wireReviewerAgent } from "./reviewer-wiring.js";
 import { readJudgeSettings, readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { formatJudgeModel, type JudgeModelRef } from "../../permissions/judge/judge-settings.js";
@@ -49,15 +48,15 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
 
   // Bind the classifier, verdict cache, and denial history; streaming providers are adapted to one-shot review calls.
   // Secrets decrypt asynchronously while reviewer wiring is synchronous, so a plan names the credential to pre-read.
-  const reviewerProviderPlan = (vendor: string, selectedModel?: string) => createSystemSubagentProviderPlan({
+  const reviewerProviderPlan = (vendor: string, selectedModel?: string, route?: SystemSubagentRouteIdentity) => createSystemSubagentProviderPlan({
     settingsService, llmFetch, networkFetch: singleHopNetworkFetch, subscriptionProviderFactory,
-  }, vendor, selectedModel);
+  }, vendor, selectedModel, route);
   const readReviewerSecrets = async (
-    targets: ReadonlyArray<{ vendor: string; model?: string }>,
+    targets: ReadonlyArray<{ vendor: string; model?: string; route?: SystemSubagentRouteIdentity }>,
   ): Promise<Map<string, string | null>> => {
     const secrets = new Map<string, string | null>();
-    for (const { vendor, model } of targets) {
-      const secretKey = reviewerProviderPlan(vendor, model)?.secretKey;
+    for (const { vendor, model, route } of targets) {
+      const secretKey = reviewerProviderPlan(vendor, model, route)?.secretKey;
       if (secretKey !== undefined && !secrets.has(secretKey)) {
         secrets.set(secretKey, await settingsService.getSecret(secretKey));
       }
@@ -68,8 +67,9 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     secrets: ReadonlyMap<string, string | null>,
     vendor: string,
     selectedModel?: string,
+    route?: SystemSubagentRouteIdentity,
   ): LLMProvider | null => {
-    const plan = reviewerProviderPlan(vendor, selectedModel);
+    const plan = reviewerProviderPlan(vendor, selectedModel, route);
     if (!plan) return null;
     if (plan.secretKey === undefined) return plan.build(null);
     // A credential not pre-read means settings changed mid-rewire; stay unconfigured until the queued rewire runs.
@@ -116,19 +116,17 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     };
   };
   const selectedModelCacheScope = (model: JudgeModelRef): Record<string, unknown> => {
-    const llm = settingsService.get("llm");
-    const block = getLlmVendorSettings(llm.vendors, model.vendor);
-    const preset = model.vendor === "openai-compatible" && llm.provider === model.vendor && llm.marketplaceProviderPresetId
+    const route = model.route;
+    const preset = route?.marketplaceProviderPresetId
       ? (settingsService.get("marketplace").installedProviderPresets ?? [])
-        .find((entry) => entry.providerId === llm.marketplaceProviderPresetId)
+        .find((entry) => entry.providerId === route.marketplaceProviderPresetId)
       : undefined;
     return {
       provider: model.vendor,
       model: model.model,
-      baseUrl: preset?.baseUrl ?? block.baseUrl ?? null,
-      credentialScope: preset
-        ? marketplaceProviderPresetSecretKey(preset.providerId)
-        : secretKeyFor(model.vendor),
+      ...route,
+      baseUrl: route?.baseUrl ?? null,
+      credentialScope: route?.credentialScope ?? null,
       ...(preset ? {
         marketplaceProviderPresetId: preset.providerId,
         providerCapabilities: preset.capabilities ?? null,
@@ -136,8 +134,8 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
         requiresApiKey: preset.requiresApiKey,
       } : {}),
       ...(model.vendor === "vertex-ai" ? {
-        vertexProject: block.vertexProject || process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || null,
-        vertexLocation: block.vertexLocation || "us-central1",
+        vertexProject: route?.vertexProject ?? null,
+        vertexLocation: route?.vertexLocation ?? null,
       } : {}),
     };
   };
@@ -162,14 +160,16 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
     const reviewerModelSelection = judgeSettings.modelRejected === true
       ? { label: "configured in Settings", available: false }
       : selectedReviewerModel
-        ? { label: formatJudgeModel(selectedReviewerModel), available: true }
+        ? { label: formatJudgeModel(selectedReviewerModel), available: Boolean(reviewerProviderPlan(
+          selectedReviewerModel.vendor, selectedReviewerModel.model, selectedReviewerModel.route,
+        )) }
         : undefined;
     const secrets = await readReviewerSecrets([
       selectedReviewerModel
-        ? { vendor: selectedReviewerModel.vendor, model: selectedReviewerModel.model }
+        ? selectedReviewerModel
         : { vendor: readActiveReviewerLlm().provider },
       ...judgeSettings.settings.chain.flatMap((stage) => stage.model
-        ? [{ vendor: stage.model.vendor, model: stage.model.model }]
+        ? [stage.model]
         : []),
     ]);
     const reviewerResult = wireReviewerAgent({
@@ -179,7 +179,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
         ? () => selectedReviewerIdentity(selectedReviewerModel)
         : readActiveReviewerLlm,
       streamProviderFor: selectedReviewerModel
-        ? (vendor) => reviewerStreamProviderFor(secrets, vendor, selectedReviewerModel.model)
+        ? (vendor) => reviewerStreamProviderFor(secrets, vendor, selectedReviewerModel.model, selectedReviewerModel.route)
         : (vendor) => reviewerStreamProviderFor(secrets, vendor),
       ...(reviewerModelSelection ? { selectedModel: reviewerModelSelection } : {}),
       onRecentlyDeniedChanged: (summary) => {
@@ -198,7 +198,7 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
       settings: judgeSettings.settings,
       ...(judgeSettings.chainRejected === true ? { chainRejected: true } : {}),
       ...(judgeSettings.unreadable === true ? { settingsUnreadable: true } : {}),
-      providerForModel: (model) => reviewerStreamProviderFor(secrets, model.vendor, model.model),
+      providerForModel: (model) => reviewerStreamProviderFor(secrets, model.vendor, model.model, model.route),
       selectedModelCacheScope,
       networkFetch: singleHopNetworkFetch,
       audit: bootAuditLogger,

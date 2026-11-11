@@ -1,3 +1,5 @@
+import { strict as assert } from "node:assert";
+import { systemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { ToolRegistry } from "../../tools/registry.js";
@@ -17,7 +19,9 @@ function makeLoop(selected = false) {
   llm.provider = "openai";
   llm.vendors.openai = { ...getLlmVendorSettings(llm.vendors, "openai"), model: "chat-model", baseUrl: "https://chat.example.test/v1" };
   llm.vendors.claude = { ...getLlmVendorSettings(llm.vendors, "claude"), model: "summary-model", baseUrl: "https://summary.example.test/v1" };
-  llm.compactionModelSelection = selected ? { vendor: "claude", model: "summary-model" } : null;
+  const summaryRoute = systemSubagentRouteIdentity(llm, "claude");
+  assert(summaryRoute);
+  llm.compactionModelSelection = selected ? { vendor: "claude", model: "summary-model", route: summaryRoute } : null;
   const requests: Array<{ vendor: string; params: StreamTurnParams }> = [];
   const providerFor = (vendor: string, subscriptionRuntime?: LLMProvider["subscriptionRuntime"]): LLMProvider => ({
     vendor: vendor as LLMProvider["vendor"],
@@ -96,7 +100,8 @@ describe("hidden compaction instance routing", () => {
 
   it("fails clearly when the selected model disappears", async () => {
     const { loop, llm, requests } = makeLoop(true);
-    llm.compactionModelSelection = { vendor: "claude", model: "missing-summary-model" };
+    assert(llm.compactionModelSelection);
+    llm.compactionModelSelection = { ...llm.compactionModelSelection, model: "missing-summary-model" };
     await expect(loop.generateCompactionText("history")).rejects.toThrow("System subagent model is unavailable: claude/missing-summary-model");
     expect(requests).toEqual([]);
   });

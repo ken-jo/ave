@@ -29,6 +29,7 @@ import { SecretDocumentStore } from "../secret-document-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
 import { compactionModelSelection } from "../../shared/compaction-model.js";
+import { systemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
 import { normalizeMarketplace } from "../settings-normalization.js";
 import {
   LOG_RETENTION_DAYS,
@@ -208,19 +209,22 @@ describe("SettingsService upstream proxy (main-owned)", () => {
 });
 
 describe("SettingsService compaction model selection", () => {
-  it("writes a deterministic legacy route migration back to disk", async () => {
+  it("writes the historical endpoint identity back to disk during legacy migration", async () => {
     const userDataPath = mkdtempSync(join(tmpdir(), "settings-compaction-migrate-"));
     try {
       const route = JSON.stringify(["api", "ollama\nhttp://localhost:11434\n", "", ""]);
       const path = join(userDataPath, "ave-settings.json");
       writeFileSync(path, currentSettingsJson({ llm: {
-        provider: "ollama", vendors: { ollama: { model: "chat-model", baseUrl: "http://localhost:11434" } },
+        provider: "ollama", vendors: { ollama: { model: "chat-model", baseUrl: "https://replacement.example.test/v1" } },
         compactionModel: "summary-model", compactionModelRoute: route,
       } }));
       const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-      expect(compactionModelSelection(service.get("llm"))).toEqual({ model: { vendor: "ollama", model: "summary-model" } });
+      const selected = { vendor: "ollama", model: "summary-model", route: {
+        vendor: "ollama", baseUrl: "http://localhost:11434", credentialScope: "llm.apiKey.ollama",
+      } };
+      expect(compactionModelSelection(service.get("llm"))).toEqual({ model: selected });
       const stored = JSON.parse(readFileSync(path, "utf8"));
-      expect(stored.llm.compactionModelSelection).toEqual({ vendor: "ollama", model: "summary-model" });
+      expect(stored.llm.compactionModelSelection).toEqual(selected);
       expect(stored.llm.compactionModel).toBe("");
       expect(stored.llm.compactionModelRoute).toBe("");
     } finally { await cleanupTmpDir(userDataPath); }
@@ -230,14 +234,45 @@ describe("SettingsService compaction model selection", () => {
     const userDataPath = mkdtempSync(join(tmpdir(), "settings-compaction-model-"));
     try {
       const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-      const selected = { vendor: "openai-compatible" as const, model: "summary-model" };
+      const presets = [
+        { providerId: "summary-a", label: "Summary A", baseUrl: "https://summary-a.example.test/v1", defaultModel: "summary", modelOptions: ["summary"], requiresApiKey: true },
+        { providerId: "summary-b", label: "Summary B", baseUrl: "https://summary-b.example.test/v1", defaultModel: "summary", modelOptions: ["summary"], requiresApiKey: true },
+      ];
+      await service.patch({ marketplace: { installedProviderPresets: presets }, llm: {
+        provider: "openai-compatible", marketplaceProviderPresetId: "summary-a",
+      } });
+      const route = systemSubagentRouteIdentity(service.get("llm"), "openai-compatible", presets, "summary-a");
+      if (!route) throw new Error("Expected configured route");
+      const selected = { vendor: "openai-compatible" as const, model: "summary-model", route };
       await service.patch({ llm: { compactionModelSelection: selected } });
-      await service.patch({ llm: { activeChatRuntime: { kind: "subscription", provider: "claude-code" } } });
+      await service.patch({ llm: { marketplaceProviderPresetId: "summary-b" } });
+      expect(compactionModelSelection(service.get("llm"))).toEqual({ model: selected });
+      await service.patch({ llm: { provider: "ollama", activeChatRuntime: { kind: "subscription", provider: "claude-code" } } });
       expect(compactionModelSelection(service.get("llm"))).toEqual({ model: selected });
       const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
       expect(compactionModelSelection(reloaded.get("llm"))).toEqual({ model: selected });
+      expect(reloaded.get("llm").compactionModelSelection?.route).toMatchObject({
+        baseUrl: "https://summary-a.example.test/v1", marketplaceProviderPresetId: "summary-a",
+        credentialScope: marketplaceProviderPresetSecretKey("summary-a"),
+      });
+      await expect(service.patch({ llm: { compactionModelSelection: { vendor: "openai-compatible", model: "summary-model" } } }))
+        .rejects.toThrow("Invalid compaction model selection");
+      expect(compactionModelSelection(service.get("llm"))).toEqual({ model: selected });
       await service.patch({ llm: { compactionModelSelection: null } });
       expect(compactionModelSelection(service.get("llm"))).toEqual({ model: null });
+    } finally { await cleanupTmpDir(userDataPath); }
+  });
+
+  it("loads an unbound legacy model without assigning the current chat destination", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "settings-compaction-unbound-"));
+    try {
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ llm: {
+        provider: "ollama", vendors: { ollama: { model: "chat-model", baseUrl: "http://localhost:11434" } },
+        compactionModelSelection: { vendor: "ollama", model: "summary-model" },
+      } }));
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(compactionModelSelection(service.get("llm"))).toEqual({ model: { vendor: "ollama", model: "summary-model" } });
+      expect(service.get("llm").compactionModelSelection?.route).toBeUndefined();
     } finally { await cleanupTmpDir(userDataPath); }
   });
 });

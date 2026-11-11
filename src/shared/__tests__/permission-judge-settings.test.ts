@@ -28,4 +28,26 @@ describe("judge settings renderer encoding", () => {
       .toMatchObject({ model: "claude/picked" });
     expect(settings.chain[1]?.model).toEqual({ vendor: "openai-compatible", model: "team/model" });
   });
+
+  it("retains the selected route identity for reviewer and stage models", () => {
+    const model = {
+      vendor: "openai-compatible" as const,
+      model: "team/model",
+      route: {
+        vendor: "openai-compatible" as const,
+        marketplaceProviderPresetId: "team-route",
+        baseUrl: "https://models.example.test/v1",
+        credentialScope: "marketplace.provider.team-route.apiKey",
+      },
+    };
+    const settings: PermissionJudgeSettings = {
+      ...structuredClone(DEFAULT_JUDGE_SETTINGS),
+      model,
+      chain: [{ provider: "builtin-llm", id: "review", model }],
+    };
+    expect(serializePermissionJudgeSettings(settings)).toMatchObject({
+      model,
+      chain: [{ model }],
+    });
+  });
 });

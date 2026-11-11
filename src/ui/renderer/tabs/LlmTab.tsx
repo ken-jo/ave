@@ -80,6 +80,7 @@ import { PricingOverridesSection } from "./PricingOverridesSection.js";
 import { ModelCatalogRefreshSection } from "./ModelCatalogRefreshSection.js";
 import { useTranslation, type I18nContextValue } from "../../../i18n/react.js";
 import { compactionModelSelection } from "../../../shared/compaction-model.js";
+import { sameSystemSubagentModel, systemSubagentModelKey } from "../../../shared/system-subagent-model.js";
 import type { PermissionJudgeSettings, PermissionJudgeSnapshot } from "../../../shared/permission-judge-settings.js";
 import {
   SUBSCRIPTION_RUNTIME_API_COUNTERPART,
@@ -918,6 +919,18 @@ type JudgeModel = NonNullable<PermissionJudgeSettings["model"]>;
 /** An unset system model follows the active chat model. */
 const UNSET_MODEL_VALUE = "unset::";
 
+function systemModelDestination(model: JudgeModel | undefined): string | undefined {
+  const route = model?.route;
+  if (!route) return undefined;
+  if (!route.baseUrl) return [route.vertexProject, route.vertexLocation].filter(Boolean).join(" / ") || undefined;
+  try {
+    const endpoint = new URL(route.baseUrl);
+    return `${endpoint.origin}${endpoint.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Shared system model choices come from connected routes. Stored unavailable choices remain visible. */
 export function SystemSubagentModelSelect({ id, snapshot, value, unsetLabel, placeholder, unavailableLabel, unavailableSelection, disabled, descriptionId, onChange }: {
   id: string;
@@ -934,17 +947,21 @@ export function SystemSubagentModelSelect({ id, snapshot, value, unsetLabel, pla
   const offered = snapshot?.modelOptions ?? [];
   const toOption = (model: JudgeModel, unlisted = false): UnifiedModelOption => {
     const label = getVendorOption(model.vendor).label;
+    const presetId = model.route?.marketplaceProviderPresetId;
+    const providerLabel = presetId ? `${label} · ${presetId}` : label;
+    const endpoint = systemModelDestination(model);
     return {
-      value: unifiedValue(apiProviderId(model.vendor), model.model),
-      providerId: apiProviderId(model.vendor),
-      providerLabel: label,
-      vendorLabel: label,
+      value: encodeURIComponent(systemSubagentModelKey(model)),
+      providerId: presetId ? `${apiProviderId(model.vendor)}:${presetId}` : apiProviderId(model.vendor),
+      providerLabel,
+      vendorLabel: providerLabel,
       modelId: model.model,
-      ...(unlisted ? { unlisted: true, facts: unavailableLabel } : {}),
+      ...(endpoint ? { facts: endpoint } : {}),
+      ...(unlisted ? { unlisted: true, facts: [endpoint, unavailableLabel].filter(Boolean).join(" · ") } : {}),
     };
   };
   const options = offered.map((model) => toOption(model));
-  if (value && !offered.some((model) => model.vendor === value.vendor && model.model === value.model)) {
+  if (value && !offered.some((model) => sameSystemSubagentModel(model, value))) {
     options.unshift(toOption(value, true));
   }
   if (unavailableSelection) options.unshift({
@@ -956,25 +973,27 @@ export function SystemSubagentModelSelect({ id, snapshot, value, unsetLabel, pla
     unlisted: true,
     facts: unavailableLabel,
   });
+  const selectedDestination = systemModelDestination(value);
   return (
-    <UnifiedModelSelect
-      disabled={disabled}
-      descriptionId={descriptionId}
-      triggerId={id}
-      testId={id}
-      options={options}
-      value={unavailableSelection ? "unavailable::" : value ? unifiedValue(apiProviderId(value.vendor), value.model) : UNSET_MODEL_VALUE}
-      leadingOption={{ value: UNSET_MODEL_VALUE, label: unsetLabel }}
-      placeholder={placeholder}
-      popupClassName={SELECT_POPUP_LAYOUT}
-      onValueChange={(picked) => {
-        if (picked === UNSET_MODEL_VALUE) return onChange(undefined);
-        const parsed = parseUnifiedValue(picked);
-        const model = parsed && offered.find((option) =>
-          apiProviderId(option.vendor) === parsed.providerId && option.model === parsed.modelId);
-        if (model) onChange({ vendor: model.vendor, model: model.model });
-      }}
-    />
+    <div className="space-y-1">
+      <UnifiedModelSelect
+        disabled={disabled}
+        descriptionId={descriptionId}
+        triggerId={id}
+        testId={id}
+        options={options}
+        value={unavailableSelection ? "unavailable::" : value ? encodeURIComponent(systemSubagentModelKey(value)) : UNSET_MODEL_VALUE}
+        leadingOption={{ value: UNSET_MODEL_VALUE, label: unsetLabel }}
+        placeholder={placeholder}
+        popupClassName={SELECT_POPUP_LAYOUT}
+        onValueChange={(picked) => {
+          if (picked === UNSET_MODEL_VALUE) return onChange(undefined);
+          const model = offered.find((option) => encodeURIComponent(systemSubagentModelKey(option)) === picked);
+          if (model) onChange(model);
+        }}
+      />
+      {selectedDestination && <p data-testid={`${id}-destination`} className="break-all text-xs text-muted-foreground">{selectedDestination}</p>}
+    </div>
   );
 }
 
@@ -3205,7 +3224,7 @@ export function LlmTab(props: LlmTabProps) {
             {t("compactionSettings.description")}
           </p>
           {(compactionUnavailableSelection || (compactionModel && compactionSnapshot && !compactionSnapshot.modelOptions.some(
-            (option) => option.vendor === compactionModel.vendor && option.model === compactionModel.model,
+            (option) => sameSystemSubagentModel(option, compactionModel),
           ))) && <p role="alert" data-testid="compaction-model-unavailable" className="text-xs text-destructive">{t("compactionSettings.selectedUnavailable")}</p>}
           {compactionOptionsFailed && <p role="alert" className="text-xs text-destructive">{t("permissionJudge.readFailed")}</p>}
           <Button

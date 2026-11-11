@@ -1,3 +1,5 @@
+import { strict as assert } from "node:assert";
+import { systemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { MemoryReviewerService } from "../../memory/memory-reviewer-service.js";
@@ -37,7 +39,9 @@ function fixture(
     ...getLlmVendorSettings(llm.vendors, "claude"),
     baseUrl: "https://fallback.example.test/v1",
   };
-  llm.compactionModelSelection = compactionModel ? { vendor: "openai", model: compactionModel } : null;
+  const summaryRoute = systemSubagentRouteIdentity(llm, "openai");
+  assert(summaryRoute);
+  llm.compactionModelSelection = compactionModel ? { vendor: "openai", model: compactionModel, route: summaryRoute } : null;
   llm.modelListCache["openai\nhttps://primary.example.test/v1\n"] = {
     vendor: "openai", baseUrl: "https://primary.example.test/v1", endpoint: "https://primary.example.test/v1/models",
     fetchedAt: new Date().toISOString(), models: ["chat-model", "summary-model"],

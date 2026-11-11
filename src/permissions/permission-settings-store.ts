@@ -9,7 +9,8 @@ import { parseConfigurationObject } from "../shared/configuration-document.js";
 import { readAveHomeConfigurationFile, readAveHomeRestrictionSource, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { UUID_PATTERN } from "../shared/uuid.js";
-import { isLLMVendor, type LLMVendor } from "../shared/llm-vendor-defaults.js";
+import { isLLMVendor } from "../shared/llm-vendor-defaults.js";
+import { isSystemSubagentModelRef, type SystemSubagentModelRef } from "../shared/system-subagent-model.js";
 import {
   JudgeSettingsError,
   normalizeJudgeSettings,
@@ -486,9 +487,10 @@ export function readJudgeSettings(
   }
 }
 
-export interface StoredJudgeModelRef { vendor: LLMVendor; model: string }
+export type StoredJudgeModelRef = SystemSubagentModelRef;
 
 function storedJudgeModelRef(raw: unknown): StoredJudgeModelRef | null {
+  if (isSystemSubagentModelRef(raw)) return raw;
   if (typeof raw !== "string") return null;
   const slash = raw.indexOf("/");
   const vendor = raw.slice(0, slash);

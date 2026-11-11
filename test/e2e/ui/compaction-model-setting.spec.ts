@@ -12,7 +12,7 @@ test('compaction selects a connected route and retains unavailable selections', 
     const snapshot = await window.ave.permission.judgeGet();
     if (!snapshot.ok) throw new Error('Could not read connected system model routes');
     const model = snapshot.modelOptions[0];
-    if (!model) throw new Error('No connected system model route');
+    if (!model?.route) throw new Error('No connected system model route');
     return model;
   });
   await picker.click();
@@ -23,10 +23,10 @@ test('compaction selects a connected route and retains unavailable selections', 
     return (await api.getSettings()).llm.compactionModelSelection;
   })).toEqual(selected);
 
-  await settings.evaluate(async () => {
+  await settings.evaluate(async (selection) => {
     const api = (window as unknown as { aveApi: AveApi }).aveApi;
-    await api.updateSettings({ llm: { compactionModelSelection: { vendor: 'claude', model: 'unavailable-summary-model' } } });
-  });
+    await api.updateSettings({ llm: { compactionModelSelection: { ...selection, model: 'unavailable-summary-model' } } });
+  }, selected);
   await expect(picker).toContainText('unavailable-summary-model');
   await expect(settings.getByTestId('compaction-model-unavailable')).toBeVisible();
   await settings.screenshot({ path: testInfo.outputPath('compaction-model-unavailable.png') });

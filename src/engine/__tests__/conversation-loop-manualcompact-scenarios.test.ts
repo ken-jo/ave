@@ -1,3 +1,5 @@
+import { strict as assert } from "node:assert";
+import { systemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage } from "../llm/types.js";
@@ -35,7 +37,9 @@ describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
     const llm = structuredClone(DEFAULT_SETTINGS.llm);
     llm.provider = "claude";
     llm.vendors.claude = { ...getLlmVendorSettings(llm.vendors, "claude"), model: "claude-sonnet-4-5" };
-    llm.compactionModelSelection = { vendor: "claude", model: "summary-small" };
+    const summaryRoute = systemSubagentRouteIdentity(llm, "claude");
+    assert(summaryRoute);
+    llm.compactionModelSelection = { vendor: "claude", model: "summary-small", route: summaryRoute };
     const address = llmRouteCatalogAddress(llm);
     llm.modelListCache[llmModelListCacheKey(address.vendor, address.baseUrl, address.credentialScope)] = {
       vendor: "claude", ...(address.baseUrl ? { baseUrl: address.baseUrl } : {}), endpoint: "https://models.example.test",
