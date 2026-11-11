@@ -334,6 +334,9 @@ jobs:
       - name: Remove root-level Bun binary shims before Vitest
         working-directory: ave
         run: rm -f ajv pino
+      - name: Run script tests
+        run: bun run test:scripts
+        working-directory: ave
       - name: Run the suite (coverage gate on nightly and dispatch)
         # The suite resolves entirely from ave/src. Sibling slugs appear
         # only as fixtures or mocked installer inputs.
@@ -742,6 +745,10 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or !$status.user.exists -or !$status.cred_present) {
             throw 'Native sandbox provisioning did not produce a usable account'
           }
+      - name: Run script tests
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        run: bun run test:scripts
       - name: Run Windows appearance regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
