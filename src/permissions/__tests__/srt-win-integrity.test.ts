@@ -11,16 +11,22 @@ import BUILD_RECEIPTS from "../generated/srt-win-build-receipts.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { assertSrtWinDigest, assertSrtWinSpawnIntegrity, getSrtWinArchitecture, prepareSrtWinExecutable, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
 
+vi.mock("../generated/srt-win-build-receipts.js", async () => {
+  const { upstreamSrtWinReceiptFixtures } = await import("../../__tests__/support/srt-win-build-receipts.js");
+  return { default: upstreamSrtWinReceiptFixtures() };
+});
+
 const require = createRequire(import.meta.url);
-const { assertSrtWinVendor: assertVendor } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
+const { assertSrtWinVendor: assertVendor, readUpstreamSrtWinInput } = require("../../../scripts/lib/srt-win-integrity.cjs") as {
   assertSrtWinVendor: (path: string, arches: string[] | undefined, receipts: typeof BUILD_RECEIPTS) => void;
+  readUpstreamSrtWinInput: (path: string, arch: string) => Buffer;
 };
 const originalVendor = join(dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json")), "vendor");
 const vendor = mkdtempSync(join(tmpdir(), "ave-srt-vendor-fixture-"));
 for (const arch of ["x64", "arm64"]) {
   const directory = join(vendor, "srt-win", arch);
   mkdirSync(directory, { recursive: true });
-  copyFileSync(join(originalVendor, "srt-win", arch, "srt-win.exe"), join(directory, "srt-win.exe"));
+  writeFileSync(join(directory, "srt-win.exe"), readUpstreamSrtWinInput(originalVendor, arch));
   writeFileSync(join(directory, "build-receipt.json"), JSON.stringify(BUILD_RECEIPTS[arch]));
 }
 const assertSrtWinVendor = (path: string, arches?: string[]): void => assertVendor(path, arches, BUILD_RECEIPTS);
@@ -45,7 +51,7 @@ describe("Windows helper integrity", () => {
     try {
       const { assertSrtWinDigest: assertUnbuiltDigest } = await import("../srt-win-integrity.js");
       for (const arch of ["x64", "arm64"]) {
-        expect(() => assertUnbuiltDigest(readFileSync(join(originalVendor, "srt-win", arch, "srt-win.exe")), arch))
+        expect(() => assertUnbuiltDigest(readUpstreamSrtWinInput(originalVendor, arch), arch))
           .toThrow(expect.objectContaining({ code: "srt-win-integrity-mismatch" }));
       }
     } finally {
