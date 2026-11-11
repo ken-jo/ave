@@ -1739,7 +1739,7 @@ describe("installer smoke and packaging discipline", () => {
       "bun run typecheck",
       "check:typecheck-tests",
     ]);
-    expect(matched(jobRunCommands(shards as string), VERIFIES_THE_CODE)).toEqual(["bun run test:ci"]);
+    expect(matched(jobRunCommands(shards as string), VERIFIES_THE_CODE)).toEqual(["bun run test:ci", "bun run test:scripts"]);
     expect(packageScripts["test:ci"]).toBe("node scripts/run-ci-suite.mjs");
     expect(readRepoFile("scripts/run-ci-suite.mjs")).toContain('join("scripts", "run-test-coverage-gate.mjs")');
   });
