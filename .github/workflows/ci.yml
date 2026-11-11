@@ -964,6 +964,8 @@ jobs:
           src/permissions/__tests__/macos-sandbox-wrap.test.ts
           src/permissions/__tests__/asrt-protected-write-roots.test.ts
           src/permissions/__tests__/asrt-exit-release.test.ts
+          test/scripts/fetch-uv-cache.test.ts
+          test/scripts/setup-bun-cache.test.ts
           test/scripts/asrt-patched-symbols.test.ts
           src/permissions/__tests__/asrt-windows-support.test.ts
           src/permissions/__tests__/asrt-background-initialization.test.ts

@@ -72,7 +72,7 @@ case "${1:-}" in
       echo "$ASSET.zip SHA-256 $actual does not match the pinned $PINNED" >&2
       exit 1
     fi
-    expected="$(awk -v name="$ASSET.zip" '$2 == name { print $1 }' "$work/SHASUMS256.txt")"
+    expected="$(awk -v name="$ASSET.zip" '$2 == name || $2 == "*" name { print $1 }' "$work/SHASUMS256.txt")"
     if ! [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || [ "$actual" != "$expected" ]; then
       echo "$ASSET.zip SHA-256 $actual does not match the release's $expected" >&2
       exit 1

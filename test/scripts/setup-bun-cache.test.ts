@@ -69,7 +69,7 @@ describe("runtime archive cache", () => {
     }
     const requests = exitCode === 0 ? 2 : 1;
     const digest = createHash("sha256").update(`Authorization: Bearer ${token}\n`).digest("hex");
-    expect(readFileSync(join(root, "curl-stdin"), "utf8")).toBe(`${digest}  -\n`.repeat(requests));
+    expect(readFileSync(join(root, "curl-stdin"), "utf8")).toMatch(new RegExp(`^(?:${digest} [ *]-\n){${requests}}$`));
     const args = readFileSync(join(root, "curl-args"), "utf8").trim().split("\n");
     expect(args.filter((arg) => arg === "--header")).toHaveLength(requests);
     expect(args.filter((arg) => arg === "@-")).toHaveLength(requests);
@@ -185,6 +185,14 @@ describe("runtime archive cache", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("does not match the pinned");
   });
+  it.each([" ", "*"])("accepts a release checksum with marker %s", (marker) => {
+    expect(run("verify").status).toBe(0);
+    writeFileSync(join(root, "bun-download", "SHASUMS256.txt"), `${pinned} ${marker}${asset}.zip\n`);
+    env.CACHE_HIT = "true";
+    const result = run("verify");
+    expect(result.status, result.stderr).toBe(0);
+  });
+
   it.each(["wrong", "missing", "duplicate"])("rejects %s release checksums on a hit", (kind) => {
     expect(run("verify").status).toBe(0);
     const entry = `${pinned}  ${asset}.zip\n`;
@@ -227,10 +235,13 @@ describe("POSIX install step", () => {
     const result = spawnSync("bash", ["-c", installRun], { env, encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
     const bin = join(root, "bun-home", ".bun", "bin");
-    expect(readFileSync(join(root, "github-path"), "utf8")).toBe(`${bin}\n`);
+    expect(resolve(readFileSync(join(root, "github-path"), "utf8").trim())).toBe(bin);
     for (const tool of ["bun", "bunx"]) {
       expect(readFileSync(join(bin, tool), "utf8")).toBe(fixtureBun);
-      expect(statSync(join(bin, tool)).mode & 0o777).toBe(0o755);
+      if (process.platform !== "win32") expect(statSync(join(bin, tool)).mode & 0o777).toBe(0o755);
+      const executed = spawnSync("bash", [join(bin, tool)], { env, encoding: "utf8" });
+      expect(executed.status, executed.stderr).toBe(0);
+      expect(executed.stdout).toBe("fixture-bun\n");
     }
     expect(existsSync(join(root, "fetches"))).toBe(hit !== "true");
   });

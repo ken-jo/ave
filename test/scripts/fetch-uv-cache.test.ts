@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getUvTargetByDir } from "../../scripts/uv-targets.mjs";
@@ -27,7 +28,7 @@ beforeEach(() => {
   writeFileSync(join(root, "source", "uv"), content);
   archive = join(root, "fixture.tar.gz");
   fetchLog = join(root, "fetches");
-  execFileSync("tar", ["-czf", archive, "-C", join(root, "source"), "uv"]);
+  execFileSync("tar", ["-czf", "fixture.tar.gz", "-C", "source", "uv"], { cwd: root });
   const digest = createHash("sha256").update(readFileSync(archive)).digest("hex");
   const targets = join(root, "scripts", "uv-targets.mjs");
   // Pin the independent fixture archive in this isolated copy, retaining real verification and extraction.
@@ -48,7 +49,7 @@ globalThis.fetch = async () => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-const fetchRuntime = () => spawnSync(process.execPath, ["--import", loader, join(root, "scripts", "fetch-uv.mjs"), "--target", "linux-x64"], { env, encoding: "utf8" });
+const fetchRuntime = () => spawnSync(process.execPath, ["--import", pathToFileURL(loader).href, join(root, "scripts", "fetch-uv.mjs"), "--target", "linux-x64"], { env, encoding: "utf8" });
 const binary = () => join(root, "resources", "uv", "linux-x64", "uv");
 
 describe("verified runtime archive reuse", () => {
