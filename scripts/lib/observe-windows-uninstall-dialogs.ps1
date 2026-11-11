@@ -8,6 +8,5 @@ if ($env:AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE -ne '1' -or $env:GITHUB_AC
 }
 $request = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json
 Add-Type -Path (Join-Path $PSScriptRoot 'windows-uninstall-dialog-observer.cs')
-$result = [UninstallDialogObserver]::Run($request.executable, $request.ownerSid, $request.reply,
-  [string[]]$request.sentinelPaths, [string[]]$request.sentinelContents, $request.finishedPath, [long]$request.deadlineUnixMs)
+$result = [UninstallDialogObserver]::Run($request.executable, $request.ownerSid, $request.finishedPath, [long]$request.deadlineUnixMs)
 $result | ConvertTo-Json -Depth 10 -Compress | Set-Content -LiteralPath $ReportPath -Encoding UTF8
