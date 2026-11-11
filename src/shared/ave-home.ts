@@ -44,6 +44,8 @@ export class AveHomeConfigurationUntrustedError extends Error {
   }
 }
 
+class ConfigurationMarkerContentError extends Error {}
+
 function configurationKey(home: string): string {
   const root = resolve(home);
   return process.platform === "win32" ? root.toLowerCase() : root;
@@ -286,7 +288,14 @@ export function verifyAveHomeConfiguration(home: string, recoverInvalidMarker: b
       throw error;
     }
     if (process.platform === "win32") {
-      if (recoverInvalidMarker !== true) return inspectWindowsConfiguration(home, recoverInvalidMarker === "boundary");
+      try {
+        return inspectWindowsConfiguration(home, recoverInvalidMarker === "boundary");
+      } catch (error) {
+        if (recoverInvalidMarker !== true || !(error instanceof ConfigurationMarkerContentError)) throw error;
+      }
+      // Only invalid marker contents require the mutating recovery helper.
+      // Missing and valid markers already have a native read-only verdict.
+      // Configuration loaders and mutations pin their boundaries again before use.
       const script = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';
         $request=ConvertFrom-Json $env:AVE_DACL_REQUEST;
         Add-Type -TypeDefinition @'
@@ -369,9 +378,10 @@ function inspectWindowsConfiguration(home: string, boundaryOnly: boolean): boole
   const marker = readWindowsDacls([resolve(config, AVE_HOME_CONFIGURATION_MARKER)], { content: true })[0]!;
   if (!admitWindowsReparse(marker!, "evidence")) throw new Error("Configuration marker is not a regular file");
   if (marker!.exists === false) return false;
-  if (marker!.directory || typeof marker!.contentHex !== "string"
+  if (marker!.directory) throw new Error("Configuration marker content is invalid");
+  if (typeof marker!.contentHex !== "string"
     || Buffer.from(marker!.contentHex, "hex").toString("utf8") !== AVE_HOME_CONFIGURATION_MARKER_CONTENT) {
-    throw new Error("Configuration marker content is invalid");
+    throw new ConfigurationMarkerContentError("Configuration marker content is invalid");
   }
   return true;
 }
