@@ -235,7 +235,7 @@ describe("POSIX install step", () => {
     const result = spawnSync("bash", ["-c", installRun], { env, encoding: "utf8" });
     expect(result.status, result.stderr).toBe(0);
     const bin = join(root, "bun-home", ".bun", "bin");
-    expect(resolve(readFileSync(join(root, "github-path"), "utf8").trim())).toBe(bin);
+    expect(readFileSync(join(root, "github-path"), "utf8").replace(/\\/g, "/")).toBe(`${bin.replace(/\\/g, "/")}\n`);
     for (const tool of ["bun", "bunx"]) {
       expect(readFileSync(join(bin, tool), "utf8")).toBe(fixtureBun);
       if (process.platform !== "win32") expect(statSync(join(bin, tool)).mode & 0o777).toBe(0o755);
