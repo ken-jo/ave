@@ -47,9 +47,27 @@ describe("machine uninstaller removal", () => {
     expect(removal).toContain("FindNext $R0 $R1");
     expect(removal).toMatch(/ave_remove_files_close_empty:\s+FindClose \$R0\s+ave_remove_files_empty:/);
     expect(removal).toMatch(/RMDir "\$INSTDIR"\s+IfFileExists "\$INSTDIR\\\*\.\*" 0 ave_remove_files_done\s+StrCpy \$R2 "\$INSTDIR"/);
-    expect(removal).toMatch(/\$\{if\} \$\{Silent\}\s+Goto ave_remove_files_failed/);
+    expect(removal).toMatch(/\$\{if\} \$aveSilentUninstallRequested == "1"\s+Goto ave_remove_files_failed/);
     expect(removal).toMatch(/ave_remove_files_failed:\s+SetErrorLevel 1/);
     expect(removal).toContain('Abort "Ave uninstall failed: app files remain at $R2"');
     expect(removal).toContain("IDYES ave_retry_elevated IDNO ave_remove_files_failed");
+  });
+
+  it("uses original command-line intent and requires affirmative visible consent for data deletion", () => {
+    const template = readTemplate("uninstaller.nsh");
+    expect(template).toMatch(/MessageBox MB_OKCANCEL\|MB_TOPMOST\|MB_SETFOREGROUND/);
+    expect(template.indexOf('MessageBox MB_OKCANCEL')).toBeLessThan(template.lastIndexOf('SetSilent silent'));
+    expect(initialization).toMatch(/\$\{StdUtils\.ParameterCnt\} \$R0/);
+    expect(initialization).toMatch(/\$\{StdUtils\.ParameterStr\} \$R2 \$R1/);
+    expect(initialization).toContain('StrCmpS $R2 "/S" ave_uninstall_arguments_silent');
+    expect(initialization).toContain('StrCmpS $R3 "_?=" ave_uninstall_arguments_done');
+    expect(initialization).not.toMatch(/\$\{Silent\}/);
+    const consent = hook.slice(hook.indexOf('; KEEP_APP_DATA is evaluated'), hook.indexOf('; A perMachine uninstaller normally'));
+    expect(consent).toMatch(/\$aveSilentUninstallRequested == "1"\s+Goto ave_delete_userdata/);
+    expect(consent).toMatch(/SetSilent normal\s+MessageBox MB_YESNOCANCEL\|MB_ICONQUESTION\|MB_DEFBUTTON2\|MB_TOPMOST\|MB_SETFOREGROUND/);
+    expect(consent).toMatch(/\/SD IDNO IDYES ave_userdata_consent_given\s+SetSilent silent\s+Goto ave_skip_userdata/);
+    expect(consent).toMatch(/ave_userdata_consent_given:\s+SetSilent silent\s+ave_delete_userdata:/);
+    expect(consent).not.toMatch(/\$\{Silent\}/);
+    expect(consent).not.toContain("/SD IDYES");
   });
 });

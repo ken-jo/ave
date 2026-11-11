@@ -26,3 +26,11 @@ index 11a859b..11d373d 100644
      const configWithProgress = { ...config, downloadOptions };
      try {
          let filePath;
+diff --git a/templates/nsis/uninstaller.nsh b/templates/nsis/uninstaller.nsh
+--- a/templates/nsis/uninstaller.nsh
++++ b/templates/nsis/uninstaller.nsh
+@@ -21,3 +21,3 @@ Function un.onInit
+     !ifdef ONE_CLICK
+-      MessageBox MB_OKCANCEL "$(areYouSureToUninstall)" IDOK +2
++      MessageBox MB_OKCANCEL|MB_TOPMOST|MB_SETFOREGROUND "$(areYouSureToUninstall)" IDOK +2
+       Quit

@@ -8,11 +8,12 @@
 ;   - `%APPDATA%\${APP_*}\`    — Electron userData/cache의 현재/과거 이름
 ;   - `%LOCALAPPDATA%\${APP_*}\` — Chromium GPU cache 등 Electron 잔여
 ;
-; 사용자 confirmation:
-;   - GUI 설치 제거 → MessageBox 로 "Yes/No" 묻기. Default 는 Yes.
-;   - Silent uninstall (`/S` flag) → /SD IDYES 라서 자동 Yes (스크립트/MDM 운영 정합).
-;   - Silent uninstall without /KEEP_APP_DATA deletes user data by design
-;     (owner directive 2026-05-20); /KEEP_APP_DATA explicitly preserves it.
+; User-data consent follows the original command line, because the one-click
+; template also enables silent mode after its GUI uninstall confirmation.
+;   - Without /S, show a foreground data prompt with No as the default.
+;     Only explicit Yes deletes; No, Cancel and closing the prompt keep data.
+;   - Explicit /S without /KEEP_APP_DATA deletes user data by design
+;     (owner directive 2026-05-20). /KEEP_APP_DATA and updates preserve data.
 ;
 ; 제거 사유 / 보존 사유:
 ;   - 사용자 명시 directive (2026-05-20): "삭제 코드를 추가했는데 Roaming 폴더 / 홈
@@ -567,9 +568,20 @@ FunctionEnd
     Goto ave_skip_userdata
   ${endif}
 
-  MessageBox MB_YESNO|MB_ICONQUESTION \
-    "Ave 사용자 데이터를 함께 삭제하시겠습니까?$\n$\n[예]: 모든 채팅 기록, 설정, 메모리, plugin 데이터, 데모 활성 상태가 영구 삭제됩니다.$\n[아니오]: 사용자 데이터는 보존됩니다 — 같은 사용자가 Ave 를 재설치하면 이어서 사용할 수 있습니다." \
-    /SD IDYES IDNO ave_skip_userdata
+  ${if} $aveSilentUninstallRequested == "1"
+    Goto ave_delete_userdata
+  ${endif}
+
+  SetSilent normal
+  MessageBox MB_YESNOCANCEL|MB_ICONQUESTION|MB_DEFBUTTON2|MB_TOPMOST|MB_SETFOREGROUND \
+    "Ave 사용자 데이터를 함께 삭제하시겠습니까?$\n$\n[예]: 모든 채팅 기록, 설정, 메모리, plugin 데이터, 데모 활성 상태가 영구 삭제됩니다.$\n[아니오/취소/닫기]: 사용자 데이터는 보존됩니다 — 같은 사용자가 Ave 를 재설치하면 이어서 사용할 수 있습니다." \
+    /SD IDNO IDYES ave_userdata_consent_given
+  SetSilent silent
+  Goto ave_skip_userdata
+
+  ave_userdata_consent_given:
+  SetSilent silent
+  ave_delete_userdata:
 
   ; A perMachine uninstaller normally has all-users shell context. User data
   ; belongs to the original interactive user, matching electron-builder's own
@@ -678,11 +690,12 @@ FunctionEnd
     Goto ave_remove_files_failed
   ${endif}
 
-  ${if} ${Silent}
+  ${if} $aveSilentUninstallRequested == "1"
     Goto ave_remove_files_failed
   ${endif}
 
-  MessageBox MB_YESNO|MB_ICONEXCLAMATION \
+  SetSilent normal
+  MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_TOPMOST|MB_SETFOREGROUND \
     "Ave 설치 파일을 제거하지 못했습니다.$\n$\n남은 경로: $R2$\n$\n파일이 잠겨 있거나 삭제 권한이 부족할 수 있습니다. 관리자 권한으로 한 번 더 시도하시겠습니까?" \
     IDYES ave_retry_elevated IDNO ave_remove_files_failed
 
@@ -698,9 +711,11 @@ FunctionEnd
 
   ave_remove_files_failed:
     SetErrorLevel 1
-    ${ifNot} ${Silent}
-      MessageBox MB_OK|MB_ICONEXCLAMATION \
+    ${if} $aveSilentUninstallRequested == "0"
+      SetSilent normal
+      MessageBox MB_OK|MB_ICONEXCLAMATION|MB_TOPMOST|MB_SETFOREGROUND \
         "Ave 설치 파일을 제거하지 못했습니다.$\n$\n남은 경로: $R2$\n$\nAve가 실행 중이면 종료한 뒤 다시 시도해 주세요."
+      SetSilent silent
     ${endif}
     Abort "Ave uninstall failed: app files remain at $R2"
 
