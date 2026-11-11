@@ -2951,8 +2951,8 @@ terminate the wrapped worker.
 x64 build, shells used the owner's SID at Low Mandatory Level
 (`S-1-16-4096`), with administrator groups deny-only and no AppContainer or
 restricted SIDs. Ranked MXC filesystem grants and denies confine reads and
-writes; `allowDaclMutation: false` refuses fallback. Low integrity alone does
-not prove read confinement. The `srt-win` account's SID-keyed ACE stamps and
+writes. DACL-mutating fallback is disabled; boot validation requires BaseContainer.
+Low integrity alone does not prove read confinement. The `srt-win` account's SID-keyed ACE stamps and
 WFP filters serve plugin confinement, not MXC shells. Egress uses MXC network
 policy plus `runtimeConfig.networkProxy` to the invocation's loopback relay
 (DNS exception below). `ingress.default: "allow"` requests private-network
