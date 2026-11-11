@@ -289,7 +289,7 @@ export function verifyAveHomeConfiguration(home: string, recoverInvalidMarker: b
     }
     if (process.platform === "win32") {
       try {
-        return inspectWindowsConfiguration(home, recoverInvalidMarker === "boundary");
+        return runWindowsNative(() => inspectWindowsConfiguration(home, recoverInvalidMarker === "boundary"));
       } catch (error) {
         if (recoverInvalidMarker !== true || !(error instanceof ConfigurationMarkerContentError)) throw error;
       }

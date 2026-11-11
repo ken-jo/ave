@@ -85,8 +85,8 @@ describe("protected home configuration", () => {
     expect(migrateAveHomeConfiguration(dir)).toEqual([]);
     if (process.platform === "win32") {
       const requests = vi.mocked(execFileSync).mock.calls.slice(before).filter(([file]) => /powershell\.exe$/i.test(String(file)));
-      expect(requests).toHaveLength(2);
-      const script = requests[1]?.[2]?.input;
+      expect(requests).toHaveLength(1);
+      const script = requests[0]?.[2]?.input;
       expect(script).toContain('$result = @([HomeDirectoryDacl]::CommitConfiguration(');
       expect(script).toContain('$result += @([HomeDirectoryDacl]::CleanupConfiguration(');
     }
