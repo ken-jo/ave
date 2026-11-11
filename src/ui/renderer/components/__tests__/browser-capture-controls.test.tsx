@@ -8,7 +8,7 @@ import { registerComposerTarget, resetComposerTargetsForTest } from "../../previ
 import { setWebSurfaceElement } from "../../preview/web-surfaces.js";
 
 const TAB = "browser:capture";
-afterEach(() => { cleanup(); resetComposerTargetsForTest(); setWebSurfaceElement(TAB, null); });
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); resetComposerTargetsForTest(); setWebSurfaceElement(TAB, null); });
 
 function mount() {
   const attachImage = vi.fn(async () => true);
@@ -23,9 +23,19 @@ function mount() {
   return { ...view, api, capture, getState, attachImage, guest };
 }
 
-async function choose(testId: string) {
+async function openCaptureMenu() {
   fireEvent.pointerDown(screen.getByTestId("browser-capture-menu"), { button: 0, ctrlKey: false });
-  fireEvent.click(await screen.findByTestId(testId));
+  const menu = await screen.findByRole("menu");
+  const closeAutoFocus = vi.fn();
+  menu.addEventListener("focusScope.autoFocusOnUnmount", closeAutoFocus, { once: true });
+  return closeAutoFocus;
+}
+
+async function choose(testId: string) {
+  const closeAutoFocus = await openCaptureMenu();
+  await act(async () => { fireEvent.click(screen.getByTestId(testId)); });
+  // Menu removal precedes its deferred focus handoff.
+  await waitFor(() => expect(closeAutoFocus).toHaveBeenCalledOnce());
 }
 
 describe("browser user captures", () => {
@@ -56,8 +66,7 @@ describe("browser user captures", () => {
     const { capture } = mount();
     await choose("browser-capture-area");
     const overlay = await screen.findByTestId("browser-capture-overlay");
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
-    await waitFor(() => expect(overlay).toHaveFocus());
+    expect(overlay).toHaveFocus();
     fireEvent.keyDown(overlay, { key: "Escape" });
     expect(screen.queryByTestId("browser-capture-overlay")).toBeNull();
     expect(capture).not.toHaveBeenCalled();
@@ -113,13 +122,48 @@ describe("browser user captures", () => {
 
   it("preserves selection focus and listeners across an unrelated parent render", async () => {
     const { rerender, api } = mount();
-    await choose("browser-capture-area");
-    const overlay = await screen.findByTestId("browser-capture-overlay");
+    const closeAutoFocus = await openCaptureMenu();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(async () => { fireEvent.click(screen.getByTestId("browser-capture-area")); });
+    const overlay = screen.getByTestId("browser-capture-overlay");
+    expect(overlay).toHaveFocus();
     const focus = vi.spyOn(overlay, "focus");
     rerender(<BrowserCaptureControls api={api} tabId={TAB} composerGroupId="conversation" />);
+    expect(closeAutoFocus).not.toHaveBeenCalled();
+    act(() => { vi.runOnlyPendingTimers(); });
+    expect(closeAutoFocus).toHaveBeenCalledOnce();
     expect(focus).not.toHaveBeenCalled();
     expect(screen.getByTestId("browser-capture-overlay")).toBe(overlay);
     fireEvent.keyDown(overlay, { key: "Escape" });
     expect(screen.queryByTestId("browser-capture-overlay")).toBeNull();
+  });
+
+  it("keeps a later keyboard focus choice when the menu close handoff is delayed", async () => {
+    mount();
+    const closeAutoFocus = await openCaptureMenu();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(async () => { fireEvent.click(screen.getByTestId("browser-capture-area")); });
+    const overlay = screen.getByTestId("browser-capture-overlay");
+    expect(overlay).toHaveFocus();
+    const trigger = screen.getByTestId("browser-capture-menu");
+    act(() => { trigger.focus(); });
+    expect(trigger).toHaveFocus();
+    expect(closeAutoFocus).not.toHaveBeenCalled();
+    act(() => { vi.runOnlyPendingTimers(); });
+    expect(closeAutoFocus).toHaveBeenCalledOnce();
+    expect(trigger).toHaveFocus();
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(screen.queryByTestId("browser-capture-overlay")).toBeNull();
+  });
+
+  it("focuses area selection when its state arrives after the menu closes", async () => {
+    const { getState } = mount();
+    const state = await getState();
+    let releaseState!: () => void;
+    getState.mockReturnValueOnce(new Promise((resolve) => { releaseState = () => resolve(state); }));
+    await choose("browser-capture-area");
+    expect(screen.queryByTestId("browser-capture-overlay")).toBeNull();
+    await act(async () => { releaseState(); });
+    expect(screen.getByTestId("browser-capture-overlay")).toHaveFocus();
   });
 });

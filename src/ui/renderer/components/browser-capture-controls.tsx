@@ -142,11 +142,9 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
           data-testid="browser-capture-menu"><Camera className="h-3.5 w-3.5" aria-hidden="true" />{t("browserCapture.capture")}</Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" onCloseAutoFocus={(event) => {
-        // Keep focus with the mounted area dialog when its menu closes.
-        const overlay = overlayRef.current;
-        if (!overlay) return;
+        // The mounted dialog owns initial focus; a delayed menu close must preserve later focus choices.
+        if (!overlayRef.current) return;
         event.preventDefault();
-        overlay.focus();
       }}>
         <DropdownMenuItem data-testid="browser-capture-viewport" onSelect={() => void startCapture("viewport")}>{t("browserCapture.viewport")}</DropdownMenuItem>
         <DropdownMenuItem data-testid="browser-capture-full-page" onSelect={() => void startCapture("full-page")}>{t("browserCapture.fullPage")}</DropdownMenuItem>
