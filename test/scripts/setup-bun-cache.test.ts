@@ -185,14 +185,25 @@ describe("runtime archive cache", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("does not match the pinned");
   });
-  it.each([" ", "*"])("accepts a release checksum with marker %s", (marker) => {
+  it.each([" ", "*"].flatMap((marker) => ["\n", "\r\n"].map((ending) => [marker, ending])))("accepts a release checksum with marker %s and ending %j", (marker, ending) => {
     expect(run("verify").status).toBe(0);
-    writeFileSync(join(root, "bun-download", "SHASUMS256.txt"), `${pinned} ${marker}${asset}.zip\n`);
+    writeFileSync(join(root, "bun-download", "SHASUMS256.txt"), `${pinned} ${marker}${asset}.zip${ending}`);
     env.CACHE_HIT = "true";
     const result = run("verify");
     expect(result.status, result.stderr).toBe(0);
   });
 
+  it.each([
+    ["text filename with a leading star", `${pinned}  *${asset}.zip\n`],
+    ["binary filename with a suffix", `${pinned} *${asset}.zip suffix.zip\n`],
+    ["single space without a marker", `${pinned} ${asset}.zip\n`],
+    ["duplicate text and binary entries", `${pinned}  ${asset}.zip\n${pinned} *${asset}.zip\n`],
+  ])("rejects a release checksum with %s", (_kind, manifest) => {
+    expect(run("verify").status).toBe(0);
+    writeFileSync(join(root, "bun-download", "SHASUMS256.txt"), manifest);
+    env.CACHE_HIT = "true";
+    expect(run("verify").status).not.toBe(0);
+  });
   it.each(["wrong", "missing", "duplicate"])("rejects %s release checksums on a hit", (kind) => {
     expect(run("verify").status).toBe(0);
     const entry = `${pinned}  ${asset}.zip\n`;
