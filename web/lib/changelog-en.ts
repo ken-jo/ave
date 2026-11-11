@@ -37,6 +37,13 @@ const EN: Record<string, EnBlock[]> = {
           ]
         },
         {
+          title: "You may need to choose a model again after upgrading",
+          points: [
+            "A one-time migration clears saved built-in provider and marketplace preset models, including fallback entries, when they match the previously auto-filled default. If the active route is affected, it becomes not configured and generation stops until you choose a model again.",
+            "Open Settings → Model, select the model for the provider you want to use, and check model selections under Failover (Fallback Chain). Marketplace preset cleanup can happen later, once the installed preset is known. Different model values and selections made after the migration are retained."
+          ]
+        },
+        {
           title: "One responsive workspace replaces app modes",
           points: [
             "The old app-mode setting is removed during the upgrade; other settings are retained. (#255)"
