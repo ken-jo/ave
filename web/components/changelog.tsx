@@ -44,26 +44,32 @@ function Block({ b }: { b: ChangeBlock }) {
   }
 }
 
-/** One release in English: a bullet per item, its headline in bold and its points beneath. */
+/** English headings and lists retain the release's section order. */
 function EnglishBody({ r }: { r: Release }) {
-  const { items } = englishRelease(r);
+  const { blocks } = englishRelease(r);
   return (
-    <ul className="cl-items">
-      {items.map((it, i) => (
-        <li key={i}>
-          <strong>
-            <Text parts={it.title} />
-          </strong>
-          <ul>
-            {it.points.map((p, j) => (
-              <li key={j}>
-                <Text parts={p} />
-              </li>
-            ))}
-          </ul>
-        </li>
+    <>
+      {blocks.map((block, index) => block.kind === "h3" ? (
+        <Block key={index} b={block} />
+      ) : (
+        <ul className="cl-items" key={index}>
+          {block.items.map((it, i) => (
+            <li key={i}>
+              <strong>
+                <Text parts={it.title} />
+              </strong>
+              <ul>
+                {it.points.map((p, j) => (
+                  <li key={j}>
+                    <Text parts={p} />
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
       ))}
-    </ul>
+    </>
   );
 }
 

@@ -22,28 +22,27 @@ this app does not serve.
 
 ## What To Declare
 
-Released hosts serve protocol `"3"`; published extensions currently declare:
+Ave 0.15.0 serves protocol `"5"`; extensions targeting it declare:
 
 ```jsonc
 "extensions": {
   "ai.agent-connector.ave": {
-    "requires": { "hostProtocol": "3", "minAppVersion": "0.14.0" }
+    "requires": { "hostProtocol": "5", "minAppVersion": "0.15.0" }
   }
 }
 ```
 
-**Upcoming, unreleased:** this development build serves protocol 5, which requires
-host-issued loopback OAuth state and a declared worker control mode. Protocol 4 was
-never released; released hosts move from 3 straight to 5. Do not publish protocol-5
-packages for released protocol-3 hosts: the host-protocol declaration, independently
-of `minAppVersion`, refuses an unserved contract. No first published app version
-exists for protocol 5. Release preparation selects the actual minimum app version.
+**Ave 0.15.0 is the first protocol-5 release.** It requires host-issued loopback
+OAuth state and a declared worker control mode. Protocol 4 was never released;
+hosts move from 3 straight to 5. Publish updated protocol-5 replacements for
+protocol-3 extensions with the coordinated 0.15.0 release. Older protocol-3 hosts
+refuse protocol-5 packages, independently of `minAppVersion`.
 The current schema lives at `schemas/plugin-host-protocol/5/protocol.schema.json`
 in the repository. The released protocol-3 schema stays frozen at
 `web/public/schemas/plugin-host-protocol/3/v0.14.0/protocol.schema.json`.
 See [protocol §3.3.1](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth),
 [§3.3.2](../design/plugin-hostapi-protocol.md#332-worker-stdio-control-v1),
-the [upcoming OAuth migration](./plugin-development.md#loopback-oauth-with-pkce)
+the [OAuth migration](./plugin-development.md#loopback-oauth-with-pkce)
 and [delegated workers](./plugin-development.md#delegated-workers).
 A `process` extension also follows the [entry rules](./plugin-development.md#entry-or-process).
 
@@ -73,8 +72,9 @@ An extension repository copies the public types from an Ave git ref into
 - `schemas/plugin-manifest.schema.json`
 - `schemas/plugin-host-protocol/5/protocol.schema.json`
 
-The public-type copy requires no signature or sha256 pin. Before protocol 5
-ships, marketplace vendoring must switch from the release bundle to a git ref.
+The public-type copy requires no signature or sha256 pin. For protocol 5,
+marketplace vendoring must switch from the release bundle to the `v0.15.0` git
+ref once the tag exists.
 The v0.14.0 bundle remains available for existing consumers.
 
 ## Releasing In The Official Marketplace

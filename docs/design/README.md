@@ -21,7 +21,7 @@ contracts. The visual design system for the whole app is
 - [Plugin HostApi as a versioned protocol](./plugin-hostapi-protocol.md): the
   in-process HostApi turned into a published JSON-RPC protocol (`ai.agent-connector.ave/host/*`
   beside MCP) so every code extension runs in its own confined process. The app
-  serves unreleased host protocol `"5"`. Read by tests and scripts; source comments cite its
+  serves host protocol `"5"` starting with 0.15.0. Read by tests and scripts; source comments cite its
   sections.
 - [Multi-source git marketplace](./multi-source-git-marketplace.md): source
   registry and sync, the `marketplace.json` and `ave-package.json` schemas,

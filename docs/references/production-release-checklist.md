@@ -35,7 +35,7 @@ bun run release
 # Output: release/Ave-<version>-<platform>-<arch>...
 ```
 
-`bun run release` regenerates `schemas/plugin-host-protocol/1/protocol.schema.json`
+`bun run release` regenerates `schemas/plugin-host-protocol/5/protocol.schema.json`
 after the bump, because its `$id` carries the app version. A release change
 that bumps `package.json` by hand runs `bun run generate:plugin-host-protocol-schema`
 and commits the result; otherwise `bun run build` fails at
@@ -140,10 +140,12 @@ Windows tag is published:
   installed executable;
 - HKCU registration and `%LOCALAPPDATA%\\Programs\\ave` install residue
   are absent;
-- both genuine `/KEEP_APP_DATA` and DELETE passes first prove the ASRT sandbox
-  user/group/credential, WFP filters, packaged-backend group RX, and a real
-  holder ACL, then prove uninstall removed all machine/ASRT state while only
-  userData preservation differs.
+- GUI and silent genuine uninstall, with and without the compatibility flag
+  `/KEEP_APP_DATA`, first prove the ASRT sandbox user/group/credential, WFP
+  filters, packaged-backend group RX, and a real holder ACL, then prove uninstall
+  removed all machine/ASRT state while preserving every user-data sentinel;
+- the legacy `--delete-app-data` flag also preserves user data in every GUI,
+  silent and compatibility-flag combination, without a data-deletion question.
 
 Do not treat a missing/non-readable ASRT precondition as a successful skip.
 Move that candidate to a documented manual release gate instead. Hosted CI
@@ -164,22 +166,20 @@ and requires a SID/profile handoff fix before the full gate is rerun.
       resolved app/userData path belong to the initiating standard user. Prove
       the administrator profile gained no Ave data, and record both account
       SIDs, process owner, resolved paths, and evidence URL.
-- [ ] Genuine KEEP: seed fixed-content sentinels in the initiating user's
+- [ ] Genuine uninstall: seed fixed-content sentinels in the initiating user's
       resolved `%USERPROFILE%\.ave`, Roaming `Ave`/`ave`, and Local
-      `Ave`/`ave` paths; approve with the distinct administrator and run
-      genuine `/KEEP_APP_DATA` uninstall. Record the resolved paths and prove
-      every original-user sentinel/profile is unchanged while the administrator
-      profile's Ave paths remain absent or byte-for-byte unchanged.
-- [ ] Genuine DELETE → guided reinstall: start from a fresh signed-candidate
-      install after the KEEP pass, seed the same original-user sentinels, approve
-      with the distinct administrator, and run genuine DELETE uninstall. First
-      prove every original-user Ave sentinel/profile path is removed. Then
-      explicitly guide the initiating standard user to reinstall the signed
-      candidate and complete first launch as that original user. Record both
-      SIDs, candidate SHA, Windows build, resolved paths, and evidence URL; prove
-      the launched process owner and every recreated app/userData path belong to
-      the original user while the distinct administrator profile's Ave paths remain absent
-      or byte-for-byte unchanged.
+      `Ave`/`ave` paths; approve with the distinct administrator and run GUI
+      and silent uninstall, with and without `/KEEP_APP_DATA`. Record the
+      resolved paths and prove every original-user sentinel/profile is unchanged
+      without a data-deletion question, while the administrator profile's Ave
+      paths remain absent or byte-for-byte unchanged.
+- [ ] Preserved-data reinstall: after genuine uninstall, explicitly guide the
+      initiating standard user to reinstall the signed candidate and launch it
+      as that original user. Record both SIDs, candidate SHA, Windows build,
+      resolved paths, and evidence URL; prove the launched process owner and
+      every app/userData path belong to the original user, the original-user
+      sentinels remain unchanged, and the distinct administrator profile's Ave
+      paths remain absent or byte-for-byte unchanged.
 
 Do not add an online web bootstrapper to the NSIS path unless the product
 explicitly changes distribution strategy. Runtime assets such as the compressed
