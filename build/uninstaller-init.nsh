@@ -15,7 +15,7 @@
 Var aveSilentUninstallRequested
 
 ; The template also enables silent mode for GUI uninstalls. Preserve the
-; invoking command line's intent independently of that mutable runtime state.
+; invoking command line's intent so genuine app-file failures still show GUI errors.
 !macro customUnInit
   Push $R0
   Push $R1

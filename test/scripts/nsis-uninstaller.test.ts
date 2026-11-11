@@ -53,21 +53,26 @@ describe("machine uninstaller removal", () => {
     expect(removal).toContain("IDYES ave_retry_elevated IDNO ave_remove_files_failed");
   });
 
-  it("uses original command-line intent and requires affirmative visible consent for data deletion", () => {
+  it("keeps visible GUI removal errors independent of runtime silent mode", () => {
     const template = readTemplate("uninstaller.nsh");
     expect(template).toMatch(/MessageBox MB_OKCANCEL\|MB_TOPMOST\|MB_SETFOREGROUND/);
-    expect(template.indexOf('MessageBox MB_OKCANCEL')).toBeLessThan(template.lastIndexOf('SetSilent silent'));
     expect(initialization).toMatch(/\$\{StdUtils\.ParameterCnt\} \$R0/);
     expect(initialization).toMatch(/\$\{StdUtils\.ParameterStr\} \$R2 \$R1/);
     expect(initialization).toContain('StrCmpS $R2 "/S" ave_uninstall_arguments_silent');
     expect(initialization).toContain('StrCmpS $R3 "_?=" ave_uninstall_arguments_done');
-    expect(initialization).not.toMatch(/\$\{Silent\}/);
-    const consent = hook.slice(hook.indexOf('; KEEP_APP_DATA is evaluated'), hook.indexOf('; A perMachine uninstaller normally'));
-    expect(consent).toMatch(/\$aveSilentUninstallRequested == "1"\s+Goto ave_delete_userdata/);
-    expect(consent).toMatch(/SetSilent normal\s+MessageBox MB_YESNOCANCEL\|MB_ICONQUESTION\|MB_DEFBUTTON2\|MB_TOPMOST\|MB_SETFOREGROUND/);
-    expect(consent).toMatch(/\/SD IDNO IDYES ave_userdata_consent_given\s+SetSilent silent\s+Goto ave_skip_userdata/);
-    expect(consent).toMatch(/ave_userdata_consent_given:\s+SetSilent silent\s+ave_delete_userdata:/);
-    expect(consent).not.toMatch(/\$\{Silent\}/);
-    expect(consent).not.toContain("/SD IDYES");
+  });
+
+  it("always preserves data without a prompt and accepts the compatibility flag", () => {
+    const config = JSON.parse(readRepoFile("package.json"));
+    expect(config.build.nsis.deleteAppDataOnUninstall).toBe(false);
+    expect(hook).not.toContain("Ave 사용자 데이터를 함께 삭제하시겠습니까?");
+    expect(hook).not.toContain("ave_delete_userdata");
+    expect(hook).not.toContain("ave_skip_userdata");
+    expect(hook).not.toMatch(/MB_YESNO(?:CANCEL)?\|MB_ICONQUESTION/);
+    const removedDirectories = [...hook.matchAll(/^\s*RMDir(?: \/r)? "([^"\n]+)"/gm)].map(match => match[1]);
+    expect(removedDirectories).toEqual(["$INSTDIR", "$INSTDIR"]);
+    expect(hook).toContain("/KEEP_APP_DATA is accepted for updater");
+    expect(hook).toContain("compatibility and no longer changes behavior");
+    expect(hook).not.toMatch(/\$\{GetOptions\} \$R0 "\/KEEP_APP_DATA"/);
   });
 });

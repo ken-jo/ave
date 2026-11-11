@@ -104,6 +104,26 @@ cmd /c "if exist dist rmdir /s /q dist"
 bun install
 ```
 
+### Uninstall and remove local data
+
+Remove Ave from Settings → Apps → Installed apps. Uninstall removes the app,
+shortcuts, protocol registration, notification artifacts and sandbox setup.
+It always keeps your chats, settings, memories, credentials and plugin data,
+without a data-deletion question. Silent uninstall and updates also keep data;
+`/KEEP_APP_DATA` remains accepted for compatibility and has no additional effect.
+Reinstalling Ave can reuse the retained data.
+
+For full manual removal, quit Ave and uninstall it first. Back up anything you
+need, then delete these folders if present; deletion permanently removes their
+contents:
+
+- `%USERPROFILE%\.ave` (or your configured `AVE_HOME`)
+- `%APPDATA%\Ave` and `%LOCALAPPDATA%\Ave`
+- Legacy app-name folders `%APPDATA%\ave` and `%LOCALAPPDATA%\ave`
+
+On the usual case-insensitive filesystem, `Ave` and `ave` name the same folder.
+If you configured a separate app profile, remove that profile manually too.
+
 ### Plugin build changes do not appear
 
 The local install copies the build folder, so the app runs the installed copy, not your checkout. After rebuilding, install the folder again through "Install from local folder". This copies it again and restarts the extension. See [Local plugin development](./local-plugin-development.md#reload).

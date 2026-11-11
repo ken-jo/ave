@@ -1,24 +1,21 @@
-; Ave NSIS installer hook — user-data cleanup on uninstall.
+; Ave uninstall always preserves user data without a data-removal prompt.
+; Owner decision 2026-11-11 replaces the 2026-05-20 complete-removal directive.
+; GUI, /S, /KEEP_APP_DATA, updates and elevated retries all keep these paths:
+;   %USERPROFILE%\.ave\ (or the configured AVE_HOME)
+;   %APPDATA%\Ave\ and %APPDATA%\ave\ (current/legacy app names)
+;   %LOCALAPPDATA%\Ave\ and %LOCALAPPDATA%\ave\
+; Full manual removal: uninstall the app, then delete those folders yourself.
+; deleteAppDataOnUninstall stays false; /KEEP_APP_DATA is accepted for updater
+; compatibility and no longer changes behavior. App files and security state
+; are still removed on genuine uninstall.
 ;
-; electron-builder의 `nsis.include` 로 wiring. `/KEEP_APP_DATA`가 모든 userData를
-; 실제로 보존할 수 있도록 `deleteAppDataOnUninstall: false`를 사용하고, 이 hook이
-; Roaming/Local/홈 데이터 삭제를 한 분기에서 책임진다:
-;
-;   - `%USERPROFILE%\.ave\`   — AVE_HOME (sessions, memories, secrets, plugins data)
-;   - `%APPDATA%\${APP_*}\`    — Electron userData/cache의 현재/과거 이름
-;   - `%LOCALAPPDATA%\${APP_*}\` — Chromium GPU cache 등 Electron 잔여
-;
-; User-data consent follows the original command line, because the one-click
-; template also enables silent mode after its GUI uninstall confirmation.
-;   - Without /S, show a foreground data prompt with No as the default.
-;     Only explicit Yes deletes; No, Cancel and closing the prompt keep data.
-;   - Explicit /S without /KEEP_APP_DATA deletes user data by design
-;     (owner directive 2026-05-20). /KEEP_APP_DATA and updates preserve data.
-;
-; 제거 사유 / 보존 사유:
-;   - 사용자 명시 directive (2026-05-20): "삭제 코드를 추가했는데 Roaming 폴더 / 홈
-;     디렉토리 하위 .ave 가 잔여로 남음 — 완전 제거되도록 수정". 즉 *default 완전
-;     제거* 가 원래 의도. 단 *되돌리기 불가* 손실이라 [아니오] 선택 시 보존 path 도 제공.
+; References for separate app removal and optional manual data removal:
+; https://github.com/microsoft/vscode/blob/main/build/win32/code.iss [UninstallDelete]
+; https://zed.dev/docs/uninstall (Windows)
+; https://www.jetbrains.com/help/idea/uninstall.html
+; https://support.1password.com/uninstall-1password/
+; https://www.electron.build/nsis/#deleteappdataonuninstall
+; https://github.com/electron-userland/electron-builder/issues/8240
 
 !define AVE_GIT_INSTALL_SCRIPT "install-windows-git.ps1"
 
@@ -491,7 +488,7 @@ FunctionEnd
   ${GetParameters} $R0
 
   ; Only electron-builder's updater uninstall may preserve machine-level ASRT.
-  ; /KEEP_APP_DATA is a genuine uninstall choice and controls userData only.
+  ; /KEEP_APP_DATA remains accepted for updater compatibility; all paths keep user data.
   ${if} ${isUpdated}
     Goto ave_skip_genuine_uninstall
   ${endif}
@@ -526,15 +523,6 @@ FunctionEnd
     Abort "Ave uninstall failed: current-user notification artifact cleanup returned exit $R4"
   ${endif}
 
-  ClearErrors
-  ${GetParameters} $R0
-  StrCpy $R1 "0"
-  ClearErrors
-  ${GetOptions} $R0 "/KEEP_APP_DATA" $R2
-  ${ifNot} ${Errors}
-    StrCpy $R1 "1"
-  ${endif}
-
   ; ── ASRT OS sandbox teardown (every genuine uninstall) ──
   ; Recover dead holder-PID grants before deleting the sandbox principal, then
   ; remove the WFP filters, sandbox user/group, credential and setup marker.
@@ -563,54 +551,6 @@ FunctionEnd
     Abort "Ave uninstall failed: packaged srt-win.exe is missing; ASRT teardown cannot be verified"
   ${endif}
 
-  ; KEEP_APP_DATA is evaluated only after ASRT teardown.
-  ${if} $R1 == "1"
-    Goto ave_skip_userdata
-  ${endif}
-
-  ${if} $aveSilentUninstallRequested == "1"
-    Goto ave_delete_userdata
-  ${endif}
-
-  SetSilent normal
-  MessageBox MB_YESNOCANCEL|MB_ICONQUESTION|MB_DEFBUTTON2|MB_TOPMOST|MB_SETFOREGROUND \
-    "Ave 사용자 데이터를 함께 삭제하시겠습니까?$\n$\n[예]: 모든 채팅 기록, 설정, 메모리, plugin 데이터, 데모 활성 상태가 영구 삭제됩니다.$\n[아니오/취소/닫기]: 사용자 데이터는 보존됩니다 — 같은 사용자가 Ave 를 재설치하면 이어서 사용할 수 있습니다." \
-    /SD IDNO IDYES ave_userdata_consent_given
-  SetSilent silent
-  Goto ave_skip_userdata
-
-  ave_userdata_consent_given:
-  SetSilent silent
-  ave_delete_userdata:
-
-  ; A perMachine uninstaller normally has all-users shell context. User data
-  ; belongs to the original interactive user, matching electron-builder's own
-  ; deletion template, so switch only inside the DELETE branch and restore it.
-  ${if} $installMode == "all"
-    SetShellVarContext current
-  ${endif}
-
-  ; AVE_HOME — sessions / memories / secrets / plugins / audit / .env.demo
-  RMDir /r "$PROFILE\.ave"
-
-  ; Keep electron-builder's current/legacy APPDATA candidates together with
-  ; their Local AppData counterparts. KEEP_APP_DATA skips this whole block.
-  RMDir /r "$APPDATA\${APP_FILENAME}"
-  RMDir /r "$LOCALAPPDATA\${APP_FILENAME}"
-  !ifdef APP_PRODUCT_FILENAME
-    RMDir /r "$APPDATA\${APP_PRODUCT_FILENAME}"
-    RMDir /r "$LOCALAPPDATA\${APP_PRODUCT_FILENAME}"
-  !endif
-  !ifdef APP_PACKAGE_NAME
-    RMDir /r "$APPDATA\${APP_PACKAGE_NAME}"
-    RMDir /r "$LOCALAPPDATA\${APP_PACKAGE_NAME}"
-  !endif
-
-  ${if} $installMode == "all"
-    SetShellVarContext all
-  ${endif}
-
-  ave_skip_userdata:
   ave_skip_genuine_uninstall:
   Pop $R9
   Pop $R8
