@@ -10,14 +10,8 @@ import {
   type PermissionJudgeSnapshot,
 } from "../../../../shared/permission-judge-settings.js";
 import { SettingsSection } from "../PageShell.js";
-import { getVendorOption } from "../../constants.js";
 import {
-  apiProviderId,
-  parseUnifiedValue,
-  SELECT_POPUP_LAYOUT,
-  unifiedValue,
-  UnifiedModelSelect,
-  type UnifiedModelOption,
+  SystemSubagentModelSelect,
 } from "../../tabs/LlmTab.js";
 
 type JudgeStage = PermissionJudgeSettings["chain"][number];
@@ -32,57 +26,6 @@ function nextStage(chain: readonly JudgeStage[]): JudgeStage {
   return { id: `stage-${number}`, provider: "builtin-llm" };
 }
 
-type JudgeModel = NonNullable<PermissionJudgeSettings["model"]>;
-
-/** The non-model row: no choice stored, so the reviewer follows its fallback. */
-const UNSET_MODEL_VALUE = "unset::";
-
-/** The chat model chooser, offering the models the host can run the reviewer on (`snapshot.modelOptions`, the
- * connected API routes). A stored model the host no longer offers stays visible, marked, so the choice is not hidden. */
-function JudgeModelSelect({ id, snapshot, value, unsetLabel, placeholder, unavailableLabel, onChange }: {
-  id: string;
-  snapshot: PermissionJudgeSnapshot | null;
-  value: JudgeModel | undefined;
-  unsetLabel: string;
-  placeholder: string;
-  unavailableLabel: string;
-  onChange: (model: JudgeModel | undefined) => void;
-}) {
-  const offered = snapshot?.modelOptions ?? [];
-  const toOption = (model: JudgeModel, unlisted = false): UnifiedModelOption => {
-    const label = getVendorOption(model.vendor).label;
-    return {
-      value: unifiedValue(apiProviderId(model.vendor), model.model),
-      providerId: apiProviderId(model.vendor),
-      providerLabel: label,
-      vendorLabel: label,
-      modelId: model.model,
-      ...(unlisted ? { unlisted: true, facts: unavailableLabel } : {}),
-    };
-  };
-  const options = offered.map((model) => toOption(model));
-  if (value && !offered.some((model) => model.vendor === value.vendor && model.model === value.model)) {
-    options.unshift(toOption(value, true));
-  }
-  return (
-    <UnifiedModelSelect
-      triggerId={id}
-      testId={id}
-      options={options}
-      value={value ? unifiedValue(apiProviderId(value.vendor), value.model) : UNSET_MODEL_VALUE}
-      leadingOption={{ value: UNSET_MODEL_VALUE, label: unsetLabel }}
-      placeholder={placeholder}
-      popupClassName={SELECT_POPUP_LAYOUT}
-      onValueChange={(picked) => {
-        if (picked === UNSET_MODEL_VALUE) return onChange(undefined);
-        const parsed = parseUnifiedValue(picked);
-        const model = parsed && offered.find((option) =>
-          apiProviderId(option.vendor) === parsed.providerId && option.model === parsed.modelId);
-        if (model) onChange({ vendor: model.vendor, model: model.model });
-      }}
-    />
-  );
-}
 
 function transportFor(stage: JudgeStage): JudgeTransport {
   return stage.provider === "builtin-llm" ? "builtin-llm" : stage.external?.url !== undefined ? "url" : "command";
@@ -234,7 +177,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
           <fieldset disabled={busy} className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="permission-reviewer-model">{t("permissionJudge.reviewerModel")}</Label>
-              <JudgeModelSelect
+              <SystemSubagentModelSelect
                 id="permission-reviewer-model"
                 snapshot={snapshot}
                 value={draft.model ?? undefined}
@@ -320,7 +263,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
                         {transport === "builtin-llm" ? (
                           <div className="space-y-1.5">
                             <Label htmlFor={`${prefix}-model`}>{t("permissionJudge.model")}</Label>
-                            <JudgeModelSelect
+                            <SystemSubagentModelSelect
                               id={`${prefix}-model`}
                               snapshot={snapshot}
                               value={stage.model}

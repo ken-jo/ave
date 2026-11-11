@@ -1613,8 +1613,8 @@ export const en = {
   "compactionSettings.title": "Compaction",
   "compactionSettings.model": "Compaction model",
   "compactionSettings.currentModel": "Current chat model",
-  "compactionSettings.description": "Empty uses the current chat model; another model ID compacts with this provider. Add focus instructions after /compact to choose what to keep.",
-  "compactionSettings.unavailable": "This runtime uses the current chat model for compaction and does not support a separate compaction model.",
+  "compactionSettings.description": "Follow the current chat model or choose a connected provider model for compaction. Add focus instructions after /compact to choose what to keep.",
+  "compactionSettings.selectedUnavailable": "The selected compaction model is unavailable. Choose an available model or follow the current chat model before compacting.",
   "compactionSettings.saveFailed": "Could not save the compaction model. Your changes are still here; try again.",
 
   // composer

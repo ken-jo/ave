@@ -1615,8 +1615,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "compactionSettings.title": "대화 압축",
   "compactionSettings.model": "압축 모델",
   "compactionSettings.currentModel": "현재 채팅 모델",
-  "compactionSettings.description": "비워 두면 현재 채팅 모델을, 다른 모델 ID를 넣으면 이 공급자로 압축합니다. /compact 뒤에 지침을 적어 보존할 내용을 정할 수 있습니다.",
-  "compactionSettings.unavailable": "이 실행 환경은 현재 채팅 모델로 압축하며 별도 압축 모델을 지원하지 않습니다.",
+  "compactionSettings.description": "현재 채팅 모델을 따르거나 연결된 공급자의 모델로 대화를 압축합니다. /compact 뒤에 지침을 적어 보존할 내용을 정할 수 있습니다.",
+  "compactionSettings.selectedUnavailable": "선택한 압축 모델을 사용할 수 없습니다. 사용 가능한 모델을 고르거나 현재 채팅 모델 따르기로 바꾼 뒤 압축하세요.",
   "compactionSettings.saveFailed": "압축 모델을 저장하지 못했습니다. 입력한 내용은 유지됩니다. 다시 시도하세요.",
 
   // composer

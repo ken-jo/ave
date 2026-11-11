@@ -3,7 +3,7 @@ import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { installMockAveApi, type MockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+import { installMockAveApi, makeMockAveNamespace, mockJudgeGet, type MockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { deferred } from "../../../../../test/renderer/helpers.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { llmModelListCacheKey, type LlmModelListCache, type LlmModelListResult } from "../../../../shared/llm-model-list.js";
@@ -176,6 +176,7 @@ function listedModels(
 
 function makeApi(overrides: MockApi = {}): MockApi {
   const api = installMockAveApi();
+  window.ave = makeMockAveNamespace().ns as unknown as Window["ave"];
   api.listLlmModels = vi.fn().mockResolvedValue(FETCH_FAILED);
   api.hasApiKey = vi.fn().mockResolvedValue(false);
   for (const [name, impl] of Object.entries(overrides)) api[name] = impl;
@@ -188,6 +189,9 @@ function storedKeysFor(...providerIds: string[]) {
 }
 
 interface Profile {
+  compactionModelSelection?: { vendor: "openai" | "claude"; model: string } | null;
+  compactionModel?: string;
+  compactionModelRoute?: string;
   provider?: string;
   pinnedModels?: string[];
   vendors?: Record<string, unknown>;
@@ -200,6 +204,8 @@ function profileSettings(profile: Profile) {
   return {
     llm: {
       provider: profile.provider ?? "openai",
+      ...(profile.compactionModelSelection !== undefined ? { compactionModelSelection: profile.compactionModelSelection } : {}),
+      ...(profile.compactionModel !== undefined ? { compactionModel: profile.compactionModel, compactionModelRoute: profile.compactionModelRoute } : {}),
       pinnedModels: profile.pinnedModels ?? [],
       vendors: profile.vendors ?? {},
       modelListCache: profile.modelListCache ?? {},
@@ -552,38 +558,76 @@ describe("LlmTab provider cards", () => {
     expect(within(menu).getByTestId("llm-tab:add-provider-item:deepseek")).toBeVisible();
   });
 
-  it("shows compaction uses the current model when the runtime cannot choose another one", async () => {
-    installSubscription([], {}, { kind: "subscription", provider: "kimi-code" });
-    await renderTab(makeApi());
-    expect(screen.getByRole("textbox", { name: t("compactionSettings.model") })).toBeDisabled();
-    expect(screen.getByText(t("compactionSettings.unavailable"))).toBeVisible();
-    expect(screen.getByTestId("compaction-model-save")).toBeDisabled();
+  async function pickCompactionModel(label: string) {
+    openMenu(screen.getByTestId("compaction-model"));
+    const option = await screen.findByRole("option", { name: new RegExp(label) });
+    fireEvent.click(option);
+  }
+
+  function offerCompactionModels() {
+    const readSnapshot = mockJudgeGet();
+    window.ave.permission.judgeGet = vi.fn(async () => {
+      const snapshot = await readSnapshot();
+      return {
+        ...snapshot,
+        settings: { ...snapshot.settings, model: null },
+        modelOptions: [{ vendor: "claude" as const, model: "summary-model" }],
+      };
+    });
+  }
+
+  it.each(["chatgpt-plan", "claude-code", "kimi-code"] as const)("enables the compaction picker on %s", async (provider) => {
+    installSubscription([], {}, { kind: "subscription", provider });
+    const api = makeApi();
+    offerCompactionModels();
+    await renderTab(api);
+    await waitFor(() => expect(screen.getByTestId("compaction-model")).toBeEnabled());
+    await pickCompactionModel("summary-model");
+    expect(screen.getByTestId("compaction-model-save")).toBeEnabled();
   });
 
-  it("preserves compaction input on save failure and unrelated settings broadcasts", async () => {
+  it("preserves compaction selection on save failure and unrelated settings broadcasts", async () => {
     const api = makeApi();
+    offerCompactionModels();
     await renderTab(api);
-    const input = screen.getByRole("textbox", { name: t("compactionSettings.model") });
-    fireEvent.change(input, { target: { value: "summary-model" } });
+    await pickCompactionModel("summary-model");
     await act(async () => { await api.updateSettings({ llm: { pinnedModels: [] } }); });
-    expect(input).toHaveValue("summary-model");
+    expect(screen.getByTestId("compaction-model")).toHaveTextContent("summary-model");
     api.updateSettings.mockRejectedValueOnce(new Error("unavailable"));
     fireEvent.click(screen.getByTestId("compaction-model-save"));
     await waitFor(() => expect(screen.getByText(t("compactionSettings.saveFailed"))).toHaveAttribute("role", "alert"));
-    expect(input).toHaveValue("summary-model");
+    expect(screen.getByTestId("compaction-model")).toHaveTextContent("summary-model");
   });
 
-  it("saves a separate compaction model and clears it to follow the current model", async () => {
+  it("saves a separate provider model and clears it to follow the current model", async () => {
     const { api } = profileApi({}, { hasApiKey: storedKeysFor("openai") });
+    offerCompactionModels();
     await renderTab(api);
-    const input = screen.getByRole("textbox", { name: t("compactionSettings.model") });
-    expect(input).toHaveValue("");
-    fireEvent.change(input, { target: { value: "summary-model" } });
+    expect(screen.getByTestId("compaction-model")).toHaveTextContent(t("compactionSettings.currentModel"));
+    await pickCompactionModel("summary-model");
     fireEvent.click(screen.getByTestId("compaction-model-save"));
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModel: "summary-model", compactionModelRoute: expect.any(String) } }));
-    fireEvent.change(input, { target: { value: "" } });
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: { vendor: "claude", model: "summary-model" } } }));
+    await pickCompactionModel(t("compactionSettings.currentModel"));
     fireEvent.click(screen.getByTestId("compaction-model-save"));
-    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModel: "", compactionModelRoute: expect.any(String) } }));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: null } }));
+  });
+
+  it("keeps a disconnected compaction model visible with an unavailable warning", async () => {
+    const { api } = profileApi({ compactionModelSelection: { vendor: "claude", model: "missing-summary" } });
+    await renderTab(api);
+    expect(screen.getByTestId("compaction-model")).toHaveTextContent("missing-summary");
+    expect(await screen.findByTestId("compaction-model-unavailable")).toHaveTextContent(t("compactionSettings.selectedUnavailable"));
+    expect(screen.getByTestId("compaction-model-save")).toBeDisabled();
+  });
+
+  it("keeps an unresolved legacy compaction choice visible until replaced", async () => {
+    const { api } = profileApi({ compactionModel: "legacy-summary", compactionModelRoute: '["subscription","codex"]' });
+    await renderTab(api);
+    expect(screen.getByTestId("compaction-model")).toHaveTextContent("legacy-summary");
+    expect(await screen.findByTestId("compaction-model-unavailable")).toBeVisible();
+    await pickCompactionModel(t("compactionSettings.currentModel"));
+    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: null } }));
   });
 
   it("offers the catalog in release order in the fallback chooser without a key", async () => {
