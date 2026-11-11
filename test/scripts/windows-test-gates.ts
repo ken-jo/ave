@@ -15,6 +15,7 @@ const HELPER_MODELS: Record<string, { target: string; equal: boolean }> = {
   electronControlLauncher: { target: "linux", equal: false }, // src/plugins/isolation/__tests__/adversarial-escapes.test.ts:127-138
 };
 const FEATURE_CALLS = new Set([
+  "hasNativeSrtWinBuildReceipt", // src/__tests__/support/srt-win-build-receipts.ts:48-51
   "canCreateSymlinks", // src/__tests__/support/symlink-capability.ts:32-50
   "existsSync", // Runtime lib/fs.js:276-290: path existence, no platform branch.
   "hasExecutable", // src/hooks/__tests__/test-helpers.ts:7-14

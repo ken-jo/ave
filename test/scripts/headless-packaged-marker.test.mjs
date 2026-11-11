@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { join } from "node:path";
 import {
   HEADLESS_PACKAGED_MARKER_NAME,
   headlessPackagedMarkerPath,
@@ -8,7 +9,7 @@ import {
 
 test("uses one versioned marker path", () => {
   assert.equal(HEADLESS_PACKAGED_MARKER_NAME, ".ave-headless-packaged-v1");
-  assert.equal(headlessPackagedMarkerPath("/app"), "/app/.ave-headless-packaged-v1");
+  assert.equal(headlessPackagedMarkerPath("/app"), join("/app", ".ave-headless-packaged-v1"));
 });
 
 test("propagates unexpected marker inspection failures as a closed startup", () => {
@@ -16,7 +17,7 @@ test("propagates unexpected marker inspection failures as a closed startup", () 
   assert.throws(
     () => readHeadlessPackagedMarker("/app", () => { throw cause; }),
     (error) => error instanceof Error
-      && error.message === "Packaged runtime marker inspection failed: /app/.ave-headless-packaged-v1"
+      && error.message === `Packaged runtime marker inspection failed: ${join("/app", ".ave-headless-packaged-v1")}`
       && error.cause === cause,
   );
 });

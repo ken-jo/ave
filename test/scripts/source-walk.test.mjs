@@ -28,7 +28,7 @@ test("a directory removed mid-walk is skipped, not fatal", () => {
   });
   assert.deepEqual(
     seen.map((p) => p.slice(root.length + 1)).sort(),
-    ["a/one.ts", "z/three.ts"],
+    [join("a", "one.ts"), join("z", "three.ts")],
   );
   rmSync(root, { recursive: true, force: true });
 });

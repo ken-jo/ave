@@ -9,9 +9,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import { writeImageRuntimePackage } from "../../src/__tests__/support/image-runtime-package.js";
 import { writeCanvasRuntimePackage, writePageRuntimeResources } from "../../src/__tests__/support/page-runtime-package.js";
 import { writeMxcRuntimePackage } from "../../src/__tests__/support/mxc-runtime-package.js";
-import SRT_WIN_BUILD_RECEIPTS from "../../src/permissions/generated/srt-win-build-receipts.js";
+import { upstreamSrtWinReceiptFixtures } from "../../src/__tests__/support/srt-win-build-receipts.js";
 
+const SRT_WIN_BUILD_RECEIPTS = upstreamSrtWinReceiptFixtures();
 const require = createRequire(import.meta.url);
+const { readUpstreamSrtWinInput } = require("../../scripts/lib/srt-win-integrity.cjs") as {
+  readUpstreamSrtWinInput: (path: string, arch: string) => Buffer;
+};
 const packageHook = require("../../scripts/electron-after-pack.cjs") as (
   context: Awaited<ReturnType<typeof createPackage>>["context"],
 ) => Promise<void>;
@@ -93,7 +97,7 @@ async function createPackage(platform: keyof typeof RUNTIME_FILES) {
     putFile(vendorPath);
     if (platform === "win32") {
       const runtimeRoot = dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json"));
-      putFile(vendorPath, readFileSync(join(runtimeRoot, "vendor", "srt-win", "x64", "srt-win.exe")));
+      putFile(vendorPath, readUpstreamSrtWinInput(join(runtimeRoot, "vendor"), "x64"));
       putFile(join(dirname(vendorPath), "build-receipt.json"), JSON.stringify(SRT_WIN_BUILD_RECEIPTS.x64));
     }
     chmodSync(vendorPath, 0o755);

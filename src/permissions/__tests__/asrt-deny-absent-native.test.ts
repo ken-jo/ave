@@ -5,6 +5,7 @@ import * as os from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hasNativeSrtWinBuildReceipt } from "../../__tests__/support/srt-win-build-receipts.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { initializeRequiredSandbox } from "../../__tests__/support/native-sandbox.js";
@@ -24,7 +25,7 @@ vi.mock("node:os", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:os")>()),
 }));
 
-describe.runIf(process.platform === "win32")("Windows absent deny native enforcement", () => {
+describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("Windows absent deny native enforcement", () => {
   let root: string;
   let container: string;
   let ancestorAces: string | undefined;
@@ -212,7 +213,7 @@ describe.runIf(process.platform === "win32")("Windows absent deny native enforce
   }, 60_000);
 });
 
-describe.runIf(process.platform === "win32")("Windows private helper deny lifetime", () => {
+describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("Windows private helper deny lifetime", () => {
   let container: string;
 
   beforeEach(() => {

@@ -5,11 +5,11 @@ import { getBuiltinModule } from "node:process";
 import { afterAll, afterEach, beforeEach, expect, vi } from "vitest";
 import { installWindowsNativeTripwire } from "./support/windows-native-tripwire.js";
 
-// Native host tests consume the actual compiled receipts; other hosts use inert fixture bytes.
+// Match the installed test input without changing production trust.
 vi.mock("../permissions/generated/srt-win-build-receipts.js", async (importOriginal) => {
-  if (getBuiltinModule("node:os").type() === "Windows_NT") return importOriginal();
-  const { upstreamSrtWinReceiptFixtures } = await import("./support/srt-win-build-receipts.js");
-  return { default: upstreamSrtWinReceiptFixtures() };
+  const { default: generated } = await importOriginal<typeof import("../permissions/generated/srt-win-build-receipts.js")>();
+  const { selectSrtWinTestReceipts } = await import("./support/srt-win-build-receipts.js");
+  return { default: selectSrtWinTestReceipts(generated) };
 });
 
 // Capture the real host before suite code can replace process.platform.

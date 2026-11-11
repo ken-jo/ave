@@ -128,6 +128,7 @@ import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/generate-seccomp-filter.js";
+import { hasNativeSrtWinBuildReceipt } from "../../__tests__/support/srt-win-build-receipts.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../lib/confined-process-phase.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -278,7 +279,7 @@ describe("asrt-sandbox — gate default OFF", () => {
 });
 
 describe("asrt-sandbox — active flag lifecycle (boot-time, no runtime injection)", () => {
-  it("flips to true on initialize and back to false on reset", async () => {
+  it.skipIf(process.platform === "win32" && !hasNativeSrtWinBuildReceipt())("flips to true on initialize and back to false on reset", async () => {
     if (!(await asrtCanInitialize())) {
       // Unsupported platform or missing sandbox deps — initialize would fail-closed at boot anyway; the gate stays OFF.
       expect(isAsrtSandboxActive()).toBe(false);
@@ -293,7 +294,7 @@ describe("asrt-sandbox — active flag lifecycle (boot-time, no runtime injectio
 });
 
 describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", () => {
-  it.runIf(process.platform === "win32")("stamps an isolated profile without traversing the whole profile", async (context) => {
+  it.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("stamps an isolated profile without traversing the whole profile", async (context) => {
     const dependencies = await checkAsrtDependencies();
     if (dependencies.errors.length > 0) {
       console.info(`Native ACL stamp timing unavailable: ${dependencies.errors.join("; ")}`);
@@ -313,7 +314,7 @@ describe("asrt-sandbox — gate ON wraps a real command under the OS sandbox", (
     }
   }, 60_000);
 
-  it("returns ASRT argv whose wrapped echo runs and resolves vendor binaries", async () => {
+  it.skipIf(process.platform === "win32" && !hasNativeSrtWinBuildReceipt())("returns ASRT argv whose wrapped echo runs and resolves vendor binaries", async () => {
     if (!(await asrtCanInitialize())) return;
 
     const writeDir = mkdtempSync(join(tmpdir(), "asrt-test-"));
@@ -607,7 +608,7 @@ describe("asrt-sandbox — Linux seccomp helper beneath a read deny", () => {
 });
 
 describe("asrt-sandbox — per-command trust boundary (security MINOR)", () => {
-  it("a per-command filesystem wrap cannot carry a weakening flag (no such field)", async () => {
+  it.skipIf(process.platform === "win32" && !hasNativeSrtWinBuildReceipt())("a per-command filesystem wrap cannot carry a weakening flag (no such field)", async () => {
     if (!(await asrtCanInitialize())) return;
 
     await initializeAsrtSandbox({ allowedDomains: [] });
@@ -826,7 +827,7 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
 });
 
 describe("asrt-sandbox — idempotency guard (PR #1356 NIT)", () => {
-  it("initialize throws if already active (double-init is a loud failure)", async () => {
+  it.skipIf(process.platform === "win32" && !hasNativeSrtWinBuildReceipt())("initialize throws if already active (double-init is a loud failure)", async () => {
     if (!(await asrtCanInitialize())) return;
     await initializeAsrtSandbox({ allowedDomains: [] });
     expect(isAsrtSandboxActive()).toBe(true);
@@ -838,7 +839,7 @@ describe("asrt-sandbox — idempotency guard (PR #1356 NIT)", () => {
 describe("asrt-sandbox — a wrap begins the confined-process phase", () => {
   afterEach(() => _resetConfinedProcessPhaseForTests());
   for (const kind of ["tool", "worker"] as const) {
-    it(`${kind} wrap marks that confined processes may run`, async ({ skip }) => {
+    it.skipIf(process.platform === "win32" && !hasNativeSrtWinBuildReceipt())(`${kind} wrap marks that confined processes may run`, async ({ skip }) => {
       if (!(await asrtCanInitialize())) skip("ASRT cannot initialize on this host");
       await initializeAsrtSandbox({ allowedDomains: [] });
       _resetConfinedProcessPhaseForTests();
@@ -851,7 +852,7 @@ describe("asrt-sandbox — a wrap begins the confined-process phase", () => {
 });
 
 describe("asrt-sandbox — worker wrap carries only the filesystem jail", () => {
-  it("wrapWorkerCommand wraps with no per-command network override (network is the shared config)", async () => {
+  it.skipIf(process.platform === "win32" && !hasNativeSrtWinBuildReceipt())("wrapWorkerCommand wraps with no per-command network override (network is the shared config)", async () => {
     if (!(await asrtCanInitialize())) return;
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
     // WrapOptions exposes only `filesystem` + `abortSignal` — there is no `network` channel (it would be INERT per command; enforcement is the shared config). The wrap succeeds with the filesystem slice only.
@@ -994,7 +995,7 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
 });
 
 describe("asrt-sandbox — parentProxy explicit (PR #1356 security MINOR)", () => {
-  it("the composed child env never carries the host HTTP_PROXY (no covert egress chain)", async () => {
+  it.skipIf(process.platform === "win32" && !hasNativeSrtWinBuildReceipt())("the composed child env never carries the host HTTP_PROXY (no covert egress chain)", async () => {
     if (!(await asrtCanInitialize())) return;
     // Set a bogus host proxy. Two layers must prevent it reaching the child: 1. network.parentProxy is set explicitly to {} so ASRT's egress proxy does NOT chain through the host proxy (resolveParentProxy would otherwise silently inherit process.env.HTTP_PROXY); 2. buildSandboxedChildEnv strips the host HTTP_PROXY from the child env because ASRT did not change it (it equals process.env).
     const { buildSandboxedChildEnv } = await import("../../tools/safe-env.js");

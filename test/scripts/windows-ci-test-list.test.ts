@@ -152,6 +152,30 @@ describe("conditional Windows gates", () => {
     ]);
   });
 
+  it("classifies receipt availability while retaining platform requirements", () => {
+    expect(conditionalGates(`
+      const available = hasNativeSrtWinBuildReceipt();
+      const alias = available;
+      it.runIf(hasNativeSrtWinBuildReceipt());
+      it.runIf(alias);
+      it.skipIf(!hasNativeSrtWinBuildReceipt());
+      it.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt());
+      it.runIf(process.platform === "win32" && alias);
+      it.skipIf(process.platform !== "win32" || !hasNativeSrtWinBuildReceipt());
+      it.skipIf(process.platform !== "win32" || !alias);
+      it.skipIf(process.platform === "win32" && !hasNativeSrtWinBuildReceipt());
+      it.runIf(process.platform === "win32" && someHelper());
+    `).map((gate) => gate.classification)).toEqual([
+      "not-win32-only", "not-win32-only", "not-win32-only",
+      "win32-only", "win32-only", "win32-only", "win32-only",
+      "not-win32-only", "unclassifiable",
+    ]);
+    expect(listProblems(new Map([["test/example.test.ts",
+      'it.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt());',
+    ]]), `- name: ${STEP_NAME}\n`))
+      .toEqual([`test/example.test.ts: missing from ${STEP_NAME}`]);
+  });
+
   it("rejects unknown capability calls identically inline and through constants", () => {
     expect(conditionalGates(`
       const available = someHelper();
