@@ -2404,8 +2404,10 @@ confinement, so shell/process relaxation must remain stricter than filesystem
 or network-bearing tool relaxation.
 
 `features.osToolSandbox` defaults to `true` on macOS, Linux and Windows.
-An explicit stored value is preserved. Windows requests container-backed shell
-confinement by default; plugin confinement remains independently opt-in.
+An explicit stored value is preserved. On Windows, container-backed agent
+shells also require `features.windowsShellLocalNetworkAccess`, which defaults
+to `false`; while it is off, they use the approved-host route and cannot earn
+sandbox-auto eligibility. Plugin confinement remains independently opt-in.
 Activation still requires a successful runtime
 probe. The host issues one immutable `HostShellExecutionPlan` per invocation;
 its `sandboxed` field describes the selected child, including exclusions and
@@ -2952,18 +2954,30 @@ x64 build, shells used the owner's SID at Low Mandatory Level
 (`S-1-16-4096`), with administrator groups deny-only and no AppContainer or
 restricted SIDs. Ranked MXC filesystem grants and denies confine reads and
 writes. DACL-mutating fallback is disabled; boot validation requires BaseContainer.
-Low integrity alone does not prove read confinement. The `srt-win` account's SID-keyed ACE stamps and
-WFP filters serve plugin confinement, not MXC shells. Egress uses MXC network
+Low integrity alone does not prove read confinement. The `srt-win` account's
+SID-keyed ACE stamps and WFP filters serve plugin confinement, not MXC shells.
+Egress uses MXC network
 policy plus `runtimeConfig.networkProxy` to the invocation's loopback relay
 (DNS exception below). `ingress.default: "allow"` requests private-network
 inbound, and `hostLoopback: "allow"` requests backend-dependent bidirectional
 connectivity, not only proxy access. Inbound probes failed while host-listener
-controls succeeded: measured, mechanism unverified. The request does not
-guarantee inbound denial.
+controls succeeded; these bounded measurements do not guarantee inbound denial.
+
+`features.windowsShellLocalNetworkAccess` defaults to `false`. OFF keeps
+Windows agent shells on the existing approved-host permission route, without
+sandbox-auto eligibility or an MXC shell start probe. ON permits the existing
+MXC route once readiness passes and accepts possible local-network and loopback
+inbound connections. Changes apply to the next command without restarting;
+headless requests retain the [decision tree](permission-decision-tree.md).
+This explicit opt-in follows the
+[VS Code Windows sandbox proxy access reference](https://code.visualstudio.com/docs/agents/run/agent-sandboxing#check-windows-sandbox-proxy-access).
+The shell setting does not alter the separately opted-in extension policy,
+including stdio MCP servers and its documented [D2 residual](../design/windows-extensions-mxc.md#7-resolved-owner-decisions).
 
 By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
 command on Windows runs in its own Microsoft Execution Containers (MXC)
-BaseContainer where the host offers one. The shell path uses the MIT-licensed
+BaseContainer when local-network access is enabled and the host offers one.
+The shell path uses the MIT-licensed
 `wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.1 at
 `<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
 `scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
@@ -3064,13 +3078,16 @@ in its directory.
 - **Detection.** On the boot path the launcher's sha256 must match the pin,
   `--probe` must report the `base-container` tier, and `--dry-run` of a request
   shaped like a real one (loopback proxy, default-deny egress, no DACL
-  fallback) must pass. ASRT then starts as if MXC were available, and MXC is
-  `checking`: after boot, off the critical path, System32 Windows PowerShell
+  fallback) must pass. These checks do not start a container. With shell
+  local-network access off, the real start probe is deferred and shells stay
+  on the approved-host route. Once access is on, MXC is `checking`: off the
+  critical path, System32 Windows PowerShell
   5.1 must start (`exit 0`) in a real container of that shape (reduced
   caller-owned environment, proxy mode; a cold start can take tens of
   seconds). Until it settles, shells take the approved-host route and Settings
-  says the check is running; when it passes the record switches to MXC, unless
-  something re-recorded it meanwhile. Detection reads what the launcher does,
+  says the check is running; when it passes and local-network access remains
+  on, the effective route switches to MXC. Turning access off prevents a late
+  probe result from enabling that route. Detection reads what the launcher does,
   not the build number: MXC 1.0.1 no longer requires PSEC 1.1 for an
   identity-less loopback proxy (the launcher queries host support and the
   directions depend on the Windows build), so the exact request must still
@@ -3094,7 +3111,8 @@ in its directory.
   changing already-admitted holders. Failure retains the degraded routes and
   publishes the startup diagnostic. Reset invalidates pending promotion before
   releasing session ACLs.
-  With MXC, shells run in containers whether or not srt-win is installed;
+  With ready MXC and shell local-network access enabled, shells run in containers
+  whether or not srt-win is installed;
   without srt-win, ASRT starts as the proxy only (`windows.externalConfinement`,
   patch part 3, which also skips the srt-win dependency check `initialize()`
   runs first), the process-wide capability confines nothing, and extensions
@@ -3104,8 +3122,9 @@ in its directory.
   recorded under that invocation's token only. Without MXC, shells keep the
   approved host route. Without either, the gate degrades as before. The
   persistent conversation PTY never runs in MXC (its background descendants
-  outlive individual commands), and reads only the process-wide
-  capability.
+  outlive individual commands), including the side-chat terminal; it reads
+  only the process-wide capability. Extension holders and all MCP stdio
+  wraps keep their separate confinement selection and D2 local-network policy.
 - **Filesystem.** The per-command ASRT lists are ranked for MXC
   (`rankMxcFilesystem`): the protected read floor drops grants not under a
   pierce, a write grant under a `denyWrite` path becomes read-only, a deny
@@ -3119,6 +3138,13 @@ in its directory.
   grants fails closed. The shell cannot create that missing directory during
   this spawn. Denies are recomputed each spawn, restoring precise entries once
   it exists; an approved file tool can still create the directory.
+  In the six installed x64 runs observed on 2026-11-11, node opens of the Ave
+  home, config, browser-profile and user key-store boundaries were denied;
+  PowerShell opens at the Ave home and config boundaries were denied except
+  Read-Attributes-only opens, with no boundary `ReadFile` or `QueryDirectory`
+  observed.
+  Attribution of each native access decision is an unknown implementation
+  detail; the observation covers those runs and access modes only.
 - **Policy transport.** Requests that exceed the inline command-line budget
   use a random 128-bit named pipe served by the existing path-kind helper.
   The helper has two host-only roles: path classification/facts and policy
@@ -3174,9 +3200,10 @@ in its directory.
   measurement found a listener bound to `0.0.0.0:18555` unreachable from
   loopback, LAN, overlay-network and remote peers, while host-listener controls
   succeeded. Firewall and audit policies were unchanged, so attribution to
-  a particular filter or firewall rule remains unverified. The separate
-  account's connect-only WFP filters do not establish an inbound boundary
-  for MXC shells.
+  a particular filter or firewall rule is an unknown implementation detail.
+  These bounded refusals do not establish an inbound boundary. Shells request
+  this policy only after the local-network access setting is enabled; the
+  separate account's connect-only WFP filters do not protect MXC-shell inbound.
 - **UI.** Containers run with `ui.disable: false` (PowerShell 5.1 does not
   start without Win32k), clipboard `none` and input injection off. A contained
   process can still open windows on the user's desktop and so could draw a
@@ -3196,6 +3223,11 @@ in its directory.
 - **Settings.** Permissions shows the substrate chosen for shells and
   extensions, the MXC unavailable reason with the Windows build, the Bash
   limit, the DNS channel, and that extensions share one proxy identity.
+  The Windows shell local-network toggle displays: "Commands can accept
+  connections from your local network and loopback; enable only if you accept
+  that." With access off, status and the diagnostics bundle report the
+  approved-host route even when MXC is available. Extension confinement and
+  its local-network policy remain independent.
 - **Extension disclosure (row 6).** The Permissions card renders the
   extension state from `SandboxWindowsSubstrateInfo.extensionPlan`, never from
   `extensions` alone: `checking` and `rejected` say starts are refused and that
