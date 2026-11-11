@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { closeSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const pins = require("../src/permissions/srt-win-pins.json");
@@ -147,7 +147,9 @@ export async function buildSrtWin(options) {
     writeFileSync(archivePath, archive, { flag: "wx" });
     const extracted = join(scratch, "source");
     mkdirSync(extracted);
-    run("tar.exe", ["-xzf", archivePath, "--strip-components=1", "-C", extracted], scratch);
+    // Drive-qualified archive paths can be parsed as remote host names. Both
+    // paths are inside scratch, which is also the extraction working directory.
+    run("tar.exe", ["-xzf", relative(scratch, archivePath), "--strip-components=1", "-C", relative(scratch, extracted)], scratch);
     // The immutable archive hash authenticates the complete source tree before patching.
     const source = join(extracted, "vendor", "srt-win-src");
     if (!existsSync(join(source, "Cargo.lock"))) throw new Error("Native source lockfile is missing");

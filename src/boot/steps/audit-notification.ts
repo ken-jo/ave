@@ -14,18 +14,8 @@ import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import type { BootContext } from "../context.js";
-import type { DesktopHostCapabilities } from "../host-runtime.js";
 
 const log = createLogger("ave");
-
-/** Initialize the presenter at boot so Windows toast activation is registered before any notification. */
-function initializeOsNotificationPresenter(
-  desktop: Pick<DesktopHostCapabilities, "initializeNotificationPresenter"> | undefined,
-): void {
-  if (!desktop) return;
-  const supported = desktop.initializeNotificationPresenter();
-  log.info("boot: OS notification presenter initialised (supported=%s)", supported);
-}
 
 export async function setupAuditAndNotification(ctx: BootContext): Promise<void> {
   const { getMainWindow, aveHomeDocUpgradeMarkers } = ctx;
@@ -66,7 +56,6 @@ export async function setupAuditAndNotification(ctx: BootContext): Promise<void>
     }),
     isOsNotificationsEnabled: () => ctx.settingsService.get("alerts").osNotificationsEnabled,
   });
-  initializeOsNotificationPresenter(ctx.host.desktop);
   if (aveHomeDocUpgradeMarkers.length > 0) {
     const markerSummary =
       aveHomeDocUpgradeMarkers.length === 1

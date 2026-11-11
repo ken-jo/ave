@@ -19,6 +19,8 @@ import { readRepoFile } from "../../src/__tests__/test-helpers.js";
 import {
   ACL_QUERY_SCRIPT,
   assertAsrtUserReady,
+  assertDisposableSmokeGate,
+  assertLimitedUninstallResult,
   assertRuntimeNotificationArtifactsRemoved,
   FOREIGN_PROTOCOL_FIXTURE_SCRIPT,
   buildPowerShellScript,
@@ -28,6 +30,7 @@ import {
   isOwnedRuntimeShortcut,
   MAX_OUTPUT_CHARS,
   normalizeToastActivatorClsid,
+  OWNED_PROTOCOL_FIXTURE_SCRIPT,
   parseExecutableFromCommand,
   parseJsonProcessResult,
   REGISTRY_KEY_DELETED_ERROR,
@@ -109,6 +112,74 @@ function runPowerShellParser(source: string) {
 }
 
 describe("Windows NSIS installer smoke contracts", () => {
+  it("requires the actual hosted platform metadata after account switching", () => {
+    const env = { GITHUB_ACTIONS: "true", RUNNER_OS: "Windows", AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: "1" };
+    expect(() => assertDisposableSmokeGate(env)).not.toThrow();
+    for (const runnerOs of [undefined, "Linux"]) {
+      expect(() => assertDisposableSmokeGate({ ...env, RUNNER_OS: runnerOs })).toThrow("requires RUNNER_OS=Windows");
+    }
+    expect(() => assertDisposableSmokeGate({ ...env, AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: undefined })).toThrow("=1 is required");
+  });
+  it("rejects elevated launchers, wrong integrity and failed uninstall exits", () => {
+    const result = { administrator: false, mediumIntegrity: true, userSid: "S-1-5-21-123", exitCode: 0 };
+    expect(() => assertLimitedUninstallResult(result)).not.toThrow();
+    for (const patch of [{ administrator: true }, { mediumIntegrity: false }, { exitCode: 1 }, { exitCode: null }, { userSid: "" }]) {
+      expect(() => assertLimitedUninstallResult({ ...result, ...patch })).toThrow("limited uninstall did not complete successfully");
+    }
+    expect(() => assertLimitedUninstallResult(null)).toThrow();
+  });
+
+  it("runs genuine uninstall from the retained filtered owner process", () => {
+    const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
+    const body = smoke.slice(smoke.indexOf("async function uninstallAndVerify("), smoke.indexOf("export function assertLimitedUninstallResult("));
+    expect(body).toContain("await runLimitedUninstaller(machineInstall, args, timeoutMs)");
+    expect(body).toContain("await assertUninstalledSurface(machineInstall)");
+    expect(body).not.toContain("await runProcess(machineInstall.uninstaller");
+    const launcher = readRepoFile("scripts/lib/run-limited-windows-process.ps1");
+    expect(launcher).toContain("$env:AVE_WINDOWS_SMOKE_OWNER_DIRECTORY");
+    expect(launcher).toContain("if ($null -eq $report.exitCode) { throw");
+    expect(launcher).toContain("exit $report.exitCode");
+    expect(smoke).toContain("copyFileSync(machineInstall.uninstaller, worker)");
+    expect(smoke).toMatch(/const workerArgs = \[\.\.\.args, `_\?=\$\{machineInstall\.installDir\}`\]/);
+    expect(smoke).toContain('"-FilePath", worker');
+    expect(smoke).toContain("Buffer.from(JSON.stringify(workerArgs))");
+    const owner = readRepoFile("scripts/lib/run-windows-installer-owner.ps1");
+    expect(owner).toContain("if ($OwnerBootstrap) { Invoke-OwnerRequests }");
+    expect(owner).toContain("if ($admin -or $request.userSid -ne $identity.User.Value) { throw");
+    expect(owner).toContain("if (-not $report.mediumIntegrity) { throw");
+    expect(owner).toContain("$start.UseShellExecute = $false");
+    expect(owner).toContain("$report.exitCode = $process.ExitCode");
+    expect(owner).toContain("$env:RUNNER_ENVIRONMENT -ne 'github-hosted'");
+    expect(owner).toContain("New-LocalUser -Name $name");
+    expect(owner).toContain("-Credential $credential -LoadUserProfile");
+    expect(owner).toContain("if ($admin) { throw 'The owner bootstrap did not receive a filtered token' }");
+    expect(owner).toContain("-Verb RunAs");
+    expect(owner).toContain("finally {");
+    expect(owner).toContain("Remove-LocalUser -SID $user.SID");
+    expect(owner).toContain("profile storage ends with the hosted VM");
+    expect(owner).toContain("-Value $saved[$name]");
+    expect(owner).toMatch(/\/grant "\*\$\{sid\}:\(OI\)\(CI\)F"/);
+    const workflow = readRepoFile(".github/workflows/build-installers.yml");
+    const preflight = workflow.indexOf("name: Verify native owner token flow");
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(preflight).toBeLessThan(workflow.indexOf("name: Install dependencies"));
+    expect(workflow).toContain("run: node test/scripts/probes/windows-owner-flow.mjs");
+  });
+
+  it("checks owned keys in both hives without fixture cleanup masking an empty root", () => {
+    const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
+    const pass = smoke.slice(smoke.indexOf("async function runInstallerPass("), smoke.indexOf("async function main("));
+    expect(pass).toContain("await seedOwnedCurrentUserProtocol(state.machineInstall)");
+    expect(pass).toMatch(/if \(!keepAppData\) \{\s+state\.foreignProtocolFixture = createForeignProtocolFixture\(keepAppData\);\s+await seedForeignProtocolFixture\(state\.foreignProtocolFixture\);\s+\}/);
+    expect(pass.indexOf("await seedOwnedCurrentUserProtocol")).toBeLessThan(pass.indexOf("await uninstallAndVerify"));
+    expect(pass).toContain("launchError ??= error");
+    expect(pass).toContain("if (launchError) throw launchError");
+    expect(pass.indexOf("if (launchError) throw launchError")).toBeGreaterThan(pass.indexOf("await uninstallAndVerify"));
+    expect(pass.indexOf("createUserDataSentinels()")).toBeGreaterThan(pass.indexOf("await assertRuntimeNotificationArtifacts"));
+    expect(pass.indexOf("createUserDataSentinels()")).toBeLessThan(pass.indexOf("await uninstallAndVerify"));
+    expect(smoke.slice(smoke.indexOf("async function main("))).not.toContain("createUserDataSentinels()");
+  });
+
   it("extracts quoted and unquoted executable paths from registry commands", () => {
     expect(
       parseExecutableFromCommand(
@@ -396,6 +467,9 @@ describe("Windows NSIS installer smoke contracts", () => {
         registry: REGISTRY_QUERY_SCRIPT,
         acl: ACL_QUERY_SCRIPT,
         foreignProtocolFixture: FOREIGN_PROTOCOL_FIXTURE_SCRIPT,
+        ownedProtocolFixture: OWNED_PROTOCOL_FIXTURE_SCRIPT,
+        limitedProcessLauncher: readRepoFile("scripts/lib/run-limited-windows-process.ps1"),
+        ownerProfileLauncher: readRepoFile("scripts/lib/run-windows-installer-owner.ps1"),
         notificationCleanup: readRepoFile(
           "build/uninstall-windows-notification-artifacts.ps1",
         ),
@@ -1232,7 +1306,7 @@ describe("Windows NSIS installer smoke contracts", () => {
       smoke.indexOf("async function uninstallAndVerify"),
       smoke.indexOf("async function cleanupFailedInstallerPass"),
     );
-    const processExit = uninstallFlow.indexOf("await runProcess");
+    const processExit = uninstallFlow.indexOf("await runLimitedUninstaller");
     const uninstallRegistrationBarrier = uninstallFlow.indexOf(
       "await waitForExactUninstallRegistrationRemoved",
     );
@@ -1488,7 +1562,7 @@ describe("Windows NSIS installer smoke contracts", () => {
       smoke.indexOf("async function uninstallAndVerify"),
       smoke.indexOf("async function cleanupFailedInstallerPass"),
     );
-    const processExit = uninstallFlow.indexOf("await runProcess");
+    const processExit = uninstallFlow.indexOf("await runLimitedUninstaller");
     const uninstallRegistrationBarrier = uninstallFlow.indexOf(
       "await waitForExactUninstallRegistrationRemoved",
     );
@@ -1830,7 +1904,8 @@ describe("Windows NSIS installer smoke contracts", () => {
       "AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}",
     );
     expect(workflow).not.toContain("--skip-windows-installer-smoke");
-    expect(workflow.match(/^ {10}AVE_ALLOW_(DISPOSABLE_WINDOWS_INSTALLER|DESTRUCTIVE_UNINSTALL)_SMOKE: .*$/gmu)).toHaveLength(2);
+    expect(workflow.match(/^ {6}AVE_ALLOW_(DISPOSABLE_WINDOWS_INSTALLER|DESTRUCTIVE_UNINSTALL)_SMOKE: .*$/gmu)).toHaveLength(2);
+    expect(workflow).toMatch(/name: Verify native owner token flow\n\s+if: matrix\.target == 'win'\n\s+run: node test\/scripts\/probes\/windows-owner-flow\.mjs/);
 
     const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
     expect(smoke).toContain('"AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE"');

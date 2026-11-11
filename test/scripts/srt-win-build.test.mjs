@@ -46,6 +46,10 @@ test("source archive is independently hash pinned to an immutable revision", () 
   assert.ok(pins.source.url.endsWith(`/tarball/${pins.source.revision}`));
   assert.throws(() => assertSourceArchive(Buffer.from("tampered source")), /srt-win-source-integrity-mismatch/);
 });
+test("native source extraction keeps drive letters out of archive arguments", () => {
+  const source = readFileSync(new URL("../../scripts/build-srt-win.mjs", import.meta.url), "utf8");
+  assert.match(source, /run\("tar\.exe", \["-xzf", relative\(scratch, archivePath\), "--strip-components=1", "-C", relative\(scratch, extracted\)\], scratch\)/);
+});
 test("native helper compilation refuses a non-native host", () => {
   const moduleUrl = new URL("../../scripts/build-srt-win.mjs", import.meta.url).href;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
