@@ -8,18 +8,19 @@ import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededEl
 
 test('glass tint spans bare material to opaque and preserves opaque safety surfaces', async () => {
   const context = await launchSeededElectron({
+    seedApiKey: false,
     historyRows: [{ role: 'user', content: 'Verify populated sidebar readability' }],
     sessionTitle: 'Active glass conversation',
     prepareHome: (aveHome) => {
       const id = 'e2000001-bb11-4cc2-8dd3-eeeeeeeeeeee';
       writeFileSync(join(aveHome, 'sessions', `${id}.jsonl`), `${JSON.stringify({ role: 'user', content: 'An inactive conversation' })}\n`);
-      writeFileSync(join(aveHome, 'sessions', `${id}.meta.json`), JSON.stringify({ title: 'Inactive glass conversation' }));
+      writeFileSync(join(aveHome, 'sessions', `${id}.meta.json`), JSON.stringify({ title: 'Inactive glass conversation', unreadSince: new Date().toISOString() }));
       const archivedId = 'e2000002-bb11-4cc2-8dd3-eeeeeeeeeeee';
       writeFileSync(join(aveHome, 'sessions', `${archivedId}.jsonl`), `${JSON.stringify({ role: 'user', content: 'An archived conversation' })}\n`);
       writeFileSync(join(aveHome, 'sessions', `${archivedId}.meta.json`), JSON.stringify({ title: 'Archived glass conversation', archivedAt: new Date().toISOString() }));
     },
     settings: {
-      ...buildLlmSettings(),
+      ...buildLlmSettings(undefined, ''),
       system: { sidebarState: 'expanded' },
     },
   });
@@ -147,6 +148,35 @@ test('glass tint spans bare material to opaque and preserves opaque safety surfa
       const selectedRatio = (Math.max(selectedForeground, selectedBackground) + 0.05) / (Math.min(selectedForeground, selectedBackground) + 0.05);
       expect(selectedRatio, `${scheme.id}: selected conversation`).toBeGreaterThanOrEqual(4.5);
       contrasts.push({ scheme: scheme.id, shell: scheme.shell, tint: 40, kind: 'body', ratio: selectedRatio });
+      const settings = page.getByTestId('sidebar-settings');
+      await expect(settings).not.toHaveAttribute('aria-current', 'page');
+      await expect(settings.locator('svg.text-destructive')).toBeVisible();
+      await expect(page.getByTestId('sidebar-settings-alert')).toBeVisible();
+      await expect(page.getByTestId('sidebar-session-unread-e2000001-bb11-4cc2-8dd3-eeeeeeeeeeee')).toBeVisible();
+      const statusColors = await page.evaluate(() => {
+        const read = (selector: string, property: 'color' | 'backgroundColor') => {
+          const element = document.querySelector(selector);
+          if (!element) throw new Error(`Status marker missing: ${selector}`);
+          const color = getComputedStyle(element)[property].match(/[\d.]+/g)?.map(Number);
+          if (!color || color.length < 3) throw new Error('Status marker color missing');
+          return { selector, color };
+        };
+        return [
+          read('[data-testid="sidebar-settings"] svg.text-destructive', 'color'),
+          read('[data-testid="sidebar-settings-alert"]', 'backgroundColor'),
+          read('[data-testid="sidebar-session-unread-e2000001-bb11-4cc2-8dd3-eeeeeeeeeeee"]', 'backgroundColor'),
+        ];
+      });
+      for (const status of statusColors.slice(0, 2)) {
+        expect(status.color, `${scheme.id}: coloured error state`).not.toEqual(selected.foreground);
+      }
+      for (const status of statusColors) {
+        expect(status.color[3] ?? 1, status.selector).toBe(1);
+        const luminance = relativeLuminance(status.color.slice(0, 3).map(channel => channel / 255) as [number, number, number]);
+        const ratio = (Math.max(luminance, backgroundLuminance) + 0.05) / (Math.min(luminance, backgroundLuminance) + 0.05);
+        expect(ratio, `${scheme.id}: ${status.selector}`).toBeGreaterThanOrEqual(3);
+        contrasts.push({ scheme: scheme.id, shell: scheme.shell, tint: 40, kind: 'status', ratio });
+      }
       await openInlineSettings(app, page, 'appearance');
     }
     if (glass) {

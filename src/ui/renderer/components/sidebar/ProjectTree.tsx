@@ -1226,7 +1226,7 @@ export function ProjectTree({
         /** Same acknowledgement text the composer selector shows for the same `pickRoot` warning — one flow, one wording. */
         <div
           data-testid="sidebar-project-root-warning"
-          className="my-1 space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-dense"
+          className="ave-sidebar-warning my-1 space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-dense"
         >
           <div className="font-medium text-destructive">{t("composerProjectSelector.rootWarningTitle")}</div>
           <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground [overflow-wrap:anywhere]">

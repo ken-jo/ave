@@ -13,12 +13,17 @@ export interface ColorScheme {
   shell: ResolvedShell;
   terminal: TerminalPalette;
 }
+/** Renderer-only status colours for the glass sidebar, with paired ink for filled badges. */
+export type GlassStatusTokens = Pick<ThemeTokens,
+  "destructive" | "destructive-foreground" | "warning" | "warning-foreground"
+  | "success" | "success-foreground" | "info" | "info-foreground" | "emphasis">;
 export interface ResolvedTheme {
   id: string;
   shell: ResolvedShell;
   terminal: ColorScheme["terminal"];
   tokens: ThemeTokens;
   surfaces: ThemeSurfaces;
+  glassStatus: GlassStatusTokens;
 }
 export interface ThemeContextValue {
   appearance: AppearanceSettings;
