@@ -1,7 +1,7 @@
 import { createProvider, secretKeyFor } from "../llm/provider-factory.js";
 import { FallbackProvider } from "../llm/vercel/fallback-chain.js";
 import type { LLMProvider, ProviderConfig } from "../llm/types.js";
-import type { SettingsService } from "../../data/settings-store.js";
+import type { LLMSettings, SettingsService } from "../../data/settings-store.js";
 import {
   canUseLlmVendorWithoutApiKey,
   getLlmVendorSettings,
@@ -232,7 +232,18 @@ export async function generateText(
   abortSignal?: AbortSignal,
   options?: GenerateTextOptions,
 ): Promise<string> {
-    const llm = settingsService.get("llm");
+    return generateTextForRoute(provider, settingsService.get("llm"), prompt, systemPrompt, abortSignal, options);
+}
+
+/** A one-shot system instance receives its resolved route independently of chat state. */
+export async function generateTextForRoute(
+  provider: LLMProvider | null,
+  llm: LLMSettings,
+  prompt: string,
+  systemPrompt = t("be_conversationLoop.generateTextSystemPrompt"),
+  abortSignal?: AbortSignal,
+  options?: GenerateTextOptions,
+): Promise<string> {
     const model = provider?.subscriptionRuntime
       ? provider.subscriptionRuntime.model ?? "default"
       : activeLlmRouteModel(llm, cleanModelOverride(options?.modelOverride));

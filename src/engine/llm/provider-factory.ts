@@ -81,6 +81,4 @@ export function createProvider(config: ProviderConfig): LLMProvider {
     : transport;
 }
 
-export function secretKeyFor(vendor: LLMVendor): string {
-  return `llm.apiKey.${vendor}`;
-}
+export { llmVendorSecretKey as secretKeyFor } from "../../shared/llm-vendor-defaults.js";

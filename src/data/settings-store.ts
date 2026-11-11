@@ -19,7 +19,8 @@ import {
 import { normalizeShutdownCleanupTimeoutMs } from "../shared/tool-timeout-policy.js";
 import type { PricingOverride } from "../shared/pricing-overrides.js";
 import { LlmProviderSettingsError } from "../shared/custom-provider.js";
-import { compactionModelRouteKey } from "../shared/compaction-model.js";
+import type { JudgeModelRef } from "../permissions/judge/judge-settings.js";
+import { isCompactionModelSelection } from "../shared/compaction-model.js";
 import {
   sanitizePluginConfig,
   sanitizePluginConfigKey,
@@ -329,9 +330,11 @@ export function settingsFilePath(userDataPath: string): string {
 
 /** Read lazy vendor blocks through getLlmVendorSettings; provider defaults govern sampling and stale controls drop on write. */
 export interface LLMSettings {
-  /** Empty uses the current chat model; another id stays on the active provider and credential route. */
+  /** Saved summarizer destination and model. Null follows the current chat model. */
+  compactionModelSelection?: JudgeModelRef | null;
+  /** Legacy model id retained only when its stored route cannot be migrated. */
   compactionModel?: string;
-  /** Provider namespace that owns compactionModel; a different active route uses its current chat model. */
+  /** Legacy authentication route used only to migrate compactionModel. */
   compactionModelRoute?: string;
   /** Selects the execution boundary for new chat turns. API credentials and their provider/model
    * configuration remain under `provider` and `vendors` even while a subscription runtime is active. */
@@ -365,6 +368,7 @@ export interface LLMSettings {
 
 /** Patch shape for `SettingsService.patch()`. Vendor blocks are partial so a UI save touching a single vendor doesn't have to send every default or marketplace provider block. */
 export interface LLMSettingsPatch {
+  compactionModelSelection?: JudgeModelRef | null;
   compactionModel?: string;
   compactionModelRoute?: string;
   activeChatRuntime?: ActiveChatRuntime;
@@ -985,6 +989,11 @@ export class SettingsService {
         )
       : [];
     if (partial.llm) {
+      if (Object.hasOwn(partial.llm, "compactionModelSelection")
+        && (!isCompactionModelSelection(partial.llm.compactionModelSelection)
+          || (partial.llm.compactionModelSelection !== null && !partial.llm.compactionModelSelection?.route))) {
+        throw new Error("Invalid compaction model selection");
+      }
       const nextLlm = mergeLlmPatch(
         this.settings.llm,
         partial.llm,
@@ -995,13 +1004,6 @@ export class SettingsService {
         for (const [key, entry] of Object.entries(nextLlm.modelListCache)) {
           if (entry.vendor === "openai-compatible" && !entry.credentialScope) delete nextLlm.modelListCache[key];
         }
-      }
-      if (Object.hasOwn(partial.llm, "compactionModel")) {
-        const route = compactionModelRouteKey(nextLlm, nextMarketplace.installedProviderPresets);
-        if (Object.hasOwn(partial.llm, "compactionModelRoute") && partial.llm.compactionModelRoute !== route) {
-          throw new Error("Compaction provider route changed");
-        }
-        nextLlm.compactionModelRoute = route;
       }
       this.settings.llm = nextLlm;
       this.providerConfigChanged();
@@ -1688,6 +1690,9 @@ export class SettingsService {
         marketplace.installedProviderPresets,
       );
       llm = normalizedLlm;
+      if (rawLlm?.compactionModel && llm.compactionModelSelection !== undefined) {
+        migrationWriteBack = true;
+      }
 
       const appearance = normalizeAppearance(parsed.appearance, (field) => log.warn(`Invalid appearance setting: ${field}`));
       if (typeof onDisk?.language === "string" && onDisk.language !== appearance.language) {

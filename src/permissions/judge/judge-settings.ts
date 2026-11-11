@@ -7,6 +7,7 @@ import type { JudgeCategory } from "./judge-contract.js";
 import { MAX_PERMISSION_JUDGE_STAGES } from "../../shared/permission-judge-settings.js";
 import { JUDGE_BLOCK_THRESHOLDS } from "./judge-breaker.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { isSystemSubagentModelRef, type SystemSubagentModelRef, type SystemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
 
 // Settings path of the subtree. The write floor is enforced outside this module: agent file and shell writes to `~/.ave/config/settings.json` hit the sensitive-path floor, and the only writer is the user-keyboard-gated Settings IPC in `src/ipc/domains/permission-judge.ts`.
 const JUDGE_SETTINGS_KEY = "permissions.judge";
@@ -29,11 +30,7 @@ export interface JudgeExternalSettings {
   env?: readonly string[];
 }
 
-// A chat-picker model: vendor plus a model id the picker offers for it.
-export interface JudgeModelRef {
-  vendor: LLMVendor;
-  model: string;
-}
+export type JudgeModelRef = SystemSubagentModelRef;
 
 export interface JudgeStageSettings {
   provider: JudgeStageProvider;
@@ -184,7 +181,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 // The models the chat model picker offers, per provider.
 export interface JudgeModelCatalog {
-  optionsFor(vendor: LLMVendor): readonly string[];
+  optionsFor(vendor: LLMVendor, route?: SystemSubagentRouteIdentity): readonly string[];
 }
 
 // Static-only catalog, for callers that have no live `llm` settings (tests, schema checks).
@@ -192,11 +189,17 @@ const STATIC_JUDGE_MODEL_CATALOG: JudgeModelCatalog = {
   optionsFor: (vendor) => llmVendorModelOptions(vendor),
 };
 
-// Parse `<vendor>/<model>` (split on the FIRST slash; model ids may contain slashes) and check it against the chat model picker's option list.
+// Route-bearing choices retain their saved identity. Legacy strings remain readable for display.
 function parseJudgeModel(
   raw: unknown,
   catalog: JudgeModelCatalog = STATIC_JUDGE_MODEL_CATALOG,
 ): { value?: JudgeModelRef; error?: string } {
+  if (isSystemSubagentModelRef(raw)) {
+    if (!catalog.optionsFor(raw.vendor, raw.route).includes(raw.model)) {
+      return { value: raw, error: `model '${raw.model}' is not offered for provider '${raw.vendor}' by the model picker` };
+    }
+    return { value: raw };
+  }
   if (typeof raw !== "string" || raw.length === 0) return { error: "model must be a '<provider>/<model>' string" };
   const slash = raw.indexOf("/");
   if (slash <= 0 || slash === raw.length - 1) return { error: `model '${raw}' must be '<provider>/<model>'` };
@@ -204,7 +207,7 @@ function parseJudgeModel(
   const model = raw.slice(slash + 1);
   if (!isLLMVendor(vendor)) return { error: `model provider '${vendor}' is not a configured LLM provider` };
   if (!catalog.optionsFor(vendor).includes(model)) {
-    return { error: `model '${model}' is not offered for provider '${vendor}' by the model picker` };
+    return { value: { vendor, model }, error: `model '${model}' is not offered for provider '${vendor}' by the model picker` };
   }
   return { value: { vendor, model } };
 }
@@ -345,8 +348,7 @@ export function normalizeJudgeSettings(
     if (error || !value) {
       issues.push(`${error ?? "model invalid"}; permission reviewer unavailable`);
       modelRejected = true;
-      const wellFormed = parseJudgeModel(obj.model, { optionsFor: () => [String(obj.model).slice(String(obj.model).indexOf("/") + 1)] });
-      if (wellFormed.value) rejectedModel = wellFormed.value;
+      if (value) rejectedModel = value;
     } else {
       settings.model = value;
     }

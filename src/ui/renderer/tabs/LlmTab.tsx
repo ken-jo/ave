@@ -79,14 +79,14 @@ import { SettingsHelpPopover, SettingsPageHeader, SettingsSection } from "../com
 import { PricingOverridesSection } from "./PricingOverridesSection.js";
 import { ModelCatalogRefreshSection } from "./ModelCatalogRefreshSection.js";
 import { useTranslation, type I18nContextValue } from "../../../i18n/react.js";
-import { compactionModelRouteKey } from "../../../shared/compaction-model.js";
+import { compactionModelSelection } from "../../../shared/compaction-model.js";
+import { sameSystemSubagentModel, systemSubagentModelKey } from "../../../shared/system-subagent-model.js";
+import type { PermissionJudgeSettings, PermissionJudgeSnapshot } from "../../../shared/permission-judge-settings.js";
 import {
   SUBSCRIPTION_RUNTIME_API_COUNTERPART,
   SUBSCRIPTION_RUNTIME_ROW_PARTNER,
-  MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
   openAiLoginTypeFor,
   isSubscriptionRuntimeId,
-  subscriptionAcceptsModelOverride,
   subscriptionRuntimeDescriptor,
   type SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
@@ -255,7 +255,7 @@ const CHAT_BLOCKER_MESSAGE_KEYS = {
 
 type ChatBlocker = keyof typeof CHAT_BLOCKER_MESSAGE_KEYS;
 
-export const SELECT_POPUP_LAYOUT =
+const SELECT_POPUP_LAYOUT =
   "min-w-64 max-h-[min(386px,var(--radix-select-content-available-height))]";
 
 type ModelListState =
@@ -900,18 +900,101 @@ function apiRouteRowId(route: ConfiguredApiRoute): string {
 
 const API_PROVIDER_PREFIX = "api:";
 
-export function apiProviderId(vendorId: string): string {
+function apiProviderId(vendorId: string): string {
   return `${API_PROVIDER_PREFIX}${vendorId}`;
 }
 
-export function unifiedValue(providerId: string, modelId: string): string {
+function unifiedValue(providerId: string, modelId: string): string {
   return `${providerId}::${modelId}`;
 }
 
-export function parseUnifiedValue(value: string): { providerId: string; modelId: string } | null {
+function parseUnifiedValue(value: string): { providerId: string; modelId: string } | null {
   const at = value.indexOf("::");
   if (at <= 0) return null;
   return { providerId: value.slice(0, at), modelId: value.slice(at + 2) };
+}
+
+type JudgeModel = NonNullable<PermissionJudgeSettings["model"]>;
+
+/** An unset system model follows the active chat model. */
+const UNSET_MODEL_VALUE = "unset::";
+
+function systemModelDestination(model: JudgeModel | undefined): string | undefined {
+  const route = model?.route;
+  if (!route) return undefined;
+  if (!route.baseUrl) return [route.vertexProject, route.vertexLocation].filter(Boolean).join(" / ") || undefined;
+  try {
+    const endpoint = new URL(route.baseUrl);
+    return `${endpoint.origin}${endpoint.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Shared system model choices come from connected routes. Stored unavailable choices remain visible. */
+export function SystemSubagentModelSelect({ id, snapshot, value, unsetLabel, placeholder, unavailableLabel, unavailableSelection, disabled, descriptionId, onChange }: {
+  id: string;
+  snapshot: PermissionJudgeSnapshot | null;
+  value: JudgeModel | undefined;
+  unsetLabel: string;
+  placeholder: string;
+  unavailableLabel: string;
+  unavailableSelection?: string;
+  disabled?: boolean;
+  descriptionId?: string;
+  onChange: (model: JudgeModel | undefined) => void;
+}) {
+  const offered = snapshot?.modelOptions ?? [];
+  const toOption = (model: JudgeModel, unlisted = false): UnifiedModelOption => {
+    const label = getVendorOption(model.vendor).label;
+    const presetId = model.route?.marketplaceProviderPresetId;
+    const providerLabel = presetId ? `${label} · ${presetId}` : label;
+    const endpoint = systemModelDestination(model);
+    return {
+      value: encodeURIComponent(systemSubagentModelKey(model)),
+      providerId: presetId ? `${apiProviderId(model.vendor)}:${presetId}` : apiProviderId(model.vendor),
+      providerLabel,
+      vendorLabel: providerLabel,
+      modelId: model.model,
+      ...(endpoint ? { facts: endpoint } : {}),
+      ...(unlisted ? { unlisted: true, facts: [endpoint, unavailableLabel].filter(Boolean).join(" · ") } : {}),
+    };
+  };
+  const options = offered.map((model) => toOption(model));
+  if (value && !offered.some((model) => sameSystemSubagentModel(model, value))) {
+    options.unshift(toOption(value, true));
+  }
+  if (unavailableSelection) options.unshift({
+    value: "unavailable::",
+    providerId: "unavailable",
+    providerLabel: unavailableLabel,
+    vendorLabel: unavailableLabel,
+    modelId: unavailableSelection,
+    unlisted: true,
+    facts: unavailableLabel,
+  });
+  const selectedDestination = systemModelDestination(value);
+  return (
+    <div className="space-y-1">
+      <UnifiedModelSelect
+        disabled={disabled}
+        descriptionId={descriptionId}
+        triggerId={id}
+        testId={id}
+        options={options}
+        value={unavailableSelection ? "unavailable::" : value ? encodeURIComponent(systemSubagentModelKey(value)) : UNSET_MODEL_VALUE}
+        leadingOption={{ value: UNSET_MODEL_VALUE, label: unsetLabel }}
+        placeholder={placeholder}
+        popupClassName={SELECT_POPUP_LAYOUT}
+        onValueChange={(picked) => {
+          if (picked === UNSET_MODEL_VALUE) return onChange(undefined);
+          const model = offered.find((option) => encodeURIComponent(systemSubagentModelKey(option)) === picked);
+          if (model) onChange(model);
+        }}
+      />
+      {selectedDestination && <p data-testid={`${id}-destination`} className="break-all text-xs text-muted-foreground">{selectedDestination}</p>}
+    </div>
+  );
 }
 
 function upstreamModelProvider(
@@ -939,7 +1022,7 @@ function upstreamModelProvider(
 
 /** Show currently offered pins first across providers, then group other models by provider; retain stored pins for disconnected catalogs.
  * Reviewer selection omits pin controls and offers unset to follow chat. */
-export function UnifiedModelSelect({
+function UnifiedModelSelect({
   options,
   value,
   onValueChange,
@@ -951,6 +1034,7 @@ export function UnifiedModelSelect({
   triggerId = "model-select",
   testId = TEST_IDS.llmModelSelect,
   leadingOption,
+  descriptionId,
 }: {
   options: readonly UnifiedModelOption[];
   value: string;
@@ -966,6 +1050,7 @@ export function UnifiedModelSelect({
   testId?: string;
   /** A first row that is not a model, e.g. "follow the chat model". */
   leadingOption?: { value: string; label: string };
+  descriptionId?: string;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -1118,7 +1203,7 @@ export function UnifiedModelSelect({
       }}
       disabled={disabled}
     >
-      <SelectTrigger id={triggerId} className="w-full" data-testid={testId}>
+      <SelectTrigger id={triggerId} className="w-full" data-testid={testId} aria-describedby={descriptionId}>
         <SelectValue placeholder={placeholder}>
           {selectedOption ? content(selectedOption, false) : undefined}
         </SelectValue>
@@ -1550,33 +1635,31 @@ export function LlmTab(props: LlmTabProps) {
   const subscription = useSubscriptionProviders(api);
   // Mirrored from settings rather than held locally: another window may pin a model too, and the chooser must show one truth.
   const [pinnedModels, setPinnedModels] = useState<readonly string[]>([]);
-  const [compactionModel, setCompactionModel] = useState("");
+  const [compactionModel, setCompactionModel] = useState<JudgeModel | null>(null);
   const [savedCompactionModel, setSavedCompactionModel] = useState("");
+  const [compactionUnavailableSelection, setCompactionUnavailableSelection] = useState<string>();
+  const [compactionSnapshot, setCompactionSnapshot] = useState<PermissionJudgeSnapshot | null>(null);
+  const [compactionOptionsFailed, setCompactionOptionsFailed] = useState(false);
   const [compactionSaving, setCompactionSaving] = useState(false);
   const [compactionSaveFailed, setCompactionSaveFailed] = useState(false);
   const compactionModelDirtyRef = useRef(false);
-  const compactionRouteRef = useRef("");
-  const compactionModelEditable = subscription.activeRuntime.kind === "api"
-    || subscriptionAcceptsModelOverride(subscription.activeRuntime);
   const handleCompactionModelSave = async () => {
     setCompactionSaving(true);
     setCompactionSaveFailed(false);
     try {
-      const latest = await api.getSettings();
-      const route = compactionModelRouteKey(latest.llm, latest.marketplace?.installedProviderPresets);
-      if (route !== compactionRouteRef.current) throw new Error("Compaction provider route changed");
-      const result = await api.updateSettings({ llm: { compactionModel: compactionModel.trim(), compactionModelRoute: route } });
+      const result = await api.updateSettings({ llm: { compactionModelSelection: compactionModel } });
       if (isIpcErrorResult(result)) throw new Error(result.error);
       compactionModelDirtyRef.current = false;
-      setSavedCompactionModel(result.llm.compactionModel ?? "");
-      setCompactionModel(result.llm.compactionModel ?? "");
+      const selection = compactionModelSelection(result.llm, result.marketplace?.installedProviderPresets);
+      setSavedCompactionModel(JSON.stringify(selection));
+      setCompactionModel(selection.model);
+      setCompactionUnavailableSelection(selection.unavailableLabel);
     } catch {
       setCompactionSaveFailed(true);
     } finally {
       setCompactionSaving(false);
     }
   };
-
   const handleTogglePin = useCallback((modelId: string) => {
     const next = pinnedModels.includes(modelId)
       ? pinnedModels.filter((id: string) => id !== modelId)
@@ -1609,7 +1692,20 @@ export function LlmTab(props: LlmTabProps) {
   useEffect(() => {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
+    let compactionOptionsRevision = 0;
     const applySettings = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
+      const revision = ++compactionOptionsRevision;
+      void Promise.resolve().then(() => window.ave.permission.judgeGet()).then((result) => {
+        if (cancelled || revision !== compactionOptionsRevision) return;
+        if (result.ok) {
+          setCompactionSnapshot(result);
+          setCompactionOptionsFailed(false);
+        } else {
+          setCompactionOptionsFailed(true);
+        }
+      }).catch(() => {
+        if (!cancelled && revision === compactionOptionsRevision) setCompactionOptionsFailed(true);
+      });
       // Content-compared, like the credential set below it: a broadcast arrives for every settings write, and a fresh object identity
       // each time would re-run every effect that reads a row's endpoint; including the one that asks endpoints for their catalogues.
       setSavedVendorBlocks((current) => {
@@ -1618,13 +1714,11 @@ export function LlmTab(props: LlmTabProps) {
       });
       setSettingsRevision((current) => current + 1);
       setPinnedModels(settings.llm?.pinnedModels ?? []);
-      if (isLLMVendor(settings.llm?.provider)) {
-        const compactRoute = compactionModelRouteKey(settings.llm, settings.marketplace?.installedProviderPresets);
-        if (compactionRouteRef.current !== compactRoute) compactionModelDirtyRef.current = false;
-        compactionRouteRef.current = compactRoute;
-        const compactModel = settings.llm?.compactionModelRoute === compactRoute ? settings.llm?.compactionModel ?? "" : "";
-        setSavedCompactionModel(compactModel);
-        if (!compactionModelDirtyRef.current) setCompactionModel(compactModel);
+      const compactSelection = compactionModelSelection(settings.llm, settings.marketplace?.installedProviderPresets);
+      setSavedCompactionModel(JSON.stringify(compactSelection));
+      if (!compactionModelDirtyRef.current) {
+        setCompactionModel(compactSelection.model);
+        setCompactionUnavailableSelection(compactSelection.unavailableLabel);
       }
       const cache = settings.llm?.modelListCache ?? {};
       setSavedModelListCache((current) => sameSettingsValue(current, cache) ? current : cache);
@@ -3109,28 +3203,36 @@ export function LlmTab(props: LlmTabProps) {
       <SettingsSection title={t("compactionSettings.title")} id="llm-compaction">
         <div className="space-y-2">
           <Label htmlFor="compaction-model">{t("compactionSettings.model")}</Label>
-          <Input
+          <SystemSubagentModelSelect
             id="compaction-model"
-            data-testid="compaction-model"
-            value={compactionModelEditable ? compactionModel : ""}
-            onChange={(event) => {
-              compactionModelDirtyRef.current = event.target.value.trim() !== savedCompactionModel;
-              setCompactionModel(event.target.value);
-            }}
+            descriptionId="compaction-model-description"
+            snapshot={compactionSnapshot}
+            value={compactionModel ?? undefined}
+            unavailableSelection={compactionUnavailableSelection}
+            unsetLabel={t("compactionSettings.currentModel")}
             placeholder={t("compactionSettings.currentModel")}
-            aria-describedby="compaction-model-description"
-            maxLength={MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH}
-            disabled={!settingsLoaded || !compactionModelEditable || compactionSaving}
+            unavailableLabel={t("permissionJudge.modelUnavailableFacts")}
+            disabled={!settingsLoaded || !compactionSnapshot || compactionSaving}
+            onChange={(model) => {
+              const selection = { model: model ?? null };
+              compactionModelDirtyRef.current = JSON.stringify(selection) !== savedCompactionModel;
+              setCompactionModel(model ?? null);
+              setCompactionUnavailableSelection(undefined);
+            }}
           />
           <p id="compaction-model-description" className="text-xs text-muted-foreground">
-            {t(compactionModelEditable ? "compactionSettings.description" : "compactionSettings.unavailable")}
+            {t("compactionSettings.description")}
           </p>
+          {(compactionUnavailableSelection || (compactionModel && compactionSnapshot && !compactionSnapshot.modelOptions.some(
+            (option) => sameSystemSubagentModel(option, compactionModel),
+          ))) && <p role="alert" data-testid="compaction-model-unavailable" className="text-xs text-destructive">{t("compactionSettings.selectedUnavailable")}</p>}
+          {compactionOptionsFailed && <p role="alert" className="text-xs text-destructive">{t("permissionJudge.readFailed")}</p>}
           <Button
             type="button"
             size="sm"
             variant="outline"
             data-testid="compaction-model-save"
-            disabled={!settingsLoaded || !compactionModelEditable || compactionSaving || compactionModel.trim() === savedCompactionModel}
+            disabled={!settingsLoaded || !compactionSnapshot || compactionSaving || !compactionModelDirtyRef.current}
             onClick={() => { void handleCompactionModelSave(); }}
           >
             {t(compactionSaving ? "llmTab.saving" : "llmTab.save")}

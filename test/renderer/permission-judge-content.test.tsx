@@ -58,6 +58,30 @@ afterEach(() => {
 });
 
 describe("approval judge settings", () => {
+  it("preserves the selected route for reviewer and evaluator model saves", async () => {
+    const selected = {
+      vendor: "openai-compatible" as const, model: "team/reviewer",
+      route: {
+        vendor: "openai-compatible" as const, baseUrl: "https://review.example.test/v1",
+        credentialScope: "llm.apiKey.openai-compatible", wire: "openai-chat" as const,
+      },
+    };
+    const view = mount({ modelOptions: [selected] });
+    try {
+      await screen.findByLabelText("Custom evaluation behavior");
+      await pickModel(screen.getByLabelText("Permission reviewer model"), /review.example.test/);
+      fireEvent.click(screen.getByRole("button", { name: "Add custom evaluator" }));
+      await pickModel(screen.getByLabelText("Judge model"), /review.example.test/);
+      fireEvent.click(screen.getByRole("button", { name: "Save judge settings" }));
+      await screen.findByText("Judge settings saved.");
+      expect(view.judgeSet).toHaveBeenCalledWith({
+        model: selected,
+        chain: [{ id: "stage-1", provider: "builtin-llm", model: selected }],
+      });
+      expect(document.body.textContent).not.toContain(selected.route.credentialScope);
+    } finally { view.restore(); }
+  });
+
   it("defaults an added stage to shadow and saves a configured provider model exactly", async () => {
     const view = mount();
     try {

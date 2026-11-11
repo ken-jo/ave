@@ -26,6 +26,7 @@ import type { AppSettings } from "./settings-store.js";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   llm: {
+    compactionModelSelection: null,
     compactionModel: "",
     compactionModelRoute: "",
     activeChatRuntime: { kind: "api" },

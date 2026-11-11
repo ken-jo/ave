@@ -10,6 +10,10 @@ import { makeAppIpcInvoker } from "./test-helpers.js";
 import { useTempPaths } from "../../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import { initializeAveHomeFixture } from "../../../__tests__/support/ave-home-privacy.js";
+import { DEFAULT_SETTINGS } from "../../../data/settings-defaults.js";
+import { systemSubagentRouteIdentity } from "../../../shared/system-subagent-model.js";
+import { getLlmVendorSettings } from "../../../shared/llm-vendor-defaults.js";
+import type { MarketplaceInstalledProviderPreset } from "../../../shared/marketplace-package-assets.js";
 
 const homePath = useTempPaths("settings-broadcast-", ".ave");
 
@@ -325,6 +329,53 @@ describe("marketplace provider preset runtime refresh", () => {
 
     expect(deps.conversationLoop.refreshProvider).toHaveBeenCalledOnce();
     expect(deps.sideChatConversationLoop.refreshProvider).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { target: "reviewer", change: "endpoint changed", before: {}, after: { baseUrl: "https://changed.example.test/v1" } },
+    { target: "reviewer", change: "removed", before: {}, after: null },
+    { target: "reviewer", change: "key required", before: {}, after: { requiresApiKey: true } },
+    { target: "reviewer", change: "keyless", before: { requiresApiKey: true }, after: { requiresApiKey: false } },
+    { target: "reviewer", change: "capabilities changed", before: {}, after: { capabilities: { localOnly: true } } },
+    { target: "reviewer", change: "trust changed", before: {}, after: { trust: { credentialUse: "required" as const } } },
+    { target: "stage", change: "key required", before: {}, after: { requiresApiKey: true } },
+    { target: "stage", change: "capabilities changed", before: {}, after: { capabilities: { localOnly: true } } },
+    { target: "stage", change: "trust changed", before: {}, after: { trust: { credentialUse: "required" as const } } },
+  ])("rewires a saved inactive preset when its $target route has $change", async ({ target, before, after }) => {
+    const home = await createSettingsHome();
+    const llm = structuredClone(DEFAULT_SETTINGS.llm);
+    llm.provider = "openai";
+    llm.vendors["openai-compatible"] = {
+      ...getLlmVendorSettings(llm.vendors, "openai-compatible"),
+      model: "summary", baseUrl: "https://generic.example.test/v1",
+    };
+    const preset: MarketplaceInstalledProviderPreset = {
+      providerId: "summary-route", label: "Summary route", baseUrl: "https://summary.example.test/v1",
+      defaultModel: "summary", modelOptions: ["summary"], requiresApiKey: false, modelDiscoveryPolicy: "static" as const,
+      ...before,
+    };
+    let presets = [preset];
+    const route = systemSubagentRouteIdentity(llm, "openai-compatible", presets, preset.providerId);
+    if (!route) throw new Error("Preset route missing");
+    const model = { vendor: "openai-compatible", model: "summary", route };
+    const judge = target === "stage" ? { chain: [{ provider: "builtin-llm", model }] } : { model };
+    writePermissionSettingsFixture(home, JSON.stringify({ permissions: { judge } }));
+    const baseDeps = makeDeps([]);
+    const rewire = vi.fn();
+    const deps = {
+      ...baseDeps,
+      settingsService: {
+        ...baseDeps.settingsService,
+        get: vi.fn((key: string) => key === "llm" ? llm : key === "marketplace" ? { installedProviderPresets: presets } : {}),
+      },
+      rewireReviewerAgent: rewire,
+    };
+    const { mutateMarketplaceProviderPresets } = await import("../settings.js");
+    await mutateMarketplaceProviderPresets(deps as unknown as IpcDeps, async () => {
+      presets = after === null ? [] : [{ ...preset, ...after }];
+      return { ...DEFAULT_SETTINGS, llm, marketplace: { ...DEFAULT_SETTINGS.marketplace, installedProviderPresets: presets } } as never;
+    });
+    expect(rewire).toHaveBeenCalledOnce();
   });
 });
 // ─── MAJOR-2 R2: settings:update triggers rewireReviewerAgent when baseUrl changes ──

@@ -39,8 +39,9 @@ import { isToolResultStubContent } from "../shared/tool-result-stub.js";
 import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
 import { createStepTracer, type ConversationTracer } from "./telemetry/tracing.js";
 import { t } from "../i18n/index.js";
-import { selectedCompactionModel } from "../shared/compaction-model.js";
-import { buildProvider, cleanModelOverride, generateText, resolveVendorName } from "./turn/provider.js";
+import { compactionModelSelection } from "../shared/compaction-model.js";
+import { resolveSystemSubagentRoute } from "./system-subagent-route.js";
+import { buildProvider, generateText, generateTextForRoute, resolveVendorName } from "./turn/provider.js";
 import type { GenerateTextOptions } from "./turn/provider.js";
 import { fireLifecycleEvent, fireUserPromptSubmit } from "./turn/lifecycle-hooks.js";
 import {
@@ -158,6 +159,7 @@ export class ConversationLoop {
    * file-mention read) can outlive a swap.
    */
   replaceSessionIdentity(sessionId: string): void {
+    if (this.manualCompactionAbortController) this.abortCurrentTurn(new Error("session changed"));
     updateApprovalSurface({ kind: "move", previousSessionId: this.approvalSessionId, sessionId });
     this.approvalSessionId = sessionId;
     this.sessionEpochValue += 1;
@@ -192,6 +194,7 @@ export class ConversationLoop {
   /** Local full-request projection corresponding to `lastContextInputTokens`. */
   lastContextInputProjectionTokens = 0;
   currentAbortController: AbortController | null = null;
+  manualCompactionAbortController: AbortController | null = null;
   private projectWorkRevoked = false;
   activeTurnJournal: import("./turn/turn-journal.js").TurnJournal | null = null;
 
@@ -268,6 +271,7 @@ export class ConversationLoop {
 
   abortCurrentTurn(reason: Error = new Error("user cancelled turn")): void {
     this.currentAbortController?.abort(reason);
+    this.manualCompactionAbortController?.abort(reason);
   }
 
   /** Cancel admitted and running work, and fence later submissions until an explicit session transition. */
@@ -409,7 +413,7 @@ export class ConversationLoop {
     return generateText(this.provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, options);
   }
 
-  /** A recap may choose another model, while keeping the active authentication and endpoint boundary. */
+  /** Resolve a hidden one-shot system instance without registering a conversation or agent. */
   async generateCompactionText(
     prompt: string,
     systemPrompt?: string,
@@ -417,14 +421,20 @@ export class ConversationLoop {
     outputTokenLimit?: number,
   ): Promise<string> {
     const llm = this.deps.settingsService.get("llm");
-    const modelOverride = cleanModelOverride(selectedCompactionModel(llm, this.deps.settingsService.get("marketplace").installedProviderPresets));
+    const selection = compactionModelSelection(llm, this.deps.settingsService.get("marketplace").installedProviderPresets);
     const options = { ...(outputTokenLimit === undefined ? {} : { outputTokenLimit }) };
-    if (!modelOverride) {
-      return this.generateText(prompt, systemPrompt, abortSignal, { ...options, modelOverride: this.deps.modelOverride });
+    if (selection.unavailableLabel) {
+      throw new Error(`Compaction model unavailable: ${selection.unavailableLabel}`);
     }
-    // Explicit recap selection permits retries, but never substitution by a chat fallback route.
-    const provider = await buildProvider({ ...this.deps, modelOverride }, { fallbackEnabled: false });
-    return generateText(provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, { ...options, modelOverride });
+    if (!selection.model) {
+      const modelOverride = this.deps.modelOverride;
+      const provider = await buildProvider({ ...this.deps, modelOverride });
+      return generateTextForRoute(provider, llm, prompt, systemPrompt, abortSignal, {
+        ...options, modelOverride,
+      });
+    }
+    const route = await resolveSystemSubagentRoute(this.deps, selection.model);
+    return generateTextForRoute(route.provider, route.llmSettings, prompt, systemPrompt, abortSignal, options);
   }
 
   getVendor(): string {
@@ -530,6 +540,7 @@ export class ConversationLoop {
     if (this.activeSessionTransition !== null) {
       throw new Error("conversation-loop:session-transition-in-progress");
     }
+    if (this.manualCompactionAbortController) this.abortCurrentTurn(new Error("session transition started"));
     const lease = Object.freeze({
       sessionId: this.sessionId,
       sessionEpoch: this.sessionEpoch,
@@ -924,8 +935,9 @@ export class ConversationLoop {
     // Preserve verbatim pre-compact messages for checkpoint branching.
     messagesBefore: import("./llm/types.js").GenericMessage[],
     projectionContext: RequestProjectionContext,
+    abortSignal?: AbortSignal,
   ): Promise<void> {
-    return applyBoundaryToSession(this, result, trigger, estimatedBefore, callbacks, prevMessageCount, messagesBefore, projectionContext);
+    return applyBoundaryToSession(this, result, trigger, estimatedBefore, callbacks, prevMessageCount, messagesBefore, projectionContext, abortSignal);
   }
 
   async runPreflightGuard(

@@ -84,6 +84,7 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
       hasMarketplaceProviderPreset: Boolean(llm.marketplaceProviderPresetId),
       streamSmoothing: llm.streamSmoothing,
       compactionModel: llm.compactionModel ?? "",
+      compactionModelSelection: llm.compactionModelSelection ?? null,
       fallbackChain: llm.fallbackChain,
       vendors,
     };

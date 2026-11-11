@@ -242,7 +242,10 @@ async function runTurnInSpan(
       if (turnStateFinalized) return;
       turnStateFinalized = true;
       abortSignal?.removeEventListener("abort", onParentAbort);
-      if (self.sessionEpoch !== sessionEpoch || (self.currentAbortController !== null && self.currentAbortController !== ac)) return;
+      if (self.sessionEpoch !== sessionEpoch || (self.currentAbortController !== null && self.currentAbortController !== ac)) {
+        if (self.currentAbortController === ac) self.currentAbortController = null;
+        return;
+      }
       self.currentAbortController = null;
       self.turnAdditionalDirectories = [];
       await self.dropPendingGuidance("turn-ended", callbacks);
@@ -295,6 +298,9 @@ async function runTurnInSpan(
         // Skills run as model turns with visible loading; builtins and user command files win name collisions.
         routeResult = { route: "llm", input: turnInput };
       } else {
+        if (routeResult.command === "compact") {
+          return await self.handleCommand(routeResult.command, routeResult.args, inputOrigin, callbacks, options.userMessageId);
+        }
         self.currentAbortController = null;
         return self.handleCommand(routeResult.command, routeResult.args, inputOrigin, callbacks, options.userMessageId);
       }

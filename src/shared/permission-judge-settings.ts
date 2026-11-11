@@ -1,5 +1,5 @@
 import type { JudgeSettings } from "../permissions/judge/judge-settings.js";
-import type { LLMVendor } from "./llm-vendor-defaults.js";
+import type { SystemSubagentModelRef } from "./system-subagent-model.js";
 
 export const MAX_PERMISSION_JUDGE_STAGES = 4;
 
@@ -8,7 +8,7 @@ export type PermissionJudgeSettings = JudgeSettings;
 export interface PermissionJudgeSnapshot {
   settings: PermissionJudgeSettings;
   issues: string[];
-  modelOptions: Array<{ vendor: LLMVendor; model: string }>;
+  modelOptions: SystemSubagentModelRef[];
   /** What an unset reviewer model resolves to right now: the active chat route. */
   chatModel: string | null;
   /** The stored reviewer model is not offered by any connected provider. A well-formed stored choice
@@ -47,12 +47,12 @@ export function serializePermissionJudgeSettingsPatch(patch: Partial<PermissionJ
 function serializeFields(settings: Partial<PermissionJudgeSettings>): Record<string, unknown> {
   return {
     // Explicit null: "unset" is a stored choice (follow the chat model), not an absent field.
-    model: settings.model ? `${settings.model.vendor}/${settings.model.model}` : null,
+    model: settings.model ? serializeModel(settings.model) : null,
     chain: (settings.chain ?? []).map((stage) => ({
       provider: stage.provider,
       id: stage.id,
       ...(stage.escalateBelow !== undefined ? { escalateBelow: stage.escalateBelow } : {}),
-      ...(stage.model ? { model: `${stage.model.vendor}/${stage.model.model}` } : {}),
+      ...(stage.model ? { model: serializeModel(stage.model) } : {}),
       ...(stage.external ? { external: { ...stage.external } } : {}),
     })),
     mode: settings.mode,
@@ -61,4 +61,8 @@ function serializeFields(settings: Partial<PermissionJudgeSettings>): Record<str
     chainDeadlineMs: settings.chainDeadlineMs,
     breaker: { ...settings.breaker },
   };
+}
+
+function serializeModel(model: SystemSubagentModelRef): SystemSubagentModelRef | string {
+  return model.route ? { ...model, route: { ...model.route } } : `${model.vendor}/${model.model}`;
 }

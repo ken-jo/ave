@@ -21,9 +21,9 @@ export interface JudgeModelCatalogSource {
 // The same option set the chat model picker offers (`LlmTab` `modelOptionsFor`): the current route's listing or seeded policy, its saved selection, and the same retirement filter. A model identity selects each vendor's current route; inactive presets do not add alternative credential routes to this catalog.
 export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeModelCatalog {
   return {
-    optionsFor(vendor) {
+    optionsFor(vendor, route) {
       const block = source.vendors?.[vendor];
-      const presetId = vendor === "openai-compatible" && source.provider === vendor
+      const presetId = route ? route.marketplaceProviderPresetId : vendor === "openai-compatible" && source.provider === vendor
         ? source.marketplaceProviderPresetId?.trim() : undefined;
       const preset = presetId ? source.installedProviderPresets?.find((entry) => entry.providerId === presetId) : undefined;
       if (presetId && !preset) return [];

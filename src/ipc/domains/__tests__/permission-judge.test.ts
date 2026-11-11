@@ -14,6 +14,7 @@ import { registerPermissionJudgeHandlers } from "../permission-judge.js";
 import * as permissionSettings from "../../../permissions/permission-settings-store.js";
 import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
+import type { PermissionJudgeReadResult } from "../../../shared/permission-judge-settings.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({ ipcMain: { handle: (channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler) } }));
@@ -21,6 +22,20 @@ const makeDir = useTempDirs("ave-judge-ipc-");
 const intent = { inputOrigin: "user-keyboard", userActivation: true };
 let deps: IpcDeps;
 let home: string;
+
+function judgeHandler(channel: string) {
+  const handler = handlers.get(channel);
+  if (!handler) throw new Error("Judge handler missing");
+  return handler;
+}
+
+async function offeredModel(modelId: string) {
+  const result = await judgeHandler(PERMISSIONS.judgeGet)(hostFrameEvent()) as PermissionJudgeReadResult;
+  if (!result.ok) throw new Error("Could not read model options");
+  const model = result.modelOptions.find((option) => option.vendor === "openai-compatible" && option.model === modelId);
+  if (!model) throw new Error("Model option missing");
+  return model;
+}
 
 beforeEach(() => {
   handlers.clear();
@@ -101,12 +116,13 @@ describe("judge settings host boundary", () => {
   it("shows configured provider models and persists selected identity before refresh", async () => {
     const read = await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent());
     expect(read).toMatchObject({ ok: true, settings: { chain: [], mode: "shadow" }, modelOptions: [{ vendor: "openai-compatible", model: "team/local" }] });
+    const model = await offeredModel("team/local");
     const saved = await handlers.get(PERMISSIONS.judgeSet)!(hostFrameEvent(), {
       intent,
-      settings: { chain: [{ provider: "builtin-llm", model: "openai-compatible/team/local" }] },
+      settings: { chain: [{ provider: "builtin-llm", model }] },
     });
     expect(saved).toMatchObject({ ok: true, settings: { chain: [{ model: { vendor: "openai-compatible", model: "team/local" } }], mode: "shadow" } });
-    expect(JSON.parse(readFileSync(permissionSettingsPath(home), "utf8")).permissions.judge.chain[0].model).toBe("openai-compatible/team/local");
+    expect(JSON.parse(readFileSync(permissionSettingsPath(home), "utf8")).permissions.judge.chain[0].model).toEqual(model);
     expect(deps.rewireReviewerAgent).toHaveBeenCalledOnce();
   });
 
@@ -128,9 +144,47 @@ describe("judge settings host boundary", () => {
     expect(await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent())).toMatchObject({
       ok: true, modelOptions: [{ vendor: "openai-compatible", model: "team/default" }, { vendor: "openai-compatible", model: "team/chosen" }],
     });
+    const model = await offeredModel("team/chosen");
     expect(await handlers.get(PERMISSIONS.judgeSet)!(hostFrameEvent(), {
-      intent, settings: { chain: [{ provider: "builtin-llm", model: "openai-compatible/team/chosen" }] },
+      intent, settings: { chain: [{ provider: "builtin-llm", model }] },
     })).toMatchObject({ ok: true, settings: { chain: [{ model: { vendor: "openai-compatible", model: "team/chosen" } }] } });
+  });
+
+  it("requires a pinned route for a new reviewer or stage selection", async () => {
+    for (const settings of [
+      { model: "openai-compatible/team/local" },
+      { chain: [{ provider: "builtin-llm", model: "openai-compatible/team/local" }] },
+    ]) {
+      expect(await judgeHandler(PERMISSIONS.judgeSet)(hostFrameEvent(), { intent, settings }))
+        .toEqual({ ok: false, error: "invalid-judge-settings" });
+    }
+    expect(deps.rewireReviewerAgent).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unavailable pinned destination through unrelated settings writes", async () => {
+    const llm = {
+      provider: "openai-compatible",
+      vendors: { "openai-compatible": { model: "team/local", baseUrl: "http://localhost:9000/v1" } },
+    };
+    vi.spyOn(deps.settingsService, "get").mockImplementation((key) => (key === "llm" ? llm : {}) as never);
+    const model = await offeredModel("team/local");
+    expect(await judgeHandler(PERMISSIONS.judgeSet)(hostFrameEvent(), { intent, settings: { model } }))
+      .toMatchObject({ ok: true, settings: { model }, reviewerModelUnavailable: false });
+    llm.vendors["openai-compatible"].baseUrl = "http://localhost:9001/v1";
+    expect(await judgeHandler(PERMISSIONS.judgeGet)(hostFrameEvent()))
+      .toMatchObject({ ok: true, settings: { model }, reviewerModelUnavailable: true });
+    expect(await judgeHandler(PERMISSIONS.judgeSet)(hostFrameEvent(), { intent, settings: { mode: "active" } }))
+      .toMatchObject({ ok: true, settings: { model }, reviewerModelUnavailable: true });
+    expect(JSON.parse(readFileSync(permissionSettingsPath(home), "utf8")).permissions.judge.model).toEqual(model);
+  });
+
+  it("rejects a changed destination that is absent from connected route options", async () => {
+    const model = await offeredModel("team/local");
+    if (!model.route) throw new Error("Pinned model route missing");
+    const changed = { ...model, route: { ...model.route, baseUrl: "https://other.example.test/v1" } };
+    expect(await judgeHandler(PERMISSIONS.judgeSet)(hostFrameEvent(), { intent, settings: { model: changed } }))
+      .toEqual({ ok: false, error: "invalid-judge-settings" });
+    expect(existsSync(permissionSettingsPath(home))).toBe(false);
   });
 
   it("notifies every app window only after settings and runtime agree", async () => {

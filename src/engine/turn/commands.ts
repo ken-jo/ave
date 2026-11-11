@@ -250,6 +250,9 @@ export async function handleCommand(
           ...(callbacks?.onCompactStarted ? { onCompactStarted: callbacks.onCompactStarted } : {}),
           ...(focus.length > 0 ? { focus } : {}),
         });
+        if (self.currentAbortController?.signal.aborted) {
+          return { text: "", toolCalls: [], route: "command", stopReason: "interrupted" };
+        }
         result = r.summary;
         break;
       }

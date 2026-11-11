@@ -1,3 +1,5 @@
+import { strict as assert } from "node:assert";
+import { systemSubagentRouteIdentity } from "../../shared/system-subagent-model.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage } from "../llm/types.js";
@@ -11,7 +13,6 @@ import { getModelPreflightThreshold } from "../auto-compact.js";
 import { getPreflightThreshold } from "../../shared/context-budget.js";
 import { MemoryReviewerService } from "../../memory/memory-reviewer-service.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
-import { compactionModelRouteKey } from "../../shared/compaction-model.js";
 import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
 import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
 import { llmRouteCatalogAddress } from "../../shared/context-budget.js";
@@ -36,8 +37,9 @@ describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
     const llm = structuredClone(DEFAULT_SETTINGS.llm);
     llm.provider = "claude";
     llm.vendors.claude = { ...getLlmVendorSettings(llm.vendors, "claude"), model: "claude-sonnet-4-5" };
-    llm.compactionModel = "summary-small";
-    llm.compactionModelRoute = compactionModelRouteKey(llm);
+    const summaryRoute = systemSubagentRouteIdentity(llm, "claude");
+    assert(summaryRoute);
+    llm.compactionModelSelection = { vendor: "claude", model: "summary-small", route: summaryRoute };
     const address = llmRouteCatalogAddress(llm);
     llm.modelListCache[llmModelListCacheKey(address.vendor, address.baseUrl, address.credentialScope)] = {
       vendor: "claude", ...(address.baseUrl ? { baseUrl: address.baseUrl } : {}), endpoint: "https://models.example.test",

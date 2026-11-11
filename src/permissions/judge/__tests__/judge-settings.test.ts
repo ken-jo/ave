@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { llmVendorModelOptions } from "../../../shared/llm-vendor-defaults.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
 import { createJudgeChain, type CreateJudgeDeps } from "../create-judge.js";
@@ -9,6 +9,7 @@ import {
   normalizeJudgeSettings,
   serializeJudgeSettings,
   validateJudgeSettings,
+  type JudgeModelCatalog,
 } from "../judge-settings.js";
 import { judgeModelCatalogFrom } from "../judge-model-catalog.js";
 
@@ -47,6 +48,30 @@ describe("judge settings", () => {
     expect(read.settings.model).toBeNull();
     expect(read.issues.join()).toMatch(/permission reviewer unavailable/);
     expect(() => validateJudgeSettings({ model: `${PICKER_VENDOR}/not-offered` })).toThrow(JudgeSettingsError);
+  });
+
+  it("retains pinned destinations while validating their own model catalog", () => {
+    const model = {
+      vendor: "openai-compatible" as const,
+      model: "team/summary",
+      route: {
+        vendor: "openai-compatible" as const,
+        marketplaceProviderPresetId: "summary-route",
+        baseUrl: "https://summary.example.test/v1",
+        credentialScope: "marketplace.provider.summary-route.apiKey",
+      },
+    };
+    const catalog: JudgeModelCatalog = {
+      optionsFor: vi.fn((_vendor, route) => route?.marketplaceProviderPresetId === "summary-route" ? ["team/summary"] : []),
+    };
+    const parsed = validateJudgeSettings({ model, chain: [{ provider: "builtin-llm", model }] }, catalog);
+    expect(parsed.model).toEqual(model);
+    expect(parsed.chain[0]?.model).toEqual(model);
+    expect(serializeJudgeSettings(parsed)).toMatchObject({ model, chain: [{ model }] });
+    expect(catalog.optionsFor).toHaveBeenCalledWith("openai-compatible", model.route);
+    const unavailable = normalizeJudgeSettings({ model }, { optionsFor: () => [] });
+    expect(unavailable.modelRejected).toBe(true);
+    expect(unavailable.rejectedModel).toEqual(model);
   });
 
   it("a chain without a mode stays in shadow", () => {
