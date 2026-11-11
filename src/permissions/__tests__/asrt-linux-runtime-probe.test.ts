@@ -701,6 +701,24 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
   });
 });
 
+describe.each(["darwin", "linux"] as const)("runtime preparation diagnostics on %s", (platform) => {
+  it.each(["listener", "wrapper"] as const)("preserves the %s preparation cause without exposing it in the boot message", async (stage) => {
+    setProcessPlatform(platform);
+    const cause = new Error("private native preparation detail");
+    if (stage === "listener") h.openInvocationListener.mockRejectedValueOnce(cause);
+    else h.wrapWithSandboxArgv.mockRejectedValueOnce(cause);
+    const failure = await initializeAsrtSandbox({ allowedDomains: [] }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      code: platform === "darwin" ? ASRT_MAC_RUNTIME_PROBE_ERROR_CODE : ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE,
+      message: `ASRT ${platform === "darwin" ? "macOS" : "Linux"} runtime probe failed: configured ASRT wrapper could not be prepared`,
+      cause: stage === "listener" ? expect.objectContaining({ cause }) : cause,
+    });
+    expect(h.spawn).not.toHaveBeenCalled();
+    expect(h.reset).toHaveBeenCalledOnce();
+    expect(isAsrtSandboxActive()).toBe(false);
+  });
+});
+
 describe("configured profile launch on macOS", () => {
   it("refuses an oversized encoded probe before spawning and releases its listener", async () => {
     setProcessPlatform("darwin");

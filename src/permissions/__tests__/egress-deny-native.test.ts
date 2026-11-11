@@ -1,8 +1,10 @@
 // Proxy refusals must reach the owning invocation's audit and shell annotation; an empty strict allowlist denies before DNS or any external connection.
 import { afterEach, describe, expect, it, type TestContext } from "vitest";
-import { existsSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join, relative } from "node:path";
+import { whichSync } from "@anthropic-ai/sandbox-runtime/dist/utils/which.js";
 import {
   initializeAsrtSandbox,
   isAsrtSandboxActive,
@@ -58,6 +60,60 @@ async function startStrictSandboxWithMonitor(): Promise<SandboxEgressDenyAuditEn
 }
 
 describe.runIf(nativePlatform)("proxy deny attribution (native)", () => {
+  it("prepares the native wrapper without waiting for an executable locator process", async (context) => {
+    await requireNativeCase(context);
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "egress-wrapper-lookup-")));
+    const previousPath = process.env.PATH;
+    try {
+      const gate = join(cwd, "locator-gate");
+      const entered = join(cwd, "locator-entered");
+      execFileSync("mkfifo", [gate]);
+      // Hold shell lookup before it can answer, independent of scheduling or host load.
+      writeFileSync(join(cwd, "which"), `#!/bin/sh\nif [ "$1" = bash ]; then\n  printf entered > ${shellQuote(entered)}\n  read -r release < ${shellQuote(gate)}\nfi\nexec /usr/bin/which "$@"\n`, { mode: 0o700 });
+      process.env.PATH = `${cwd}${delimiter}${previousPath ?? ""}`;
+      await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
+      expect(isAsrtSandboxActive()).toBe(true);
+      expect(existsSync(entered)).toBe(false);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await cleanupTmpDir(cwd);
+    }
+  });
+
+  it("resolves executable files in path order and observes permission changes without caching", async () => {
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "egress-wrapper-path-")));
+    const previousPath = process.env.PATH;
+    try {
+      const first = join(cwd, "first entry");
+      const second = join(cwd, "second");
+      mkdirSync(first);
+      mkdirSync(second);
+      const executable = join(second, "shell-fixture");
+      writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+      const shadow = join(first, "shell-fixture");
+      writeFileSync(shadow, "not executable\n", { mode: 0o600 });
+      process.env.PATH = [first, second].join(delimiter);
+      expect(whichSync("shell-fixture")).toBe(executable);
+      expect(whichSync(executable)).toBe(executable);
+      expect(whichSync(`./${relative(process.cwd(), executable)}`)).toBe(executable);
+      chmodSync(shadow, 0o700);
+      expect(whichSync("shell-fixture")).toBe(shadow);
+      chmodSync(executable, 0o600);
+      expect(whichSync(executable)).toBeNull();
+      symlinkSync(shadow, join(first, "linked-shell"));
+      expect(whichSync("linked-shell")).toBe(join(first, "linked-shell"));
+      mkdirSync(join(first, "directory-shell"));
+      expect(whichSync("directory-shell")).toBeNull();
+      expect(whichSync("absent-shell")).toBeNull();
+      expect(whichSync("")).toBeNull();
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      await cleanupTmpDir(cwd);
+    }
+  });
+
   for (const kind of ["direct", "literal shell", "opaque script"] as const) {
     it(`denies an actual ${kind} upload outside the host allowlist`, async (context) => {
       await requireNativeCase(context);
