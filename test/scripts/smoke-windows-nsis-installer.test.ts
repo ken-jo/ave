@@ -21,6 +21,7 @@ import {
   assertAsrtUserReady,
   assertDisposableSmokeGate,
   assertLimitedUninstallResult,
+  assertUninstallDialogReport,
   assertRuntimeNotificationArtifactsRemoved,
   FOREIGN_PROTOCOL_FIXTURE_SCRIPT,
   buildPowerShellScript,
@@ -42,6 +43,56 @@ import {
 } from "../../scripts/smoke-windows-nsis-installer.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+describe("uninstall dialog observations", () => {
+  const confirmation = { kind: "confirmation", visible: true, topmost: true };
+
+  it("accepts GUI confirmation with no data question", () => {
+    expect(() => assertUninstallDialogReport({ dialogs: [confirmation] }, { gui: true })).not.toThrow();
+  });
+
+  it("accepts silent uninstall without any dialogs", () => {
+    expect(() => assertUninstallDialogReport({ dialogs: [] }, { gui: false })).not.toThrow();
+  });
+
+  it.each([true, false])("rejects any data question when GUI=%s", gui => {
+    expect(() => assertUninstallDialogReport({ dialogs: [confirmation, { kind: "data" }] }, { gui })).toThrow(/unexpected data prompt/);
+  });
+
+  it("requires the GUI confirmation", () => {
+    expect(() => assertUninstallDialogReport({ dialogs: [] }, { gui: true })).toThrow(/unexpected uninstall dialogs/);
+  });
+
+  it("rejects dialogs in silent mode", () => {
+    expect(() => assertUninstallDialogReport({ dialogs: [confirmation] }, { gui: false })).toThrow(/unexpected uninstall dialogs/);
+  });
+
+  it.each([{ topmost: false }, { visible: false }])("rejects hidden confirmation evidence %j", change => {
+    expect(() => assertUninstallDialogReport({ dialogs: [{ ...confirmation, ...change }] }, { gui: true })).toThrow(/visible and topmost/);
+  });
+
+  it("propagates observer failures", () => {
+    expect(() => assertUninstallDialogReport({ error: "hook failed", dialogs: [] }, { gui: true })).toThrow(/hook failed/);
+  });
+
+  it("observes GUI and silent paths and checks preserved data", () => {
+    const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
+    expect(smoke).toContain('await runLimitedUninstaller(machineInstall, args.filter((arg) => arg !== "/S"), timeoutMs, true)');
+    expect(smoke).toContain('await runLimitedUninstaller(machineInstall, args, timeoutMs)');
+    expect(smoke).toContain("assertUninstallDialogReport(observed.report, { gui: gui === true })");
+    expect(smoke).toMatch(/assertUserDataTargetsExist\(\);\s+assertUninstallDialogReport/);
+    expect(smoke).toContain("dataState");
+    expect(smoke).not.toContain("guiReply");
+    const observer = readRepoFile("scripts/lib/windows-uninstall-dialog-observer.cs");
+    expect(observer).toContain("SetWinEventHook");
+    expect(observer).toContain("QueryFullProcessImageName");
+    expect(observer).toContain("identity.User.Value == ownerSid");
+    expect(observer).toContain('answer = data ? "No" : "OK"');
+    expect(observer).toContain('IsWindowVisible(child)');
+    expect(observer).toContain('IsWindowEnabled(button)');
+    expect(observer).not.toContain("Thread.Sleep");
+  });
+});
 
 const WINDOWS_UNINSTALL_REGISTRY_PATH =
   "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
@@ -1706,7 +1757,24 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(smoke).toContain("resolveRepositorySrtWin()");
   });
 
-  it("preserves every deduped sentinel during KEEP and removes it during DELETE", () => {
+  it("exercises the legacy deletion flag with every GUI and compatibility-flag combination", () => {
+    const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
+    const removal = smoke.slice(smoke.indexOf("async function uninstallAndVerify("), smoke.indexOf("export function assertLimitedUninstallResult("));
+    expect(removal).toContain('if (deleteAppData) args.push("--delete-app-data")');
+    expect(removal).toContain('args.filter((arg) => arg !== "/S")');
+    expect(removal).toContain("await runLimitedUninstaller(machineInstall, args, timeoutMs)");
+    const main = smoke.slice(smoke.indexOf("async function main("));
+    for (const gui of [true, false]) {
+      for (const keepAppData of [true, false]) {
+        expect(main).toContain(`{ gui: ${gui}, keepAppData: ${keepAppData} }`);
+      }
+    }
+    expect(main).toContain("gui, keepAppData, deleteAppData: true, launchInstalledApp: false");
+    expect(smoke).toContain("const workerArgs = [...args,");
+    expect(smoke).toContain("assertUserDataTargetsExist()");
+  });
+
+  it("preserves every deduped sentinel in all uninstall modes", () => {
     const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
 
     expect(smoke).toContain(
@@ -1716,30 +1784,22 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(smoke).toContain("USER_DATA_SENTINEL_CONTENT");
     expect(smoke).toContain("hasExpectedUserDataSentinel(target)");
     expect(smoke).toContain("assertUserDataTargetsExist()");
-    expect(smoke).toContain("assertUserDataTargetsRemoved()");
+    expect(smoke).not.toContain("assertUserDataTargetsRemoved");
   });
 
-  it("tears ASRT down before KEEP_APP_DATA and skips teardown only for updater uninstall", () => {
+  it("tears ASRT down regardless of the compatibility flag and skips only updater uninstall", () => {
     const installer = readRepoFile("build/installer.nsh");
     const updatedGuard = installer.indexOf("${if} ${isUpdated}");
     const updatedArg = installer.indexOf('${GetOptions} $R0 "--updated"');
-    const keepOption = installer.indexOf('${GetOptions} $R0 "/KEEP_APP_DATA"');
     const recover = installer.indexOf('"$R2" acl recover --force');
     const teardown = installer.indexOf('"$R2" uninstall');
-    const keepBranch = installer.indexOf('${if} $R1 == "1"');
 
     expect(updatedGuard).toBeGreaterThanOrEqual(0);
     expect(updatedArg).toBeGreaterThan(updatedGuard);
-    expect(keepOption).toBeGreaterThan(updatedArg);
-    expect(recover).toBeGreaterThan(keepOption);
+    expect(recover).toBeGreaterThan(updatedArg);
     expect(teardown).toBeGreaterThan(recover);
-    expect(keepBranch).toBeGreaterThan(teardown);
-    expect(installer.slice(updatedGuard, keepOption)).toContain(
-      "Goto ave_skip_genuine_uninstall",
-    );
-    expect(installer.slice(keepOption, recover)).not.toContain(
-      "Goto ave_skip_genuine_uninstall",
-    );
+    expect(installer.slice(updatedGuard, recover)).toContain("Goto ave_skip_genuine_uninstall");
+    expect(installer).not.toMatch(/\$\{GetOptions\} \$R0 "\/KEEP_APP_DATA"/);
     expect(installer).toContain(
       'Abort "Ave uninstall failed: ASRT holder ACL recovery returned exit $R3"',
     );
@@ -1774,8 +1834,8 @@ describe("Windows NSIS installer smoke contracts", () => {
     expect(smoke).toContain("async function cleanupFailedInstallerPass");
     expect(smoke).toContain('...(state.keepAppData ? ["/KEEP_APP_DATA"] : [])');
     expect(smoke).toContain("[windows-installer-smoke] cleanup report");
-    expect(smoke).toContain("KEEP sentinel content preserved");
-    expect(smoke).toContain("DELETE userData absent");
+    expect(smoke).toContain("user-data sentinel content preserved");
+    expect(smoke).not.toContain("DELETE userData absent");
   });
 
   it("attests completed NSIS installs with a final installer-only marker", () => {
@@ -1894,17 +1954,15 @@ describe("Windows NSIS installer smoke contracts", () => {
     ).toBeGreaterThan(failureLabel);
   });
 
-  it("enables machine and destructive gates only on disposable Windows CI", () => {
+  it("enables the installer smoke only on disposable Windows CI", () => {
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
-    // Both gates open only for the Windows matrix entry, which runs on a disposable hosted image (packaging-discipline-source locks the label).
+    // The gate opens only for the disposable Windows matrix entry.
     expect(workflow).toContain(
       "AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}",
     );
-    expect(workflow).toContain(
-      "AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}",
-    );
+    expect(workflow).not.toContain("AVE_ALLOW_DESTRUCTIVE_UNINSTALL_SMOKE");
     expect(workflow).not.toContain("--skip-windows-installer-smoke");
-    expect(workflow.match(/^ {6}AVE_ALLOW_(DISPOSABLE_WINDOWS_INSTALLER|DESTRUCTIVE_UNINSTALL)_SMOKE: .*$/gmu)).toHaveLength(2);
+    expect(workflow.match(/^ {6}AVE_ALLOW_(DISPOSABLE_WINDOWS_INSTALLER|DESTRUCTIVE_UNINSTALL)_SMOKE: .*$/gmu)).toHaveLength(1);
     expect(workflow).toMatch(/name: Verify native owner token flow\n\s+if: matrix\.target == 'win'\n\s+run: node test\/scripts\/probes\/windows-owner-flow\.mjs/);
 
     const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");

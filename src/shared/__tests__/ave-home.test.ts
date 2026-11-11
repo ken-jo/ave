@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
-import { assertAveHomeRuntimeBoundary, setAveHomePrivacyAtBoot, AVE_HOME_PROTECTED_DIRECTORIES, AVE_HOME_RUNTIME_DIRECTORY, createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
+import { assertAveHomeRuntimeBoundary, setAveHomePrivacyAtBoot, AVE_HOME_PROTECTED_DIRECTORIES, AVE_HOME_RUNTIME_DIRECTORY, createAveHomeIfAbsent, ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, windowsDirectoryProtectionRequest, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule, verifyAveHomeConfiguration, AVE_HOME_CONFIGURATION_MARKER_CONTENT } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
@@ -52,6 +52,60 @@ afterEach(async () => {
   vi.unstubAllEnvs();
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
   vi.mocked(execFileSync).mockReset().mockImplementation(actual.execFileSync);
+});
+
+describe("configuration marker recovery", () => {
+  const hostPlatform = process.platform;
+  afterEach(() => { Object.defineProperty(process, "platform", { value: hostPlatform, configurable: true }); });
+
+  function configurationFacts(markerContent: string | null, unsafeDirectory = false): string {
+    const home = resolve(tmpdir(), "configuration-marker-home");
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    vi.spyOn(windowsNativeHost, "runWindowsNative").mockImplementation(operation => operation());
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(paths => paths.map(path => {
+      const row = nativeDescriptor(path);
+      if (path.endsWith(".ave-config-migrated")) {
+        return markerContent === null ? { ...row, exists: false, directory: false, dacl: null }
+          : { ...row, directory: false, attributes: 128, contentHex: Buffer.from(markerContent).toString("hex") };
+      }
+      if (!row.dacl) throw new Error("Configuration facts need a directory DACL");
+      return unsafeDirectory && path.endsWith("config") ? { ...row, dacl: { ...row.dacl, protected: false } } : row;
+    }));
+    vi.mocked(execFileSync).mockImplementation(() => { throw new Error("Unexpected configuration recovery subprocess"); });
+    return home;
+  }
+
+  it("avoids a recovery subprocess for an absent marker", () => {
+    const home = configurationFacts(null);
+    expect(verifyAveHomeConfiguration(home, true)).toBe(false);
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it("avoids a recovery subprocess for a valid marker", () => {
+    const home = configurationFacts(AVE_HOME_CONFIGURATION_MARKER_CONTENT);
+    expect(verifyAveHomeConfiguration(home, true)).toBe(true);
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it("uses the existing pinned recovery operation for invalid marker content", () => {
+    const home = configurationFacts("invalid marker");
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify({ committed: false }));
+    expect(verifyAveHomeConfiguration(home, true)).toBe(false);
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(execFileSync).mock.calls[0]?.[2]?.input).toContain("RecoverConfigurationCommit");
+  });
+
+  it("refuses an unprotected configuration without entering recovery", () => {
+    const home = configurationFacts(null, true);
+    expect(() => verifyAveHomeConfiguration(home, true)).toThrow(/boundary protection is unverified/);
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  it("keeps read-only verification strict for invalid content", () => {
+    const home = configurationFacts("invalid marker");
+    expect(() => verifyAveHomeConfiguration(home)).toThrow(/marker content is invalid/);
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
 });
 
 describe("aveHome", () => {

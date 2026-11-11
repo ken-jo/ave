@@ -63,6 +63,8 @@ interface ActiveTrust {
 }
 
 let active: ActiveTrust | undefined;
+let inputWriteBatchDepth = 0;
+const completedInputWrites = new Set<ActiveTrust>();
 let reviewSnapshot: { id: string; rows: readonly AveHomeTrustRow[] } | undefined;
 
 const MAX_INPUT_BYTES = 16 * 1024 * 1024;
@@ -475,11 +477,13 @@ function stage(trust: ActiveTrust, key: string, kind: "file" | "entry", hash: st
   }
   return {
     committed: () => {
+      const hasOverlappingWrites = (overlapping.get(key)?.size ?? 0) > 1;
       const landed = landedHash(trust, key, kind, hash);
       dropInFlight(key, hash, false);
       settle(trust, key, landed);
-      // The intent already vouches for these bytes, so a failed collapse strands nothing; boot collapses it.
-      try { persist(trust); } catch { /* collapsed at the next boot */ }
+      // Every intent is durable before its write. Distinct synchronous writes can share the final collapse.
+      if (inputWriteBatchDepth > 0 && !hasOverlappingWrites) completedInputWrites.add(trust);
+      else try { persist(trust); } catch { /* collapsed at the next boot */ }
     },
     failed: () => {
       // A failed write clears its own intent at once, so restored old bytes that happen to match it never become trusted (R5).
@@ -496,6 +500,22 @@ function guardWrite(path: string, content: string | Uint8Array): AtomicWriteTick
   const admitted = admitWrite(path, `change ${path}`);
   if (admitted === undefined) return undefined;
   return stage(admitted.trust, admitted.key, admitted.kind, admitted.kind === "entry" ? entryFileDigestOf(content) : sha256Hex(content));
+}
+
+/** Keep each write intent durable, collapsing completed writes together when this synchronous scope ends. */
+export function batchAveHomeInputWritesSync<T>(write: () => T): T {
+  inputWriteBatchDepth++;
+  try { return write(); }
+  finally {
+    inputWriteBatchDepth--;
+    if (inputWriteBatchDepth === 0) {
+      const completed = [...completedInputWrites];
+      completedInputWrites.clear();
+      for (const trust of completed) {
+        try { persist(trust); } catch { /* durable intents are collapsed at the next boot */ }
+      }
+    }
+  }
 }
 
 /** Record a write that does not go through the atomic-file helpers: `bytes` is exactly what `write` puts at `path`. */
@@ -1028,6 +1048,8 @@ function removePosixNoFollow(path: string): void {
 /** Test teardown only. */
 export function _resetAveHomeTrustForTest(): void {
   active = undefined;
+  inputWriteBatchDepth = 0;
+  completedInputWrites.clear();
   inFlight.clear();
   overlapping.clear();
   reviewSnapshot = undefined;

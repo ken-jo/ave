@@ -18,7 +18,7 @@ import * as atomicFile from "../lib/atomic-file.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 import { getConfiguredHostResources } from "./host-resources.js";
-import { recordAveHomeInputWriteSync } from "../shared/ave-home-trust.js";
+import { batchAveHomeInputWritesSync, recordAveHomeInputWriteSync } from "../shared/ave-home-trust.js";
 
 export interface AveHomeDocUpgradeMarker {
   sourcePath: string;
@@ -45,13 +45,15 @@ export function seedAveHomeDocs(): { seeded: string[]; upgraded: string[] } {
     return result;
   }
 
-  seedOne(home, AGENTS_DOC_NAME, result, {
-    upgradePolicy: "marker",
-    replaceableHashesResource: "AGENTS.md.replaceable-sha256",
+  batchAveHomeInputWritesSync(() => {
+    seedOne(home, AGENTS_DOC_NAME, result, {
+      upgradePolicy: "marker",
+      replaceableHashesResource: "AGENTS.md.replaceable-sha256",
+    });
+    seedDir(home, "agents", result, { upgradePolicy: "seed-only" });
+    seedDir(home, "skills", result, { upgradePolicy: "marker" });
+    seedDir(home, "prompts", result, { upgradePolicy: "marker" });
   });
-  seedDir(home, "agents", result, { upgradePolicy: "seed-only" });
-  seedDir(home, "skills", result, { upgradePolicy: "marker" });
-  seedDir(home, "prompts", result, { upgradePolicy: "marker" });
   return result;
 }
 

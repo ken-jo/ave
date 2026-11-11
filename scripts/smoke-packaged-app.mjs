@@ -15,6 +15,7 @@ import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs"
 import { assertNoWindowsProtocolClaim } from "./lib/windows-protocol-cleanup.mjs";
 import { windowsPowerShellEnv } from "./lib/windows-powershell-env.mjs";
 import {
+  bootReadinessTimestamp,
   launchSucceeded,
   readProductionLogsSince,
   reachedBootReadiness,
@@ -257,6 +258,7 @@ function assertUpgradeProbe(probe) {
 async function runPackagedAppOnce(executable, timeoutMs, env, label) {
   const args = smokeArgs(process.platform, env);
   const logSnapshot = snapshotProductionLogs(env.AVE_HOME);
+  const launchedAt = Date.now();
   process.stdout.write(`[packaged-smoke] launching ${label}: ${executable} ${args.join(" ")}\n`);
 
   return await new Promise((resolvePromise, reject) => {
@@ -276,9 +278,11 @@ async function runPackagedAppOnce(executable, timeoutMs, env, label) {
 
     child.stdout?.on("data", (chunk) => {
       output = appendOutput(output, chunk);
+      process.stdout.write(chunk);
     });
     child.stderr?.on("data", (chunk) => {
       output = appendOutput(output, chunk);
+      process.stderr.write(chunk);
     });
     child.on("error", (err) => {
       clearTimeout(timer);
@@ -291,6 +295,8 @@ async function runPackagedAppOnce(executable, timeoutMs, env, label) {
 
       const launchLog = readProductionLogsSince(env.AVE_HOME, logSnapshot);
       const ready = reachedBootReadiness(launchLog);
+      const readyAt = bootReadinessTimestamp(launchLog);
+      process.stdout.write(`[packaged-smoke] startup timing (${label}): ${JSON.stringify({ launchedAt, readyAt, durationMs: readyAt === null ? null : readyAt - launchedAt, budgetMs: timeoutMs })}\n`);
       const logTail = launchLog.slice(-4_000) || "(no production log entries from this launch)";
       if (MODULE_LOAD_FAILURE.test(output)) {
         reject(new Error(`packaged app emitted module load failure (${label}):\n${output}\nproduction log tail:\n${logTail}`));
@@ -369,8 +375,8 @@ async function runWindowsInstallerSmoke(releaseDir, timeoutMs) {
     "-NodeExecutable", process.execPath,
     "-ArgumentsBase64", Buffer.from(JSON.stringify(smokeArgs)).toString("base64"),
     "-WorkingDirectory", root,
-    // Bound the complete two-pass owner harness using the existing install,
-    // uninstall and postcondition budgets; individual operation limits stay fixed.
+    // Keep the established owner-harness ceiling for silent and GUI cases.
+    // Individual install, uninstall and postcondition limits stay fixed.
     "-DeadlineUnixMs", String(Date.now() + 2 * (180_000 + 120_000 + 30_000) + timeoutMs),
   ] : smokeArgs;
 

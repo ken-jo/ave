@@ -34,3 +34,13 @@ export function launchSucceeded({ ready, timedOut, code, signal }) {
   if (!ready || (code !== null && code !== 0)) return false;
   return code === 0 || (timedOut && (signal === "SIGTERM" || signal === "SIGKILL"));
 }
+
+export function bootReadinessTimestamp(logText) {
+  for (const line of logText.split("\n")) {
+    try {
+      const row = JSON.parse(line);
+      if (typeof row.msg === "string" && BOOT_READY.test(row.msg) && Number.isFinite(row.time)) return row.time;
+    } catch { /* Other output is not a structured production log entry. */ }
+  }
+  return null;
+}

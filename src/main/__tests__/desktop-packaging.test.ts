@@ -120,41 +120,24 @@ describe("desktop packaging", () => {
     expect(script).not.toContain("AVE_HOME:-");
   });
 
-  it("removes user data on Windows uninstall (Roaming + ~/.ave cleanup wired)", () => {
+  it("preserves user data on Windows uninstall", () => {
     const pkg = readPackageJson();
     expect(pkg.build.nsis).toMatchObject({
       oneClick: true,
       createStartMenuShortcut: true,
       uninstallDisplayName: "Ave",
-      // The custom hook owns every user-data path so `/KEEP_APP_DATA` can preserve Roaming data as well as AVE_HOME and Local AppData.
+      // Neither the template nor the custom hook may remove user-data homes.
       deleteAppDataOnUninstall: false,
       include: "build/installer.nsh",
     });
   });
 
-  it("keeps KEEP_APP_DATA ahead of current-user Windows data deletion", () => {
+  it("removes app files without deleting user-data roots or asking to delete data", () => {
     const script = readFileSync(join(root, "build", "installer.nsh"), "utf8");
-    const keepBranch = script.indexOf('${if} $R1 == "1"');
-    const currentContext = script.indexOf("SetShellVarContext current");
-    const roamingDelete = script.indexOf(
-      'RMDir /r "$APPDATA\\${APP_FILENAME}"',
-    );
-    const restoreContext = script.indexOf(
-      "SetShellVarContext all",
-      currentContext,
-    );
-
-    expect(keepBranch).toBeGreaterThanOrEqual(0);
-    expect(currentContext).toBeGreaterThan(keepBranch);
-    expect(roamingDelete).toBeGreaterThan(currentContext);
-    expect(restoreContext).toBeGreaterThan(roamingDelete);
-    expect(script).toContain('RMDir /r "$APPDATA\\${APP_PRODUCT_FILENAME}"');
-    expect(script).toContain('RMDir /r "$APPDATA\\${APP_PACKAGE_NAME}"');
-    expect(script).toContain('RMDir /r "$LOCALAPPDATA\\${APP_FILENAME}"');
-    expect(script).toContain(
-      'RMDir /r "$LOCALAPPDATA\\${APP_PRODUCT_FILENAME}"',
-    );
-    expect(script).toContain('RMDir /r "$LOCALAPPDATA\\${APP_PACKAGE_NAME}"');
+    expect(script).toContain('RMDir /r "$INSTDIR"');
+    expect(script).not.toMatch(/^\s*(?:RMDir|Delete)\b[^\r\n]*"\$(?:PROFILE|APPDATA|LOCALAPPDATA)(?:\\|")/gm);
+    expect(script).not.toContain("Ave 사용자 데이터를 함께 삭제하시겠습니까?");
+    expect(script).not.toContain("ave_delete_userdata");
   });
 
   it("uses Ave-branded icon assets for the one-click Windows installer", () => {

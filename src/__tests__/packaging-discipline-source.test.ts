@@ -1348,7 +1348,7 @@ describe("installer smoke and packaging discipline", () => {
     expect(installers).toContain("uses: ./.github/actions/cache-runtime-tools");
   });
 
-  it("authorizes the destructive Windows release steps only on the hosted Windows installer job", () => {
+  it("authorizes machine installation only on the hosted Windows installer job", () => {
     // These steps claim HKCU ave://, install machine-wide and uninstall, so
     // they need a disposable machine. Every job runs on a hosted label (the
     // runner policy above), so the Windows matrix entry is that machine; each
@@ -1363,7 +1363,8 @@ describe("installer smoke and packaging discipline", () => {
         expect(line, `${name}: ${line.trim()}`).toMatch(/: \$\{\{ matrix\.target == 'win' && '1' \|\| '' \}\}$/u);
       }
     }
-    expect(authorizations).toBe(2);
+    // Data preservation needs no separate data-deletion authorization.
+    expect(authorizations).toBe(1);
 
     const installers = workflowJobs(readRepoFile(".github/workflows/build-installers.yml")).get("installers");
     if (installers === undefined) throw new Error("build-installers.yml has no installers job");
