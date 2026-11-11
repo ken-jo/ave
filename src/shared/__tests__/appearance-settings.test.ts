@@ -29,7 +29,9 @@ describe("appearance persistence normalization", () => {
   });
   it("keeps a valid glass tint and drops an invalid one with a warning", () => {
     const warn = vi.fn();
-    expect(normalizeAppearance({ ...DEFAULT_APPEARANCE, glassTint: 70 }, warn).glassTint).toBe(70);
+    for (const glassTint of [0, 40, 70, 100]) {
+      expect(normalizeAppearance({ ...DEFAULT_APPEARANCE, glassTint }, warn).glassTint).toBe(glassTint);
+    }
     expect(normalizeAppearance({ ...DEFAULT_APPEARANCE }, warn)).not.toHaveProperty("glassTint");
     expect(warn).not.toHaveBeenCalled();
     for (const glassTint of [-1, 101, 12.5, "50", null]) {
@@ -45,19 +47,16 @@ describe("glass tint", () => {
     expect([0, 50, 100].every(isGlassTint)).toBe(true);
     expect([-1, 101, 0.5, Number.NaN, "10", undefined].some(isGlassTint)).toBe(false);
   });
-  it("maps one value from each shell's legible floor (the owner's default) to opaque", () => {
-    expect(glassTintAlpha(DEFAULT_GLASS_TINT, "light")).toBe(0.75);
-    expect(glassTintAlpha(DEFAULT_GLASS_TINT, "dark")).toBe(0.6);
-    expect(glassTintAlpha(50, "light")).toBe(0.875);
-    expect(glassTintAlpha(50, "dark")).toBe(0.8);
-    expect(glassTintAlpha(100, "light")).toBe(1);
-    expect(glassTintAlpha(100, "dark")).toBe(1);
+  it("maps percent cover from bare material to opaque with a forty percent default", () => {
+    expect(DEFAULT_GLASS_TINT).toBe(40);
+    expect(glassTintAlpha(0)).toBe(0);
+    expect(glassTintAlpha(DEFAULT_GLASS_TINT)).toBe(0.4);
+    expect(glassTintAlpha(50)).toBe(0.5);
+    expect(glassTintAlpha(100)).toBe(1);
   });
-  it("clamps out-of-range input to the legible floor and to opaque", () => {
-    expect(glassTintAlpha(-50, "light")).toBe(0.75);
-    expect(glassTintAlpha(-50, "dark")).toBe(0.6);
-    expect(glassTintAlpha(250, "light")).toBe(1);
-    expect(glassTintAlpha(250, "dark")).toBe(1);
+  it("clamps out-of-range input to bare material and opaque", () => {
+    expect(glassTintAlpha(-50)).toBe(0);
+    expect(glassTintAlpha(250)).toBe(1);
   });
 });
 

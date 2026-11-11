@@ -6,7 +6,7 @@ import type { ThemeTokens, ThemeSurfaces } from "../../../shared/theme-tokens.js
 import { hexToOklch, mixOklch, oklchToHex } from "./oklch.js";
 import { requireScheme } from "./schemes/index.js";
 import { STATIC_DESIGN_TOKENS } from "./design-tokens.js";
-import type { ColorScheme, ResolvedTheme } from "./types.js";
+import type { ColorScheme, GlassStatusTokens, ResolvedTheme } from "./types.js";
 
 /** Relative luminance contrast of concrete sRGB colors. */
 export function contrastRatio(a: string, b: string): number {
@@ -81,6 +81,22 @@ export function resolveTheme(scheme: ColorScheme): ResolvedTheme {
   const selectionForeground = readableColor(foreground, [palette.selectionBackground], 4.5,
     contrastRatio("#ffffff", palette.selectionBackground) > contrastRatio("#000000", palette.selectionBackground), `${scheme.id}/selection`);
   const readableOn = (color: string) => contrastRatio("#ffffff", color) >= contrastRatio("#111111", color) ? "#ffffff" : "#111111";
+  // The worst neutral material at the default cover bounds every supported tint
+  // above it. Include opaque theme surfaces for selected rows and status-dot rings.
+  const material = dark ? 140 : 168;
+  const roundGround = dark ? Math.ceil : Math.floor;
+  const glassGround = `#${[1, 3, 5].map((offset) => roundGround(
+    Number.parseInt(surfaceHex.card.slice(offset, offset + 2), 16) * DEFAULT_GLASS_TINT / 100
+    + material * (1 - DEFAULT_GLASS_TINT / 100),
+  ).toString(16).padStart(2, "0")).join("")}`;
+  const glassStatus = Object.fromEntries(Object.entries(status).flatMap(([key, color]) => {
+    // Status text shares these colours with icons, so require body-text contrast too.
+    const safe = readableColor(color, [...surfaces, glassGround], 4.5, dark, `${scheme.id}/glass-${key}`);
+    return [
+      [key, hexToTriple(safe)],
+      ...(key === "emphasis" ? [] : [[`${key}-foreground`, hexToTriple(readableOn(safe))]]),
+    ];
+  })) as GlassStatusTokens;
   const border = mix(0.18), strong = mix(0.32);
   const colors: Record<string, string> = {
     ...surfaceHex,
@@ -115,6 +131,7 @@ export function resolveTheme(scheme: ColorScheme): ResolvedTheme {
     id: scheme.id, shell: scheme.shell, terminal: palette,
     tokens: Object.fromEntries(THEME_TOKEN_NAMES.map((name) => [name, hexToTriple(colors[name]!)])) as ThemeTokens,
     surfaces: Object.fromEntries(THEME_SURFACE_NAMES.map((name) => [name, hexToTriple(colors[name]!)])) as ThemeSurfaces,
+    glassStatus,
   };
 }
 
@@ -134,6 +151,7 @@ export function applySchemeColors(scheme: ColorScheme, doc: Document = document)
   root.style.colorScheme = theme.shell;
   for (const [name, value] of Object.entries(STATIC_DESIGN_TOKENS)) root.style.setProperty(name, value);
   for (const [name, value] of Object.entries({ ...theme.tokens, ...theme.surfaces })) root.style.setProperty(`--${name}`, value);
+  for (const [name, value] of Object.entries(theme.glassStatus)) root.style.setProperty(`--glass-${name}`, value);
   return theme;
 }
 
@@ -145,9 +163,9 @@ export function applyAppearance(appearance: AppearanceSettings, doc: Document = 
   const families = codeFamily.match(/"[^"]*"|'[^']*'|[^,"']+/g) ?? [];
   const hasGeneric = families.some((family) => /^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-serif|ui-sans-serif|ui-monospace|ui-rounded|math|emoji|fangsong)$/i.test(family.trim()));
   doc.documentElement.style.setProperty("--font-mono", hasGeneric ? codeFamily : `${codeFamily}, monospace`);
-  // The one glass token, for the shell being painted. Only `html[data-glass]` rules read it, so a window without the material
+  // The one glass token, shared by both shells. Only `html[data-glass]` rules read it, so a window without the material
   // carries it unused.
-  doc.documentElement.style.setProperty("--glass-tint-alpha", String(glassTintAlpha(appearance.glassTint ?? DEFAULT_GLASS_TINT, theme.shell)));
+  doc.documentElement.style.setProperty("--glass-tint-alpha", String(glassTintAlpha(appearance.glassTint ?? DEFAULT_GLASS_TINT)));
   return theme;
 }
 

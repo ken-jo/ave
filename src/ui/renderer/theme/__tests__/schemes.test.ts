@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { SCHEMES, requireScheme } from "../schemes/index.js";
 import { applyAppearance, contrastRatio, resolveTheme, resolveAppearanceScheme } from "../resolve-theme.js";
 import { STATIC_DESIGN_TOKENS } from "../design-tokens.js";
-import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS, DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
+import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS, DEFAULT_APPEARANCE, DEFAULT_GLASS_TINT } from "../../../../shared/appearance-settings.js";
 import { FONT_SIZE_SCALE_DEFAULT } from "../../../../shared/appearance-font.js";
 
 function rgbHex(triple: string): string {
@@ -17,10 +17,14 @@ function rgbHex(triple: string): string {
 
 describe("curated color schemes", () => {
   it("applies the shared static design values on the pre-paint and live path", () => {
-    applyAppearance(DEFAULT_APPEARANCE, document, false);
+    const theme = applyAppearance(DEFAULT_APPEARANCE, document, false);
     for (const [name, value] of Object.entries(STATIC_DESIGN_TOKENS)) {
       expect(document.documentElement.style.getPropertyValue(name), name).toBe(value);
     }
+    for (const [name, value] of Object.entries(theme.glassStatus)) {
+      expect(document.documentElement.style.getPropertyValue(`--glass-${name}`), name).toBe(value);
+    }
+    expect(document.documentElement.style.getPropertyValue("--destructive")).toBe(theme.tokens.destructive);
   });
   it("renders the dense type steps at their former px sizes on the default root", () => {
     // tiny and dense replaced fixed 10px and 11px labels; at the default scale they must render the same box.
@@ -39,6 +43,47 @@ describe("curated color schemes", () => {
     expect(SCHEMES.filter((s) => s.shell === "light").map((s) => s.id)).toEqual([...LIGHT_SCHEME_IDS]);
   });
   for (const scheme of SCHEMES) {
+    it(`${scheme.id} keeps coloured glass statuses and filled badges readable`, () => {
+      const theme = resolveTheme(scheme);
+      const card = rgbHex(theme.tokens.card);
+      const tones = ["destructive", "warning", "success", "info", "emphasis"] as const;
+      const [minimumMaterial, maximumMaterial] = scheme.shell === "dark" ? [0, 140] as const : [168, 255] as const;
+      for (const tone of tones) {
+        expect(rgbHex(theme.glassStatus[tone]), tone).not.toBe(rgbHex(theme.tokens.foreground));
+      }
+      for (let tint = DEFAULT_GLASS_TINT; tint <= 100; tint++) {
+        for (let material = minimumMaterial; material <= maximumMaterial; material++) {
+          const blended = `#${[1, 3, 5].map((offset) => Math.round(
+            Number.parseInt(card.slice(offset, offset + 2), 16) * tint / 100 + material * (1 - tint / 100),
+          ).toString(16).padStart(2, "0")).join("")}`;
+          for (const tone of tones) {
+            // The same status tokens colour text, child icons, borders and dots.
+            expect(contrastRatio(rgbHex(theme.glassStatus[tone]), blended), `${tone} at ${tint}% over grey ${material}`).toBeGreaterThanOrEqual(4.5);
+          }
+        }
+      }
+      for (const tone of ["destructive", "warning", "success", "info"] as const) {
+        const color = rgbHex(theme.glassStatus[tone]);
+        expect(contrastRatio(rgbHex(theme.glassStatus[`${tone}-foreground`]), color), `${tone} badge ink`).toBeGreaterThanOrEqual(4.5);
+        expect(contrastRatio(color, card), `${tone} status-dot ring`).toBeGreaterThanOrEqual(3);
+      }
+    });
+    it(`${scheme.id} keeps full-strength glass labels readable from the default tint upward`, () => {
+      const { tokens } = resolveTheme(scheme);
+      const foreground = rgbHex(tokens.foreground);
+      const card = rgbHex(tokens.card);
+      const [minimumMaterial, maximumMaterial] = scheme.shell === "dark" ? [0, 140] as const : [168, 255] as const;
+      for (let tint = DEFAULT_GLASS_TINT; tint <= 100; tint++) {
+        for (let material = minimumMaterial; material <= maximumMaterial; material++) {
+          const blended = `#${[1, 3, 5].map((offset) => Math.round(
+            Number.parseInt(card.slice(offset, offset + 2), 16) * tint / 100 + material * (1 - tint / 100),
+          ).toString(16).padStart(2, "0")).join("")}`;
+          const ratio = contrastRatio(foreground, blended);
+          expect(ratio, `${tint}% over grey ${material}: body text`).toBeGreaterThanOrEqual(4.5);
+          expect(ratio, `${tint}% over grey ${material}: headers and icons`).toBeGreaterThanOrEqual(3);
+        }
+      }
+    });
     it(`${scheme.id} keeps muted text readable on every text surface`, () => {
       const theme = resolveTheme(scheme);
       const muted = rgbHex(theme.tokens["muted-foreground"]);

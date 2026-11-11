@@ -73,16 +73,16 @@ describe("appearance provider", () => {
 });
 
 describe("glass tint token", () => {
-  it("writes --glass-tint-alpha for the painted shell from the one setting", () => {
+  it.each(["light", "dark"] as const)("writes percent cover for the %s shell including bare material", (mode) => {
     const root = document.documentElement;
-    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "light" });
-    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.75");
-    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "dark" });
-    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.6");
-    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "dark", glassTint: 100 });
+    applyAppearance({ ...DEFAULT_APPEARANCE, mode });
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.4");
+    applyAppearance({ ...DEFAULT_APPEARANCE, mode, glassTint: 0 });
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0");
+    applyAppearance({ ...DEFAULT_APPEARANCE, mode, glassTint: 100 });
     expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("1");
-    applyAppearance({ ...DEFAULT_APPEARANCE, mode: "light", glassTint: 50 });
-    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.875");
+    applyAppearance({ ...DEFAULT_APPEARANCE, mode, glassTint: 50 });
+    expect(root.style.getPropertyValue("--glass-tint-alpha")).toBe("0.5");
   });
 
   it("previews a tint without saving and saves it on commit", () => {
@@ -96,7 +96,7 @@ describe("glass tint token", () => {
     }
     render(<ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "dark" }}><Tint /></ThemeProvider>);
     fireEvent.click(screen.getByText("Preview"));
-    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.92");
+    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.8");
     expect(api.updateSettings).not.toHaveBeenCalledWith({ appearance: { glassTint: 80 } });
     fireEvent.click(screen.getByText("Commit"));
     expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { glassTint: 80 } });

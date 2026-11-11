@@ -238,7 +238,7 @@ function SessionRow({
           pass through it keep their contrast. Archived rows stay READABLE. Dimming them to the point of illegibility would
           make the archive a place things go to be lost, which is what delete is for. */}
       <div
-        className={`flex min-w-0 flex-1 items-center ${archived ? "opacity-70" : ""}`}
+        className={`ave-sidebar-label flex min-w-0 flex-1 items-center ${archived ? "opacity-70" : ""}`}
         data-testid={`sidebar-row-content-${session.id}`}
       >
       {/* ── Leading slot. One 14px square that holds the row's KIND at rest and
@@ -367,7 +367,7 @@ function SessionRow({
           </button>
         ) : null}
       {time ? (
-        <span className="shrink-0 pr-1 text-tiny text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
+        <span className="ave-sidebar-label shrink-0 pr-1 text-tiny text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
           {time}
         </span>
       ) : null}
@@ -964,7 +964,7 @@ export function ProjectTree({
         onFocus={(event) => { if (event.target === event.currentTarget) setFocusKey(key); }}
         onContextMenu={(event) => openNativeContextMenu(event, "project", projectMenuHandlers(project))}
         className={[
-          "group mt-1 flex w-full min-w-0 items-center rounded-md transition-colors hover:bg-muted",
+          "ave-sidebar-label group mt-1 flex w-full min-w-0 items-center rounded-md transition-colors hover:bg-muted",
           TREE_ROW_FOCUS_CLASS,
           archived ? "opacity-70" : "",
         ].filter(Boolean).join(" ")}
@@ -1226,7 +1226,7 @@ export function ProjectTree({
         /** Same acknowledgement text the composer selector shows for the same `pickRoot` warning — one flow, one wording. */
         <div
           data-testid="sidebar-project-root-warning"
-          className="my-1 space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-dense"
+          className="ave-sidebar-warning my-1 space-y-2 rounded-md border border-destructive bg-destructive/(--opacity-muted) p-2 text-dense"
         >
           <div className="font-medium text-destructive">{t("composerProjectSelector.rootWarningTitle")}</div>
           <ul className="list-disc space-y-0.5 pl-4 text-muted-foreground [overflow-wrap:anywhere]">

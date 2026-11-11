@@ -17,7 +17,7 @@ export interface AppearanceSettings {
   zoomLevel?: number;
   terminalFont: TerminalFontSettings;
   language?: Locale;
-  /** How much of the card colour covers the macOS window material, 0–100 (100 = opaque). Absent = {@link DEFAULT_GLASS_TINT}. */
+  /** Percent card-colour cover over the system window material, 0–100 (0 = bare material, 100 = opaque). Absent = {@link DEFAULT_GLASS_TINT}. */
   glassTint?: number;
 }
 const DEFAULT_TERMINAL_FONT: Readonly<TerminalFontSettings> = Object.freeze({
@@ -28,30 +28,24 @@ export const DEFAULT_APPEARANCE: Readonly<AppearanceSettings> = Object.freeze({
   terminalFont: DEFAULT_TERMINAL_FONT, language: "en", zoomLevel: 0,
 });
 /**
- * The glass tint is ONE user value that drives both shells: 0 is the most see-through tint that still keeps the sidebar's muted
- * text at 3:1 over the material, 100 is fully opaque. Each shell maps it linearly from its floor to 1.
- *
- * The floors are the owner's prototype picks, and they are also the legibility limit. Composite = alpha * card +
- * (1 - alpha) * material, with the material modelled as any neutral grey within reach of the measured macOS material (inactive
- * under-window: dark ~rgb(83,81,81), light ~rgb(226,225,225)): dark material at most grey 140, light at least grey 168. Over all
- * twelve curated schemes the worst muted-text contrast is 3.03:1 at dark 0.6 (gruvbox-dark over grey 140) and 4.17:1 at light
- * 0.75 (solarized-light over grey 168); dark 0.4 would fall to 2.23:1. So the default is the floor (0), and the slider only
- * moves toward opaque.
+ * One percent-cover value drives both shells: 0 leaves the system material bare,
+ * 100 paints an opaque card, and the default covers forty percent. Glass sidebar
+ * labels use full-strength foreground colours: tint 40 and above guarantees
+ * body contrast of 4.5:1 and header/icon contrast of 3:1 over the material model
+ * (dark neutral greys 0–140, light 168–255). Below 40 the user trades contrast
+ * for transparency. Content surfaces stay opaque; the sidebar has no alpha floor.
  */
 export const GLASS_TINT_MIN = 0;
 export const GLASS_TINT_MAX = 100;
-export const DEFAULT_GLASS_TINT = 0;
-const GLASS_TINT_ALPHA_FLOOR = { light: 0.75, dark: 0.6 } as const;
+export const DEFAULT_GLASS_TINT = 40;
 
 export function isGlassTint(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= GLASS_TINT_MIN && value <= GLASS_TINT_MAX;
 }
 
-/** The `--glass-tint-alpha` for a shell. The tint is clamped to its range, so the alpha never drops below the shell's floor. */
-export function glassTintAlpha(tint: number, shell: "light" | "dark"): number {
-  const t = Math.min(GLASS_TINT_MAX, Math.max(GLASS_TINT_MIN, tint)) / GLASS_TINT_MAX;
-  const floor = GLASS_TINT_ALPHA_FLOOR[shell];
-  return Math.round((floor + (1 - floor) * t) * 1000) / 1000;
+/** The `--glass-tint-alpha`: clamped percent cover, independent of the shell. */
+export function glassTintAlpha(tint: number): number {
+  return Math.min(GLASS_TINT_MAX, Math.max(GLASS_TINT_MIN, tint)) / GLASS_TINT_MAX;
 }
 
 export function isAppearanceMode(value: unknown): value is AppearanceMode {

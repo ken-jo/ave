@@ -158,9 +158,9 @@ describe("Window glass tint", () => {
     const { api, view } = renderWithMaterial({ ...DEFAULT_APPEARANCE, mode: "light" }, true);
     const slider = view.getByRole("slider", { name: "창 유리 틴트" }) as HTMLInputElement;
     expect(slider.disabled).toBe(false);
-    expect(slider.value).toBe("0");
+    expect(slider.value).toBe("40");
     fireEvent.change(slider, { target: { value: "90" } });
-    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.975");
+    expect(document.documentElement.style.getPropertyValue("--glass-tint-alpha")).toBe("0.9");
     expect(api.updateSettings).not.toHaveBeenCalledWith({ appearance: { glassTint: 90 } });
     fireEvent.pointerUp(slider);
     // The same gesture's lost capture finds nothing pending: one save, not two.
@@ -177,9 +177,9 @@ describe("Window glass tint", () => {
     stubReducedTransparency(false);
     const { api, view } = renderWithMaterial({ ...DEFAULT_APPEARANCE, mode: "dark" }, true);
     const slider = view.getByRole("slider", { name: "창 유리 틴트" });
-    fireEvent.change(slider, { target: { value: "40" } });
+    fireEvent.change(slider, { target: { value: "41" } });
     end(slider);
-    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { glassTint: 40 } });
+    expect(api.updateSettings).toHaveBeenCalledWith({ appearance: { glassTint: 41 } });
   });
 
   it("saves nothing for a key that moved nothing", () => {

@@ -1161,22 +1161,55 @@
  * own `bg-card`), as do headers, the terminal and every popover.
  *
  * Alpha never goes on `--background` / `--card` themselves: the contrast
- * solver in resolve-theme.ts derives text against those as opaque grounds,
- * and the material under a tint is close to that ground in both shells.
+ * solver in resolve-theme.ts derives text against those as opaque grounds.
+ * Sidebar labels use the scheme's full-strength foreground over the material.
+ * Status colours retain their hues through sidebar-scoped variants from the
+ * same contrast solver, including explicit child colours and paired badge ink.
+ * At tint 40 and above it clears 4.5:1 for body text and 3:1 for headers/icons
+ * across the material model (dark neutral greys 0–140, light 168–255).
+ * Below 40 the user trades text contrast for transparency; the ground stays bare at 0.
  *
  * The rules sit outside every cascade layer so they outrank the `bg-*`
  * utilities on the same elements without `!important`.
  *
  * `--glass-tint-alpha` — how much of the card colour covers the material —
  * is set by `applyAppearance` from the user's `appearance.glassTint` slider,
- * mapped onto the painted shell's range (`glassTintAlpha`). */
+ * as percent cover in both shells (`glassTintAlpha`): 0 leaves the material
+ * bare, 100 paints an opaque card, and the default is 40. */
 html[data-glass],
 html[data-glass] body,
 html[data-glass] .ave-glass-clear {
   background-color: transparent;
 }
 html[data-glass] .ave-glass-tint {
+  --muted-foreground: var(--foreground);
+  --destructive: var(--glass-destructive);
+  --destructive-foreground: var(--glass-destructive-foreground);
+  --warning: var(--glass-warning);
+  --warning-foreground: var(--glass-warning-foreground);
+  --success: var(--glass-success);
+  --success-foreground: var(--glass-success-foreground);
+  --info: var(--glass-info);
+  --info-foreground: var(--glass-info-foreground);
+  --emphasis: var(--glass-emphasis);
+  color: hsl(var(--foreground));
   background-color: hsl(var(--card) / var(--glass-tint-alpha));
+}
+/* Explicit alpha and archived/disabled content opacity must not weaken a glass label.
+ * Filled badges use paired glass status ink; portalled popovers retain normal tokens. */
+html[data-glass] .ave-glass-tint .ave-sidebar-label {
+  color: hsl(var(--foreground));
+  opacity: 1;
+}
+/* Selected rows already have a fill. Keep it opaque so its foreground is
+ * measured against a theme surface, independently of the material below. */
+html[data-glass] .ave-glass-tint :is([role="treeitem"][aria-selected="true"], button[aria-current="page"], [data-active="true"]) {
+  background-color: hsl(var(--muted));
+}
+/* The existing warning panel has its own surface: translucent status washes
+ * would otherwise change the ground beneath both its status and body text. */
+html[data-glass] .ave-glass-tint .ave-sidebar-warning {
+  background-color: hsl(var(--card));
 }
 /* An overlaying sidebar floats over a conversation, not over the material:
  * a see-through card there would print the transcript under the list. */

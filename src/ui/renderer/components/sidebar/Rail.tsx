@@ -26,7 +26,7 @@ export const RailButton = forwardRef<HTMLButtonElement, RailButtonProps>(functio
       title={label}
       aria-current={current ? "page" : undefined}
       className={[
-        `relative ${RAIL_CONTROL_SIZE_CLASS} aspect-square flex shrink-0 items-center justify-center rounded-md transition-colors`,
+        `ave-sidebar-label relative ${RAIL_CONTROL_SIZE_CLASS} aspect-square flex shrink-0 items-center justify-center rounded-md transition-colors`,
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
         current ? "bg-primary/(--opacity-subtle) text-primary" : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
         className ?? "",
