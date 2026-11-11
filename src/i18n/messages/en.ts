@@ -3758,7 +3758,7 @@ export const en = {
   "permissionsTab.windowsShellLocalNetworkHint": "Off by default. When off, commands use the approved-host route. Changes apply to the next command without restarting.",
   "permissionsTab.windowsShellLocalNetworkExtensionScope": "Extension confinement, including MCP servers, keeps its separate local-network policy.",
   "permissionsTab.windowsShellLocalNetworkToggleFailed": "Failed to change Windows shell local-network access.",
-  "permissionsTab.osSandboxWindowsShellsLocalNetworkOff": "Shell: containers are available, but local-network access is off. Each command uses the approved-host route.",
+  "permissionsTab.osSandboxWindowsShellsLocalNetworkOff": "Shell: local-network access is off. Each command uses the approved-host route.",
   "permissionsTab.osSandboxUnavailable": "The OS tool sandbox is not available on this platform ({platform}); tools run unconfined here.",
   "permissionsTab.osSandboxCapabilityHeading": "Isolation on this platform",
   "permissionsTab.osSandboxCapabilityMac": "macOS (Seatbelt): commands write only in project and temporary folders; network goes out only to hosts you allow.",

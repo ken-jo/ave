@@ -1356,7 +1356,10 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.queryByTestId("os-sandbox-windows-shared-identity")).toBeNull();
   });
 
-  it.each(["en", "ko"] as const)("shows local-network risk and separate extension scope in %s", async (locale) => {
+  it.each([
+    ["en", "checking"], ["ko", "checking"],
+    ["en", "available"], ["ko", "available"],
+  ] as const)("shows local-network consent off in %s while the container is %s", async (locale, mxcState) => {
     const before = getLocale();
     setLocale(locale);
     try {
@@ -1365,7 +1368,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       ave.permission.sandboxCapability.mockResolvedValue({ ...current,
         windowsSubstrate: {
           shellLocalNetworkAccess: false,
-          mxc: { state: "available" }, windowsBuild: "10.0.26300", srtWinReady: false,
+          mxc: { state: mxcState }, windowsBuild: "10.0.26300", srtWinReady: false,
           shells: "approved-host", extensions: "none", shellEgressIdentity: "shared", extensionEgressIdentity: "shared",
         },
       } as never);
@@ -1377,6 +1380,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
         .toHaveTextContent(t("permissionsTab.windowsShellLocalNetworkExtensionScope"));
       expect(screen.getByTestId("os-sandbox-windows-substrate-shells"))
         .toHaveTextContent(t("permissionsTab.osSandboxWindowsShellsLocalNetworkOff"));
+      expect(screen.getByTestId("os-sandbox-windows-substrate-shells"))
+        .not.toHaveTextContent(locale === "en" ? "containers are available" : "컨테이너를 사용할 수 있지만");
     } finally {
       setLocale(before);
     }

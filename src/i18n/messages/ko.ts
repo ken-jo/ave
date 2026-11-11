@@ -3760,7 +3760,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.windowsShellLocalNetworkHint": "기본값은 꺼짐입니다. 꺼져 있으면 명령은 호스트 승인 경로를 사용합니다. 변경은 재시작 없이 다음 명령부터 적용됩니다.",
   "permissionsTab.windowsShellLocalNetworkExtensionScope": "MCP 서버를 포함한 익스텐션 격리는 별도의 로컬 네트워크 정책을 유지합니다.",
   "permissionsTab.windowsShellLocalNetworkToggleFailed": "Windows 셸 로컬 네트워크 접근 설정을 변경하지 못했습니다.",
-  "permissionsTab.osSandboxWindowsShellsLocalNetworkOff": "셸: 컨테이너를 사용할 수 있지만 로컬 네트워크 접근이 꺼져 있습니다. 명령마다 호스트 승인 경로를 사용합니다.",
+  "permissionsTab.osSandboxWindowsShellsLocalNetworkOff": "셸: 로컬 네트워크 접근이 꺼져 있습니다. 명령마다 호스트 승인 경로를 사용합니다.",
   "permissionsTab.osSandboxUnavailable": "이 플랫폼({platform})에서는 OS 도구 샌드박스를 사용할 수 없습니다. 도구가 격리 없이 실행됩니다.",
   "permissionsTab.osSandboxCapabilityHeading": "이 플랫폼의 격리",
   "permissionsTab.osSandboxCapabilityMac": "macOS(Seatbelt): 명령은 프로젝트와 임시 폴더에만 쓰고, 네트워크는 허용한 호스트로만 나갑니다.",
