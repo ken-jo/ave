@@ -113,9 +113,34 @@ without a data-deletion question. Silent uninstall and updates also keep data;
 `/KEEP_APP_DATA` remains accepted for compatibility and has no additional effect.
 Reinstalling Ave can reuse the retained data.
 
-For full manual removal, quit Ave and uninstall it first. Back up anything you
-need, then delete these folders if present; deletion permanently removes their
-contents:
+Retained data includes credentials and key material. The Ave home defaults to
+`%USERPROFILE%\.ave`, or the folder selected by `AVE_HOME`. Its sensitive
+locations include `secrets\` for secret material, `keys\` for signing and
+encryption keys, `subscription-runtimes\` for provider sign-in state, and
+`config\` and `ave-secrets.json` for protected configuration and legacy secret
+copies when present. `certs\` contains cached public corporate CA certificates.
+The app profile also retains encrypted provider API keys, plugin secrets and
+MCP authorization credentials in `%APPDATA%\Ave\ave-secrets.json`, plus browser
+login cookies and session state under `%APPDATA%\Ave\Partitions\`.
+
+Treat retained credentials as active until you confirm revocation or expiry
+with their issuer. For full manual removal, complete these steps in order.
+
+1. While Ave is installed, sign out of connected model subscriptions and plugin
+   accounts using their sign-out controls where available. Review the providers,
+   plugins and MCP servers you connected so you can identify their credentials.
+2. Open each provider's account security or developer console. Revoke API keys,
+   access and refresh tokens, personal access tokens, authorized-app grants and
+   sessions used by Ave. For shared credentials, update the other clients to a
+   replacement credential before revoking the old one. Verify completion in
+   each provider's console before deleting local files.
+3. If you configured SSH keys or client certificates for Ave, remove their
+   authorized public keys from the remote accounts or hosts and arrange client
+   certificate revocation with the issuer or administrator. Review any credential
+   files you configured outside the Ave folders for separate manual removal.
+4. Quit Ave and uninstall it from Settings. Back up chats and other personal
+   files you need, then manually delete the following folders if present.
+   Deletion permanently removes their contents.
 
 - `%USERPROFILE%\.ave` (or your configured `AVE_HOME`)
 - `%APPDATA%\Ave` and `%LOCALAPPDATA%\Ave`
