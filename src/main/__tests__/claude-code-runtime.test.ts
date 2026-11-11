@@ -31,6 +31,9 @@ import { SubscriptionToolBridge } from "../subscription-tool-bridge.js";
 import { CLAUDE_CODE_CLI_MINIMUM_VERSION, claudeCodeSubscriptionStatus } from "../../shared/claude-code-subscription.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
+import { arrivalBeforeCompletion } from "../../__tests__/support/arrival-before-completion.js";
+import { advanceFakeClock } from "../../__tests__/support/fake-clock-wait.js";
 
 // Release metadata is fetched only by real Linux publisher verification; these fixtures never reach it.
 const RELEASE_FETCH = (async () => { throw new Error("Unexpected release metadata request"); }) as unknown as typeof fetch;
@@ -61,7 +64,12 @@ class FakeChild extends EventEmitter {
   exitCode: number | null = null;
   readonly kill = vi.fn(() => true);
   input = "";
-  constructor() { super(); this.stdin.on("data", (chunk) => { this.input += String(chunk); }); }
+  readonly promptReceived = deferred<string>();
+  constructor() {
+    super();
+    this.stdin.on("data", (chunk) => { this.input += String(chunk); });
+    this.stdin.once("finish", () => this.promptReceived.resolve(this.input));
+  }
   send(event: unknown): void { this.stdout.write(`${JSON.stringify(event)}\n`); }
   close(code = 0, signal: NodeJS.Signals | null = null): void {
     this.exitCode = code;
@@ -126,6 +134,7 @@ function spawnHarness(
 ) {
   let ready!: (child: FakeChild) => void;
   const started = new Promise<FakeChild>((resolve) => { ready = resolve; });
+  let nextSpawn = deferred<FakeChild>();
   const calls: Array<{ child: FakeChild; args: readonly string[]; options: SpawnOptions }> = [];
   const probes: string[][] = [];
   const spawn = vi.fn((_command: string, args: readonly string[], options: SpawnOptions) => {
@@ -142,10 +151,12 @@ function spawnHarness(
       return child as unknown as ChildProcess;
     }
     calls.push({ child, args, options }); ready(child);
+    nextSpawn.resolve(child);
+    nextSpawn = deferred<FakeChild>();
     if (script) setImmediate(() => script(child, args));
     return child as unknown as ChildProcess;
   });
-  return { spawn, calls, started, probes };
+  return { spawn, calls, started, probes, nextStarted: () => nextSpawn.promise };
 }
 
 async function conversation(tools: readonly ToolSchema[] = [], resolveExecutable?: (path: string) => Promise<string>) {
@@ -205,7 +216,7 @@ describe("CLI conversation boundary", () => {
   it("keeps prompts off argv, disables built-ins, verifies result, and cleans its config", async () => {
     const h = await conversation();
     const done = collect(h.runtime.streamTurn("private prompt"));
-    const child = await h.started;
+    const child = await arrivalBeforeCompletion(h.started, done);
     expect(child.input).toBe("private prompt");
     const { args, options } = h.calls[0]!;
     expect(args).not.toContain("private prompt");
@@ -222,7 +233,7 @@ describe("CLI conversation boundary", () => {
   });
 
   it("reads stdout arriving after exit and a valid final frame without newline", async () => {
-    const h = await conversation(); const done = collect(h.runtime.streamTurn("hello")); const child = await h.started;
+    const h = await conversation(); const done = collect(h.runtime.streamTurn("hello")); const child = await arrivalBeforeCompletion(h.started, done);
     child.send(init()); child.emit("exit", 0, null); child.send(assistant());
     child.stdout.write(JSON.stringify(result())); child.emit("close", 0, null);
     expect((await done).at(-1)).toEqual({ type: "message_complete", stopReason: "end_turn" });
@@ -260,7 +271,7 @@ describe("CLI conversation boundary", () => {
     for (const invalid of [false, true]) {
       const h = await conversation(); const done = collect(h.runtime.streamTurn("hello"));
       const failure = invalid ? rejection(done) : null;
-      const child = await h.started; child.send(init());
+      const child = await arrivalBeforeCompletion(h.started, done); child.send(init());
       const message = Buffer.from(`${JSON.stringify(assistant([{ type: "text", text: "한글" }]))}\n`);
       for (const byte of message) child.stdout.write(Buffer.from([byte]));
       child.send(result()); if (invalid) child.stdout.write(Buffer.from([0xed])); child.close();
@@ -270,7 +281,7 @@ describe("CLI conversation boundary", () => {
   });
 
   it("only a validated bridge call produces a host tool event", async () => {
-    const h = await conversation([TOOL]); const done = collect(h.runtime.streamTurn("read file")); const child = await h.started;
+    const h = await conversation([TOOL]); const done = collect(h.runtime.streamTurn("read file")); const child = await arrivalBeforeCompletion(h.started, done);
     const { args } = h.calls[0]!;
     expect(args.slice(args.indexOf("--allowedTools"), args.indexOf("--allowedTools") + 2)).toEqual(["--allowedTools", HOST_TOOL]);
     const config = args[args.indexOf("--mcp-config") + 1]!;
@@ -295,7 +306,7 @@ describe("CLI conversation boundary", () => {
   });
 
   it("allows the CLI termination control without turning it into a host call", async () => {
-    const h = await conversation([TOOL]); const done = collect(h.runtime.streamTurn("hello")); const child = await h.started;
+    const h = await conversation([TOOL]); const done = collect(h.runtime.streamTurn("hello")); const child = await arrivalBeforeCompletion(h.started, done);
     child.send(init([HOST_TOOL, "EndConversation"]));
     child.send(assistant([{ type: "tool_use", id: "end", name: "EndConversation", input: {} }]));
     child.send(result({ result: "" })); child.close(); expect(await done).toEqual([{ type: "message_complete", stopReason: "end_turn" }]);
@@ -350,12 +361,29 @@ describe("CLI conversation boundary", () => {
     expect(await failure).toBeInstanceOf(Error); expect(child.kill).toHaveBeenCalledTimes(1); expect(readdirSync(h.runtimeTempDir)).toEqual([]);
   });
 
-  it("does not replay a native session when supplied the next full history envelope", async () => {
-    const h = await conversation();
+  it("does not replay a native session when supplied the next full history envelope", async ({ signal }) => {
+    vi.useFakeTimers();
+    let gate = { entered: deferred<void>(), released: deferred<void>() };
+    const h = await conversation([], async (path) => {
+      const current = gate;
+      current.entered.resolve();
+      await current.released.promise;
+      return path;
+    });
     for (const text of ["complete history: first request", "complete history: first request, first answer, second request"]) {
+      gate = { entered: deferred<void>(), released: deferred<void>() };
+      const nextChild = h.nextStarted();
       const completed = collect(h.runtime.streamTurn(text));
-      await vi.waitFor(() => expect(h.calls.at(-1)?.child.input).toBe(text), NATIVE_LOCATION_WAIT);
-      const call = h.calls.at(-1)!; call.child.send(init()); call.child.send(result()); call.child.close(); await completed;
+      const arriving = arrivalBeforeCompletion(nextChild, completed);
+      try {
+        await arrivalBeforeCompletion(gate.entered.promise, completed);
+        await advanceFakeClock(NATIVE_LOCATION_WAIT.timeout + 1, signal);
+      } finally { gate.released.resolve(); }
+      const child = await arriving;
+      expect(await arrivalBeforeCompletion(child.promptReceived.promise, completed)).toBe(text);
+      const call = h.calls.at(-1)!;
+      expect(call.child).toBe(child);
+      child.send(init()); child.send(result()); child.close(); await completed;
       expect(call.args).not.toContain("--resume"); expect(call.args).toContain("--no-session-persistence");
       expect(call.child.input).toBe(text);
     }
@@ -364,7 +392,7 @@ describe("CLI conversation boundary", () => {
   it("aborts buffered output even after the process completed", async () => {
     const h = await conversation(); const controller = new AbortController();
     const iterator = h.runtime.streamTurn("hello", controller.signal)[Symbol.asyncIterator]();
-    const first = iterator.next(); const child = await h.started;
+    const first = iterator.next(); const child = await arrivalBeforeCompletion(h.started, first);
     child.send(init()); child.send(assistant()); child.send(result()); child.close(); await first;
     controller.abort(); await expect(iterator.next()).rejects.toMatchObject({ name: "AbortError" });
   });
@@ -376,7 +404,7 @@ describe("CLI conversation boundary", () => {
   });
 
   it("preserves terminal-only text and the provider's length stop", async () => {
-    const h = await conversation(); const done = collect(h.runtime.streamTurn("hello")); const child = await h.started;
+    const h = await conversation(); const done = collect(h.runtime.streamTurn("hello")); const child = await arrivalBeforeCompletion(h.started, done);
     child.send(init()); child.send(result({ result: "actual final text", stop_reason: "max_tokens" })); child.close();
     expect(await done).toEqual([{ type: "text_delta", text: "actual final text" }, { type: "message_complete", stopReason: "max_tokens" }]);
   });
@@ -550,7 +578,7 @@ describe("CLI account and verification boundary", () => {
   );
 
   it("stop cancels captured commands and prevents future launches", async () => {
-    const h = await clientHarness(() => undefined); const pending = h.client.getStatus(); const child = await h.started;
+    const h = await clientHarness(() => undefined); const pending = h.client.getStatus(); const child = await arrivalBeforeCompletion(h.started, pending);
     await h.client.stop(); expect(await pending).toMatchObject({ runtime: "unavailable" });
     await expect(h.client.verify()).rejects.toThrow(); expect(h.calls).toHaveLength(1); expect(child.kill).toHaveBeenCalledTimes(1);
   });
@@ -581,18 +609,24 @@ describe("CLI account and verification boundary", () => {
   it("terminates the CLI and reports failure when its login window cancels", async () => {
     const directories = await paths();
     const h = spawnHarness(undefined, {});
-    const openAuthorizationUrl = vi.fn();
+    const authorizationOpened = deferred<import("../oauth-login.js").OAuthLoginOptions>();
+    const openAuthorizationUrl = vi.fn((_url: string, options: import("../oauth-login.js").OAuthLoginOptions) => {
+      authorizationOpened.resolve(options);
+    });
     const cli = installedCli(directories.runtimeHome);
     const client = new ClaudeCodeSubscriptionClient({ releaseFetch: RELEASE_FETCH, ...directories, ...h, candidates: cli.candidates,
       resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest, openAuthorizationUrl });
     owners.push(client);
     await client.startBrowserLogin();
     const child = await h.started;
+    const killed = deferred<void>();
+    child.kill.mockImplementation(() => { killed.resolve(); return true; });
     child.stdout.write("https://claude.ai/oauth/authorize?state=cancel\n");
-    await vi.waitFor(() => expect(openAuthorizationUrl).toHaveBeenCalledOnce());
-    const login = openAuthorizationUrl.mock.calls[0][1] as import("../oauth-login.js").OAuthLoginOptions;
+    const login = await authorizationOpened.promise;
+    expect(openAuthorizationUrl).toHaveBeenCalledOnce();
     login.onCancel();
-    await vi.waitFor(() => expect(child.kill).toHaveBeenCalled());
+    await killed.promise;
+    expect(child.kill).toHaveBeenCalled();
     await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-login-failed" });
   });
 });
@@ -902,7 +936,7 @@ describe("Claude service integration", () => {
     await service.verify("claude-code");
     const session = await service.openTextSession({ kind: "subscription", provider: "claude-code" });
     const failed = rejection(collect(session.streamTurn("hello")));
-    const child = await h.started;
+    const child = await arrivalBeforeCompletion(h.started, failed);
     if (failure === "unsupported startup") { child.stderr.write("error: unknown option '--strict-mcp-config'\n"); child.close(1); }
     else if (failure === "provider startup") { child.stderr.write("Error: service unavailable\n"); child.close(1); }
     else if (failure === "unsupported catalog") child.send(init(["Bash"]));

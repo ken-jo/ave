@@ -24,6 +24,7 @@ import {
 } from "../codex-conversation-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { deferred } from "../../__tests__/support/deferred.js";
+import { arrivalBeforeCompletion } from "../../__tests__/support/arrival-before-completion.js";
 import { advanceFakeClock, waitOnRealClock } from "../../__tests__/support/fake-clock-wait.js";
 beforeEach(() => {
   vi.stubEnv("SystemRoot", "C:\\Windows");
@@ -164,6 +165,27 @@ function requestId(message: JsonRecord): number {
   return message.id as number;
 }
 
+function holdExecutableVerification() {
+  const entered = deferred<void>();
+  const released = deferred<void>();
+  const verify = executableArtifacts.verifyCodexExecutableArtifact;
+  vi.spyOn(executableArtifacts, "verifyCodexExecutableArtifact").mockImplementation(async (...args) => {
+    entered.resolve();
+    await released.promise;
+    return verify(...args);
+  });
+  return {
+    async advancePastPollingDeadline(completion: Promise<unknown>, signal: AbortSignal) {
+      try {
+        await arrivalBeforeCompletion(entered.promise, completion);
+        await advanceFakeClock(NATIVE_LOCATION_WAIT.timeout + 1, signal);
+      } finally {
+        released.resolve();
+      }
+    },
+  };
+}
+
 async function createServiceForRuntimes(harness: Harness, runtimes: CodexConversationRuntime[]) {
   const audit = vi.fn();
   const service = await SubscriptionRuntimeService.create(async () => undefined, { claudeCodeReleaseFetch: RELEASE_FETCH,
@@ -279,23 +301,27 @@ describe("native RPC timeout context", () => {
     vi.useFakeTimers();
   });
 
-  // Waits below poll on the real clock and advances stop once the test's signal aborts: a body that outlives its timeout must not
-  // move the fake clock the next test installs.
+  // Clock advances stop once the test's signal aborts so a timed-out body cannot move a later test's clock.
   it.for(["initialize", "account/read", "thread/start", "turn/start"] as const)(
     "retains the actual unacknowledged %s operation and closes its transport",
     async (operation, { signal }) => {
+      const gate = holdExecutableVerification();
+      const requestReceived = deferred<void>();
       const harness = await createHarness((message, current) => {
-        if (message.method === operation) return;
+        if (message.method === operation) { requestReceived.resolve(); return; }
         if (message.method === "initialize") reply(current.child, requestId(message), {});
         if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
       });
-      const pending = (operation === "account/read"
+      const pending = operation === "account/read"
         ? harness.runtime.verifyIsolation()
-        : harness.runtime.startTurn({ text: "private request" })
-      ).catch((error: unknown) => error);
-      await waitOnRealClock(() => expect(methodMessages(harness, operation)).toHaveLength(1), { signal, ...NATIVE_LOCATION_WAIT });
+        : harness.runtime.startTurn({ text: "private request" });
+      const arrival = arrivalBeforeCompletion(requestReceived.promise, pending);
+      const failureReady = pending.catch((error: unknown) => error);
+      await gate.advancePastPollingDeadline(pending, signal);
+      await arrival;
+      expect(methodMessages(harness, operation)).toHaveLength(1);
       await advanceFakeClock(CODEX_RPC_REQUEST_TIMEOUT_MS, signal);
-      const failure = await pending;
+      const failure = await failureReady;
       expect(failure).toMatchObject({ providerError: {
         transport: { phase: "rpc-timeout", kind: "timeout", operation },
       } });
@@ -306,14 +332,21 @@ describe("native RPC timeout context", () => {
   );
 
   it("does not apply the RPC response deadline to an acknowledged running turn", async ({ signal }) => {
+    const gate = holdExecutableVerification();
+    const turnStarted = deferred<void>();
     const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
-      if (message.method === "turn/start") reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
+      if (message.method === "turn/start") {
+        reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
+        turnStarted.resolve();
+      }
     });
     const settled = vi.fn();
     const pending = harness.runtime.startTurn({ text: "continue normally" }).then((result) => { settled(); return result; });
-    await waitOnRealClock(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), { signal, ...NATIVE_LOCATION_WAIT });
+    const arrival = arrivalBeforeCompletion(turnStarted.promise, pending);
+    await gate.advancePastPollingDeadline(pending, signal);
+    await arrival;
     await advanceFakeClock(CODEX_RPC_REQUEST_TIMEOUT_MS * 2, signal);
     expect(settled).not.toHaveBeenCalled();
     expect(harness.child.kill).not.toHaveBeenCalled();
@@ -322,6 +355,8 @@ describe("native RPC timeout context", () => {
   });
 
   it("writes an actual missing RPC response through the provider and collector to the error trace", async ({ signal }) => {
+    const gate = holdExecutableVerification();
+    const turnStarted = deferred<void>();
     const verification = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "account/read") reply(current.child, requestId(message), { account: { type: "chatgpt" } });
@@ -329,6 +364,7 @@ describe("native RPC timeout context", () => {
     const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
+      if (message.method === "turn/start") turnStarted.resolve();
     });
     const { service, audit } = await createServiceForRuntimes(harness, [verification.runtime, harness.runtime]);
     try {
@@ -345,7 +381,9 @@ describe("native RPC timeout context", () => {
       const tracer = createStepTracer("rpc-timeout", spanProvider.getTracer("test"));
       loop.setTracer(tracer);
       const pending = loop.runTurn("private-user-input", undefined, undefined, { ...userKeyboardTurn() });
-      await waitOnRealClock(() => expect(methodMessages(harness, "turn/start")).toHaveLength(1), { signal, ...NATIVE_LOCATION_WAIT });
+      const arrival = arrivalBeforeCompletion(turnStarted.promise, pending);
+      await gate.advancePastPollingDeadline(pending, signal);
+      await arrival;
       await advanceFakeClock(CODEX_RPC_REQUEST_TIMEOUT_MS, signal);
       await expect(pending).resolves.toMatchObject({ stopReason: "stream-error" });
       const events = exporter.getFinishedSpans().flatMap(span => span.events);
@@ -998,13 +1036,17 @@ describe("CodexConversationRuntime", () => {
     await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false), NATIVE_LOCATION_WAIT);
   });
 
-  it("removes a staged localImage when an active turn is interrupted", async () => {
+  it("removes a staged localImage when an active turn is interrupted", async ({ signal }) => {
+    vi.useFakeTimers();
+    const gate = holdExecutableVerification();
+    const turnStarted = deferred<void>();
     let stagedPath: string | undefined;
     const harness = await createTurnHarness((message, current) => {
       if (message.method === "turn/start") {
         const input = (message.params as { input?: Array<{ type?: string; path?: string }> }).input;
         stagedPath = input?.find((part) => part.type === "localImage")?.path;
         reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
+        turnStarted.resolve();
         return;
       }
       if (message.method === "turn/interrupt") {
@@ -1020,10 +1062,14 @@ describe("CodexConversationRuntime", () => {
       text: "Interrupt after staging.",
       attachments: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
     });
-    await vi.waitFor(() => expect(stagedPath).toBeTruthy(), NATIVE_LOCATION_WAIT);
+    const arrival = arrivalBeforeCompletion(turnStarted.promise, pending);
+    await gate.advancePastPollingDeadline(pending, signal);
+    await arrival;
+    expect(stagedPath).toBeTruthy();
+    expect(existsSync(stagedPath as string)).toBe(true);
     await harness.runtime.interrupt();
     await expect(pending).resolves.toMatchObject({ status: "interrupted" });
-    await vi.waitFor(() => expect(existsSync(stagedPath as string)).toBe(false), NATIVE_LOCATION_WAIT);
+    await waitOnRealClock(() => expect(existsSync(stagedPath as string)).toBe(false), { signal, ...NATIVE_LOCATION_WAIT });
   });
 
   for (const [terminalEvent, closeTransport] of [
@@ -1068,7 +1114,7 @@ describe("CodexConversationRuntime", () => {
         text: "Stop while staging this image.",
         attachments: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
       });
-      await writeStarted;
+      await arrivalBeforeCompletion(writeStarted, pending);
       expect(existsSync(stagedPath as string)).toBe(true);
       closeTransport(harness);
       releaseWrite();
@@ -1283,7 +1329,7 @@ describe("CodexConversationRuntime", () => {
       { text: "Say hello" },
       { onTextDelta, onDynamicToolCall },
     ).catch((error: unknown) => error);
-    await turnStartReceived;
+    await arrivalBeforeCompletion(turnStartReceived, outcome);
 
     // A replayed descriptive item must not bind the pending turn's identity.
     const historicalItem = { threadId: "thread-1", turnId: "historic-turn", item: { id: "historic-item", ...item } };
@@ -1585,7 +1631,7 @@ describe("CodexConversationRuntime", () => {
     });
 
     const turn = harness.runtime.startTurn({ text: "Cancel this turn" });
-    await waitForTurnStart;
+    await arrivalBeforeCompletion(waitForTurnStart, turn);
     await new Promise<void>((resolveTurnStart) => setImmediate(resolveTurnStart));
     await harness.runtime.interrupt();
 
@@ -1601,6 +1647,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("dispatches turn/interrupt when cancellation races the turn/start response", async () => {
+    const interruptReceived = deferred<void>();
     let deferredTurnStart: JsonRecord | null = null;
     let signalTurnStart: () => void = () => {};
     const turnStartReceived = new Promise<void>((resolveTurnStart) => {
@@ -1613,6 +1660,7 @@ describe("CodexConversationRuntime", () => {
         return;
       }
       if (message.method === "turn/interrupt") {
+        interruptReceived.resolve();
         reply(current.child, requestId(message), {});
         notify(current.child, "turn/completed", {
           threadId: "thread-1",
@@ -1622,8 +1670,9 @@ describe("CodexConversationRuntime", () => {
     });
 
     const turn = harness.runtime.startTurn({ text: "Cancel before the turn starts" });
-    await turnStartReceived;
+    await arrivalBeforeCompletion(turnStartReceived, turn);
     const interrupt = harness.runtime.interrupt();
+    const interrupted = arrivalBeforeCompletion(interruptReceived.promise, Promise.all([turn, interrupt]));
     await Promise.resolve();
     expect(methodMessages(harness, "turn/interrupt")).toHaveLength(0);
 
@@ -1631,7 +1680,8 @@ describe("CodexConversationRuntime", () => {
     if (!turnStart) throw new Error("missing-turn-start-request");
     reply(harness.child, requestId(turnStart), { turn: { id: "turn-1", status: "inProgress" } });
 
-    await vi.waitFor(() => expect(methodMessages(harness, "turn/interrupt")).toHaveLength(1), NATIVE_LOCATION_WAIT);
+    await interrupted;
+    expect(methodMessages(harness, "turn/interrupt")).toHaveLength(1);
     await interrupt;
     await expect(turn).resolves.toEqual({
       threadId: "thread-1",
@@ -1654,7 +1704,7 @@ describe("CodexConversationRuntime", () => {
     });
 
     const turn = harness.runtime.startTurn({ text: "Complete before the start response" });
-    await turnStartReceived;
+    await arrivalBeforeCompletion(turnStartReceived, turn);
     const interrupt = harness.runtime.interrupt();
     notify(harness.child, "turn/completed", {
       threadId: "thread-1",
@@ -1695,7 +1745,7 @@ describe("CodexConversationRuntime", () => {
       { text: "Do not bind a resumed historic turn." },
       { onTurnCompleted: completed },
     );
-    await turnStartReceived;
+    await arrivalBeforeCompletion(turnStartReceived, turn);
     notify(harness.child, "item/agentMessage/delta", {
       threadId: "thread-1",
       turnId: "historic-turn",
@@ -1754,7 +1804,7 @@ describe("CodexConversationRuntime", () => {
     });
 
     const turn = harness.runtime.startTurn({ text: "Do not lose the live terminal signal" });
-    await turnStartReceived;
+    await arrivalBeforeCompletion(turnStartReceived, turn);
     for (const turnId of ["historic-one", "historic-two", "turn-live"]) {
       notify(harness.child, "turn/completed", {
         threadId: "thread-1",
@@ -1779,7 +1829,7 @@ describe("CodexConversationRuntime", () => {
     });
 
     const turn = harness.runtime.startTurn({ text: "Do not leave a child alive" });
-    await waitForTurnStart;
+    await arrivalBeforeCompletion(waitForTurnStart, turn);
     const rejectedTurn = expect(turn).rejects.toMatchObject({ code: "codex-operation-failed" });
     harness.runtime.stop();
 
@@ -1869,6 +1919,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("rejects a same-thread dynamic tool request before turn/start proves its identity", async () => {
+    const toolReplyReceived = deferred<void>();
     const dynamicTools = [{
       name: "ave_echo",
       description: "Returns a value only through the Ave host bridge.",
@@ -1891,6 +1942,7 @@ describe("CodexConversationRuntime", () => {
           id: "historic-tool-rpc",
           error: { code: -32602, message: "Invalid dynamic tool request" },
         });
+        toolReplyReceived.resolve();
       }
     });
 
@@ -1898,7 +1950,7 @@ describe("CodexConversationRuntime", () => {
       { text: "Reject a replayed tool call", dynamicTools },
       { onDynamicToolCall },
     );
-    await turnStartReceived;
+    await arrivalBeforeCompletion(turnStartReceived, turn);
     notify(harness.child, "item/started", {
       threadId: "thread-1",
       turnId: "historic-turn",
@@ -1924,10 +1976,11 @@ describe("CodexConversationRuntime", () => {
     const turnStart = deferredTurnStart;
     if (!turnStart) throw new Error("missing-turn-start-request");
     reply(harness.child, requestId(turnStart), { turn: { id: "turn-live", status: "inProgress" } });
-    await vi.waitFor(() => expect(harness.messages).toContainEqual({
+    await arrivalBeforeCompletion(toolReplyReceived.promise, turn);
+    expect(harness.messages).toContainEqual({
       id: "historic-tool-rpc",
       error: { code: -32602, message: "Invalid dynamic tool request" },
-    }), NATIVE_LOCATION_WAIT);
+    });
     notify(harness.child, "turn/completed", {
       threadId: "thread-1",
       turn: { id: "turn-live", status: "completed" },
@@ -2105,11 +2158,7 @@ describe("CodexConversationRuntime", () => {
         abortSignal: abortController.signal,
       });
       // Observe startup failure immediately, including while waiting for the request.
-      const requestReady = Promise.race([
-        requestReceived.promise,
-        pendingTurn.then(() => { throw new Error("Unexpected turn completion before startup request"); }),
-      ]);
-      void requestReady.catch(() => undefined);
+      const requestReady = arrivalBeforeCompletion(requestReceived.promise, pendingTurn);
 
       await Promise.race([verifyingExecutable.promise, requestReady]);
       // Hold verification past the former polling deadline without sleeping or adding load.
