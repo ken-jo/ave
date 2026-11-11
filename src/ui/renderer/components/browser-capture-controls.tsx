@@ -11,6 +11,7 @@ import { getWebSurfaceViewportElement } from "../preview/web-surfaces.js";
 interface AreaSelection {
   tab: BrowserWorkspaceTab;
   bounds: { x: number; y: number; width: number; height: number };
+  focusOwner: Element | null;
 }
 interface Point { x: number; y: number }
 
@@ -25,6 +26,11 @@ function CaptureAreaOverlay({ selection, overlayRef, onCancel, onSelect }: {
   const [start, setStart] = useState<Point | null>(null);
   const [end, setEnd] = useState<Point | null>(null);
   useEffect(() => {
+    const activeElement = document.activeElement;
+    if (activeElement !== selection.focusOwner && !(activeElement === document.body && !selection.focusOwner?.isConnected)) {
+      onCancel();
+      return;
+    }
     overlayRef.current?.focus();
     const handleKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -45,7 +51,7 @@ function CaptureAreaOverlay({ selection, overlayRef, onCancel, onSelect }: {
       window.removeEventListener("resize", onCancel);
       window.removeEventListener("blur", onCancel);
     };
-  }, [onCancel, overlayRef]);
+  }, [onCancel, overlayRef, selection.focusOwner]);
   const point = (event: PointerEvent): Point => ({
     x: Math.max(0, Math.min(selection.bounds.width, event.clientX - selection.bounds.x)),
     y: Math.max(0, Math.min(selection.bounds.height, event.clientY - selection.bounds.y)),
@@ -123,6 +129,7 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
     finally { setBusy(false); }
   };
   const startCapture = async (mode: "viewport" | "full-page" | "area") => {
+    const focusOwner = document.activeElement;
     setFailed(false); setBusy(true);
     try {
       const state = await api.getState();
@@ -132,7 +139,10 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
       const guest = getWebSurfaceViewportElement(tabId);
       const rect = guest?.getBoundingClientRect();
       if (!rect || rect.width < 1 || rect.height < 1) { setFailed(true); return; }
-      setSelection({ tab, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
+      // The request may outlive the menu; only its own or unclaimed focus can enter selection.
+      const activeElement = document.activeElement;
+      if (activeElement && activeElement !== document.body && activeElement !== triggerRef.current && activeElement !== focusOwner) return;
+      setSelection({ tab, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, focusOwner: activeElement });
     } catch { setFailed(true); }
     finally { setBusy(false); }
   };

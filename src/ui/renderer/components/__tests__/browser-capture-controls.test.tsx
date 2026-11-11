@@ -167,6 +167,33 @@ describe("browser user captures", () => {
     expect(screen.getByTestId("browser-capture-overlay")).toHaveFocus();
   });
 
+  it("abandons delayed area selection after focus moves to another input", async () => {
+    const { getState, capture, container } = mount();
+    const input = document.createElement("input");
+    container.appendChild(input);
+    const state = await getState();
+    let releaseState!: () => void;
+    getState.mockReturnValueOnce(new Promise((resolve) => { releaseState = () => resolve(state); }));
+    const closeAutoFocus = await openCaptureMenu();
+    const areaItem = screen.getByTestId("browser-capture-area");
+    act(() => { areaItem.focus(); });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await act(async () => { fireEvent.keyDown(areaItem, { key: "Enter" }); });
+    expect(screen.queryByTestId("browser-capture-overlay")).toBeNull();
+    expect(closeAutoFocus).not.toHaveBeenCalled();
+    act(() => { vi.runOnlyPendingTimers(); });
+    expect(closeAutoFocus).toHaveBeenCalledOnce();
+    const inputFocus = vi.spyOn(input, "focus");
+    act(() => { input.focus(); });
+    expect(input).toHaveFocus();
+    await act(async () => { releaseState(); });
+    expect(input).toHaveFocus();
+    expect(inputFocus).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("browser-capture-overlay")).toBeNull();
+    expect(screen.getByTestId("browser-capture-menu")).toBeEnabled();
+    expect(capture).not.toHaveBeenCalled();
+  });
+
   it("preserves an outside input after selection is canceled before the menu close handoff", async () => {
     const { container } = mount();
     const input = document.createElement("input");
