@@ -369,8 +369,8 @@ async function runWindowsInstallerSmoke(releaseDir, timeoutMs) {
     "-NodeExecutable", process.execPath,
     "-ArgumentsBase64", Buffer.from(JSON.stringify(smokeArgs)).toString("base64"),
     "-WorkingDirectory", root,
-    // Bound the complete two-pass owner harness using the existing install,
-    // uninstall and postcondition budgets; individual operation limits stay fixed.
+    // Keep the established owner-harness ceiling for silent and GUI cases.
+    // Individual install, uninstall and postcondition limits stay fixed.
     "-DeadlineUnixMs", String(Date.now() + 2 * (180_000 + 120_000 + 30_000) + timeoutMs),
   ] : smokeArgs;
 

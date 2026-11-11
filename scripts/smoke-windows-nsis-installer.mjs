@@ -1441,7 +1441,7 @@ function terminateProcessTree(child, label) {
 async function runProcess(
   command,
   args,
-  { timeoutMs, env = process.env, input, allowNonZero = false } = {},
+  { timeoutMs, env = process.env, input, allowNonZero = false, onStdout } = {},
 ) {
   process.stdout.write(
     `[windows-installer-smoke] $ ${command} ${args.join(" ")}\n`,
@@ -1495,6 +1495,7 @@ async function runProcess(
     };
 
     child.stdout?.on("data", (chunk) => {
+      onStdout?.(chunk);
       const captured = captureOutputChunk(stdout, chunk);
       stdout = captured.output;
       stdoutTruncated ||= captured.truncated;
@@ -2238,9 +2239,14 @@ async function uninstallAndVerify(
   timeoutMs,
   probe,
   foreignProtocolFixture,
+  guiReply,
 ) {
   const args = ["/S", "/allusers", ...(keepAppData ? ["/KEEP_APP_DATA"] : [])];
-  await runLimitedUninstaller(machineInstall, args, timeoutMs);
+  if (guiReply) {
+    await runLimitedUninstaller(machineInstall, ["/allusers"], timeoutMs, guiReply);
+  } else {
+    await runLimitedUninstaller(machineInstall, args, timeoutMs);
+  }
   await waitForExactUninstallRegistrationRemoved(machineInstall, timeoutMs);
   await waitForFileRemoved(machineInstall.installedExe, timeoutMs);
   await assertRuntimeNotificationArtifactsRemoved(machineInstall);
@@ -2251,7 +2257,7 @@ async function uninstallAndVerify(
   await assertUninstalledSurface(machineInstall);
   await assertAsrtTeardown(probe);
   process.stdout.write(
-    `[windows-installer-smoke] ${keepAppData ? "KEEP_APP_DATA" : "DELETE"} genuine uninstall pass completed\n`,
+    `[windows-installer-smoke] ${guiReply ? `GUI ${guiReply}` : keepAppData ? "KEEP_APP_DATA" : "DELETE"} genuine uninstall pass completed\n`,
   );
 }
 
@@ -2267,7 +2273,64 @@ export function assertLimitedUninstallResult(result) {
   }
 }
 
-async function runLimitedUninstaller(machineInstall, args, timeoutMs) {
+export function assertGuiConsentReport(report, reply) {
+  if (report?.error) throw new Error(`dialog observer failed: ${report.error}`);
+  if (!Array.isArray(report?.dialogs)) throw new Error("dialog observer returned no dialog list");
+  const data = report.dialogs.filter(dialog => dialog.kind === "data");
+  const confirmations = report.dialogs.filter(dialog => dialog.kind === "confirmation");
+  if (data.length !== 1 || confirmations.length === 0) {
+    throw new Error(`GUI uninstall did not show exactly one data prompt: ${JSON.stringify(report)}`);
+  }
+  if (report.dialogs.some(dialog => dialog.visible !== true || dialog.topmost !== true)) {
+    throw new Error(`uninstall dialog was not visible and topmost: ${JSON.stringify(report)}`);
+  }
+  if (data[0].defaultButton !== 7 || data[0].dataIntactBeforeAnswer !== true || data[0].answer !== reply) {
+    throw new Error(`unsafe data prompt state: ${JSON.stringify(report)}`);
+  }
+}
+
+export async function observeUninstallDialogs({ executable, ownerSid, reply, timeoutMs, sentinels, launch }) {
+  assertDisposableSmokeGate();
+  const directory = mkdtempSync(join(tmpdir(), "ave-uninstall-dialogs-"));
+  const finishedPath = join(directory, "finished");
+  const reportPath = join(directory, "report.json");
+  const requestPath = join(directory, "request.json");
+  const deadlineUnixMs = Date.now() + timeoutMs;
+  writeFileSync(requestPath, JSON.stringify({
+    executable, ownerSid, reply, finishedPath, deadlineUnixMs,
+    sentinelPaths: sentinels.map(sentinel => sentinel.path),
+    sentinelContents: sentinels.map(sentinel => sentinel.contents),
+  }));
+  let ready;
+  const readiness = new Promise(resolveReady => { ready = resolveReady; });
+  let output = "";
+  const observer = runProcess(powershellExecutable(), [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-File", fileURLToPath(new URL("./lib/observe-windows-uninstall-dialogs.ps1", import.meta.url)),
+    "-RequestPath", requestPath, "-ReportPath", reportPath,
+  ], {
+    timeoutMs, env: windowsPowerShellEnv(),
+    onStdout(chunk) {
+      output += chunk.toString("utf8");
+      if (output.includes("AVE_UNINSTALL_DIALOG_OBSERVER_READY")) ready();
+    },
+  });
+  try {
+    let result;
+    let launchError;
+    try {
+      await Promise.race([readiness, observer.then(() => { throw new Error("Dialog observer exited before launch"); })]);
+      result = await launch(deadlineUnixMs);
+    } catch (error) { launchError = error; }
+    finally { writeFileSync(finishedPath, "finished"); }
+    await observer;
+    if (launchError) throw launchError;
+    const report = JSON.parse(readFileSync(reportPath, "utf8").replace(/^\uFEFF/, ""));
+    return { result, report };
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+
+async function runLimitedUninstaller(machineInstall, args, timeoutMs, guiReply) {
   const reportRoot = mkdtempSync(join(tmpdir(), "ave-limited-uninstall-"));
   try {
     // Stage the same temporary worker the on-disk bootstrap would start. The
@@ -2285,7 +2348,7 @@ async function runLimitedUninstaller(machineInstall, args, timeoutMs) {
     ]));
     if (parent?.elevatedParent !== true) throw new Error("limited uninstall smoke requires an elevated parent");
     process.stdout.write(`[windows-installer-smoke] parent token: ${JSON.stringify(parent)}; launching a medium-integrity non-admin outer uninstaller\n`);
-    const result = await runProcess(
+    const launch = (deadlineUnixMs) => runProcess(
       powershellExecutable(),
       [
         "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
@@ -2294,13 +2357,30 @@ async function runLimitedUninstaller(machineInstall, args, timeoutMs) {
         "-ArgumentsBase64", Buffer.from(JSON.stringify(workerArgs)).toString("base64"),
         "-WorkingDirectory", tmpdir(),
         "-ReportPath", join(reportRoot, "result.json"),
-        "-DeadlineUnixMs", String(Date.now() + timeoutMs),
+        "-DeadlineUnixMs", String(deadlineUnixMs),
       ],
       { timeoutMs, env: windowsPowerShellEnv() },
     );
+    let result;
+    let guiObservation;
+    if (guiReply) {
+      if (workerArgs.includes("/S")) throw new Error("GUI uninstall was given /S");
+      const observed = await observeUninstallDialogs({
+        executable: worker, ownerSid: process.env.AVE_WINDOWS_SMOKE_OWNER_SID, reply: guiReply, timeoutMs,
+        sentinels: userDataTargets().map(target => ({ path: userDataSentinel(target), contents: Buffer.from(USER_DATA_SENTINEL_CONTENT).toString("base64") })),
+        launch,
+      });
+      result = observed.result;
+      guiObservation = observed.report;
+    } else { result = await launch(Date.now() + timeoutMs); }
     const report = parseJsonProcessResult(result, "limited uninstall");
     assertLimitedUninstallResult(report);
     process.stdout.write(`[windows-installer-smoke] limited uninstall: ${JSON.stringify(report)}\n`);
+    if (guiObservation) {
+      const dataState = userDataTargets().map(target => ({ target, present: hasExpectedUserDataSentinel(target) }));
+      process.stdout.write(`[windows-installer-smoke] GUI ${guiReply}: ${JSON.stringify({ ...guiObservation, dataState })}\n`);
+      assertGuiConsentReport(guiObservation, guiReply);
+    }
   } finally {
     rmSync(reportRoot, { recursive: true, force: true });
   }
@@ -2420,7 +2500,7 @@ async function cleanupFailedInstallerPass(state, timeoutMs) {
 async function runInstallerPass(
   installer,
   options,
-  { keepAppData, launchInstalledApp },
+  { keepAppData, launchInstalledApp, guiReply },
 ) {
   const state = {
     keepAppData,
@@ -2478,6 +2558,7 @@ async function runInstallerPass(
       options.uninstallTimeoutMs,
       state.probe,
       state.foreignProtocolFixture,
+      guiReply,
     );
     state.foreignProtocolFixture = null;
     state.machineInstall = null;
@@ -2532,6 +2613,13 @@ async function main() {
   process.stdout.write(
     "[windows-installer-smoke] full uninstall removed Ave user data paths\n",
   );
+  for (const guiReply of ["no", "close", "yes"]) {
+    await runInstallerPass(installer, options, {
+      keepAppData: guiReply !== "yes", launchInstalledApp: false, guiReply,
+    });
+    if (guiReply !== "yes") cleanupSmokeUserDataBestEffort();
+    assertNoExistingUserDataTargets();
+  }
 }
 
 function failSmoke(error) {
