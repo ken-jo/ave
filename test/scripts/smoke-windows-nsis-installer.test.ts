@@ -2185,3 +2185,25 @@ describe("registry keys marked for deletion", () => {
     },
   );
 });
+
+describe("NSIS app-running prompt", () => {
+  it("asks a question that matches OK/Cancel instead of the stock appRunning text", () => {
+    const installer = readRepoFile("build/installer.nsh");
+    const macroStart = installer.indexOf("!macro customCheckAppRunning");
+    const macroEnd = installer.indexOf("!macroend", macroStart);
+    expect(macroStart).toBeGreaterThanOrEqual(0);
+    const macro = installer.slice(macroStart, macroEnd);
+
+    expect(installer).toContain('!include "getProcessInfo.nsh"');
+    expect(installer).toMatch(/^Var pid$/m);
+    expect(macro).toContain('"${PRODUCT_NAME}가 실행 중입니다. 종료하고 계속할까요?"');
+    expect(macro).toContain('"${PRODUCT_NAME} is running. Close it and continue?"');
+    expect(macro).toContain("${if} $LANGUAGE == 1042");
+    expect(macro).toContain(
+      'MessageBox MB_OKCANCEL|MB_ICONQUESTION|MB_TOPMOST|MB_SETFOREGROUND "$R2" /SD IDOK IDOK ave_app_running_confirmed',
+    );
+    expect(macro).not.toContain("$(appRunning)");
+    expect(macro).toContain('"$(appCannotBeClosed)" /SD IDCANCEL IDRETRY ave_app_running_loop');
+    expect(installer).not.toMatch(/^\s*LangString\s+appRunning\b/m);
+  });
+});

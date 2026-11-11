@@ -95,6 +95,79 @@ FunctionEnd
 !define AVE_NSIS_PER_MACHINE_MARKER ".ave-nsis-per-machine-v1"
 !define AVE_NOTIFICATION_CLEANUP_SCRIPT "uninstall-windows-notification-artifacts.ps1"
 
+; electron-builder's stock app-running box says "Click OK to close it" under
+; OK/Cancel buttons. Ask a question instead so the buttons match. A LangString
+; override is not reliable: messages.nsh and this include are emitted by
+; concurrent tasks, and a duplicate LangString fails makensis -WX (6030).
+; customCheckAppRunning is the supported hook; it replaces _CHECK_APP_RUNNING
+; from app-builder-lib 26.18.0 allowOnlyOneInstallerInstance.nsh, which then
+; skips its own getProcessInfo include and $pid. Korean and English are
+; explicit; other installer languages fall back to English.
+!include "getProcessInfo.nsh"
+Var pid
+
+!macro customCheckAppRunning
+  !insertmacro IS_POWERSHELL_AVAILABLE
+  ${GetProcessInfo} 0 $pid $1 $2 $3 $4
+  ${if} $3 != "${APP_EXECUTABLE_FILENAME}"
+    ${if} ${isUpdated}
+      Sleep 300
+    ${endIf}
+
+    !insertmacro FIND_PROCESS "${APP_EXECUTABLE_FILENAME}" $R0
+    ${if} $R0 == 0
+      ${if} ${isUpdated}
+        Sleep 1000
+        Goto ave_app_running_stop
+      ${endIf}
+      Push $R2
+      ${if} $LANGUAGE == 1042
+        StrCpy $R2 "${PRODUCT_NAME}가 실행 중입니다. 종료하고 계속할까요?"
+      ${else}
+        StrCpy $R2 "${PRODUCT_NAME} is running. Close it and continue?"
+      ${endIf}
+      MessageBox MB_OKCANCEL|MB_ICONQUESTION|MB_TOPMOST|MB_SETFOREGROUND "$R2" /SD IDOK IDOK ave_app_running_confirmed
+      Pop $R2
+      Quit
+
+      ave_app_running_confirmed:
+      Pop $R2
+
+      ave_app_running_stop:
+      DetailPrint "$(appClosing)"
+      !insertmacro KILL_PROCESS "${APP_EXECUTABLE_FILENAME}" 0
+      Sleep 300
+
+      StrCpy $R1 0
+      ave_app_running_loop:
+        IntOp $R1 $R1 + 1
+        !insertmacro FIND_PROCESS "${APP_EXECUTABLE_FILENAME}" $R0
+        ${if} $R0 == 0
+          Sleep 1000
+          !insertmacro KILL_PROCESS "${APP_EXECUTABLE_FILENAME}" 1
+          !insertmacro FIND_PROCESS "${APP_EXECUTABLE_FILENAME}" $R0
+          ${if} $R0 == 0
+            DetailPrint `Waiting for "${PRODUCT_NAME}" to close.`
+            Sleep 2000
+          ${else}
+            Goto ave_app_running_done
+          ${endIf}
+        ${else}
+          Goto ave_app_running_done
+        ${endIf}
+
+        ; Retry/Cancel already matches appCannotBeClosed's wording.
+        ${if} $R1 > 1
+          MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(appCannotBeClosed)" /SD IDCANCEL IDRETRY ave_app_running_loop
+          Quit
+        ${else}
+          Goto ave_app_running_loop
+        ${endIf}
+      ave_app_running_done:
+    ${endIf}
+  ${endIf}
+!macroend
+
 ; _root is a predefined HKEY handle. _out becomes 1 only for exactly one
 ; terminating NUL stored as REG_SZ in electron-builder's selected view.
 !macro aveIsExactEmptyUrlProtocolRegSz _root _out
