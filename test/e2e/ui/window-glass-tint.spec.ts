@@ -127,6 +127,27 @@ test('glass tint spans bare material to opaque and preserves opaque safety surfa
         expect(ratio, `${scheme.id}: ${label.selector}`).toBeGreaterThanOrEqual(label.kind === 'body' ? 4.5 : 3);
         contrasts.push({ scheme: scheme.id, shell: scheme.shell, tint: 40, kind: label.kind, ratio });
       }
+      await page.getByTestId('sidebar-session-e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee').click();
+      const selectedRow = page.getByTestId('sidebar-row-session-e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee');
+      await expect(selectedRow).toHaveAttribute('aria-selected', 'true');
+      const selectedPaint = () => selectedRow.evaluate(element => {
+        const title = element.querySelector('[data-testid^="sidebar-conversation-title-"]');
+        if (!title) throw new Error('Selected conversation title missing');
+        return {
+          background: getComputedStyle(element).backgroundColor.match(/[\d.]+/g)?.map(Number) ?? [],
+          foreground: getComputedStyle(title).color.match(/[\d.]+/g)?.map(Number) ?? [],
+        };
+      });
+      await expect.poll(async () => (await selectedPaint()).background[3] ?? 1).toBe(1);
+      const selected = await selectedPaint();
+      expect(selected.background).toHaveLength(3);
+      expect(selected.foreground).toHaveLength(3);
+      const selectedBackground = relativeLuminance(selected.background.map(channel => channel / 255) as [number, number, number]);
+      const selectedForeground = relativeLuminance(selected.foreground.map(channel => channel / 255) as [number, number, number]);
+      const selectedRatio = (Math.max(selectedForeground, selectedBackground) + 0.05) / (Math.min(selectedForeground, selectedBackground) + 0.05);
+      expect(selectedRatio, `${scheme.id}: selected conversation`).toBeGreaterThanOrEqual(4.5);
+      contrasts.push({ scheme: scheme.id, shell: scheme.shell, tint: 40, kind: 'body', ratio: selectedRatio });
+      await openInlineSettings(app, page, 'appearance');
     }
     if (glass) {
       await slider.press('Home');

@@ -1190,6 +1190,11 @@ html[data-glass] .ave-glass-tint .ave-sidebar-label {
   color: hsl(var(--foreground));
   opacity: 1;
 }
+/* Selected rows already have a fill. Keep it opaque so its foreground is
+ * measured against a theme surface, independently of the material below. */
+html[data-glass] .ave-glass-tint :is([role="treeitem"][aria-selected="true"], button[aria-current="page"], [data-active="true"]) {
+  background-color: hsl(var(--muted));
+}
 /* An overlaying sidebar floats over a conversation, not over the material:
  * a see-through card there would print the transcript under the list. */
 html[data-glass] [data-sidebar-overlay="true"] .ave-glass-tint {
