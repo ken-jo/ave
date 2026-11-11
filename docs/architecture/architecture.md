@@ -2947,6 +2947,20 @@ terminate the wrapped worker.
 
 ### Windows agent shells in Microsoft Execution Containers
 
+**Identity and network (measured 2026-11-11).** On the installed per-machine
+x64 build, shells used the owner's SID at Low Mandatory Level
+(`S-1-16-4096`), with administrator groups deny-only and no AppContainer or
+restricted SIDs. Ranked MXC filesystem grants and denies confine reads and
+writes; `allowDaclMutation: false` refuses fallback. Low integrity alone does
+not prove read confinement. The `srt-win` account's SID-keyed ACE stamps and
+WFP filters serve plugin confinement, not MXC shells. Egress uses MXC network
+policy plus `runtimeConfig.networkProxy` to the invocation's loopback relay
+(DNS exception below). `ingress.default: "allow"` requests private-network
+inbound, and `hostLoopback: "allow"` requests backend-dependent bidirectional
+connectivity, not only proxy access. Inbound probes failed while host-listener
+controls succeeded: measured, mechanism unverified. The request does not
+guarantee inbound denial.
+
 By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
 command on Windows runs in its own Microsoft Execution Containers (MXC)
 BaseContainer where the host offers one. The shell path uses the MIT-licensed
@@ -3154,12 +3168,15 @@ in its directory.
   domain that server answers for, without touching the proxy: an exfiltration
   channel the proxy never sees. Settings says so.
 - **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
-  the container `privateNetworkClientServer`, and MXC documents that its proxy
-  mapping does not complete the host-loopback ingress contract. Measured with
-  Windows Firewall on and its default inbound action: a container could bind a
-  listener, and no connection reached it from the host's loopback, LAN, WSL or
-  Tailscale addresses, from another machine, or from another container. That
-  rests on the firewall's default inbound block, not on Ave's request.
+  the container `privateNetworkClientServer`. The pinned SDK describes
+  host-loopback allow as stateful outbound connectivity at baseline; native
+  ingress support adds container-hosted servers. The 2026-11-11 installed x64
+  measurement found a listener bound to `0.0.0.0:18555` unreachable from
+  loopback, LAN, overlay-network and remote peers, while host-listener controls
+  succeeded. Firewall and audit policies were unchanged, so attribution to
+  a particular filter or firewall rule remains unverified. The separate
+  account's connect-only WFP filters do not establish an inbound boundary
+  for MXC shells.
 - **UI.** Containers run with `ui.disable: false` (PowerShell 5.1 does not
   start without Win32k), clipboard `none` and input injection off. A contained
   process can still open windows on the user's desktop and so could draw a
