@@ -1,4 +1,4 @@
-import { inline, type Inline, type Release } from "./changelog";
+import { inline, type Inline, type Release } from "./changelog.js";
 
 /**
  * The English release notes the English pages show. The repository's
@@ -7,7 +7,7 @@ import { inline, type Inline, type Release } from "./changelog";
  * Text in `backticks` renders as code.
  *
  * `englishRelease` ties the two together: a release in CHANGELOG.md without an
- * entry here, or an entry whose item count differs from the release's list,
+ * entry here, different block kinds, or per-list item-count mismatches
  * fails the build, so the English page cannot fall behind or drift.
  */
 
@@ -16,8 +16,249 @@ interface EnItem {
   points: string[];
 }
 
-const EN: Record<string, EnItem[]> = {
-  "v0.14.0": [
+type EnBlock =
+  | { kind: "h3"; text: string }
+  | { kind: "list"; items: EnItem[] };
+
+const EN: Record<string, EnBlock[]> = {
+  "v0.15.0": [
+    {
+      kind: "h3",
+      text: "Before you update"
+    },
+    {
+      kind: "list",
+      items: [
+        {
+          title: "0.15.0 is the first host protocol 5 release",
+          points: [
+            "Released hosts move directly from protocol 3 to 5; protocol 4 was never released. Protocol-3 extensions cannot run, so update them to protocol 5. Marketplace extensions are being republished with this release.",
+            "For your own extensions, re-vendor the contract from the v0.15.0 tag and republish with `hostProtocol: \"5\"` and `minAppVersion: \"0.15.0\"`. (#378, #445, #450)"
+          ]
+        },
+        {
+          title: "One responsive workspace replaces app modes",
+          points: [
+            "The old app-mode setting is removed during the upgrade; other settings are retained. (#255)"
+          ]
+        },
+        {
+          title: "Shell sandboxing and extension confinement have separate settings",
+          points: [
+            "Shell sandboxing covers commands and the workspace terminal. Extension confinement covers workers, processes, hooks and MCP stdio servers.",
+            "An enabled old setting migrates to both settings enabled; a disabled one leaves both disabled. Scripts that used `AVE_SANDBOX_ENABLED=1` to confine extensions must also set `AVE_PLUGIN_WORKER_CONFINEMENT=1`. (#14)"
+          ]
+        },
+        {
+          title: "Windows shell local-network access defaults to OFF",
+          points: [
+            "Find it in Settings → Permissions. When off, each command uses the approved-host route. When on, supported PCs can run shells in containers, but commands can accept connections from the local network and loopback.",
+            "Changes apply to the next command without restarting. Extension confinement retains its separate network policy. (#560)"
+          ]
+        },
+        {
+          title: "Uninstalling on Windows keeps your data",
+          points: [
+            "Chats, settings, memories, credentials and extension data survive interactive and silent uninstall, as well as updates. There is no data-deletion question; reinstalling can reuse the retained data. (#552, #556)"
+          ]
+        },
+        {
+          title: "Korean UI and color schemes are built in",
+          points: [
+            "The marketplace Korean language pack is withdrawn. Theme packages are replaced by built-in color schemes.",
+            "Existing appearance settings migrate to the new schemes. Language and UI fonts are retained; code and terminal fonts start from the defaults. (#449, #483)"
+          ]
+        }
+      ]
+    },
+    {
+      kind: "h3",
+      text: "New features"
+    },
+    {
+      kind: "list",
+      items: [
+        {
+          title: "The workspace adapts to the window width",
+          points: [
+            "Narrow windows show the focused tile and hide split, close, maximize and new-tile controls. Hidden conversations keep running; widening the window restores the layout.",
+            "The sidebar remembers expanded, icons-only or hidden state. The sidebar and work panel can overlay the content without resizing the OS window. (#255)"
+          ]
+        },
+        {
+          title: "Conversations, terminals and pages share the project tree",
+          points: [
+            "Delegated conversations appear beneath their parents. Preview items or open folders to browse files, with syntax colors, line numbers and file information for code.",
+            "Project removal shows which work will stop and can be undone. (#311, #413, #424, #425, #427, #432, #544)"
+          ]
+        },
+        {
+          title: "Each browser or terminal panel can keep its own conversation",
+          points: [
+            "Panel conversations and selections are restored. When you take over the browser, the agent waits until you explicitly resume it. File uploads and drag gestures are supported. (#23, #61, #78, #157)"
+          ]
+        },
+        {
+          title: "Preview documents and tables inside the app",
+          points: [
+            "Read-only previews cover CSV, TSV, XLSX, XLS and ODS tables, PDFs, presentations and document outlines.",
+            "An optional document engine, installed during onboarding or from document settings, adds page conversion and formula recalculation. Watch the agent work in documents, browsers and terminals as it happens. (#199, #224, #254, #278, #284, #285, #288)"
+          ]
+        },
+        {
+          title: "Follow and steer work from the work board",
+          points: [
+            "See stages, elapsed time and descriptions; send further instructions or stop running work; jump to the related conversation or tool approval. The board no longer limits the number of items. (#393, #394, #396, #398, #412)"
+          ]
+        },
+        {
+          title: "Project attention requests gather in one place",
+          points: [
+            "Handle proposals, plan approvals and failed routines together, with outstanding requests shown in the title bar. The notification center keeps history and withdraws approvals already handled. (#402, #403, #408, #421, #426, #491, #528, #529)"
+          ]
+        },
+        {
+          title: "Manage schedules in day, week and month views",
+          points: [
+            "Edit or pause project schedules and display them on the work board. Manage the next run of a conversation-linked schedule and see run time and token usage. (#406, #417, #419, #422, #429, #434)"
+          ]
+        },
+        {
+          title: "See where memories came from and how they were used",
+          points: [
+            "Review sources, changes and use in answers. Edit a memory or undo its save from the result. The default project's memories are separate from global memories. (#395, #397, #399, #400, #410, #414, #416, #435)"
+          ]
+        },
+        {
+          title: "Review file changes by hunk and rewind conversations",
+          points: [
+            "Review or undo the last turn's changes, or restore files when rewinding the conversation. Running work and completed tool results are saved continuously for recovery after an unexpected exit. (#47, #171, #259)"
+          ]
+        },
+        {
+          title: "Choose queue order and a separate compaction model",
+          points: [
+            "Reorder waiting messages, control running commands and choose a model for compaction. Provider settings are built in; installed subscription CLIs can be discovered and connected, with the actual model and billing route shown.",
+            "Sign in to remote MCP servers from Settings. (#49, #122, #156, #231, #257, #265, #280)"
+          ]
+        },
+        {
+          title: "Capture web pages into conversations",
+          points: [
+            "Capture an element, a selected area or the full content. Preview hidden agent tabs or watch them in a small floating window. (#364, #476, #537, #538)"
+          ]
+        },
+        {
+          title: "Customize colors, fonts, shortcuts and notification sounds",
+          points: [
+            "Adjust glass tint and chat, code and terminal fonts, remap shortcuts, and choose accessibility sounds for completion, interruption and approval requests. (#449, #473, #518, #522, #523, #526, #555)"
+          ]
+        }
+      ]
+    },
+    {
+      kind: "h3",
+      text: "Permissions and security"
+    },
+    {
+      kind: "list",
+      items: [
+        {
+          title: "Consistent approval choices and remembered scopes",
+          points: [
+            "Choose a permission reviewer model. Allow writes and `auto` modes admit recoverable project file changes without repeated approval, while file and executable identity checks and sensitive control-file protection remain in force. (#184, #217, #223, #261, #312, #315)"
+          ]
+        },
+        {
+          title: "Stronger shell, network and protected-path checks",
+          points: [
+            "Command aliases, path aliases and links cannot bypass checks. Home content whose trust cannot be established must be approved or removed in Settings. Permission-rule and audit-record ordering is corrected. (#387, #442, #443, #444, #487, #489, #490, #492)"
+          ]
+        },
+        {
+          title: "Stronger Windows process teardown and permission revocation",
+          points: [
+            "Extension, worker, hook and MCP server resources are not reused before process exit is confirmed. Failed permission revocation blocks the affected session. (#345, #351, #368, #371, #376, #379, #505, #517)"
+          ]
+        },
+        {
+          title: "Browser approvals stay bound to the requesting conversation, site and action",
+          points: [
+            "Agent control is withdrawn when you interact or the connection ends; project removal cancels pending work. Browser and terminal file-upload consent is also strengthened. (#262, #277, #458, #486, #530, #534, #542, #543)"
+          ]
+        }
+      ]
+    },
+    {
+      kind: "h3",
+      text: "For extension developers"
+    },
+    {
+      kind: "list",
+      items: [
+        {
+          title: "Loopback OAuth requires host-issued state and PKCE S256",
+          points: [
+            "Send the single-use `state` returned by `authRedirect.open()` unchanged. Missing or altered state and replays are rejected. Migrate to the protocol-5 contract with `minAppVersion: \"0.15.0\"`."
+          ]
+        },
+        {
+          title: "Delegated workers communicate over standard streams instead of sockets",
+          points: [
+            "Each worker declares `output-only-v1` or `stdio-control-v1`; control-mode stdout is reserved for JSON-RPC frames. `udsArgName` and `socketPath` are removed.",
+            "Ask the plugin to perform network work through `hostFetch`, and request a private worker state directory with `stateDirectory: true`. Pending calls end with the worker's termination reason and are not replayed. (#378)"
+          ]
+        },
+        {
+          title: "Extension UI uses MCP App resources",
+          points: [
+            "The old dedicated UI bridge, unused HostApi members and cross-extension event grants are removed. Re-vendor public types and the manifest, protocol and worker schemas from v0.15.0; changing only the version declarations is insufficient.",
+            "Copy the new contract from the repository tag instead of a signed contract bundle. (#445, #450)"
+          ]
+        }
+      ]
+    },
+    {
+      kind: "h3",
+      text: "Fixes"
+    },
+    {
+      kind: "list",
+      items: [
+        {
+          title: "Separate compaction models work with subscription connections",
+          points: [
+            "Compaction cancellation, credential scope and login and connection status displays are corrected. (#367, #392, #554)"
+          ]
+        },
+        {
+          title: "Conversation, tab and window restoration is steadier",
+          points: [
+            "Conversation ordering, titles, hidden-tile selection, terminal and web tabs, main-window changes and side-chat links are corrected. The opening screen uses the saved language. (#282, #307, #309, #354, #356, #357, #372, #377, #405, #496, #527)"
+          ]
+        },
+        {
+          title: "Browser input, capture and file previews are corrected",
+          points: [
+            "Address input, clicks and capture have fewer focus races; table quoting and calendar month boundaries are corrected. Browser reads avoid unnecessary waits, and file search continues past unreadable subfolders. (#222, #341, #415, #478, #537, #538, #541, #559)"
+          ]
+        },
+        {
+          title: "Terminal commands show warnings for files the agent changed",
+          points: [
+            "Changed-file warnings appear beside command output, and user input is distinguished from agent input. Windows terminals prefer an installed PowerShell 7. (#302, #306, #308, #314)"
+          ]
+        },
+        {
+          title: "Windows installation, startup and removal are steadier",
+          points: [
+            "App-exit checks, installer residue, terminal cleanup and sandbox preparation races are corrected. Packaging no longer requires the absent `dxil.dll` runtime file. (#352, #353, #551, #553, #556)"
+          ]
+        }
+      ]
+    }
+  ],
+  "v0.14.0": [{ kind: "list", items: [
     {
       title: "Ave’s website and distribution addresses",
       points: ["The website is `ave.agent-connector.ai`; downloads and updates come from `downloads.agent-connector.ai`."],
@@ -192,24 +433,39 @@ const EN: Record<string, EnItem[]> = {
         "The Audit tab in Settings counts permission records by decision, such as allowed or denied, and its top types no longer show `undefined`. (#106)",
       ],
     },
-  ],
+  ] }],
 };
 
 export interface EnRelease {
-  items: { title: Inline[]; points: Inline[][] }[];
+  blocks: (
+    | { kind: "h3"; text: Inline[] }
+    | { kind: "list"; items: { title: Inline[]; points: Inline[][] }[] }
+  )[];
 }
 
 /** The English notes for one release; fails the build if they are missing or out of step with CHANGELOG.md. */
 export function englishRelease(r: Release): EnRelease {
-  const items = EN[r.name];
-  if (!items) throw new Error(`lib/changelog-en.ts has no English notes for ${r.name}`);
-  const list = r.blocks.find((b) => b.kind === "list");
-  const count = list && list.kind === "list" ? list.items.length : 0;
-  if (items.length !== count) {
-    throw new Error(`lib/changelog-en.ts: ${r.name} has ${items.length} items, CHANGELOG.md has ${count}`);
+  const blocks = EN[r.name];
+  if (!blocks) throw new Error(`lib/changelog-en.ts has no English notes for ${r.name}`);
+  if (blocks.length !== r.blocks.length) {
+    throw new Error(`lib/changelog-en.ts: ${r.name} has ${blocks.length} blocks, CHANGELOG.md has ${r.blocks.length}`);
   }
-  if (r.blocks.length !== 1) throw new Error(`${r.name}: expected a single list of changes to translate`);
-  return { items: items.map((it) => ({ title: inline(it.title), points: it.points.map((p) => inline(p)) })) };
+  return { blocks: blocks.map((block, index) => {
+    const source = r.blocks[index]!;
+    if (block.kind === "h3" && source.kind === "h3") {
+      return { kind: "h3", text: inline(block.text) };
+    }
+    if (block.kind === "list" && source.kind === "list") {
+      if (block.items.length !== source.items.length) {
+        throw new Error(`lib/changelog-en.ts: ${r.name} block ${index + 1} has ${block.items.length} items, CHANGELOG.md has ${source.items.length}`);
+      }
+      return {
+        kind: "list",
+        items: block.items.map((it) => ({ title: inline(it.title), points: it.points.map((p) => inline(p)) })),
+      };
+    }
+    throw new Error(`lib/changelog-en.ts: ${r.name} block ${index + 1} is ${block.kind}, CHANGELOG.md has ${source.kind}`);
+  }) };
 }
 
 /** Releases with English notes that CHANGELOG.md does not list: a stale entry here. */
