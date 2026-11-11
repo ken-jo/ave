@@ -2185,3 +2185,84 @@ describe("registry keys marked for deletion", () => {
     },
   );
 });
+
+describe("NSIS app-running prompt", () => {
+  it("asks a question that matches OK/Cancel instead of the stock appRunning text", () => {
+    const installer = readRepoFile("build/installer.nsh");
+    const macroStart = installer.indexOf("!macro customCheckAppRunning");
+    const macroEnd = installer.indexOf("!macroend", macroStart);
+    expect(macroStart).toBeGreaterThanOrEqual(0);
+    const macro = installer.slice(macroStart, macroEnd);
+
+    expect(installer).toContain('!include "getProcessInfo.nsh"');
+    expect(installer).toMatch(/^Var pid$/m);
+    expect(macro).toContain('"${PRODUCT_NAME}가 실행 중입니다. 종료하고 계속할까요?"');
+    expect(macro).toContain('"${PRODUCT_NAME} is running. Close it and continue?"');
+    expect(macro).toContain("${if} $LANGUAGE == 1042");
+    expect(macro).toContain(
+      'MessageBox MB_OKCANCEL|MB_ICONQUESTION|MB_TOPMOST|MB_SETFOREGROUND "$R2" /SD IDOK IDOK ave_app_running_confirmed',
+    );
+    expect(macro).not.toContain("$(appRunning)");
+    expect(macro).toContain('"$(appCannotBeClosed)" /SD IDCANCEL IDRETRY ave_app_running_loop');
+    expect(installer).not.toMatch(/^\s*LangString\s+appRunning\b/m);
+  });
+});
+
+describe("NSIS app-running macro parity", () => {
+  const normalize = (source: string) =>
+    source
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+#\s.*$/, "").trim())
+      .filter((line) => line !== "" && !line.startsWith(";") && !line.startsWith("#"));
+
+  const macroBody = (source: string, name: string) => {
+    const start = source.indexOf(`!macro ${name}`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = source.indexOf("!macroend", start);
+    expect(end).toBeGreaterThan(start);
+    return normalize(source.slice(source.indexOf("\n", start) + 1, end));
+  };
+
+  it("matches the pinned template except for the question dialog", () => {
+    const template = macroBody(
+      readRepoFile("node_modules/app-builder-lib/templates/nsis/include/allowOnlyOneInstallerInstance.nsh"),
+      "_CHECK_APP_RUNNING",
+    );
+    const labels: Record<string, string> = {
+      doStopProcess: "ave_app_running_stop",
+      loop: "ave_app_running_loop",
+      not_running: "ave_app_running_done",
+    };
+    const relabeled = template.map((line) =>
+      line.replace(/\b(doStopProcess|loop|not_running)\b/g, (label) => labels[label] ?? label),
+    );
+    const stockDialog = [
+      'MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "$(appRunning)" /SD IDOK IDOK ave_app_running_stop',
+      "Quit",
+      "ave_app_running_stop:",
+    ];
+    const dialogAt = relabeled.indexOf(stockDialog[0]);
+    expect(relabeled.slice(dialogAt, dialogAt + stockDialog.length)).toEqual(stockDialog);
+    const questionDialog = [
+      "Push $R2",
+      `\${if} $LANGUAGE == 1042`,
+      `StrCpy $R2 "\${PRODUCT_NAME}가 실행 중입니다. 종료하고 계속할까요?"`,
+      `\${else}`,
+      `StrCpy $R2 "\${PRODUCT_NAME} is running. Close it and continue?"`,
+      `\${endIf}`,
+      'MessageBox MB_OKCANCEL|MB_ICONQUESTION|MB_TOPMOST|MB_SETFOREGROUND "$R2" /SD IDOK IDOK ave_app_running_confirmed',
+      "Pop $R2",
+      "Quit",
+      "ave_app_running_confirmed:",
+      "Pop $R2",
+      "ave_app_running_stop:",
+    ];
+    const expected = [
+      "!insertmacro IS_POWERSHELL_AVAILABLE",
+      ...relabeled.slice(0, dialogAt),
+      ...questionDialog,
+      ...relabeled.slice(dialogAt + stockDialog.length),
+    ];
+    expect(macroBody(readRepoFile("build/installer.nsh"), "customCheckAppRunning")).toEqual(expected);
+  });
+});
