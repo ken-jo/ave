@@ -17,6 +17,7 @@ import { getAveAppVersion } from "../../shared/app-version.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { createLogger } from "../../lib/logger.js";
 import type { IpcDeps } from "../types.js";
+import { getWindowsSandboxSubstrate } from "../../permissions/sandbox-capability.js";
 
 const log = createLogger("ipc-diagnostics");
 
@@ -99,6 +100,7 @@ export function registerDiagnosticsHandlers(deps: IpcDeps): void {
         const includeCrashDumps =
           settings.diagnostics.includeCrashDumps === true && opts?.includeCrashDumps !== false;
         const buffer = await buildDiagnosticsBundle({
+          windowsSandbox: getWindowsSandboxSubstrate(),
           settings,
           auditLogger,
           appVersion: getAveAppVersion(),

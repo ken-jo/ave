@@ -11,6 +11,7 @@ import type { AppSettings } from "../data/settings-store.js";
 import { activeLlmRouteModel } from "../shared/llm-vendor-defaults.js";
 import type { AuditLogger, AuditEntry } from "./audit-logger.js";
 import { utcDateKey } from "../shared/local-date.js";
+import type { SandboxWindowsSubstrateInfo } from "../shared/sandbox-capability-info.js";
 
 const DIAGNOSTICS_BUNDLE_SCHEMA_VERSION = 1;
 
@@ -37,6 +38,7 @@ interface DiagnosticsBundleManifest {
 }
 
 export interface BuildDiagnosticsBundleOptions {
+  windowsSandbox?: SandboxWindowsSubstrateInfo | null;
   settings: AppSettings;
   auditLogger: AuditLogger;
   appVersion: string;
@@ -213,6 +215,14 @@ export async function buildDiagnosticsBundle(
   const redactedSettings = pickRedactedSettings(opts.settings);
   if (addEntry("settings-redacted.json", JSON.stringify(redactedSettings, null, 2))) {
     contents.push("settings-redacted.json");
+  }
+  if (opts.windowsSandbox) {
+    const status = opts.windowsSandbox;
+    const mxc = status.mxc.state === "unavailable" ? { state: status.mxc.state, reason: status.mxc.reason }
+      : { state: status.mxc.state };
+    const snapshot = { shellLocalNetworkAccess: status.shellLocalNetworkAccess, shells: status.shells,
+      mxc, shellEgressIdentity: status.shellEgressIdentity, extensions: status.extensions };
+    if (addEntry("sandbox-status.json", JSON.stringify(snapshot, null, 2))) contents.push("sandbox-status.json");
   }
 
   try {

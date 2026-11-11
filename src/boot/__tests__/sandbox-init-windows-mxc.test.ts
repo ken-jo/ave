@@ -75,6 +75,7 @@ import {
   getSandboxBootOutcome,
   getWindowsSandboxSubstrate,
   setSandboxStatusChangeListener,
+  setWindowsShellLocalNetworkAccess,
 } from "../../permissions/sandbox-capability.js";
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -141,6 +142,52 @@ it("degrades before initializing the extension backend when private-directory pr
 });
 
 describe("initSandboxGate — Windows MXC substrate", () => {
+  it("defers every real container start by default and enables the next route without restarting", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    await initSandboxGate(harness.context(true, false));
+    expect(h.startProbe).not.toHaveBeenCalled();
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "approved-host", shellLocalNetworkAccess: false });
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", sandboxed: false });
+    setWindowsShellLocalNetworkAccess(true);
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", shellLocalNetworkAccess: true }));
+    expect(h.startProbe).toHaveBeenCalledOnce();
+    setWindowsShellLocalNetworkAccess(false);
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", sandboxed: false });
+  });
+
+  it("does not promote a late real probe result after shell consent is disabled", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    let settle!: (value: typeof MXC_OK) => void;
+    h.startProbe.mockReturnValue(new Promise(resolve => { settle = resolve; }));
+    await initSandboxGate(harness.context(true, false, true));
+    await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
+    setWindowsShellLocalNetworkAccess(false);
+    settle(MXC_OK);
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()?.mxc.state).toBe("available"));
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "approved-host", shellLocalNetworkAccess: false });
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", sandboxed: false });
+    setWindowsShellLocalNetworkAccess(true);
+    expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "mxc", sandboxed: true });
+  });
+
+  it("retries a start cancelled before native creation when consent is enabled again", async () => {
+    h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
+    h.detectMxc.mockResolvedValue(MXC_OK);
+    h.startProbe.mockImplementationOnce(async (mayStart: () => boolean) => {
+      setWindowsShellLocalNetworkAccess(false);
+      expect(mayStart()).toBe(false);
+      return { state: "unavailable", reason: "powershell-start-failed", windowsBuild: null };
+    });
+    await initSandboxGate(harness.context(true, false, true));
+    await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shellLocalNetworkAccess: false, mxc: { state: "checking" } }));
+    setWindowsShellLocalNetworkAccess(true);
+    await vi.waitFor(() => expect(getHostShellExecutionPlan()).toMatchObject({ substrate: "mxc", sandboxed: true }));
+    expect(h.startProbe).toHaveBeenCalledTimes(2);
+  });
+
   it.each([["slow", MXC_OK, "mxc"], ["hung", MXC_OLD, "approved-host"]] as const)("reaches ready while a %s ACL stamp remains pending", async (_delay, mxc, shells) => {
     h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
     h.detectMxc.mockResolvedValue(mxc);
@@ -151,7 +198,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       return { windowsIsolation: stamp.then(() => ({ status: "ready" })), isCurrent: () => true };
     });
     let ready = false;
-    const boot = initSandboxGate(harness.context(true, true)).then(() => { ready = true; });
+    const boot = initSandboxGate(harness.context(true, true, true)).then(() => { ready = true; });
     try {
       await vi.waitFor(() => expect(ready).toBe(true));
       await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells, extensions: "none" }));
@@ -180,7 +227,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     let finishStamp!: (result: { status: "ready" }) => void;
     h.initialize.mockResolvedValue({ windowsIsolation: new Promise(resolve => { finishStamp = resolve; }), isCurrent: () => true });
 
-    await initSandboxGate(harness.context(true, true));
+    await initSandboxGate(harness.context(true, true, true));
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
     const pendingPlan = getHostShellExecutionPlan();
     finishStamp({ status: "ready" });
@@ -198,7 +245,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     let finishStamp!: (result: { status: "failed"; error: Error }) => void;
     h.initialize.mockResolvedValue({ windowsIsolation: new Promise(resolve => { finishStamp = resolve; }), isCurrent: () => true });
 
-    await initSandboxGate(harness.context(true, true));
+    await initSandboxGate(harness.context(true, true, true));
     finishStamp({ status: "failed", error: new Error(`srt-win acl stamp ${failure}`) });
 
     await vi.waitFor(() => expect(h.logger.warn).toHaveBeenCalledWith(expect.stringContaining(`srt-win acl stamp ${failure}`)));
@@ -215,7 +262,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     let finishStamp!: (result: { status: "failed"; error: Error }) => void;
     h.initialize.mockResolvedValue({ windowsIsolation: new Promise(resolve => { finishStamp = resolve; }), isCurrent: () => true });
 
-    await initSandboxGate(harness.context(true, true));
+    await initSandboxGate(harness.context(true, true, true));
     finishStamp({ status: "failed", error: new Error("srt-win acl stamp failed") });
 
     await vi.waitFor(() => expect(getSandboxBootOutcome()).toMatchObject({
@@ -231,7 +278,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     let finishStamp!: (result: { status: "ready" } | { status: "failed"; error: Error }) => void;
     let current = true;
     h.initialize.mockResolvedValue({ windowsIsolation: new Promise(resolve => { finishStamp = resolve; }), isCurrent: () => current });
-    await initSandboxGate(harness.context(true, true));
+    await initSandboxGate(harness.context(true, true, true));
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
     const outcome = getSandboxBootOutcome();
     finishStamp(status === "ready" ? { status } : { status, error: new Error("retired stamp") });
@@ -246,7 +293,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OK);
 
-    await initSandboxGate(harness.context(true, true));
+    await initSandboxGate(harness.context(true, true, true));
 
     expect(h.initialize).toHaveBeenCalledOnce();
     expect(h.initialize.mock.calls[0]?.[0]).toMatchObject({ windows: { externalConfinement: true } });
@@ -268,7 +315,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
     h.detectMxc.mockResolvedValue(MXC_OK);
 
-    await initSandboxGate(harness.context(true, true));
+    await initSandboxGate(harness.context(true, true, true));
 
     expect(h.initialize.mock.calls[0]?.[0]).toHaveProperty("windows.backgroundInitialization", true);
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "deps-present" });
@@ -280,7 +327,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.checkDeps.mockResolvedValue({ errors: [], warnings: [] });
     h.detectMxc.mockResolvedValue(MXC_OLD);
 
-    await initSandboxGate(harness.context(true, false));
+    await initSandboxGate(harness.context(true, false, true));
 
     expect(getWindowsSandboxSubstrate()).toMatchObject({
       shells: "approved-host",
@@ -300,7 +347,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.checkDeps.mockResolvedValue(SRT_WIN_MISSING);
     h.detectMxc.mockResolvedValue(MXC_OLD);
 
-    await initSandboxGate(harness.context(true, false));
+    await initSandboxGate(harness.context(true, false, true));
 
     expect(h.initialize).not.toHaveBeenCalled();
     expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade" });
@@ -321,7 +368,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.detectMxc.mockResolvedValue(MXC_OK);
     vi.stubEnv("AVE_PLUGIN_WORKER_CONFINEMENT", "1");
 
-    await initSandboxGate(harness.context(true, false));
+    await initSandboxGate(harness.context(true, false, true));
 
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only", onSignal: "explicit-env" });
     await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "mxc", extensions: "none" }));
@@ -336,7 +383,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       h.detectMxc.mockResolvedValue(MXC_OK);
       h.initialize.mockRejectedValue(Object.assign(new Error(`sandbox: refusing confinement: ${home}\\logs is a link or reparse point`),
         { code: "ave-home-boundary-unverified", reason, home }));
-      const context = harness.context(true, true);
+      const context = harness.context(true, true, true);
       const logRefusal = vi.fn();
       context.bootAuditLogger.log = logRefusal;
 
@@ -365,7 +412,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
         { code: "ave-home-boundary-unverified", reason, home: "C:\\Users\\alice\\.ave" }));
 
       // Worker confinement on, shell scope off: the shell intent stays false.
-      await initSandboxGate(harness.context(false, true));
+      await initSandboxGate(harness.context(false, true, true));
 
       expect(h.initialize).toHaveBeenCalledOnce();
       expect(getAveHomePrivacyFailure()).toMatchObject({ enforcement: "none", category });
@@ -380,7 +427,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.detectMxc.mockResolvedValue(MXC_OK);
     h.initialize.mockRejectedValue(Object.assign(new Error("proxy failed to bind"), { code: "EADDRINUSE" }));
 
-    await initSandboxGate(harness.context(false, true));
+    await initSandboxGate(harness.context(false, true, true));
 
     const plan = getHostShellExecutionPlan();
     expect(plan).toMatchObject({ requestedSandbox: false, fallbackReason: "disabled-by-setting", requiresExplicitUserApproval: false });
@@ -393,7 +440,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.detectMxc.mockResolvedValue(MXC_OLD);
     h.initialize.mockRejectedValue(Object.assign(new Error("proxy failed to bind"), { code: "EADDRINUSE" }));
 
-    await initSandboxGate(harness.context(true, true));
+    await initSandboxGate(harness.context(true, true, true));
 
     expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", reason: "degrade-windows-init-failed", causes: ["init-failed"] });
     expect(getAveHomePrivacyFailure()).toBeUndefined();
@@ -405,10 +452,11 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.detectMxc.mockResolvedValue(MXC_OK);
     h.initialize.mockRejectedValue(new Error("proxy failed to bind"));
 
-    await initSandboxGate(harness.context(true, false));
+    await initSandboxGate(harness.context(true, false, true));
 
     expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade" });
-    await vi.waitFor(() => expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "none", mxc: { state: "available" } }));
+    expect(getWindowsSandboxSubstrate()).toMatchObject({ shells: "none", extensions: "none", mxc: { state: "checking" } });
+    expect(h.startProbe).not.toHaveBeenCalled();
     expect(getHostShellExecutionPlan().substrate).not.toBe("mxc");
   });
 
@@ -419,7 +467,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
       .mockRejectedValueOnce(new Error("srt-win acl stamp timed out after 60000ms"))
       .mockResolvedValueOnce(undefined);
 
-    await initSandboxGate(harness.context(true, true));
+    await initSandboxGate(harness.context(true, true, true));
 
     expect(h.initialize).toHaveBeenCalledTimes(2);
     expect(h.initialize.mock.calls[0]?.[0]).toHaveProperty("windows.backgroundInitialization", true);
@@ -436,7 +484,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     h.detectMxc.mockResolvedValue(MXC_OLD);
     h.initialize.mockRejectedValue(new Error("srt-win acl stamp timed out after 60000ms"));
 
-    await initSandboxGate(harness.context(true, false));
+    await initSandboxGate(harness.context(true, false, true));
 
     expect(h.initialize).toHaveBeenCalledOnce();
     expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade" });
@@ -449,7 +497,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     let finishProbe!: (value: unknown) => void;
     h.startProbe.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
 
-    await initSandboxGate(harness.context(true, false));
+    await initSandboxGate(harness.context(true, false, true));
 
     await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
     expect(getSandboxBootOutcome()).toMatchObject({ action: "activate", reason: "activate-windows-mxc-proxy-only" });
@@ -469,7 +517,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     let finishProbe!: (value: unknown) => void;
     h.startProbe.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
 
-    await initSandboxGate(harness.context(true, false));
+    await initSandboxGate(harness.context(true, false, true));
     await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
     expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", requiresExplicitUserApproval: true });
 
@@ -490,7 +538,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     let finishProbe!: (value: unknown) => void;
     h.startProbe.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
 
-    await initSandboxGate(harness.context(true, false));
+    await initSandboxGate(harness.context(true, false, true));
     await vi.waitFor(() => expect(h.startProbe).toHaveBeenCalledOnce());
     expect(detectSandboxCapability().reason).toContain("container start check pending");
 
@@ -527,7 +575,7 @@ describe("initSandboxGate — Windows MXC substrate", () => {
     let finishProbe!: (value: unknown) => void;
     h.startProbe.mockReturnValue(new Promise((resolve) => { finishProbe = resolve; }));
 
-    await initSandboxGate(harness.context(true, false));
+    await initSandboxGate(harness.context(true, false, true));
     __resetWindowsSandboxSubstrateForTest();
     finishProbe({ state: "available", windowsBuild: "10.0.26300.9711" });
     await new Promise((resolve) => setTimeout(resolve, 10));

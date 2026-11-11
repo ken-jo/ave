@@ -6,7 +6,7 @@ import { DEFAULT_UPSTREAM_PROXY } from "../../shared/upstream-proxy.js";
 export interface SandboxBootHarness {
   readonly logSandboxGate: ReturnType<typeof vi.fn>;
   readonly flush: ReturnType<typeof vi.fn>;
-  context(settingOn: boolean, pluginWorkerConfinement?: boolean): BootContext;
+  context(settingOn: boolean, pluginWorkerConfinement?: boolean, windowsShellLocalNetworkAccess?: boolean): BootContext;
 }
 
 /** Build a fresh boot context per test so audit spies cannot leak between cases. */
@@ -16,17 +16,18 @@ export function createSandboxBootHarness(): SandboxBootHarness {
   return {
     logSandboxGate,
     flush,
-    context: (settingOn: boolean, pluginWorkerConfinement = false): BootContext =>
+    context: (settingOn: boolean, pluginWorkerConfinement = false, windowsShellLocalNetworkAccess = false): BootContext =>
       ({
         host: createBootHostFixture(),
         settingsService: {
           get: vi.fn((key: string) =>
             key === "features"
-              ? { osToolSandbox: settingOn, pluginWorkerConfinement, hostClassifiesRisk: false }
+              ? { osToolSandbox: settingOn, pluginWorkerConfinement, windowsShellLocalNetworkAccess, hostClassifiesRisk: false }
               : key === "upstreamProxy"
                 ? { ...DEFAULT_UPSTREAM_PROXY }
                 : undefined,
           ),
+          getPersisted: vi.fn(() => ({ windowsShellLocalNetworkAccess })),
           getSecret: vi.fn(() => null),
           onChanged: vi.fn(() => () => {}),
         },

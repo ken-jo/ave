@@ -661,7 +661,7 @@ describe("sandbox-capability — Windows MXC substrate", () => {
     setShellSandboxRequestedAtBoot(true);
     setPluginWorkerConfinementRequestedAtBoot(true);
     const plan = planWindowsSandbox({
-      shellRequested: true,
+      shellRequested: true, shellLocalNetworkAccess: true,
       workerRequested: true,
       mxc: { state: "available" },
       windowsBuild: "10.0.26300.9711",
@@ -696,7 +696,7 @@ describe("sandbox-capability — Windows MXC substrate", () => {
 
   it("rejects a substrate record that contradicts its MXC capability", () => {
     const { substrate } = planWindowsSandbox({
-      shellRequested: true,
+      shellRequested: true, shellLocalNetworkAccess: true,
       workerRequested: false,
       mxc: { state: "unavailable", reason: "tier-unsupported" },
       windowsBuild: null,
@@ -717,7 +717,7 @@ describe("sandbox-capability — Windows MXC substrate", () => {
       confines: { filesystem: true, process: false, network: true },
     });
     const { substrate } = planWindowsSandbox({
-      shellRequested: true,
+      shellRequested: true, shellLocalNetworkAccess: true,
       workerRequested: false,
       mxc: { state: "unavailable", reason: "request-rejected" },
       windowsBuild: "10.0.22631.1",
@@ -753,7 +753,7 @@ describe("extension selection is not per-process confinement evidence", () => {
   });
 
   it("keeps an identical extension plan's identity when the shell probe settles, and replaces it on a content change", () => {
-    const inputs = { shellRequested: true, workerRequested: true, mxc: { state: "checking" },
+    const inputs = { shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: { state: "checking" },
       extensionMxc: { state: "available" }, windowsBuild: null, srtWinReady: false } as const;
     setWindowsSandboxSubstrate(windowsSubstrateFor(inputs, "proxy-only"));
     const recorded = getWindowsSandboxSubstrate();

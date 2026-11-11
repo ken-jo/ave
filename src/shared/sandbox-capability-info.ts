@@ -315,6 +315,8 @@ export interface SandboxWindowsSubstrateInfo {
   readonly windowsBuild: string | null;
   /** Whether srt-win (the one-time administrator install) was ready at boot. */
   readonly srtWinReady: boolean;
+  /** Live shell-only consent for the container proxy's local-network and loopback access. */
+  readonly shellLocalNetworkAccess: boolean;
   /** Bash/PowerShell tool commands: each in its own MXC container (`mxc`), or; with srt-win active and no MXC; as
    * an ordinary process after a per-command approval (`approved-host`), or without the sandbox at all (`none`). */
   readonly shells: "mxc" | "approved-host" | "none";

@@ -67,6 +67,7 @@ import {
   setActiveSandboxCapability,
   setShellSandboxRequestedAtBoot,
   setWindowsSandboxSubstrate,
+  setWindowsShellLocalNetworkAccess,
 } from "../../permissions/sandbox-capability.js";
 import {
   mxcShellCapability,
@@ -117,7 +118,7 @@ function bootMxcShells(): void {
   setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability(windowsProxyOnlyCapability());
   const { substrate } = planWindowsSandbox({
-    shellRequested: true,
+    shellRequested: true, shellLocalNetworkAccess: true,
     workerRequested: false,
     mxc: { state: "available" },
     windowsBuild: "10.0.26300.9711",
@@ -140,6 +141,64 @@ function executePowerShell(toolContext: ToolExecutionContext, command = "Write-O
 }
 
 describe("builtin shell — Windows MXC containers", () => {
+  it("never prepares an MXC parser or command with local-network access off", async () => {
+    bootMxcShells();
+    setWindowsShellLocalNetworkAccess(false);
+    const result = await executePowerShell(context("local-network-off"));
+    expect(result.isError).toBe(true);
+    expect(getHostShellExecutionPlan()).toMatchObject({ mode: "plain", sandboxed: false, requiresExplicitUserApproval: true });
+    expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
+    expect(childProcessMock.spawn.mock.calls.some(([file]) => file === WXC_EXEC)).toBe(false);
+  });
+
+  it("refuses a prepared parser when consent is disabled before native spawn", async () => {
+    bootMxcShells();
+    const prepare = mxcLaunchMock.prepare.getMockImplementation();
+    if (!prepare) throw new Error("Container preparation fixture is unavailable");
+    mxcLaunchMock.prepare.mockImplementation(async input => {
+      const launch = await prepare(input);
+      setWindowsShellLocalNetworkAccess(false);
+      return launch;
+    });
+    const result = await executePowerShell(context("local-network-disabled-during-parser"));
+    expect(result.isError).toBe(true);
+    expect(mxcLaunchMock.prepare).toHaveBeenCalledOnce();
+    expect(childProcessMock.spawn.mock.calls.some(([file]) => file === WXC_EXEC)).toBe(false);
+    expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
+  });
+
+  it("refuses the command when consent is disabled after its parser completed", async () => {
+    bootMxcShells();
+    const prepare = mxcLaunchMock.prepare.getMockImplementation();
+    if (!prepare) throw new Error("Container preparation fixture is unavailable");
+    mxcLaunchMock.prepare.mockImplementation(async input => {
+      const launch = await prepare(input);
+      if (!isParserLaunch(input)) setWindowsShellLocalNetworkAccess(false);
+      return launch;
+    });
+    const result = await executePowerShell(context("local-network-disabled-before-command"));
+    expect(result.isError).toBe(true);
+    expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(2);
+    expect(childProcessMock.spawn.mock.calls.filter(([file]) => file === WXC_EXEC)).toHaveLength(1);
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not restore an old parser admission after consent is switched off and on", async () => {
+    bootMxcShells();
+    const prepare = mxcLaunchMock.prepare.getMockImplementation();
+    if (!prepare) throw new Error("Container preparation fixture is unavailable");
+    mxcLaunchMock.prepare.mockImplementation(async input => {
+      const launch = await prepare(input);
+      setWindowsShellLocalNetworkAccess(false);
+      setWindowsShellLocalNetworkAccess(true);
+      return launch;
+    });
+    const result = await executePowerShell(context("old-local-network-admission"));
+    expect(result.isError).toBe(true);
+    expect(childProcessMock.spawn.mock.calls.some(([file]) => file === WXC_EXEC)).toBe(false);
+    expect(mxcLaunchMock.release).toHaveBeenCalledOnce();
+  });
+
   beforeEach(() => {
     configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     vi.stubEnv("SystemRoot", "C:\\Windows");

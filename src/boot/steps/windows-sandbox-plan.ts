@@ -23,6 +23,7 @@ type WindowsMxcState =
 
 export interface WindowsSandboxPlanInputs {
   readonly shellRequested: boolean;
+  readonly shellLocalNetworkAccess?: boolean;
   readonly workerRequested: boolean;
   /** While the post-boot shell probe is checking, prepare the proxy but do not use container shells yet. */
   readonly mxc: WindowsMxcState;
@@ -62,7 +63,8 @@ export function canRetryWindowsAsProxyOnly(input: WindowsSandboxPlanInputs, star
 /** A failed probe on proxy-only boot keeps the proxy running; shells use the approved host route. */
 export function windowsSubstrateFor(input: WindowsSandboxPlanInputs, started: WindowsAsrtStart): SandboxWindowsSubstrateInfo {
   const shells: SandboxWindowsSubstrateInfo["shells"] =
-    started === "none" || !input.shellRequested ? "none" : input.mxc.state === "available" ? "mxc" : "approved-host";
+    started === "none" || !input.shellRequested ? "none"
+      : input.shellLocalNetworkAccess === true && input.mxc.state === "available" ? "mxc" : "approved-host";
   const extensionPlan = planWindowsExtensionHolder({
     requested: input.workerRequested,
     mxc: input.extensionMxc ?? { state: "unavailable", reason: "native-validation-required" },
@@ -74,6 +76,7 @@ export function windowsSubstrateFor(input: WindowsSandboxPlanInputs, started: Wi
     mxc: input.mxc.state === "unavailable" ? { state: "unavailable", reason: input.mxc.reason } : { state: input.mxc.state },
     windowsBuild: input.windowsBuild,
     srtWinReady: input.srtWinReady,
+    shellLocalNetworkAccess: input.shellLocalNetworkAccess === true,
     shells,
     extensions,
     shellEgressIdentity: shells === "mxc" ? "kernel-channel" : "shared",
@@ -110,6 +113,8 @@ export function windowsProxyOnlyCapability(substrate?: SandboxWindowsSubstrateIn
     ? "agent shell confinement depends on the container substrate"
     : substrate.shells === "mxc"
       ? "agent shell commands run in containers"
+      : !substrate.shellLocalNetworkAccess
+        ? "shell local-network access is off; agent shell commands require host approval"
       : substrate.mxc.state === "checking"
         ? "container start check pending; agent shell commands require host approval"
         : "containers unavailable; agent shell commands require host approval";
@@ -134,7 +139,8 @@ export function windowsExtensionBootWarning(substrate: SandboxWindowsSubstrateIn
       "plugin workers, plugin children, plugin hooks and MCP stdio servers are REFUSED until a backend is admitted; nothing runs unconfined.";
   }
   // The shell clause describes this substrate's shells, never a container route it does not have.
-  const shells = substrate.shells !== "mxc" && !(substrate.shells === "approved-host" && substrate.mxc.state === "checking")
+  const shells = !substrate.shellLocalNetworkAccess ||
+    (substrate.shells !== "mxc" && !(substrate.shells === "approved-host" && substrate.mxc.state === "checking"))
     ? ""
     : substrate.shells === "mxc"
       ? "; agent shells run in Microsoft Execution Containers"

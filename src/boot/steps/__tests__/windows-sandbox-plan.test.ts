@@ -18,7 +18,7 @@ const BUILD = "10.0.26300.9711";
 
 describe("planWindowsSandbox — the four MXC × srt-win rows", () => {
   it("MXC + srt-win: shells in MXC (kernel-channel identity), extensions under srt-win", () => {
-    const plan = planWindowsSandbox({ shellRequested: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
+    const plan = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
     expect(plan.start).toBe("srt-win");
     expect(plan.substrate).toMatchObject({
       shells: "mxc",
@@ -32,13 +32,13 @@ describe("planWindowsSandbox — the four MXC × srt-win rows", () => {
   });
 
   it("MXC without srt-win: ASRT starts as the proxy only, extensions are not confined", () => {
-    const plan = planWindowsSandbox({ shellRequested: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: false });
+    const plan = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: false });
     expect(plan.start).toBe("proxy-only");
     expect(plan.substrate).toMatchObject({ shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel" });
   });
 
   it("srt-win without MXC: shells take the approved-host route and the identity is shared", () => {
-    const plan = planWindowsSandbox({ shellRequested: true, workerRequested: true, mxc: UNAVAILABLE, windowsBuild: BUILD, srtWinReady: true });
+    const plan = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: UNAVAILABLE, windowsBuild: BUILD, srtWinReady: true });
     expect(plan.start).toBe("srt-win");
     expect(plan.substrate).toMatchObject({
       shells: "approved-host",
@@ -49,7 +49,7 @@ describe("planWindowsSandbox — the four MXC × srt-win rows", () => {
   });
 
   it("neither: ASRT does not start and nothing is claimed", () => {
-    const plan = planWindowsSandbox({ shellRequested: true, workerRequested: true, mxc: UNAVAILABLE, windowsBuild: null, srtWinReady: false });
+    const plan = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: UNAVAILABLE, windowsBuild: null, srtWinReady: false });
     expect(plan.start).toBe("none");
     expect(plan.substrate).toMatchObject({ shells: "none", extensions: "none", shellEgressIdentity: "shared" });
   });
@@ -58,7 +58,7 @@ describe("planWindowsSandbox — the four MXC × srt-win rows", () => {
     const workerOnly = planWindowsSandbox({ shellRequested: false, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: false });
     expect(workerOnly.start).toBe("none");
     expect(workerOnly.substrate.shells).toBe("none");
-    const shellOnly = planWindowsSandbox({ shellRequested: true, workerRequested: false, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
+    const shellOnly = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: false, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
     expect(shellOnly.substrate.extensions).toBe("none");
   });
 });
@@ -67,13 +67,13 @@ describe("planWindowsSandbox — MXC still checking", () => {
   const CHECKING = { state: "checking" } as const;
 
   it("starts ASRT as if MXC were there but keeps shells off MXC until the probe passes", () => {
-    const plan = planWindowsSandbox({ shellRequested: true, workerRequested: false, mxc: CHECKING, windowsBuild: BUILD, srtWinReady: false });
+    const plan = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: false, mxc: CHECKING, windowsBuild: BUILD, srtWinReady: false });
     expect(plan.start).toBe("proxy-only");
     expect(plan.substrate).toMatchObject({ mxc: { state: "checking" }, shells: "approved-host", shellEgressIdentity: "shared" });
   });
 
   it("settles against the mode ASRT actually started in", () => {
-    const input = { shellRequested: true, workerRequested: true, windowsBuild: BUILD, srtWinReady: false } as const;
+    const input = { shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, windowsBuild: BUILD, srtWinReady: false } as const;
     expect(windowsSubstrateFor({ ...input, mxc: AVAILABLE }, "proxy-only")).toMatchObject({ shells: "mxc", extensions: "none", shellEgressIdentity: "kernel-channel" });
     // A failed probe on a proxy-only boot: the proxy keeps running and shells ask.
     expect(windowsSubstrateFor({ ...input, mxc: { state: "unavailable", reason: "unverified-session" } }, "proxy-only")).toMatchObject({ shells: "approved-host", extensions: "none" });
@@ -83,7 +83,7 @@ describe("planWindowsSandbox — MXC still checking", () => {
 
 describe("Windows substrate helpers", () => {
   it("withdraws every claim when ASRT did not start after all", () => {
-    const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
+    const { substrate } = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
     expect(windowsSubstrateWithoutAsrt(substrate)).toMatchObject({
       shells: "none",
       extensions: "none",
@@ -93,7 +93,7 @@ describe("Windows substrate helpers", () => {
   });
 
   it("claims full confinement for an MXC shell and none for the proxy-only runtime", () => {
-    const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: false });
+    const { substrate } = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: false });
     expect(mxcShellCapability().confines).toEqual({ filesystem: true, process: true, network: true });
     expect(windowsProxyOnlyCapability(substrate)).toMatchObject({
       kind: "asrt",
@@ -103,7 +103,7 @@ describe("Windows substrate helpers", () => {
   });
 
   it("reports the approved host route when the proxy-only container probe fails", () => {
-    const input = { shellRequested: true, workerRequested: true, windowsBuild: BUILD, srtWinReady: false } as const;
+    const input = { shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, windowsBuild: BUILD, srtWinReady: false } as const;
     const substrate = windowsSubstrateFor({ ...input, mxc: UNAVAILABLE }, "proxy-only");
     expect(substrate).toMatchObject({ shells: "approved-host", extensions: "none" });
     expect(windowsProxyOnlyCapability(substrate)).toMatchObject({
@@ -124,7 +124,7 @@ describe("independent holder backend selection", () => {
     [false, true, "available", "none", "mxc", "ready"],
     [true, false, "available", "mxc", "none", "off"],
   ] as const)("keeps shell=%s extension=%s selection independent of extension %s", (shellRequested, workerRequested, state, shells, extensions, readiness) => {
-    const plan = planWindowsSandbox({ shellRequested, workerRequested, mxc: AVAILABLE,
+    const plan = planWindowsSandbox({ shellRequested, shellLocalNetworkAccess: true, workerRequested, mxc: AVAILABLE,
       extensionMxc: { state }, windowsBuild: BUILD, srtWinReady: false });
     expect(plan.start).toBe("proxy-only");
     expect(plan.substrate).toMatchObject({ shells, extensions, extensionPlan: { readiness, uiPolicy: "ui-enabled" } });
@@ -132,7 +132,7 @@ describe("independent holder backend selection", () => {
   });
 
   it("does not derive extension readiness from a successful shell probe", () => {
-    const plan = planWindowsSandbox({ shellRequested: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
+    const plan = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: true, mxc: AVAILABLE, windowsBuild: BUILD, srtWinReady: true });
     expect(plan.substrate.extensionPlan).toMatchObject({ selectedBackend: "srt-win", readiness: "fallback", reason: "native-validation-required", fallbackVersion: "0.0.80" });
   });
 
@@ -193,7 +193,7 @@ describe("boot warning for requested extension confinement", () => {
   });
 
   it("mentions container shells only when this substrate has them or is still checking them", () => {
-    const shellInput = { ...input, shellRequested: true } as const;
+    const shellInput = { ...input, shellRequested: true, shellLocalNetworkAccess: true } as const;
     expect(windowsExtensionBootWarning(windowsSubstrateFor(input, "none"))).not.toContain("agent shells");
     expect(windowsExtensionBootWarning(windowsSubstrateFor(shellInput, "proxy-only"))).not.toContain("Execution Containers");
     expect(windowsExtensionBootWarning(windowsSubstrateFor({ ...shellInput, mxc: { state: "checking" } }, "proxy-only")))

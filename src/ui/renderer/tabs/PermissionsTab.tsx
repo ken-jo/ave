@@ -538,6 +538,8 @@ export function PermissionsTab({
   // this run. The stored value still decides the next run without it, so the control stays usable; what was missing was saying so.
   const envForcedPaths = useEnvForcedSettings();
   const [sandboxBusy, setSandboxBusy] = useState(false);
+  const [windowsShellLocalNetworkAccess, setWindowsShellLocalNetworkAccess] = useState(false);
+  const [windowsShellLocalNetworkBusy, setWindowsShellLocalNetworkBusy] = useState(false);
   // Plugin-worker confinement: its own setting, so the shell toggle above never confines workers
   // and this one never confines shells. `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
   const [workBoardApprovalSurface, setWorkBoardApprovalSurface] = useState<WorkBoardToolApprovalSurface | "invalid" | null>(null);
@@ -623,6 +625,7 @@ export function PermissionsTab({
       settle("settings", () => getApi().getSettings(), (settingsRes) => {
         setOwnerAwayAutoSkipMinutes(settingsRes.permissions?.ownerAwayAutoSkipMinutes ?? 0);
         setSandboxEnabled(settingsRes.features?.osToolSandbox ?? false);
+        setWindowsShellLocalNetworkAccess(settingsRes.features?.windowsShellLocalNetworkAccess === true);
         setWorkerConfinementEnabled(settingsRes.features?.pluginWorkerConfinement ?? false);
         // Normalized on load in main, so an out-of-enum value is a contract break: that section says so, without defaulting the
         // preference and without failing the other sections this read feeds.
@@ -962,6 +965,24 @@ export function PermissionsTab({
   };
   const handleSandboxToggle = () => toggleConfinementScope("shell");
   const handleWorkerConfinementToggle = () => toggleConfinementScope("pluginWorkers");
+  const handleWindowsShellLocalNetworkToggle = async () => {
+    if (windowsShellLocalNetworkBusy) return;
+    const next = !windowsShellLocalNetworkAccess;
+    setWindowsShellLocalNetworkBusy(true);
+    try {
+      const res = await getApi().updateSettings({ features: { windowsShellLocalNetworkAccess: next } });
+      if (isIpcErrorResult(res)) {
+        showBanner("error", t("permissionsTab.windowsShellLocalNetworkToggleFailed"));
+        return;
+      }
+      setWindowsShellLocalNetworkAccess(next);
+      await refreshSandboxCapability();
+    } catch {
+      showBanner("error", t("permissionsTab.windowsShellLocalNetworkToggleFailed"));
+    } finally {
+      setWindowsShellLocalNetworkBusy(false);
+    }
+  };
   const [privacyApprovalBusy, setPrivacyApprovalBusy] = useState(false);
   const handlePrivacyApproval = async () => {
     if (privacyApprovalBusy) return;
@@ -1177,6 +1198,28 @@ export function PermissionsTab({
             testId="os-sandbox-forced"
             className="mt-2"
           />
+          {sandboxCapability?.platform === "win32" ? (
+            <div className="mt-3 flex items-start gap-3" data-testid="windows-shell-local-network-setting">
+              <Checkbox
+                checked={windowsShellLocalNetworkAccess}
+                data-testid="windows-shell-local-network-toggle"
+                aria-label={t("permissionsTab.windowsShellLocalNetworkLabel")}
+                disabled={windowsShellLocalNetworkBusy}
+                className="mt-0.5 size-5"
+                onCheckedChange={() => void handleWindowsShellLocalNetworkToggle()}
+              />
+              <div className="min-w-0 space-y-0.5">
+                <p className="text-sm">{t("permissionsTab.windowsShellLocalNetworkLabel")}</p>
+                <p data-testid="windows-shell-local-network-risk" className="text-dense text-warning">
+                  {t("permissionsTab.windowsShellLocalNetworkRisk")}
+                </p>
+                <p className="text-dense text-muted-foreground">{t("permissionsTab.windowsShellLocalNetworkHint")}</p>
+                <p data-testid="windows-shell-local-network-extension-scope" className="text-dense text-muted-foreground">
+                  {t("permissionsTab.windowsShellLocalNetworkExtensionScope")}
+                </p>
+              </div>
+            </div>
+          ) : null}
           <div className="mt-3 flex items-start gap-3">
             <Checkbox
               checked={workerConfinementEffective}
@@ -1226,7 +1269,7 @@ export function PermissionsTab({
                   {t("permissionsTab.osSandboxPotentialReason", { reason: sandboxKindText(sandboxCapability.kind) })}
                 </p>
               ) : null}
-              {sandboxRuntimeReason ? (
+              {sandboxRuntimeReason && !(sandboxCapability.platform === "win32" && windowsSubstrate) ? (
                 <p data-testid="os-sandbox-runtime-reason">
                   {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxKindText(sandboxCapability.runtime?.kind) })}
                 </p>
@@ -1283,11 +1326,13 @@ export function PermissionsTab({
               <p data-testid="os-sandbox-windows-substrate-shells">
                 {windowsSubstrate.shells === "mxc"
                   ? t("permissionsTab.osSandboxWindowsShellsMxc")
-                  : windowsSubstrate.mxc.state === "checking" && windowsSubstrate.shells === "approved-host"
-                    ? t("permissionsTab.osSandboxWindowsShellsChecking")
-                    : windowsSubstrate.shells === "approved-host"
-                      ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
-                      : t("permissionsTab.osSandboxWindowsShellsNone")}
+                  : !windowsSubstrate.shellLocalNetworkAccess && windowsSubstrate.mxc.state !== "unavailable" && windowsSubstrate.shells === "approved-host"
+                    ? t("permissionsTab.osSandboxWindowsShellsLocalNetworkOff")
+                    : windowsSubstrate.mxc.state === "checking" && windowsSubstrate.shells === "approved-host"
+                      ? t("permissionsTab.osSandboxWindowsShellsChecking")
+                      : windowsSubstrate.shells === "approved-host"
+                        ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
+                        : t("permissionsTab.osSandboxWindowsShellsNone")}
               </p>
               {windowsSubstrate.shells === "mxc" ? (
                 <>

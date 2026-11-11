@@ -3,6 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildHostShellExecutionPlan } from "../host-shell-execution-plan.js";
+import { __resetWindowsSandboxSubstrateForTest, setWindowsShellLocalNetworkAccess } from "../sandbox-capability.js";
 
 const releaseEgressSessions = vi.fn<(ended: (sessionId: string) => boolean) => void>();
 vi.mock("../egress-runtime.js", () => ({ releaseEgressSessions }));
@@ -29,6 +30,7 @@ function releasedAmong(...sessionIds: string[]): string[] {
 
 let dir: string;
 beforeEach(() => {
+  __resetWindowsSandboxSubstrateForTest();
   dir = realpathSync(mkdtempSync(join(tmpdir(), "session-scope-end-")));
   vi.stubEnv("AVE_HOME", join(dir, "state"));
   __resetSessionStoreForTest();
@@ -37,6 +39,7 @@ beforeEach(() => {
   endAgentBrowserObservationSessions.mockClear();
 });
 afterEach(() => {
+  __resetWindowsSandboxSubstrateForTest();
   __resetSessionStoreForTest();
   vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
@@ -50,6 +53,26 @@ const plain = (command: string, sessionId: string) => ({
 
 // Owner 2026-10-25 (five-choice cards): every "This session" choice dies with its conversation.
 describe("ending a conversation's session scope", () => {
+  it("revokes shell grants across a consent round trip while preserving independent authority", () => {
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    manager.addSessionRule("root", "Bash(printf ready)");
+    manager.addSessionRule("child", "PowerShell(Get-Date)");
+    manager.addSessionRule("root", "Network(example.test)");
+    const extensionSignal = manager.getPluginRevokeSignal("sample-extension");
+    const epoch = manager.getPolicyEpoch();
+    setWindowsShellLocalNetworkAccess(false);
+    expect(manager.getPolicyEpoch()).toBe(epoch);
+    expect(manager.listSessionRules("child")).toEqual(["PowerShell(Get-Date)"]);
+
+    setWindowsShellLocalNetworkAccess(true);
+    setWindowsShellLocalNetworkAccess(false);
+    expect(manager.getPolicyEpoch()).not.toBe(epoch);
+    expect(manager.listSessionRules("root")).toEqual(["Network(example.test)"]);
+    expect(manager.listSessionRules("child")).toEqual([]);
+    expect(extensionSignal.aborted).toBe(false);
+    expect(manager.getPluginRevokeEpoch("sample-extension")).toBe(0);
+  });
+
   it("drops its session shell rules, session approvals and egress session hosts, and only its own", async () => {
     const manager = new PermissionManager(join(dir, "permissions.json"));
     manager.addSessionRule("ending", "Bash(printf ready)");

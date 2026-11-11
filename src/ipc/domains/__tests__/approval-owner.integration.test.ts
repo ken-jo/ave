@@ -188,7 +188,7 @@ describe("live native approval ownership", () => {
     if (process.platform === "win32") {
       setShellSandboxRequestedAtBoot(true);
       setActiveSandboxCapability(windowsProxyOnlyCapability());
-      const { substrate } = planWindowsSandbox({ shellRequested: true, workerRequested: false,
+      const { substrate } = planWindowsSandbox({ shellRequested: true, shellLocalNetworkAccess: true, workerRequested: false,
         mxc: { state: "available" }, windowsBuild: "10.0.26300.9711", srtWinReady: false });
       setWindowsSandboxSubstrate(substrate, mxcShellCapability());
       expect(getHostShellExecutionPlan()).toMatchObject({ sandboxed: true, substrate: "mxc" });

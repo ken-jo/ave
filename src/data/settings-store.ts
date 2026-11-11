@@ -476,6 +476,9 @@ export interface FeatureFlags {
   /** Controls host shells and workspace terminals only; worker confinement and approval policy remain independent.
    * Defaults on for macOS/Linux and off for Windows; unavailable settings activation warns, explicit macOS/Linux activation aborts, and Windows reports filesystem/network confinement only. */
   osToolSandbox?: boolean;
+  /** Enables local-network and loopback access for Windows agent-shell containers. Off by default;
+   * changes apply to subsequent commands without restarting. Extension confinement is independent. */
+  windowsShellLocalNetworkAccess?: boolean;
   /**
    * Plugin-worker confinement — when `true`, the processes extensions run
    * (plugin workers, out-of-process plugin children, plugin script hooks and
@@ -906,19 +909,24 @@ export class SettingsService {
     return structuredClone(this.settings[key]);
   }
 
+  /** Durable settings for gates that must not act on a pending in-memory write. */
+  getPersisted<K extends keyof AppSettings>(key: K): AppSettings[K] {
+    return structuredClone(this.saved[key]);
+  }
+
   async set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): Promise<void> {
     const persist = async () => {
       this.settings[key] = value;
       if (key === "llm" || key === "marketplace") this.providerConfigChanged();
       await this.commit();
-      for (const listener of this.changeListeners.get(key) ?? []) {
+      for (const listener of key === "features" ? [] : this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
       }
     };
     return key === "marketplace" ? withInstalledStateMutation(persist) : persist();
   }
 
-  /** Observes durable writes through set; callbacks must not block the writer. */
+  /** Observes durable writes through set, and every durable feature commit; callbacks must not block the writer. */
   onChanged(key: keyof AppSettings, listener: () => void): () => void {
     let listeners = this.changeListeners.get(key);
     if (!listeners) this.changeListeners.set(key, (listeners = new Set()));
@@ -1780,7 +1788,13 @@ export class SettingsService {
         const snapshot = this.getAll();
         try {
           await this.saveSettings(snapshot);
+          const featuresChanged = !isDeepStrictEqual(this.saved.features, snapshot.features);
           this.saved = snapshot;
+          if (featuresChanged) {
+            for (const listener of this.changeListeners.get("features") ?? []) {
+              try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }
+            }
+          }
           if (this.withheldSecretKeys.size > 0) void this.deleteWithheldSecrets();
           for (const write of batch) write.resolve();
         } catch (err) {

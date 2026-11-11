@@ -64,6 +64,9 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       detectSandboxCapability,
       setWindowsSandboxSubstrate,
       getWindowsSandboxSubstrate,
+      bindWindowsShellLocalNetworkAccess,
+      isWindowsShellLocalNetworkAccessAllowed,
+      setWindowsShellStartProbe,
     } = await import("../../permissions/sandbox-capability.js");
     const { sandboxConfinementForPlatform } = await import(
       "../../shared/sandbox-capability-info.js"
@@ -75,6 +78,8 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
     // Shell and worker signals control independent scopes; either may initialize the shared runtime.
     // Explicit environment activation and settings activation use different failure policies.
     const features = settingsService.get("features");
+    bindWindowsShellLocalNetworkAccess(settingsService);
+    setWindowsShellStartProbe(undefined);
     const shellExplicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
     const workerExplicitEnv = process.env["AVE_PLUGIN_WORKER_CONFINEMENT"] === "1";
     // While any Ave folder input is pending review, both scopes are requested whatever the settings say; the verdict is the
@@ -139,41 +144,58 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
         : [];
       // Record every Windows substrate branch for Settings; available containers carry agent shells independently of the other runtime.
       const windowsInputs = process.platform === "win32"
-        ? await detectWindowsBootInputs(shellRequested, workerRequested, deps.errors.length === 0)
+        ? await detectWindowsBootInputs(shellRequested, workerRequested, deps.errors.length === 0, isWindowsShellLocalNetworkAccessAllowed())
         : undefined;
       const windowsPlan = windowsInputs === undefined ? undefined : planWindowsSandbox(windowsInputs);
       // Track proxy-only startup separately from the requested runtime plan.
       let windowsStart = windowsPlan?.start;
       let windowsMxc = windowsInputs?.mxc;
+      let shellStartProbe: Promise<WindowsSandboxPlanInputs["mxc"]> | undefined;
       /** Publish slow shell-probe results only if the startup record has not been replaced meanwhile. */
       const recordWindows = (started: "srt-win" | "proxy-only" | "none", failed: boolean): void => {
         if (windowsInputs === undefined) return;
         const at = (mxc: WindowsSandboxPlanInputs["mxc"]) => {
-          const substrate = windowsSubstrateFor({ ...windowsInputs, mxc }, started);
+          const substrate = windowsSubstrateFor({ ...windowsInputs, mxc,
+            shellLocalNetworkAccess: isWindowsShellLocalNetworkAccessAllowed() }, started);
           return failed ? windowsSubstrateWithoutAsrt(substrate) : substrate;
         };
         const first = at(windowsMxc ?? windowsInputs.mxc);
-        setWindowsSandboxSubstrate(first, first.shells === "mxc" ? mxcShellCapability() : undefined);
+        setWindowsSandboxSubstrate(first, first.mxc.state === "available" && first.shells !== "none" ? mxcShellCapability() : undefined);
         if (started === "proxy-only" && !failed) {
           setActiveSandboxCapability(windowsProxyOnlyCapability(first));
         }
         if (windowsMxc?.state !== "checking") return;
-        const recorded = getWindowsSandboxSubstrate();
-        void settleWindowsMxcStartProbe().then((mxc) => {
-          if (getWindowsSandboxSubstrate() !== recorded) return;
-          windowsMxc = mxc;
-          const settled = at(mxc);
-          setWindowsSandboxSubstrate(settled, settled.shells === "mxc" ? mxcShellCapability() : undefined);
-          if (started === "proxy-only" && !failed) {
-            setActiveSandboxCapability(windowsProxyOnlyCapability(settled));
-          }
-          log.info(
-            "boot: Windows sandbox settled — MXC %s, shells: %s, shell egress identity: %s",
-            mxc.state === "unavailable" ? `unavailable (${mxc.reason})` : mxc.state,
-            settled.shells,
-            settled.shellEgressIdentity,
-          );
-        });
+        const recordedMxc = getWindowsSandboxSubstrate()?.mxc;
+        let probing = false;
+        const startProbe = (): void => {
+          if (probing || !isWindowsShellLocalNetworkAccessAllowed() || failed || started === "none" ||
+              getWindowsSandboxSubstrate()?.mxc !== recordedMxc || windowsMxc?.state !== "checking") return;
+          probing = true;
+          shellStartProbe ??= settleWindowsMxcStartProbe(isWindowsShellLocalNetworkAccessAllowed)
+            .finally(() => { shellStartProbe = undefined; });
+          void shellStartProbe.then((mxc) => {
+            probing = false;
+            if (getWindowsSandboxSubstrate()?.mxc !== recordedMxc) return;
+            if (mxc.state === "checking") {
+              if (isWindowsShellLocalNetworkAccessAllowed()) startProbe();
+              return;
+            }
+            windowsMxc = mxc;
+            const settled = at(mxc);
+            setWindowsSandboxSubstrate(settled, settled.mxc.state === "available" && settled.shells !== "none" ? mxcShellCapability() : undefined);
+            if (started === "proxy-only" && !failed) {
+              setActiveSandboxCapability(windowsProxyOnlyCapability(settled));
+            }
+            log.info(
+              "boot: Windows sandbox settled — MXC %s, shells: %s, shell egress identity: %s",
+              mxc.state === "unavailable" ? `unavailable (${mxc.reason})` : mxc.state,
+              settled.shells,
+              settled.shellEgressIdentity,
+            );
+          });
+        };
+        setWindowsShellStartProbe(startProbe);
+        startProbe();
       };
       // Proxy-only startup can confine container shells while extensions remain unconfined.
       const decision: { action: SandboxGateAction; reason: SandboxGateReason } =
@@ -617,12 +639,14 @@ async function detectWindowsBootInputs(
   shellRequested: boolean,
   workerRequested: boolean,
   srtWinReady: boolean,
+  shellLocalNetworkAccess: boolean,
 ): Promise<WindowsSandboxPlanInputs> {
   const { detectHostMxcPrerequisites } = await import("../../permissions/mxc-windows.js");
   const mxc = await detectHostMxcPrerequisites();
   if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
   return {
     shellRequested,
+    shellLocalNetworkAccess,
     workerRequested,
     mxc: mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
     // Shell startup never certifies the separate installed SDK/request/endpoint native gate.
@@ -633,16 +657,25 @@ async function detectWindowsBootInputs(
 }
 
 /** Probe a real shell start after boot. */
-async function settleWindowsMxcStartProbe(): Promise<WindowsSandboxPlanInputs["mxc"]> {
+async function settleWindowsMxcStartProbe(mayStart: () => boolean): Promise<WindowsSandboxPlanInputs["mxc"]> {
   const { probeHostMxcPowerShellStart } = await import("../../permissions/mxc-windows.js");
+  if (!mayStart()) return { state: "checking" };
   const started = Date.now();
+  let cancelled = false;
+  const canStart = (): boolean => {
+    if (mayStart()) return true;
+    cancelled = true;
+    return false;
+  };
   try {
-    const mxc = await probeHostMxcPowerShellStart();
+    const mxc = await probeHostMxcPowerShellStart(canStart);
+    if (cancelled) return { state: "checking" };
     log.info("boot: MXC PowerShell start probe finished in %d ms (%s)", Date.now() - started, mxc.state);
     if (mxc.state === "available") return { state: "available" };
     logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
     return { state: "unavailable", reason: mxc.reason };
   } catch (error) {
+    if (!mayStart()) return { state: "checking" };
     logMxcUnavailable("powershell-start-failed", null, errorMessage(error));
     return { state: "unavailable", reason: "powershell-start-failed" };
   }
