@@ -65,6 +65,12 @@ describe("main.ts — headless exec branch", () => {
     expect(mainSource.slice(guard, guard + 200)).toContain(": EXEC_FAILURE_EXIT_CODE;");
   });
 
+  it("projects bootstrap errors before structured logging can serialize their causes", () => {
+    expect(mainSource).toContain('import { bootstrapErrorForLog } from "./main/bootstrap-error-log.js"');
+    expect(mainSource).toContain('log.error({ err: bootstrapErrorForLog(error) }, "bootstrap failed")');
+    expect(mainSource).toContain('log.error({ err: bootstrapErrorForLog(displayError) }, "startup error display failed")');
+  });
+
   it("exits non-zero after an interactive bootstrap failure without changing normal quits", () => {
     const failure = mainSource.slice(mainSource.indexOf('"bootstrap failed"'), mainSource.indexOf("app.quit();", mainSource.indexOf('"bootstrap failed"')));
     expect(failure).toContain("if (execRequest === null) guiBootstrapFailed = true;");

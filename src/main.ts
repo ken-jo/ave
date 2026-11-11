@@ -18,6 +18,7 @@ import {
 } from "./main/ave-protocol-registration.js";
 import { setIsPackaged } from "./boot/dev-flags.js";
 import { createLogger } from "./lib/logger.js";
+import { bootstrapErrorForLog } from "./main/bootstrap-error-log.js";
 import {
   isAppUpdateInstallPrepared,
   isAppUpdateInstallRequested,
@@ -644,14 +645,14 @@ if (!gotSingleInstanceLock) {
     installHtmlPreviewPartitionBlock();
     installSideBrowserPartitionPolicy();
     void main().catch(async (error) => {
-      log.error({ err: error }, "bootstrap failed");
+      log.error({ err: bootstrapErrorForLog(error) }, "bootstrap failed");
       if (bootLaunch !== "headless" && execRequest === null) {
         showConfigurationBootError(error);
         try {
           const { showProviderSettingsStartupError } = await import("./main/provider-settings-startup-error.js");
           await showProviderSettingsStartupError(error, app.getPath("userData"), app.getLocale());
         } catch (displayError) {
-          log.error({ err: displayError }, "startup error display failed");
+          log.error({ err: bootstrapErrorForLog(displayError) }, "startup error display failed");
         }
       }
       // Preserve any code already chosen by the run. A failed interactive

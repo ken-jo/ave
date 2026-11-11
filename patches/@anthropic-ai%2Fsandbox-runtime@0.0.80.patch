@@ -251,6 +251,12 @@ the installed package.
 16. Stamp timing observations. Debug output records planned targets and their
     parents before the native call, its total elapsed time, and measured native
     per-operation durations for full denies and parent guards.
+
+17. POSIX executable discovery checks PATH entries in process, preserving order,
+    executable permission and explicit-path handling without caching. A locator
+    subprocess missing its one-second scheduling deadline must not classify an
+    installed shell as absent during wrapper preparation. Native confinement
+    still verifies the resulting wrapper by executing it.
 diff --git a/dist/index.d.ts b/dist/index.d.ts
 index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
@@ -8084,3 +8090,56 @@ index 0000000000000000000000000000000000000000..bc21c05d0133f7b282f906dc44ffbc16
 ++        "placeholder controls: foreign_empty_and_nonempty=refused nonempty_record=refused hardlink=refused restore=clean"
 ++    );
 ++}
+diff --git a/dist/utils/which.js b/dist/utils/which.js
+--- a/dist/utils/which.js
++++ b/dist/utils/which.js
+@@ -1,7 +1,9 @@
+ import { spawnSync } from 'node:child_process';
++import { accessSync, constants, statSync } from 'node:fs';
++import { delimiter, isAbsolute } from 'node:path';
+ /**
+  * Find the path to an executable, similar to the `which` command.
+- * Uses Bun.which when running in Bun, falls back to spawnSync for Node.js.
++ * Resolves POSIX executables directly; discovery must not depend on subprocess scheduling.
+  *
+  * @param bin - The name of the executable to find
+  * @returns The full path to the executable, or null if not found
+@@ -11,7 +13,26 @@
+     if (typeof globalThis.Bun !== 'undefined') {
+         return globalThis.Bun.which(bin);
+     }
+-    // Fallback to Node.js implementation
++    if (process.platform !== 'win32') {
++        if (!bin) return null;
++        // Keep dot segments until the filesystem has followed preceding links.
++        const candidates = bin.includes('/')
++            ? [bin]
++            : (process.env.PATH ?? '/usr/bin:/bin').split(delimiter).map(dir => `${dir || '.'}/${bin}`);
++        for (const candidate of candidates) {
++            const fullPath = isAbsolute(candidate) ? candidate : `${process.cwd()}/${candidate}`;
++            try {
++                if (!statSync(fullPath).isFile()) continue;
++                accessSync(fullPath, constants.X_OK);
++                return fullPath;
++            }
++            catch {
++                // Missing, inaccessible and non-executable candidates do not shadow later entries.
++            }
++        }
++        return null;
++    }
++    // Retain platform executable-extension lookup on Windows.
+     const result = spawnSync('which', [bin], {
+         encoding: 'utf8',
+         stdio: ['ignore', 'pipe', 'ignore'],
+diff --git a/dist/utils/which.d.ts b/dist/utils/which.d.ts
+--- a/dist/utils/which.d.ts
++++ b/dist/utils/which.d.ts
+@@ -1,6 +1,6 @@
+ /**
+  * Find the path to an executable, similar to the `which` command.
+- * Uses Bun.which when running in Bun, falls back to spawnSync for Node.js.
++ * Resolves POSIX executables directly; discovery must not depend on subprocess scheduling.
+  *
+  * @param bin - The name of the executable to find
+  * @returns The full path to the executable, or null if not found

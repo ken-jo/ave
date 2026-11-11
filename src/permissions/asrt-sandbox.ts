@@ -271,7 +271,7 @@ async function openEgressListener(
     const message = errorMessage(error);
     // Ended macOS listeners hold their ports for a quarantine (longer while their process group lives); an app restart releases them at once.
     const hint = /invocation listeners are held/u.test(message) ? " Restart Ave to release them." : "";
-    throw new Error(`${caller}: could not open the invocation's egress listener: ${message}${hint}`);
+    throw new Error(`${caller}: could not open the invocation's egress listener: ${message}${hint}`, { cause: error });
   }
 }
 
@@ -1959,8 +1959,8 @@ export const ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE = "asrt-linux-runtime-probe-fai
 export class AsrtLinuxRuntimeProbeError extends Error {
   readonly code = ASRT_LINUX_RUNTIME_PROBE_ERROR_CODE;
 
-  constructor(detail: string) {
-    super(`ASRT Linux runtime probe failed: ${detail}`);
+  constructor(detail: string, options?: ErrorOptions) {
+    super(`ASRT Linux runtime probe failed: ${detail}`, options);
     this.name = "AsrtLinuxRuntimeProbeError";
   }
 }
@@ -1976,8 +1976,8 @@ export const ASRT_MAC_RUNTIME_PROBE_ERROR_CODE = "asrt-macos-runtime-probe-faile
 
 export class AsrtMacRuntimeProbeError extends Error {
   readonly code = ASRT_MAC_RUNTIME_PROBE_ERROR_CODE;
-  constructor(detail: string) {
-    super(`ASRT macOS runtime probe failed: ${detail}`);
+  constructor(detail: string, options?: ErrorOptions) {
+    super(`ASRT macOS runtime probe failed: ${detail}`, options);
     this.name = "AsrtMacRuntimeProbeError";
   }
 }
@@ -2109,7 +2109,7 @@ async function verifyAsrtRuntime(
     await executeAsrtRuntimeProbe(process.platform === "linux" ? hardenLinuxSandboxWrap(probe) : probe, abortController);
   } catch (error) {
     if (isAsrtLinuxRuntimeProbeError(error) || isAsrtMacRuntimeProbeError(error)) throw error;
-    throw new RuntimeProbeError("configured ASRT wrapper could not be prepared");
+    throw new RuntimeProbeError("configured ASRT wrapper could not be prepared", { cause: error });
   } finally {
     abortController.abort();
     if (listenerOpened) SandboxManager.closeInvocationListener(invocation.token);

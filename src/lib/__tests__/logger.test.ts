@@ -248,6 +248,45 @@ describe("logger format selection", () => {
 });
 
 describe("logger redaction (#1499 disk-persistence defense)", () => {
+  it.each(["production", "packaged"] as const)("redacts bootstrap cause messages and stacks in %s JSON output", async (mode) => {
+    const writes: string[] = [];
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      writes.push(chunk.toString());
+      return true;
+    }) as typeof process.stdout.write);
+    const syntheticToken = "synthetic-bootstrap-cause-token";
+    const url = `https://fixture-user:${syntheticToken}@fixture.invalid/native?token=${syntheticToken}`;
+    const cause = new Error(`native preparation failed for ${url}`);
+    cause.stack = `Error: native preparation failed for ${url}\n    at nativePrepare (fixture.js:1:1)`;
+    try {
+      const { createLogger } = await importLogger({
+        NODE_ENV: mode === "production" ? "production" : "test",
+        VITEST: mode === "production" ? undefined : "1",
+        AVE_LOG_FORMAT: undefined,
+      }, { electronVersion: "32.0.0", defaultApp: mode === "packaged" ? null : true });
+      const { bootstrapErrorForLog } = await import("../../main/bootstrap-error-log.js");
+      const { AsrtMacRuntimeProbeError } = await import("../../permissions/asrt-sandbox.js");
+      const error = new AsrtMacRuntimeProbeError("configured ASRT wrapper could not be prepared", { cause });
+      createLogger("ave").error({ err: bootstrapErrorForLog(error) }, "bootstrap failed");
+      const output = writes.join("");
+      const record = JSON.parse(output) as { err: { type: string; message: string; stack: string; code: string }; msg: string };
+      // Boolean assertions keep synthetic credential strings out of failure diagnostics too.
+      expect(output.includes(syntheticToken)).toBe(false);
+      expect(record.err.message.includes("[REDACTED:")).toBe(true);
+      expect(record.err.stack.includes("[REDACTED:")).toBe(true);
+      expect(record.err.message.includes("configured ASRT wrapper could not be prepared")).toBe(true);
+      expect(record.err.stack.includes("nativePrepare")).toBe(true);
+      expect(record.err.code).toBe("asrt-macos-runtime-probe-failed");
+      expect(record.err.type).toBe("AsrtMacRuntimeProbeError");
+      expect(record.msg).toBe("bootstrap failed");
+      expect(error.cause === cause).toBe(true);
+      expect(cause.message.includes(syntheticToken)).toBe(true);
+      expect(cause.stack?.includes(syntheticToken)).toBe(true);
+    } finally {
+      stdout.mockRestore();
+    }
+  });
+
   it("censors secret-bearing fields in JSON output", async () => {
     // Exercise the real JSON stream and assert redaction at top level and one level deep.
     const writes: string[] = [];
