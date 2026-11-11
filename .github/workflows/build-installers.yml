@@ -227,6 +227,9 @@ jobs:
       - name: Verify native owner token flow
         if: matrix.target == 'win'
         run: node test/scripts/probes/windows-owner-flow.mjs
+      - name: Verify native uninstall dialog automation
+        if: matrix.target == 'win'
+        run: node test/scripts/probes/windows-uninstall-dialogs.mjs
       - name: Install dependencies
         env:
           GITHUB_TOKEN: ${{ github.token }}

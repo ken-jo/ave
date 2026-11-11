@@ -21,6 +21,7 @@ import {
   assertAsrtUserReady,
   assertDisposableSmokeGate,
   assertLimitedUninstallResult,
+  assertGuiConsentReport,
   assertRuntimeNotificationArtifactsRemoved,
   FOREIGN_PROTOCOL_FIXTURE_SCRIPT,
   buildPowerShellScript,
@@ -42,6 +43,48 @@ import {
 } from "../../scripts/smoke-windows-nsis-installer.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+describe("GUI uninstall consent observations", () => {
+  function report(reply: string) {
+    return { dialogs: [
+      { kind: "confirmation", visible: true, topmost: true },
+      { kind: "data", visible: true, topmost: true, defaultButton: 7, dataIntactBeforeAnswer: true, answer: reply },
+    ] };
+  }
+
+  it.each(["no", "close", "yes"])("accepts observed safe consent for %s", reply => {
+    expect(() => assertGuiConsentReport(report(reply), reply)).not.toThrow();
+  });
+
+  it("rejects the original silent auto-delete path with no data prompt", () => {
+    expect(() => assertGuiConsentReport({ dialogs: [report("no").dialogs[0]] }, "no")).toThrow(/data prompt/);
+  });
+
+  it.each([
+    { defaultButton: 6 }, { dataIntactBeforeAnswer: false }, { topmost: false },
+    { visible: false }, { answer: "yes" },
+  ])("rejects unsafe data prompt evidence %j", change => {
+    const observed = report("no");
+    const data = observed.dialogs[1];
+    if (!data) throw new Error("Data prompt fixture is missing");
+    Object.assign(data, change);
+    expect(() => assertGuiConsentReport(observed, "no")).toThrow();
+  });
+
+  it("runs no-S GUI answers through real dialog observation", () => {
+    const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
+    expect(smoke).toContain('await runLimitedUninstaller(machineInstall, ["/allusers"], timeoutMs, guiReply)');
+    expect(smoke).toContain('for (const guiReply of ["no", "close", "yes"])');
+    expect(smoke).toContain("assertGuiConsentReport(guiObservation, guiReply)");
+    expect(smoke).toContain("dataState");
+    const observer = readRepoFile("scripts/lib/windows-uninstall-dialog-observer.cs");
+    expect(observer).toContain("SetWinEventHook");
+    expect(observer).toContain("QueryFullProcessImageName");
+    expect(observer).toContain("identity.User.Value == ownerSid");
+    expect(observer).toContain("RequireSentinels(); observation.dataIntactBeforeAnswer = true");
+    expect(observer).not.toContain("Thread.Sleep");
+  });
+});
 
 const WINDOWS_UNINSTALL_REGISTRY_PATH =
   "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
