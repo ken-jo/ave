@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { getBuiltinModule } from "node:process";
 import type { SrtWinBuildReceipt } from "../../permissions/generated/srt-win-build-receipts.js";
 import pins from "../../permissions/srt-win-pins.json" with { type: "json" };
+
+const { existsSync, readFileSync } = getBuiltinModule("node:fs");
 
 // Pin-based receipts accompany upstream fixture bytes only.
 export function upstreamSrtWinReceiptFixtures(): Readonly<Record<string, SrtWinBuildReceipt>> {
