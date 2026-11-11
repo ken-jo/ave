@@ -18,6 +18,7 @@ import {
   type PreflightThresholdSource,
 } from "../auto-compact.js";
 import { t } from "../../i18n/index.js";
+import { raceWithAbort } from "../../shared/abortable-deadline.js";
 import { createLogger } from "../../lib/logger.js";
 import { FALLBACK_CONTEXT_WINDOW } from "../../shared/model-host-policy.js";
 import {
@@ -275,15 +276,6 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
     summary: string;
     removedMessageCount: number;
   }> {
-    if (self.providerPending) await self.whenProviderReady();
-    if (!self.provider) {
-      return {
-        compacted: false,
-        compactedAt: null,
-        summary: t("be_conversationLoop.manualCompactNoProvider"),
-        removedMessageCount: 0,
-      };
-    }
     if (self.isCompacting) {
       return {
         compacted: false,
@@ -293,24 +285,40 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
       };
     }
 
-    const memoryReviewer = compactionReviewer(self);
-    if (!memoryReviewer) {
-      log.warn("manualCompact skipped: common Memory Reviewer is unavailable");
-      return {
-        compacted: false,
-        compactedAt: null,
-        summary: t("be_conversationLoop.manualCompactFailed", {
-          message: "Memory reviewer is unavailable",
-        }),
-        removedMessageCount: 0,
-      };
-    }
-
-    const { preflight } = contextBudgetForCurrentRuntime(self);
-    const preserveRecentTokens = Math.max(1_000, Math.floor(preflight * 0.4));
-
+    const controller = new AbortController();
+    const turnSignal = self.currentAbortController?.signal;
+    const abortSignal = turnSignal ? AbortSignal.any([turnSignal, controller.signal]) : controller.signal;
+    const sessionEpoch = self.sessionEpoch;
+    const sessionId = self.sessionId;
+    self.manualCompactionAbortController = controller;
     self.isCompacting = true;
     try {
+      abortSignal.throwIfAborted();
+      if (self.isSessionTransitioning()) throw new Error("session transition in progress");
+      if (self.providerPending) await raceWithAbort(self.whenProviderReady(), abortSignal);
+      abortSignal.throwIfAborted();
+      if (!self.provider) {
+        return {
+          compacted: false,
+          compactedAt: null,
+          summary: t("be_conversationLoop.manualCompactNoProvider"),
+          removedMessageCount: 0,
+        };
+      }
+      const memoryReviewer = compactionReviewer(self);
+      if (!memoryReviewer) {
+        log.warn("manualCompact skipped: common Memory Reviewer is unavailable");
+        return {
+          compacted: false,
+          compactedAt: null,
+          summary: t("be_conversationLoop.manualCompactFailed", {
+            message: "Memory reviewer is unavailable",
+          }),
+          removedMessageCount: 0,
+        };
+      }
+      const { preflight } = contextBudgetForCurrentRuntime(self);
+      const preserveRecentTokens = Math.max(1_000, Math.floor(preflight * 0.4));
       const messagesBefore = self.history.getMessages();
       const scope = self.resolveToolScope("");
       const toolSchemas = self.rebuildToolSchemas(scope);
@@ -326,19 +334,24 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
         reason: "manual",
         tokenEstimate: requestProjection.totalTokens,
       });
+      abortSignal.throwIfAborted();
       const messagesBeforeCount = messagesBefore.length;
       const tokensBefore = requestProjection.totalTokens;
+      const compactNum = self.compactNum + 1;
       const result = await compactWithBoundary({
         messages: messagesBefore,
         memoryReviewer,
         preserveRecentTokens,
         preserveRecentTurns: DEFAULT_PRESERVE_RECENT_TURNS,
-        compactNum: self.compactNum + 1,
-        sessionId: self.sessionId,
+        compactNum,
+        sessionId,
         preflightTokens: preflight,
         summaryInputTokens: compactionInputBudget(self, preflight),
+        abortSignal,
         ...(callbacks?.focus !== undefined ? { focus: callbacks.focus } : {}),
       });
+      abortSignal.throwIfAborted();
+      if (self.sessionEpoch !== sessionEpoch) throw new Error("session changed");
 
       if (result.status === CompressionStatus.NOOP) {
         return {
@@ -357,28 +370,33 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
         messagesBefore.length,
         messagesBefore,
         projectionContext,
+        abortSignal,
       );
 
-      await self.fireLifecycleEvent("PostCompact", {
-        reason: "manual",
-        messagesBefore: messagesBeforeCount,
-        messagesAfter: self.history.getMessages().length,
-        tokensBefore,
-        tokensAfter: self.lastContextInputTokens,
-      });
-
-      void Promise.resolve(
-        self.deps.memoryManager?.sessions.saveSession(self.sessionId, self.history.getMessages()),
-      ).catch((err: unknown) => {
-        log.warn("manualCompact saveSession failed: %s", (err as Error).message);
-      });
+      if (self.sessionEpoch === sessionEpoch) {
+        const committedHistory = self.history.getMessages();
+        void Promise.resolve(
+          self.deps.memoryManager?.sessions.saveSession(sessionId, committedHistory),
+        ).catch((err: unknown) => {
+          log.warn("manualCompact saveSession failed: %s", (err as Error).message);
+        });
+        if (!abortSignal.aborted) {
+          await self.fireLifecycleEvent("PostCompact", {
+            reason: "manual",
+            messagesBefore: messagesBeforeCount,
+            messagesAfter: committedHistory.length,
+            tokensBefore,
+            tokensAfter: self.lastContextInputTokens,
+          });
+        }
+      }
 
       const compactedAt = result.boundary?.createdAt ?? new Date().toISOString();
       const summary = result.status === CompressionStatus.CONTENT_TRUNCATED
         ? t("be_conversationLoop.manualCompactSummaryTruncated", { count: result.removedCount })
         : result.status === CompressionStatus.REDUCED_INSUFFICIENT_FORCED
-        ? t("be_conversationLoop.manualCompactSummaryForced", { count: result.removedCount, num: self.compactNum })
-        : t("be_conversationLoop.manualCompactSummarySummarized", { count: result.removedCount, num: self.compactNum });
+        ? t("be_conversationLoop.manualCompactSummaryForced", { count: result.removedCount, num: compactNum })
+        : t("be_conversationLoop.manualCompactSummarySummarized", { count: result.removedCount, num: compactNum });
       return {
         compacted: true,
         compactedAt,
@@ -395,6 +413,7 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
         removedMessageCount: 0,
       };
     } finally {
+      if (self.manualCompactionAbortController === controller) self.manualCompactionAbortController = null;
       self.isCompacting = false;
     }
   }
@@ -409,8 +428,17 @@ export async function applyBoundaryToSession(
     prevMessageCount: number,
     messagesBefore: import("../llm/types.js").GenericMessage[],
     projectionContext: RequestProjectionContext,
+    abortSignal?: AbortSignal,
   ): Promise<void> {
+    const sessionId = self.sessionId;
     if (result.boundary === null) {
+      const compactNum = self.compactNum + 1;
+      try {
+        await self.deps.memoryManager.sessions.saveCheckpointSnapshot(sessionId, compactNum, messagesBefore);
+      } catch (snapshotErr) {
+        log.warn(`applyBoundaryToSession: saveCheckpointSnapshot failed — ${(snapshotErr as Error).message}`);
+      }
+      abortSignal?.throwIfAborted();
       self.compactNum += 1;
       let truncated = contentTruncatedHistoryWithContextCarrier({
         messages: result.newHistory,
@@ -434,12 +462,15 @@ export async function applyBoundaryToSession(
         estimatedAfter: contextTokensAfter,
         ...(result.truncatedDir !== undefined ? { truncatedDir: result.truncatedDir } : {}),
       });
+      self.history.clear();
+      self.history.restore(truncated.history);
+      self.cumulativeUsage = {
+        ...self.cumulativeUsage,
+        inputTokens: truncated.contextTokensAfter,
+      };
+      self.lastContextInputTokens = truncated.contextTokensAfter;
+      self.lastContextInputProjectionTokens = truncated.contextTokensAfter;
       try {
-        await self.deps.memoryManager.sessions.saveCheckpointSnapshot(
-          self.sessionId,
-          self.compactNum,
-          messagesBefore,
-        );
         const { usableContext: usable } = contextBudgetForCurrentRuntime(self);
         const ctxUsageAtTrigger = usable > 0 ? Math.min(1.0, estimatedBefore / usable) : 0;
         const checkpointEntry: import("../../memory/session-repository.js").Checkpoint = {
@@ -451,20 +482,13 @@ export async function applyBoundaryToSession(
           messageCountAtTrigger: prevMessageCount,
           compactNum: self.compactNum,
         };
-        const existingMeta = self.deps.memoryManager.sessions.loadSessionMetadata(self.sessionId) ?? {};
+        const existingMeta = self.deps.memoryManager.sessions.loadSessionMetadata(sessionId) ?? {};
         const updatedMeta = self.deps.memoryManager.sessions.appendCheckpoint(existingMeta, checkpointEntry);
-        await self.deps.memoryManager.sessions.saveSessionMetadata(self.sessionId, updatedMeta);
+        await self.deps.memoryManager.sessions.saveSessionMetadata(sessionId, updatedMeta);
       } catch (storageErr) {
         log.warn(`applyBoundaryToSession: content-truncated checkpoint persist failed — ${(storageErr as Error).message}`);
       }
-      self.history.clear();
-      self.history.restore(truncated.history);
-      self.cumulativeUsage = {
-        ...self.cumulativeUsage,
-        inputTokens: truncated.contextTokensAfter,
-      };
-      self.lastContextInputTokens = truncated.contextTokensAfter;
-      self.lastContextInputProjectionTokens = truncated.contextTokensAfter;
+      if (abortSignal?.aborted) return;
       callbacks?.onCompactOccurred?.({
         removedMessages: result.removedCount,
         freedTokens,
@@ -478,18 +502,18 @@ export async function applyBoundaryToSession(
       return;
     }
 
-    self.compactNum = result.boundary.compactNum;
-
     // Snapshot failure is non-fatal to compaction; branching reports the missing snapshot when used.
     try {
       await self.deps.memoryManager.sessions.saveCheckpointSnapshot(
-        self.sessionId,
-        self.compactNum,
+        sessionId,
+        result.boundary.compactNum,
         messagesBefore,
       );
     } catch (snapshotErr) {
       log.warn(`applyBoundaryToSession: saveCheckpointSnapshot failed — ${(snapshotErr as Error).message}`);
     }
+    abortSignal?.throwIfAborted();
+    self.compactNum = result.boundary.compactNum;
 
     const preamble = renderBoundaryAsPreamble(result.boundary);
     let compactedHistory = compactedHistoryWithContextCarrier(result.newHistory, result.estimatedAfter);
@@ -521,9 +545,9 @@ export async function applyBoundaryToSession(
         messageCountAtTrigger: prevMessageCount,
         compactNum: self.compactNum,
       };
-      const existingMeta = self.deps.memoryManager.sessions.loadSessionMetadata(self.sessionId) ?? {};
+      const existingMeta = self.deps.memoryManager.sessions.loadSessionMetadata(sessionId) ?? {};
       const updatedMeta = self.deps.memoryManager.sessions.appendCheckpoint(existingMeta, checkpointEntry);
-      await self.deps.memoryManager.sessions.saveSessionMetadata(self.sessionId, {
+      await self.deps.memoryManager.sessions.saveSessionMetadata(sessionId, {
         ...updatedMeta,
         summaryPreamble: preamble,
       });
@@ -531,6 +555,7 @@ export async function applyBoundaryToSession(
       log.warn(`applyBoundaryToSession: checkpoint persist failed — ${(storageErr as Error).message}`);
     }
 
+    if (abortSignal?.aborted) return;
     callbacks?.onCompactOccurred?.({
       removedMessages: result.removedCount,
       freedTokens: Math.max(0, estimatedBefore - contextTokensAfter),

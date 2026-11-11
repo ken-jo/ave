@@ -953,6 +953,10 @@ Important rules:
   choices retain their historical endpoint and credential identity during
   migration. Selections without sufficient destination identity remain visible
   as unavailable in settings until replaced.
+  Manual compaction carries the active turn and session cancellation signal
+  through recap generation and checkpoint preparation. Session changes reject
+  pending results. Cancellation after a boundary commits preserves that result
+  and suppresses completion notifications.
 - System subagents perform internal summarization, permission review and decision
   work as provider instances. They have no user-facing session, session-history
   entry, subagent panel row or transcript agent card. Compaction commits its result

@@ -159,6 +159,7 @@ export class ConversationLoop {
    * file-mention read) can outlive a swap.
    */
   replaceSessionIdentity(sessionId: string): void {
+    if (this.manualCompactionAbortController) this.abortCurrentTurn(new Error("session changed"));
     updateApprovalSurface({ kind: "move", previousSessionId: this.approvalSessionId, sessionId });
     this.approvalSessionId = sessionId;
     this.sessionEpochValue += 1;
@@ -193,6 +194,7 @@ export class ConversationLoop {
   /** Local full-request projection corresponding to `lastContextInputTokens`. */
   lastContextInputProjectionTokens = 0;
   currentAbortController: AbortController | null = null;
+  manualCompactionAbortController: AbortController | null = null;
   private projectWorkRevoked = false;
   activeTurnJournal: import("./turn/turn-journal.js").TurnJournal | null = null;
 
@@ -269,6 +271,7 @@ export class ConversationLoop {
 
   abortCurrentTurn(reason: Error = new Error("user cancelled turn")): void {
     this.currentAbortController?.abort(reason);
+    this.manualCompactionAbortController?.abort(reason);
   }
 
   /** Cancel admitted and running work, and fence later submissions until an explicit session transition. */
@@ -537,6 +540,7 @@ export class ConversationLoop {
     if (this.activeSessionTransition !== null) {
       throw new Error("conversation-loop:session-transition-in-progress");
     }
+    if (this.manualCompactionAbortController) this.abortCurrentTurn(new Error("session transition started"));
     const lease = Object.freeze({
       sessionId: this.sessionId,
       sessionEpoch: this.sessionEpoch,
@@ -931,8 +935,9 @@ export class ConversationLoop {
     // Preserve verbatim pre-compact messages for checkpoint branching.
     messagesBefore: import("./llm/types.js").GenericMessage[],
     projectionContext: RequestProjectionContext,
+    abortSignal?: AbortSignal,
   ): Promise<void> {
-    return applyBoundaryToSession(this, result, trigger, estimatedBefore, callbacks, prevMessageCount, messagesBefore, projectionContext);
+    return applyBoundaryToSession(this, result, trigger, estimatedBefore, callbacks, prevMessageCount, messagesBefore, projectionContext, abortSignal);
   }
 
   async runPreflightGuard(
