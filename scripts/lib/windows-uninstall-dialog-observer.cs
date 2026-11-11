@@ -13,8 +13,6 @@ public sealed class UninstallDialogObservation {
   public string text;
   public bool visible;
   public bool topmost;
-  public int defaultButton;
-  public bool dataIntactBeforeAnswer;
   public string answer;
 }
 
@@ -38,6 +36,7 @@ public static class UninstallDialogObserver {
   [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
   [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr window, uint flags);
   [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr window);
   [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern IntPtr GetWindowLong64(IntPtr window, int index);
   [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong32(IntPtr window, int index);
   [DllImport("user32.dll")] private static extern IntPtr GetDlgItem(IntPtr dialog, int id);
@@ -61,8 +60,7 @@ public static class UninstallDialogObserver {
   private static readonly string DATA_QUESTION = "Ave 사용자 데이터를 함께 삭제하시겠습니까?";
   private static readonly HashSet<string> handled = new HashSet<string>();
   private static UninstallDialogReport report;
-  private static string executable, ownerSid, answer;
-  private static string[] sentinelPaths, sentinelContents;
+  private static string executable, ownerSid;
   private static uint observerThread;
   private static int observerSession;
   private static WinEvent callback;
@@ -92,15 +90,11 @@ public static class UninstallDialogObserver {
     } finally { CloseHandle(processHandle); }
   }
 
-  private static void RequireSentinels() {
-    for (int index = 0; index < sentinelPaths.Length; index++) {
-      byte[] expected = Convert.FromBase64String(sentinelContents[index]);
-      byte[] actual = File.ReadAllBytes(sentinelPaths[index]);
-      if (actual.Length != expected.Length) throw new InvalidOperationException("User data changed before the consent answer");
-      for (int offset = 0; offset < actual.Length; offset++) {
-        if (actual[offset] != expected[offset]) throw new InvalidOperationException("User data changed before the consent answer");
-      }
-    }
+  private static bool VisibleButton(IntPtr dialog, int id) {
+    IntPtr button = GetDlgItem(dialog, id);
+    var className = new StringBuilder(256);
+    GetClassName(button, className, className.Capacity);
+    return className.ToString() == "Button" && IsWindowVisible(button) && IsWindowEnabled(button);
   }
 
   private static void Inspect(IntPtr window) {
@@ -115,31 +109,26 @@ public static class UninstallDialogObserver {
     EnumChildWindows(window, delegate(IntPtr child, IntPtr unused) {
       var childClass = new StringBuilder(256);
       GetClassName(child, childClass, childClass.Capacity);
-      if (childClass.ToString() == "Static") text.AppendLine(Text(child));
+      if (childClass.ToString() == "Static" && IsWindowVisible(child)) text.AppendLine(Text(child));
       return true;
     }, IntPtr.Zero);
     bool data = text.ToString().Contains(DATA_QUESTION);
     bool confirmation = !data && text.ToString().Contains("Ave")
-      && GetDlgItem(window, 1) != IntPtr.Zero && GetDlgItem(window, 2) != IntPtr.Zero;
+      && VisibleButton(window, 1) && VisibleButton(window, 2);
     if (!data && !confirmation) return;
-    if (data && (GetDlgItem(window, 6) == IntPtr.Zero || GetDlgItem(window, 7) == IntPtr.Zero)) return;
+    if (data && (!VisibleButton(window, 6) || !VisibleButton(window, 7))) return;
     string kind = data ? "data" : "confirmation";
     string key = processId + ":" + window.ToInt64() + ":" + kind;
     if (!handled.Add(key)) return;
     long style = IntPtr.Size == 8 ? GetWindowLong64(window, -20).ToInt64() : GetWindowLong32(window, -20);
     var observation = new UninstallDialogObservation {
       processId = (int)processId, kind = kind, text = text.ToString(), visible = true,
-      topmost = (style & 8) != 0, defaultButton = (int)(SendMessage(window, 0x0400, IntPtr.Zero, IntPtr.Zero).ToInt64() & 0xffff),
-      answer = data ? answer : "OK"
+      topmost = (style & 8) != 0, answer = data ? "No" : "OK"
     };
     report.dialogs.Add(observation);
-    if (data) { RequireSentinels(); observation.dataIntactBeforeAnswer = true; }
-    if (data && answer == "close") {
-      SendMessage(window, 0x0010, IntPtr.Zero, IntPtr.Zero);
-    } else {
-      int button = data ? (answer == "yes" ? 6 : 7) : 1;
-      SendMessage(GetDlgItem(window, button), 0x00f5, IntPtr.Zero, IntPtr.Zero);
-    }
+    // An unexpected data question must fail the assertion, but choose No so
+    // the observer never authorizes deletion while collecting that evidence.
+    SendMessage(GetDlgItem(window, data ? 7 : 1), 0x00f5, IntPtr.Zero, IntPtr.Zero);
   }
 
   private static void OnEvent(IntPtr hook, uint eventId, IntPtr window, int objectId, int childId, uint thread, uint time) {
@@ -151,11 +140,9 @@ public static class UninstallDialogObserver {
     }
   }
 
-  public static UninstallDialogReport Run(string targetExecutable, string expectedSid, string reply, string[] paths, string[] contents, string finishedPath, long deadlineUnixMs) {
-    if (reply != "yes" && reply != "no" && reply != "close") throw new ArgumentException("Invalid dialog answer");
+  public static UninstallDialogReport Run(string targetExecutable, string expectedSid, string finishedPath, long deadlineUnixMs) {
     executable = Path.GetFullPath(targetExecutable);
-    ownerSid = expectedSid; answer = reply; sentinelPaths = paths; sentinelContents = contents;
-    if (paths.Length != contents.Length) throw new ArgumentException("Invalid sentinel manifest");
+    ownerSid = expectedSid;
     report = new UninstallDialogReport(); handled.Clear();
     observerThread = GetCurrentThreadId(); observerSession = Process.GetCurrentProcess().SessionId;
     callback = OnEvent;
