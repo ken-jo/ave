@@ -12,6 +12,7 @@ import {
 } from "../approval-gate.js";
 import { buildHostShellExecutionPlan, requiresExplicitHostShellApproval } from "../host-shell-execution-plan.js";
 import { updatePermissionsFile } from "../permissions-store.js";
+import { setWindowsShellLocalNetworkAccess, __resetWindowsSandboxSubstrateForTest } from "../sandbox-capability.js";
 import {
   buildHostShellExecutionPermitBinding,
   resolveHostShellWorkingDirectory,
@@ -133,6 +134,19 @@ function permitInput(
 }
 
 describe("Windows partial-shell execution permit", () => {
+  afterEach(() => __resetWindowsSandboxSubstrateForTest());
+
+  it.each([false, true])("rejects policy authorization recorded before consent changes from %s", initial => {
+    setWindowsShellLocalNetworkAccess(initial);
+    const binding = makeBinding();
+    recordHostShellPolicyAuthorization(binding);
+    setWindowsShellLocalNetworkAccess(!initial);
+    setWindowsShellLocalNetworkAccess(initial);
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: undefined })).toBeUndefined();
+    recordHostShellPolicyAuthorization(binding);
+    expect(mintHostShellExecutionPermit({ plan: binding.plan, binding, approvalDecision: undefined })).toBeDefined();
+  });
+
   it("binds host policy authorization to one action and consumes it once", () => {
     const binding = makeBinding();
     recordHostShellPolicyAuthorization(binding);
@@ -239,7 +253,10 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
     pm = new PermissionManager(join(directory, "permissions.json"));
     pm.setRules(([{ pattern: "Bash(echo one-shot)", action: "allow" }, { pattern: "Bash(echo other)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
   });
-  afterEach(() => cleanupTmpDir(directory));
+  afterEach(async () => {
+    __resetWindowsSandboxSubstrateForTest();
+    await cleanupTmpDir(directory);
+  });
 
   function explicitHostPlan() {
     return buildHostShellExecutionPlan({
@@ -394,6 +411,50 @@ describe("explicit host execution permit from a matching exact allow rule (unsan
   it("refuses a floor session grant without its conversation or for another floor", () => {
     expect(() => pm.addFloorSessionGrant("", { code: "sandbox-unavailable" })).toThrow();
     expect(() => pm.addFloorSessionGrant("floor-session", { code: "protected-path" as never })).toThrow();
+  });
+
+  it.each([
+    [false, "consume", false], [true, "consume", false],
+    [false, "handoff", false], [true, "handoff", false],
+    [false, "consume", true], [true, "consume", true],
+    [false, "handoff", true], [true, "handoff", true],
+  ] as const)("revokes a minted Windows floor permit from consent %s before %s, round trip %s", async (initial, stage, roundTrip) => {
+    setWindowsShellLocalNetworkAccess(initial);
+    const plan = buildHostShellExecutionPlan({
+      platform: "win32", requestedSandbox: true, executionMode: "host", unavailableSandboxRequiresAsk: true,
+      activeCapability: { kind: "none", confidence: "verified", platform: "win32", reason: "fixture unavailable sandbox" },
+    });
+    const binding = hostBinding(plan);
+    pm.setMode("allow");
+    pm.addFloorSessionGrant("floor-session", { code: "sandbox-unavailable" });
+    const mint = () => {
+      const decision = pm.checkDetailed("bash", "builtin", "shell", null, {
+        ruleSubject: { kind: "shell", dialect: "bash", command: binding.command, cwd: binding.resolvedCwd },
+        hostShellExecutionPlan: plan, shellExecution: HOST_ROUTE_ON_SANDBOX_HOST, sessionId: "floor-session",
+      });
+      expect(decision).toMatchObject({ decision: "allow", reasonCode: "floor-session-allow" });
+      const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: undefined, floorSessionDecision: decision, permissionManager: pm });
+      expect(permit).toBeDefined();
+      return permit;
+    };
+    const control = consumeHostShellExecutionPermitForSpawn(permitInput(binding, mint()));
+    if (control === undefined) throw new Error("Unchanged consent must admit the control permit");
+    expect(await withHostShellExecutionHandoff(control, () => true)).toBe(true);
+    const permit = mint();
+    const transition = () => {
+      setWindowsShellLocalNetworkAccess(!initial);
+      if (roundTrip) setWindowsShellLocalNetworkAccess(initial);
+    };
+    if (stage === "consume") {
+      transition();
+      expect(consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit))).toBeUndefined();
+    } else {
+      const authorization = consumeHostShellExecutionPermitForSpawn(permitInput(binding, permit));
+      if (authorization === undefined) throw new Error("Unchanged consent must admit the pending permit");
+      const handoff = vi.fn(() => true);
+      expect(await withHostShellExecutionHandoff(authorization, handoff, async () => transition())).toBeUndefined();
+      expect(handoff).not.toHaveBeenCalled();
+    }
   });
 
   it("separates ordinary upload permission from host rule authority and retains protected floors", () => {

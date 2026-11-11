@@ -21,11 +21,13 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 
 import { createDynamicTool, type Tool } from "../base.js";
-import { BashTool } from "../shell-tools.js";
+import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { ToolExecutor, type ToolCallMeta } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { preparedShellFacts } from "../prepared-shell-invocation.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
+import { runWithToolExecutionCwd } from "../execution-context.js";
 import { permissionManagerReturning as pmReturning } from "./executor-reviewer-fixtures.js";
 import {
   ApprovalGate,
@@ -40,9 +42,14 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
+  __resetWindowsSandboxSubstrateForTest,
   setActiveSandboxCapability,
   setShellSandboxRequestedAtBoot,
+  setWindowsSandboxSubstrate,
+  setWindowsShellLocalNetworkAccess,
 } from "../../permissions/sandbox-capability.js";
+import { mxcShellCapability, windowsSubstrateFor } from "../../boot/steps/windows-sandbox-plan.js";
+import { _resetAveHomePrivacyForTest, setAveHomePrivacyAtBoot, AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE } from "../../shared/ave-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
 import {
@@ -151,6 +158,49 @@ function recordingAuditLogger(): {
   return { auditLogger, telemetryEntries, permissionEntries };
 }
 
+function sessionSavingGate(pm: PermissionManager, beforeSave?: () => void, beforePersist?: () => Promise<void>) {
+  let gate: ApprovalGate;
+  const saves: Awaited<ReturnType<typeof saveApprovalCardRule>>[] = [];
+  const errors: unknown[] = [];
+  const send = vi.fn((channel: string, request: ApprovalRequest) => {
+    if (channel !== "ave:approval:request") return;
+    void (async () => {
+      try {
+        const snapshot = gate.getRequestSnapshot(request.id);
+        if (snapshot === null) throw new Error("Approval request snapshot is missing");
+        const token = gate.beginApprovalRuleSave(request.id, pm.getPolicyEpoch());
+        beforeSave?.();
+        const saved = await saveApprovalCardRule(snapshot, { action: "allow", scope: "session" },
+          { decision: "allow", scope: "session", displayedVerdictAtApproval: snapshot.verdictAtApproval }, pm, undefined, beforePersist);
+        gate.completeApprovalRuleSave(token, pm.getPolicyEpoch(), saved.ok ? saved.scope : undefined);
+        saves.push(saved);
+        gate.resolveFromDesktopRenderer(request.id, {
+          requestId: request.id, choice: saved.ok ? "allow-once" : "deny-once",
+          ...(request.egressHost ? { egressScope: "once" as const } : {}), nonce: request.nonce, hmac: request.hmac,
+        }, webContents as never);
+      } catch (error) {
+        errors.push(error);
+        gate.resolveFromDesktopRenderer(request.id, {
+          requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac,
+        }, webContents as never);
+      }
+    })();
+  });
+  const webContents = { isDestroyed: () => false, send };
+  gate = new ApprovalGate(webContents as never);
+  return { gate, saves, errors, cards: () => sentApprovalCards<ApprovalRequest>({ send } as never) };
+}
+
+const CONSENT_TRANSITIONS = [
+  { label: "enabled", initial: false, next: [true] },
+  { label: "disabled", initial: true, next: [false] },
+  { label: "disabled and enabled again", initial: true, next: [false, true] },
+] as const;
+const CONSENT_SHELLS = [
+  { name: "bash", create: () => new BashTool(), command: "mkdir consent-output", rule: "Bash(mkdir consent-output)" },
+  { name: "powershell", create: () => new PowerShellTool(), command: "New-Item consent-output -ItemType Directory", rule: "PowerShell(New-Item consent-output -ItemType Directory)" },
+] as const;
+
 describe("ToolExecutor — Windows partial shell Plan B", () => {
   beforeEach(() => {
     testRoot = realpathSync(mkdtempSync(join(tmpdir(), "partial-shell-policy-")));
@@ -160,14 +210,170 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
   });
 
   afterEach(() => {
+    _resetAveHomePrivacyForTest();
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
+    __resetWindowsSandboxSubstrateForTest();
     __resetShellResolverCache();
     childProcessMock.execFileSync.mockReset();
     vi.unstubAllEnvs();
     setProcessPlatform(ORIGINAL_PLATFORM);
     rmSync(testRoot, { recursive: true, force: true });
   });
+
+  it.each(CONSENT_TRANSITIONS.flatMap(transition => CONSENT_SHELLS
+    .filter(shell => shell.name !== "powershell" || transition.initial)
+    .map(shell => ({ ...transition, shell }))))(
+    "revokes a saved $shell.name session rule when shell consent is $label", async ({ initial, next, shell }) => {
+      partialWindowsAsrt();
+      setWindowsSandboxSubstrate(windowsSubstrateFor({ shellRequested: true, workerRequested: false,
+        shellLocalNetworkAccess: initial, mxc: { state: "available" }, windowsBuild: null, srtWinReady: true }, "srt-win"), mxcShellCapability());
+      const pm = new PermissionManager(join(testRoot, "session-consent.json"));
+      pm.setMode("strict");
+      const execute = vi.fn();
+      const tool = shell.create();
+      vi.spyOn(tool, "execute").mockImplementation(async () => { execute(); return { output: "executed", isError: false }; });
+      const registry = new ToolRegistry();
+      registry.register(tool);
+      const run = (gate: ApprovalGate, id: string) => runWithToolExecutionCwd(testRoot, () =>
+        new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+          [{ id, name: shell.name, input: { command: shell.command } }],
+          { sessionId: "shell-consent", permissionContext: permissionContext() }));
+      const first = sessionSavingGate(pm);
+      const allowed = await run(first.gate, "save-shell-session");
+      expect(first.errors).toEqual([]);
+      expect(first.saves).toEqual([expect.objectContaining({ ok: true, scope: "session", pattern: shell.rule })]);
+      expect(first.cards()).toHaveLength(1);
+      expect(allowed[0]?.is_error).toBeUndefined();
+      expect(execute).toHaveBeenCalledOnce();
+
+      const repeated = gateResolving("deny-once");
+      expect((await run(repeated.gate, "repeat-shell-session"))[0]?.is_error).toBeUndefined();
+      expect(sentApprovalCards({ send: repeated.send })).toHaveLength(0);
+      expect(execute).toHaveBeenCalledTimes(2);
+
+      for (const enabled of next) setWindowsShellLocalNetworkAccess(enabled);
+      const revoked = gateResolving("deny-once");
+      expect((await run(revoked.gate, "revoked-shell-session"))[0]?.is_error).toBe(true);
+      expect(sentApprovalCards({ send: revoked.send })).toHaveLength(1);
+      expect(execute).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not create a reusable PowerShell rule from an unpinned host card before enabling consent", async () => {
+    partialWindowsAsrt();
+    setWindowsShellLocalNetworkAccess(false);
+    const pm = new PermissionManager(join(testRoot, "unpinned-session-consent.json"));
+    pm.setMode("strict");
+    const execute = vi.fn();
+    const tool = new PowerShellTool();
+    vi.spyOn(tool, "execute").mockImplementation(async () => { execute(); return { output: "executed", isError: false }; });
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const run = (gate: ApprovalGate, id: string) => runWithToolExecutionCwd(testRoot, () =>
+      new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+        [{ id, name: "powershell", input: { command: "New-Item consent-output -ItemType Directory" } }],
+        { sessionId: "unpinned-shell-consent", permissionContext: permissionContext() }));
+    const first = sessionSavingGate(pm);
+    expect((await run(first.gate, "unpinned-shell-save"))[0]?.is_error).toBe(true);
+    expect(first.errors).toEqual([]);
+    expect(first.saves).toEqual([expect.objectContaining({ ok: false, error: "one-shot-not-recordable" })]);
+    expect(first.cards()[0]?.shellRule).toMatchObject({ sessionAllowed: false });
+    expect(execute).not.toHaveBeenCalled();
+    setWindowsShellLocalNetworkAccess(true);
+    const denied = gateResolving("deny-once");
+    expect((await run(denied.gate, "unpinned-shell-retry"))[0]?.is_error).toBe(true);
+    expect(sentApprovalCards({ send: denied.send })).toHaveLength(1);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each(CONSENT_TRANSITIONS.flatMap(transition => CONSENT_SHELLS.map(shell => ({ ...transition, shell }))))(
+    "revokes a saved $shell.name floor session grant when shell consent is $label", async ({ initial, next, shell }) => {
+      requestedSandboxUnavailable("win32");
+      setWindowsShellLocalNetworkAccess(initial);
+      setAveHomePrivacyAtBoot({ enforcement: "none", home: join(testRoot, "ave-home"),
+        reason: AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, category: "boundary-unlisted" });
+      const pm = new PermissionManager(join(testRoot, "floor-consent.json"));
+      pm.setMode("allow");
+      const execute = vi.fn();
+      const tool = shell.create();
+      vi.spyOn(tool, "execute").mockImplementation(async () => { execute(); return { output: "executed", isError: false }; });
+      const registry = new ToolRegistry();
+      registry.register(tool);
+      const run = (gate: ApprovalGate, id: string) => runWithToolExecutionCwd(testRoot, () =>
+        new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+          [{ id, name: shell.name, input: { command: shell.command } }],
+          { sessionId: "floor-consent", permissionContext: permissionContext() }));
+      const first = sessionSavingGate(pm);
+      expect((await run(first.gate, "save-floor-session"))[0]?.is_error).toBeUndefined();
+      expect(first.errors).toEqual([]);
+      expect(first.saves).toEqual([expect.objectContaining({ ok: true, scope: "session", pattern: "sandbox-unavailable" })]);
+      expect(first.cards()).toHaveLength(1);
+      expect(first.cards()[0]?.shellRule).toMatchObject({ floorSessionOnly: true });
+      expect(execute).toHaveBeenCalledOnce();
+
+      const repeated = gateResolving("deny-once");
+      expect((await run(repeated.gate, "repeat-floor-session"))[0]?.is_error).toBeUndefined();
+      expect(sentApprovalCards({ send: repeated.send })).toHaveLength(0);
+      expect(execute).toHaveBeenCalledTimes(2);
+
+      for (const enabled of next) setWindowsShellLocalNetworkAccess(enabled);
+      const revoked = gateResolving("deny-once");
+      expect((await run(revoked.gate, "revoked-floor-session"))[0]?.is_error).toBe(true);
+      expect(sentApprovalCards({ send: revoked.send })).toHaveLength(1);
+      expect(execute).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(CONSENT_TRANSITIONS)("preserves a card-saved Network session rule when shell consent is $label", async ({ initial, next }) => {
+    partialWindowsAsrt();
+    setWindowsShellLocalNetworkAccess(initial);
+    const pm = new PermissionManager(join(testRoot, "network-consent.json"));
+    const first = sessionSavingGate(pm);
+    await first.gate.requestAndWait({ id: "save-network-session", kind: "egress-host", category: "tool", toolName: "bash",
+      source: "builtin", args: { host: "api.example.test", port: 443 }, reason: "Network permission required", createdAt: Date.now(),
+      allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false,
+      sessionId: "network-consent", trustOrigin: "user-keyboard", egressHost: { host: "api.example.test", port: 443,
+        network: "public", rule: "Network(api.example.test:443)", scopes: ["once", "session"] } });
+    expect(first.errors).toEqual([]);
+    expect(first.saves).toEqual([expect.objectContaining({ ok: true, scope: "session", pattern: "Network(api.example.test:443)" })]);
+    const subject = { host: "api.example.test", port: 443, sessionId: "network-consent" };
+    expect(await pm.networkRuleDecision(subject)).toMatchObject({ decision: "allow", scope: "session" });
+    for (const enabled of next) setWindowsShellLocalNetworkAccess(enabled);
+    expect(await pm.networkRuleDecision(subject)).toMatchObject({ decision: "allow", scope: "session" });
+  });
+
+  it.each(CONSENT_TRANSITIONS.flatMap(transition => [false, true].flatMap(floor =>
+    (["before save", "during persistence"] as const).map(timing => ({ ...transition, floor, timing })))))(
+    "refuses a pending card session save after consent is $label ($timing, floor $floor)", async ({ initial, next, floor, timing }) => {
+      partialWindowsAsrt();
+      setWindowsShellLocalNetworkAccess(initial);
+      if (floor) setAveHomePrivacyAtBoot({ enforcement: "none", home: join(testRoot, "ave-home"),
+        reason: AVE_HOME_BOUNDARY_UNVERIFIED_ERROR_CODE, category: "boundary-unlisted" });
+      const pm = new PermissionManager(join(testRoot, "pending-session-consent.json"));
+      pm.setMode(floor ? "allow" : "strict");
+      const execute = vi.fn();
+      const registry = shellProbeRegistry(execute);
+      const run = (gate: ApprovalGate, id: string) => runWithToolExecutionCwd(testRoot, () =>
+        new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
+          [{ id, name: "bash", input: { command: "mkdir consent-output" } }],
+          { sessionId: "pending-shell-consent", permissionContext: permissionContext() }));
+      const changeConsent = () => {
+        for (const enabled of next) setWindowsShellLocalNetworkAccess(enabled);
+      };
+      const first = sessionSavingGate(pm, timing === "before save" ? changeConsent : undefined,
+        timing === "during persistence" ? async () => { await Promise.resolve(); changeConsent(); } : undefined);
+      expect((await run(first.gate, "stale-shell-save"))[0]?.is_error).toBe(true);
+      expect(first.errors).toEqual([]);
+      expect(first.cards()).toHaveLength(1);
+      expect(first.saves).toEqual([expect.objectContaining({ ok: false, error: "rule-save-failed", message: "Shell consent changed during approval" })]);
+      expect(execute).not.toHaveBeenCalled();
+      const denied = gateResolving("deny-once");
+      expect((await run(denied.gate, "after-stale-shell-save"))[0]?.is_error).toBe(true);
+      expect(sentApprovalCards({ send: denied.send })).toHaveLength(1);
+      expect(execute).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["active", "off"])("binds native consent for explicit host with sandbox %s", async (sandbox) => {
     vi.stubEnv("AVE_PRIVATE_TEST_MARKER", "fixture-not-forwarded");

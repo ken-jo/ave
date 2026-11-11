@@ -264,6 +264,11 @@ export function isWindowsShellLocalNetworkAccessAllowed(): boolean {
   return windowsShellLocalNetworkAccessEnabled;
 }
 
+/** Session shell grants belong to one uninterrupted consent state. */
+export function getWindowsShellConsentRevision(): number {
+  return windowsShellLocalNetworkRevision;
+}
+
 /** Bind shell consent to durable feature commits, including writes with later post-save failures. */
 export function bindWindowsShellLocalNetworkAccess(settings: {
   getPersisted(key: "features"): { windowsShellLocalNetworkAccess?: boolean } | undefined;

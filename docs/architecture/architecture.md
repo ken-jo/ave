@@ -2968,7 +2968,10 @@ Windows agent shells on the existing approved-host permission route, without
 sandbox-auto eligibility or an MXC shell start probe. ON permits the existing
 MXC route once readiness passes and accepts possible local-network and loopback
 inbound connections. Changes apply to the next command without restarting;
-headless requests retain the [decision tree](permission-decision-tree.md).
+either transition revokes shell session rules and floor-only session grants,
+while independent network and extension grants remain. Within an unchanged
+consent state, the floor-only session exception still follows the
+[decision tree](permission-decision-tree.md), including headless denial.
 This explicit opt-in follows the
 [VS Code Windows sandbox proxy access reference](https://code.visualstudio.com/docs/agents/run/agent-sandboxing#check-windows-sandbox-proxy-access).
 The shell setting does not alter the separately opted-in extension policy,
