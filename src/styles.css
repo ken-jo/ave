@@ -1161,15 +1161,16 @@
  * own `bg-card`), as do headers, the terminal and every popover.
  *
  * Alpha never goes on `--background` / `--card` themselves: the contrast
- * solver in resolve-theme.ts derives text against those as opaque grounds,
- * and the material under a tint is close to that ground in both shells.
+ * solver in resolve-theme.ts derives text against those as opaque grounds.
+ * The system material carries contrast beneath the sidebar tint.
  *
  * The rules sit outside every cascade layer so they outrank the `bg-*`
  * utilities on the same elements without `!important`.
  *
  * `--glass-tint-alpha` — how much of the card colour covers the material —
  * is set by `applyAppearance` from the user's `appearance.glassTint` slider,
- * mapped onto the painted shell's range (`glassTintAlpha`). */
+ * as percent cover in both shells (`glassTintAlpha`): 0 leaves the material
+ * bare, 100 paints an opaque card, and the default is 40. */
 html[data-glass],
 html[data-glass] body,
 html[data-glass] .ave-glass-clear {
