@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { SCHEMES, requireScheme } from "../schemes/index.js";
 import { applyAppearance, contrastRatio, resolveTheme, resolveAppearanceScheme } from "../resolve-theme.js";
 import { STATIC_DESIGN_TOKENS } from "../design-tokens.js";
-import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS, DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
+import { DARK_SCHEME_IDS, LIGHT_SCHEME_IDS, DEFAULT_APPEARANCE, DEFAULT_GLASS_TINT } from "../../../../shared/appearance-settings.js";
 import { FONT_SIZE_SCALE_DEFAULT } from "../../../../shared/appearance-font.js";
 
 function rgbHex(triple: string): string {
@@ -39,6 +39,22 @@ describe("curated color schemes", () => {
     expect(SCHEMES.filter((s) => s.shell === "light").map((s) => s.id)).toEqual([...LIGHT_SCHEME_IDS]);
   });
   for (const scheme of SCHEMES) {
+    it(`${scheme.id} keeps full-strength glass labels readable from the default tint upward`, () => {
+      const { tokens } = resolveTheme(scheme);
+      const foreground = rgbHex(tokens.foreground);
+      const card = rgbHex(tokens.card);
+      const [minimumMaterial, maximumMaterial] = scheme.shell === "dark" ? [0, 140] as const : [168, 255] as const;
+      for (let tint = DEFAULT_GLASS_TINT; tint <= 100; tint++) {
+        for (let material = minimumMaterial; material <= maximumMaterial; material++) {
+          const blended = `#${[1, 3, 5].map((offset) => Math.round(
+            Number.parseInt(card.slice(offset, offset + 2), 16) * tint / 100 + material * (1 - tint / 100),
+          ).toString(16).padStart(2, "0")).join("")}`;
+          const ratio = contrastRatio(foreground, blended);
+          expect(ratio, `${tint}% over grey ${material}: body text`).toBeGreaterThanOrEqual(4.5);
+          expect(ratio, `${tint}% over grey ${material}: headers and icons`).toBeGreaterThanOrEqual(3);
+        }
+      }
+    });
     it(`${scheme.id} keeps muted text readable on every text surface`, () => {
       const theme = resolveTheme(scheme);
       const muted = rgbHex(theme.tokens["muted-foreground"]);

@@ -1162,7 +1162,10 @@
  *
  * Alpha never goes on `--background` / `--card` themselves: the contrast
  * solver in resolve-theme.ts derives text against those as opaque grounds.
- * The system material carries contrast beneath the sidebar tint.
+ * Sidebar labels use the scheme's full-strength foreground over the material.
+ * At tint 40 and above it clears 4.5:1 for body text and 3:1 for headers/icons
+ * across the material model (dark neutral greys 0–140, light 168–255).
+ * Below 40 the user trades text contrast for transparency; the ground stays bare at 0.
  *
  * The rules sit outside every cascade layer so they outrank the `bg-*`
  * utilities on the same elements without `!important`.
@@ -1177,7 +1180,15 @@ html[data-glass] .ave-glass-clear {
   background-color: transparent;
 }
 html[data-glass] .ave-glass-tint {
+  --muted-foreground: var(--foreground);
+  color: hsl(var(--foreground));
   background-color: hsl(var(--card) / var(--glass-tint-alpha));
+}
+/* Explicit alpha and archived/disabled content opacity must not weaken a glass label.
+ * Filled badges and portalled popovers keep their own foreground/background pair. */
+html[data-glass] .ave-glass-tint .ave-sidebar-label {
+  color: hsl(var(--foreground));
+  opacity: 1;
 }
 /* An overlaying sidebar floats over a conversation, not over the material:
  * a see-through card there would print the transcript under the list. */

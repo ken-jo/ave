@@ -1,10 +1,23 @@
 import { test, expect } from '@playwright/test';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { SCHEMES } from '../../../src/ui/renderer/theme/schemes/index.js';
+import { relativeLuminance } from '../../contrast-helpers.js';
 import { openInlineSettings } from './inline-settings.js';
 import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from './seeded-electron.js';
 
 test('glass tint spans bare material to opaque and preserves opaque safety surfaces', async () => {
   const context = await launchSeededElectron({
-    historyRows: [],
+    historyRows: [{ role: 'user', content: 'Verify populated sidebar readability' }],
+    sessionTitle: 'Active glass conversation',
+    prepareHome: (aveHome) => {
+      const id = 'e2000001-bb11-4cc2-8dd3-eeeeeeeeeeee';
+      writeFileSync(join(aveHome, 'sessions', `${id}.jsonl`), `${JSON.stringify({ role: 'user', content: 'An inactive conversation' })}\n`);
+      writeFileSync(join(aveHome, 'sessions', `${id}.meta.json`), JSON.stringify({ title: 'Inactive glass conversation' }));
+      const archivedId = 'e2000002-bb11-4cc2-8dd3-eeeeeeeeeeee';
+      writeFileSync(join(aveHome, 'sessions', `${archivedId}.jsonl`), `${JSON.stringify({ role: 'user', content: 'An archived conversation' })}\n`);
+      writeFileSync(join(aveHome, 'sessions', `${archivedId}.meta.json`), JSON.stringify({ title: 'Archived glass conversation', archivedAt: new Date().toISOString() }));
+    },
     settings: {
       ...buildLlmSettings(),
       system: { sidebarState: 'expanded' },
@@ -19,14 +32,15 @@ test('glass tint spans bare material to opaque and preserves opaque safety surfa
       });
     };
     await transparency('no-preference');
-    // Exercise the glass stylesheet contract even on test hosts without a native material.
-    // These markers represent the preload state of a window created with the material.
-    await page.evaluate(() => {
-      document.documentElement.setAttribute('data-glass', '');
-      document.documentElement.setAttribute('data-glass-capable', '');
-    });
+    const glass = await page.evaluate(() => document.documentElement.hasAttribute('data-glass'));
+    if (process.platform === 'darwin') expect(glass, 'Native material must be enabled for the glass regression').toBe(true);
     await setWindowSize(app, 1200, 860);
     await openInlineSettings(app, page, 'appearance');
+    await expect(page.getByTestId('sidebar-conversation-title-e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee')).toHaveText('Active glass conversation');
+    await expect(page.getByTestId('sidebar-conversation-title-e2000001-bb11-4cc2-8dd3-eeeeeeeeeeee')).toHaveText('Inactive glass conversation');
+    await page.getByTestId('sidebar-toggle-archived').click();
+    await expect(page.getByTestId('sidebar-row-session-e2000002-bb11-4cc2-8dd3-eeeeeeeeeeee')).toHaveAttribute('data-archived', 'true');
+    await expect(page.getByTestId('sidebar-conversation-title-e2000002-bb11-4cc2-8dd3-eeeeeeeeeeee')).toHaveText('Archived glass conversation');
     const slider = page.locator('#appearance-glass-tint-input');
     const card = page.getByTestId('sidebar-card');
     const paints = () => page.evaluate(() => {
@@ -45,7 +59,7 @@ test('glass tint spans bare material to opaque and preserves opaque safety surfa
       };
     });
     const evidence = [];
-    for (const mode of ['light', 'dark'] as const) {
+    if (glass) for (const mode of ['light', 'dark'] as const) {
       await page.getByTestId(`appearance-mode-${mode}`).click();
       await expect(slider).toHaveValue('40');
       for (const [key, tint] of [['Home', 0], ['End', 100]] as const) {
@@ -60,20 +74,77 @@ test('glass tint spans bare material to opaque and preserves opaque safety surfa
       await expect.poll(() => paints()).toMatchObject({ token: '0.4', sidebar: 0.4, rail: 0.4, pane: 1, body: 0 });
       evidence.push({ mode, tint: 40, ...await paints() });
     }
-    await slider.press('Home');
-    await transparency('reduce');
-    await expect(slider).toBeDisabled();
-    await expect.poll(() => paints()).toMatchObject({ token: '0', sidebar: 1, rail: 1, pane: 1, body: 1 });
-    evidence.push({ reducedTransparency: true, ...await paints() });
-    await transparency('no-preference');
-    await expect(slider).toBeEnabled();
-    await expect.poll(() => paints()).toMatchObject({ token: '0', sidebar: 0, rail: 0, body: 0 });
+    const contrasts = [];
+    for (const scheme of SCHEMES) {
+      await page.evaluate(({ id, shell }) => window.aveApi.updateSettings({ appearance: {
+        mode: shell, [shell === 'dark' ? 'darkScheme' : 'lightScheme']: id, glassTint: 40,
+      } }), scheme);
+      await expect(page.locator('html')).toHaveAttribute('data-scheme', scheme.id);
+      const foreground = await card.evaluate(element => getComputedStyle(element).color);
+      // Scheme changes animate control colours; measure the settled label, not the transition.
+      await expect(page.getByTestId('sidebar-search').locator('svg')).toHaveCSS('color', foreground);
+      await expect(page.getByTestId('sidebar-collapse-toggle').locator('svg')).toHaveCSS('color', foreground);
+      const colors = await page.evaluate(() => {
+        const channels = (color: string) => {
+          const values = color.match(/[\d.]+/g)?.map(Number);
+          if (!values || values.length < 3) throw new Error('Unresolved painted color');
+          return values;
+        };
+        const sidebar = document.querySelector('[data-testid="sidebar-card"]');
+        if (!sidebar) throw new Error('Populated sidebar missing');
+        const targets = [
+          ['body', '[data-testid="sidebar-conversation-title-e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee"]'],
+          ['body', '[data-testid="sidebar-conversation-title-e2000001-bb11-4cc2-8dd3-eeeeeeeeeeee"]'],
+          ['body', '[data-testid="sidebar-conversation-title-e2000002-bb11-4cc2-8dd3-eeeeeeeeeeee"]'],
+          ['body', '[data-testid="sidebar-row-session-e2000001-bb11-4cc2-8dd3-eeeeeeeeeeee"] .text-tiny'],
+          ['body', '[data-testid="sidebar-project-header"] .text-muted-foreground'],
+          ['header', '[data-testid="sidebar-project-header"] .truncate'],
+          ['icon', '[data-testid="sidebar-search"] svg'],
+          ['icon', '[data-testid="sidebar-collapse-toggle"] svg'],
+          ['icon', '[data-testid="sidebar-conversation-glyph-e2000001-bb11-4cc2-8dd3-eeeeeeeeeeee"]'],
+        ] as const;
+        return {
+          background: channels(getComputedStyle(sidebar).backgroundColor),
+          labels: targets.map(([kind, selector]) => {
+            const element = document.querySelector(selector);
+            if (!element) throw new Error(`Sidebar label missing: ${selector}`);
+            let opacity = 1;
+            for (let ancestor: Element | null = element; ancestor && ancestor !== sidebar; ancestor = ancestor.parentElement) opacity *= Number(getComputedStyle(ancestor).opacity);
+            return { kind, selector, color: channels(getComputedStyle(element).color), opacity };
+          }),
+        };
+      });
+      const alpha = colors.background[3] ?? 1;
+      expect(alpha).toBe(glass ? 0.4 : 1);
+      const material = scheme.shell === 'dark' ? 140 : 168;
+      const background = colors.background.slice(0, 3).map(channel => (channel * alpha + material * (1 - alpha)) / 255) as [number, number, number];
+      const backgroundLuminance = relativeLuminance(background);
+      for (const label of colors.labels) {
+        expect(label.opacity, label.selector).toBe(1);
+        expect(label.color[3] ?? 1, label.selector).toBe(1);
+        const foreground = relativeLuminance(label.color.slice(0, 3).map(channel => channel / 255) as [number, number, number]);
+        const ratio = (Math.max(foreground, backgroundLuminance) + 0.05) / (Math.min(foreground, backgroundLuminance) + 0.05);
+        expect(ratio, `${scheme.id}: ${label.selector}`).toBeGreaterThanOrEqual(label.kind === 'body' ? 4.5 : 3);
+        contrasts.push({ scheme: scheme.id, shell: scheme.shell, tint: 40, kind: label.kind, ratio });
+      }
+    }
+    if (glass) {
+      await slider.press('Home');
+      await transparency('reduce');
+      await expect(slider).toBeDisabled();
+      await expect.poll(() => paints()).toMatchObject({ token: '0', sidebar: 1, rail: 1, pane: 1, body: 1 });
+      evidence.push({ reducedTransparency: true, ...await paints() });
+      await transparency('no-preference');
+      await expect(slider).toBeEnabled();
+      await expect.poll(() => paints()).toMatchObject({ token: '0', sidebar: 0, rail: 0, body: 0 });
+    }
     await setWindowSize(app, 360, 768);
     await expect(page.getByTestId('primary-sidebar')).toHaveAttribute('data-sidebar-overlay', 'true');
     await expect(card).toBeVisible();
-    await expect.poll(() => paints()).toMatchObject({ token: '0', sidebar: 1, pane: 1, body: 0 });
+    await expect.poll(() => paints()).toMatchObject({ sidebar: 1, pane: 1, body: glass ? 0 : 1 });
     evidence.push({ overlay: true, ...await paints() });
     await test.info().attach('glass-tint-paints', { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' });
+    await test.info().attach('populated-sidebar-contrast', { body: JSON.stringify(contrasts, null, 2), contentType: 'application/json' });
   } finally {
     await teardownSeededElectron(context, { terminate: true });
   }

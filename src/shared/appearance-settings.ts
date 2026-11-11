@@ -29,8 +29,11 @@ export const DEFAULT_APPEARANCE: Readonly<AppearanceSettings> = Object.freeze({
 });
 /**
  * One percent-cover value drives both shells: 0 leaves the system material bare,
- * 100 paints an opaque card, and the default covers forty percent. The system
- * material carries text contrast beneath the tint; content surfaces stay opaque.
+ * 100 paints an opaque card, and the default covers forty percent. Glass sidebar
+ * labels use full-strength foreground colours: tint 40 and above guarantees
+ * body contrast of 4.5:1 and header/icon contrast of 3:1 over the material model
+ * (dark neutral greys 0–140, light 168–255). Below 40 the user trades contrast
+ * for transparency. Content surfaces stay opaque; the sidebar has no alpha floor.
  */
 export const GLASS_TINT_MIN = 0;
 export const GLASS_TINT_MAX = 100;

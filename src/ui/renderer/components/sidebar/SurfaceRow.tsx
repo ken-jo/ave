@@ -119,7 +119,7 @@ export function SurfaceRow({
       {status ? (
         <span
           className={[
-            "flex shrink-0 items-center gap-1 pr-1 text-tiny group-hover:hidden group-focus-within:hidden",
+            "ave-sidebar-label flex shrink-0 items-center gap-1 pr-1 text-tiny group-hover:hidden group-focus-within:hidden",
             status.tone === "attention" ? "text-warning" : "text-muted-foreground",
           ].join(" ")}
           data-testid={`sidebar-surface-status-${surface.tabId}`}

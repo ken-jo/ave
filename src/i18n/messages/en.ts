@@ -202,7 +202,7 @@ export const en = {
   "appearanceTab.glassTintLabel": "Window glass tint",
   "appearanceTab.glassTintMin": "0% · System material",
   "appearanceTab.glassTintMax": "100% · Opaque",
-  "appearanceTab.glassTintHint": "How much of the sidebar's colour covers the system material: 0% leaves it bare, 100% is opaque.",
+  "appearanceTab.glassTintHint": "0% leaves the system material bare; 100% is opaque. Below 40%, text contrast may decrease.",
   "appearanceTab.glassTintReducedHint": "Unavailable while the system reduces transparency (macOS: Accessibility › Reduce transparency; Windows: Personalization › Colors › Transparency effects off); the window stays opaque.",
   "appearanceTab.glassTintKeywords": "transparency, translucent, vibrancy, mica, glass, opacity",
   "appearanceTab.terminalTitle": "Code and terminal font",
