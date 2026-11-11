@@ -22,11 +22,13 @@ import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { _resetAveHomePrivacyForTest, AveHomeConfigurationRefusedWriteError, ensureAveHomePrivate, setAveHomeConfigurationRefusedAtBoot } from "../ave-home.js";
+import * as configurationAccess from "../ave-home-configuration-access.js";
 import { AveHomeConfigurationNotOwnerError, setAveHomeConfigurationOwner } from "../ave-home-configuration-access.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import {
   _resetAveHomeTrustForTest,
   approveAveHomeTrustItems,
+  batchAveHomeInputWritesSync,
   aveHomeTreeDigest,
   classifyWindowsHomeEvidence,
   initialAveHomeTrustManifest,
@@ -277,6 +279,74 @@ describe("R4 write admission", () => {
 });
 
 describe("R5 write intents", () => {
+  it("persists each batched intent before writing and shares the final collapse", () => {
+    const dir = home();
+    boot(dir);
+    const persist = vi.spyOn(configurationAccess, "writeAveHomeTrustManifestSync");
+    try {
+      batchAveHomeInputWritesSync(() => {
+        for (const name of ["AGENTS.md", "user-preferences.md"]) {
+          recordAveHomeInputWriteSync(join(dir, name), name, () => {
+            expect(manifest(dir).entries[manifestKey(name)]).toEqual({ pendingWrite: sha256Hex(name) });
+            writeFileSync(join(dir, name), name);
+          });
+        }
+        expect(persist).toHaveBeenCalledTimes(2);
+      });
+      expect(persist).toHaveBeenCalledTimes(3);
+      for (const name of ["AGENTS.md", "user-preferences.md"]) {
+        expect(manifest(dir).entries[manifestKey(name)]).toEqual({ current: sha256Hex(name) });
+        expect(readAveHomeInputSync(join(dir, name))).toMatchObject({ status: "trusted" });
+      }
+    } finally { persist.mockRestore(); }
+  });
+
+  it("flushes nested scopes only after the outer scope completes", () => {
+    const dir = home();
+    boot(dir);
+    const persist = vi.spyOn(configurationAccess, "writeAveHomeTrustManifestSync");
+    try {
+      batchAveHomeInputWritesSync(() => {
+        batchAveHomeInputWritesSync(() => {
+          recordAveHomeInputWriteSync(join(dir, "AGENTS.md"), "# nested", () => writeFileSync(join(dir, "AGENTS.md"), "# nested"));
+        });
+        expect(persist).toHaveBeenCalledTimes(1);
+        expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ pendingWrite: sha256Hex("# nested") });
+      });
+      expect(persist).toHaveBeenCalledTimes(2);
+    } finally { persist.mockRestore(); }
+  });
+
+  it("recovers matching durable bytes after the final batched collapse fails", () => {
+    const dir = home();
+    boot(dir);
+    const persist = vi.spyOn(configurationAccess, "writeAveHomeTrustManifestSync");
+    try {
+      batchAveHomeInputWritesSync(() => {
+        recordAveHomeInputWriteSync(join(dir, "AGENTS.md"), "# durable", () => writeFileSync(join(dir, "AGENTS.md"), "# durable"));
+        persist.mockImplementationOnce(() => { throw new Error("disk full"); });
+      });
+      expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ pendingWrite: sha256Hex("# durable") });
+    } finally { persist.mockRestore(); }
+    expect(boot(dir).pending).toBe(false);
+    expect(readAveHomeInputSync(join(dir, "AGENTS.md"))).toMatchObject({ status: "trusted" });
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("# durable") });
+  });
+
+  it("clears a failed batched intent immediately and flushes completed writes on an exception", () => {
+    const dir = home();
+    boot(dir);
+    expect(() => batchAveHomeInputWritesSync(() => {
+      recordAveHomeInputWriteSync(join(dir, "AGENTS.md"), "# kept", () => writeFileSync(join(dir, "AGENTS.md"), "# kept"));
+      try {
+        recordAveHomeInputWriteSync(join(dir, "user-preferences.md"), "# lost", () => { throw new Error("disk full"); });
+      } finally {
+        expect(manifest(dir).entries["user-preferences.md"]).toBeUndefined();
+      }
+    })).toThrow("disk full");
+    expect(manifest(dir).entries[manifestKey("AGENTS.md")]).toEqual({ current: sha256Hex("# kept") });
+  });
+
   it("records the intent before the write and collapses it after", () => {
     const dir = home();
     boot(dir);
