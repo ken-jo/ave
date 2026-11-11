@@ -11,6 +11,7 @@ import { getWebSurfaceViewportElement } from "../preview/web-surfaces.js";
 interface AreaSelection {
   tab: BrowserWorkspaceTab;
   bounds: { x: number; y: number; width: number; height: number };
+  focusOwner: Element | null;
 }
 interface Point { x: number; y: number }
 
@@ -25,6 +26,11 @@ function CaptureAreaOverlay({ selection, overlayRef, onCancel, onSelect }: {
   const [start, setStart] = useState<Point | null>(null);
   const [end, setEnd] = useState<Point | null>(null);
   useEffect(() => {
+    const activeElement = document.activeElement;
+    if (activeElement !== selection.focusOwner && !(activeElement === document.body && !selection.focusOwner?.isConnected)) {
+      onCancel();
+      return;
+    }
     overlayRef.current?.focus();
     const handleKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -45,7 +51,7 @@ function CaptureAreaOverlay({ selection, overlayRef, onCancel, onSelect }: {
       window.removeEventListener("resize", onCancel);
       window.removeEventListener("blur", onCancel);
     };
-  }, [onCancel, overlayRef]);
+  }, [onCancel, overlayRef, selection.focusOwner]);
   const point = (event: PointerEvent): Point => ({
     x: Math.max(0, Math.min(selection.bounds.width, event.clientX - selection.bounds.x)),
     y: Math.max(0, Math.min(selection.bounds.height, event.clientY - selection.bounds.y)),
@@ -99,6 +105,7 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [selection, setSelection] = useState<AreaSelection | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
   const cancelSelection = useCallback(() => setSelection(null), []);
 
@@ -122,6 +129,7 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
     finally { setBusy(false); }
   };
   const startCapture = async (mode: "viewport" | "full-page" | "area") => {
+    const focusOwner = document.activeElement;
     setFailed(false); setBusy(true);
     try {
       const state = await api.getState();
@@ -131,22 +139,25 @@ export function BrowserCaptureControls({ api, tabId, composerGroupId }: {
       const guest = getWebSurfaceViewportElement(tabId);
       const rect = guest?.getBoundingClientRect();
       if (!rect || rect.width < 1 || rect.height < 1) { setFailed(true); return; }
-      setSelection({ tab, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height } });
+      // The request may outlive the menu; only its own or unclaimed focus can enter selection.
+      const activeElement = document.activeElement;
+      if (activeElement && activeElement !== document.body && activeElement !== triggerRef.current && activeElement !== focusOwner) return;
+      setSelection({ tab, bounds: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, focusOwner: activeElement });
     } catch { setFailed(true); }
     finally { setBusy(false); }
   };
   return <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy}
+        <Button ref={triggerRef} type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs" disabled={busy}
           data-testid="browser-capture-menu"><Camera className="h-3.5 w-3.5" aria-hidden="true" />{t("browserCapture.capture")}</Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" onCloseAutoFocus={(event) => {
-        // Keep focus with the mounted area dialog when its menu closes.
-        const overlay = overlayRef.current;
-        if (!overlay) return;
-        event.preventDefault();
-        overlay.focus();
+        // A canceled dialog can leave focus on another control before this deferred callback runs.
+        const activeElement = document.activeElement;
+        if (overlayRef.current || (activeElement && activeElement !== document.body && activeElement !== triggerRef.current)) {
+          event.preventDefault();
+        }
       }}>
         <DropdownMenuItem data-testid="browser-capture-viewport" onSelect={() => void startCapture("viewport")}>{t("browserCapture.viewport")}</DropdownMenuItem>
         <DropdownMenuItem data-testid="browser-capture-full-page" onSelect={() => void startCapture("full-page")}>{t("browserCapture.fullPage")}</DropdownMenuItem>
