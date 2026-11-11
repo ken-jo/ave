@@ -8,10 +8,14 @@ describe("arrival before operation completion", () => {
     const failure = new Error("Startup failed");
     const operation = release.promise.then(() => { throw failure; });
     const waiting = arrivalBeforeCompletion(deferred<void>().promise, operation);
-    release.resolve();
-    // Let rejection reporting run before attaching the assertion, as a gate-driving caller would.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    await expect(waiting).rejects.toBe(failure);
+    try {
+      release.resolve();
+      // Let rejection reporting run before attaching the assertion, as a gate-driving caller would.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await expect(waiting).rejects.toBe(failure);
+    } finally {
+      release.resolve();
+    }
   });
 
   it("still observes operation failure after the arrival won the race", async () => {
@@ -20,9 +24,12 @@ describe("arrival before operation completion", () => {
     const failure = new Error("Operation failed after arrival");
     const operation = release.promise.then(() => { throw failure; });
     const waiting = arrivalBeforeCompletion(arrived.promise, operation);
-    arrived.resolve("ready");
-    await expect(waiting).resolves.toBe("ready");
-    release.resolve();
+    try {
+      arrived.resolve("ready");
+      await expect(waiting).resolves.toBe("ready");
+    } finally {
+      release.resolve();
+    }
     await new Promise<void>((resolve) => setImmediate(resolve));
     await expect(operation).rejects.toBe(failure);
   });

@@ -175,10 +175,11 @@ function holdExecutableVerification() {
     return verify(...args);
   });
   return {
-    async advancePastPollingDeadline(completion: Promise<unknown>, signal: AbortSignal) {
+    async advancePastPollingDeadline(completion: Promise<unknown>, signal: AbortSignal, checkWhileHeld?: () => void) {
       try {
         await arrivalBeforeCompletion(entered.promise, completion);
         await advanceFakeClock(NATIVE_LOCATION_WAIT.timeout + 1, signal);
+        checkWhileHeld?.();
       } finally {
         released.resolve();
       }
@@ -403,6 +404,20 @@ describe("native RPC timeout context", () => {
 });
 
 describe("CodexConversationRuntime", () => {
+  it("releases executable verification when a held assertion fails", async ({ signal }) => {
+    vi.useFakeTimers();
+    const gate = holdExecutableVerification();
+    const harness = await createHarness((message, current) => {
+      if (message.method === "initialize") reply(current.child, requestId(message), {});
+      if (message.method === "account/read") reply(current.child, requestId(message), { account: { type: "chatgpt" } });
+    });
+    const pending = harness.runtime.verifyIsolation();
+    const failure = new Error("Held assertion failed");
+    await expect(gate.advancePastPollingDeadline(pending, signal, () => { throw failure; })).rejects.toBe(failure);
+    await expect(pending).resolves.toBeUndefined();
+    expect(harness.spawnCalls).toHaveLength(1);
+  });
+
   it("refuses a qualified executable replaced before app-server spawn", async () => {
     const harness = await createHarness();
     chmodSync(harness.artifact.executable, 0o700);
@@ -2135,19 +2150,12 @@ describe("CodexConversationRuntime", () => {
 
     expect(onDynamicToolCall).not.toHaveBeenCalled();
   });
-  it.each(["initialize", "thread/start"] as const)(
+  it.for(["initialize", "thread/start"] as const)(
     "does not advance startup when aborted during %s after delayed executable verification",
-    async (operation) => {
+    async (operation, { signal }) => {
       vi.useFakeTimers();
-      const verifyingExecutable = deferred<void>();
-      const releaseRuntime = deferred<void>();
+      const gate = holdExecutableVerification();
       const requestReceived = deferred<JsonRecord>();
-      const verifyArtifact = executableArtifacts.verifyCodexExecutableArtifact;
-      vi.spyOn(executableArtifacts, "verifyCodexExecutableArtifact").mockImplementation(async (...args) => {
-        verifyingExecutable.resolve();
-        await releaseRuntime.promise;
-        return verifyArtifact(...args);
-      });
       const harness = await createHarness((message, current) => {
         if (message.method === operation) requestReceived.resolve(message);
         else if (message.method === "initialize") reply(current.child, requestId(message), {});
@@ -2160,11 +2168,9 @@ describe("CodexConversationRuntime", () => {
       // Observe startup failure immediately, including while waiting for the request.
       const requestReady = arrivalBeforeCompletion(requestReceived.promise, pendingTurn);
 
-      await Promise.race([verifyingExecutable.promise, requestReady]);
-      // Hold verification past the former polling deadline without sleeping or adding load.
-      await vi.advanceTimersByTimeAsync(NATIVE_LOCATION_WAIT.timeout + 1);
-      expect(harness.spawnCalls).toHaveLength(0);
-      releaseRuntime.resolve();
+      await gate.advancePastPollingDeadline(pendingTurn, signal, () => {
+        expect(harness.spawnCalls).toHaveLength(0);
+      });
       const request = await requestReady;
       abortController.abort();
       reply(harness.child, requestId(request), operation === "initialize" ? {} : { thread: { id: "thread-1" } });
