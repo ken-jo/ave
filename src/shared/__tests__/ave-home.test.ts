@@ -68,7 +68,8 @@ describe("configuration marker recovery", () => {
         return markerContent === null ? { ...row, exists: false, directory: false, dacl: null }
           : { ...row, directory: false, attributes: 128, contentHex: Buffer.from(markerContent).toString("hex") };
       }
-      return unsafeDirectory && path.endsWith("config") ? { ...row, dacl: { ...row.dacl!, protected: false } } : row;
+      if (!row.dacl) throw new Error("Configuration facts need a directory DACL");
+      return unsafeDirectory && path.endsWith("config") ? { ...row, dacl: { ...row.dacl, protected: false } } : row;
     }));
     vi.mocked(execFileSync).mockImplementation(() => { throw new Error("Unexpected configuration recovery subprocess"); });
     return home;
