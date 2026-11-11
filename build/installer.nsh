@@ -8,14 +8,6 @@
 ; deleteAppDataOnUninstall stays false; /KEEP_APP_DATA is accepted for updater
 ; compatibility and no longer changes behavior. App files and security state
 ; are still removed on genuine uninstall.
-;
-; References for separate app removal and optional manual data removal:
-; https://github.com/microsoft/vscode/blob/main/build/win32/code.iss [UninstallDelete]
-; https://zed.dev/docs/uninstall (Windows)
-; https://www.jetbrains.com/help/idea/uninstall.html
-; https://support.1password.com/uninstall-1password/
-; https://www.electron.build/nsis/#deleteappdataonuninstall
-; https://github.com/electron-userland/electron-builder/issues/8240
 
 !define AVE_GIT_INSTALL_SCRIPT "install-windows-git.ps1"
 
