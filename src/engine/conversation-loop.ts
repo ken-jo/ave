@@ -39,8 +39,9 @@ import { isToolResultStubContent } from "../shared/tool-result-stub.js";
 import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
 import { createStepTracer, type ConversationTracer } from "./telemetry/tracing.js";
 import { t } from "../i18n/index.js";
-import { selectedCompactionModel } from "../shared/compaction-model.js";
-import { buildProvider, cleanModelOverride, generateText, resolveVendorName } from "./turn/provider.js";
+import { compactionModelSelection } from "../shared/compaction-model.js";
+import { resolveSystemSubagentRoute } from "./system-subagent-route.js";
+import { buildProvider, generateText, generateTextForRoute, resolveVendorName } from "./turn/provider.js";
 import type { GenerateTextOptions } from "./turn/provider.js";
 import { fireLifecycleEvent, fireUserPromptSubmit } from "./turn/lifecycle-hooks.js";
 import {
@@ -409,7 +410,7 @@ export class ConversationLoop {
     return generateText(this.provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, options);
   }
 
-  /** A recap may choose another model, while keeping the active authentication and endpoint boundary. */
+  /** Resolve a hidden one-shot system instance without registering a conversation or agent. */
   async generateCompactionText(
     prompt: string,
     systemPrompt?: string,
@@ -417,14 +418,20 @@ export class ConversationLoop {
     outputTokenLimit?: number,
   ): Promise<string> {
     const llm = this.deps.settingsService.get("llm");
-    const modelOverride = cleanModelOverride(selectedCompactionModel(llm, this.deps.settingsService.get("marketplace").installedProviderPresets));
+    const selection = compactionModelSelection(llm, this.deps.settingsService.get("marketplace").installedProviderPresets);
     const options = { ...(outputTokenLimit === undefined ? {} : { outputTokenLimit }) };
-    if (!modelOverride) {
-      return this.generateText(prompt, systemPrompt, abortSignal, { ...options, modelOverride: this.deps.modelOverride });
+    if (selection.unavailableLabel) {
+      throw new Error(`Compaction model unavailable: ${selection.unavailableLabel}`);
     }
-    // Explicit recap selection permits retries, but never substitution by a chat fallback route.
-    const provider = await buildProvider({ ...this.deps, modelOverride }, { fallbackEnabled: false });
-    return generateText(provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, { ...options, modelOverride });
+    if (!selection.model) {
+      const modelOverride = this.deps.modelOverride;
+      const provider = await buildProvider({ ...this.deps, modelOverride });
+      return generateTextForRoute(provider, llm, prompt, systemPrompt, abortSignal, {
+        ...options, modelOverride,
+      });
+    }
+    const route = await resolveSystemSubagentRoute(this.deps, selection.model);
+    return generateTextForRoute(route.provider, route.llmSettings, prompt, systemPrompt, abortSignal, options);
   }
 
   getVendor(): string {

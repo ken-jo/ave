@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { MemoryReviewerService } from "../../memory/memory-reviewer-service.js";
-import { compactionModelRouteKey } from "../../shared/compaction-model.js";
 import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
 import { ConversationLoop, type ConversationLoopDeps } from "../conversation-loop.js";
 import { createProvider } from "../llm/provider-factory.js";
@@ -38,8 +37,11 @@ function fixture(
     ...getLlmVendorSettings(llm.vendors, "claude"),
     baseUrl: "https://fallback.example.test/v1",
   };
-  llm.compactionModel = compactionModel;
-  llm.compactionModelRoute = compactionModelRouteKey(llm);
+  llm.compactionModelSelection = compactionModel ? { vendor: "openai", model: compactionModel } : null;
+  llm.modelListCache["openai\nhttps://primary.example.test/v1\n"] = {
+    vendor: "openai", baseUrl: "https://primary.example.test/v1", endpoint: "https://primary.example.test/v1/models",
+    fetchedAt: new Date().toISOString(), models: ["chat-model", "summary-model"],
+  };
   llm.fallbackChain = [{ provider: fallbackVendor, model: "fallback-model" }];
   const calls: { vendor: LLMVendor; model: string; endpoint?: string }[] = [];
   let failedAttempts = 0;
@@ -124,13 +126,13 @@ describe("explicit compaction model failure", () => {
     expect(calls.at(-1)).toEqual({ vendor: "claude", model: "fallback-model", endpoint: "https://fallback.example.test/v1" });
   });
 
-  it("retains the current-model path when a saved selection belongs to another route", async () => {
+  it("fails clearly when a legacy selection cannot be mapped", async () => {
     const { loop, calls, llm } = fixture(undefined, { compactionModel: "" });
+    delete llm.compactionModelSelection;
     llm.compactionModel = "inactive-summary-model";
     llm.compactionModelRoute = "inactive-route";
-    await expect(settle(loop.generateCompactionText("history"))).resolves.toBe("available summary");
-    expect(calls[0]?.model).toBe("chat-model");
-    expect(calls.at(-1)?.model).toBe("fallback-model");
+    await expect(settle(loop.generateCompactionText("history"))).rejects.toThrow("Compaction model unavailable");
+    expect(calls).toEqual([]);
   });
 
   it.each(["manual", "auto"] as const)("keeps %s compaction failures on the existing error path without rewriting history", async (trigger) => {

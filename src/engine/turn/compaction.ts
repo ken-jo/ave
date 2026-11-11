@@ -1,5 +1,6 @@
 import type { ConversationLoop } from "../conversation-loop.js";
-import { selectedCompactionModel } from "../../shared/compaction-model.js";
+import { compactionModelSelection } from "../../shared/compaction-model.js";
+import { systemSubagentLlmSettings } from "../system-subagent-route.js";
 import type { GenericMessage, MessageMeta } from "../llm/types.js";
 import type {
   CompactTriggerSource,
@@ -261,14 +262,11 @@ function compactionReviewer(self: ConversationLoop): CompactRecapReviewer | unde
 function compactionInputBudget(self: ConversationLoop, chatPreflight: number): number | undefined {
   const llm = self.deps.settingsService.get("llm");
   const presets = self.deps.settingsService.get("marketplace").installedProviderPresets;
-  const model = selectedCompactionModel(llm, presets);
+  const { model } = compactionModelSelection(llm, presets);
   if (!model) return undefined;
-  if (self.provider?.subscriptionRuntime) {
-    // Unverified subscription overrides retain a conservative ceiling until the runtime reports their capacity.
-    return Math.min(chatPreflight, SUBSCRIPTION_FALLBACK_PREFLIGHT, getModelPreflightThreshold(self.provider.vendor, model));
-  }
-  const route = resolveContextWindowForRoute(llm, presets, model);
-  return Math.min(chatPreflight, getModelPreflightThreshold(llm.provider, model, route.contextWindow, route.inputLimit));
+  const summaryLlm = systemSubagentLlmSettings(self.deps.settingsService, model);
+  const route = resolveContextWindowForRoute(summaryLlm, presets, model.model);
+  return Math.min(chatPreflight, getModelPreflightThreshold(model.vendor, model.model, route.contextWindow, route.inputLimit));
 }
 
 export async function manualCompact(self: ConversationLoop, callbacks?: ManualCompactOptions): Promise<{
