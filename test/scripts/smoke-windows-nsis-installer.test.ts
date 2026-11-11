@@ -77,7 +77,7 @@ describe("uninstall dialog observations", () => {
 
   it("observes GUI and silent paths and checks preserved data", () => {
     const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
-    expect(smoke).toContain('await runLimitedUninstaller(machineInstall, ["/allusers"], timeoutMs, true)');
+    expect(smoke).toContain('await runLimitedUninstaller(machineInstall, args.filter((arg) => arg !== "/S"), timeoutMs, true)');
     expect(smoke).toContain('await runLimitedUninstaller(machineInstall, args, timeoutMs)');
     expect(smoke).toContain("assertUninstallDialogReport(observed.report, { gui: gui === true })");
     expect(smoke).toMatch(/assertUserDataTargetsExist\(\);\s+assertUninstallDialogReport/);
@@ -1755,6 +1755,23 @@ describe("Windows NSIS installer smoke contracts", () => {
     );
     expect(smoke).toContain("await assertNoPreexistingAsrtState()");
     expect(smoke).toContain("resolveRepositorySrtWin()");
+  });
+
+  it("exercises the legacy deletion flag with every GUI and compatibility-flag combination", () => {
+    const smoke = readRepoFile("scripts/smoke-windows-nsis-installer.mjs");
+    const removal = smoke.slice(smoke.indexOf("async function uninstallAndVerify("), smoke.indexOf("export function assertLimitedUninstallResult("));
+    expect(removal).toContain('if (deleteAppData) args.push("--delete-app-data")');
+    expect(removal).toContain('args.filter((arg) => arg !== "/S")');
+    expect(removal).toContain("await runLimitedUninstaller(machineInstall, args, timeoutMs)");
+    const main = smoke.slice(smoke.indexOf("async function main("));
+    for (const gui of [true, false]) {
+      for (const keepAppData of [true, false]) {
+        expect(main).toContain(`{ gui: ${gui}, keepAppData: ${keepAppData} }`);
+      }
+    }
+    expect(main).toContain("gui, keepAppData, deleteAppData: true, launchInstalledApp: false");
+    expect(smoke).toContain("const workerArgs = [...args,");
+    expect(smoke).toContain("assertUserDataTargetsExist()");
   });
 
   it("preserves every deduped sentinel in all uninstall modes", () => {

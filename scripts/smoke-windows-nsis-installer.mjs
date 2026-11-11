@@ -2224,10 +2224,12 @@ async function uninstallAndVerify(
   probe,
   foreignProtocolFixture,
   gui,
+  deleteAppData,
 ) {
   const args = ["/S", "/allusers", ...(keepAppData ? ["/KEEP_APP_DATA"] : [])];
+  if (deleteAppData) args.push("--delete-app-data");
   if (gui) {
-    await runLimitedUninstaller(machineInstall, ["/allusers"], timeoutMs, true);
+    await runLimitedUninstaller(machineInstall, args.filter((arg) => arg !== "/S"), timeoutMs, true);
   } else {
     await runLimitedUninstaller(machineInstall, args, timeoutMs);
   }
@@ -2322,6 +2324,7 @@ async function runLimitedUninstaller(machineInstall, args, timeoutMs, gui) {
     const launcher = join(reportRoot, "limited.ps1");
     copyFileSync(fileURLToPath(new URL("./lib/run-limited-windows-process.ps1", import.meta.url)), launcher);
     const workerArgs = [...args, `_?=${machineInstall.installDir}`];
+    process.stdout.write(`[windows-installer-smoke] uninstall arguments: ${JSON.stringify(args)}\n`);
     const parent = await runPowerShellJson(buildPowerShellScript([
       "$identity = [Security.Principal.WindowsIdentity]::GetCurrent()",
       "$principal = New-Object Security.Principal.WindowsPrincipal($identity)",
@@ -2459,7 +2462,7 @@ async function cleanupFailedInstallerPass(state, timeoutMs) {
 async function runInstallerPass(
   installer,
   options,
-  { keepAppData, launchInstalledApp, gui },
+  { keepAppData, launchInstalledApp, gui, deleteAppData },
 ) {
   const state = {
     keepAppData,
@@ -2518,6 +2521,7 @@ async function runInstallerPass(
       state.probe,
       state.foreignProtocolFixture,
       gui,
+      deleteAppData,
     );
     state.foreignProtocolFixture = null;
     state.machineInstall = null;
@@ -2570,6 +2574,19 @@ async function main() {
   });
   cleanupSmokeUserDataBestEffort();
   assertNoExistingUserDataTargets();
+
+  for (const { gui, keepAppData } of [
+    { gui: true, keepAppData: false },
+    { gui: true, keepAppData: true },
+    { gui: false, keepAppData: false },
+    { gui: false, keepAppData: true },
+  ]) {
+    await runInstallerPass(installer, options, {
+      gui, keepAppData, deleteAppData: true, launchInstalledApp: false,
+    });
+    cleanupSmokeUserDataBestEffort();
+    assertNoExistingUserDataTargets();
+  }
 }
 
 function failSmoke(error) {

@@ -62,6 +62,16 @@ describe("machine uninstaller removal", () => {
     expect(initialization).toContain('StrCmpS $R3 "_?=" ave_uninstall_arguments_done');
   });
 
+  it("retains data even when the legacy deletion flag is supplied", () => {
+    const template = readTemplate("uninstaller.nsh");
+    expect(template).not.toMatch(/RMDir\s+\/r\s+"\$(?:APPDATA|LOCALAPPDATA)\\/i);
+    expect(template).not.toContain('StrCpy $isDeleteAppData "1"');
+    expect(template).not.toMatch(/\$\{GetOptions\} \$R0 "--delete-app-data"/);
+    expect(template).toMatch(/DeleteRegKey SHELL_CONTEXT "\$\{UNINSTALL_REGISTRY_KEY\}"/);
+    expect(template).toContain('Delete "$oldDesktopLink"');
+    expect(template).toContain('Delete "$oldStartMenuLink"');
+  });
+
   it("always preserves data without a prompt and accepts the compatibility flag", () => {
     const config = JSON.parse(readRepoFile("package.json"));
     expect(config.build.nsis.deleteAppDataOnUninstall).toBe(false);
