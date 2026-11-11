@@ -15,6 +15,7 @@ import { findPackagedExecutable } from "./lib/packaged-executable-selection.mjs"
 import { assertNoWindowsProtocolClaim } from "./lib/windows-protocol-cleanup.mjs";
 import { windowsPowerShellEnv } from "./lib/windows-powershell-env.mjs";
 import {
+  bootReadinessTimestamp,
   launchSucceeded,
   readProductionLogsSince,
   reachedBootReadiness,
@@ -257,6 +258,7 @@ function assertUpgradeProbe(probe) {
 async function runPackagedAppOnce(executable, timeoutMs, env, label) {
   const args = smokeArgs(process.platform, env);
   const logSnapshot = snapshotProductionLogs(env.AVE_HOME);
+  const launchedAt = Date.now();
   process.stdout.write(`[packaged-smoke] launching ${label}: ${executable} ${args.join(" ")}\n`);
 
   return await new Promise((resolvePromise, reject) => {
@@ -291,6 +293,8 @@ async function runPackagedAppOnce(executable, timeoutMs, env, label) {
 
       const launchLog = readProductionLogsSince(env.AVE_HOME, logSnapshot);
       const ready = reachedBootReadiness(launchLog);
+      const readyAt = bootReadinessTimestamp(launchLog);
+      process.stdout.write(`[packaged-smoke] startup timing (${label}): ${JSON.stringify({ launchedAt, readyAt, durationMs: readyAt === null ? null : readyAt - launchedAt, budgetMs: timeoutMs })}\n`);
       const logTail = launchLog.slice(-4_000) || "(no production log entries from this launch)";
       if (MODULE_LOAD_FAILURE.test(output)) {
         reject(new Error(`packaged app emitted module load failure (${label}):\n${output}\nproduction log tail:\n${logTail}`));

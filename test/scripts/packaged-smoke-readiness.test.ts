@@ -5,11 +5,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
 const {
+  bootReadinessTimestamp,
   launchSucceeded,
   readProductionLogsSince,
   reachedBootReadiness,
   snapshotProductionLogs,
 } = require("../../scripts/lib/packaged-smoke-readiness.mjs") as {
+  bootReadinessTimestamp: (logText: string) => number | null;
   launchSucceeded: (outcome: { ready: boolean; timedOut: boolean; code: number | null; signal: string | null }) => boolean;
   readProductionLogsSince: (home: string, snapshot: Map<string, number>) => string;
   reachedBootReadiness: (logText: string) => boolean;
@@ -23,6 +25,16 @@ afterEach(() => {
 });
 
 describe("packaged launch readiness", () => {
+  it("times only a structured readiness entry with a numeric timestamp", () => {
+    const log = [
+      "unstructured output",
+      JSON.stringify({ time: 100, msg: "boot: starting" }),
+      JSON.stringify({ time: "200", msg: "boot: ready (38 tools, 0 plugins, 0 mcp)" }),
+      JSON.stringify({ time: 300, msg: "boot: ready (38 tools, 0 plugins, 0 mcp)" }),
+    ].join("\n");
+    expect(bootReadinessTimestamp(log)).toBe(300);
+    expect(bootReadinessTimestamp('{"time":100,"msg":"boot: starting"}\n')).toBeNull();
+  });
   it.each([
     ["exit zero before boot", { ready: false, timedOut: false, code: 0, signal: null }, false],
     ["boot then timeout", { ready: true, timedOut: true, code: null, signal: "SIGTERM" }, true],
@@ -38,13 +50,15 @@ describe("packaged launch readiness", () => {
     const logs = join(home, "logs");
     mkdirSync(logs);
     const log = join(logs, "ave-2026-09-28.log");
-    writeFileSync(log, '{"msg":"boot: ready (38 tools, 0 plugins, 0 mcp)"}\n');
+    writeFileSync(log, '{"time":100,"msg":"boot: ready (38 tools, 0 plugins, 0 mcp)"}\n');
 
     const beforeUpgrade = snapshotProductionLogs(home);
     appendFileSync(log, '{"msg":"boot: starting"}\n');
     expect(reachedBootReadiness(readProductionLogsSince(home, beforeUpgrade))).toBe(false);
+    expect(bootReadinessTimestamp(readProductionLogsSince(home, beforeUpgrade))).toBeNull();
 
-    appendFileSync(log, '{"msg":"boot: ready (38 tools, 0 plugins, 0 mcp)"}\n');
+    appendFileSync(log, '{"time":300,"msg":"boot: ready (38 tools, 0 plugins, 0 mcp)"}\n');
     expect(reachedBootReadiness(readProductionLogsSince(home, beforeUpgrade))).toBe(true);
+    expect(bootReadinessTimestamp(readProductionLogsSince(home, beforeUpgrade))).toBe(300);
   });
 });

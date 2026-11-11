@@ -168,6 +168,13 @@ export async function bootstrap(
   configureAppShutdownHost(host);
   configureHostResources(host);
   log.info("boot: starting...");
+  const bootStarted = performance.now();
+  let phaseStarted = bootStarted;
+  const recordBootPhase = (phase: string): void => {
+    const now = performance.now();
+    log.info({ phase, durationMs: Math.round(now - phaseStarted), elapsedMs: Math.round(now - bootStarted) }, "boot: phase completed");
+    phaseStarted = now;
+  };
   // From here until initSandboxGate records its outcome, stdio MCP server spawns are refused (fail closed).
   markSandboxGatePendingAtBoot();
   const headless = launch === "headless";
@@ -191,13 +198,16 @@ export async function bootstrap(
   if ("error" in telemetrySpec) log.error(`boot: ${telemetrySpec.error}`);
   ctx.tracing = await configureTracing(telemetrySpec, getAveAppVersion());
 
+  recordBootPhase("notification-and-tracing");
   await setupNetworkFetch(ctx);
+  recordBootPhase("network-fetch");
 
   // Create protected storage boundaries before any feature writes.
   // Under the host-instance lock: the full protection (subdirectory repair, runtime-root claim, the narrow root repair) and the
   // sealed result. The pre-lock phase (createAveHomeIfAbsent, in ensureWorkspaceCwd) only ever creates a missing home.
   const homePrivacy = ensureAveHomePrivate();
   setAveHomePrivacyAtBoot(homePrivacy);
+  recordBootPhase("home-protection");
   if (homePrivacy.enforcement !== "posix-mode") {
     for (const diagnostic of homePrivacy.diagnostics ?? []) log.warn(`boot: ${diagnostic}`);
   }
@@ -211,10 +221,12 @@ export async function bootstrap(
   if (homePrivacy.enforcement === "none") log.warn("boot: legacy root configuration is not migrated while home protection is unverified");
   const configurationDiagnostics = isAveHomeConfigurationOwner()
     ? migrateAveHomeConfiguration(homePrivacy.home, homePrivacy) : [];
+  recordBootPhase("configuration-migration");
   if (homePrivacy.enforcement === "none") setAveHomeConfigurationRefusedAtBoot(homePrivacy.home);
   for (const diagnostic of configurationDiagnostics) log.warn(`boot: ${diagnostic}`);
   // Before any loader or boot-time writer: which home inputs Ave can vouch for this run. A pending verdict forces confinement.
   const homeTrust = evaluateAveHomeTrustAtBoot(homePrivacy.home);
+  recordBootPhase("home-trust");
 
   // The application-owned scratch directory the agent may stage work in
   // without an approval. It is offered to the model and to the Layer 1
@@ -232,6 +244,8 @@ export async function bootstrap(
       if (removal.status === "failed") writeExitDiagnostic(`scratch directory ${basename(scratch.path)} was not removed on exit (${removal.code})`);
     });
   }
+
+  recordBootPhase("scratch-directory");
 
   // Seed user-facing docs into `~/.ave/` before any other component reads
   // home state. AGENTS.md is the LLM-facing system reference; on first boot
@@ -259,9 +273,11 @@ export async function bootstrap(
     log.warn(`boot: seedAveHomeDocs failed (non-fatal): ${String(err)}`);
   }
   ctx.aveHomeDocUpgradeMarkers = aveHomeDocUpgradeMarkers;
+  recordBootPhase("home-documents");
 
   // §4.2 Step 0-1 + 4-5: Core services.
   const core = await bootstrapCoreServices(mainWindow, host);
+  recordBootPhase("core-services");
   const {
     pythonPath,
     pythonRuntime,
@@ -286,6 +302,7 @@ export async function bootstrap(
 
   // Shared AuditLogger + NotificationService + plugin auth-partition seeding.
   await setupAuditAndNotification(ctx);
+  recordBootPhase("audit-notifications");
   notifyHomeBoundaryRepairs(homePrivacy, ctx);
   notifyHomeConfigurationPreserved(configurationDiagnostics, ctx);
   notifyHomeTrustPending(homeTrust, ctx);
@@ -299,6 +316,7 @@ export async function bootstrap(
 
   );
   ctx.approvalGate = approvalGate;
+  recordBootPhase("approval-gate");
   const remoteA2AAgentActionApprover = buildSingleFlightAgentActionApprover(
     approvalGate,
     {
@@ -354,6 +372,7 @@ export async function bootstrap(
   ctx.remoteA2AActionController = remoteA2A.controller;
   ctx.remoteA2AStartFailureReason = remoteA2A.startFailureReason;
   ctx.remoteA2ABootGates = remoteA2ABootGates;
+  recordBootPhase("remote-services");
 
   // §4.2 Step 3 + 5: PluginRuntime + per-plugin HostApi factory.
   // Sweep orphan uninstall tombstones from prior session FIRST (before
@@ -614,6 +633,7 @@ export async function bootstrap(
     },
   });
 
+  recordBootPhase("plugin-state-and-permissions");
   const {
     pluginRuntime,
     deploymentGuard,
@@ -654,6 +674,7 @@ export async function bootstrap(
     // call, but startPluginsOnce only fires at startPlugins() further below.
     refreshSandboxUnionDomains: () => ctx.refreshSandboxNetworkConfig(),
   });
+  recordBootPhase("plugin-runtime");
   ctx.pluginRuntime = pluginRuntime;
   ctx.deploymentGuard = deploymentGuard;
   ctx.lateBinding = lateBinding;
@@ -677,6 +698,7 @@ export async function bootstrap(
   // Before cleanup replay and plugin startup: uninstall events must reach the
   // alerts service, and declared kinds must register before their first raise.
   await setupAlerts(ctx);
+  recordBootPhase("workspace-stores");
   // ONE cleanup service set for every boot entry point into
   // plugins/uninstall-lifecycle. It used to be hand-spelled per call site, and
   // `emitHostEvent` — optional on the dep interface, so its absence type-checks
@@ -819,10 +841,13 @@ export async function bootstrap(
   // The network union computed at init predates pluginRuntime.load(), so
   // startPluginsOnce refreshes it (same builder, safe global live-swap) after
   // load() and before startAll().
+  recordBootPhase("conversation-wiring");
   await initSandboxGate(ctx);
+  recordBootPhase("sandbox-gate");
 
   // §9.5: MCP servers + signed marketplace artifact stores.
   await setupMcp(ctx);
+  recordBootPhase("mcp");
   // An interrupted bootstrap disconnects MCP before it stops the plugin
   // runtime, as the normal shutdown does (see runIncompleteBootShutdown).
   registerBootMcpDisconnect(() => ctx.mcpManager.disconnectAll());
@@ -860,6 +885,7 @@ export async function bootstrap(
   await pluginBundleLifecycle.recoverRetirements();
 
   await startPlugins();
+  recordBootPhase("plugin-start");
 
   log.info(
     "boot: ready (%d tools, %d plugins, %d mcp)",
