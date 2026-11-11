@@ -41,15 +41,57 @@ cp "$FIXTURE_ROOT/source/$(basename "$3")" "$2"
   versionFile = join(root, "version");
   outputs = join(root, "outputs");
   writeFileSync(versionFile, "1.4.4\n");
-  env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}`, FIXTURE_ROOT: root,
+  env = { ...process.env, FIXTURE_ROOT: root,
     RUNNER_TEMP: root, RUNNER_OS: "Windows", RUNNER_ARCH: "X64", BUN_VERSION_FILE: versionFile,
     GITHUB_OUTPUT: outputs, VERSION: "1.4.4", ASSET: asset, PINNED: pinned, CACHE_HIT: "false",
     GITHUB_TOKEN: "", GH_TOKEN: "" };
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
-const run = (mode: string) => spawnSync("bash", [script, mode], { env, encoding: "utf8" });
+const runBash = (args: string[], expectsFetch = false) => {
+  const fetches = join(root, "fetches");
+  const previousFetches = existsSync(fetches) ? readFileSync(fetches, "utf8").length : 0;
+  const result = spawnSync("bash", ["-c", `
+fixture_bin="$(cd "$FIXTURE_ROOT/bin" && pwd -P)" || exit 1
+export PATH="$fixture_bin:$PATH"
+if [ "$(command -v curl)" != "$fixture_bin/curl" ]; then
+  echo 'fixture curl is not first on PATH' >&2
+  exit 1
+fi
+unset BASH_ENV
+exec "$BASH" "$@"
+`, "fixture-bash", ...args], { env, encoding: "utf8" });
+  if (expectsFetch) {
+    expect(existsSync(fetches), `fixture curl was bypassed: ${result.stderr}`).toBe(true);
+    expect(readFileSync(fetches, "utf8").length, "fixture curl did not record a new fetch").toBeGreaterThan(previousFetches);
+  }
+  return result;
+};
+const run = (mode: string) => runBash([script, mode], mode === "verify" && env.CACHE_HIT !== "true");
 
 describe("runtime archive cache", () => {
+  it("refuses to fetch without the fixture curl", () => {
+    rmSync(join(root, "bin", "curl"));
+    expect(() => run("verify")).toThrow("fixture curl was bypassed");
+    expect(existsSync(join(root, "fetches"))).toBe(false);
+  });
+
+  it("keeps the fixture curl first after shell startup changes PATH", () => {
+    mkdirSync(join(root, "bypass-bin"));
+    const bypassCurl = join(root, "bypass-bin", "curl");
+    writeFileSync(bypassCurl, `#!/bin/sh
+printf 'bypassed\\n' >> "$FIXTURE_ROOT/bypassed"
+exit 97
+`);
+    chmodSync(bypassCurl, 0o755);
+    const startup = join(root, "startup.sh");
+    writeFileSync(startup, 'export PATH="$(cd "$FIXTURE_ROOT/bypass-bin" && pwd -P):$PATH"\nunset BASH_ENV\n');
+    env.BASH_ENV = startup;
+    const result = run("verify");
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(root, "bypassed"))).toBe(false);
+    expect(readFileSync(join(root, "fetches"), "utf8")).toBe("fetch\nfetch\n");
+  });
+
   it.each([0, 22])("keeps credentials out of xtrace and logs when curl exits %s", (exitCode) => {
     const token = "trace-private-token";
     const unusedToken = "trace-unused-private-token";
@@ -57,7 +99,7 @@ describe("runtime archive cache", () => {
     env.GH_TOKEN = unusedToken;
     env.FIXTURE_HASH_STDIN = "true";
     env.FIXTURE_CURL_EXIT = String(exitCode);
-    const result = spawnSync("bash", ["-x", script, "verify"], { env, encoding: "utf8" });
+    const result = runBash(["-x", script, "verify"], true);
     expect(result.status).toBe(exitCode);
     expect(result.stderr).toContain(exitCode === 0 ? "+ sha256sum" : "+ exit 22");
     writeFileSync(join(root, "stdout.log"), result.stdout);
@@ -243,14 +285,14 @@ describe("POSIX install step", () => {
       }
       env.CACHE_HIT = "true";
     }
-    const result = spawnSync("bash", ["-c", installRun], { env, encoding: "utf8" });
+    const result = runBash(["-c", installRun], env.CACHE_HIT !== "true");
     expect(result.status, result.stderr).toBe(0);
     const bin = join(root, "bun-home", ".bun", "bin");
     expect(readFileSync(join(root, "github-path"), "utf8").replace(/\\/g, "/")).toBe(`${bin.replace(/\\/g, "/")}\n`);
     for (const tool of ["bun", "bunx"]) {
       expect(readFileSync(join(bin, tool), "utf8")).toBe(fixtureBun);
       if (process.platform !== "win32") expect(statSync(join(bin, tool)).mode & 0o777).toBe(0o755);
-      const executed = spawnSync("bash", [join(bin, tool)], { env, encoding: "utf8" });
+      const executed = runBash([join(bin, tool)]);
       expect(executed.status, executed.stderr).toBe(0);
       expect(executed.stdout).toBe("fixture-bun\n");
     }
@@ -263,7 +305,7 @@ describe("POSIX install step", () => {
     writeFileSync(join(root, "bun-download", "SHASUMS256.txt"), `${pinned}  ${posixAsset}.zip\n`);
     Object.assign(env, { ASSET: posixAsset, CACHE_HIT: "true", ACTION_PATH: resolve(".github/actions/setup-bun"),
       GITHUB_PATH: join(root, "github-path") });
-    const result = spawnSync("bash", ["-c", installRun], { env, encoding: "utf8" });
+    const result = runBash(["-c", installRun], env.CACHE_HIT !== "true");
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("does not match the pinned");
     expect(existsSync(join(root, "bun-home"))).toBe(false);
