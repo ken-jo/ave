@@ -918,6 +918,12 @@ export function makeSubAgentApprovalAdapter(
     const { childProvenance: _callerSupplied, ...safeReq } = req;
     return base.requestAndWait({
       ...safeReq,
+      // Child provenance makes the gate require explicit consent. A regular host-shell ask
+      // must carry the matching one-shot choices while retaining its exact native binding.
+      ...(provenance !== null && safeReq.hostShellExecutionPermitBinding !== undefined &&
+        !safeReq.forceExplicit && safeReq.allowedChoices === undefined
+        ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false }
+        : {}),
       reason: labeledReason,
       ...(provenance === null
         ? {}

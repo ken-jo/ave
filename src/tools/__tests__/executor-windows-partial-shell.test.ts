@@ -61,6 +61,7 @@ import type { PermissionAuditEntryInput } from "../../audit/audit-schema.js";
 import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
 import { userPermissionContext as permissionContext } from "./tool-context-fixture.js";
 import { sentApprovalCards } from "../../__tests__/test-helpers.js";
+import { makeSubAgentApprovalAdapter } from "../../engine/subagent-runner.js";
 
 const ORIGINAL_PLATFORM = process.platform;
 let testRoot: string;
@@ -219,6 +220,77 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     vi.unstubAllEnvs();
     setProcessPlatform(ORIGINAL_PLATFORM);
     rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    { platform: "win32", name: "powershell", command: "Get-Date -Format o" },
+    { platform: "win32", name: "bash", command: "printf child" },
+    { platform: "linux", name: "bash", command: "printf child" },
+  ] as const)("relays an approved-host $name child to a real one-shot card and rejects altered commands", async ({ platform, name, command }) => {
+    if (platform === "win32") {
+      partialWindowsAsrt();
+      setWindowsSandboxSubstrate(windowsSubstrateFor({ shellRequested: true, workerRequested: false,
+        shellLocalNetworkAccess: false, mxc: { state: "available" }, windowsBuild: null, srtWinReady: true }, "srt-win"), mxcShellCapability());
+    } else requestedSandboxUnavailable(platform);
+    const child = "sub-0f93fa03-45fbc0aa-3c8e-4aed-8c1d-06428c73b143";
+    const parent = "8f3b953b-2027-4da5-85e9-d862ee643356";
+    const executionMode = platform === "linux" ? "host" : "default";
+    const justification = executionMode === "host" ? "Use the host execution environment" : undefined;
+    const pm = new PermissionManager(join(testRoot, "child-host-consent.json"));
+    pm.setMode("strict");
+    const audit = recordingAuditLogger();
+    let base: ApprovalGate;
+    const send = vi.fn((channel: string, request: ApprovalRequest) => {
+      if (channel !== "ave:approval:request") return;
+      base.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once",
+        nonce: request.nonce, hmac: request.hmac }, native as never);
+    });
+    const native = { isDestroyed: () => false, send };
+    base = new ApprovalGate(native as never, undefined, undefined, audit.auditLogger);
+    const originalRequest = base.requestAndWait.bind(base);
+    let altered = false;
+    const relay = vi.spyOn(base, "requestAndWait").mockImplementation(request => originalRequest(altered
+      ? { ...request, args: { ...request.args as Record<string, unknown>, command: `${command} altered` } }
+      : request));
+    const gate = makeSubAgentApprovalAdapter(base, "clock check", { childSessionId: child, originSessionId: parent,
+      spawnTaskSummary: "Read the current time", background: false });
+    const tool = name === "powershell" ? new PowerShellTool() : new BashTool();
+    const execute = vi.spyOn(tool, "execute").mockImplementation(async (_input, ctx) => {
+      const plan = ctx.hostShellExecutionPlan;
+      if (plan === undefined) throw new Error("Missing child execution plan");
+      expect(plan.sandboxed).toBe(false);
+      expect(consumeHostShellExecutionPermit({ permit: ctx.hostShellExecutionPermit, plan, toolName: name,
+        toolUseId: typeof ctx.metadata.toolUseId === "string" ? ctx.metadata.toolUseId : undefined,
+        command, requestedCwd: undefined, executionCwd: ctx.cwd,
+        resolvedCwd: resolveHostShellWorkingDirectory(ctx.cwd, undefined),
+        timeoutSeconds: TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000, executionMode, justification,
+        runInBackground: false, allowedDirectories: canonicalizeHostShellAllowedDirectories(ctx.extraAllowedDirectories) })).toBe(true);
+      return { output: "child executed", isError: false };
+    });
+    const registry = new ToolRegistry();
+    registry.register(tool);
+    const executor = new ToolExecutor(registry, undefined, pm, undefined, gate);
+    const run = (id: string) => runWithToolExecutionCwd(testRoot, () => executor.executeAll(
+      [{ id, name, input: { command, ...(executionMode === "host" ? { executionMode, justification } : {}) } }],
+      { sessionId: child, permissionContext: permissionContext() }));
+    try {
+      const allowed = await run("child-host-allow");
+      expect(audit.telemetryEntries.filter(entry => entry.output?.includes("[approval:host-shell-binding-mismatch]"))).toEqual([]);
+      expect(allowed[0]?.is_error, JSON.stringify(allowed[0])).toBeUndefined();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(relay.mock.calls[0]?.[0]).toMatchObject({ sessionId: child, toolName: name, toolCategory: "shell",
+        args: { command }, forceExplicit: true, allowedChoices: ["allow-once", "deny-once"], durableApprovalRecordAllowed: false });
+      const cards = sentApprovalCards<ApprovalRequest>({ send } as never);
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ sessionId: child, toolName: name, args: { command }, requireExplicit: true,
+        allowedChoices: ["allow-once", "deny-once"], requestingAgentTitle: "clock check" });
+      expect(cards[0]).not.toHaveProperty("hostShellExecutionPermitBinding");
+      altered = true;
+      expect((await run("child-host-altered"))[0]?.is_error).toBe(true);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(sentApprovalCards({ send })).toHaveLength(1);
+      expect(audit.telemetryEntries.some(entry => entry.output?.includes("[approval:host-shell-binding-mismatch]"))).toBe(true);
+    } finally { base.disposeAll(); }
   });
 
   it.each(CONSENT_TRANSITIONS.flatMap(transition => CONSENT_SHELLS
