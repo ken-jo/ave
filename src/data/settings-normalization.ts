@@ -117,6 +117,7 @@ import type {
   WebViewSettings,
 } from "./settings-store.js";
 import { isRecord } from "../shared/is-record.js";
+import { compactionModelSelection, isCompactionModelSelection } from "../shared/compaction-model.js";
 
 const log = createLogger("settings");
 
@@ -489,7 +490,7 @@ export function mergeLlmPatch(
     "modelListCache" in partial ? partial.modelListCache : base.modelListCache,
     installedProviderPresets,
   );
-  return {
+  const normalized: LLMSettings = {
     activeChatRuntime,
     provider: activeProvider,
     ...(marketplaceProviderPresetId ? { marketplaceProviderPresetId } : {}),
@@ -515,6 +516,29 @@ export function mergeLlmPatch(
       : {}),
     // Drop the inert legacy host-resolver map rather than retaining internal hostnames.
   };
+  const selection = "compactionModelSelection" in partial
+    ? partial.compactionModelSelection
+    : "compactionModel" in partial ? undefined : base.compactionModelSelection;
+  if (selection !== undefined) {
+    if (isCompactionModelSelection(selection)) {
+      normalized.compactionModelSelection = selection ? { vendor: selection.vendor, model: selection.model.trim() } : null;
+      normalized.compactionModel = "";
+      normalized.compactionModelRoute = "";
+    } else {
+      normalized.compactionModel = JSON.stringify(selection).slice(0, MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH);
+      normalized.compactionModelRoute = "";
+    }
+  } else {
+    const migrated = compactionModelSelection(normalized, installedProviderPresets);
+    if (migrated.model) {
+      normalized.compactionModelSelection = migrated.model;
+      normalized.compactionModel = "";
+      normalized.compactionModelRoute = "";
+    } else if (!migrated.unavailableLabel) {
+      normalized.compactionModelSelection = null;
+    }
+  }
+  return normalized;
 }
 
 function uniqueValidList<T extends string>(
