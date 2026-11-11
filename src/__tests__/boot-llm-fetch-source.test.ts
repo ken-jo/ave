@@ -17,12 +17,17 @@ describe("boot LLM fetch wiring regression guards", () => {
     const bootSource = await readBootWiring();
     // Guard provider fetch selection at the shared selector.
     const providerSource = readRepoFile("src/engine/turn/provider.ts");
+    const systemSubagentSource = readRepoFile("src/engine/system-subagent-route.ts");
     const fetchSelectorSource = readRepoFile("src/engine/llm/marketplace-provider-fetch.ts");
 
     expect(fetchSelectorSource).toContain('vendor === "azure-foundry"');
     expect(fetchSelectorSource).toContain("? llmFetch");
 
-    expect(bootSource).toContain("selectProviderRuntimeFetch({");
+    expect(bootSource).toContain("createSystemSubagentProviderPlan({");
+    expect(bootSource).toContain("settingsService, llmFetch, networkFetch: singleHopNetworkFetch, subscriptionProviderFactory,");
+    expect(systemSubagentSource).toContain("selectProviderRuntimeFetch({");
+    expect(systemSubagentSource).toContain("llmFetch,");
+    expect(systemSubagentSource).toContain("networkFetch,");
 
     expect(providerSource).toContain("selectProviderRuntimeFetch({");
     expect(providerSource).toContain("llmFetch: deps.llmFetch,");

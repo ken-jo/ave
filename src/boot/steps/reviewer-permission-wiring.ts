@@ -2,14 +2,12 @@
 import { sendToWindow } from "../../ipc/safe-send.js";
 import { broadcastPermissionConfigChangedFromHost } from "../permission-config-broadcast.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
-import { createProvider, secretKeyFor } from "../../engine/llm/provider-factory.js";
-import { selectProviderRuntimeFetch } from "../../engine/llm/marketplace-provider-fetch.js";
+import { secretKeyFor } from "../../engine/llm/provider-factory.js";
+import { createSystemSubagentProviderPlan } from "../../engine/system-subagent-route.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 import {
   getLlmVendorSettings,
-  isLLMVendor,
   llmRouteModel,
-  canUseLlmVendorWithoutApiKey,
 } from "../../shared/llm-vendor-defaults.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { wireReviewerAgent } from "./reviewer-wiring.js";
@@ -51,76 +49,9 @@ export async function wireReviewerAndPermissions(ctx: BootContext): Promise<void
 
   // Bind the classifier, verdict cache, and denial history; streaming providers are adapted to one-shot review calls.
   // Secrets decrypt asynchronously while reviewer wiring is synchronous, so a plan names the credential to pre-read.
-  interface ReviewerProviderPlan {
-    secretKey?: string;
-    build(apiKey: string | null): LLMProvider | null;
-  }
-  const reviewerProviderPlan = (vendor: string, selectedModel?: string): ReviewerProviderPlan | null => {
-    const llmSettings = settingsService.get("llm");
-    const activeChatRuntime = llmSettings.activeChatRuntime;
-    if (selectedModel === undefined && activeChatRuntime?.kind === "subscription") {
-      // Include authenticated transport in reviewer cache identity; stale subscription reads must not fall through to an API-key provider.
-      if (vendor !== `subscription:${activeChatRuntime.provider}`) return null;
-      return { build: () => subscriptionProviderFactory(activeChatRuntime) };
-    }
-
-    // An unresolved active provider selection cannot use another host credential.
-    if (llmSettings.retiredProvider) return null;
-
-    const llmVendor = isLLMVendor(vendor) ? vendor : null;
-    if (!llmVendor) return null;
-    const block = getLlmVendorSettings(llmSettings.vendors, llmVendor);
-    const hasMarketplaceProviderPresetSelection =
-      llmVendor === "openai-compatible" &&
-      (selectedModel === undefined || llmSettings.provider === llmVendor) &&
-      Boolean(llmSettings.marketplaceProviderPresetId);
-    const marketplaceProviderPreset = hasMarketplaceProviderPresetSelection
-      ? (settingsService.get("marketplace").installedProviderPresets ?? [])
-        .find((preset) => preset.providerId === llmSettings.marketplaceProviderPresetId)
-      : undefined;
-    if (hasMarketplaceProviderPresetSelection && !marketplaceProviderPreset) {
-      return null;
-    }
-    const secretKey = marketplaceProviderPreset
-      ? marketplaceProviderPresetSecretKey(marketplaceProviderPreset.providerId)
-      : secretKeyFor(llmVendor);
-    return { secretKey, build: (apiKey) => {
-      const effectiveBaseUrl = marketplaceProviderPreset
-        ? marketplaceProviderPreset.baseUrl
-        : block.baseUrl;
-      const isVertex = llmVendor === "vertex-ai";
-      const canUseWithoutApiKey = marketplaceProviderPreset
-        ? marketplaceProviderPreset.requiresApiKey === false && Boolean(effectiveBaseUrl?.trim())
-        : canUseLlmVendorWithoutApiKey(llmVendor, block);
-      if (!apiKey && !isVertex && !canUseWithoutApiKey) return null;
-      if (
-        isVertex &&
-        !block.vertexProject &&
-        !process.env.GOOGLE_CLOUD_PROJECT &&
-        !process.env.GCLOUD_PROJECT
-      ) {
-        return null;
-      }
-      const providerFetch = selectProviderRuntimeFetch({
-        vendor: llmVendor,
-        baseUrl: effectiveBaseUrl,
-        providerMetadata: marketplaceProviderPreset,
-        llmFetch,
-        networkFetch: singleHopNetworkFetch,
-      });
-      return createProvider({
-        vendor: llmVendor,
-        apiKey: apiKey ?? "",
-        model: selectedModel ?? llmRouteModel(block, marketplaceProviderPreset?.providerId),
-        ...(providerFetch ? { fetch: providerFetch } : {}),
-        ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
-        ...(llmVendor === "openai-compatible" && !marketplaceProviderPreset ? { wire: block.wire } : {}),
-        ...(marketplaceProviderPreset ? { providerMetadata: marketplaceProviderPreset } : {}),
-        ...(block.vertexProject ? { vertexProject: block.vertexProject } : {}),
-        ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),
-      });
-    } };
-  };
+  const reviewerProviderPlan = (vendor: string, selectedModel?: string) => createSystemSubagentProviderPlan({
+    settingsService, llmFetch, networkFetch: singleHopNetworkFetch, subscriptionProviderFactory,
+  }, vendor, selectedModel);
   const readReviewerSecrets = async (
     targets: ReadonlyArray<{ vendor: string; model?: string }>,
   ): Promise<Map<string, string | null>> => {

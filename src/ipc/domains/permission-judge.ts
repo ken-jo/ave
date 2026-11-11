@@ -3,12 +3,12 @@ import { createLogger } from "../../lib/logger.js";
 import { createSerialQueue } from "../../lib/with-file-lock.js";
 import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
-import { canUseLlmVendorWithoutApiKey, getLlmVendorSettings, llmRouteModel, LLM_VENDORS } from "../../shared/llm-vendor-defaults.js";
+import { getLlmVendorSettings, llmRouteModel } from "../../shared/llm-vendor-defaults.js";
 import type { PermissionJudgeReadResult, PermissionJudgeSnapshot, PermissionJudgeWriteResult } from "../../shared/permission-judge-settings.js";
 import { JudgeSettingsError } from "../../permissions/judge/judge-settings.js";
 import { judgeModelCatalogFrom } from "../../permissions/judge/judge-model-catalog.js";
 import { readJudgeSettings, setJudgeSettingsPersist, type JudgeSettingsWriteReceipt } from "../../permissions/permission-settings-store.js";
-import { hostSecretKeyForVendor } from "../../plugins/secret-access/secret-gate.js";
+import { systemSubagentModelOptions } from "../../engine/system-subagent-route.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../gated.js";
 import type { IpcDeps } from "../types.js";
 import type { AppSettings } from "../../data/settings-store.js";
@@ -20,20 +20,7 @@ async function snapshot(deps: IpcDeps): Promise<PermissionJudgeSnapshot> {
   const llm = deps.settingsService.get("llm");
   const presets = deps.settingsService.get("marketplace")?.installedProviderPresets ?? [];
   const catalog = judgeModelCatalogFrom({ ...llm, installedProviderPresets: presets });
-  const modelOptions: PermissionJudgeSnapshot["modelOptions"] = [];
-  for (const vendor of LLM_VENDORS) {
-    const block = llm?.vendors?.[vendor] ?? {};
-    const activePreset = vendor === "openai-compatible" && llm?.provider === vendor
-      ? presets.find((preset) => preset.providerId === llm.marketplaceProviderPresetId) : undefined;
-    const keyless = activePreset ? !activePreset.requiresApiKey : canUseLlmVendorWithoutApiKey(vendor, block);
-    const projectConfigured = vendor === "vertex-ai" && Boolean(llm?.vendors?.[vendor]?.vertexProject?.trim());
-    if (!keyless && !projectConfigured &&
-        !await deps.settingsService.getSecret(hostSecretKeyForVendor(vendor, {
-          llmProvider: llm?.provider ?? "",
-          marketplaceProviderPresetId: llm?.marketplaceProviderPresetId,
-        }))) continue;
-    for (const model of catalog.optionsFor(vendor)) modelOptions.push({ vendor, model });
-  }
+  const modelOptions = await systemSubagentModelOptions(deps.settingsService);
   const { settings: normalized, issues, modelRejected, rejectedModel, chainRejected } = readJudgeSettings(undefined, catalog);
   // A stored but unavailable model stays visible as the selection, never as "follow chat".
   const settings = rejectedModel ? { ...normalized, model: rejectedModel } : normalized;
