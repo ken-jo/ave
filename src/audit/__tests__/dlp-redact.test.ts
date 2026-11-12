@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import {
   initDlpAudit,
   redactAuditPayload,
@@ -10,9 +11,33 @@ import {
   scrubSecretsForLLM,
 } from "../dlp-filter.js";
 import { CREDENTIAL_FORMAT_PREFIXES, holdsCredential, reservedPrefixIn, scrubDiagnosticSecrets, scrubDiagnosticSecretsStrict, type CredentialIssuer } from "../../shared/dlp.js";
-import { linearGrowthBound, measureCpuGrowth } from "../../__tests__/support/cpu-growth.js";
+import { linearGrowthBound } from "../../__tests__/support/cpu-growth.js";
+import type { DlpCpuProbe, DlpCpuProbeResult } from "./dlp-cpu-probe.js";
 import { fixtureSecret } from "./secret-fixtures.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
+
+async function runDlpCpuProbe<Kind extends DlpCpuProbe["kind"]>(
+  probe: Extract<DlpCpuProbe, { kind: Kind }>,
+  timeoutMs: number,
+): Promise<Extract<DlpCpuProbeResult, { kind: Kind }>> {
+  const worker = new Worker(new URL("./dlp-cpu-probe.ts", import.meta.url), {
+    execArgv: ["--import", "tsx"],
+    env: { ...process.env, TSX_DISABLE_CACHE: "1" },
+    workerData: probe,
+  });
+  let watchdog: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await new Promise<Extract<DlpCpuProbeResult, { kind: Kind }>>((resolve, reject) => {
+      watchdog = setTimeout(() => reject(new Error(`DLP CPU probe exceeded ${timeoutMs} ms (${probe.kind})`)), timeoutMs);
+      worker.once("message", resolve);
+      worker.once("error", reject);
+      worker.once("exit", code => reject(new Error(`DLP CPU probe exited before reporting results (code ${code})`)));
+    });
+  } finally {
+    clearTimeout(watchdog);
+    await worker.terminate();
+  }
+}
 
 it("redacts unfinished private key bodies in diagnostic and display text", () => {
   const text = "command\n-----BEGIN PRIVATE KEY-----\nunfinished-private-material";
@@ -877,19 +902,19 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     expect(scrubDiagnosticSecrets("mysql -p canarypass")).toBe("mysql -p canarypass");
   });
 
-  it("scrubs 332 KB of quotes at 800 distinct escape depths in linear time (round 17)", () => {
+  it("scrubs 332 KB of quotes at 800 distinct escape depths in linear time", async () => {
     // Bounded key windows prevent repeated scans over unmatched nested quotes.
     let text = "";
     for (let depth = 1; depth <= 800; depth++) text += `${"\\".repeat(depth)}"authorization `;
     expect(text.length).toBeGreaterThan(330_000);
-    for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
-      const started = performance.now();
-      expect(scrub(text)).toBe(text);
-      expect(performance.now() - started).toBeLessThan(1500);
+    const { samples } = await runDlpCpuProbe<"unchanged">({ kind: "unchanged", text }, 15_000);
+    for (const sample of samples) {
+      expect(sample.unchanged).toBe(true);
+      expect(sample.elapsedMs).toBeLessThan(1_500);
     }
-  });
+  }, 20_000);
 
-  it("scrubs 64 KiB of adversarial text in linear time", () => {
+  it("scrubs 64 KiB of adversarial text in linear time", async () => {
     // Measure CPU growth from 4 KiB to 64 KiB to distinguish linear from quadratic scans.
     const SMALL = 4 * 1024;
     const LARGE = 16 * SMALL;
@@ -921,12 +946,10 @@ describe("scrubDiagnosticSecrets — marketplace diagnostics behind Copy details
     const small = familiesAt(SMALL);
     const large = familiesAt(LARGE);
     expect(large.map((input) => input.length)).toEqual(small.map((input) => input.length - SMALL + LARGE));
-    for (const [index, input] of large.entries()) {
-      for (const scrub of [scrubDiagnosticSecrets, scrubSecretsForLLM]) {
-        const { smallMs, largeMs, growth } = measureCpuGrowth(() => scrub(small[index]), () => scrub(input), growthOptions);
-        if (growth === undefined) continue;
-        expect(growth,`${input.slice(0, 24)}: ${smallMs.toFixed(1)} ms at 4 KiB, ${largeMs.toFixed(1)} ms at 64 KiB`).toBeLessThan(MAX_GROWTH);
-      }
+    const { samples } = await runDlpCpuProbe<"growth">({ kind: "growth", small, large, options: growthOptions }, 170_000);
+    for (const { index, scrubber, smallMs, largeMs, growth } of samples) {
+      if (growth === undefined) continue;
+      expect(growth,`${scrubber}, ${large[index].slice(0, 24)}: ${smallMs.toFixed(1)} ms at 4 KiB, ${largeMs.toFixed(1)} ms at 64 KiB`).toBeLessThan(MAX_GROWTH);
     }
     // CPU samples avoid load bias, but collecting them may exceed the default wall-time budget.
   }, 180_000);

@@ -102,6 +102,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
   let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
   let approving = true;
   let approvals: Promise<void> | undefined;
+  let bodyFailure: { error: unknown } | undefined;
   try {
     ctx = await launchSeededElectron({ sessionTitle: "Static browser preview", settings, historyRows: [],
       launchEnv: { AVE_NATIVE_FIXTURE_MODE: "foreground" },
@@ -247,18 +248,25 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     let firstPicture: string | null = null;
     if (previewShown) {
       await expect(preview).toBeVisible();
+      let previewFailure: { error: unknown } | undefined;
       try {
         await expect(preview.locator("img")).toBeVisible({ timeout: 15_000 });
         await expect.poll(() => preview.locator("img").evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
-      } finally {
-        const capture = await page.evaluate(() => (window as unknown as { previewCapture: unknown[] }).previewCapture);
-        expect(capture).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "frame", tabId })]));
-        console.log("Static parked preview messages", capture);
+      } catch (error) {
+        previewFailure = { error };
+      }
+      let capture: unknown[] = [];
+      try {
+        capture = await page.evaluate(() => (window as unknown as { previewCapture: unknown[] }).previewCapture);
         await test.info().attach("static-preview-messages.json", { body: JSON.stringify(capture), contentType: "application/json" });
         const guests = await ctx.app.evaluate(async ({ webContents }, url) => Promise.all(webContents.getAllWebContents().filter(contents => contents.getURL() === url).map(async contents => ({ url: contents.getURL(), type: contents.getType(), embedded: Boolean(contents.hostWebContents), focused: contents.isFocused(), layout: await contents.executeJavaScript("({ visibility: document.visibilityState, width: innerWidth, height: innerHeight })") }))), firstUrl);
-        console.log("Static parked guest layout", guests);
         await test.info().attach("static-preview-guests.json", { body: JSON.stringify(guests), contentType: "application/json" });
+      } catch (error) {
+        if (!previewFailure) throw error;
+        console.warn("Could not collect parked preview diagnostics", error);
       }
+      if (previewFailure) throw previewFailure.error;
+      expect(capture).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "frame", tabId })]));
       await test.info().attach("static-preview.png", { body: await page.screenshot(), contentType: "image/png" });
       await expect(panelToggle).toHaveAttribute("aria-pressed", "false");
       firstPicture = await preview.locator("img").getAttribute("src");
@@ -399,7 +407,10 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
       active: document.activeElement?.getAttribute("data-testid"), value: (document.activeElement as HTMLInputElement)?.value })))
       .toEqual(backgroundBefore);
     await test.info().attach("turn-ended-retained-tab.png", { body: await page.screenshot(), contentType: "image/png" });
-  } finally {
+  } catch (error) {
+    bodyFailure = { error };
+  }
+  try {
     try {
       if (ctx) {
         const lifecycle = await ctx.app.evaluate(() => (globalThis as unknown as { previewLifecycle: PreviewLifecycleEntry[] }).previewLifecycle);
@@ -425,5 +436,9 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
         }
       }
     }
+  } catch (error) {
+    if (!bodyFailure) throw error;
+    console.warn("Parked preview cleanup failed after the test error", error);
   }
+  if (bodyFailure) throw bodyFailure.error;
 }
