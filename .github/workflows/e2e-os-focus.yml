@@ -69,6 +69,10 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.background-sweep
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.partitions.outputs.matrix }}
+      partitions: ${{ steps.partitions.outputs.partitions }}
+      regular-shards: ${{ steps.partitions.outputs.regular-shards }}
     env:
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
@@ -99,30 +103,35 @@ jobs:
         working-directory: ave
         env:
           AVE_BUILD_MINIFIER: esbuild
+      - name: Collect the complete background inventory
+        working-directory: ave
+        env:
+          AVE_E2E_OS_FOCUS: "0"
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/ave/test-results/background-collection.json
+        run: bun run test:ui-e2e --list --retries=0 --reporter=json
+      - name: Plan independent long cases and ordinary shards
+        id: partitions
+        working-directory: ave
+        run: node scripts/plan-background-e2e-shards.mjs test-results/background-collection.json test-results/background-sweep-plan
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: background-ui-build
           path: |
             ave/dist
             ave/build
+            ave/test-results/background-sweep-plan
           if-no-files-found: error
           retention-days: 1
 
   background-shard:
-    name: Background UI shard ${{ matrix.shard }}/96
+    name: Background UI partition ${{ matrix.id }}/${{ needs.background-build.outputs.partitions }}
     if: github.event_name == 'workflow_dispatch' && inputs.background-sweep
     needs: background-build
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 12
     strategy:
       fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-                17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
-                33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
-                49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64,
-                65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
-                81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96]
+      matrix: ${{ fromJSON(needs.background-build.outputs.matrix) }}
     env:
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
@@ -174,7 +183,9 @@ jobs:
         env:
           AVE_E2E_OS_FOCUS: "0"
           AVE_E2E_SPEC_RESULTS: ${{ github.workspace }}/ave/test-results/background-sweep/spec-results.json
-          SHARD: ${{ matrix.shard }}
+          SHARD: ${{ matrix.regularShard }}
+          SHARD_TOTAL: ${{ needs.background-build.outputs.regular-shards }}
+          TEST_LIST: ${{ matrix.testList }}
         run: |
           set -euo pipefail
           task_home=$(mktemp -d "$RUNNER_TEMP/background-shard-home.XXXXXX")
@@ -182,12 +193,18 @@ jobs:
           export HOME="$task_home" AVE_HOME="$task_home/.ave" TMPDIR="$task_home/tmp"
           started=$SECONDS
           trap 'elapsed=$((SECONDS - started)); echo "$elapsed" > test-results/background-sweep/wall-seconds.txt; echo "Shard wall time: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"' EXIT
-          xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e --shard="$SHARD/96" --retries=0 --reporter=list,./test/e2e/reporters/spec-results.ts --output=test-results/background-sweep/cases
+          plan=test-results/background-sweep-plan
+          if [ -n "$TEST_LIST" ]; then
+            selection=(--test-list="$plan/$TEST_LIST")
+          else
+            selection=(--test-list-invert="$plan/special-files.txt" --shard="$SHARD/$SHARD_TOTAL")
+          fi
+          xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e "${selection[@]}" --retries=0 --reporter=list,./test/e2e/reporters/spec-results.ts --output=test-results/background-sweep/cases
       - name: Upload per-spec shard evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: background-ui-shard-${{ matrix.shard }}
+          name: background-ui-shard-${{ matrix.id }}
           path: ave/test-results/background-sweep
           if-no-files-found: error
           retention-days: 7
