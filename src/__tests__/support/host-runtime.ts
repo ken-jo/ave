@@ -41,6 +41,7 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
     hasSingleInstanceLock: () => false,
     getAppWindows: () => [],
     openOAuthLogin: unavailable,
+    deviceCodePresentation: { available: () => false, show: unavailable },
     getFocusedWindow: () => null,
     findSessionSurface: () => null,
     findTerminalSurface: () => null,

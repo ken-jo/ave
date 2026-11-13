@@ -351,6 +351,10 @@
                   "type": "boolean",
                   "description": "Governance opt-in for allow-listed intranet/private-network (RFC1918/ULA) egress. Applies to host-mediated hostApi.hostFetch and explicitly documented browser/direct intranet exceptions; link-local and metadata addresses remain denied by host guards. Loopback is a separate axis this flag neither grants nor requires — declare the loopback literal in allowedDomains instead."
                 },
+                "deviceCodeAuth": {
+                  "type": "boolean",
+                  "description": "Explicit opt-in for host-owned device authorization. Requires external-auth-consumer and the existing network allow-list."
+                },
                 "authCookiePartition": {
                   "type": "string",
                   "minLength": 1,

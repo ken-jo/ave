@@ -90,6 +90,10 @@ interface McpServerConfigBase {
 }
 
 export interface McpOAuthConfig {
+  /** Explicit device grant opt-in; omission preserves authorization code. */
+  grantType?: "authorization-code" | "device-code";
+  /** Require proof-bound tokens; advertised support also enables them. */
+  dpop?: "required";
   /** RFC 8707 resource identifier for the target MCP server. */
   resource?: string;
   /** RFC 9728 protected resource metadata URL, when known before first 401. */
@@ -234,6 +238,13 @@ export type McpAuthStatus = "required" | "authenticating" | "authenticated" | "i
 export type McpAuthErrorCode =
   | "mcp-auth-required"
   | "mcp-auth-failed"
+  | "mcp-auth-device-unsupported"
+  | "mcp-auth-device-headless"
+  | "mcp-auth-device-denied"
+  | "mcp-auth-device-expired"
+  | "mcp-auth-device-canceled"
+  | "mcp-auth-dpop-unsupported"
+  | "mcp-auth-dpop-failed"
   | "mcp-auth-storage-unavailable"
   | "mcp-auth-storage-unreadable"
   | "mcp-auth-registration-unsupported"

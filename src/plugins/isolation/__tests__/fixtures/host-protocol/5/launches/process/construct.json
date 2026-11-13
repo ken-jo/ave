@@ -20,6 +20,9 @@
       "hostProtocol": {
         "capabilities": [
           "ai.agent-connector.ave/host/attachFloatingPanel",
+          "ai.agent-connector.ave/host/authDeviceCode/authorize",
+          "ai.agent-connector.ave/host/authDeviceCode/clear",
+          "ai.agent-connector.ave/host/authDeviceCode/fetch",
           "ai.agent-connector.ave/host/authRedirect/close",
           "ai.agent-connector.ave/host/authRedirect/open",
           "ai.agent-connector.ave/host/authRedirect/wait",

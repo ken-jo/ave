@@ -16,7 +16,7 @@ const OPENAI_COMPATIBLE = "openai-compatible";
 /** Own-namespace allows read no host secret; callers must distinguish them in audit and counters. */
 export type SecretGateOutcome =
   | { kind: "allow"; via?: "own-namespace" }
-  | { kind: "deny"; tier: "tier-2"; reason: "not-allowlisted" | "provider-key-not-exportable" }
+  | { kind: "deny"; tier: "tier-2"; reason: "not-allowlisted" | "provider-key-not-exportable" | "credential-not-exportable" }
   | { kind: "deny"; tier: "tier-3"; reason: HostSecretGrantDenial }
   | { kind: "deny"; tier: "tier-4"; reason: "vendor-mismatch" };
 
@@ -103,6 +103,9 @@ function marketplaceProviderPresetIdFromKey(key: string): string {
 
 /** Return the first tier verdict; callers still own audit records and counter updates. */
 export async function runSecretGate(input: SecretGateInput): Promise<SecretGateOutcome> {
+  if (input.key.startsWith("oauth.plugin-device.") || input.key.startsWith("mcp.oauth.")) {
+    return { kind: "deny", tier: "tier-2", reason: "credential-not-exportable" };
+  }
   if (input.key.startsWith(`plugin.${input.pluginId}.`)) {
     return { kind: "allow", via: "own-namespace" };
   }

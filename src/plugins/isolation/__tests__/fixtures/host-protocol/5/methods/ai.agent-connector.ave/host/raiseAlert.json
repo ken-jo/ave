@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 35,
+    "id": 38,
     "jsonrpc": "2.0",
     "method": "ai.agent-connector.ave/host/raiseAlert",
     "params": {
@@ -18,7 +18,7 @@
     }
   },
   "response": {
-    "id": 35,
+    "id": 38,
     "jsonrpc": "2.0",
     "result": {
       "alertId": "golden-alert-id",

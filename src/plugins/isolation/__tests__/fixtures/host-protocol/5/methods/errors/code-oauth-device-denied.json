@@ -1,0 +1,30 @@
+{
+  "request": {
+    "id": 1,
+    "jsonrpc": "2.0",
+    "method": "ai.agent-connector.ave/host/authDeviceCode/authorize",
+    "params": {
+      "_meta": {
+        "ai.agent-connector.ave/invocation": "<uuid-1>"
+      },
+      "options": {
+        "clientId": "device-client",
+        "issuer": "https://login.example.com/",
+        "resource": "https://api.example.com/resource"
+      }
+    }
+  },
+  "response": {
+    "error": {
+      "code": -32000,
+      "data": {
+        "code": "oauth-device-denied",
+        "name": "PluginDeviceAuthError"
+      },
+      "message": "Device authorization was denied."
+    },
+    "id": 1,
+    "jsonrpc": "2.0"
+  },
+  "trigger": "the user denied device authorization"
+}

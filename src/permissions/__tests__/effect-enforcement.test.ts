@@ -948,6 +948,31 @@ describe("common policy at each actual effect", () => {
     return { verdict: { level, reason: "Effect review." }, outcome, cacheReason: "miss-not-found", judge: { judged: false, skip: "judge-off" } };
   }
 
+  it("redacts host authorization material from review while binding grants to the complete payload", async () => {
+    permissionManager.setMode("auto");
+    const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("low"));
+    const { gate } = makeGate("deny-once");
+    const url = "https://issuer.example.test/token";
+    await runWithEffectGateContext({ headless: false, toolName: "outer" }, async () => {
+      for (const token of ["first-private-refresh", "second-private-refresh"]) {
+        await gateMutatingEffect({ pluginId: "p1", methodPath: "hostFetch", effect: "write", target: "https://issuer.example.test",
+          input: [url, { method: "POST", body: `refresh_token=${token}` }],
+          reviewInput: [url, { method: "POST", body: "[host authorization material]" }],
+          approvalGate: gate, permissionManager });
+      }
+      await gateMutatingEffect({ pluginId: "p1", methodPath: "hostFetch", effect: "write", target: "https://issuer.example.test",
+        input: [url, { method: "POST", body: "ordinary-resource-payload" }], approvalGate: gate, permissionManager });
+    });
+    expect(review).toHaveBeenCalledTimes(3);
+    const first = review.mock.calls[0]?.[1];
+    const second = review.mock.calls[1]?.[1];
+    expect(first?.approvalCacheKey).not.toBe(second?.approvalCacheKey);
+    expect(first?.finalInput).toMatchObject({ body: "[host authorization material]" });
+    expect(second?.finalInput).toMatchObject({ body: "[host authorization material]" });
+    expect(JSON.stringify(review.mock.calls)).not.toContain("private-refresh");
+    expect(review.mock.calls[2]?.[1].finalInput).toMatchObject({ body: "ordinary-resource-payload" });
+  });
+
   it.each([false, true])("uses the normal fallback for an unanchored nested HIGH effect with headless=%s", async (headless) => {
     permissionManager.setMode("auto");
     const review = vi.spyOn(permissionManager, "dispatchReviewer").mockResolvedValue(reviewerEvidence("high"));

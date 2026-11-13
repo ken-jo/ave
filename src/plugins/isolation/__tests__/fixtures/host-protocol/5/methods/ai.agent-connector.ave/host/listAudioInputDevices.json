@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 30,
+    "id": 33,
     "jsonrpc": "2.0",
     "method": "ai.agent-connector.ave/host/listAudioInputDevices",
     "params": {
@@ -10,7 +10,7 @@
     }
   },
   "response": {
-    "id": 30,
+    "id": 33,
     "jsonrpc": "2.0",
     "result": [
       {

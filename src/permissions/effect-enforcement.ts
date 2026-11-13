@@ -254,6 +254,8 @@ export async function gateMutatingEffect(params: {
   effect: Effect;
   target: string | undefined;
   input?: readonly unknown[];
+  /** Host-only display projection; permission identity always hashes the complete input above. */
+  reviewInput?: readonly unknown[];
   capabilityBound?: boolean;
   resolveStoragePath?: (relativePath: string) => string;
   approvalGate: ApprovalGate;
@@ -304,8 +306,9 @@ export async function gateMutatingEffect(params: {
     permission = manager.resolveRememberedPermission(permission, "The user approved this exact effect.");
   }
   const effectInput = { pluginId: params.pluginId, methodPath: params.methodPath, effect: params.effect, target: params.target ?? null };
+  const reviewSnapshot = params.reviewInput === undefined ? snapshot : snapshotMethodArguments(params.methodPath, params.reviewInput);
   const reviewInput = network
-    ? { ...(authNavigation ? authOptions : snapshot.args[1] !== null && typeof snapshot.args[1] === "object" ? snapshot.args[1] : {}), url: actualUrl, ...effectInput }
+    ? { ...(authNavigation ? authOptions : reviewSnapshot.args[1] !== null && typeof reviewSnapshot.args[1] === "object" ? reviewSnapshot.args[1] : {}), url: actualUrl, ...effectInput }
     : workerCommand ? { ...worker, command: workerCommand, ...effectInput } : { ...effectInput, input: snapshot.args };
   if (permission.reviewer && permission.decision === "ask" && !permission.forceModal) {
 

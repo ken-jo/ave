@@ -1,5 +1,9 @@
 /** Contract and effect tables must enumerate the same HostApi surface; mismatches must fail closed. */
 import { describe, expect, it, vi } from "vitest";
+import { PluginDeviceAuthError } from "../../../auth/plugin-device-auth-error.js";
+import { DeviceAuthorizationError } from "../../../auth/oauth-device-code.js";
+import { DpopError } from "../../../auth/oauth-dpop.js";
+import { SecretEncryptionUnavailableError } from "../../../data/secret-document-store.js";
 import {
   ENFORCEMENT_EXCLUSIONS,
   EffectBoundaryDeniedError,
@@ -572,10 +576,41 @@ describe("error identity survives the wire by code, never by message", () => {
       [new PluginStorageError("escapes the root", PLUGIN_ID, "../x"), "plugin-storage"],
       [new HostApiBoundaryError("subscription-unknown", "gone"), "subscription-unknown"],
       [new RangeError("something else entirely"), "host-internal"],
+      [new PluginDeviceAuthError("oauth-device-denied"), "oauth-device-denied"],
+      [new DeviceAuthorizationError("oauth-device-denied"), "host-internal"],
+      [new DpopError("oauth-dpop-unsupported"), "host-internal"],
+      [new SecretEncryptionUnavailableError(), "host-internal"],
     ];
     for (const [error, code] of cases) {
       expect(classifyHostApiError(error).code, String(error)).toBe(code);
     }
+  });
+
+  it("reconstructs fixed authorization messages without trusting error text or metadata", () => {
+    const secret = "authorization-secret-sentinel";
+    const error = Object.assign(new PluginDeviceAuthError("oauth-device-human-required"), {
+      message: secret, name: secret, cause: secret, detail: { secret },
+    });
+    const wire = classifyHostApiError(error);
+    expect(wire).toEqual({
+      code: "oauth-device-human-required", name: "PluginDeviceAuthError",
+      message: "Authenticate interactively before running unattended; do not retry.",
+    });
+    expect(JSON.stringify(wire)).not.toContain(secret);
+    expect(reconstructWireError(wire)).toMatchObject({ code: "oauth-device-human-required", message: wire.message });
+  });
+
+  it("refuses a trusted authorization error with a poisoned runtime code", () => {
+    const secret = "poisoned-authorization-code-sentinel";
+    const error = new PluginDeviceAuthError("oauth-device-denied");
+    Object.defineProperty(error, "code", { value: secret });
+    error.name = secret;
+    error.message = secret;
+    const wire = classifyHostApiError(error);
+    expect(wire).toEqual({
+      code: "host-internal", name: "Error", message: "Host request failed.", detail: { kind: "other" },
+    });
+    expect(JSON.stringify(wire)).not.toContain(secret);
   });
 
   it("preserves the class name the public contract tells plugins to match on", () => {

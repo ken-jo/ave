@@ -50,6 +50,14 @@ function gate(overrides: Partial<SecretGateInput> & { activeProvider?: string } 
 }
 
 describe("runSecretGate", () => {
+  it.each(["oauth.plugin-device.credential", "mcp.oauth.credential"])("keeps host authorization credentials private: %s", async key => {
+    for (const operation of ["export", "lease"] as const) {
+      const { outcome, readRegistryEntry, readSettings } = gate({ key, allowlist: [key], operation });
+      await expect(outcome).resolves.toEqual({ kind: "deny", tier: "tier-2", reason: "credential-not-exportable" });
+      expect(readRegistryEntry).not.toHaveBeenCalled();
+      expect(readSettings).not.toHaveBeenCalled();
+    }
+  });
   it("refuses export of a host-provider key before provenance or settings reads", async () => {
     const { outcome, readRegistryEntry, readSettings } = gate({ operation: "export" });
     await expect(outcome).resolves.toEqual({ kind: "deny", tier: "tier-2", reason: "provider-key-not-exportable" });

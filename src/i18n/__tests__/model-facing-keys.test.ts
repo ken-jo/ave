@@ -25,6 +25,7 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["main/auto-updater.ts", ["common.", "mainDialog."]], // update dialogs
   ["main/browser/browser-workspace-desktop.ts", ["browserWorkspace.permissionPrompt."]], // native site-permission dialog
   ["main/configuration-boot-error.ts", ["homePrivacy."]],
+  ["main/device-code-dialog.ts", ["deviceCode.", "common."]], // host-owned sign-in instructions and actions
   ["main/global-shortcuts.ts", ["startupTab."]], // shortcut notifications
   ["main/host-api/pick-folders.ts", ["mainDialog."]], // folder picker
   ["main/provider-settings-startup-error.ts", ["providerSettingsError."]], // startup settings error dialog

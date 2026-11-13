@@ -40,6 +40,8 @@ import {
   type WireWorkerEvent,
   type WireWorkerHandle,
   type WireWorkerSend,
+  type WireDeviceCodeAuthorizationOptions,
+  type WireDeviceCodeFetchOptions,
   workerSubscriptionIdOfRequest,
   asWireAudioCaptureEvent,
   asWireFloatingPanelEvent,
@@ -131,6 +133,17 @@ export function createServiceChildMembers(
   const { call } = deps;
 
   return {
+    "authDeviceCode.authorize": async (...args) => {
+      const { signal, ...options } = args[0] as import("../public-contract.js").DeviceCodeAuthorizationOptions;
+      const wire: WireDeviceCodeAuthorizationOptions = options;
+      return call("authDeviceCode.authorize", [wire], signal);
+    },
+    "authDeviceCode.fetch": async (...args) => {
+      const { signal, ...options } = args[0] as import("../public-contract.js").DeviceCodeFetchOptions;
+      const wire: WireDeviceCodeFetchOptions = options;
+      return decodeWireHttpResponse(await call("authDeviceCode.fetch", [wire], signal), "authDeviceCode.fetch(result)");
+    },
+    "authDeviceCode.clear": async (...args) => call("authDeviceCode.clear", [args[0]]),
     getSecret: async (...args) =>
       call("getSecret", positional(args[0])) as Promise<string | null>,
 

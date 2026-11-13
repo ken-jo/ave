@@ -56,6 +56,8 @@ const WIRE_FORMS: Partial<
     params: { input: { type: "string" }, init: "WireRequestInit" },
     result: "WireHttpResponse",
   },
+  "authDeviceCode.authorize": { params: { options: "WireDeviceCodeAuthorizationOptions" } },
+  "authDeviceCode.fetch": { params: { options: "WireDeviceCodeFetchOptions" }, result: "WireHttpResponse" },
   spawnWorker: { result: "WireWorkerHandle" },
   startAudioCapture: { result: "WireAudioCaptureHandle" },
   attachFloatingPanel: { result: "WireFloatingPanelHandle" },

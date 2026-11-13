@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 33,
+    "id": 36,
     "jsonrpc": "2.0",
     "method": "ai.agent-connector.ave/host/getAuthPartitionCookies",
     "params": {
@@ -16,7 +16,7 @@
     }
   },
   "response": {
-    "id": 33,
+    "id": 36,
     "jsonrpc": "2.0",
     "result": [
       {

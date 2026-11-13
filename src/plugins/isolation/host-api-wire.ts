@@ -42,6 +42,9 @@ import {
 import { RPC_METHOD_NOT_FOUND } from "../../mcp/protocol-constants.js";
 import { WORKER_CONTROL_METHOD } from "../public-contract.js";
 import type {
+  DeviceCodeAuthorizationOptions,
+  DeviceCodeAuthorizationErrorCode,
+  DeviceCodeFetchOptions,
   PluginWorkerControl,
   PluginWorkerExitReason,
   WorkerControlErrorCode,
@@ -530,6 +533,13 @@ export const HOST_API_WIRE_ERROR_CODES = [
   "worker-transport-unsupported",
   "worker-control-failed",
   "worker-already-running",
+  "oauth-device-human-required",
+  "oauth-device-encrypted-storage-unavailable",
+  "oauth-device-denied",
+  "oauth-device-expired",
+  "oauth-device-canceled",
+  "oauth-device-unsupported",
+  "oauth-device-failed",
   // ── Anything the host threw that is none of the above. Deliberately last and
   //    deliberately opaque: a host internal is not a contract.
   "host-internal",
@@ -537,6 +547,17 @@ export const HOST_API_WIRE_ERROR_CODES = [
 
 /** One of {@link HOST_API_WIRE_ERROR_CODES}. */
 export type HostApiWireErrorCode = (typeof HOST_API_WIRE_ERROR_CODES)[number];
+
+/** Device authorization and credential refresh share the same sanitized failures. */
+const DEVICE_CODE_WIRE_ERRORS: readonly DeviceCodeAuthorizationErrorCode[] = [
+  "oauth-device-human-required",
+  "oauth-device-encrypted-storage-unavailable",
+  "oauth-device-denied",
+  "oauth-device-expired",
+  "oauth-device-canceled",
+  "oauth-device-unsupported",
+  "oauth-device-failed",
+];
 
 /**
  * Codes any path may reply with, because they are produced by the boundary
@@ -1080,6 +1101,27 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
+  "authDeviceCode.authorize": {
+    params: ["options"],
+    arguments: "encoded",
+    result: "plain-json",
+    lifetime: "none",
+    errors: ["effect-boundary-denied", ...DEVICE_CODE_WIRE_ERRORS],
+  },
+  "authDeviceCode.fetch": {
+    params: ["options"],
+    arguments: "encoded",
+    result: "encoded",
+    lifetime: "none",
+    errors: ["effect-boundary-denied", ...DEVICE_CODE_WIRE_ERRORS],
+  },
+  "authDeviceCode.clear": {
+    params: ["options"],
+    arguments: "plain-json",
+    result: "void",
+    lifetime: "none",
+    errors: ["effect-boundary-denied"],
+  },
   // A read of what already arrived, so no mutating-effect verdict applies —
   // the same reasoning `getAuthPartitionCookies` carries. Its bound is the
   // host's ownership check plus the timeout, neither of which is a boundary
@@ -1242,6 +1284,9 @@ export const SERVICE_HOSTAPI_PATHS = [
   "resolveApiKey",
   "callLlm",
   "hostFetch",
+  "authDeviceCode.authorize",
+  "authDeviceCode.fetch",
+  "authDeviceCode.clear",
   "spawnWorker",
   "resolveMappedDriveRoot",
   "listAudioInputDevices",
@@ -2157,3 +2202,7 @@ export function asWireWorkerSend(payload: unknown, label: string): WireWorkerSen
   }
   return send as unknown as WireWorkerSend;
 }
+
+/** Cancellation uses the request notification; signals never enter JSON. */
+export type WireDeviceCodeAuthorizationOptions = Omit<DeviceCodeAuthorizationOptions, "signal">;
+export type WireDeviceCodeFetchOptions = Omit<DeviceCodeFetchOptions, "signal">;

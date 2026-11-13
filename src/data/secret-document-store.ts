@@ -441,12 +441,13 @@ export class SecretDocumentStore {
     return this.decryptEntry(key, entry.value);
   }
 
-  async set(key: string, value: string): Promise<void> {
+  async set(key: string, value: string, options?: { requireEncrypted?: boolean }): Promise<void> {
     validateSecretKey(key);
+    const requireEncrypted = options?.requireEncrypted === true;
     await this.mutate(false, async (document) => {
       await this.assertWritesAvailable();
       await this.upgradePlainEntries(document);
-      document.entries[key] = await this.encode(value);
+      document.entries[key] = await this.encode(value, requireEncrypted);
     }, { forceWrite: true, forceChangedKeys: [key] });
   }
 
@@ -563,14 +564,14 @@ export class SecretDocumentStore {
     }
   }
 
-  private async encode(value: string): Promise<SecretEntry> {
-    if (await this.isEncryptionUsable()) {
+  private async encode(value: string, requireEncrypted = false): Promise<SecretEntry> {
+    if (await this.isEncryptionUsable(requireEncrypted)) {
       return {
         encoding: this.externalKey ? "external-key" : "safe-storage",
         value: (await this.encryption.encryptStringAsync(value)).toString("base64"),
       };
     }
-    if (this.policy === "packaged") throw new SecretEncryptionUnavailableError();
+    if (this.policy === "packaged" || requireEncrypted) throw new SecretEncryptionUnavailableError();
     return { encoding: "plain-development", value };
   }
 
@@ -582,12 +583,12 @@ export class SecretDocumentStore {
 
   /** Check encrypted-at-rest availability before offering credential storage. */
   async canStoreEncrypted(): Promise<boolean> {
-    return this.isEncryptionUsable();
+    return this.isEncryptionUsable(true);
   }
 
-  private async isEncryptionUsable(): Promise<boolean> {
+  private async isEncryptionUsable(requireEncrypted = false): Promise<boolean> {
     if (!await this.encryption.isAsyncEncryptionAvailable()) return false;
-    if (this.policy !== "packaged" || this.platform !== "linux") return true;
+    if ((!requireEncrypted && this.policy !== "packaged") || this.platform !== "linux") return true;
     try {
       const backend = this.encryption.getSelectedStorageBackend();
       return backend !== "basic_text" && backend !== "unknown";
@@ -639,7 +640,7 @@ export class SecretDocumentStore {
       const entry = Object.hasOwn(document.entries, key) ? document.entries[key] : undefined;
       if (entry === undefined || entry.encoding === "plain-development" || entry.value !== ciphertext) continue;
       try {
-        document.entries[key] = await this.encode((await this.decrypt(entry.value)).result);
+        document.entries[key] = await this.encode((await this.decrypt(entry.value)).result, true);
       } catch {
         retryLater(key, ciphertext);
       }
@@ -674,7 +675,7 @@ export class SecretDocumentStore {
       const plaintext = entry.encoding === "safe-storage"
         ? (await this.decrypt(entry.value)).result
         : entry.value;
-      replacements.push([key, await this.encode(plaintext)]);
+      replacements.push([key, await this.encode(plaintext, entry.encoding !== "plain-development")]);
     }
     for (const [key, entry] of replacements) document.entries[key] = entry;
   }

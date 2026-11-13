@@ -2,6 +2,7 @@
 // Bind caller and generation identity to the connection, never request fields.
 // Host error classification stays here; children import only the wire contract.
 import { workerOutputFlowOf } from "../../permissions/worker-flow.js";
+import { isDeviceCodeAuthorizationErrorCode, PluginDeviceAuthError } from "../../auth/plugin-device-auth-error.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute } from "node:path";
@@ -255,6 +256,9 @@ export const HOSTAPI_DISPATCH_TABLE: Record<HostApiPath, HostApiPathHandler> = {
   resolveApiKey: unimplementedHostApiPath("resolveApiKey"),
   callLlm: unimplementedHostApiPath("callLlm"),
   hostFetch: unimplementedHostApiPath("hostFetch"),
+  "authDeviceCode.authorize": unimplementedHostApiPath("authDeviceCode.authorize"),
+  "authDeviceCode.fetch": unimplementedHostApiPath("authDeviceCode.fetch"),
+  "authDeviceCode.clear": unimplementedHostApiPath("authDeviceCode.clear"),
   spawnWorker: unimplementedHostApiPath("spawnWorker"),
   resolveMappedDriveRoot: unimplementedHostApiPath("resolveMappedDriveRoot"),
   listAudioInputDevices: unimplementedHostApiPath("listAudioInputDevices"),
@@ -345,6 +349,7 @@ export type ServiceHostApi = Pick<
   | "resolveApiKey"
   | "callLlm"
   | "hostFetch"
+  | "authDeviceCode"
   | "spawnWorker"
   | "resolveMappedDriveRoot"
   | "listAudioInputDevices"
@@ -965,6 +970,13 @@ export function createServiceHostApiPaths(
     callLlm: callLlmPath(hostApi),
     hostFetch: bindOptional("hostFetch", hostApi.hostFetch, () =>
       hostFetchPath(hostApi, onMalformedCredentialSelector)),
+    "authDeviceCode.authorize": defineHostApiPath("authDeviceCode.authorize", async call =>
+      hostApi.authDeviceCode.authorize({ ...call.args[0] as import("../public-contract.js").DeviceCodeAuthorizationOptions, signal: call.signal })),
+    "authDeviceCode.fetch": defineHostApiPath("authDeviceCode.fetch", async call =>
+      encodeWireHttpResponse(await hostApi.authDeviceCode.fetch(
+        { ...call.args[0] as import("../public-contract.js").DeviceCodeFetchOptions, signal: call.signal }), `${call.path}(result)`)),
+    "authDeviceCode.clear": defineHostApiPath("authDeviceCode.clear", async call =>
+      hostApi.authDeviceCode.clear(call.args[0] as { handle: string })),
     spawnWorker: bindOptional("spawnWorker", hostApi.spawnWorker, () =>
       spawnWorkerPath(hostApi, confinement)),
     resolveMappedDriveRoot: resolveMappedDriveRootPath(hostApi),
@@ -1205,6 +1217,13 @@ export function createConfigSubscriptionHostApiPaths(
 
 /** Classify host errors by class, never message text; JSON does not preserve Error identity. */
 export function classifyHostApiError(error: unknown): HostApiWireError {
+  if (error instanceof PluginDeviceAuthError) {
+    if (!isDeviceCodeAuthorizationErrorCode(error.code)) {
+      return { code: "host-internal", name: "Error", message: "Host request failed.", detail: { kind: "other" } };
+    }
+    const sanitized = new PluginDeviceAuthError(error.code);
+    return { code: sanitized.code, name: sanitized.name, message: sanitized.message };
+  }
   if (error instanceof CredentialLeaseError) {
     return { code: error.code, name: error.name, message: error.message, detail: error.detail };
   }

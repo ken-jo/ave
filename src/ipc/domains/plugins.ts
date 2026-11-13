@@ -55,6 +55,8 @@ function isBundledMcpConfigId(value: unknown): value is string {
 
 /** Authorization outcomes the renderer may see; anything else collapses to a generic failure. */
 const MCP_AUTH_ERROR_CODES: ReadonlySet<McpAuthErrorCode> = new Set<McpAuthErrorCode>([
+  "mcp-auth-device-unsupported", "mcp-auth-device-headless", "mcp-auth-device-denied",
+  "mcp-auth-device-expired", "mcp-auth-device-canceled", "mcp-auth-dpop-unsupported", "mcp-auth-dpop-failed",
   "mcp-auth-required", "mcp-auth-failed", "mcp-auth-storage-unavailable",
   "mcp-auth-storage-unreadable", "mcp-auth-registration-unsupported", "mcp-auth-resource-mismatch",
   "mcp-auth-index-unreadable",

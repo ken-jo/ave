@@ -12,6 +12,7 @@ import { resolveProcessLaunch } from "../../process-entry.js";
 import { StdioFrameDecoder } from "../../../mcp/stdio-framing.js";
 import { EffectBoundaryDeniedError } from "../../../permissions/effect-enforcement.js";
 import { WorkerTransportUnsupportedError } from "../../../permissions/mxc-extension-errors.js";
+import { PluginDeviceAuthError } from "../../../auth/plugin-device-auth-error.js";
 import { WorkerControlFailedError } from "../../../permissions/worker-stdio-control.js";
 import { WorkerAlreadyRunningError } from "../../../permissions/worker-spawn.js";
 import { ManifestIntegrityError } from "../../../permissions/manifest-integrity.js";
@@ -508,6 +509,41 @@ const ERROR_TRIGGERS: Readonly<Record<Exclude<HostApiWireErrorCode, "protocol-ve
     trigger: "a host implementation that threw something outside the closed set",
     overrides: { getSecret: throwing(() => new Error("the keychain daemon went away")) },
     provoke: throughStub("getSecret"),
+  },
+  "oauth-device-human-required": {
+    trigger: "authorization requires an interactive user",
+    overrides: { "authDeviceCode.authorize": throwing(() => new PluginDeviceAuthError("oauth-device-human-required")) },
+    provoke: throughStub("authDeviceCode.authorize"),
+  },
+  "oauth-device-encrypted-storage-unavailable": {
+    trigger: "authorization has no encrypted credential storage",
+    overrides: { "authDeviceCode.authorize": throwing(() => new PluginDeviceAuthError("oauth-device-encrypted-storage-unavailable")) },
+    provoke: throughStub("authDeviceCode.authorize"),
+  },
+  "oauth-device-denied": {
+    trigger: "the user denied device authorization",
+    overrides: { "authDeviceCode.authorize": throwing(() => new PluginDeviceAuthError("oauth-device-denied")) },
+    provoke: throughStub("authDeviceCode.authorize"),
+  },
+  "oauth-device-expired": {
+    trigger: "the device authorization expired",
+    overrides: { "authDeviceCode.authorize": throwing(() => new PluginDeviceAuthError("oauth-device-expired")) },
+    provoke: throughStub("authDeviceCode.authorize"),
+  },
+  "oauth-device-canceled": {
+    trigger: "the user canceled device authorization",
+    overrides: { "authDeviceCode.authorize": throwing(() => new PluginDeviceAuthError("oauth-device-canceled")) },
+    provoke: throughStub("authDeviceCode.authorize"),
+  },
+  "oauth-device-unsupported": {
+    trigger: "the authorization server lacks the required authorization capability",
+    overrides: { "authDeviceCode.authorize": throwing(() => new PluginDeviceAuthError("oauth-device-unsupported")) },
+    provoke: throughStub("authDeviceCode.authorize"),
+  },
+  "oauth-device-failed": {
+    trigger: "the device authorization failed without a more specific outcome",
+    overrides: { "authDeviceCode.authorize": throwing(() => new PluginDeviceAuthError("oauth-device-failed")) },
+    provoke: throughStub("authDeviceCode.authorize"),
   },
 };
 

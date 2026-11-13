@@ -169,7 +169,7 @@ export const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 30
 // How many gated hops a `redirect: "follow"` request may take after the first.
 export const MAX_REDIRECT_HOPS = 5;
 export const CREDENTIAL_HEADERS = [
-  "authorization", "proxy-authorization", "cookie", "api-key", "x-api-key",
+  "authorization", "proxy-authorization", "cookie", "dpop", "api-key", "x-api-key",
   "ocp-apim-subscription-key",
 ] as const;
 

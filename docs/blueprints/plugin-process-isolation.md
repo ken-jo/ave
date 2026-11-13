@@ -331,6 +331,8 @@ functions in a return value.
 **`callLlm(prompt, { maxTokens, systemPrompt, signal })`.** Plain data plus an
 `AbortSignal`, which cancels by request id as above. Reply is a `string`.
 
+**Device authorization.** `authDeviceCode.authorize(options)` accepts plain issuer/client/resource/scope/proof options and a local optional signal. The child removes the signal from JSON and maps cancellation to the request id; the host owns polling and returns only an opaque credential handle. `authDeviceCode.fetch(options)` uses the same signal adaptation and the existing `WireHttpResponse` representation for status, headers and bounded base64 body bytes, reconstructing a child `Response`. `authDeviceCode.clear({ handle })` carries plain JSON and returns void. No refresh token or signing key crosses this boundary. [The authorization design](../design/oauth-device-code-dpop-30.md) owns selection, storage and network semantics.
+
 **`spawnWorker(spec) → SpawnedPluginWorker`.** Returns `{ control, pid, stop(),
 onStderr(), onExit() }` plus `onStdout()` for an `output-only-v1` worker, or
 `request()`, `notify()`, `onRequest()` and `onNotification()` for a

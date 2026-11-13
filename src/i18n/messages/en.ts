@@ -3232,6 +3232,13 @@ export const en = {
   "mcpTab.authSuccess": "{id} authenticated and connected.",
   "mcpTab.serverSavedAuthRequired": "{id} saved. Authenticate to connect.",
   "mcpTab.authRequiredMessage": "Authenticate again to connect this server.",
+  "mcpTab.authDeviceUnsupportedMessage": "This authorization server does not support device sign-in.",
+  "mcpTab.authDeviceHeadlessMessage": "Device sign-in needs a person. Authenticate in the desktop app before running unattended; do not retry here.",
+  "mcpTab.authDeviceDeniedMessage": "Device sign-in was denied.",
+  "mcpTab.authDeviceExpiredMessage": "The sign-in code expired. Start sign-in again.",
+  "mcpTab.authDeviceCanceledMessage": "Device sign-in was canceled.",
+  "mcpTab.authDpopUnsupportedMessage": "This authorization server does not support the required proof binding.",
+  "mcpTab.authDpopFailedMessage": "Proof-bound authentication failed. Sign in again.",
   "mcpTab.authFailedMessage": "Authentication or connection failed. Try again.",
   "mcpTab.containedQuarantined": "Ave could not confirm that this server's previous contained process stopped. It keeps its sandbox resources, and reconnecting is blocked until you restart Ave.",
   "mcpTab.oauthHttpOnly": "OAuth authentication requires an HTTP server.",
@@ -3457,6 +3464,18 @@ export const en = {
   // modelBilling
   "modelBilling.subscription": "Billed to your own {plan} subscription, not an API key.",
   "modelBilling.apiKey": "Billed to your configured API key.",
+
+  // deviceCode
+  "deviceCode.language": "en",
+  "deviceCode.title": "Sign in on another device",
+  "deviceCode.instructions": "Open the verification page and enter this code. Check that the page shows the same code before approving.",
+  "deviceCode.codeLabel": "Your sign-in code",
+  "deviceCode.uriLabel": "Verification page",
+  "deviceCode.copyCode": "Copy code",
+  "deviceCode.copyUri": "Copy link",
+  "deviceCode.openUri": "Open verification page",
+  "deviceCode.openComplete": "Open link with code",
+  "deviceCode.waiting": "Waiting for approval. You can cancel at any time.",
 
   // oauthWindow
   "oauthWindow.title": "Sign in",

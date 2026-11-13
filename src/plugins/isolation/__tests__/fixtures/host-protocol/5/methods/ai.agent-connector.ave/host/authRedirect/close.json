@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 27,
+    "id": 30,
     "jsonrpc": "2.0",
     "method": "ai.agent-connector.ave/host/authRedirect/close",
     "params": {
@@ -13,7 +13,7 @@
     }
   },
   "response": {
-    "id": 27,
+    "id": 30,
     "jsonrpc": "2.0",
     "result": null
   }
