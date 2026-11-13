@@ -113,8 +113,11 @@ describe("browser capture", () => {
     };
     send.mockImplementation(async (method, params) => {
       if (method === "Runtime.callFunctionOn") {
-        const args = (params?.arguments as Array<{ value: unknown }>).map(argument => argument.value);
-        await runInNewContext(`(${params?.functionDeclaration})(...args)`, { ...world,
+        const values = params?.arguments;
+        const declaration = params?.functionDeclaration;
+        if (!Array.isArray(values) || typeof declaration !== "string") throw new Error("Capture scroll parameters are unavailable");
+        const args = values.map((argument: { value: unknown }) => argument.value);
+        await runInNewContext(`(${declaration})(...args)`, { ...world,
           get scrollX() { return x; }, get scrollY() { return y; }, args });
       }
       if (method === "Page.captureScreenshot") expect({ x, y }).toEqual({ x: 0, y: 0 });
