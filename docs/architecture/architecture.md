@@ -2691,13 +2691,20 @@ of 8 MiB or less (`migratePluginHostStorage`;
 
 Plugin read-relaxation is narrower than the host-shell capability. The
 foreground plugin effect-boundary may replace a pre-exec ask only when
-`hostClassifiesRisk` is enabled and
 `isActiveSandboxFilesystemContainedForPluginEffects(tool)` returns true for
 that exact tool. A process-global "sandbox active" signal is not sufficient.
 The plugin effect provider requires a host-owned `Tool.workerId` and a matching
 `pluginId/workerId` that the main process currently tracks as ASRT-wrapped.
 Ordinary in-process plugin tools, degraded hosts, and sandbox-off hosts keep
 the known-safe pre-exec ask path.
+
+Host inference determines non-meta plugin/MCP invocation risk; trusted builtins
+and meta control flow retain their host-resolved category. Passing an operation
+minimum marks a governed operation, where the registered category is a raise-only floor: the effective category
+is the maximum of host inference (including the containment floor), the registered
+category and the operation minimum. A registered category can raise inferred risk
+but cannot lower it. Command reads require active filesystem containment;
+validated ordinary read hints without commands retain their existing read lane.
 
 Every ASRT wrap carries an egress token as its `commandId`
 (`src/permissions/egress-invocations.ts`): one per Bash or PowerShell tool

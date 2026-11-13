@@ -276,7 +276,6 @@ function productionHost(installed: Installed, config: Record<string, unknown>): 
     lateBinding: {},
     getRegistryEntry: () => undefined,
     refreshRegistryEntryCacheIfChanged: async () => undefined,
-    hostClassifiesRiskEnabled: () => true,
     pluginShutdownHandlers: [],
     readAppPreference: () => undefined,
     settingsService: {

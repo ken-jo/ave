@@ -3,7 +3,7 @@ import { _electron as electron, type ElectronApplication, type Page,
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import { expect } from "@playwright/test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync,
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { LLM_VENDOR_DEFAULTS, type LLMVendor,
 } from "../../../src/shared/llm-vendor-defaults.js";
 import { DEFAULT_APPEARANCE } from "../../../src/shared/appearance-settings.js";
+import { cleanupTmpDir } from "../../../src/__tests__/support/tmp-dir-teardown.js";
 import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
 export { withNativeFocusDiagnostics } from "./native-focus.js";
@@ -306,7 +307,7 @@ export async function launchSeededElectron(opts: {
   } catch (error) {
     await app?.close().catch(() => {});
     try {
-      removeSeededElectronDirectories(userDataDir, tempHome);
+      await removeSeededElectronDirectories(userDataDir, tempHome);
     } catch (cleanupError) {
       throw new AggregateError([error, cleanupError], "Seeded Electron startup and cleanup failed");
     }
@@ -346,13 +347,20 @@ export async function teardownSeededElectron(
     await exited;
   }
   await quitElectron(ctx.app);
-  removeSeededElectronDirectories(ctx.userDataDir, ctx.tempHome);
+  await removeSeededElectronDirectories(ctx.userDataDir, ctx.tempHome);
 }
 
-function removeSeededElectronDirectories(userDataDir: string, tempHome: string): void {
-  rmSync(userDataDir, { recursive: true, force: true });
-  makeTreeWritableSync(tempHome);
-  rmSync(tempHome, { recursive: true, force: true });
+async function removeSeededElectronDirectories(userDataDir: string, tempHome: string): Promise<void> {
+  const results = await Promise.allSettled([
+    cleanupTmpDir(userDataDir),
+    Promise.resolve().then(() => {
+      makeTreeWritableSync(tempHome);
+      return cleanupTmpDir(tempHome);
+    }),
+  ]);
+  const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "Seeded Electron directory cleanup failed");
 }
 
 export function makeTreeWritableSync(root: string): void {

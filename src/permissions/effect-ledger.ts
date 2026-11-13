@@ -17,7 +17,7 @@ export interface EffectEntry {
 
 // Aggregate read/write classification for one invocation.
 export interface EffectSummary {
-  // The owning ledger's EffectLedger.correlationId. Threaded into BOTH the category shadow and the effect shadow for one invocation so the two rows join in the reconciliation dataset.
+  // The owning ledger's EffectLedger.correlationId, included in the observed-effect record for this invocation.
   correlationId: string;
   // True iff any recorded effect was a `"write"`. The host-owned read/write bit.
   hasMutatingEffect: boolean;

@@ -38,7 +38,6 @@ export interface InvocationRunnerServices {
   readonly rateLimiter: RateLimiter;
   readonly bashAstValidator?: BashAstValidator;
   readonly scriptHookManager?: ScriptHookManager;
-  readonly hostClassifiesRiskProvider: () => boolean;
   readonly sandboxFsContainedProvider: (tool: Tool) => boolean;
   readonly workspaceRootLifecycleProvider: () => PermissionDirectoryLifecycle | undefined;
   readonly auditWriter: AuditWriter;
@@ -51,19 +50,15 @@ export interface InvocationRunnerServices {
 export function resolveEnforcedCategory(
   services: InvocationRunnerServices,
   tool: Tool,
-  declaredCategory: ToolCategory,
+  registeredCategoryFloor: ToolCategory,
   finalInput: Record<string, unknown>,
-  correlationId: string,
   operationFloor?: GovernedRiskFloor,
 ): ToolCategory {
   return resolveEnforcedCategoryImpl({
     tool,
-    declaredCategory,
+    registeredCategoryFloor,
     finalInput,
-    correlationId,
-    hostClassifiesRisk: services.hostClassifiesRiskProvider(),
     sandboxFsContained: services.sandboxFsContainedProvider(tool),
-    auditLogger: services.auditLogger,
     operationFloor,
   });
 }
