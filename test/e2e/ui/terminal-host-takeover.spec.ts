@@ -66,9 +66,11 @@ if (process.platform !== "win32") test("the user takes over an approved host com
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   let app: ElectronApplication | undefined;
   let page: Page | undefined;
+  let terminalStartup: unknown;
   try {
     mkdirSync(userData, { recursive: true });
     mkdirSync(workspace, { recursive: true });
+    mkdirSync(home, { recursive: true });
     // System login startup can install a command-not-found handler, which correctly refuses agent typing.
     // This fixture owns a plain prompt; handler refusals have dedicated shell integration coverage.
     if (!existsSync("/bin/zsh")) writeFileSync(join(home, ".bash_profile"), "unset -f command_not_found_handle\n");
@@ -145,6 +147,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
       if (!result.ok) throw new Error(`Terminal fixture replay failed: ${result.reason}`);
       return result.session;
     }, { tabId, cwd: realpathSync(workspace) });
+    terminalStartup = terminalSession;
     await expect.poll(() => terminalPage.evaluate(async (session) => {
       const terminal = window.aveApi.terminal;
       if (!terminal) throw new Error("Terminal API is unavailable");
@@ -217,6 +220,11 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await expect(pane.getByTestId("terminal-agent-control")).toHaveCount(0);
     expect(appErrors).toEqual([]);
   } finally {
+    if (app && page && !page.isClosed()) {
+      const runtime = await app.evaluate(() => ({ platform: process.platform, shell: process.env.SHELL }));
+      const output = await page.evaluate(() => (window as unknown as { hostOutput?: string }).hostOutput);
+      await testInfo.attach("host-terminal-startup", { body: JSON.stringify({ runtime, session: terminalStartup, output }, null, 2), contentType: "application/json" });
+    }
     await testInfo.attach("host-tool-results", { body: JSON.stringify(toolResults, null, 2), contentType: "application/json" });
     if (app && page) await teardownSeededElectron({ app, page, userDataDir: userData, tempHome: home, aveHome: featureHome }, { terminate: true });
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
