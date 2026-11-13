@@ -207,7 +207,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
       const blocks = await terminal.listBlocks(session);
       if (!blocks.ok) throw new Error(`Terminal blocks unavailable: ${blocks.error}`);
       const summary = blocks.blocks.find(block => block.command === command);
-      if (!summary || summary.status !== "done") return null;
+      if (summary?.status !== "done") return null;
       const result = await terminal.getBlock(session, summary.id);
       if (!result.ok) throw new Error(`Terminal block unavailable: ${result.error}`);
       return { output: result.block.output, exitCode: result.block.exitCode };
