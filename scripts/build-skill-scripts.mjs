@@ -3,15 +3,15 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { SKILL_SCRIPT_ENTRIES } from "./lib/skill-script-inventory.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const ENTRIES = { "edit-xlsx": "src/skills/xlsx-edit-cli.ts" };
 
 export async function buildSkillScripts() {
   const directory = resolve(ROOT, "dist/skill-scripts");
   await mkdir(directory, { recursive: true });
   const scripts = {};
-  for (const [name, source] of Object.entries(ENTRIES)) {
+  for (const [name, source] of Object.entries(SKILL_SCRIPT_ENTRIES)) {
     const file = `${name}.cjs`;
     const target = resolve(directory, file);
     const result = await build({ absWorkingDir: ROOT, entryPoints: [source], bundle: true,
