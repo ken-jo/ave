@@ -2,6 +2,10 @@ import type { NativeImage, WebContents } from "electron";
 import { describe, expect, it, vi } from "vitest";
 import { BrowserWorkspacePreview } from "../browser-workspace-preview.js";
 import { captureAgentPreview, type AgentPreviewHost, type AgentPreviewTab } from "../browser-agent-preview.js";
+import { createBrowserTabActivity } from "../browser-tab-activity.js";
+import { deferred } from "../../../__tests__/support/deferred.js";
+import { EventEmitter } from "node:events";
+import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
 
 function image(bytes = 100): NativeImage {
   const value = { getSize: () => ({ width: 1920, height: 1080 }), isEmpty: () => false, resize: vi.fn(() => value), toJPEG: () => Buffer.alloc(bytes) };
@@ -14,13 +18,70 @@ function setup() {
   let at = 1000;
   const capturePage = vi.fn(async () => image());
   const focus = vi.fn(); const loadURL = vi.fn();
-  const guest = { id: 7, capturePage, focus, loadURL, getURL: vi.fn(() => "https://example.com"), isLoadingMainFrame: vi.fn(() => false), isDestroyed: () => false } as unknown as WebContents;
+  let throttled = true;
+  const guest = Object.assign(new EventEmitter(), { id: 7, capturePage, focus, loadURL,
+    getBackgroundThrottling: () => throttled, setBackgroundThrottling: vi.fn((value: boolean) => { throttled = value; }),
+    getURL: vi.fn(() => "https://example.com"), isLoadingMainFrame: vi.fn(() => false), isDestroyed: () => false }) as unknown as WebContents;
   const preview = new BrowserWorkspacePreview({ liveTab: (windowId, tabId) => live && windowId === 1 && tabId.startsWith("browser:") ? { guest, documentGeneration: generation } : null, isWindowVisible: () => visible, now: () => at });
   return { preview, guest, capturePage, focus, loadURL, setVisible: (value: boolean) => { visible = value; }, setGeneration: (value: number) => { generation = value; }, setLive: (value: boolean) => { live = value; }, advance: (ms: number) => { at += ms; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 
 describe("browser preview capture", () => {
+  it.each([true, false])("holds painting through readback and restores the original throttling %s", async throttled => {
+    const { preview, guest, capturePage } = setup();
+    guest.setBackgroundThrottling(throttled);
+    capturePage.mockImplementationOnce(async () => {
+      expect(guest.getBackgroundThrottling()).toBe(false);
+      return image();
+    });
+    await preview.capture(1, TARGET);
+    expect(guest.getBackgroundThrottling()).toBe(throttled);
+    expect(capturePage).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores painting after a native readback failure and preserves its cause", async () => {
+    const { preview, guest, capturePage } = setup();
+    const cause = new Error("Native readback failed");
+    capturePage.mockRejectedValueOnce(cause);
+    await expect(preview.capture(1, TARGET)).rejects.toMatchObject({ message: "capture-unavailable", cause });
+    expect(guest.getBackgroundThrottling()).toBe(true);
+  });
+
+  it("keeps the native capture failure first when painting cleanup also fails", async () => {
+    const { preview, guest, capturePage } = setup();
+    const nativeError = new Error("Native readback failed");
+    const cleanupError = new Error("Painting cleanup failed");
+    capturePage.mockRejectedValueOnce(nativeError);
+    vi.mocked(guest.setBackgroundThrottling).mockImplementation(enabled => { if (enabled) throw cleanupError; });
+    const failure = await preview.capture(1, TARGET).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({ message: "capture-unavailable", errors: [expect.objectContaining({ cause: nativeError }), cleanupError] });
+  });
+
+  it.each(["preview", "activity"] as const)("retains painting when %s finishes before the other owner", async first => {
+    vi.useFakeTimers();
+    const { preview, guest, capturePage } = setup();
+    const capture = deferred<NativeImage>();
+    const action = deferred<void>();
+    capturePage.mockImplementationOnce(() => capture.promise);
+    const pendingPreview = preview.capture(1, TARGET);
+    const pendingAction = createBrowserTabActivity(() => true)(guest, new AbortController().signal, async () => true, () => action.promise);
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      if (first === "preview") { capture.resolve(image()); await pendingPreview; }
+      else { action.resolve(); await pendingAction; await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs); }
+      expect(guest.getBackgroundThrottling()).toBe(false);
+    } finally {
+      capture.resolve(image());
+      action.resolve();
+      await Promise.allSettled([pendingPreview, pendingAction]);
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.browserLayoutIdleGraceMs);
+      vi.useRealTimers();
+    }
+    expect(guest.getBackgroundThrottling()).toBe(true);
+  });
+
   it("captures a compressed bounded thumbnail without showing, focusing or navigating its guest", async () => {
     const { preview, capturePage, focus, loadURL, advance } = setup();
     const result = await preview.capture(1, TARGET);

@@ -1812,6 +1812,10 @@ cannot enable it.
 Preview work is scheduled only for connected, intersecting cards in a visible
 app window. Main owns at most one in-flight capture per window, throttling,
 invalidation epochs, and reduced image size; it retains no preview image cache.
+Preview readback holds temporary page painting so an inactive or occluded
+opener can supply frames. It shares that ownership with agent activity and
+restores the original background-throttling setting only after the final owner
+releases the page. Capture does not activate or focus the owning window.
 `BrowserPreviewScheduler` in the renderer owns the tab/document cache, capped
 at 16 entries with reuse for less than ten seconds. Only a completion whose
 original card is still eligible enters that cache. Hidden or unmounted panels

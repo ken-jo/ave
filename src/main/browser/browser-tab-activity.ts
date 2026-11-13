@@ -21,6 +21,29 @@ const MAX_AWAKE_TABS = 8;
 const LAYOUT_POLL_MS = 25;
 // Wake ownership follows the physical guest across short-lived action adapters.
 const activities = new Map<LayoutGuest, Activity>();
+type PaintingGuest = Pick<LayoutGuest, "isDestroyed" | "getBackgroundThrottling" | "setBackgroundThrottling">;
+const paintingHolds = new WeakMap<PaintingGuest, { users: number; throttled: boolean }>();
+
+/** Captures and agent activity share painting ownership of the physical page. */
+export function holdBrowserTabPainting(guest: PaintingGuest): () => void {
+  let hold = paintingHolds.get(guest);
+  if (!hold) {
+    const throttled = guest.getBackgroundThrottling();
+    guest.setBackgroundThrottling(false);
+    hold = { users: 0, throttled };
+    paintingHolds.set(guest, hold);
+  }
+  hold.users++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    hold.users--;
+    if (hold.users !== 0) return;
+    paintingHolds.delete(guest);
+    if (!guest.isDestroyed()) guest.setBackgroundThrottling(hold.throttled);
+  };
+}
 
 /** Main owns temporary painting; visible slots always take precedence in the renderer. */
 export function createBrowserTabActivity(setAwake: (guestId: number, awake: boolean) => boolean) {
@@ -34,7 +57,9 @@ export function createBrowserTabActivity(setAwake: (guestId: number, awake: bool
         else throw new BrowserActionError("browser-layout-busy", "too many browser tabs are acting; wait for an action to finish and retry");
       }
       if (!setAwake(guest.id, true)) throw new BrowserActionError("tab-not-laid-out", "the tab is not laid out; reopen its conversation or show the tab and retry");
-      const throttled = guest.getBackgroundThrottling();
+      let releasePainting: () => void;
+      try { releasePainting = holdBrowserTabPainting(guest); }
+      catch (error) { setAwake(guest.id, false); throw error; }
       let unsubscribe = () => {};
       const sleep = () => {
         const current = activities.get(guest);
@@ -42,13 +67,12 @@ export function createBrowserTabActivity(setAwake: (guestId: number, awake: bool
         clearTimeout(current.timer);
         activities.delete(guest);
         unsubscribe();
-        setAwake(guest.id, false);
-        if (!guest.isDestroyed()) guest.setBackgroundThrottling(throttled);
+        try { setAwake(guest.id, false); }
+        finally { releasePainting(); }
       };
       activity = { users: 0, sleep };
       activities.set(guest, activity);
       unsubscribe = subscribeBrowserGuestDestroyed(guest, sleep);
-      guest.setBackgroundThrottling(false);
     }
     clearTimeout(activity.timer);
     activity.users++;
