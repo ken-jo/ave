@@ -133,7 +133,7 @@ describe("native invocation permission evidence", () => {
       expect(scopes.map(scope => scope.choice)).toContain("allow-session");
       return { requestId: request.id, choice: "allow-session" };
     } };
-    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, undefined,
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
       () => ({ allowDirectory, denyDirectory: async () => [] }));
     const permissionContext = { trustOrigin: "llm-tool-arg" as const, additionalDirectories: [],
       getAdditionalDirectories: () => directories, onSessionDirectoryGrant: (directory: string) => { directories.push(directory); } };
@@ -164,7 +164,7 @@ describe("native invocation permission evidence", () => {
     });
     const allowDirectory = vi.fn(async (directory: string) => [directory]);
     const gate = { requestAndWait: async (request: ApprovalRequestInput) => ({ requestId: request.id, choice: "allow-always" }) };
-    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, undefined,
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined,
       () => ({ allowDirectory, denyDirectory: async () => [] }));
     const execute = vi.spyOn(writeTool, "execute");
     await expect(run(subject, "write_file", { path: join(outside, "result.txt"), content: "must not write" }))
@@ -185,7 +185,7 @@ describe("native invocation permission evidence", () => {
       allowDirectory: async (directory: string) => [directory],
       denyDirectory: async () => { throw new Error("No directory removal was requested"); },
     };
-    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, undefined, () => lifecycle);
+    const subject = new ToolExecutor(registry, undefined, manager, undefined, gate as never, undefined, audit, undefined, () => lifecycle);
     const execute = vi.spyOn(writeTool, "execute");
     const [result] = await subject.executeAll([{ id: randomUUID(), name: "write_file", input: { path, content: "approved write" } }], {
       sessionId, executionCwd: project,
@@ -682,7 +682,7 @@ describe("native invocation permission evidence", () => {
       try { directories = await addAllowedDirectoryPersist(directory, join(root, "folder-settings.json")); return directories; }
       catch (error) { directorySaveFailure = error instanceof Error ? error.message : String(error); throw error; }
     }, denyDirectory: async () => { throw new Error("No directory removal was requested"); } };
-    const realExecutor = new ToolExecutor(registry, hookRunner, manager, undefined, gate, hooks, audit, undefined, undefined, () => lifecycle);
+    const realExecutor = new ToolExecutor(registry, hookRunner, manager, undefined, gate, hooks, audit, undefined, () => lifecycle);
     const execute = vi.spyOn(writeTool, "execute");
     const options = { sessionId, executionCwd: project, permissionContext: { trustOrigin: "llm-tool-arg" as const, ownerUnattended: change === "late-owner", additionalDirectories: [], getAdditionalDirectories: () => directories,
       onSessionDirectoryGrant: (directory: string) => { directories = [...new Set([...directories, directory])]; } } };

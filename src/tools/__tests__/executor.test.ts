@@ -2826,7 +2826,6 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       undefined,
       undefined,
       undefined,
-      undefined,
       () => lifecycle,
     );
 
@@ -2878,7 +2877,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     const gate = new ApprovalGate(wc as never);
     const allowDirectory = vi.fn(async (root: string) => [root]);
     const executor = new ToolExecutor(
-      registry, undefined, fixtureManager(), undefined, gate, undefined, undefined, undefined, undefined,
+      registry, undefined, fixtureManager(), undefined, gate, undefined, undefined, undefined,
       () => ({ allowDirectory, denyDirectory: vi.fn(async () => []) }),
     );
     setAveHomeConfigurationRefusedAtBoot(aveHome());
@@ -3926,7 +3925,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
     expect(checkSpy.mock.calls.map(([toolName, source, category]) => [toolName, source, category])).toEqual([
       ["native_write_surface", "builtin", "write"],
       ["plugin_write_surface", "plugin", "write"],
-      ["mcp_write_surface", "mcp", "write"],
+      ["mcp_write_surface", "mcp", "network"],
     ]);
   });
 
@@ -4720,7 +4719,6 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
         { requestAndWait } as never,
         undefined,
         undefined,
-        () => true,
       );
       await executor.executeAll(
         [{ id: `tu-${name}`, name, input: { endpoint: "https://example.com/api" } }],

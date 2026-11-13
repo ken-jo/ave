@@ -1242,7 +1242,7 @@ Contract tests (host):
   rejected for every plugin; for a plugin without an `alerts` block the
   acceptance limit does not apply.
 - Routine lane: `mail_email_reply` invoked from a routine session under
-  default settings (`hostClassifiesRisk` off, no reviewer attached) is
+  default settings (no reviewer attached) is
   refused by `reviewer-dispatch.ts`; with a reviewer attached a non-low
   verdict is still refused.
 - `configInherits`: applied when the retired record is written (installed

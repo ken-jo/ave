@@ -1,66 +1,19 @@
-// Category and observed-effect rows share one invocation correlation ID in the dedicated non-HMAC shadow channel; they are not tamper-evident. Emission must never change permission or pollute canonical telemetry.
-import type { ToolCategory } from "../../tools/types.js";
+// Observed-effect records use the dedicated non-HMAC shadow channel; emission never changes permission.
 import type { AuditLogger } from "../../audit/audit-logger.js";
 import type { EffectSummary } from "../effect-ledger.js";
 import type { ToolSource } from "../../shared/permission-review-status.js";
-
-export interface RiskShadowRecord {
-  toolName: string;
-  source: ToolSource;
-  pluginId?: string;
-  // Category the host would enforce today (declared category).
-  declaredCategory: ToolCategory;
-  // Category the host derived from its own signals (inspectHostRisk).
-  hostDerivedCategory: ToolCategory;
-  // Whether `hostClassifiesRisk` enforcement was active for this call.
-  enforced: boolean;
-  // Per-invocation join key (the EffectLedger's correlationId). Threaded identically into the matching emitEffectShadowLog record so the pre-exec category shadow and the post-exec effect shadow for ONE invocation join on this id.
-  correlationId: string;
-}
 
 export interface EffectShadowRecord {
   toolName: string;
   source: ToolSource;
   pluginId?: string;
-  // Category the plugin declared for this tool (pre-removal artifact).
-  declaredCategory: ToolCategory;
   // Whether this tool's effects are HOST-OBSERVABLE — `true` for in-process plugin tools whose hostApi closures are instrumented, `false` for tools the host does not mediate (external `source:"mcp"`, which never reaches the instrumented chokepoints). When `false`, an EMPTY effect summary is NOT a confirmed read — a later read-recognition gate MUST fail closed on `hostObservable:false` and never auto-relax to read.
   hostObservable: boolean;
   // Host-observed effects collected for this invocation (the EffectLedger summary).
   hostObservedEffect: EffectSummary;
 }
 
-// Emit one structured CATEGORY shadow record to the dedicated shadow channel. The `diverged` field is what reconciliation tooling filters on: `true` means the host and the plugin disagree about the call's risk, which must be understood before enforcement is enabled for that plugin.
-export function emitRiskShadowLog(
-  record: RiskShadowRecord,
-  auditLogger: AuditLogger,
-): void {
-  const diverged = record.declaredCategory !== record.hostDerivedCategory;
-  const fields = {
-    event: "risk-shadow",
-    toolName: record.toolName,
-    source: record.source,
-    ...(record.pluginId ? { pluginId: record.pluginId } : {}),
-    declaredCategory: record.declaredCategory,
-    hostDerivedCategory: record.hostDerivedCategory,
-    diverged,
-    enforced: record.enforced,
-    correlationId: record.correlationId,
-  };
-  try {
-    auditLogger.logShadow({
-      timestamp: new Date().toISOString(),
-      sessionId: "permission-shadow",
-      type: "info",
-      input: `risk-shadow ${record.toolName} source=${record.source} diverged=${diverged}`,
-      output: JSON.stringify(fields),
-    });
-  } catch {
-    // Shadow logging must never break a tool invocation.
-  }
-}
-
-// Emit one structured EFFECT shadow record to the dedicated shadow channel: the plugin-declared category against the host-OBSERVED effect summary. The `hasMutatingEffect` boolean is the host-owned read/write classification for this invocation — the signal a later read-recognition gate will reconcile against the declared category before effect-boundary gating is enabled.
+// Record host-observed effects for later read recognition; unobservable empty ledgers cannot prove a read.
 export function emitEffectShadowLog(
   record: EffectShadowRecord,
   auditLogger: AuditLogger,
@@ -71,7 +24,6 @@ export function emitEffectShadowLog(
     toolName: record.toolName,
     source: record.source,
     ...(record.pluginId ? { pluginId: record.pluginId } : {}),
-    declaredCategory: record.declaredCategory,
     hostObservable: record.hostObservable,
     hasMutatingEffect,
     effects,

@@ -348,7 +348,7 @@ describe.skipIf(process.platform === "win32")("bash live output", () => {
     ]);
     const executor = new ToolExecutor(
       registry, undefined, permissions, new BashAstValidator({ mode: "deny" }),
-      undefined, undefined, undefined, () => true,
+      undefined, undefined, undefined,
     );
     const outputs: Array<{ name: string; text: string; toolUseId: string }> = [];
     const [result] = await executor.executeAll(

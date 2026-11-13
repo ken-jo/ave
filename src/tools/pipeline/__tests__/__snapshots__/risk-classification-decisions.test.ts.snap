@@ -1,0 +1,537 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`registered risk floor decisions > preserves governed plugin decisions across the command fixtures 1`] = `
+[
+  {
+    "category": "write",
+    "command": "git log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git log --oneline -n 2",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git log 'HEAD'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git show --no-patch HEAD",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --name-only HEAD main",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff HEAD main --name-status",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --raw HEAD main",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git rev-parse --verify HEAD",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git rev-parse --show-toplevel",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git branch --list",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -p -c 'printf ready'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -p -c 'cat ~/.ssh/id_rsa'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git status",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff HEAD",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --cached",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --cached --name-only",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --cached --name-status",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --cached --raw",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --staged --name-only",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --staged --name-status",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --staged --raw",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --cached --stat",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git show HEAD",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git log --ext-diff",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git show --no-patch --textconv HEAD",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git log --show-signature",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git log '--format=%G?'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git branch --list --sort=signature:grade",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git -c core.fsmonitor=marker log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --config-env=core.fsmonitor=MARKER log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --exec-path=bin log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --git-dir=other log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --work-tree=other log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git -C .. log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git -C . log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --paginate log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git alias-name",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "write",
+    "command": "env git log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git log | cat",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git log; git log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git log > output.txt",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git log --alternate-refs",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git log '.ssh/config'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git diff --cached --name-only --recurse-submodules",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "python3 -I -S ordinary.py",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "env python3 -I -S ordinary.py",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "./bin/python3 -I -S ordinary.py",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash -c 'printf ready'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -c 'printf ready'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -p -c '$runtime' extra",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "fish -N --command 'printf ready'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "node --no-addons -e 'console.log(1)'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "pwsh -NoProfile -File ordinary.ps1",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "pwsh -File - -enc P",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "pwsh '-enc' P",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "zsh -f -c 'printf ready'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+  {
+    "category": "write",
+    "command": "git log",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This write requires approval.",
+      "reasonCode": "file-write",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -p -c 'printf ready'",
+    "decision": {
+      "outcome": "ask",
+      "reason": "This shell action requires approval.",
+      "reasonCode": "shell-approval",
+    },
+  },
+]
+`;

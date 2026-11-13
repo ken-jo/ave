@@ -81,7 +81,7 @@ vi.mock("../services.js", () => ({
               return { provider: "openai", vendors: { openai: { model: "gpt", baseUrl: undefined } },
               };
             case "features":
-              return { osToolSandbox: false, hostClassifiesRisk: false, idlePreferenceRefresh: true,
+              return { osToolSandbox: false, idlePreferenceRefresh: true,
               };
             default:
               return {};
