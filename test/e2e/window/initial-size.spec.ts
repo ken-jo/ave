@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 // Verify native initial geometry.
 import { test, expect } from "@playwright/test";
 import { ElectronApplication, type Page } from "playwright";
@@ -33,12 +34,28 @@ test.describe("initial window size", () => {
       }),
       timeout: 30_000,
     });
+    if (process.env.AVE_E2E_STARTUP_DIAGNOSTICS === "1") {
+      const child = app.process();
+      child.stdout?.on("data", (data: Buffer) => process.stdout.write(data));
+      child.stderr?.on("data", (data: Buffer) => process.stderr.write(data));
+      child.once("exit", (code, signal) => {
+        console.log("Native root exit", { code, signal });
+        if (process.platform === "linux") {
+          const group = execFileSync("ps", ["-eo", "pid,ppid,pgid,args"], { encoding: "utf8" })
+            .split("\n").filter(line => line.trim().split(/\s+/)[2] === String(child.pid));
+          console.log("Native remaining group", group);
+        }
+      });
+      child.once("close", (code, signal) => console.log("Native pipes closed", { code, signal }));
+    }
     const page = await app.firstWindow();
     return { app, page };
   }
 
   test.afterEach(async () => {
+    if (process.env.AVE_E2E_STARTUP_DIAGNOSTICS === "1") console.log("Begin native quit");
     if (app) await quitElectron(app);
+    if (process.env.AVE_E2E_STARTUP_DIAGNOSTICS === "1") console.log("Native quit complete");
     app = undefined;
     if (userDataDir) rmSync(userDataDir, { recursive: true, force: true });
     if (tempHome) rmSync(tempHome, { recursive: true, force: true });

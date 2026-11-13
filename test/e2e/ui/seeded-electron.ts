@@ -327,14 +327,18 @@ export async function quitElectron(app: ElectronApplication): Promise<void> {
   const isRunning = child.exitCode === null && child.signalCode === null;
   const exited = isRunning ? once(child, "exit").then(() => {}) : Promise.resolve();
   if (isRunning) {
-    const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
-      runtimeApp.once("will-quit", () => resolve());
+    const readyToExit = app.evaluate(({ app: runtimeApp }, diagnostics) => new Promise<void>((resolve) => {
+      runtimeApp.once("will-quit", () => {
+        if (diagnostics) console.log("Native will quit", process.getActiveResourcesInfo());
+        resolve();
+      });
       runtimeApp.quit();
-    })).catch((error: unknown) => {
+    }), process.env.AVE_E2E_STARTUP_DIAGNOSTICS === "1").catch((error: unknown) => {
       if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);
       return exited;
     });
     await Promise.race([readyToExit, exited]);
+    if (process.env.AVE_E2E_STARTUP_DIAGNOSTICS === "1") console.log("Native quit acknowledged", { pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode });
   }
   await app.close().catch(() => {});
   await exited;
