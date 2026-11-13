@@ -809,6 +809,7 @@ export function buildInternalApiSurface() {
       requestId: string;
       /** A card's rule save: the choice's action and scope and, only when edited, the rule text (the host validates it against the card's own rule grammar). */
       rule?: ApprovalRuleSave;
+      readjudicate?: true;
       toolName: string;
       args: string;
       source: string;
