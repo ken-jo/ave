@@ -10,6 +10,7 @@ import type { ReleasePrepInput, ReleasePrepOutput } from "./steps/post-boot.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { BrowserUploadPickerRequest } from "../main/browser/browser-upload.js";
 import type { AgentPreviewHost } from "../main/browser/browser-agent-preview.js";
+import type { DeviceCodePresentation } from "../auth/oauth-device-code.js";
 import type { OpenOAuthLogin } from "../main/oauth-login.js";
 
 /** Desktop-owned capabilities. The server has no presentation surface. */
@@ -19,6 +20,7 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   hasSingleInstanceLock(): boolean;
   getAppWindows(): MainWindow[];
   openOAuthLogin: OpenOAuthLogin;
+  deviceCodePresentation: DeviceCodePresentation;
   getFocusedWindow(): BaseWindow | null;
   /** The live renderer hosting this exact session, or null when it is unhosted. */
   findSessionSurface(sessionId: string | undefined): WebContents | null;

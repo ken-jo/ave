@@ -3234,6 +3234,13 @@ export const ko: Record<MessageCatalogKey, string> = {
   "mcpTab.authSuccess": "{id} 인증 및 연결이 완료되었습니다.",
   "mcpTab.serverSavedAuthRequired": "{id} 설정을 저장했습니다. 연결하려면 인증하세요.",
   "mcpTab.authRequiredMessage": "서버에 연결하려면 다시 인증하세요.",
+  "mcpTab.authDeviceUnsupportedMessage": "이 인증 서버는 기기 코드 로그인을 지원하지 않습니다.",
+  "mcpTab.authDeviceHeadlessMessage": "기기 코드 로그인에는 사용자가 필요합니다. 자동 실행 전에 데스크톱 앱에서 로그인하세요. 여기에서 다시 시도하지 마세요.",
+  "mcpTab.authDeviceDeniedMessage": "기기 코드 로그인이 거부되었습니다.",
+  "mcpTab.authDeviceExpiredMessage": "로그인 코드가 만료되었습니다. 로그인을 다시 시작하세요.",
+  "mcpTab.authDeviceCanceledMessage": "기기 코드 로그인이 취소되었습니다.",
+  "mcpTab.authDpopUnsupportedMessage": "이 인증 서버는 필요한 소유 증명 바인딩을 지원하지 않습니다.",
+  "mcpTab.authDpopFailedMessage": "소유 증명 기반 인증에 실패했습니다. 다시 로그인하세요.",
   "mcpTab.authFailedMessage": "인증 또는 연결에 실패했습니다. 다시 시도하세요.",
   "mcpTab.containedQuarantined": "이 서버의 이전 컨테이너 프로세스가 멈췄는지 확인하지 못했습니다. 샌드박스 자원을 유지하며, Ave 를 재시작할 때까지 다시 연결할 수 없습니다.",
   "mcpTab.oauthHttpOnly": "OAuth 인증은 HTTP 서버에서만 사용할 수 있습니다.",
@@ -3459,6 +3466,18 @@ export const ko: Record<MessageCatalogKey, string> = {
   // modelBilling
   "modelBilling.subscription": "API 키가 아닌 본인의 {plan} 구독으로 청구됩니다.",
   "modelBilling.apiKey": "설정한 본인의 API 키로 청구됩니다.",
+
+  // deviceCode
+  "deviceCode.language": "ko",
+  "deviceCode.title": "다른 기기에서 로그인",
+  "deviceCode.instructions": "인증 페이지를 열고 이 코드를 입력하세요. 승인하기 전에 페이지에 표시된 코드가 같은지 확인하세요.",
+  "deviceCode.codeLabel": "로그인 코드",
+  "deviceCode.uriLabel": "인증 페이지",
+  "deviceCode.copyCode": "코드 복사",
+  "deviceCode.copyUri": "링크 복사",
+  "deviceCode.openUri": "인증 페이지 열기",
+  "deviceCode.openComplete": "코드가 포함된 링크 열기",
+  "deviceCode.waiting": "승인을 기다리고 있습니다. 언제든 취소할 수 있습니다.",
 
   // oauthWindow
   "oauthWindow.title": "로그인",

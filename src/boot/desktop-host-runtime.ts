@@ -1,5 +1,6 @@
 import { closeMainWindowDocuments } from "../main/main-window-host.js";
 import { app, BaseWindow, dialog, nativeImage, Notification, powerMonitor, session, shell } from "electron";
+import { createDeviceCodePresentation } from "../main/device-code-dialog.js";
 import { desktopSecretEncryption } from "../main/desktop-secret-encryption.js";
 import { browserCapturePixelRatio } from "../main/browser/browser-capture-desktop.js";
 import { browserGuestOwnerWindow } from "../main/browser/browser-guest-owner.js";
@@ -46,6 +47,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       hasSingleInstanceLock: () => app.hasSingleInstanceLock(),
       getAppWindows,
       openOAuthLogin: openLogin,
+      deviceCodePresentation: createDeviceCodePresentation(() => getPrimaryMainWindow()),
       getFocusedWindow: () => BaseWindow.getFocusedWindow(),
       findSessionSurface: findSessionMainWindowContents,
       findTerminalSurface: findTerminalMainWindowContents,
