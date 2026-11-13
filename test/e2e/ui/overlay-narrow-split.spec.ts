@@ -228,14 +228,15 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
     await expect.poll(async () => (await approvalLayout())?.laneScrollRange).toBe(0);
     await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true, true]);
     const approvalBefore = await approvalLayout();
-    expect(approvalBefore!.shrink).toBe("0");
-    expect(approvalBefore!.cardHeight).toBeLessThanOrEqual(approvalBefore!.laneHeight);
-    expect(approvalBefore!.reviewScrollRange).toBeGreaterThan(0);
+    if (!approvalBefore) throw new Error("Approval layout is unavailable");
+    expect(approvalBefore.shrink).toBe("0");
+    expect(approvalBefore.cardHeight).toBeLessThanOrEqual(approvalBefore.laneHeight);
+    expect(approvalBefore.reviewScrollRange).toBeGreaterThan(0);
     const review = approval.locator('[data-testid="tool-approval-card"] > section');
     await review.hover();
     await page.mouse.wheel(0, 600);
     await expect.poll(async () => (await approvalLayout())?.reviewScrollTop ?? 0).toBeGreaterThan(0);
-    expect((await approvalLayout())!.laneScrollTop).toBe(0);
+    expect((await approvalLayout())?.laneScrollTop).toBe(0);
     await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true, true]);
     await captureCase("approval-shorter-tile", await approvalLayout());
     await page.screenshot({ path: testInfo.outputPath("approval-narrow-split-wheel.png") });
@@ -248,9 +249,10 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
     await expect.poll(async () => (await approvalLayout())?.laneScrollTop).toBe(0);
     await expect.poll(async () => (await approvalLayout())?.buttons).toEqual([true, true, true, true, true]);
     const approvalShown = await approvalLayout();
-    expect(approvalShown!.shrink).toBe("0");
-    expect(approvalShown!.laneScrollTop).toBe(0);
-    expect(approvalShown!.laneScrollRange).toBe(0);
+    if (!approvalShown) throw new Error("Approval layout is unavailable");
+    expect(approvalShown.shrink).toBe("0");
+    expect(approvalShown.laneScrollTop).toBe(0);
+    expect(approvalShown.laneScrollRange).toBe(0);
     await captureCase("approval-short-tile", approvalShown);
     await page.screenshot({ path: testInfo.outputPath("approval-narrow-split.png") });
   } finally {
