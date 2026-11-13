@@ -218,10 +218,12 @@ its clipping ancestors. Losing that visibility stops the screencast, drops its
 frame and releases hidden-guest painting. A mounted panel that is hidden, has
 no size, is outside the viewport or sits in a hidden document stops the preview
 and drops its frame. Only while an agent-driven picture is shown,
-its hidden guest keeps painting with zero opacity, clipping, no pointer events,
+an embedded guest keeps painting with zero opacity, clipping, no pointer events,
 and aria-hidden and inert attributes. Otherwise hidden guests use visibility
 hidden. Revealing the pane or ending observation restores the normal
-attributes. The agent's typing tools already refuse password, card and one-time
+attributes. Independent native pages retain the compositor connection described
+under [browser control and tab lifetime](#browser-control-and-tab-lifetime).
+The agent's typing tools already refuse password, card and one-time
 code fields, so the preview adds no secret-input display path.
 
 The document adapter starts an exact target, accepts a rendered snapshot and
@@ -1580,11 +1582,16 @@ The app UI view's provisional `about:blank` document initializes neither the
 host API nor appearance readers; its navigated app document receives a fresh
 preload. A provisional document therefore cannot act as application chrome.
 
-An independent page stays alive and rendering while detached, retaining its
-last nonzero viewport. Presentation attaches that same page through a clipping
-container in its actual owning window. Parking first receives the registry's
-acknowledgement, then detaches the page and container. Pane movement, renderer
-remounts, and owning-window resize or hide preserve page identity. A remount
+An independent page retains its native compositor connection and last nonzero
+viewport while parked. Its clipping container stays in its actual owning window,
+wholly to the left of the window's content area. Native root detachment can lose
+painting and input acknowledgements; document visibility
+and layout dimensions alone do not establish compositor readiness.
+Presentation moves that same container into its pane. Parking first receives the
+registry's acknowledgement, then moves the container outside the window.
+The parked page cannot receive user pointer input or explicit native focus.
+Pane movement, renderer remounts, and owning-window resize or hide preserve page
+identity. A remount
 reacquires a presentation epoch rather than replacing the document; stale
 epochs and placement sequences cannot reattach an old mount. Renderer component
 cleanup only parks the page. Explicit tab close, true surface retirement, or

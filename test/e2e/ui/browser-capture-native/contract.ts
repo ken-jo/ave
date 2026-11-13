@@ -18,6 +18,10 @@ export interface CaptureNativeFixture {
   readonly targetId: number;
   readonly windowId: number;
   capture(options: BrowserScreenshotOptions, zoom?: number): Promise<CaptureNativeResult>;
+  clickHuman(): Promise<{ clicks: number; trusted: boolean }>;
+  startPreview(): void;
+  previewFrame(): { data: string; width: number; height: number } | null;
+  stopPreview(): Promise<void>;
   reset(): Promise<void>;
   assertClean(): Promise<void>;
   close(): Promise<void>;

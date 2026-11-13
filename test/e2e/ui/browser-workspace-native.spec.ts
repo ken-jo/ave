@@ -106,6 +106,30 @@ isolatedTest("CDP native popup preserves registration, hardening, opener, sessio
   } finally { await close(app); }
 });
 
+isolatedTest("native preview paints a throttled opener beneath a popup without changing window focus", { annotation: { type: "isolated-app", description: "Exercises native window lifecycle" } }, async ({}, testInfo) => {
+  const app = await launch(testInfo.project.outputDir);
+  try {
+    await openRegisteredPopup(app);
+    const capture = await app.evaluate(async ({ webContents }) => {
+      const guest = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL().endsWith("/page"));
+      if (!guest) throw new Error("Native opener is unavailable");
+      guest.setBackgroundThrottling(true);
+      const result = await (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.preview();
+      return { ...result, throttled: guest.getBackgroundThrottling() };
+    });
+    expect(capture.bytes).toBeGreaterThan(1000);
+    expect(capture.decodedWidth).toBeGreaterThan(0);
+    expect(capture.decodedHeight).toBeGreaterThan(0);
+    expect(capture.focusPreserved).toBe(true);
+    expect(capture.throttled).toBe(true);
+    const path = testInfo.outputPath("occluded-opener-preview.jpg");
+    const data = capture.preview.dataUrl.split(",")[1];
+    if (!data) throw new Error("Native opener preview is empty");
+    await fs.writeFile(path, Buffer.from(data, "base64"));
+    await testInfo.attach("occluded-opener-preview", { path, contentType: "image/jpeg" });
+  } finally { await close(app); }
+});
+
 isolatedTest("@os-focus native popup verifies focus, human pause, trusted title and explicit resume", { annotation: { type: "isolated-app", description: "Native OS focus requires a dedicated process" } }, async ({}, testInfo) => {
   const app = await launch(testInfo.project.outputDir, "foreground");
   try {

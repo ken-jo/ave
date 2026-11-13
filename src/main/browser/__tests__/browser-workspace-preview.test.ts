@@ -24,7 +24,7 @@ describe("browser preview capture", () => {
   it("captures a compressed bounded thumbnail without showing, focusing or navigating its guest", async () => {
     const { preview, capturePage, focus, loadURL, advance } = setup();
     const result = await preview.capture(1, TARGET);
-    expect(capturePage).toHaveBeenCalledWith(undefined, { stayHidden: true, stayAwake: false });
+    expect(capturePage).toHaveBeenCalledWith(undefined, { stayHidden: false, stayAwake: false });
     expect(result.width).toBe(320); expect(result.height).toBe(180);
     expect(result.dataUrl).toMatch(/^data:image\/jpeg;base64,/);
     expect(focus).not.toHaveBeenCalled(); expect(loadURL).not.toHaveBeenCalled();

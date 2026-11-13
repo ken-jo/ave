@@ -77,7 +77,9 @@ export class BrowserWorkspacePreview {
     this.lastCapture.set(windowId, now);
     try {
       let image: NativeImage;
-      try { image = await target.guest.capturePage(undefined, { stayHidden: true, stayAwake: false }); }
+      // The capture owns temporary page painting even when another native window occludes this guest.
+      // This does not show or focus its window; capture releases the page's capturer count on completion.
+      try { image = await target.guest.capturePage(undefined, { stayHidden: false, stayAwake: false }); }
       catch { throw new Error("capture-unavailable"); }
       if (!valid()) throw new Error("stale-document");
       const encoded = encodeBrowserPreview(image);
