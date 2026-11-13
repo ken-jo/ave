@@ -231,6 +231,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
   let barrier: ReturnType<typeof prepareWorkbookPublicationBarrier> | undefined;
   let ctx: Awaited<ReturnType<typeof launchSeededElectron>> | undefined;
   let processClosed: Promise<unknown> | undefined;
+  const cleanupFailures: unknown[] = [];
   let bodyFailure: { error: unknown } | undefined;
   try {
     const publicationBarrier = prepareWorkbookPublicationBarrier(join(process.cwd(), "dist/skill-scripts"), directory);
@@ -379,9 +380,7 @@ test("approved agent edits stream into the read-only workbook panel", async () =
     writeFileSync(failurePath, JSON.stringify(diagnostic, null, 2));
     await test.info().attach("agent-document-failure", { path: failurePath, contentType: "application/json" });
     await ctx?.page.screenshot({ path: test.info().outputPath("agent-document-failure.png") }).catch(() => {});
-    throw error;
   } finally {
-    const cleanupFailures: unknown[] = [];
     const cleanup = async (action: () => void | Promise<void>): Promise<void> => {
       try { await action(); } catch (error) { cleanupFailures.push(error); }
     };
@@ -395,9 +394,10 @@ test("approved agent edits stream into the read-only workbook panel", async () =
       await cleanup(() => { barrier?.restore(); });
       await cleanup(() => { rmSync(directory, { recursive: true, force: true }); });
     }
-    if (cleanupFailures.length) throw new AggregateError(bodyFailure
-      ? [bodyFailure.error, ...cleanupFailures] : cleanupFailures, "Workbook observation cleanup failed");
   }
+  if (cleanupFailures.length) throw new AggregateError(bodyFailure
+    ? [bodyFailure.error, ...cleanupFailures] : cleanupFailures, "Workbook observation cleanup failed");
+  if (bodyFailure) throw bodyFailure.error;
 });
 
 test("approved native edits highlight lines in the read-only code viewer", async () => {
