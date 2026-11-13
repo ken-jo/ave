@@ -4,12 +4,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
+import { HookRunner } from "../../hooks/hook-runner.js";
 import { ApprovalGate, IPC_APPROVAL_REQUEST, type ApprovalRequest } from "../../permissions/approval-gate.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { PluginOperationGrantCoordinator } from "../../permissions/plugin-operation-grant.js";
 import { hashReceiptFiles, writeInstallReceipt } from "../../plugins/plugin-install-receipt.js";
 import { makeTestTreeWritable, servedAgentPluginsDocument, TestPluginRuntime, writeTestPluginRegistry } from "../../plugins/__tests__/test-helpers.js";
 import { mcpToolToPluginTool, type DiscoveredMcpTool } from "../../mcp/plugin-tool-from-mcp.js";
-import { ToolExecutor } from "../executor.js";
+import { runToolInvocation } from "../invocation-runner.js";
+import { AuditWriter } from "../pipeline/audit-writer.js";
+import { RateLimiter } from "../pipeline/rate-limiter.js";
+import { tryUserApprovalMemorySkip } from "../pipeline/approval-memory-skip.js";
 import { ToolRegistry } from "../registry.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
 
@@ -92,14 +97,21 @@ describe("executor human re-adjudication card production", () => {
     });
     const hooks = new ScriptHookManager();
     hooks.setPluginGenerationAccess(generations);
-    const executor = new ToolExecutor(tools, undefined, manager, undefined, approvalGate, hooks, audit,
-      () => true, () => false, undefined, undefined, () => generations);
+    const services = {
+      toolRegistry: tools, hookRunner: new HookRunner(), permissionManager: manager,
+      approvalGate, scriptHookManager: hooks, auditLogger: audit, requirePermissionAuditChain: true,
+      hostClassifiesRiskProvider: () => true, sandboxFsContainedProvider: () => false,
+      workspaceRootLifecycleProvider: () => undefined,
+      auditWriter: new AuditWriter(audit, tools, hooks, true), rateLimiter: new RateLimiter(),
+      tryUserApprovalMemorySkip, pluginOperationGrants: new PluginOperationGrantCoordinator(),
+      pluginGenerationAccessProvider: () => generations, pluginOperationIdentityProvider: () => undefined,
+    };
     const input = { operation: "publish" };
-    const [result] = await executor.executeAll([{ id: "publish-request", name: TOOL_NAME, input }], {
+    const result = await runToolInvocation(services, { id: "publish-request", name: TOOL_NAME, input }, "publishing-group", 0, {
       sessionId: "publishing-session", executionCwd: root,
       permissionContext: userPermissionContext({ headless: false }),
     });
-    expect(result.is_error).toBe(true);
+    expect(result).toHaveProperty("is_error", true);
     expect(invoke).not.toHaveBeenCalled();
     expect(cards).toHaveLength(1);
     const card = cards[0];

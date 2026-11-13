@@ -23,10 +23,11 @@ describe("existing plugin invocation decisions", () => {
     const decisions = CLASSIFIER_WIDENING_FIXTURES.map(({ command }) => {
       const finalInput = { operation: "inspect", command };
       const operation = resolvePluginOperation(OPERATION_POLICY, finalInput, "model");
-      const category = resolveEnforcedCategory({
-        tool, declaredCategory: tool.category, finalInput, correlationId: "command-corpus",
+      const classificationInput = {
+        tool, declaredCategory: tool.category, registeredCategoryFloor: tool.category, finalInput, correlationId: "command-corpus",
         hostClassifiesRisk: true, sandboxFsContained: true, auditLogger, operationFloor: operation.rule.minimumRisk,
-      });
+      };
+      const category = resolveEnforcedCategory(classificationInput);
       const verdict = classifier.classify({
         toolName: tool.name, source: tool.source, category, pathFields: [], trustOrigin: "llm-tool-arg", finalInput,
         executionCwd: "/workspace/project", allowedDirectories: ["/workspace/project"], sensitivePathsAdjacent: [],
