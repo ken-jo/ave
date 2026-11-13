@@ -11,7 +11,7 @@ import { RPC_INTERNAL_ERROR } from "./protocol-constants.js";
 import { createLogger } from "../lib/logger.js";
 
 const log = createLogger("mcp-task-store");
-export const MCP_TASK_STORE_POLICY = {
+const MCP_TASK_STORE_POLICY = {
   maxTasks: 128,
   ttlMs: 24 * 60 * 60 * 1000,
   maxResultBytes: 128 * 1024,

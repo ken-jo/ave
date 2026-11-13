@@ -534,11 +534,6 @@
     },
     {
       "type": "types",
-      "file": "src/mcp/mcp-client.ts",
-      "name": "JsonRpcNotification"
-    },
-    {
-      "type": "types",
       "file": "src/mcp/types.ts",
       "name": "McpGlobalRules"
     },
