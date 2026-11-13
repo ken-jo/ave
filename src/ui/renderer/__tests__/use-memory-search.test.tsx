@@ -22,9 +22,49 @@ describe("useMemorySearch", () => {
     vi.useRealTimers();
   });
 
+  it("ignores an older search that resolves after the query is cleared", async () => {
+    vi.useFakeTimers();
+    let resolveSearch!: (notes: { title: string; excerpt: string }[]) => void;
+    const api = {
+      onMemorySaveResult: vi.fn(() => () => {}),
+      memoryGetSummaries: vi.fn().mockResolvedValue({ ok: true, notes: [{ title: "Current catalog", content: "Current" }], entries: [] }),
+      memoryGetIndex: vi.fn().mockResolvedValue(""),
+      memoryListSessions: vi.fn().mockResolvedValue([]),
+      memorySearchEntries: vi.fn(() => new Promise((resolve) => { resolveSearch = resolve; })),
+      memorySearchSessions: vi.fn().mockResolvedValue([]),
+    } as unknown as AveApi;
+    render(<Harness api={api} />);
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.change(screen.getByLabelText("query"), { target: { value: "old" } });
+    await act(async () => { vi.advanceTimersByTime(200); });
+    fireEvent.change(screen.getByLabelText("query"), { target: { value: "" } });
+    await act(async () => { resolveSearch([{ title: "Stale search", excerpt: "Old" }]); });
+    expect(screen.getByTestId("notes").textContent).toBe("Current catalog");
+  });
+
+  it("keeps the newest catalog when change-event reads complete out of order", async () => {
+    let notify!: Parameters<AveApi["onMemorySaveResult"]>[0];
+    let resolveInitial!: (value: unknown) => void;
+    const api = {
+      onMemorySaveResult: vi.fn((handler) => { notify = handler; return () => {}; }),
+      memoryGetSummaries: vi.fn().mockImplementationOnce(() => new Promise((resolve) => { resolveInitial = resolve; }))
+        .mockResolvedValue({ ok: true, notes: [{ title: "Newest catalog", content: "New" }], entries: [] }),
+      memoryGetIndex: vi.fn().mockResolvedValue(""),
+      memoryListSessions: vi.fn().mockResolvedValue([]),
+    } as unknown as AveApi;
+    render(<Harness api={api} />);
+    await act(async () => {
+      notify({ sessionId: "session", result: { status: "saved", op: "created", entry: { id: "new", filename: "new.md", title: "Event title", scope: "global" } } });
+    });
+    await act(async () => { resolveInitial({ ok: true, notes: [{ title: "Old catalog", content: "Old" }], entries: [] }); });
+    expect(screen.getByTestId("notes").textContent).toBe("Newest catalog");
+  });
+
   it("queries memorySearchEntries for note results after debounce", async () => {
     vi.useFakeTimers();
     const api = {
+      onMemorySaveResult: vi.fn(() => () => {}),
+      memoryGetSummaries: vi.fn().mockResolvedValue({ ok: true, notes: [], entries: [] }),
       memoryGetIndex: vi.fn().mockResolvedValue("# Ave Memory Index\n\n## Saved Memories\n- indexed 기억"),
       memoryListSessions: vi.fn().mockResolvedValue([]),
       memorySearchEntries: vi.fn().mockResolvedValue([
@@ -64,6 +104,8 @@ describe("useMemorySearch", () => {
   it("does not call memorySearchEntries before debounce delay elapses", async () => {
     vi.useFakeTimers();
     const api = {
+      onMemorySaveResult: vi.fn(() => () => {}),
+      memoryGetSummaries: vi.fn().mockResolvedValue({ ok: true, notes: [], entries: [] }),
       memoryGetIndex: vi.fn().mockResolvedValue(""),
       memoryListSessions: vi.fn().mockResolvedValue([]),
       memorySearchEntries: vi.fn().mockResolvedValue([]),

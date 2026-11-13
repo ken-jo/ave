@@ -74,6 +74,82 @@ function panelWithMemories() {
 }
 
 describe("MemorySearchPanel", () => {
+  it("intersects kind and source with counts, keeps legacy notes reachable and clears an empty filter", async () => {
+    const api = memorySearchPanelApi();
+    const notes = [
+      { filename: "fact.md", title: "배운 사실", content: "사실", kind: "fact" as const, source: "assistant" as const },
+      { filename: "preference.md", title: "사용자 선호", content: "선호", kind: "preference" as const, source: "user" as const },
+      { filename: "legacy.md", title: "이전 형식", content: "메모" },
+    ];
+    Object.assign(api, { memoryGetSummaries: vi.fn(async () => summariesForNotes(notes)), memoryGetIndex: vi.fn(async () => "# Instructions\n\nIndex") });
+    render(<MemorySearchPanel api={api} onAskAveToFix={noFix} />);
+    const kinds = await screen.findByRole("group", { name: "종류" });
+    const sources = screen.getByRole("group", { name: "저장 방식" });
+    await waitFor(() => expect(within(kinds).getByRole("button", { name: "전체 3" })).toBeTruthy());
+    expect(within(kinds).getByRole("button", { name: "메모 1" })).toBeTruthy();
+    expect(within(sources).getByRole("button", { name: "기록 없음 1" })).toBeTruthy();
+    const user = (userEvent as unknown as { setup: () => { tab(): Promise<void>; keyboard(keys: string): Promise<void> } }).setup();
+    const fact = within(kinds).getByRole("button", { name: "사실 1" });
+    fact.focus();
+    await user.keyboard("{Enter}");
+    expect(fact.getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByRole("button", { name: /사용자 선호/ })).toBeNull();
+    expect(within(sources).getByRole("button", { name: "사용자 0" })).toBeTruthy();
+    fireEvent.click(within(sources).getByRole("button", { name: "사용자 0" }));
+    expect(screen.getByText("선택한 필터에 맞는 기억이 없습니다.")).toBeTruthy();
+    expect(screen.queryByText(/아직 저장된 기억이 없습니다/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "필터 지우기" }));
+    expect(screen.getByRole("button", { name: /사용자 선호/ })).toBeTruthy();
+    fireEvent.click(within(sources).getByRole("button", { name: "기록 없음 1" }));
+    expect(screen.getByRole("button", { name: /^이전 형식/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /메모리 인덱스/ })).toBeNull();
+  });
+
+  it("re-queries saved changes and replaces the filtered list rather than appending event entries", async () => {
+    const api = memorySearchPanelApi();
+    const note = { filename: "fact.md", title: "배운 사실", content: "사실", kind: "fact" as const, source: "assistant" as const };
+    const getSummaries = vi.fn().mockResolvedValue(summariesForNotes([note]));
+    let notify!: Parameters<AveApi["onMemorySaveResult"]>[0];
+    const unsubscribe = vi.fn();
+    Object.assign(api, { memoryGetSummaries: getSummaries, onMemorySaveResult: vi.fn((handler) => { notify = handler; return unsubscribe; }) });
+    const { unmount } = render(<MemorySearchPanel api={api} onAskAveToFix={noFix} />);
+    const kinds = await screen.findByRole("group", { name: "종류" });
+    fireEvent.click(await within(kinds).findByRole("button", { name: "사실 1" }));
+    getSummaries.mockResolvedValue(summariesForNotes([]));
+    notify({ sessionId: "session", result: { status: "saved", op: "deleted", entry: { id: "deleted", filename: "fact.md", title: "Event only", scope: "global" } } });
+    await waitFor(() => expect(within(kinds).getByRole("button", { name: "사실 0" })).toBeTruthy());
+    expect(getSummaries).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", { name: /^배운 사실/ })).toBeNull();
+    expect(screen.queryByText("Event only")).toBeNull();
+    unmount();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("counts the search results inside the selected scope and leaves chat history independent", async () => {
+    const api = memorySearchPanelApi();
+    const notes = [
+      { id: "project", filename: "project.md", title: "프로젝트 사실", content: "사실", projectRoot: PROJECT.projectRoot, kind: "fact" as const, source: "user" as const },
+      { id: "global", filename: "global.md", title: "전역 사실", content: "사실", kind: "fact" as const, source: "assistant" as const },
+    ];
+    Object.assign(api, {
+      memoryGetSummaries: vi.fn(async () => summariesForNotes(notes)),
+      memorySearchEntries: vi.fn(async () => [{ ...notes[0], excerpt: "검색한 사실" }]),
+      memorySearchSessions: vi.fn(async () => [{ sessionId: "chat", title: "검색 대화", matchedMessage: "검색", timestamp: RECENT }]),
+    });
+    render(<MemorySearchPanel api={api} project={PROJECT} onAskAveToFix={noFix} />);
+    const kinds = await screen.findByRole("group", { name: "종류" });
+    await within(kinds).findByRole("button", { name: "사실 2" });
+    fireEvent.click(within(screen.getByRole("region", { name: "기억 범위" })).getByRole("button", { name: /^alpha/ }));
+    expect(within(kinds).getByRole("button", { name: "사실 1" })).toBeTruthy();
+    fireEvent.click(within(kinds).getByRole("button", { name: "사실 1" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "메모리 검색" }), { target: { value: "검색" } });
+    await waitFor(() => expect(api.memorySearchEntries).toHaveBeenCalledWith("검색", { projectRoot: PROJECT.projectRoot, projectName: "alpha", includeUnscoped: false }));
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "저장 방식" })).getByRole("button", { name: "사용자 1" })).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /전역 사실/ })).toBeNull();
+    await setupUser().click(screen.getByRole("tab", { name: /^채팅 목록/ }));
+    expect(await screen.findByRole("button", { name: /검색 대화/ })).toBeTruthy();
+  });
+
   it.each([
     ["C:\\workspace\\alpha", "c:/WORKSPACE/ALPHA/"],
     ["/workspace/alpha", "/workspace/alpha/"],

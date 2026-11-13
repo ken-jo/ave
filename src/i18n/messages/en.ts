@@ -3335,6 +3335,16 @@ export const en = {
   "memorySaveNotice.panelUndoExpired": "This undo is no longer available",
 
   // memorySearchPanel
+  "memorySearchPanel.filterKind": "Kind",
+  "memorySearchPanel.filterSource": "Source",
+  "memorySearchPanel.filterAll": "All",
+  "memorySearchPanel.source.user": "User",
+  "memorySearchPanel.source.assistant": "Assistant",
+  "memorySearchPanel.source.import": "Imported",
+  "memorySearchPanel.source.capture": "Automatic capture",
+  "memorySearchPanel.source.unknown": "Unrecorded",
+  "memorySearchPanel.noFilterResults": "No memories match these filters.",
+  "memorySearchPanel.clearFilters": "Clear filters",
   "memorySearchPanel.justNow": "Just now",
   "memorySearchPanel.minutesAgo": "{minutes} minutes ago",
   "memorySearchPanel.hoursAgo": "{hours} hours ago",
