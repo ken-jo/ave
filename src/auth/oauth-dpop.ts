@@ -141,17 +141,19 @@ function resourceProofError(header: string | null): ProofError | undefined {
   let error: string | undefined;
   const matches = (): ProofError | undefined => scheme.toLowerCase() === "dpop" &&
     (error === "use_dpop_nonce" || error === "invalid_dpop_proof") ? error : undefined;
+  const attributePattern = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+)[ \t]*=[ \t]*(?:"((?:[^"\\]|\\.)*)"|([!#$%&'*+.^_`|~0-9A-Za-z-]+))$/u;
   for (const part of parts) {
-    let parameter = part.trim();
-    const challenge = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+)(?:[ \t]+(.*))?$/u.exec(parameter);
-    if (challenge) {
+    let attribute = attributePattern.exec(part.trim());
+    // Parameter whitespace is allowed around '=' and must not mint a new scheme.
+    if (!attribute) {
+      const challenge = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+)(?:[ \t]+(.*))?$/u.exec(part.trim());
+      if (!challenge) continue;
       const matched = matches();
       if (matched) return matched;
       scheme = challenge[1];
       error = undefined;
-      parameter = challenge[2] ?? "";
+      attribute = attributePattern.exec(challenge[2] ?? "");
     }
-    const attribute = /^([!#$%&'*+.^_`|~0-9A-Za-z-]+)[ \t]*=[ \t]*(?:"((?:[^"\\]|\\.)*)"|([!#$%&'*+.^_`|~0-9A-Za-z-]+))$/u.exec(parameter);
     if (attribute?.[1].toLowerCase() === "error") {
       if (error !== undefined) return undefined;
       error = (attribute[2] ?? attribute[3]).replace(/\\(.)/gu, "$1");

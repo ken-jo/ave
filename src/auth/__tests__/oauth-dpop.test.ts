@@ -198,6 +198,36 @@ describe("proof token requests", () => {
 });
 
 describe("proof resource requests", () => {
+  it.each(['error = "use_dpop_nonce"', 'error= "use_dpop_nonce"', 'error =use_dpop_nonce', 'error\t=\t"use_dpop_nonce"'])(
+    "retries a resource nonce challenge with parameter whitespace: %s", async parameter => {
+      const wire = transport(json(401, {}, { "WWW-Authenticate": `DPoP realm="x", ${parameter}`, "DPoP-Nonce": "nonce" }), json(200, {}));
+      const fetch = createDpopFetch(await DpopKey.create(), wire.fetch, "resource", "access-token");
+      expect((await fetch("https://resource.example.test/mcp")).status).toBe(200);
+      expect(wire.requests).toHaveLength(2);
+      expect(requestProof(wire.requests[1]).payload.nonce).toBe("nonce");
+      expect(verifyProof(requestProof(wire.requests[1]))).toBe(true);
+    },
+  );
+
+  it.each(['error = "invalid_dpop_proof"', 'error= "invalid_dpop_proof"', 'error =invalid_dpop_proof', 'error\t=\t"invalid_dpop_proof"'])(
+    "terminates a spaced invalid-proof challenge without retry: %s", async parameter => {
+      const wire = transport(json(401, {}, { "WWW-Authenticate": `DPoP realm="x", ${parameter}` }));
+      const fetch = createDpopFetch(await DpopKey.create(), wire.fetch, "resource", "access-token");
+      await expect(fetch("https://resource.example.test/mcp")).rejects.toMatchObject({ code: "oauth-dpop-failed" });
+      expect(wire.requests).toHaveLength(1);
+    },
+  );
+
+  it.each(['Bearer realm="x", error = "use_dpop_nonce"', 'Bearer realm="x", error = "invalid_dpop_proof"',
+    'DPoP realm="x", Bearer error = "use_dpop_nonce"', 'DPoP realm="error = invalid_dpop_proof", Bearer error = "invalid_dpop_proof"'])(
+    "does not mistake another scheme's spaced error for a proof error: %s", async challenge => {
+      const wire = transport(json(401, {}, { "WWW-Authenticate": challenge, "DPoP-Nonce": "unused" }));
+      const fetch = createDpopFetch(await DpopKey.create(), wire.fetch, "resource", "access-token");
+      expect((await fetch("https://resource.example.test/mcp")).status).toBe(401);
+      expect(wire.requests).toHaveLength(1);
+    },
+  );
+
   it("binds the access token and retries only a matching resource nonce challenge", async () => {
     const wire = transport(json(401, {}, { "WWW-Authenticate": 'Bearer realm="legacy", DPoP realm="tools, resources", error="use_dpop_nonce"',
       "DPoP-Nonce": "resource-nonce" }), json(200, {}, { "DPoP-Nonce": "next-nonce" }), json(200, {}));

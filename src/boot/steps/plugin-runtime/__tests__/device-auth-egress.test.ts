@@ -19,7 +19,7 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 const ISSUER = "https://issuer.example.test";
 const RESOURCE = "https://api.example.test/resource";
 
-function fixture(options: { dpop?: boolean } = {}) {
+function fixture(options: { dpop?: boolean; challenge?: "use_dpop_nonce" | "invalid_dpop_proof" } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "device-egress-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const secrets = new Map<string, string>();
@@ -36,7 +36,7 @@ function fixture(options: { dpop?: boolean } = {}) {
     if (path.includes(".well-known")) return json({ issuer: ISSUER, device_authorization_endpoint: `${ISSUER}/device`, token_endpoint: `${ISSUER}/token`,
       ...(options.dpop ? { dpop_signing_alg_values_supported: ["ES256"] } : {}) });
     if (path === "/device") return json({ device_code: "secret-device-grant", user_code: "CODE-1234", verification_uri: `${ISSUER}/verify`, expires_in: 60, interval: 1 });
-    if (path === "/token") return json({ access_token: "host-access-token", refresh_token: "secret-refresh-grant", token_type: options.dpop ? "DPoP" : "Bearer", expires_in: 0 });
+    if (path === "/token") return json({ access_token: "host-access-token", refresh_token: "secret-refresh-grant", token_type: options.dpop ? "DPoP" : "Bearer", expires_in: options.challenge ? 3600 : 0 });
     if (options.dpop) {
       const proof = request.headers.get("dpop");
       if (!proof) throw new Error("Missing fixture proof");
@@ -47,6 +47,12 @@ function fixture(options: { dpop?: boolean } = {}) {
         { key: publicKey, dsaEncoding: "ieee-p1363" }, Buffer.from(signature, "base64url"))) {
         return new Response("", { status: 401, headers: { "www-authenticate": 'DPoP error="invalid_dpop_proof"' } });
       }
+    }
+    const resourceAttempts = requests.filter(request => request.url === RESOURCE).length;
+    if (options.challenge && (options.challenge === "invalid_dpop_proof" || resourceAttempts === 1)) {
+      return new Response("", { status: 401, headers: {
+        "www-authenticate": `DPoP realm="x", error = "${options.challenge}"`, "dpop-nonce": "resource-nonce",
+      } });
     }
     return new Response("resource");
   });
@@ -79,6 +85,26 @@ function fixture(options: { dpop?: boolean } = {}) {
 }
 
 describe("device authorization at the live plugin network boundary", () => {
+  it("retries a spaced nonce challenge once through host egress without refreshing", async () => {
+    const f = fixture({ dpop: true, challenge: "use_dpop_nonce" });
+    const { handle } = await f.api.authDeviceCode.authorize({ issuer: ISSUER, clientId: "public-client", resource: RESOURCE });
+    expect((await f.api.authDeviceCode.fetch({ handle, url: RESOURCE })).ok).toBe(true);
+    const resourceRequests = f.requests.filter(request => request.url === RESOURCE);
+    expect(resourceRequests).toHaveLength(2);
+    const retried = resourceRequests[1].proof;
+    if (!retried) throw new Error("Missing retried proof");
+    expect(JSON.parse(Buffer.from(retried.split(".")[1], "base64url").toString()).nonce).toBe("resource-nonce");
+    expect(f.requests.filter(request => new URLSearchParams(request.body).get("grant_type") === "refresh_token")).toHaveLength(0);
+  });
+
+  it("keeps a spaced invalid-proof challenge terminal instead of entering refresh recovery", async () => {
+    const f = fixture({ dpop: true, challenge: "invalid_dpop_proof" });
+    const { handle } = await f.api.authDeviceCode.authorize({ issuer: ISSUER, clientId: "public-client", resource: RESOURCE });
+    await expect(f.api.authDeviceCode.fetch({ handle, url: RESOURCE })).rejects.toThrow();
+    expect(f.requests.filter(request => request.url === RESOURCE)).toHaveLength(1);
+    expect(f.requests.filter(request => new URLSearchParams(request.body).get("grant_type") === "refresh_token")).toHaveLength(0);
+  });
+
   it.each(["patch", "pAtCh", "custom"])("signs the uppercase HTTP method actually sent for %s", async method => {
     const f = fixture({ dpop: true });
     await runWithEffectGateContext({ headless: false, toolName: "plugin-login" }, async () => {
