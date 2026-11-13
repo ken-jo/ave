@@ -320,7 +320,9 @@ export async function quitElectron(app: ElectronApplication): Promise<void> {
   const child = electronProcesses.get(app);
   if (!child) throw new Error("The native process was not registered at launch");
   const isRunning = child.exitCode === null && child.signalCode === null;
-  const exited = isRunning ? once(child, "exit").then(() => {}) : Promise.resolve();
+  // Native exit disconnects automation. Closing its context again can wait on disposed transports.
+  if (!isRunning) return;
+  const exited = once(child, "exit").then(() => {});
   if (isRunning) {
     const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
       runtimeApp.once("will-quit", () => resolve());
@@ -331,7 +333,7 @@ export async function quitElectron(app: ElectronApplication): Promise<void> {
     });
     await Promise.race([readyToExit, exited]);
   }
-  await app.close().catch(() => {});
+  if (child.exitCode === null && child.signalCode === null) await app.close();
   await exited;
 }
 

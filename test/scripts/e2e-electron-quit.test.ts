@@ -7,7 +7,7 @@ vi.mock("playwright", () => ({ _electron: { launch: launcher } }));
 vi.mock("../e2e/ui/background-electron.js", () => ({ resolveE2eExecutable: () => undefined }));
 
 async function application(exitCode: number | null = null) {
-  const child = Object.assign(new EventEmitter(), { exitCode, signalCode: null, kill: vi.fn() });
+  const child = Object.assign(new EventEmitter(), { exitCode, signalCode: null as string | null, kill: vi.fn() });
   const nativeApp = Object.assign(new EventEmitter(), { quit: vi.fn() });
   const quit = nativeApp.quit;
   const evaluate = vi.fn(async (operation: (module: { app: typeof nativeApp }) => void) => operation({ app: nativeApp }));
@@ -55,7 +55,7 @@ describe("native test application quit", () => {
       runtime.child.emit("exit", 0, null);
     });
     await quitElectron(runtime.app);
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("still requires native exit when the quit response transport closes", async () => {
@@ -68,7 +68,7 @@ describe("native test application quit", () => {
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
     await quitting;
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("does not hold native exit behind a pending quit response", async () => {
@@ -78,7 +78,7 @@ describe("native test application quit", () => {
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
     await quitting;
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("reports a child-process error without waiting for the quit response", async () => {
@@ -92,19 +92,28 @@ describe("native test application quit", () => {
     expect(runtime.close).not.toHaveBeenCalled();
   });
 
-  it("does not request quit again after the native process has exited", async () => {
+  it("does not reopen automation teardown after the native process has exited", async () => {
     const runtime = await application(0);
     await quitElectron(runtime.app);
     expect(runtime.evaluate).not.toHaveBeenCalled();
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
+  it("does not close automation for a process terminated by signal", async () => {
+    const runtime = await application();
+    runtime.child.signalCode = "SIGKILL";
+    await quitElectron(runtime.app);
+    expect(runtime.evaluate).not.toHaveBeenCalled();
+    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.child.kill).not.toHaveBeenCalled();
+  });
+
   it("accepts a process already closed by a spec after its automation implementation is disposed", async () => {
     const runtime = await application(0);
     runtime.process.mockImplementation(() => { throw new TypeError("Native implementation was disposed"); });
     await expect(quitElectron(runtime.app)).resolves.toBeUndefined();
     expect(runtime.process).toHaveBeenCalledOnce();
     expect(runtime.evaluate).not.toHaveBeenCalled();
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
     expect(runtime.child.kill).not.toHaveBeenCalled();
   });
 });
