@@ -1,6 +1,7 @@
 /** Remembered approval shares finalized-input identity with recorded requests; one-shot choices never persist.
  * Target-wide changes retain risk checks except an explicitly granted external tool whose scope covers every argument. */
 import { matchesMcpToolApprovalMemory } from "../../shared/mcp-tool-approval.js";
+import { exactCanonicalStringify } from "../../shared/exact-json.js";
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
 import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
@@ -12,6 +13,8 @@ import {
   approvalCacheKeyIdentity,
   isExactArgsDecision,
   lookupApproval,
+  lookupUserDecision,
+  lookupReadjudicationApproval,
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
 import type { UserApprovalHitPayload, UserApprovalVerdict } from "../../shared/permissions-events.js";
@@ -120,6 +123,24 @@ export async function tryUserApprovalMemorySkip(
     executionCwd,
     sessionId,
   ).catch(() => null); // storage failure must never block tool execution
+
+  // A human's exact re-adjudication has its own store namespace. Its evidence
+  // describes the original decision and is not re-evaluated on reuse.
+  if (source === "plugin" && pluginId !== undefined && context.otherPrincipal !== true) {
+    try {
+      const restrictive = await lookupUserDecision(toolName, canonicalArgs, source, context.trustOrigin,
+        identity, executionCwd, sessionId);
+      if (restrictive?.decision === "deny") return null;
+      const readjudicated = await lookupReadjudicationApproval(toolName, exactCanonicalStringify(finalInput), source, pluginId,
+        context.trustOrigin, executionCwd, sessionId);
+      if (readjudicated) {
+        disclose?.({ toolName, scope: readjudicated.scope, verdictAtApproval: "medium" });
+        return { decision: "allow", reason: `prior human re-adjudication (scope=${readjudicated.scope})` };
+      }
+    } catch {
+      // No exact re-adjudication authority; any independent ordinary approval retains its existing checks below.
+    }
+  }
 
   // No active (non-revoked) approval → fall through to the approval dock.
   if (!approval) return null;
