@@ -265,9 +265,12 @@ export class PluginDeviceAuth {
     if (!live) throw new Error("oauth-device-unknown-handle");
     const target = authUrl(options.url);
     if (target.href !== live.saved.resource) throw new Error("oauth-device-audience-denied");
-    if (options.method !== undefined && (typeof options.method !== "string" || !/^[A-Za-z]+$/u.test(options.method))) {
+    const rawMethod = options.method;
+    if (rawMethod !== undefined && (typeof rawMethod !== "string" || !/^[A-Za-z]+$/u.test(rawMethod))) {
       throw new Error("oauth-device-invalid-options");
     }
+    // Host egress uppercases verbs; the proof must sign that exact spelling.
+    const method = rawMethod?.toUpperCase();
     if (options.body !== undefined && typeof options.body !== "string") throw new Error("oauth-device-invalid-options");
     let headers: Headers;
     try { headers = new Headers(options.headers); }
@@ -288,7 +291,7 @@ export class PluginDeviceAuth {
       const fetchFn = live.resourceFetch ?? (live.key
         ? createDpopFetch(live.key, this.dependencies.fetch, "resource", live.saved.tokens.access_token) : this.dependencies.fetch);
       live.resourceFetch = fetchFn;
-      return fetchFn(target, { method: options.method, headers, body: options.body, redirect: "error", signal: requestSignal });
+      return fetchFn(target, { method, headers, body: options.body, redirect: "error", signal: requestSignal });
     };
     let response = await send();
     if (response.status === 401 && !refreshed && live.saved.tokens.refresh_token) {

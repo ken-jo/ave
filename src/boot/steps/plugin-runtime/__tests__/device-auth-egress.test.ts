@@ -1,3 +1,4 @@
+import { createPublicKey, verify } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,23 +19,35 @@ afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 const ISSUER = "https://issuer.example.test";
 const RESOURCE = "https://api.example.test/resource";
 
-function fixture() {
+function fixture(options: { dpop?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "device-egress-"));
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const secrets = new Map<string, string>();
-  const requests: Array<{ url: string; body: string }> = [];
+  const requests: Array<{ url: string; body: string; method: string; proof: string | null }> = [];
   const disposers: Array<() => void> = [];
   cleanups.push(() => { for (const dispose of disposers) dispose(); });
   const audit = vi.fn();
   const transport = directHostFetchTransport(async (input, init) => {
     const request = new Request(input, init);
     const body = await request.text();
-    requests.push({ url: request.url, body });
+    requests.push({ url: request.url, body, method: request.method, proof: request.headers.get("dpop") });
     const path = new URL(request.url).pathname;
     const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
-    if (path.includes(".well-known")) return json({ issuer: ISSUER, device_authorization_endpoint: `${ISSUER}/device`, token_endpoint: `${ISSUER}/token` });
+    if (path.includes(".well-known")) return json({ issuer: ISSUER, device_authorization_endpoint: `${ISSUER}/device`, token_endpoint: `${ISSUER}/token`,
+      ...(options.dpop ? { dpop_signing_alg_values_supported: ["ES256"] } : {}) });
     if (path === "/device") return json({ device_code: "secret-device-grant", user_code: "CODE-1234", verification_uri: `${ISSUER}/verify`, expires_in: 60, interval: 1 });
-    if (path === "/token") return json({ access_token: "host-access-token", refresh_token: "secret-refresh-grant", token_type: "Bearer", expires_in: 0 });
+    if (path === "/token") return json({ access_token: "host-access-token", refresh_token: "secret-refresh-grant", token_type: options.dpop ? "DPoP" : "Bearer", expires_in: 0 });
+    if (options.dpop) {
+      const proof = request.headers.get("dpop");
+      if (!proof) throw new Error("Missing fixture proof");
+      const [header, payload, signature] = proof.split(".");
+      const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+      const publicKey = createPublicKey({ key: JSON.parse(Buffer.from(header, "base64url").toString()).jwk, format: "jwk" });
+      if (claims.htm !== request.method || !verify("sha256", Buffer.from(`${header}.${payload}`),
+        { key: publicKey, dsaEncoding: "ieee-p1363" }, Buffer.from(signature, "base64url"))) {
+        return new Response("", { status: 401, headers: { "www-authenticate": 'DPoP error="invalid_dpop_proof"' } });
+      }
+    }
     return new Response("resource");
   });
   const permissionManager = new PermissionManager(join(dir, "permissions.json"));
@@ -66,6 +79,19 @@ function fixture() {
 }
 
 describe("device authorization at the live plugin network boundary", () => {
+  it.each(["patch", "pAtCh", "custom"])("signs the uppercase HTTP method actually sent for %s", async method => {
+    const f = fixture({ dpop: true });
+    await runWithEffectGateContext({ headless: false, toolName: "plugin-login" }, async () => {
+      const { handle } = await f.api.authDeviceCode.authorize({ issuer: ISSUER, clientId: "public-client", resource: RESOURCE });
+      const response = await f.api.authDeviceCode.fetch({ handle, url: RESOURCE, method, body: "update" });
+      expect(response.ok).toBe(true);
+    });
+    const request = f.requests.find(request => request.url === RESOURCE);
+    if (!request?.proof) throw new Error("Missing resource proof");
+    const claims = JSON.parse(Buffer.from(request.proof.split(".")[1], "base64url").toString());
+    expect(request.method).toBe(method.toUpperCase());
+    expect(claims.htm).toBe(request.method);
+  });
   it("keeps private grant bodies out of review and logs while retaining ordinary resource body inspection", async () => {
     const f = fixture();
     await runWithEffectGateContext({ headless: false, toolName: "plugin-login" }, async () => {
