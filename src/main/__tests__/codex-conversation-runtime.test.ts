@@ -80,7 +80,8 @@ interface Harness {
 const harnesses: Harness[] = [];
 const TEST_RUNTIME_PARENT = tmpdir();
 
-async function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => boolean | void): Promise<Harness> {
+async function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => boolean | void,
+  onPlanUsage?: CodexConversationRuntimeOptions["onPlanUsage"]): Promise<Harness> {
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-conversation-runtime-"));
   if (process.platform !== "win32") normalizeFixtureAncestorPermissions(runtimeRoot);
   const runtimeHome = join(runtimeRoot, "home");
@@ -102,6 +103,7 @@ async function createHarness(onMessage?: (message: JsonRecord, harness: Harness)
     resolveRuntime: async () => artifact,
     spawn,
     clientVersion: "test-version",
+    onPlanUsage,
   });
   const harness = { runtime, child, runtimeRoot, workspaceDir, spawnCalls, messages, artifact };
   child.stdin.on("data", (chunk: Buffer | string) => {
@@ -404,6 +406,30 @@ describe("native RPC timeout context", () => {
 });
 
 describe("CodexConversationRuntime", () => {
+  it("observes account quota notifications without treating them as turn-scoped usage", async () => {
+    const records = JSON.parse(readFileSync(new URL("./fixtures/subscription-plan-usage-events.json", import.meta.url), "utf8"));
+    const onPlanUsage = vi.fn();
+    const harness = await createHarness((message, current) => {
+      if (message.method === "initialize") reply(current.child, requestId(message), {});
+      if (message.method === "account/read") {
+        reply(current.child, requestId(message), { account: { type: "chatgpt" } });
+        notify(current.child, records.accountUpdated.method, records.accountUpdated.params);
+      }
+    }, onPlanUsage);
+    await expect(harness.runtime.verifyIsolation()).resolves.toBeUndefined();
+    expect(onPlanUsage).toHaveBeenCalledWith([
+      { id: "codex:primary", usedPercent: 31, resetsAt: 1730948100000, windowDurationMins: 15 },
+    ]);
+    expect(harness.runtime.isTurnActive()).toBe(false);
+    notify(harness.child, "account/rateLimits/updated", { rateLimits: { limitId: "codex", secondary: null } });
+    expect(onPlanUsage).toHaveBeenLastCalledWith([{ id: "codex:secondary", removed: true }]);
+    onPlanUsage.mockClear();
+    notify(harness.child, "account/rateLimits/updated", { rateLimits: { limitId: "other" } });
+    expect(onPlanUsage).not.toHaveBeenCalled();
+    onPlanUsage.mockImplementation(() => { throw new Error("Observer failed"); });
+    expect(() => notify(harness.child, records.accountUpdated.method, records.accountUpdated.params)).not.toThrow();
+  });
+
   it("releases executable verification when a held assertion fails", async ({ signal }) => {
     vi.useFakeTimers();
     const gate = holdExecutableVerification();

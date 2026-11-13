@@ -1307,9 +1307,6 @@ describe("HostApi incarnation authority", () => {
     const settings = makeSettingsService(new Map());
     settings.getSecret.mockImplementation((key: string) =>
       key === "plugin.plugin-a.llm.apiKey.openai" ? "synthetic-secret" : undefined);
-    const originalGet = settings.get.getMockImplementation()!;
-    settings.get.mockImplementation((key: string) =>
-      key === "features" ? { hostClassifiesRisk: true } : originalGet(key));
     let revision = 0;
     const listeners = new Set<() => void>();
     settings.getProviderConfigRevision = () => revision;
@@ -1433,14 +1430,7 @@ describe("HostApi incarnation authority", () => {
 });
 
 describe("host fetch binds approved request bodies to transport", () => {
-  function riskSettings(enabled = true) {
-    const settings = makeSettingsService(new Map());
-    const originalGet = settings.get.getMockImplementation()!;
-    settings.get.mockImplementation((key: string) => key === "features" ? { hostClassifiesRisk: enabled } : originalGet(key));
-    return settings;
-  }
-
-  it.each([false, true])("multipart transport data stays approved with risk classification enabled=%s", async (enabled) => {
+  it("multipart transport data stays approved", async () => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-form-data-")));
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode("strict");
@@ -1452,7 +1442,7 @@ describe("host fetch binds approved request bodies to transport", () => {
       sent.push(Array.from(body.entries()));
       return new Response("sent");
     }) as unknown as typeof fetch;
-    const createHostApi = await initAndGetFactory(riskSettings(enabled), { log: vi.fn() }, transport, approvalGate, { permissionManager });
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, transport, approvalGate, { permissionManager });
     const api = createHostApi("plugin-a", { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["93.184.216.34"] } }, pluginDataDirIn(root), activeIncarnation(), "plugin-a");
     const body = new FormData();
     body.set("payload", "approved");
@@ -1466,13 +1456,13 @@ describe("host fetch binds approved request bodies to transport", () => {
     expect(transport).toHaveBeenCalledOnce();
   });
 
-  it.each([false, true])("stream bodies fail before tool network effects with risk classification enabled=%s", async (enabled) => {
+  it("stream bodies fail before tool network effects", async () => {
     const root = tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-stream-body-")));
     const permissionManager = new PermissionManager(join(root, "permissions.json"));
     permissionManager.setMode("allow");
     const approvalGate = { requestAndWait: vi.fn() };
     const transport = vi.fn(async () => new Response("unused")) as unknown as typeof fetch;
-    const createHostApi = await initAndGetFactory(riskSettings(enabled), { log: vi.fn() }, transport, approvalGate, { permissionManager });
+    const createHostApi = await initAndGetFactory(makeSettingsService(new Map()), { log: vi.fn() }, transport, approvalGate, { permissionManager });
     const api = createHostApi("plugin-a", { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"], networkAccess: { allowedDomains: ["93.184.216.34"] } }, pluginDataDirIn(root), activeIncarnation(), "plugin-a");
     const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.close(); } });
     await runWithEffectGateContext({ headless: false, approvalSurface: "interactive", toolName: "sample" }, async () => {

@@ -171,7 +171,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
     // Permission policy host-classifies-risk migration gate. Ships ON; the host derives the effective category from host-owned signals (foreground plugin
     // read-relaxation included) instead of trusting the plugin-declared category. Shadow mode reconciliation completed before this flip; users can still opt out in Settings.
-    hostClassifiesRisk: true,
     // Request OS confinement by default on supported desktop platforms; container-backed shell isolation is available on win32.
     // Stored user values override this default. Settings activation degrades visibly when unavailable; explicit AVE_SANDBOX_ENABLED=1 activation stays fail-closed on macOS/Linux.
     osToolSandbox: process.platform === "darwin" || process.platform === "linux" || process.platform === "win32",

@@ -24,6 +24,7 @@ import { DEFAULT_APPEARANCE } from "../../../../src/shared/appearance-settings.j
 import type { InitialAppearanceResult } from "../../../../src/shared/initial-appearance.js";
 import type { BrowserActionTab } from "../../../../src/tools/browser-tools.js";
 import type { CaptureNativeFixture, CaptureNativeResult } from "./contract.js";
+import { isUniformJpeg, startBrowserPreview, type BrowserPreviewHandle } from "../../../../src/main/browser-observation-preview.js";
 
 configureE2eWindowPolicy();
 // Window replacement between tests keeps this worker-owned process alive.
@@ -44,6 +45,30 @@ let win: MainWindow;
 let guest: WebContents;
 let tabId = "";
 let requestId = "";
+let preview: BrowserPreviewHandle | undefined;
+let previewFrame: ReturnType<CaptureNativeFixture["previewFrame"]> = null;
+
+async function stopPreview(): Promise<void> {
+  await preview?.stop();
+  preview = undefined;
+  previewFrame = null;
+}
+
+async function clickHuman(): ReturnType<CaptureNativeFixture["clickHuman"]> {
+  const tab = record();
+  const origin = browserOrigin(guest.getURL());
+  if (!origin) throw new Error("Capture fixture origin is unavailable");
+  const lease = browserTabRegistry.acquireControl(tab, actor);
+  const live = { tab, signal: tab.actions.signal, leaseId: lease.id,
+    approval: { tabId, origin, documentId: tab.documentId, controlGeneration: tab.controlGeneration } };
+  try {
+    const snapshot = await actions.snapshot(live, {});
+    const ref = /button "Human takeover target"[^\n]*\[ref=(e\d+)\]/.exec(snapshot.text)?.[1];
+    if (!ref) throw new Error("Capture fixture click target is unavailable");
+    await actions.click(live, ref);
+    return guest.executeJavaScript("({ clicks: window.nativeState.humanClicks, trusted: window.lastHumanClickTrusted })");
+  } finally { browserTabRegistry.releaseControl(tabId, lease.id); }
+}
 
 const server = createServer(async (request, response) => {
   if (request.url?.startsWith("/host")) {
@@ -55,7 +80,8 @@ const server = createServer(async (request, response) => {
   } else {
     response.setHeader("content-type", "text/html");
     const page = await fs.readFile(pagePath, "utf8");
-    response.end(page.replace("</style>", "#drag{background:#36a;color:white}body{background:linear-gradient(to bottom,#e5533d 0 480px,#2f78dc 480px 960px,#d6b527 960px 1440px,#914dc8 1440px 1920px,#00a65a 1920px)}</style>").replace('aria-label="Drag source">Drag source</div>', 'aria-label="Drag source"></div>'));
+    response.end(page.replace("</style>", "#drag{background:#36a;color:white}body{background:linear-gradient(to bottom,#e5533d 0 480px,#2f78dc 480px 960px,#d6b527 960px 1440px,#914dc8 1440px 1920px,#00a65a 1920px)}</style>").replace('aria-label="Drag source">Drag source</div>', 'aria-label="Drag source"></div>')
+      .replace("</script>", 'byId("human").addEventListener("click", event => { window.lastHumanClickTrusted = event.isTrusted; });</script>'));
   }
 });
 
@@ -123,6 +149,7 @@ let origin = "";
 let nativeSurfaces: BrowserNativeSurfaceHost | undefined;
 
 async function reset(): Promise<void> {
+  await stopPreview();
   if (guest && !guest.isDestroyed()) guest.setZoomFactor(1);
   nativeSurfaces?.dispose();
   nativeSurfaces = undefined;
@@ -240,9 +267,24 @@ void app.whenReady().then(async () => {
     get pageUrl() { return `${origin}/page`; },
     get targetId() { return guest.id; },
     get windowId() { return win.id; },
-    capture, reset,
+    capture, reset, clickHuman,
+    startPreview: () => {
+      previewFrame = null;
+      preview = startBrowserPreview(guest, {
+        frame: frame => { previewFrame = frame; preview?.rendered(frame.frame); },
+        updating: () => { previewFrame = null; },
+        ended: error => { console.error(error); },
+        isBlank: data => isUniformJpeg(data, buffer => {
+          const image = nativeImage.createFromBuffer(buffer);
+          return { bitmap: image.toBitmap(), ...image.getSize() };
+        }),
+      });
+    },
+    previewFrame: () => previewFrame,
+    stopPreview,
     assertClean: async () => assertNativeBrowserState(win, guest, rendererTabId),
     close: async () => {
+      await stopPreview();
       if (!guest.isDestroyed()) guest.stop();
       nativeSurfaces?.dispose();
       disposeBrowserWorkspaceService();

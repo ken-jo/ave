@@ -49,6 +49,7 @@ const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonl
     "../lib/json-line-reader.js": ["JsonLineReader"],
     "../shared/is-record.js": ["isRecord"],
     "../shared/claude-code-subscription.js": ["CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID"],
+    "../shared/subscription-plan-usage.js": ["SubscriptionPlanUsageWindow"],
     "../shared/tool-timeout-policy.js": ["TOOL_TIMEOUT_POLICY"],
     "./claude-code-subscription-client.js": ["ClaudeCodeSubscriptionError", "claudeCodeLocationError", "sanitizedClaudeCodeEnvironment", "validateClaudeCodeRuntimeDirectories"],
     "./claude-code-stream.js": ["CLAUDE_CODE_MAX_OUTPUT_BYTES", "CLAUDE_CODE_MAX_PROMPT_BYTES", "CLAUDE_CODE_MCP_SERVER_NAME", "claudeCodePrintArgs", "ClaudeCodeStream"],
@@ -61,6 +62,8 @@ const TRANSPORT_IMPORTS: Readonly<Record<string, Readonly<Record<string, readonl
   },
   "claude-code-stream.ts": {
     "../shared/is-record.js": ["isRecord"],
+    "../shared/subscription-plan-usage.js": ["SubscriptionPlanUsageWindow"],
+    "./subscription-plan-usage-parsers.js": ["parseClaudeCodePlanUsage"],
   },
   "claude-code-executable.ts": {
     "node:fs": ["promises"],
@@ -82,7 +85,7 @@ const TRANSPORT_FS_OWNER_DIGESTS: Readonly<Record<string, Readonly<Record<string
     "qualify": "81f861d5ef6826959f50114311c601673f1ffefe0e5e3d0b340f694bf0fcaffb"
   },
   "claude-code-conversation-runtime.ts": {
-    "streamTurn": "10159534fafced47164c2004cdb93928ecddd7a51534125005201c7e204fbc1a"
+    "streamTurn": "158d7cfb5f45f10c9b3c3c9c8593b6150c650a962e5b89982f895f0c62025cc5"
   },
   "claude-code-executable.ts": {
     "pinClaudeCodeExecutable": "16a71e85746f5a6e33d086638a947327418304903228c7f48aafb7fd3176fdd1"

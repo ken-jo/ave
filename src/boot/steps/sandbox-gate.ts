@@ -52,8 +52,7 @@ export function decideSandboxGate(input: SandboxGateInputs): SandboxGateDecision
 /** Host risk classification cannot contain direct filesystem, network, or detached mutations outside HostApi.
  * Warn whenever OS confinement is inactive, including failed settings activation. */
 export function shouldWarnHostClassifyInterlock(input: {
-  hostClassifiesRisk: boolean;
   sandboxActive: boolean;
 }): boolean {
-  return input.hostClassifiesRisk && !input.sandboxActive;
+  return !input.sandboxActive;
 }

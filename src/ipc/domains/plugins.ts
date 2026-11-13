@@ -798,7 +798,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     // Read CSP from the resource's own metadata, never from renderer input.
     const resource = await backend.readUiResource(uri);
     const proxyUrl = createMcpAppProxySession(serverId, resource.csp, resource.permissions);
-    return { proxyUrl, html: resource.html } satisfies McpUiResourceBundle;
+    return { proxyUrl, html: resource.html, hostCapabilities: resource.hostCapabilities } satisfies McpUiResourceBundle;
   });
 
   // Require host-renderer identity and server-owned tools; backend visibility checks precede normal risk and consent gates.

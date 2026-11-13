@@ -291,6 +291,7 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
         {
           uri: "ui://com.example.notes/read.html",
           csp: { connectDomains: ["https://api.example.com"] },
+          hostCapabilities: ["serverTools"],
         },
       ],
       readHtml: async () => "<h1>note</h1>",
@@ -308,6 +309,7 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
     expect(res).toEqual({
       html: "<h1>note</h1>",
       csp: { connectDomains: ["https://api.example.com"] },
+      hostCapabilities: ["serverTools"],
     });
   });
 

@@ -104,6 +104,18 @@ function SubscriptionProvidersSection({
 }
 
 describe("SubscriptionAuthControls", () => {
+  it("shows reported plan gauges only while connected", () => {
+    const status = connectedCodex().status;
+    if (!status) throw new Error("Missing connected provider status");
+    const planUsage = { observedAt: Date.now(), windows: [{ id: "codex:primary", usedPercent: 43 }] };
+    const { rerender } = renderProviders([connectedCodex({ status: { ...status, planUsage } })], {});
+    expect(screen.getByText("43% used")).toBeVisible();
+    rerender(<SubscriptionProvidersSection providers={[connectedCodex({ status: {
+      ...status, connection: "signed-out", planUsage,
+    } })]} actions={{}} />);
+    expect(screen.queryByTestId("subscription-plan-usage")).toBeNull();
+  });
+
   it("carries nothing but sign-in: no header, no state word, no refresh, no model controls", () => {
     renderProviders([connectedCodex()], { refreshStatus: vi.fn(), useForChat: vi.fn(), logout: vi.fn() });
 

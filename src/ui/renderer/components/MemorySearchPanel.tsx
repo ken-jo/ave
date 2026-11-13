@@ -14,6 +14,10 @@ import { projectRootEquals, type ProjectIdentity } from "../../../shared/project
 import { formatRelativeTime, type RelativeTimeLabels } from "../../../shared/format-time.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 import { sessionDisplayTitle } from "../../../shared/suggestions-session.js";
+import type { MemoryKind, MemorySourceKind } from "../../../memory/memory-manager.js";
+
+const KIND_FILTERS = ["preference", "constraint", "fact", "goal", "reference", "note"] as const satisfies readonly MemoryKind[];
+const SOURCE_FILTERS = ["user", "assistant", "import", "capture", "unknown"] as const satisfies readonly (MemorySourceKind | "unknown")[];
 
 const RELATIVE_TIME_LABELS: RelativeTimeLabels = {
   justNow: () => t("memorySearchPanel.justNow"),
@@ -149,18 +153,29 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [sort, setSort] = useState<"recent" | "kind" | "origin">("recent");
   const [scope, setScope] = useState<"all" | "project" | "global">("all");
+  const [kindFilter, setKindFilter] = useState<MemoryKind | null>(null);
+  const [sourceFilter, setSourceFilter] = useState<MemorySourceKind | "unknown" | null>(null);
   const [originFilter, setOriginFilter] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, MemoryDetailResult>>({});
   const [detailRetry, setDetailRetry] = useState(0);
   const projectKey = `${project?.projectRoot ?? ""}\0${project?.projectName ?? ""}\0${project?.isDefault === true}`;
   const detailCache = useRef({ projectKey, catalogRevision, entries: {} as Record<string, MemoryDetailResult> });
   const summaryById = useMemo(() => new Map(summaries?.ok ? summaries.entries.map((entry) => [entry.id, entry]) : []), [summaries]);
-  const selected = [...noteCatalog, ...noteResults].find((note) => (note.filename ?? note.title) === selectedKey);
+  const selected = noteCatalog.find((note) => (note.filename ?? note.title) === selectedKey)
+    ?? noteResults.find((note) => (note.filename ?? note.title) === selectedKey);
   const globalNotes = noteCatalog.filter(isGlobalMemory);
   const localNotes = noteCatalog.filter((note) => !note.isIndex && !isGlobalMemory(note));
-  const projectEmpty = !!project?.projectRoot && localNotes.length === 0 && !query.trim() && scope !== "global";
-  const visibleNotes = [...(originFilter ? noteCatalog.filter((note) => note.origin?.sessionId === originFilter) : noteResults)]
-    .filter((note) => scope === "global" ? isGlobalMemory(note) : scope === "project" || projectEmpty ? !isGlobalMemory(note) : true)
+  const filtersActive = kindFilter !== null || sourceFilter !== null;
+  const projectEmpty = !!project?.projectRoot && localNotes.length === 0 && !query.trim() && scope !== "global" && !filtersActive && !originFilter;
+  const scopedNotes = noteResults.filter((note) =>
+    (!originFilter || note.origin?.sessionId === originFilter)
+    && (scope === "global" ? isGlobalMemory(note) : scope === "project" ? !isGlobalMemory(note) : true));
+  const filterNotes = scopedNotes.filter((note) => !note.isIndex);
+  const matchesKind = (note: NoteResult) => kindFilter === null || (note.kind ?? "note") === kindFilter;
+  const matchesSource = (note: NoteResult) => sourceFilter === null || (note.source ?? "unknown") === sourceFilter;
+  const visibleNotes = scopedNotes.filter((note) =>
+    (!filtersActive || !note.isIndex) && matchesKind(note) && matchesSource(note)
+    && (!projectEmpty || !isGlobalMemory(note)))
     .sort((a, b) => {
       if (sort === "kind") return (a.kind ?? "note").localeCompare(b.kind ?? "note");
       const aSummary = a.id ? summaryById.get(a.id) : undefined;
@@ -199,6 +214,8 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
     setOriginFilter(null);
     setSelectedKey(null);
     setScope("all");
+    setKindFilter(null);
+    setSourceFilter(null);
   }, [projectKey]);
 
   useEffect(() => {
@@ -206,6 +223,8 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
       setQuery(initialQuery.text);
       setOriginFilter(null);
       setScope("all");
+      setKindFilter(null);
+      setSourceFilter(null);
     }
   }, [initialQuery, setQuery]);
 
@@ -342,7 +361,7 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
             {!summaries.scopeCounts.defaultProjectApplicable && <span className="block text-tiny">{t("memorySearchPanel.notAppliedHere")}</span>}
           </div>}
         </section>}
-        {recent.length > 0 && !query.trim() ? (
+        {recent.length > 0 && !query.trim() && !filtersActive && !originFilter ? (
           <section className="min-w-0 rounded-lg border bg-muted/(--opacity-subtle) p-3" aria-label={t("memorySaveNotice.recentTitle")} data-testid="memory-recent-strip">
             <h3 className="pb-2 text-xs font-semibold">{t("memorySaveNotice.recentTitle")} {recent.length} <span className="font-normal text-muted-foreground">{t("memorySearchPanel.recentDescription")}</span></h3>
             <ul className="space-y-1">
@@ -364,9 +383,9 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
           <TabsList className="w-full">
             <TabsTrigger value="notes" className="flex-1 gap-1.5">
               {t("memorySearchPanel.notesTab")}
-              {noteResults.length > 0 && (
+              {visibleNotes.length > 0 && (
                 <span className="inline-flex items-center rounded-full bg-primary px-1.5 py-0.5 text-tiny font-semibold leading-none text-primary-foreground">
-                  {noteResults.length}
+                  {visibleNotes.length}
                 </span>
               )}
             </TabsTrigger>
@@ -380,6 +399,25 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
             </TabsTrigger>
           </TabsList>
           <TabsContent value="notes" className="mt-2 flex-1 min-h-0 overflow-hidden rounded-lg border data-[state=active]:flex data-[state=active]:flex-col">
+            <div className="space-y-2 border-b p-3">
+              <fieldset className="flex min-w-0 flex-wrap items-center gap-1">
+                <legend className="sr-only">{t("memorySearchPanel.filterKind")}</legend>
+                <span aria-hidden="true" className="mr-1 text-xs text-muted-foreground">{t("memorySearchPanel.filterKind")}</span>
+                {[null, ...KIND_FILTERS].map((value) => <Button key={value ?? "all"} size="sm" variant={kindFilter === value ? "secondary" : "ghost"} aria-pressed={kindFilter === value}
+                  onClick={() => { setKindFilter(value); setSelectedKey(null); }}>
+                  {value ? t(`memorySearchPanel.kind.${value}`) : t("memorySearchPanel.filterAll")} <span className="ml-1 tabular-nums text-muted-foreground">{filterNotes.filter((note) => matchesSource(note) && (value === null || (note.kind ?? "note") === value)).length}</span>
+                </Button>)}
+              </fieldset>
+              <fieldset className="flex min-w-0 flex-wrap items-center gap-1">
+                <legend className="sr-only">{t("memorySearchPanel.filterSource")}</legend>
+                <span aria-hidden="true" className="mr-1 text-xs text-muted-foreground">{t("memorySearchPanel.filterSource")}</span>
+                {[null, ...SOURCE_FILTERS].map((value) => <Button key={value ?? "all"} size="sm" variant={sourceFilter === value ? "secondary" : "ghost"} aria-pressed={sourceFilter === value}
+                  onClick={() => { setSourceFilter(value); setSelectedKey(null); }}>
+                  {value ? t(`memorySearchPanel.source.${value}`) : t("memorySearchPanel.filterAll")} <span className="ml-1 tabular-nums text-muted-foreground">{filterNotes.filter((note) => matchesKind(note) && (value === null || (note.source ?? "unknown") === value)).length}</span>
+                </Button>)}
+              </fieldset>
+              {originFilter && <Button size="sm" variant="outline" onClick={() => setOriginFilter(null)}>{t("memorySearchPanel.clearOriginFilter")}</Button>}
+            </div>
             {noteResults.length > 0 && !loading && (
               <div className="flex items-center rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2">
                 <span className="flex-1 text-xs font-semibold text-muted-foreground">{t("memorySearchPanel.notesTab")}</span>
@@ -393,20 +431,20 @@ export function MemorySearchPanel({ api, project, defaultProject, onStartConvers
               <div className="flex flex-col gap-2 p-3">
                 {loading ? (
                   <p className="py-4 text-xs text-muted-foreground">{t("memorySearchPanel.searching")}</p>
+                ) : visibleNotes.length === 0 && (filtersActive || originFilter) ? (
+                  <EmptyState align="center" className="px-4 py-8" title={t("memorySearchPanel.noFilterResults")}
+                    action={{ label: t("memorySearchPanel.clearFilters"), onClick: () => { setKindFilter(null); setSourceFilter(null); setOriginFilter(null); } }} />
                 ) : (projectEmpty || visibleNotes.filter((note) => !note.isIndex).length === 0) && !query.trim() ? (
                   <EmptyState align="center" className="min-h-64 px-4 py-8" title={t("memorySearchPanel.noNotesEmpty")}
                     action={{ label: t("memorySearchPanel.startConversation"), disabled: busy || !onStartConversation, onClick: () => void startConversation() }} />
                 ) : visibleNotes.length === 0 ? <p className="py-4 text-xs text-muted-foreground">{t("memorySearchPanel.noResults")}</p> : (
-                  <>
-                  {originFilter && <Button size="sm" variant="outline" onClick={() => setOriginFilter(null)}>{t("memorySearchPanel.clearOriginFilter")}</Button>}
-                  {visibleNotes.map((note, index) => {
+                  visibleNotes.map((note, index) => {
                     const summary = note.id ? summaryById.get(note.id) : undefined;
                     return <div key={(note.filename ?? note.title) + note.updatedAt}>
                       {sort === "origin" && (index === 0 || note.origin?.sessionId !== visibleNotes[index - 1]?.origin?.sessionId) && <h3 className="pb-2 pt-3 text-xs font-medium text-muted-foreground">{summary?.origin.status === "recorded" ? summary.origin.title || shortSessionId(summary.origin.sessionId) : summary?.origin.status === "unavailable" ? t("memorySearchPanel.originUnavailable") : t("memorySearchPanel.noOrigin")}</h3>}
                       <NoteRow note={note} selected={(note.filename ?? note.title) === selectedKey} summary={summary} onSelect={() => selectNote(note)} />
                     </div>;
-                  })}
-                  </>
+                  })
                 )}
               </div>
             </ScrollArea>

@@ -605,6 +605,22 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     expect(schemaKeys).not.toContain("clipboardRead");
   });
 
+  it.each([
+    [[], true],
+    [["serverTools", "message", "serverResources", "openLinks", "downloadFile", "updateModelContext"], true],
+    [["serverTools", "sampling"], false],
+    [["serverTools", "serverTools"], false],
+    ["serverTools", false],
+    [[null], false],
+  ])("validates resource host capabilities %j", async (hostCapabilities, valid) => {
+    const validator = await buildManifestValidator();
+    expect(validator(agentPluginsDocument({
+      id: "ui-resource-plugin", name: "Resource", version: "1.0.0",
+      description: "Declared card operations.", entry: "dist/index.js", tools: [],
+      uiResources: [{ uri: "ui://ui-resource-plugin/card.html", hostCapabilities }],
+    }))).toBe(valid);
+  });
+
   it("accepts a uiResources[] entry declaring only its uri (policy is optional)", async () => {
     const validator = await buildManifestValidator();
     expect(

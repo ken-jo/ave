@@ -162,7 +162,6 @@ export interface ExecutionStageContext {
   source: ToolSource;
   trust: TrustLevel;
   invocationCategory: ToolCategory;
-  declaredCategoryForEffectShadow: ToolCategory;
   /** Layer 1 read fence for this invocation; see ToolExecutionContext. */
   blockReadsOutsideWorkingDirectories: boolean;
   finalInput: Record<string, unknown>;
@@ -238,7 +237,6 @@ export async function executeAuthorizedToolInvocation(
     source,
     trust,
     invocationCategory,
-    declaredCategoryForEffectShadow,
     blockReadsOutsideWorkingDirectories,
     finalInput,
     sessionId,
@@ -1374,7 +1372,6 @@ export async function executeAuthorizedToolInvocation(
         toolName: tool.name,
         source: tool.source,
         ...(tool.pluginId ? { pluginId: tool.pluginId } : {}),
-        declaredCategory: declaredCategoryForEffectShadow,
         hostObservable: tool.source === "plugin",
         hostObservedEffect: effectSummary,
       },

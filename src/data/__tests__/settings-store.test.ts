@@ -1686,12 +1686,27 @@ describe("SettingsService role presets", () => {
     expect(reloaded.get("features")?.a2aLoopbackServer).toBe(true);
   });
 
-  it("keeps host risk classification enabled and plugin-worker confinement opt-in", () => {
+  it("keeps plugin-worker confinement opt-in", () => {
     // pluginWorkerConfinement (workers, plugin children, plugin hooks, MCP servers) ships OFF
     // everywhere. It is separate from osToolSandbox so the shell default cannot confine workers on its own.
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("features")?.hostClassifiesRisk ?? false).toBe(true);
+    expect(service.get("features")).not.toHaveProperty("hostClassifiesRisk");
     expect(service.get("features")?.pluginWorkerConfinement).toBe(false);
+  });
+
+  it.each([true, false, "invalid"])("silently removes a stored risk toggle %s without changing other features", (value) => {
+    const settingsPath = join(userDataPath, "ave-settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ features: {
+      hostClassifiesRisk: value, osToolSandbox: false, pluginWorkerConfinement: true,
+    } }), "utf-8");
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("features")).not.toHaveProperty("hostClassifiesRisk");
+    expect(service.get("features")).toMatchObject({ osToolSandbox: false, pluginWorkerConfinement: true });
+    const saved = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    expect(saved.features).not.toHaveProperty("hostClassifiesRisk");
+    expect(saved.features).toMatchObject({ osToolSandbox: false, pluginWorkerConfinement: true });
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("features")).toEqual(service.get("features"));
   });
 
   it("ships shell egress asks ON and keeps a stored opt-out", async () => {

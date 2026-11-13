@@ -1099,7 +1099,7 @@ export class McpClient {
       ? textPart._meta?.ui
       : undefined;
 
-    return { html: textPart.text, csp: meta?.csp, permissions: meta?.permissions };
+    return { html: textPart.text, csp: meta?.csp, permissions: meta?.permissions, hostCapabilities: meta?.["ai.agent-connector.ave/hostCapabilities"] };
   }
 
   /** The `listChanged` kinds the CURRENT snapshot advertises. */

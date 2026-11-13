@@ -1,7 +1,8 @@
 import type { NativeImage, WebContents } from "electron";
 import { BROWSER_WORKSPACE_LIMITS, type BrowserPreview, type BrowserPreviewImage, type BrowserWorkspaceTarget } from "../../shared/browser-workspace.js";
+import { holdBrowserTabPainting } from "./browser-tab-activity.js";
 
-interface BrowserPreviewTarget { readonly guest: Pick<WebContents, "id" | "isDestroyed" | "capturePage" | "getURL">; readonly documentGeneration: number }
+interface BrowserPreviewTarget { readonly guest: Pick<WebContents, "id" | "isDestroyed" | "capturePage" | "getURL" | "getBackgroundThrottling" | "setBackgroundThrottling">; readonly documentGeneration: number }
 export interface BrowserWorkspacePreviewDeps {
   liveTab(windowId: number, tabId: string): BrowserPreviewTarget | null;
   isWindowVisible(windowId: number): boolean;
@@ -75,14 +76,29 @@ export class BrowserWorkspacePreview {
     };
     this.inFlight.set(windowId, target.guest.id);
     this.lastCapture.set(windowId, now);
+    let releasePainting: (() => void) | undefined;
+    let outcome: { preview: BrowserPreview } | { error: unknown };
     try {
       let image: NativeImage;
-      try { image = await target.guest.capturePage(undefined, { stayHidden: true, stayAwake: false }); }
-      catch { throw new Error("capture-unavailable"); }
+      // A capturer count alone does not keep a throttled owning window drawing frames.
+      try {
+        releasePainting = holdBrowserTabPainting(target.guest);
+        image = await target.guest.capturePage(undefined, { stayHidden: false, stayAwake: false });
+      } catch (cause) { throw new Error("capture-unavailable", { cause }); }
       if (!valid()) throw new Error("stale-document");
       const encoded = encodeBrowserPreview(image);
       if (!encoded || !valid()) throw new Error("capture-unavailable");
-      return { ...request, ...encoded };
+      outcome = { preview: { ...request, ...encoded } };
+    } catch (error) {
+      outcome = { error };
+    }
+    try { releasePainting?.(); }
+    catch (cause) {
+      outcome = { error: "error" in outcome
+        ? new AggregateError([outcome.error, cause], outcome.error instanceof Error ? outcome.error.message : "capture-unavailable")
+        : new Error("capture-unavailable", { cause }) };
     } finally { this.inFlight.delete(windowId); }
+    if ("error" in outcome) throw outcome.error;
+    return outcome.preview;
   }
 }

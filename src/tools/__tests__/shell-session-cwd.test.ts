@@ -248,7 +248,7 @@ describe.skipIf(process.platform === "win32")("executor session working director
     const preHookInputs = vi.spyOn(hooks, "runPreHooks");
     const executor = new ToolExecutor(
       registry, hooks, permissions, new BashAstValidator({ mode: "deny" }),
-      undefined, undefined, undefined, () => true,
+      undefined, undefined, undefined,
     );
     const started: Record<string, unknown>[] = [];
     const bash = async (sessionId: string, id: string, command: string) => {

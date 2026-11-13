@@ -16,6 +16,9 @@ configureE2eWindowPolicy();
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_ID = "e2e-mcp-server";
+const capabilityCase = process.argv.find((arg) => arg.startsWith("--capability-case="))?.split("=")[1];
+const hostCapabilities = capabilityCase === "declared" ? ["serverTools"]
+  : capabilityCase === "over-declared" ? ["serverTools", "sampling", "logging"] : undefined;
 
 // Register before app readiness, as production does.
 protocol.registerSchemesAsPrivileged([MCP_APP_CUSTOM_SCHEME]);
@@ -57,6 +60,7 @@ app.whenReady().then(() => {
         proxyUrl,
         partition: mcpAppPartitionName(SERVER_ID),
         html: innerHtml,
+        hostCapabilities,
       })})`,
     );
   });

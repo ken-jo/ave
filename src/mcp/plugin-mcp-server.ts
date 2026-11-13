@@ -201,12 +201,13 @@ export class PluginMcpServer {
           const ui: McpUiResourceMeta = {};
           if (resource.csp !== undefined) ui.csp = resource.csp;
           if (resource.permissions !== undefined) ui.permissions = resource.permissions;
+          if (resource.hostCapabilities !== undefined) ui["ai.agent-connector.ave/hostCapabilities"] = resource.hostCapabilities;
           const content: Record<string, unknown> = {
             uri,
             mimeType: MCP_APP_MIME_TYPE,
             text: resource.html,
           };
-          if (ui.csp !== undefined || ui.permissions !== undefined) content._meta = { ui };
+          if (Object.keys(ui).length > 0) content._meta = { ui };
           return {
             jsonrpc: "2.0",
             id,

@@ -1135,9 +1135,6 @@ export function normalizeFeatureFlags(input: unknown): FeatureFlags {
   if (typeof obj.onboardingCompleted === "boolean") {
     result.onboardingCompleted = obj.onboardingCompleted;
   }
-  if (typeof obj.hostClassifiesRisk === "boolean") {
-    result.hostClassifiesRisk = obj.hostClassifiesRisk;
-  }
   if (typeof obj.osToolSandbox === "boolean") {
     result.osToolSandbox = obj.osToolSandbox;
   }

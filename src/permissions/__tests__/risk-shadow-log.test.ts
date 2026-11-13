@@ -1,9 +1,9 @@
-// Category/effect shadow rows share correlation and reach the dedicated non-HMAC audit sink; emission must never enforce or alter permission.
+// Observed effects reach the dedicated non-HMAC sink without altering permission.
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emitRiskShadowLog, emitEffectShadowLog } from "../reviewer/risk-shadow-log.js";
+import { emitEffectShadowLog } from "../reviewer/risk-shadow-log.js";
 import { AuditLogger, type AuditEntry } from "../../audit/audit-logger.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { auditPayload } from "../judge/__tests__/judge-request-fixture.js";
@@ -23,84 +23,6 @@ function collectingAudit(): { entries: AuditEntry[]; logger: AuditLogger } {
 // Parse the structured payload the shadow path packs into `output`.
 const payload = auditPayload;
 
-describe("emitRiskShadowLog — category shadow", () => {
-  it("emits the declared vs host-derived pair with diverged=false when equal", () => {
-    const { entries, logger } = collectingAudit();
-    emitRiskShadowLog(
-      {
-        toolName: "files_read",
-        source: "plugin",
-        pluginId: "ave-plugin-sampletool",
-        declaredCategory: "read",
-        hostDerivedCategory: "read",
-        enforced: false,
-        correlationId: "corr-cat-1",
-      },
-      logger,
-    );
-    expect(entries).toHaveLength(1);
-    expect(payload(entries[0])).toMatchObject({
-      event: "risk-shadow",
-      toolName: "files_read",
-      source: "plugin",
-      pluginId: "ave-plugin-sampletool",
-      declaredCategory: "read",
-      hostDerivedCategory: "read",
-      diverged: false,
-      enforced: false,
-      correlationId: "corr-cat-1",
-    });
-  });
-
-  it("sets diverged=true when declared and host-derived disagree", () => {
-    const { entries, logger } = collectingAudit();
-    emitRiskShadowLog(
-      {
-        toolName: "rogue_tool",
-        source: "plugin",
-        declaredCategory: "read",
-        hostDerivedCategory: "write",
-        enforced: false,
-        correlationId: "corr-cat-2",
-      },
-      logger,
-    );
-    const p = payload(entries[0]);
-    expect(p.diverged).toBe(true);
-    expect(p.declaredCategory).toBe("read");
-    expect(p.hostDerivedCategory).toBe("write");
-  });
-
-  it("omits pluginId when absent (builtin/mcp tools)", () => {
-    const { entries, logger } = collectingAudit();
-    emitRiskShadowLog(
-      {
-        toolName: "bash",
-        source: "builtin",
-        declaredCategory: "shell",
-        hostDerivedCategory: "shell",
-        enforced: true,
-        correlationId: "corr-cat-3",
-      },
-      logger,
-    );
-    const p = payload(entries[0]);
-    expect("pluginId" in p).toBe(false);
-    expect(p.enforced).toBe(true);
-  });
-
-  it("is a pure side-effect sink that cannot alter a decision (void by type)", () => {
-    const { entries, logger } = collectingAudit();
-    // The void return is TS-enforced; assert the BEHAVIOUR (it only emits one shadow row and exposes no decision surface) rather than the return value.
-    emitRiskShadowLog(
-      { toolName: "t", source: "mcp", declaredCategory: "network", hostDerivedCategory: "network", enforced: false, correlationId: "corr-cat-4" },
-      logger,
-    );
-    expect(entries).toHaveLength(1);
-    expect(payload(entries[0]).correlationId).toBe("corr-cat-4");
-  });
-});
-
 describe("emitEffectShadowLog — effect shadow", () => {
   it("records a read-only invocation as hasMutatingEffect=false", () => {
     const { entries, logger } = collectingAudit();
@@ -109,7 +31,7 @@ describe("emitEffectShadowLog — effect shadow", () => {
         toolName: "ave-plugin-sampletool_read",
         source: "plugin",
         pluginId: "ave-plugin-sampletool",
-        declaredCategory: "read",
+
         hostObservable: true,
         hostObservedEffect: {
           correlationId: "corr-eff-1",
@@ -124,7 +46,7 @@ describe("emitEffectShadowLog — effect shadow", () => {
       toolName: "ave-plugin-sampletool_read",
       source: "plugin",
       pluginId: "ave-plugin-sampletool",
-      declaredCategory: "read",
+
       hostObservable: true,
       hasMutatingEffect: false,
       correlationId: "corr-eff-1",
@@ -137,7 +59,7 @@ describe("emitEffectShadowLog — effect shadow", () => {
       {
         toolName: "remote_mcp_tool",
         source: "mcp",
-        declaredCategory: "read",
+
         hostObservable: false,
         hostObservedEffect: {
           correlationId: "corr-eff-mcp",
@@ -161,7 +83,7 @@ describe("emitEffectShadowLog — effect shadow", () => {
         toolName: "ave-plugin-sampletool_write",
         source: "plugin",
         pluginId: "ave-plugin-sampletool",
-        declaredCategory: "read",
+
         hostObservable: true,
         hostObservedEffect: {
           correlationId: "corr-eff-2",
@@ -199,7 +121,7 @@ describe("shadow log — dedicated shadow channel sink (temp AVE_HOME)", () => {
         toolName: "ave-plugin-sampletool_write",
         source: "plugin",
         pluginId: "ave-plugin-sampletool",
-        declaredCategory: "read",
+
         hostObservable: true,
         hostObservedEffect: {
           correlationId: "corr-sink",
@@ -221,6 +143,7 @@ describe("shadow log — dedicated shadow channel sink (temp AVE_HOME)", () => {
     expect(effectRow).toBeDefined();
     const p = payload(effectRow!);
     expect(p.event).toBe("effect-shadow");
+    expect(p).not.toHaveProperty("declaredCategory");
     expect(p.hasMutatingEffect).toBe(true);
     expect(p.pluginId).toBe("ave-plugin-sampletool");
     expect(p.correlationId).toBe("corr-sink");

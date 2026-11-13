@@ -301,17 +301,24 @@ describe("checked repository metadata inputs", () => {
     expect(inspectGitRepository(cwd)).toBeNull();
   });
 
-  it("rejects a config mutation during its descriptor read", () => {
+  it.each(["chunk", "EOF"])("rejects a config mutation after reading a descriptor %s", phase => {
+    const configPath = join(cwd, ".git", "config");
+    const configStat = nativeFs.lstatSync(configPath, { bigint: true });
     let changed = false;
     vi.spyOn(fs, "readSync").mockImplementation((...args: Parameters<typeof fs.readSync>) => {
       const result = nativeFs.readSync(...args);
-      if (!changed) {
+      const stat = nativeFs.fstatSync(args[0], { bigint: true });
+      // Directory enumeration can read another control file before configuration.
+      if (!changed && stat.dev === configStat.dev && stat.ino === configStat.ino
+        && (phase === "chunk" ? result > 0 : result === 0)) {
         changed = true;
-        nativeFs.appendFileSync(join(cwd, ".git", "config"), "# mutation\n");
+        nativeFs.appendFileSync(configPath, "# mutation\n");
       }
       return result;
     });
     expect(inspectGitRepository(cwd)).toBeNull();
+    expect(changed).toBe(true);
+    expect(nativeFs.readFileSync(configPath, "utf8")).toBe(`${ORDINARY_CONFIG}# mutation\n`);
   });
 
   it.each(["darwin", "linux", "win32"] as const)("accepts ordinary metadata with a fixed file backend on %s", platform => {

@@ -82,6 +82,7 @@ export function createMcpAppBridge(
   el: BridgeWebviewElement,
   hostContext: McpUiHostContext,
   deps: McpAppBridgeDeps,
+  declaredCapabilities?: unknown,
 ): { bridge: AppBridge; transport: WebviewIpcTransport; connected: Promise<void> } {
   const transport = new WebviewIpcTransport(el);
 
@@ -168,7 +169,16 @@ export function createMcpAppBridge(
     },
   ];
 
-  const capabilities = handlers.reduce<McpAppHostCapabilities>(
+  // No declaration means display-only. Select request handlers as well as advertisement so a raw request cannot bypass it.
+  const declared = new Set(
+    Array.isArray(declaredCapabilities) && declaredCapabilities.every((key) => typeof key === "string")
+      ? declaredCapabilities
+      : [],
+  );
+  const activeHandlers = handlers.filter((handler) =>
+    !handler.capability || Object.keys(handler.capability).every((key) => declared.has(key)),
+  );
+  const capabilities = activeHandlers.reduce<McpAppHostCapabilities>(
     (acc, handler) => (handler.capability ? { ...acc, ...handler.capability } : acc),
     {},
   );
@@ -184,7 +194,7 @@ export function createMcpAppBridge(
 
   // Register EVERY handler before `connect()` — a late assignment would race the guest's first frames (the relay preload
   // announces sandbox-proxy-ready the moment the proxy document loads, which can beat `connect()`).
-  for (const handler of handlers) handler.register(bridge);
+  for (const handler of activeHandlers) handler.register(bridge);
 
   return { bridge, transport, connected: bridge.connect(transport) };
 }
