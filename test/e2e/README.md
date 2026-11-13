@@ -75,6 +75,11 @@ after the test process is interrupted; recovery requires the upload step to run.
 Use `complete` and the per-case states to distinguish a finished run from a
 snapshot with pending or running cases.
 
+Request injection uses the tested page's native window through
+[`sendRendererEvent`](ui/renderer-events.ts). Native visibility and window-list
+order do not establish the intended recipient. Stream injection also requires
+the page explicitly, preserving its existing chat-group envelope.
+
 ## Shared application lifetime
 
 The native browser action and capture specs and the workspace find/preview cases

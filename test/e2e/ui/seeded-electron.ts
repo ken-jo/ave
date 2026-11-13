@@ -16,6 +16,7 @@ import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
 export { withNativeFocusDiagnostics } from "./native-focus.js";
 import { resolveE2eExecutable } from "./background-electron.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const electronProcesses = new WeakMap<ElectronApplication, ReturnType<ElectronApplication["process"]>>();
@@ -376,15 +377,12 @@ export function makeTreeWritableSync(root: string): void {
 
 export async function sendRendererStreamEvent(
   app: ElectronApplication,
+  page: Page,
   event: JsonObject,
 ): Promise<void> {
   // Every chat stream frame names its group; the preload drops unlabelled frames (public-surface.ts subscribeForChatGroup).
   const labelled = { chatGroupId: MAIN_CHAT_GROUP_ID, ...event };
-  await app.evaluate(({ BrowserWindow }, ev) => {
-    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-    if (!win) return;
-    win.webContents.send("ave:chat:stream", ev);
-  }, labelled);
+  await sendRendererEvent(app, page, "ave:chat:stream", labelled);
 }
 
 /** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest non-destroyed window, including hidden startup windows: a spec that has opened a

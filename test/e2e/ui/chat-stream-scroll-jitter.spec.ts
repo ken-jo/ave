@@ -8,6 +8,7 @@ import {
   type SeededElectronContext,
 } from "./seeded-electron.js";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
 const CHAT_VIEWPORT_SELECTOR = ".ave-chat-scroll [data-radix-scroll-area-viewport]";
 
@@ -269,11 +270,7 @@ test.describe("chat stream bottom-follow jitter", () => {
       await expect(ctx.page.getByTestId("jump-to-bottom")).toBeVisible();
 
       // Use the shared view-activation channel because the sidebar has no dedicated Memory row.
-      await ctx.app.evaluate(({ BrowserWindow }) => {
-        const target = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
-        if (!target) throw new Error("no visible window to activate the memory view in");
-        target.webContents.send("ave:view:activate", { viewKey: "memory" });
-      });
+      await sendRendererEvent(ctx.app, ctx.page, "ave:view:activate", { viewKey: "memory" });
       // Narrow widths hide the breadcrumb label; the route path still identifies the page.
       await expect(ctx.page.getByTestId("view-path-current-memory")).toHaveAttribute("aria-current", "page", { timeout: 10_000 });
       await ctx.page.getByTestId(TEST_IDS.viewPathBack).click();

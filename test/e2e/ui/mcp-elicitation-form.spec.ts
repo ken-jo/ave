@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "./fixtures";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
@@ -27,10 +28,7 @@ test("MCP elicitation approval form returns structured content", async ({ app, m
     });
   });
 
-  await app.evaluate(({ BrowserWindow }, req) => {
-    const win = BrowserWindow.getAllWindows()[0];
-    win?.webContents.send("ave:approval:request", req);
-  }, {
+  await sendRendererEvent(app, mainWindow, "ave:approval:request", {
     id: "e2e-mcp-elicitation",
     category: "agent-action",
     kind: "agent-action",
