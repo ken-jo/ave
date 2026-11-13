@@ -1,5 +1,7 @@
-/** Durable plugin-scoped task records. Recovery never replays a tool or restores execution authority. */
+/** Bounded plugin-scoped task records. Recovery never replays effects or restores execution authority. */
 import { createHash, randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
+import { lstat, opendir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { openFeatureNamespace, type FeatureNamespaceHandle } from "../main/storage/feature-namespace.js";
 import { readAveHomeInput } from "../shared/ave-home-trust.js";
@@ -9,51 +11,157 @@ import { RPC_INTERNAL_ERROR } from "./protocol-constants.js";
 import { createLogger } from "../lib/logger.js";
 
 const log = createLogger("mcp-task-store");
+export const MCP_TASK_STORE_POLICY = {
+  maxTasks: 128,
+  ttlMs: 24 * 60 * 60 * 1000,
+  maxResultBytes: 128 * 1024,
+  maxRecordBytes: 256 * 1024,
+  maxLegacyBytes: 32 * 1024 * 1024,
+} as const;
+const TASK_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+const STAGING_FILE_RE = /^[a-f0-9-]{36}\.json\.[a-f0-9]{32}\.tmp$/;
+
+function isMissing(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+function isTerminal(task: DetailedTask): boolean {
+  return task.status !== "working" && task.status !== "input_required";
+}
+function jsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
 
 export class McpTaskStore {
   private readonly records = new Map<string, DetailedTask>();
   private queue: Promise<unknown> = Promise.resolve();
   private readonly ready: Promise<void>;
   private readonly listeners = new Set<(task: DetailedTask) => void>();
-  private readonly fileName: string;
+  private readonly directoryName: string;
+  private writeFailed = false;
 
   constructor(pluginId: string, private readonly namespace: FeatureNamespaceHandle = openFeatureNamespace("mcp-tasks")) {
-    this.fileName = `${createHash("sha256").update(pluginId).digest("hex")}.json`;
+    this.directoryName = createHash("sha256").update(pluginId).digest("hex");
     this.ready = this.load();
   }
 
+  private recordName(taskId: string): string {
+    return `${this.directoryName}/${taskId}.json`;
+  }
+
+  private async read(name: string, maxBytes: number): Promise<unknown | undefined> {
+    const path = join(this.namespace.dir, name);
+    let info: Stats;
+    try { info = await lstat(path); }
+    catch (error) { if (isMissing(error)) return undefined; throw error; }
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("Task store entry is not a plain file");
+    if (info.size > maxBytes) throw new Error("Task store entry exceeds the read limit");
+    const input = await readAveHomeInput(path);
+    if (input.status !== "trusted") throw new Error("Task store is unavailable or untrusted");
+    if (input.bytes.byteLength > maxBytes) throw new Error("Task store entry exceeds the read limit");
+    return JSON.parse(input.bytes.toString("utf8")) as unknown;
+  }
+
+  private failure(task: DetailedTask, message: string): DetailedTask {
+    return { taskId: task.taskId, createdAt: task.createdAt, lastUpdatedAt: new Date().toISOString(),
+      ttlMs: task.ttlMs, pollIntervalMs: TASK_POLL_INTERVAL_MS, status: "failed",
+      error: { code: RPC_INTERNAL_ERROR, message } };
+  }
+
+  private expired(task: DetailedTask): boolean {
+    return Date.parse(task.createdAt) + (task.ttlMs ?? MCP_TASK_STORE_POLICY.ttlMs) <= Date.now();
+  }
+
+  private recover(value: unknown): DetailedTask {
+    let task = DetailedTaskSchema.parse(value);
+    if (!TASK_ID_RE.test(task.taskId)) throw new Error("Invalid stored task identifier");
+    task.ttlMs = Math.min(task.ttlMs ?? MCP_TASK_STORE_POLICY.ttlMs, MCP_TASK_STORE_POLICY.ttlMs);
+    if (!isTerminal(task)) task = this.failure(task, "Task execution was interrupted by server restart");
+    if ((task.status === "completed" && jsonBytes(task.result) > MCP_TASK_STORE_POLICY.maxResultBytes)
+      || Buffer.byteLength(`${JSON.stringify(task, null, 2)}\n`) > MCP_TASK_STORE_POLICY.maxRecordBytes) {
+      task = this.failure(task, "Task result exceeds the storage limit");
+    }
+    return task;
+  }
+
   private async load(): Promise<void> {
-    const input = await readAveHomeInput(join(this.namespace.dir, this.fileName));
-    if (input.status === "absent") return;
-    if (input.status !== "trusted") throw new Error("Task store is untrusted");
-    const parsed: unknown = JSON.parse(input.bytes.toString("utf8"));
-    if (!Array.isArray(parsed)) throw new Error("Invalid task store");
-    let recovered = false;
-    for (const value of parsed) {
-      let task = DetailedTaskSchema.parse(value);
-      if (this.records.has(task.taskId)) throw new Error("Duplicate task identifier in store");
-      if (task.status === "working" || task.status === "input_required") {
-        task = { ...task, status: "failed", lastUpdatedAt: new Date().toISOString(),
-          error: { code: RPC_INTERNAL_ERROR, message: "Task execution was interrupted by server restart" } };
-        recovered = true;
+    const dir = join(this.namespace.dir, this.directoryName);
+    let directoryExists = false;
+    try {
+      const info = await lstat(dir);
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Task store is not a plain directory");
+      directoryExists = true;
+    } catch (error) { if (!isMissing(error)) throw error; }
+    if (directoryExists) {
+      let count = 0;
+      for await (const entry of await opendir(dir)) {
+        if (STAGING_FILE_RE.test(entry.name)) { await unlink(join(dir, entry.name)); continue; }
+        if (!entry.name.endsWith(".json") || !TASK_ID_RE.test(entry.name.slice(0, -5))) continue;
+        if (++count > MCP_TASK_STORE_POLICY.maxTasks) throw new Error("Task store capacity exceeded on disk");
+        const name = `${this.directoryName}/${entry.name}`;
+        const raw = await this.read(name, MCP_TASK_STORE_POLICY.maxRecordBytes);
+        if (raw === undefined) throw new Error("Stored task disappeared during startup");
+        const task = this.recover(raw);
+        if (entry.name !== `${task.taskId}.json`) throw new Error("Stored task identifier mismatch");
+        if (this.expired(task)) { await unlink(join(dir, entry.name)); continue; }
+        if (JSON.stringify(raw) !== JSON.stringify(task)) await this.namespace.writeJson(name, task);
+        this.records.set(task.taskId, task);
       }
+    }
+    // One bounded migration of the former aggregate format; never retain an archive copy.
+    const legacyName = `${this.directoryName}.json`;
+    const legacy = await this.read(legacyName, MCP_TASK_STORE_POLICY.maxLegacyBytes);
+    if (legacy === undefined) return;
+    if (!Array.isArray(legacy)) throw new Error("Invalid task store");
+    const candidates = new Map<string, DetailedTask>();
+    for (const value of legacy) {
+      const task = this.recover(value);
+      if (candidates.has(task.taskId)) throw new Error("Duplicate task identifier in store");
+      if (!this.expired(task)) candidates.set(task.taskId, task);
+    }
+    for (const task of this.records.values()) candidates.set(task.taskId, task);
+    const retained = [...candidates.values()].sort((a, b) => Date.parse(a.lastUpdatedAt) - Date.parse(b.lastUpdatedAt))
+      .slice(-MCP_TASK_STORE_POLICY.maxTasks);
+    const ids = new Set(retained.map((task) => task.taskId));
+    for (const task of this.records.values()) if (!ids.has(task.taskId)) await this.remove(task.taskId);
+    for (const task of retained) {
+      await this.namespace.writeJson(this.recordName(task.taskId), task);
       this.records.set(task.taskId, task);
     }
-    if (recovered) await this.namespace.writeJson(this.fileName, [...this.records.values()]);
+    await unlink(join(this.namespace.dir, legacyName));
   }
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(() => this.ready).then(operation);
+    const next = this.queue.then(() => this.ready).then(() => {
+      if (this.writeFailed) throw new Error("Task store is unavailable after a write failure");
+      return operation();
+    });
     this.queue = next.catch(() => {});
     return next;
+  }
+
+  private async remove(taskId: string): Promise<void> {
+    try { await unlink(join(this.namespace.dir, this.recordName(taskId))); }
+    catch (error) { if (!isMissing(error)) throw error; }
+    this.records.delete(taskId);
+  }
+
+  private async prune(): Promise<void> {
+    for (const task of this.records.values()) if (this.expired(task)) await this.remove(task.taskId);
   }
 
   private async commit(task: DetailedTask): Promise<DetailedTask> {
     const nonJson = describeNonJson(task, "task");
     if (nonJson) throw new Error(`Task cannot be persisted: ${nonJson}`);
-    const snapshot = DetailedTaskSchema.parse(JSON.parse(JSON.stringify(task)));
-    const records = new Map(this.records).set(snapshot.taskId, snapshot);
-    await this.namespace.writeJson(this.fileName, [...records.values()]);
+    let snapshot = DetailedTaskSchema.parse(JSON.parse(JSON.stringify(task)));
+    if (Buffer.byteLength(`${JSON.stringify(snapshot, null, 2)}\n`) > MCP_TASK_STORE_POLICY.maxRecordBytes) {
+      snapshot = this.failure(snapshot, "Task result exceeds the storage limit");
+    }
+    try { await this.namespace.writeJson(this.recordName(snapshot.taskId), snapshot); }
+    catch (error) {
+      // A failed directory sync may follow a successful rename. Do not admit uncounted files.
+      this.writeFailed = true;
+      throw error;
+    }
     this.records.set(snapshot.taskId, snapshot);
     for (const listener of this.listeners) {
       try { listener(structuredClone(snapshot)); }
@@ -63,27 +171,40 @@ export class McpTaskStore {
   }
 
   create(): Promise<DetailedTask> {
-    return this.serialize(() => {
+    return this.serialize(async () => {
+      await this.prune();
+      if (this.records.size >= MCP_TASK_STORE_POLICY.maxTasks) {
+        const oldest = [...this.records.values()].filter(isTerminal)
+          .sort((a, b) => Date.parse(a.lastUpdatedAt) - Date.parse(b.lastUpdatedAt))[0];
+        if (!oldest) throw new Error("Task store capacity reached");
+        // Capacity pressure shortens the oldest terminal handle's remaining lifetime to zero.
+        await this.remove(oldest.taskId);
+      }
       const now = new Date().toISOString();
       return this.commit({ taskId: randomUUID(), status: "working", createdAt: now,
-        lastUpdatedAt: now, ttlMs: null, pollIntervalMs: TASK_POLL_INTERVAL_MS });
+        lastUpdatedAt: now, ttlMs: MCP_TASK_STORE_POLICY.ttlMs, pollIntervalMs: TASK_POLL_INTERVAL_MS });
     });
   }
 
   get(taskId: string): Promise<DetailedTask | undefined> {
     return this.serialize(async () => {
+      await this.prune();
       const task = this.records.get(taskId);
       return task ? structuredClone(task) : undefined;
     });
   }
 
   complete(taskId: string, result: Record<string, unknown>): Promise<DetailedTask | undefined> {
-    return this.transition(taskId, (task) => ({ ...task, status: "completed", result }));
+    return this.transition(taskId, (task) => {
+      const nonJson = describeNonJson(result, "task result");
+      if (nonJson) throw new Error(`Task cannot be persisted: ${nonJson}`);
+      return jsonBytes(result) > MCP_TASK_STORE_POLICY.maxResultBytes
+        ? this.failure(task, "Task result exceeds the storage limit") : { ...task, status: "completed", result };
+    });
   }
 
   fail(taskId: string): Promise<DetailedTask | undefined> {
-    return this.transition(taskId, (task) => ({ ...task, status: "failed",
-      error: { code: RPC_INTERNAL_ERROR, message: "Task result could not be persisted" } }));
+    return this.transition(taskId, (task) => this.failure(task, "Task result could not be persisted"));
   }
 
   cancel(taskId: string): Promise<DetailedTask | undefined> {
@@ -92,8 +213,9 @@ export class McpTaskStore {
 
   private transition(taskId: string, change: (task: DetailedTask) => DetailedTask): Promise<DetailedTask | undefined> {
     return this.serialize(async () => {
+      await this.prune();
       const task = this.records.get(taskId);
-      if (!task || (task.status !== "working" && task.status !== "input_required")) return task ? structuredClone(task) : undefined;
+      if (!task || isTerminal(task)) return task ? structuredClone(task) : undefined;
       return this.commit({ ...change(task), lastUpdatedAt: new Date().toISOString() });
     });
   }

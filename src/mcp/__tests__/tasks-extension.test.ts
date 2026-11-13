@@ -77,11 +77,13 @@ describe("durable task protocol", () => {
     conforms("CreateTaskResult", created);
     expect(created).toMatchObject({ resultType: "task", status: "working" });
     const files = await import("node:fs/promises").then((fs) => fs.readdir(openFeatureNamespace("mcp-tasks").dir));
-    const saved = JSON.parse(await readFile(join(openFeatureNamespace("mcp-tasks").dir, files[0]), "utf8"));
-    expect(saved[0].taskId).toBe(created.taskId);
+    const recordPath = join(openFeatureNamespace("mcp-tasks").dir, files[0], `${created.taskId}.json`);
+    const saved = JSON.parse(await readFile(recordPath, "utf8"));
+    expect(saved.taskId).toBe(created.taskId);
     if (process.platform !== "win32") {
       expect((await stat(openFeatureNamespace("mcp-tasks").dir)).mode & 0o777).toBe(0o700);
-      expect((await stat(join(openFeatureNamespace("mcp-tasks").dir, files[0]))).mode & 0o777).toBe(0o600);
+      expect((await stat(join(openFeatureNamespace("mcp-tasks").dir, files[0]))).mode & 0o777).toBe(0o700);
+      expect((await stat(recordPath)).mode & 0o777).toBe(0o600);
     }
     conforms("GetTaskResult", (await request(server, "tasks/get", { taskId: created.taskId })).result);
     work.resolve(OUTCOME);

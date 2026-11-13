@@ -291,9 +291,26 @@ is `9f3de4d0a022a3b1d20db86ff2219641f6632d3529e6fbcd580c958dc9dd6526`.
 `TOOL_TIMEOUT_POLICY.mcpTaskPromotionMs` only when that request declares the Tasks
 capability. Quick calls and non-declaring clients retain immediate results.
 Creation is committed before returning the flat task handle. Task records live
-under `AVE_HOME/mcp-tasks/`, partitioned by plugin, through `openFeatureNamespace`
-and its queued atomic writes. The current retention policy is unlimited (`ttlMs:
-null`); results are ordinary tool output, not an encrypted secret store.
+under `AVE_HOME/mcp-tasks/<plugin-hash>/<task-id>.json`, through
+`openFeatureNamespace` and its queued atomic writes. Each transition replaces only
+that task's file, with no aggregate history or per-transition index rewrite.
+`MCP_TASK_STORE_POLICY` bounds each plugin to 128 records, a maximum lifetime of
+24 hours from creation, 128 KiB of compact UTF-8 result JSON and 256 KiB of encoded
+record JSON. Retained record bytes are therefore bounded to 32 MiB per plugin,
+plus one bounded atomic staging file. In-memory history has the same record and
+payload limits. Results are ordinary tool output, not an encrypted secret store.
+
+Expiry is pruned on startup and store access. Capacity pressure expires the
+oldest terminal handle early; if all 128 slots are active, new task creation
+fails. Expired/evicted handles return the pinned invalid-params task-not-found
+error. Oversized results become a bounded failed task with an internal-error
+payload; result data is never truncated. Late completion cannot recreate an
+expired record. The prior aggregate format is validated and migrated once:
+retain at most the newest 128 unexpired records under the same limits, then
+remove the aggregate without retaining an archive. Legacy input over 32 MiB,
+malformed input, oversized record files and unexpected on-disk record counts
+refuse loading instead of reading unbounded data or silently resetting history.
+Known incomplete atomic staging files are discarded during startup recovery.
 Terminal results survive restart. Interrupted work becomes a protocol-level
 failure without replaying tool effects or restoring invocation authority.
 Concurrent plugin generations share a store writer within the process. Recovery
