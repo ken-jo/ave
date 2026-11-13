@@ -319,7 +319,8 @@ contracts remain unconditional. Proven renderer-only patches omit native
 platform jobs; selected native jobs must succeed in the existing aggregate. Do not manually duplicate
 the full trio around a push. After failure, rerun only failed or invalidated
 checks. No release gate runs the UI suite. The default suite
-(`bun run test:ui-e2e`) is local; the separate native OS-focus project runs
+(`bun run test:ui-e2e`) runs locally, with a required background subset in CI;
+the separate native OS-focus project runs
 on a hosted virtual display or explicit local opt-in (see
 [the e2e guide](test/e2e/README.md)). The suite seeds only fixture plugins from
 `test/fixtures`, so it needs nothing outside this repository; run only
