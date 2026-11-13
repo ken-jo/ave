@@ -1690,7 +1690,7 @@ export function createBrowserPageActions(
             target.assertCurrent?.(false);
             if (capturePixelRatioForGuest(guest) !== pixelRatio) throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
           };
-          return captureScreenshot({ ...target, captureViewport: () => captureBrowserViewport(guest, assertCaptureCurrent, pixelRatio) }, operation, options ?? {}, browserRefs, pixelRatio);
+          return captureScreenshot({ ...target, captureViewport: () => captureBrowserViewport(guest, assertCaptureCurrent, pixelRatio, target.cdp) }, operation, options ?? {}, browserRefs, pixelRatio);
         });
       });
     },

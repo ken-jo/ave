@@ -83,7 +83,7 @@ export class BrowserWorkspaceCapture {
         const result = await captureBrowserPage(cdp, operation.signal, {
           ...(request.fullPage === undefined ? {} : { fullPage: request.fullPage }),
           ...(clip === undefined ? {} : { clip }),
-        }, pixelRatio, maxMs, () => captureBrowserViewport(guest, assertCurrent, pixelRatio), operation);
+        }, pixelRatio, maxMs, () => captureBrowserViewport(guest, assertCurrent, pixelRatio, cdp), operation);
         assertCurrent();
         const bytes = Buffer.from(result.data, "base64");
         const image = nativeImage.createFromBuffer(bytes);

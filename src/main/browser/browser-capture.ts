@@ -8,26 +8,6 @@ import { runBrowserCapture, type BrowserCaptureOperation } from "./browser-captu
 
 const activeCaptures = new WeakSet<object>();
 const CAPTURE_VIEWPORT_FIELDS = ["pageX", "pageY", "clientWidth", "clientHeight", "zoom", "scale"] as const;
-const CAPTURE_PAINT = `function() {
-  if (document.visibilityState === "hidden") return;
-  return new Promise(resolve => {
-    let firstFrame = 0;
-    let secondFrame = 0;
-    const finish = () => {
-      cancelAnimationFrame(firstFrame);
-      cancelAnimationFrame(secondFrame);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-      resolve();
-    };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") finish();
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    firstFrame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(finish);
-    });
-  });
-}`;
 export interface CaptureViewport {
   pageX: number; pageY: number; clientWidth: number; clientHeight: number;
   zoom?: number; scale?: number;
@@ -43,23 +23,23 @@ export function assertCaptureViewport(viewport: CaptureViewport | undefined, exp
   }
 }
 
-/** Read the native viewport without changing its host slot or focus; the caller owns wake activity. */
-export async function captureBrowserViewport(guest: Pick<WebContents, "capturePage" | "getZoomFactor">, assertCurrent: () => void, pixelRatio: number): Promise<BrowserViewportImage> {
+/** Read a redraw-bound viewport without changing its host slot or focus; the caller owns wake activity. */
+export async function captureBrowserViewport(guest: Pick<WebContents, "getZoomFactor">, assertCurrent: () => void, pixelRatio: number, cdp: CdpSession): Promise<BrowserViewportImage> {
   assertCurrent();
   if (!Number.isFinite(pixelRatio) || pixelRatio <= 0) throw new BrowserActionError("screenshot-unavailable", "the view has no valid pixel density");
   const zoom = guest.getZoomFactor();
-  const image = await guest.capturePage(undefined, { stayHidden: true, stayAwake: false });
+  const image = await cdp.send("Page.captureScreenshot", {
+    format: "png", captureBeyondViewport: false, fromSurface: true,
+  }) as { data?: unknown };
   assertCurrent();
   if (guest.getZoomFactor() !== zoom) throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
-  const { width, height } = image.getSize();
-  if (image.isEmpty() || width < 1 || height < 1) throw new BrowserActionError("screenshot-failed", "the tab returned no image");
-  if (width * height > BROWSER_CAPTURE_LIMITS.pixels) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
-  const png = image.toPNG({ scaleFactor: 1 });
+  if (typeof image.data !== "string" || image.data.length === 0) throw new BrowserActionError("screenshot-failed", "the tab returned no image");
+  if (Buffer.byteLength(image.data, "base64") > BROWSER_CAPTURE_LIMITS.bytes) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture byte limit");
+  const png = Buffer.from(image.data, "base64");
   if (png.length < 24 || png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") throw new BrowserActionError("screenshot-failed", "the tab returned an invalid image");
   const pixelWidth = png.readUInt32BE(16), pixelHeight = png.readUInt32BE(20);
   if (pixelWidth < 1 || pixelHeight < 1 || pixelWidth * pixelHeight > BROWSER_CAPTURE_LIMITS.pixels) throw new BrowserActionError("screenshot-limit", "the image exceeds the capture pixel limit");
-  // Readback is tagged as a 1x image even when its bitmap uses the view's device scale.
-  return { data: png.toString("base64"), cssScale: zoom * pixelRatio };
+  return { data: image.data, cssScale: zoom * pixelRatio };
 }
 
 /** Full pages retain the current CSS width and truncate their bottom at the pixel limit. */
@@ -132,18 +112,7 @@ async function capturePage(
       if (!captureViewport) throw new BrowserActionError("screenshot-unavailable", "the tab has no native viewport readback");
       result = await captureBrowserTiles(cdp, captureSignal, originalWidth, captureHeight, viewport, captureViewport, (position) => { scrollRestore = position; });
     } else if (!options.fullPage && captureViewport) {
-      // Layout can advance before the native surface paints its new scroll or zoom.
-      const executionContextId = await captureScrollContext(cdp);
-      throwIfAborted(captureSignal);
-      const painted = await operation.wait(cdp.send("Runtime.callFunctionOn", {
-        executionContextId,
-        functionDeclaration: CAPTURE_PAINT,
-        returnByValue: true,
-        awaitPromise: true,
-      })) as { exceptionDetails?: unknown };
-      if (painted.exceptionDetails) throw new BrowserActionError("screenshot-unavailable", "the page could not paint for capture");
-      throwIfAborted(captureSignal);
-      result = await captureViewport();
+      result = await operation.wait(captureViewport());
     } else {
       result = await cdp.send("Page.captureScreenshot", {
         format: "png", captureBeyondViewport: false, fromSurface: true,
