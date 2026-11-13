@@ -10,7 +10,7 @@ export const MCP_SKILLS_SPEC_COMMIT = "649f7aee87d631ac4d1fdd3b12eef0c6264fdb3a"
 const MCP_SKILL_MAX_BYTES = 16 * 1024 * 1024;
 const MCP_SKILL_MAX_RESOURCES = 512;
 
-export interface McpSkillResource {
+interface McpSkillResource {
   readonly uri: string;
   readonly digest: string;
   readonly size: number;
