@@ -1026,6 +1026,9 @@ export const ko: Record<MessageCatalogKey, string> = {
   "be_skillList.toolDescription": "현재 사용할 수 있는 Ave skills 목록을 반환합니다. skill_load 전에 어떤 skill 이 있는지 확인할 때 사용하세요.",
 
   // be_skillLoad
+  "be_skillLoad.serverIdDescription": "MCP 스킬을 제공하는 호스트 지정 서버 ID입니다. skillName 대신 uri와 함께 사용하며 목록에 없는 스킬도 지원합니다.",
+  "be_skillLoad.uriDescription": "MCP 스킬의 SKILL.md 리소스 URI입니다. 목록에 없으면 skills/get으로 확인합니다.",
+  "be_skillLoad.mcpApprovalReason": "신뢰하지 않는 스킬 지시가 이 컴퓨터에서 코드 실행을 요청할 수 있습니다. MCP 서버 '{server}'의 스킬 '{uri}' 사용에 동의하시겠습니까? 이 스킬과 정확한 파일 다이제스트에만 동의하며 일반 도구 권한은 계속 적용됩니다. 스킬의 훅과 권한 부여 선언은 무시합니다. 승인 전에는 꺼져 있고 파일 목록이나 내용이 바뀌면 동의가 취소됩니다.",
   "be_skillLoad.toolDescription": "이름으로 skill 의 지시(SKILL.md 본문)를 읽습니다. 시스템 프롬프트에는 skill 이름과 설명만 있으므로, skill 을 사용하기 전에 이 도구로 읽고 반환된 지시를 따르세요. 결과는 본문과 번들 파일 목록을 담은 <ave-skill name base> 블록입니다(번들 파일은 skill_read 로 하나씩 가져옵니다). 결과는 이 대화에 남습니다: 이전 결과가 아직 보이면 같은 skill 을 다시 읽지 말고, 보이지 않으면(예: 압축 후) 다시 읽으세요. skill 을 처음 읽을 때와 내용이 바뀐 뒤 읽을 때는 사용자 승인을 요청합니다.",
   "be_skillLoad.skillNameDescription": "읽을 skill 이름 (파일/디렉터리명과 frontmatter name 이 일치해야 함).",
   "be_skillLoad.approvalReason": "skill '{name}' 을 이 대화로 읽어 어시스턴트가 그 지시를 따르게 합니다. 승인 기록은 영구 저장되며 현재 본문과 번들 파일 목록에 바인딩됩니다 — 둘 중 하나라도 변경되면 다시 확인합니다.",

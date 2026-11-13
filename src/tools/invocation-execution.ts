@@ -1126,7 +1126,11 @@ export async function executeAuthorizedToolInvocation(
               }
               handlerAdmissionBlocked = false;
               return runWithAgentObservationInvocation({ sessionId, toolUseId: toolUse.id },
-                () => tool.execute(finalInput, ctx),
+                () => {
+                  const denial = services.skillAdmissionCheck?.(sessionId, toolUse.name, finalInput);
+                  if (denial) throw new Error(denial);
+                  return tool.execute(finalInput, ctx);
+                },
                 preparedShellInvocation ? preparedShellCommand(preparedShellInvocation).homePath : undefined, signal);
             },
             () => {

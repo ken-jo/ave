@@ -252,6 +252,9 @@ export class ConversationLoop {
       () => deps.pluginRuntime?.getGenerationAccess?.(),
       deps.pluginOperationIdentityProvider,
     );
+    this.toolExecutor.setSkillAdmissionCheck((sessionId, toolName, input) =>
+      deps.skillOverlay?.checkAdmission?.(sessionId, toolName, input, this.history.getMessages().flatMap((message) =>
+        message.role === "tool_result" && message.toolName === "skill_load" && !message.isError ? [message.content] : [])));
     this.auditLogger = deps.auditLogger ?? new AuditLogger();
     // Credentials decrypt asynchronously; `whenProviderReady` settles this first build.
     void this.refreshProvider().catch(() => undefined);

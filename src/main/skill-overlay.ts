@@ -2,8 +2,11 @@
 // resource identity until conversation teardown or plugin retirement; see docs/development/README.md#skill-loading-policy.
 import { SKILL_MAX_BODY_BYTES, type LoadedSkill } from "./skill-store.js";
 import { escapeHtml } from "../shared/escape-html.js";
+import { parseMcpSkillSelector } from "../shared/mcp-skill-selector.js";
+import type { SkillStore } from "./skill-store.js";
 
 export interface SkillOverlayEntry {
+  mcpOwner?: LoadedSkill["mcpOwner"];
   name: string;
   pluginOwner?: LoadedSkill["pluginOwner"];
   agentPluginOwner?: LoadedSkill["agentPluginOwner"];
@@ -15,6 +18,22 @@ export interface SkillOverlayEntry {
 }
 
 export class SkillOverlay {
+  constructor(private readonly store?: SkillStore) {}
+
+  checkAdmission(sessionId: string | undefined, toolName: string, input: Record<string, unknown>, visibleSkillResults: readonly string[] = []): string | undefined {
+    if (toolName !== "skill_load" && toolName !== "skill_list") {
+      const loaded = new Set(this.list(sessionId ?? "").map((entry) => entry.name));
+      for (const content of visibleSkillResults) {
+        const selector = skillNameFromReadResult(content);
+        if (selector && parseMcpSkillSelector(selector) && !loaded.has(selector)) {
+          return "Restored MCP skill instructions require a verified skill_load before further tool use";
+        }
+      }
+    }
+    if (!this.store && this.list(sessionId ?? "").some((entry) => entry.mcpOwner)) return "Skill source is unavailable";
+    return this.store ? this.mcpAdmissionDenial(this.store, sessionId, toolName, input) : undefined;
+  }
+
   private readonly bySession = new Map<string, Map<string, SkillOverlayEntry>>();
 
   // Record (or refresh) a skill read in the given conversation.
@@ -27,6 +46,7 @@ export class SkillOverlay {
       if (existingKey !== key && entry.name === skill.name) bySkill.delete(existingKey);
     }
     bySkill.set(key, {
+      mcpOwner: skill.mcpOwner,
       name: skill.name,
       pluginOwner: skill.pluginOwner,
       agentPluginOwner: skill.agentPluginOwner,
@@ -46,6 +66,28 @@ export class SkillOverlay {
   // Drop all skills for a conversation — fired when the conversation is replaced.
   clear(sessionId: string): void {
     this.bySession.delete(sessionId);
+  }
+
+  // The held entry lasts at least as long as its visible instructions. A failed read or
+  // observed rotation withdraws consent before any further invocation can use those instructions.
+  mcpAdmissionDenial(store: SkillStore, sessionId: string | undefined, toolName: string, input: Record<string, unknown>): string | undefined {
+    const owners = this.list(sessionId ?? "").flatMap((entry) => entry.mcpOwner ? [entry.mcpOwner] : []);
+    const target = toolName === "mcp_resource_read" || toolName === "skill_load" && typeof input.serverId === "string" ? input.serverId
+      : toolName === "skill_load" && typeof input.skillName === "string" ? parseMcpSkillSelector(input.skillName)?.serverId : undefined;
+    if (typeof target === "string" && owners.some((owner) => owner.serverId !== target)) {
+      return "Cross-server skill resource reads are disabled; use a separate conversation";
+    }
+    if (toolName === "mcp_resource_read" && typeof input.serverId === "string" && typeof input.uri === "string"
+      && store.isMcpSkillResource(input.serverId, input.uri)) {
+      return "Use skill_load and skill_read for declared skill files so consent and manifest verification apply";
+    }
+    if (toolName === "mcp_resource_read" && typeof input.uri === "string" && owners.some((owner) =>
+      input.uri === owner.entry.uri || (input.uri as string).startsWith(owner.entry.uri.slice(0, -"SKILL.md".length)))) {
+      return "Read active skill files with skill_read so their manifest digests are verified";
+    }
+    if (toolName === "skill_load" || toolName === "skill_list") return undefined;
+    if (owners.some((owner) => !store.isMcpSkillCurrent(owner))) return "Skill consent was revoked by a change or disconnection; reload and approve the skill";
+    return undefined;
   }
 
   // Drop every conversation's reads of one retired plugin generation.
@@ -72,7 +114,8 @@ export function skillBaseDir(skill: Pick<LoadedSkill, "filePath">): string | nul
 export function renderSkillReadResult(skill: LoadedSkill): string {
   const base = skillBaseDir(skill);
   const baseAttr = base ? ` base="${escapeHtml(base)}"` : "";
-  const lines: string[] = [`<ave-skill name="${escapeHtml(skill.name)}"${baseAttr}>`];
+  const originAttr = skill.mcpOwner ? ` origin="mcp" server="${escapeHtml(skill.mcpOwner.serverId)}" uri="${escapeHtml(skill.mcpOwner.entry.uri)}"` : "";
+  const lines: string[] = [`<ave-skill name="${escapeHtml(skill.name)}"${baseAttr}${originAttr}>`];
   lines.push(neutralizeSkillFence(skill.body));
   if (skill.resources.length > 0) {
     // Resource names are validated at discovery; re-escaping here would change valid names and break skill_read.

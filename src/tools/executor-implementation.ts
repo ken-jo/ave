@@ -88,6 +88,11 @@ function isRationaleRequiredExecuteOneOutcome(
 // ─── Executor ──────────────────────────────────────
 
 export class ToolExecutor {
+  private skillAdmissionCheck: import("./invocation-services.js").InvocationRunnerServices["skillAdmissionCheck"];
+
+  setSkillAdmissionCheck(check: NonNullable<import("./invocation-services.js").InvocationRunnerServices["skillAdmissionCheck"]>): void {
+    this.skillAdmissionCheck = check;
+  }
   private readonly toolRegistry: ToolRegistry;
   private readonly hookRunner: HookRunner;
   private readonly permissionManager?: PermissionManager;
@@ -625,6 +630,7 @@ export class ToolExecutor {
     const result = await runToolInvocation(
       {
         toolRegistry: this.toolRegistry,
+        skillAdmissionCheck: this.skillAdmissionCheck,
         hookRunner: this.hookRunner,
         permissionManager: this.permissionManager,
         approvalGate: this.approvalGate,

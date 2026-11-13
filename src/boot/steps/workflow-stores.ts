@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { SessionGoalStore } from "../../main/session-goal-store.js";
 import { AskUserQuestionGate } from "../../main/ask-user-question-gate.js";
 import { SkillStore } from "../../main/skill-store.js";
+import { McpSkillSource } from "../../main/mcp-skill-source.js";
 import { SkillOverlay } from "../../main/skill-overlay.js";
 import { SkillApprovalsStore } from "../../main/skill-approvals-store.js";
 import { AgentProfileStore } from "../../main/agent-profile-store.js";
@@ -86,10 +87,13 @@ export async function setupWorkflowStores(
     load: (sessionId) => sessionOwner(sessionId).sessions.loadSessionMetadata(sessionId)?.goal ?? null,
     save: (sessionId, goal) => sessionOwner(sessionId).sessions.saveSessionGoal(sessionId, goal),
   });
-  const skillStore = new SkillStore({ bundledDir: join(ctx.host.resourcePath, "skills") });
+  const skillStore = new SkillStore({
+    bundledDir: join(ctx.host.resourcePath, "skills"),
+    mcpSource: new McpSkillSource(() => ctx.mcpManager),
+  });
   const agentProfileStore = new AgentProfileStore();
   const personaPromptStore = new PersonaPromptStore();
-  const skillOverlay = new SkillOverlay();
+  const skillOverlay = new SkillOverlay(skillStore);
   const skillApprovalsStore = new SkillApprovalsStore();
   await skillApprovalsStore.load().catch((err) => {
     log.warn(

@@ -65,9 +65,9 @@ The **Ave host becomes an MCP _host_** that runs **one MCP client per loaded plu
 | `McpServerApproval.allowedCapabilities` (static per-connection whitelist) (`src/mcp/types.ts:27-97`) | Per-request `clientCapabilities` in `_meta`; server returns missing-capability error | Governance moves from connect-time whitelist → per-request capability declaration + per-request gating; **policy** (deny-by-default, namespace, max-tools) stays host-side. |
 | Long-running routines (host-internal) | **Tasks** extension `io.modelcontextprotocol/tasks` | New: long-running plugin tools opt into Tasks; host polls. _(verify exact Tasks methods — research found conflicting names.)_ |
 | Plugin UI (`PluginUiExtension[]`, embedded host viewport) (`src/plugins/public-contract.ts`) | **MCP Apps** `io.modelcontextprotocol/ui` (`_meta.ui`→`ui://` resource, `text/html;profile=mcp-app`) | Electron host uses isolated embedded webviews plus renderer-native fullscreen/PiP surfaces under a host-built CSP. **Apps version axis is SEPARATE** (SEP-1865 / snapshot `2026-01-26`, postMessage `2025-06-18`) — do not couple to the core-RC milestone. |
-| Skills (`SkillOverlay`, `SKILL.md`+`references/`) (`src/main/skill-overlay.ts`) | **Skills over MCP** `io.modelcontextprotocol/skills` (skills as `skill://` Resources) | Maps cleanly (no new RPC); **SEP-2640 is Draft** — pin schema before building; never auto-execute skill-declared code without per-skill opt-in. |
+| Skills (`SkillOverlay`, `SKILL.md`+`references/`) (`src/main/skill-overlay.ts`) | **Skills over MCP** `io.modelcontextprotocol/skills` (skills as `skill://` Resources) | Client pin, `skills/list`/`skills/get`, verification and explicit consent: [skill resource contract](mcp-skills-resources.md). |
 
-**GAPS now resolved (see §8 for the verified shapes):** Tasks lives in a **separate** extension repo (`experimental-ext-tasks`) with methods `tasks/get`/`tasks/update`/`tasks/cancel`; `DiscoverResult.ttlMs`/`cacheScope` are **real required** fields (`CacheableResult`); `resultType` core enum is `"complete" | "input_required"` (`"task"` is extension-only); MRTR retries the **same** request with `inputResponses`+echoed `requestState` (no new id); errors are `-32021` (missing client capability) / `-32022` (unsupported version) after final renumbering — **no "input-required error"**; `sampling`/`roots`/`logging` are **deprecated** (SEP-2577). Still genuinely open: **MCP Apps** is not a `2026-07-28` artifact (SEP-1865, snapshot `2026-01-26`) and **Skills** SEP-2640 is Draft — both pinned at their own milestone.
+**GAPS now resolved (see §8 for the verified shapes):** Tasks lives in a **separate** extension repo (`experimental-ext-tasks`) with methods `tasks/get`/`tasks/update`/`tasks/cancel`; `DiscoverResult.ttlMs`/`cacheScope` are **real required** fields (`CacheableResult`); `resultType` core enum is `"complete" | "input_required"` (`"task"` is extension-only); MRTR retries the **same** request with `inputResponses`+echoed `requestState` (no new id); errors are `-32021` (missing client capability) / `-32022` (unsupported version) after final renumbering — **no "input-required error"**; `sampling`/`roots`/`logging` are **deprecated** (SEP-2577). Still genuinely open: **MCP Apps** is not a `2026-07-28` artifact (SEP-1865, snapshot `2026-01-26`). Skills uses the released Beta pin in the [skill resource contract](mcp-skills-resources.md).
 
 ---
 
@@ -281,12 +281,13 @@ failed/cancelled → throw, in-task `input_required` → typed not-yet. Remainin
 server-side task CREATION + a durable store surviving restart, gated on pinning
 the `experimental-ext-tasks` draft (§6).
 
-**`apps-and-skills-extensions` (8) — Apps consumption partial; Skills + CSP
-pending.** MCP Apps `_meta.ui` → `uiPayload` + `readResource("ui://")` exist and
+**`apps-and-skills-extensions` (8) — Skills client implemented; Apps consumption partial.**
+The [skill resource contract](mcp-skills-resources.md) owns the released Beta pin,
+discovery, digest verification and per-skill code-execution opt-in.
+MCP Apps `_meta.ui` → `uiPayload` + `readResource("ui://")` exist and
 the per-request gate exempts `ui://` from the core `resources` capability.
 Remaining: native-host iframe CSP/permission enforcement per `_meta.ui`
-(renderer + Playwright), and Skills-over-MCP (`skill://` Resources + digest
-verification + per-skill opt-in) — both gated on the §6 Apps/Skills snapshot pin.
+(renderer validation). The Skills client no longer depends on a draft snapshot.
 
 **`legacy-removal` (9) — DONE (flag-day executed).** The in-process loopback is now
 the UNIVERSAL plugin registration + execution path; the legacy
@@ -371,8 +372,8 @@ were actually implementable once the open decisions were made autonomously:
 **Truly-blocked remainder (external prerequisites, NOT effort).** M1/M2/M5
 complete; M3/M6/M7/M8 have their sound cores complete + tested. What is left
 genuinely needs inputs unavailable in-session: **upstream draft schemas I cannot
-fetch** (M7 server-side task creation = `experimental-ext-tasks` exact result
-shape; M8 Skills = SEP-2640 `skill://` schema); **renderer + Playwright** (M8
+fetch** (server-side task creation = `experimental-ext-tasks` exact result
+shape; the Skills schema is now pinned in the [skill resource contract](mcp-skills-resources.md)); **renderer tests** (native-host
 ui:// iframe CSP); **the hook-expansion matcher infra** (M6 `mcp__.*` + generic
 command hooks — a separate feature); **a category-compliant installed plugin**
 (M3 activation); and **M9 is a terminal flag-day** — `pluginToolsForRegistration`
@@ -387,7 +388,7 @@ or breaking live plugins — all No-Fallback violations.
 
 - **Signed-zip artifact format** — out-of-process stdio + new manifest/`_meta` fields version the artifact + SDK schema; define the re-sign + installed-plugin migration (`plugin-install-receipt.ts` SHA-256 pins). Decide at `untrusted-stdio-isolation`.
 - **Tasks extension draft pinning** — `experimental-ext-tasks` versions independently of the core RC; pin its draft schema (and re-check `DetailedTask`/`notifications/tasks`) at `tasks-extension`.
-- **Apps/Skills version pinning** — pin to the `2026-01-26`/Draft snapshots now (accept churn) or defer until they ride a dated RC. Decide at `apps-and-skills-extensions`.
+- **Apps/Skills version pinning** — Apps retains its independent `2026-01-26` snapshot. Skills uses the released Beta commit in the [skill resource contract](mcp-skills-resources.md); its lifecycle is independent of the base protocol.
 - ~~**Per-request capability source**~~ — DECIDED (owner directive 2026-08-16, design in §6a): the provider derives from the active turn's interactivity plus hook policy, and the server-side capability snapshot becomes TTL-aware instead of connect-latched.
 
 ---

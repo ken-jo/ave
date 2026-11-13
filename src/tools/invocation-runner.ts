@@ -2335,7 +2335,10 @@ export async function runToolInvocation(
       paths: invocationPermissionContext.paths,
       secretRead: invocationPermissionContext.secretRead,
       floor: invocationPermissionContext.floor,
-      admissionDenial: invocationPermissionContext.admissionDenial,
+      admissionDenial: invocationPermissionContext.admissionDenial ?? (() => {
+        const reason = services.skillAdmissionCheck?.(sessionId, toolUse.name, finalInput);
+        return reason ? { code: "mcp-skill-consent", reason } : undefined;
+      })(),
       fileWritePolicy,
       services,
       tool,

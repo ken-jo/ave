@@ -314,7 +314,10 @@ export interface ConversationLoopDeps {
   // Isolated children must not write normal main-session persistence.
   disableSessionPersistence?: boolean;
   // Skill registry authorizes reads but holds no bodies; clear it only when replacing the conversation.
-  skillOverlay?: { clear(sessionId: string): void };
+  skillOverlay?: {
+    clear(sessionId: string): void;
+    checkAdmission?(sessionId: string | undefined, toolName: string, input: Record<string, unknown>, visibleSkillResults?: readonly string[]): string | undefined;
+  };
   // Indexed non-builtin slash names run as model skill requests rather than unknown commands.
   isSkillName?: (name: string) => boolean;
   // Omit notifications for background loops to avoid turn-end spam.

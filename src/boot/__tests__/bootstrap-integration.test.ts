@@ -453,7 +453,7 @@ vi.mock("../../engine/llm/provider-factory.js", () => ({
   secretKeyFor: vi.fn((v: string) => `llm.apiKey.${v}`),
 }));
 
-vi.mock("../../tools/executor.js", () => ({ ToolExecutor: class {} }));
+vi.mock("../../tools/executor.js", () => ({ ToolExecutor: class { setSkillAdmissionCheck = vi.fn(); } }));
 vi.mock("../../tools/write-diff-cache.js", () => ({
   purgeStaleSessionDiffDirs: vi.fn(async () => ({ swept: [], failed: [] })),
   clearSessionDiffCache: vi.fn(async () => {}),

@@ -29,6 +29,7 @@ export type PluginOperationIdentityProvider = (
 ) => PluginOperationInvocationContext | undefined;
 
 export interface InvocationRunnerServices {
+  readonly skillAdmissionCheck?: (sessionId: string | undefined, toolName: string, input: Record<string, unknown>) => string | undefined;
   readonly toolRegistry: ToolRegistry;
   readonly hookRunner: HookRunner;
   readonly permissionManager?: PermissionManager;
