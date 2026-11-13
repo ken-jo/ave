@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIsolatedElectronEnv, launchElectron } from "../ui/seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, quitElectron } from "../ui/seeded-electron.js";
 import { withPageWindow } from "../ui/renderer-events.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -38,7 +38,7 @@ test.describe("initial window size", () => {
   }
 
   test.afterEach(async () => {
-    await app?.close();
+    if (app) await quitElectron(app);
     app = undefined;
     if (userDataDir) rmSync(userDataDir, { recursive: true, force: true });
     if (tempHome) rmSync(tempHome, { recursive: true, force: true });
