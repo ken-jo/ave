@@ -92,7 +92,7 @@ async function harness(options: { readOnly?: boolean; raisingPolicy?: boolean; o
   const context = {
     toolRegistry: registry, permissionManager: manager, approvalGate: gate,
     bootAuditLogger: resources.trackFlushable(new AuditLogger(join(directory, "audit"))),
-    settingsService: { get: () => ({ hostClassifiesRisk: true }) },
+    settingsService: { get: () => ({}) },
     pluginRuntime: runtime, pluginBundleLifecycle: runtime.getGenerationAccess(),
     lateBinding: { pluginToolInvokerRef: {} },
   } as unknown as BootContext;

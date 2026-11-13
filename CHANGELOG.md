@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `features.hostClassifiesRisk` 저장값은 업데이트 때 조용히 제거되며, 호스트 위험 분류가 항상 적용됩니다.
+- 새로 기록하는 비감사급 `permission-shadow.jsonl`에서 카테고리 비교 행과 효과 행의 `declaredCategory` 필드를 제거합니다. 관측 효과 행과 기존 기록은 유지됩니다.
+
 ## v0.15.0 — 2026-11-12
 
 ### 업데이트 전에 알아 둘 것

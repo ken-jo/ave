@@ -49,7 +49,6 @@ function hostApiUnderTest(pluginDataDir: string): {
     }),
     lateBinding: {},
     getRegistryEntry: () => undefined,
-    hostClassifiesRiskEnabled: () => true,
     pluginShutdownHandlers: [],
     readAppPreference: () => undefined,
     settingsService: {

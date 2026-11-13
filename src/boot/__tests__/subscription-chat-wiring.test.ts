@@ -53,7 +53,7 @@ function sharedLoopDeps() {
     settingsService: {
       get: (key: string) => {
         if (key === "llm") return { activeChatRuntime: selection };
-        if (key === "features") return { hostClassifiesRisk: false };
+        if (key === "features") return {};
         return {};
       },
       getSecret: () => undefined,

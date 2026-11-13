@@ -1,6 +1,7 @@
 import { mkdirSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test as base, expect } from "./fixtures.js";
+import { setWindowSize } from "./seeded-electron.js";
 
 const MEMORY_ID = "68d0be17-3e57-4ce0-8c85-9955fdb0a152";
 const SOURCE_SESSION_ID = "43710b94-5bfb-4efc-b7c3-bef127b0ad26";
@@ -9,7 +10,7 @@ const TITLE = "Payment timeout is ten seconds";
 const QUOTE = "The gateway now times out after ten seconds. Remember that.";
 const BEFORE = "The payment timeout is eight seconds.";
 const AFTER = "The payment timeout is ten seconds.";
-const AT = "2026-11-04T09:00:00.000Z";
+const AT = new Date(Date.now() - 60 * 60 * 1000).toISOString();
 
 const test = base.extend({
   aveHome: async ({ tempHome }, use) => {
@@ -63,10 +64,8 @@ const test = base.extend({
 });
 
 test("shows live origin, history and filtered uses at wide and narrow sizes", async ({ app, mainWindow }, testInfo) => {
-  await app.evaluate(({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
-    if (!window) throw new Error("Memory panel window unavailable");
-    window.setContentSize(1280, 860);
+  await setWindowSize(app, 1280, 860);
+  await (await app.browserWindow(mainWindow)).evaluate((window) => {
     window.webContents.send("ave:view:activate", { viewKey: "memory" });
   });
   const panel = mainWindow.getByTestId("memory-search-panel");
@@ -94,11 +93,7 @@ test("shows live origin, history and filtered uses at wide and narrow sizes", as
   await expect(usage).toContainText("Searched");
   await mainWindow.screenshot({ path: testInfo.outputPath("memory-use-filter-wide.png"), animations: "disabled" });
 
-  await app.evaluate(({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
-    if (!window) throw new Error("Memory panel window unavailable");
-    window.setContentSize(760, 860);
-  });
+  await setWindowSize(app, 760, 860);
   await expect(panel.getByRole("button", { name: "Back to memories" })).toBeVisible();
   await mainWindow.screenshot({ path: testInfo.outputPath("memory-detail-narrow.png"), animations: "disabled" });
   expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -114,9 +109,7 @@ test("shows live origin, history and filtered uses at wide and narrow sizes", as
 });
 
 test("starts a conversation from the empty project memory state", async ({ app, mainWindow }) => {
-  await app.evaluate(({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
-    if (!window) throw new Error("Memory panel window unavailable");
+  await (await app.browserWindow(mainWindow)).evaluate((window) => {
     window.webContents.send("ave:view:activate", { viewKey: "memory" });
   });
   const panel = mainWindow.getByTestId("memory-search-panel");
@@ -125,12 +118,39 @@ test("starts a conversation from the empty project memory state", async ({ app, 
   await expect(panel).not.toBeVisible();
 });
 
+test("filters memories by kind and source using the keyboard at narrow and wide sizes", async ({ app, mainWindow }, testInfo) => {
+  await setWindowSize(app, 1280, 860);
+  await (await app.browserWindow(mainWindow)).evaluate((window) => {
+    window.webContents.send("ave:view:activate", { viewKey: "memory" });
+  });
+  const panel = mainWindow.getByTestId("memory-search-panel");
+  const kinds = panel.getByRole("group", { name: "Kind", exact: true });
+  const sources = panel.getByRole("group", { name: "Source", exact: true });
+  await expect(kinds.getByRole("button", { name: "All 2", exact: true })).toBeVisible();
+  const fact = kinds.getByRole("button", { name: "Fact 1", exact: true });
+  await fact.focus();
+  await mainWindow.keyboard.press("Space");
+  await expect(fact).toHaveAttribute("aria-pressed", "true");
+  await expect(sources.getByRole("button", { name: "Assistant 1", exact: true })).toBeVisible();
+  await expect(sources.getByRole("button", { name: "User 0", exact: true })).toBeVisible();
+  await expect(panel.getByRole("button", { name: /Retired callback reference/ })).toHaveCount(0);
+  await mainWindow.screenshot({ path: testInfo.outputPath("memory-filters-wide.png"), animations: "disabled" });
+  await sources.getByRole("button", { name: "User 0", exact: true }).click();
+  await expect(panel.getByText("No memories match these filters.", { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: "Clear filters", exact: true }).click();
+  await sources.getByRole("button", { name: "User 1", exact: true }).click();
+  await expect(panel.getByRole("button", { name: /Retired callback reference/ })).toBeVisible();
+  await expect(panel.getByRole("button", { name: TITLE, exact: false })).toHaveCount(0);
+  await setWindowSize(app, 760, 860);
+  expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await expect(sources.getByRole("button", { name: "User 1", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await mainWindow.screenshot({ path: testInfo.outputPath("memory-filters-narrow.png"), animations: "disabled" });
+});
+
 test("shows an unavailable deleted origin consistently in the list and detail", async ({ app, mainWindow, aveHome }) => {
   unlinkSync(join(aveHome, "sessions", `${SOURCE_SESSION_ID}.jsonl`));
   unlinkSync(join(aveHome, "sessions", `${SOURCE_SESSION_ID}.meta.json`));
-  await app.evaluate(({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
-    if (!window) throw new Error("Memory panel window unavailable");
+  await (await app.browserWindow(mainWindow)).evaluate((window) => {
     window.webContents.send("ave:view:activate", { viewKey: "memory" });
   });
   const panel = mainWindow.getByTestId("memory-search-panel");
@@ -144,9 +164,7 @@ test("shows only a failure when the usage log cannot be read", async ({ app, mai
   const usagePath = join(aveHome, "memories", "usage.jsonl");
   unlinkSync(usagePath);
   mkdirSync(usagePath);
-  await app.evaluate(({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
-    if (!window) throw new Error("Memory panel window unavailable");
+  await (await app.browserWindow(mainWindow)).evaluate((window) => {
     window.webContents.send("ave:view:activate", { viewKey: "memory" });
   });
   const panel = mainWindow.getByTestId("memory-search-panel");

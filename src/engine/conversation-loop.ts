@@ -242,9 +242,7 @@ export class ConversationLoop {
       deps.approvalGate,
       deps.scriptHookManager,
       deps.auditLogger,
-      () => deps.settingsService.get("features")?.hostClassifiesRisk ?? false,
-      // Relax plugin reads only for tracked workers under active filesystem confinement.
-      // Host-shell sandboxing alone never authorizes worker read relaxation.
+      // Read relaxation requires this exact worker's active filesystem confinement.
       isActiveSandboxFilesystemContainedForPluginEffects,
       // Resolve the shared workspace authority lazily so all loop instances see current directory grants.
       getWorkspaceRootLifecycle,

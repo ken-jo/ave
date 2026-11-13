@@ -2,11 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { t } from "../../../i18n/runtime.js";
 import type { MemorySummariesResult } from "../../../shared/memory-detail.js";
 import type { AveApi } from "../types.js";
-import type { MemoryKind, MemoryOriginV1 } from "../../../memory/memory-manager.js";
+import type { MemoryKind, MemoryOriginV1, MemorySourceKind } from "../../../memory/memory-manager.js";
 import type { ProjectIdentity } from "../../../shared/project-identity.js";
 
 export interface NoteResult {
   kind?: MemoryKind;
+  source?: MemorySourceKind;
   origin?: MemoryOriginV1;
   content?: string;
   title: string;
@@ -90,6 +91,7 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
   const [sessionResults, setSessionResults] = useState<SessionResult[]>([]);
   const [loading, setLoading] = useState(false);
   const aliveRef = useRef(true);
+  const refreshId = useRef(0);
   const projectKey = `${project?.projectRoot ?? ""}\0${project?.projectName ?? ""}\0${project?.isDefault === true ? "default" : ""}`;
 
   useEffect(() => {
@@ -100,6 +102,7 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
   }, []);
 
   const refresh = useCallback(async () => {
+    const requestId = ++refreshId.current;
     setLoading(true);
     try {
       const [memoryIndex, summaryResult, sessions] = await Promise.all([
@@ -107,7 +110,7 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
         memoryGetSummaries(api, project),
         memoryListSessions(api, project),
       ]);
-      if (!aliveRef.current) return;
+      if (!aliveRef.current || requestId !== refreshId.current) return;
       setSummaries(summaryResult);
       const mappedNotes = (summaryResult.ok ? summaryResult.notes : []).map((note) => ({
         ...note,
@@ -123,10 +126,8 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
       setCatalogRevision((revision) => revision + 1);
       setNoteCatalog(mappedMemory);
       setSessionCatalog(sessions ?? []);
-      setNoteResults(mappedMemory);
-      setSessionResults(sessions ?? []);
     } catch {
-      if (!aliveRef.current) return;
+      if (!aliveRef.current || requestId !== refreshId.current) return;
       setSummaries({ ok: false, error: "read-failed" });
       setCatalogRevision((revision) => revision + 1);
       setNoteCatalog([]);
@@ -134,13 +135,18 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
       setNoteResults([]);
       setSessionResults([]);
     } finally {
-      if (aliveRef.current) setLoading(false);
+      if (aliveRef.current && requestId === refreshId.current) setLoading(false);
     }
   }, [api, projectKey]);
 
   useEffect(() => {
     void refresh();
+    return () => { refreshId.current++; };
   }, [refresh]);
+
+  useEffect(() => api.onMemorySaveResult((event) => {
+    if (event.result.status === "saved") void refresh();
+  }), [api, refresh]);
 
   useEffect(() => {
     if (query.trim() === "") {
@@ -149,6 +155,7 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
       setLoading(false);
       return;
     }
+    let cancelled = false;
     const timer = setTimeout(async () => {
       if (!aliveRef.current) return;
       setLoading(true);
@@ -158,21 +165,21 @@ export function useMemorySearch(api: AveApi, project?: ProjectIdentity) {
           memorySearchEntries(api, query, project),
           memorySearchSessions(api, query, project),
         ]);
-        if (!aliveRef.current) return;
+        if (!aliveRef.current || cancelled) return;
         setNoteResults([
           ...memoryIndexResult(memoryIndex, query),
           ...(notes ?? []),
         ]);
         setSessionResults(sessions ?? []);
       } catch {
-        if (!aliveRef.current) return;
+        if (!aliveRef.current || cancelled) return;
         setNoteResults([]);
         setSessionResults([]);
       } finally {
-        if (aliveRef.current) setLoading(false);
+        if (aliveRef.current && !cancelled) setLoading(false);
       }
     }, 200);
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [query, api, noteCatalog, sessionCatalog, projectKey]);
 
   const reset = useCallback(() => {

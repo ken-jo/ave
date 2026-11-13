@@ -22,7 +22,7 @@ export function createSandboxBootHarness(): SandboxBootHarness {
         settingsService: {
           get: vi.fn((key: string) =>
             key === "features"
-              ? { osToolSandbox: settingOn, pluginWorkerConfinement, windowsShellLocalNetworkAccess, hostClassifiesRisk: false }
+              ? { osToolSandbox: settingOn, pluginWorkerConfinement, windowsShellLocalNetworkAccess }
               : key === "upstreamProxy"
                 ? { ...DEFAULT_UPSTREAM_PROXY }
                 : undefined,

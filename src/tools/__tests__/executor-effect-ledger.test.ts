@@ -100,7 +100,6 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
       event: "effect-shadow",
       source: "plugin",
       pluginId: "ave-plugin-sampletool",
-      declaredCategory: "read",
       hasMutatingEffect: false,
     });
   });
@@ -124,8 +123,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     const rows = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_mutating");
     expect(rows).toHaveLength(1);
     expect(rows[0].hasMutatingEffect).toBe(true);
-    // Preserve the declared category alongside the observed mutation.
-    expect(rows[0].declaredCategory).toBe("read");
+    expect(rows[0]).not.toHaveProperty("declaredCategory");
   });
 
   it("each invocation gets a FRESH ledger — no cross-invocation leak", async () => {
@@ -198,7 +196,7 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     expect(innerRows[0].hasMutatingEffect).toBe(true);
   });
 
-  it("the category shadow + effect shadow for ONE invocation share a correlationId", async () => {
+  it("keeps invocation correlation on effects without category comparison records", async () => {
     const registry = new ToolRegistry();
     registry.register(
       makePluginTool("ave-plugin-sampletool_corr", [{ kind: "config.get", effect: "read", target: "k" }]),
@@ -210,12 +208,10 @@ describe("executor effect ledger — host-observed read/write shadow", () => {
     await auditLogger.flush();
     const cat = shadowRows(auditDir, "risk-shadow").filter((r) => r.toolName === "ave-plugin-sampletool_corr");
     const eff = effectShadowRows(auditDir).filter((r) => r.toolName === "ave-plugin-sampletool_corr");
-    expect(cat).toHaveLength(1);
+    expect(cat).toHaveLength(0);
     expect(eff).toHaveLength(1);
-    expect(typeof cat[0].correlationId).toBe("string");
-    expect((cat[0].correlationId as string).length).toBeGreaterThan(0);
-    // Join pre-execution category and post-execution effects by correlationId.
-    expect(cat[0].correlationId).toBe(eff[0].correlationId);
+    expect(typeof eff[0].correlationId).toBe("string");
+    expect((eff[0].correlationId as string).length).toBeGreaterThan(0);
   });
 
   it("a plugin tool that mutates ONLY via ctx.storage.writeJson ⇒ hasMutatingEffect:true (not a confirmed read)", async () => {
