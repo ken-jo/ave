@@ -69,6 +69,9 @@ if (process.platform !== "win32") test("the user takes over an approved host com
   try {
     mkdirSync(userData, { recursive: true });
     mkdirSync(workspace, { recursive: true });
+    // System login startup can install a command-not-found handler, which correctly refuses agent typing.
+    // This fixture owns a plain prompt; handler refusals have dedicated shell integration coverage.
+    if (!existsSync("/bin/zsh")) writeFileSync(join(home, ".bash_profile"), "unset -f command_not_found_handle\n");
     mkdirSync(featureHome, { recursive: true });
     mkdirSync(join(featureHome, "sessions"), { recursive: true });
     mkdirSync(join(featureHome, "side-chat", "sessions"), { recursive: true });
@@ -134,6 +137,21 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await expect(chip).toHaveText("Host · conversation permissions");
     await expect(chip).toHaveAttribute("title", /My terminal \(host\) · Agent access follows this conversation/);
     await expect(pane.locator(".xterm")).toBeVisible();
+    const terminalPage = page;
+    const terminalSession = await terminalPage.evaluate(async ({ tabId, cwd }) => {
+      const terminal = window.aveApi.terminal;
+      if (!terminal) throw new Error("Terminal API is unavailable");
+      const result = await terminal.spawn({ tabId, lane: "manual", purpose: "workspace", cwd });
+      if (!result.ok) throw new Error(`Terminal fixture replay failed: ${result.reason}`);
+      return result.session;
+    }, { tabId, cwd: realpathSync(workspace) });
+    await expect.poll(() => terminalPage.evaluate(async (session) => {
+      const terminal = window.aveApi.terminal;
+      if (!terminal) throw new Error("Terminal API is unavailable");
+      const result = await terminal.listBlocks(session);
+      if (!result.ok) throw new Error(`Terminal fixture state unavailable: ${result.error}`);
+      return { integrated: result.integrated, cwd: result.session.currentCwd };
+    }, terminalSession)).toEqual({ integrated: true, cwd: realpathSync(workspace) });
     await expect(observationFailed).toHaveCount(0);
 
     const composer = paneChat.getByTestId("composer-textarea");
@@ -199,6 +217,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await expect(pane.getByTestId("terminal-agent-control")).toHaveCount(0);
     expect(appErrors).toEqual([]);
   } finally {
+    await testInfo.attach("host-tool-results", { body: JSON.stringify(toolResults, null, 2), contentType: "application/json" });
     if (app && page) await teardownSeededElectron({ app, page, userDataDir: userData, tempHome: home, aveHome: featureHome }, { terminate: true });
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     rmSync(root, { recursive: true, force: true });

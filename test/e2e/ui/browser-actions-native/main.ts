@@ -1,8 +1,8 @@
 import { assertNativeBrowserState, clearNativeBrowserStorage } from "../native-browser-state.js";
 import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
-import { app, BrowserWindow, nativeImage, type WebContents } from "electron";
+import { app, BrowserWindow, WebContentsView, nativeImage, type WebContents } from "electron";
 import { createServer } from "node:http";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { createBrowserPageActions } from "../../../../src/main/browser/browser-actions.js";
@@ -59,7 +59,7 @@ function recordNativeInput(event: NativeInputEventName, input: unknown): void {
 const server = createServer(async (request, response) => {
   if (request.url === "/host") {
     response.setHeader("content-type", "text/html");
-    response.end(`<!doctype html><title>Native action host</title><style>body{margin:0;background:#e8edf2;font:16px sans-serif}aside{width:210px;padding:18px}webview{position:absolute;left:230px;top:70px;width:900px;height:720px;border:2px solid #345}</style><aside>Trusted fixture chrome<input id="composer" aria-label="Host composer" autofocus></aside><webview src="about:blank" partition="${NATIVE_BROWSER_PARTITION}" webpreferences="contextIsolation=yes,sandbox=yes,nodeIntegration=no"></webview><script>window.nativeFixtureChrome.onTabOp(request => { const view = document.querySelector("webview"); if (request.op === "focus" && request.tabId === "native-fixture-browser" && view.isConnected && document.visibilityState === "visible" && view.getBoundingClientRect().width > 0) view.focus(); if (request.op === "restore-focus") document.getElementById("composer").focus(); });</script>`);
+    response.end(`<!doctype html><title>Native action host</title><style>body{margin:0;background:#e8edf2;font:16px sans-serif}aside{width:210px;padding:18px}#slot{position:absolute;left:230px;top:70px;width:904px;height:724px;border:2px solid #345}</style><aside>Trusted fixture chrome<input id="composer" aria-label="Host composer" autofocus></aside><div id="slot"></div><script>window.nativeFixtureChrome.onTabOp(request => { if (request.op === "restore-focus") document.getElementById("composer").focus(); });</script>`);
     return;
   }
   if (request.url === "/upload" && request.method === "POST") {
@@ -206,10 +206,12 @@ let origin = "";
 
 async function reset(): Promise<void> {
   if (guest && !guest.isDestroyed()) guest.setZoomFactor(1);
+  const destroyed = guest && !guest.isDestroyed() ? once(guest, "destroyed") : undefined;
   for (const window of BrowserWindow.getAllWindows()) {
     browserTabRegistry.releaseWindow(window.id);
     window.destroy();
   }
+  await destroyed;
   server.closeAllConnections();
   await clearNativeBrowserStorage(NATIVE_BROWSER_PARTITION);
   received = null;
@@ -223,42 +225,40 @@ async function reset(): Promise<void> {
     await dock.show();
   }
   win = new BrowserWindow({ width: 1180, height: 860, x: 40, y: 40, show: false,
-    webPreferences: { webviewTag: true, contextIsolation: true, nodeIntegration: false, sandbox: true, preload } });
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload } });
   if (fixtureMode === "foreground") win.show(); else win.showInactive();
+  const owner = win;
   const windowId = win.id;
   win.once("closed", () => browserTabRegistry.releaseWindow(windowId));
-  win.webContents.on("will-attach-webview", (_event, preferences) => {
-    preferences.contextIsolation = true; preferences.sandbox = true; preferences.nodeIntegration = false; delete preferences.preload;
-  });
   browserTabRegistry.setRendererLink({
-    isWindowVisible: (windowId) => windowId === win.id && !win.isDestroyed() && win.isVisible(),
-    sendTabOp: (_windowId, request) => {
+    isWindowVisible: (windowId) => windowId === owner.id && !owner.isDestroyed() && owner.isVisible(),
+    sendTabOp: (windowId, request) => {
+      if (windowId !== owner.id || owner.isDestroyed() || owner.webContents.isDestroyed()) return false;
       if (request.op === "new") requestId = request.requestId;
-      win.webContents.send("native-fixture-tab-op", request);
+      owner.webContents.send("native-fixture-tab-op", request);
       return true;
     },
     sendControl: () => {},
   });
-  let attach!: () => void;
-  const attached = new Promise<void>((resolve) => { attach = resolve; });
-  win.webContents.once("did-attach-webview", (_event, contents) => {
-    guest = contents;
-    guest.setZoomFactor(1);
-    trackBrowserGuest(guest, win.id);
-    for (const event of ["before-input-event", "before-mouse-event", "input-event"] as const) {
-      // Subscribe through the inherited event emitter and validate native payloads before typed overload support.
-      EventEmitter.prototype.on.call(guest, event, (_event: unknown, input: unknown) => { recordNativeInput(event, input); });
-    }
-    const bind = () => {
-      const result = browserTabRegistry.bindTab(win.id, { tabId: rendererTabId, webContentsId: guest.id, requestId });
-      if (!result.ok) throw new Error(`Native fixture binding failed: ${result.error}`);
-      attach();
-    };
-    if (guest.getURL() === "about:blank" && !guest.isLoading()) bind(); else guest.once("did-finish-load", bind);
-  });
-  const opened = browserTabRegistry.requestTabOp(win.id, { op: "new", url: `${origin}/page`, actor, active: true });
   await win.loadURL(`${origin}/host`);
-  await attached;
+  const opened = browserTabRegistry.requestTabOp(win.id, { op: "new", url: `${origin}/page`, actor, active: true });
+  // Agent pages own an independent native compositor from their initial blank document.
+  const view = new WebContentsView({ webPreferences: {
+    partition: NATIVE_BROWSER_PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false,
+  } });
+  guest = view.webContents;
+  const ownedGuest = guest;
+  win.contentView.addChildView(view);
+  view.setBounds({ x: 232, y: 72, width: 900, height: 720 });
+  win.once("closed", () => { if (!ownedGuest.isDestroyed()) ownedGuest.close(); });
+  guest.setZoomFactor(1);
+  trackBrowserGuest(guest, win.id, { kind: "native-view" });
+  for (const event of ["before-input-event", "before-mouse-event", "input-event"] as const) {
+    EventEmitter.prototype.on.call(guest, event, (_event: unknown, input: unknown) => { recordNativeInput(event, input); });
+  }
+  await guest.loadURL("about:blank");
+  const binding = browserTabRegistry.bindTab(win.id, { tabId: rendererTabId, webContentsId: guest.id, requestId, parked: false });
+  if (!binding.ok) throw new Error(`Native fixture binding failed: ${binding.error}`);
   const outcome = await opened;
   if (!outcome.ok) throw new Error(`Native fixture opening failed: ${outcome.error}`);
   tabId = outcome.tabId;
@@ -280,8 +280,9 @@ void app.whenReady().then(async () => {
   if (!address || typeof address === "string") throw new Error("Native fixture server did not start");
   origin = `http://127.0.0.1:${address.port}`;
   await reset();
-  const fixture: NativeBrowserFixture = { ready: true, run, reset, assertClean: async () => assertNativeBrowserState(win, guest, rendererTabId), read: () => read(), close: async () => {
-    guest.stop(); await disposeBrowserUploads(); win.destroy();
+  const fixture: NativeBrowserFixture = { ready: true, get targetId() { return guest.id; }, run, reset, assertClean: async () => assertNativeBrowserState(win, guest, rendererTabId), read: () => read(), close: async () => {
+    const destroyed = guest.isDestroyed() ? undefined : once(guest, "destroyed");
+    guest.stop(); await disposeBrowserUploads(); win.destroy(); await destroyed;
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   } };
