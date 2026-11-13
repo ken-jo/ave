@@ -4,6 +4,18 @@ Build once with `bun run build`, then run `bun run test:ui-e2e`.
 The default command selects the `background` project on every platform.
 It excludes `@os-focus` tests and never deliberately activates a native window.
 
+The existing CI build job requires `ui/approval-dialog.spec.ts` and
+`ui/background-focus.spec.ts` on its built app under a Linux virtual display.
+This subset covers browser-to-conversation approval return, floating-card layout,
+unattributed cards and trusted keyboard authority. It runs without retries, with
+a five-minute step budget, and records wall time in the job summary. The
+`background-ui-results` artifact retains the JSON report, screenshots and failure
+traces. Run the same subset locally with:
+
+```sh
+bun run test:ui-e2e ui/approval-dialog.spec.ts ui/background-focus.spec.ts --retries=0 --output=test-results/background/cases
+```
+
 The runtime requires both `AVE_E2E=1` and `NODE_ENV=test` to enable inactive
 windows and document focus emulation in unpackaged apps. Packaged apps ignore
 this policy. Each standalone test app installs the same policy before readiness.
@@ -18,6 +30,9 @@ Each worker reuses its copy and removes it at exit. The installed runtime and
 packaged executables are untouched; foreground fixtures use the original runtime.
 Keyboard input goes through the page input channel; embedded guest pointer input
 must target the guest directly instead of relying on native host focus routing.
+
+The approval-dialog spec injects requests into the native window associated
+with the tested page; native visibility does not establish renderer readiness.
 
 The documented [activation-policy contract](https://www.electronjs.org/docs/latest/api/app#appsetactivationpolicypolicy-macos)
 defines `prohibited` as removing the Dock and disallowing window creation and
