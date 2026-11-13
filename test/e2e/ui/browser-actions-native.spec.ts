@@ -256,11 +256,37 @@ test("shared native process resets dirty guest state and extra windows", async (
     await guest.executeJavaScript('localStorage.setItem("dirty", "yes"); sessionStorage.setItem("dirty", "yes"); document.cookie = "dirty=yes"; scrollTo(0, 123)');
     guest.setZoomFactor(1.25);
     const extra = new BrowserWindow({ width: 700, height: 700, show: false });
+    let release = () => {};
+    const startup = new Promise<void>(resolve => { release = resolve; });
+    const debuggerApi = extra.webContents.debugger;
+    const send = debuggerApi.sendCommand.bind(debuggerApi);
+    debuggerApi.sendCommand = async (...args: Parameters<typeof send>) => {
+      const result = await send(...args);
+      if (args[0] === "Emulation.setFocusEmulationEnabled") await startup;
+      return result;
+    };
+    (globalThis as unknown as { nativeResetGate: { release(): void; extraId: number } }).nativeResetGate = {
+      release, extraId: extra.id,
+    };
     await extra.loadURL("about:blank");
     extra.showInactive();
   });
   expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(2);
-  const prepared = await sharedElectronSession.prepare(reason => { throw new Error(`Unexpected fixture relaunch: ${reason}`); });
+  const [prepared] = await Promise.all([
+    sharedElectronSession.prepare(reason => { throw new Error(`Unexpected fixture relaunch: ${reason}`); }),
+    (async () => {
+      try {
+        await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+          const state = globalThis as unknown as { nativeBrowserFixture: NativeBrowserFixture; nativeResetGate: { extraId: number } };
+          const extra = BrowserWindow.fromId(state.nativeResetGate.extraId);
+          return { pending: state.nativeBrowserFixture.pendingWindowStartup,
+            extraAlive: extra !== null && !extra.isDestroyed() };
+        })).toEqual({ pending: 1, extraAlive: true });
+      } finally {
+        await app.evaluate(() => (globalThis as unknown as { nativeResetGate: { release(): void } }).nativeResetGate.release());
+      }
+    })(),
+  ]);
   expect(prepared).toBe(app);
   expect(prepared.process().pid).toBe(pid);
   expect((await read(prepared)).oracle).toMatchObject({ scrollTop: 0, pageY: 0, upload: null, humanClicks: 0 });

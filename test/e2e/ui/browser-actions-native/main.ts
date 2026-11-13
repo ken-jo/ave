@@ -1,5 +1,6 @@
 import { assertNativeBrowserState, clearNativeBrowserStorage } from "../native-browser-state.js";
 import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy.js";
+import { isBackgroundE2eRuntime, whenFocusEmulated } from "../../../../src/main/e2e-window-presentation.js";
 import { app, BrowserWindow, WebContentsView, nativeImage, type WebContents } from "electron";
 import { createServer } from "node:http";
 import { EventEmitter, once } from "node:events";
@@ -38,6 +39,7 @@ let guest: WebContents;
 let tabId = "";
 let win: BrowserWindow;
 let requestId = "";
+let pendingWindowStartup = 0;
 const nativeEvents: { event: string; type: string; modifiers: number; raw: Record<string, unknown> }[] = [];
 type NativeInputEventName = "before-input-event" | "before-mouse-event" | "input-event";
 interface NativeInputObservation { readonly type: string; readonly _modifiers?: number }
@@ -207,7 +209,18 @@ let origin = "";
 async function reset(): Promise<void> {
   if (guest && !guest.isDestroyed()) guest.setZoomFactor(1);
   const destroyed = guest && !guest.isDestroyed() ? once(guest, "destroyed") : undefined;
-  for (const window of BrowserWindow.getAllWindows()) {
+  const windows = BrowserWindow.getAllWindows();
+  // A newly loaded extra window may still own its startup protocol command.
+  // Drain that acknowledgement before destroying the window during reset.
+  if (isBackgroundE2eRuntime()) {
+    await Promise.all(windows.map(async window => {
+      pendingWindowStartup++;
+      try {
+        if (!await whenFocusEmulated(window.webContents)) throw new Error("Native fixture window startup ended before reset");
+      } finally { pendingWindowStartup--; }
+    }));
+  }
+  for (const window of windows) {
     browserTabRegistry.releaseWindow(window.id);
     window.destroy();
   }
@@ -290,7 +303,7 @@ void app.whenReady().then(async () => {
   if (!address || typeof address === "string") throw new Error("Native fixture server did not start");
   origin = `http://127.0.0.1:${address.port}`;
   await reset();
-  const fixture: NativeBrowserFixture = { ready: true, get targetId() { return guest.id; }, run, reset, assertClean: async () => assertNativeBrowserState(win, guest, rendererTabId), read: () => read(), close: async () => {
+  const fixture: NativeBrowserFixture = { ready: true, get targetId() { return guest.id; }, get pendingWindowStartup() { return pendingWindowStartup; }, run, reset, assertClean: async () => assertNativeBrowserState(win, guest, rendererTabId), read: () => read(), close: async () => {
     const destroyed = guest.isDestroyed() ? undefined : once(guest, "destroyed");
     guest.stop(); await disposeBrowserUploads(); win.destroy(); await destroyed;
     server.closeAllConnections();
