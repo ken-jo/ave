@@ -24,7 +24,9 @@ function subject(overrides: Partial<ToolInvocationContext> = {}): ToolInvocation
   return {
     toolName: "artifact_publish", source: "plugin", category: "write", pathFields: ["path"],
     trustOrigin: "llm-tool-arg", finalInput: { operation: "publish" }, executionCwd: DIRECTORY,
-    allowedDirectories: [DIRECTORY], sensitivePathsAdjacent: [], sandboxCapability: CAPABILITY,
+    allowedDirectories: [DIRECTORY], sensitivePathsAdjacent: [],
+    sandboxCapability: { kind: "none", confidence: "verified", platform: process.platform, reason: "unconfined" },
+    ownerPluginSandboxRoot: `${DIRECTORY}/fixture-artifact-data`,
     ...overrides,
   };
 }
@@ -132,9 +134,19 @@ describe("host-issued re-adjudication evidence", () => {
     { ...CAPABILITY, kind: "none" as const },
     { ...CAPABILITY, kind: "partial" as const },
     { ...CAPABILITY, confines: { filesystem: false, process: true, network: false } },
+  ])("keeps sandbox context separate when the sole static reason remains HIGH: %j", (sandboxCapability) => {
+    const input = candidate(subject({ sandboxCapability }));
+    expect(input.ruleVerdict).toEqual({ level: "high", reason: "write path not declared" });
+    expect(createPluginReadjudicationBasis(input)).toBeDefined();
+  });
+
+  it.each([
+    CAPABILITY,
     { ...CAPABILITY, confines: { filesystem: true, process: false, network: false } },
-  ])("requires the decision-time containment evidence: %j", async (sandboxCapability) => {
-    expect(await createPluginReadjudicationBasis(candidate(subject({ sandboxCapability })))).toBeUndefined();
+  ])("preserves an existing confined LOW without offering HIGH re-adjudication: %j", (sandboxCapability) => {
+    const input = candidate(subject({ sandboxCapability }));
+    expect(input.ruleVerdict.level).toBe("low");
+    expect(createPluginReadjudicationBasis(input)).toBeUndefined();
   });
 
   it.each([

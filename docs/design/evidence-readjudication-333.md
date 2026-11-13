@@ -36,7 +36,7 @@ The option exists only when the host supplies eligible evidence. A person must s
 
 **Artifact identity:** use the load-time `verifyPluginIntegrity` result retained for the invocation's pinned runtime instance in [runtime](../../src/plugins/runtime/index.ts). Require signed-marketplace receipt provenance, artifact hash and nonblank signer metadata. `verifyInstallReceipt` checks covered payload against the host-trusted stored receipt; it does not reauthorize a signer against current keys or refresh signature verification. Historical audit rows, labels and plugin claims are insufficient; unsigned/dev/missing evidence is absent. An admitted pinned generation may finish after replacement under existing lifecycle/effect guards. Provenance does not prove safety.
 
-**Containment:** require host-verified filesystem and process confinement of the exact worker/child at creation. A shell setting or manifest claim cannot establish this. Sandbox, network, secret and nested-effect gates remain separate from the remembered approval.
+**Sandboxing stays separate:** actual worker/child confinement is context, not EA eligibility. An absent sandbox does not disqualify EA; shell settings and manifest claims grant no containment. Sandbox, network, secret and nested-effect permissions remain independent execution boundaries.
 
 **Effect history:** [shadow logs](../../src/permissions/reviewer/risk-shadow-log.ts) are non-HMAC and cannot authorize or populate trusted history. Empty history, `hostObservable:false` and past non-mutation never prove future behavior. No trusted-history promotion is needed.
 
@@ -46,7 +46,7 @@ Store EA records in a dedicated namespace with historical HIGH, effective MEDIUM
 
 ## Security and comparison
 
-An attacker-controlled plugin can misdescribe calls, behave benignly during observation and induce repeated prompts. It cannot supply host evidence, select MEDIUM, answer its card, widen the exact record or inherit another principal's consent. Signed malicious code can still damage permitted resources after approval. Remembered consent intentionally outlives its original evidence; the user controls scope and revocation. Compromised hosts/renderers and sandbox escapes remain outside this guarantee.
+An attacker-controlled plugin can misdescribe calls, behave benignly during observation and cause repeated prompts. Its wire/API claims cannot mint host evidence, select MEDIUM, answer a card, widen the exact record or inherit another principal's consent. EA changes no OS isolation: unconfined code retains its existing host access. Signed code can still damage permitted resources after approval. Remembered consent outlives its evidence; the user controls scope and revocation. Compromised hosts/renderers and sandbox escapes remain outside this guarantee.
 
 The owner's reference is [VS Code tool approvals](https://code.visualstudio.com/docs/agents/run/approvals#tool-approval), checked 2026-11-13: inspect inputs, choose one-use or supported broader approval scopes, and manage/reset saved approvals. Approval and sandboxing are separate layers. The owner adopts that scope model here with no reuse evidence revalidation; EA risk re-adjudication is an Ave feature, not a claim that the reference implements it.
 

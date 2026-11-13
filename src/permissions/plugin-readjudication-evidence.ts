@@ -59,9 +59,6 @@ export function createPluginReadjudicationBasis(input: {
   if (input.reviewerVerdict === undefined ? input.reviewerOutcome !== undefined
       : input.reviewerVerdict.level !== "high" || input.reviewerOutcome !== "host-determined") return undefined;
   if (inspectHostRisk({ source: input.source, finalInput: input.finalInput }) !== "write") return undefined;
-  const capability = input.sandboxCapability;
-  if (capability.confidence !== "verified" || capability.kind === "none" || capability.kind === "partial" ||
-      capability.confines?.filesystem !== true || capability.confines.process !== true) return undefined;
   const snapshot = readPluginInstanceIntegrity(input.runtimeInstance);
   if (snapshot?.pluginId !== input.pluginId || snapshot.integrity.installSource !== "marketplace") return undefined;
   const evidence = {
