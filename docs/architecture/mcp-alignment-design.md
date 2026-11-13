@@ -274,12 +274,85 @@ through `runScriptHook` at all three fire points into `ScriptHookStdin` +
 SPECIFIC origin. Remaining: `mcp__.*` matcher + generic-command-hooks (need the
 hook-expansion matcher infra).
 
-**`tasks-extension` (7) — client-side consumption DONE.** `callTool` drives a
-`CreateTaskResult` to terminal via `tasks/get` polling (pollIntervalMs-clamped,
-ceiling-bounded, `tasks/cancel` on timeout); completed → render Result&Task,
-failed/cancelled → throw, in-task `input_required` → typed not-yet. Remaining:
-server-side task CREATION + a durable store surviving restart, gated on pinning
-the `experimental-ext-tasks` draft (§6).
+**`tasks-extension` (7) — durable server and client consumption implemented.** The
+wire contract is the immutable `schema/2026-07-28/schema.ts` and `schema.json` in
+`modelcontextprotocol/ext-tasks` **v0.2.3**, commit
+`cc9aaac1047a9440b07486e38f37060bbebeef4c`. Primary sources:
+[stable schema](https://github.com/modelcontextprotocol/ext-tasks/tree/cc9aaac1047a9440b07486e38f37060bbebeef4c/schema/2026-07-28),
+[stable specification](https://github.com/modelcontextprotocol/ext-tasks/blob/cc9aaac1047a9440b07486e38f37060bbebeef4c/specification/2026-07-28/tasks.md),
+and [SEP-2663](https://modelcontextprotocol.io/seps/2663-tasks-extension).
+The conformance fixture preserves all release validation constraints and removes
+only `description` annotations, including upstream product examples. The original
+source Git blob is `1d0ec255bbcc5744264be53bba0e09e7eb8a5615` (source SHA-256
+`bf30afb7ac251e3e22c037b7a685f60ef6603031b5484c0d08b1fa0bbe86d460`). The fixture SHA-256
+is `9f3de4d0a022a3b1d20db86ff2219641f6632d3529e6fbcd580c958dc9dd6526`.
+
+`PluginMcpServer` promotes calls still running after
+`TOOL_TIMEOUT_POLICY.mcpTaskPromotionMs` only when that request declares the Tasks
+capability. Quick calls and non-declaring clients retain immediate results.
+Task-capable calls atomically reserve a slot before the delegate starts, counting
+both durable tasks and calls still awaiting promotion. A full active store
+refuses the call before execution. Quick results release their reservation;
+long calls convert it into a durable task without a second capacity decision.
+Creation is committed before returning the flat task handle. Task records live
+under `AVE_HOME/mcp-tasks/<plugin-hash>/<task-id>.json`, through
+`openFeatureNamespace` and its queued atomic writes. Each transition replaces only
+that task's file, with no per-transition index rewrite.
+`MCP_TASK_STORE_POLICY` bounds each plugin to 128 records, terminal retention of
+24 hours from the final transition, 128 KiB of compact UTF-8 result JSON and 256 KiB of encoded
+record JSON. Storage is bounded to 128 such files per plugin,
+plus one bounded atomic staging file. In-memory history has the same record and
+payload limits. Results are ordinary tool output, not an encrypted secret store.
+
+Only terminal records are pruned on startup and store access. Live `working` and
+`input_required` tasks never expire through pruning, even after a clock jump.
+Active tasks advertise `ttlMs: null`; a final transition sets `ttlMs` relative to
+creation so clients see the terminal retention window, including for late
+completion. Restart recovery records an interrupted task as a fresh terminal
+failure before applying terminal retention. Capacity pressure expires the
+oldest terminal handle early; if all 128 slots are active, new task creation
+fails. Expired/evicted handles return the pinned invalid-params task-not-found
+error. Oversized results become a bounded failed task with an internal-error
+payload; result data is never truncated. Late completion cannot recreate an
+expired record. Only the plugin's task directory is read; sibling files are not
+interpreted. Malformed input, oversized record files and unexpected on-disk
+record counts refuse loading instead of reading unbounded data or silently
+resetting history.
+Known incomplete atomic staging files are discarded during startup recovery.
+Terminal results survive restart. Interrupted work becomes a protocol-level
+failure without replaying tool effects or restoring invocation authority.
+Concurrent plugin generations share a store writer within the process. Recovery
+runs on the first store access in a new process; simultaneous independent writers
+are unsupported. The host process ownership lock remains the application boundary.
+
+`tasks/get` returns `resultType: "complete"` plus `DetailedTask`; completed tool
+results are nested in `result`, and tool errors retain `completed` with
+`result.isError`. Cancellation acknowledges with `resultType: "complete"`, records
+`cancelled`, and ignores a late delegate result. It does not guarantee that the
+plugin's underlying effects stop. `tasks/update` ignores unknown input keys:
+these delegates do not produce task input requests. Subscriptions acknowledge
+`taskIds` and send full `DetailedTask` notifications with the subscription ID;
+closing the transport releases its listeners. The existing host invocation and
+effect gates remain authoritative; task storage grants no execution permission.
+The [permission decision tree](permission-decision-tree.md) is unchanged.
+
+`McpClient` and `PluginMcpHost` use `awaitMcpTask` to drive a `CreateTaskResult` to terminal via
+`tasks/get` polling (pollIntervalMs-clamped, ceiling-bounded, `tasks/cancel` on
+timeout); completed → render the nested result,
+failed/cancelled → throw, in-task `input_required` → explicit unsupported error.
+Polling waits at least 100ms and no longer than the remaining caller budget.
+Cancellation acknowledgement failures preserve the original error; that wait is
+bounded by `TOOL_TIMEOUT_POLICY.mcpRequestDefaultMs`. Requests declare support at
+`params._meta["io.modelcontextprotocol/clientCapabilities"].extensions["io.modelcontextprotocol/tasks"]`.
+Over Streamable HTTP, `tasks/get`, `tasks/update` and `tasks/cancel` derive
+`Mcp-Name` from `params.taskId`, alongside `Mcp-Method` and the per-request
+protocol version. Task identifiers use the same header-safe encoding as other
+standard routing values; a tool name cannot replace a task identifier.
+The [task tests](../../src/mcp/__tests__/tasks-extension.test.ts) cover wire
+conformance against the pinned schema, process restart, cancellation races,
+subscription delivery, creation failure and the plugin host round trip; the
+[external client tests](../../src/mcp/__tests__/mcp-client.test.ts) cover its
+nested-result consumption. The stable schema linked above owns exact envelopes.
 
 **`apps-and-skills-extensions` (8) — Skills client implemented; Apps consumption partial.**
 The [skill resource contract](mcp-skills-resources.md) owns the released Beta pin,
@@ -371,9 +444,7 @@ were actually implementable once the open decisions were made autonomously:
 
 **Truly-blocked remainder (external prerequisites, NOT effort).** M1/M2/M5
 complete; M3/M6/M7/M8 have their sound cores complete + tested. What is left
-genuinely needs inputs unavailable in-session: **upstream draft schemas I cannot
-fetch** (server-side task creation = `experimental-ext-tasks` exact result
-shape; the Skills schema is now pinned in the [skill resource contract](mcp-skills-resources.md)); **renderer tests** (native-host
+genuinely needs inputs unavailable in-session: **renderer tests** (native-host
 ui:// iframe CSP); **the hook-expansion matcher infra** (M6 `mcp__.*` + generic
 command hooks — a separate feature); **a category-compliant installed plugin**
 (M3 activation); and **M9 is a terminal flag-day** — `pluginToolsForRegistration`
@@ -387,7 +458,7 @@ or breaking live plugins — all No-Fallback violations.
 ## 6. Remaining open decisions (lower-priority; can be decided at the milestone)
 
 - **Signed-zip artifact format** — out-of-process stdio + new manifest/`_meta` fields version the artifact + SDK schema; define the re-sign + installed-plugin migration (`plugin-install-receipt.ts` SHA-256 pins). Decide at `untrusted-stdio-isolation`.
-- **Tasks extension draft pinning** — `experimental-ext-tasks` versions independently of the core RC; pin its draft schema (and re-check `DetailedTask`/`notifications/tasks`) at `tasks-extension`.
+- **Tasks extension pinning** — resolved; the immutable release pin and implementation contract are in §5a.
 - **Apps/Skills version pinning** — Apps retains its independent `2026-01-26` snapshot. Skills uses the released Beta commit in the [skill resource contract](mcp-skills-resources.md); its lifecycle is independent of the base protocol.
 - ~~**Per-request capability source**~~ — DECIDED (owner directive 2026-08-16, design in §6a): the provider derives from the active turn's interactivity plus hook policy, and the server-side capability snapshot becomes TTL-aware instead of connect-latched.
 
@@ -527,7 +598,12 @@ RequestMetaObject {
 
 **`_meta` namespacing:** prefix = dot-separated labels + `/`; a short vendor label is recommended; **any prefix whose second label is `mcp` or `modelcontextprotocol` is RESERVED for MCP** (so Ave uses e.g. `ai.agent-connector.ave/…`, never `*.mcp/…`).
 
-**Tasks (`experimental-ext-tasks`):** methods `tasks/get` / `tasks/update {taskId, inputResponses}` / `tasks/cancel {taskId}`; `CreateTaskResult = Result & Task` with `resultType:"task"`; `Task {taskId, status: "working"|"input_required"|"completed"|"failed"|"cancelled", createdAt, lastUpdatedAt, ttlMs|null, pollIntervalMs?}`; `notifications/tasks` carries the full `DetailedTask`; subscribe via `subscriptions/listen` + `{taskIds}`.
+**Tasks:** the stable release pin and current behavior are in §5a. `CreateTaskResult`
+is flat `Result & Task` with `resultType:"task"`; `tasks/get` returns
+`resultType:"complete"` and `DetailedTask`, with completed data in `result`.
+`tasks/update` and `tasks/cancel` return empty complete acknowledgements.
+`notifications/tasks` carries the full `DetailedTask`; subscribe via
+`subscriptions/listen` + `notifications.taskIds`.
 
 **Corrections vs the earlier prose research:** the missing-capability/unsupported-version error meanings (were swapped; now `-32021`/`-32022` after final renumbering); no input-required error path; Tasks methods are `get/update/cancel` (not `tasks/result`) and live in a separate repo; `"task"` resultType is extension-only; `ttlMs`/`cacheScope` are required (on `DiscoverResult` AND every `List*`/`ReadResource` result); `sampling`/`roots`/`logging` deprecated (SEP-2577).
 

@@ -65,6 +65,27 @@ describe("deriveStandardHeaders", () => {
     expect(headers["mcp-name"]).toBe("file:///projects/config.json");
   });
 
+  it.each(["tasks/get", "tasks/update", "tasks/cancel"])("routes %s using the task identifier rather than a tool name", (method) => {
+    expect(deriveStandardHeaders({ method, params: { taskId: "task-123", name: "wrong-route", _meta: META } })).toEqual({
+      "mcp-method": method,
+      "mcp-protocol-version": "2026-07-28",
+      "mcp-name": "task-123",
+    });
+  });
+
+  it.each(["tasks/get", "tasks/update", "tasks/cancel"])("encodes unsafe task identifiers for %s", (method) => {
+    const taskId = "작업\r\nx-injected: true";
+    const headers = deriveStandardHeaders({ method, params: { taskId, _meta: META } });
+    expect(headers["mcp-name"]).toBe(`=?base64?${Buffer.from(taskId, "utf8").toString("base64")}?=`);
+    expect(headers["mcp-name"]).not.toMatch(/[\r\n]/);
+  });
+
+  it.each(["tasks/get", "tasks/update", "tasks/cancel"])("does not substitute a name when %s has no valid task identifier", (method) => {
+    for (const taskId of [undefined, null, 42, ""]) {
+      expect(deriveStandardHeaders({ method, params: { taskId, name: "wrong-route", _meta: META } })["mcp-name"]).toBeUndefined();
+    }
+  });
+
   it("omits mcp-protocol-version when the body carries no _meta version (legacy era)", () => {
     const headers = deriveStandardHeaders({
       method: "tools/list",

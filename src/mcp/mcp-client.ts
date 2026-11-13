@@ -86,9 +86,9 @@ import {
 } from "../permissions/sandbox-capability.js";
 import { scrubShortError } from "../shared/dlp.js";
 import { t } from "../i18n/index.js";
-import { sleep } from "../shared/abortable-deadline.js";
 import { errorMessage } from "../shared/error-message.js";
 import { renderMcpContent } from "./mcp-tool-content.js";
+import { awaitMcpTask, MCP_TASKS_EXTENSION } from "./task-protocol.js";
 const log = createLogger("mcp-client");
 
 /** JSON-RPC 2.0 request id. This client mints numbers, so `number` is the default; a server
@@ -314,18 +314,6 @@ export type McpInputRequestResolver = (
   request: Record<string, unknown>,
 ) => Promise<unknown>;
 
-/** §8 Tasks extension; task lifecycle status (`experimental-ext-tasks`). */
-type McpTaskStatus = "working" | "input_required" | "completed" | "failed" | "cancelled";
-
-/** The task fields a `CreateTaskResult` (`= Result & Task`, §8) carries inline. Read defensively off the result (the extension versions
- * independently of the core RC; its exact result-retrieval shape is re-verified when the `experimental-ext-tasks` draft is pinned; design §6). */
-interface McpTaskState {
-  taskId: string;
-  status: McpTaskStatus;
-  ttlMs?: number | null;
-  pollIntervalMs?: number;
-}
-
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 // #1230; the MCP 2026-07-28 stateless protocol, adopted at RC and now FINAL (docs/architecture/mcp-alignment-design.md §8). Ave speaks it by default: no initialize handshake, per-request `_meta` capability negotiation, `server/discover` for capabilities. MCP_LEGACY_PROTOCOL_VERSION is used
@@ -359,9 +347,6 @@ const MAX_BUFFERED_RESPONSES = 128;
 const MAX_MRTR_ROUNDS = 8;
 /** Tasks extension (§8) polling bounds. The synchronous `callTool` await is capped by the per-call `timeoutMs` (already clamped to the 120s tool ceiling);
  * these bound the poll cadence within that window. Truly fire-and-forget tasks beyond the ceiling are a separate background-tracking UX, not this path. */
-const DEFAULT_TASK_POLL_INTERVAL_MS = 1_000;
-const MIN_TASK_POLL_INTERVAL_MS = 50;
-const MAX_TASK_POLLS = 600;
 /** Absorbs `notifications/tools/list_changed` bursts into one re-fetch. */
 const TOOLS_REFRESH_DEBOUNCE_MS = 500;
 /** Capability-snapshot TTL clamp (§6a.2): the server's own `DiscoverResult.ttlMs` drives expiry, bounded
@@ -1079,7 +1064,8 @@ export class McpClient {
         }
         if (result.resultType === "task") {
           // Tasks extension (§8 `io.modelcontextprotocol/tasks`): a long-running tool returns a `CreateTaskResult` (Result & Task); poll to terminal.
-          return await this.awaitTask(name, args, result, timeoutMs);
+          const completed = await awaitMcpTask(result, (method, params, budget) => this.sendRequest(method, params, budget), timeoutMs);
+          return this.renderToolResult(completed as unknown as McpToolCallResult);
         }
 
         return this.renderToolResult(result);
@@ -1154,67 +1140,6 @@ export class McpClient {
       );
     }
     return { text, ...(uiPayload ? { uiPayload } : {}), ...(images.length > 0 ? { images } : {}) };
-  }
-
-  /** Read the inline `Task` fields off a `CreateTaskResult`/`tasks/get` result (§8). */
-  private extractTaskState(result: McpToolCallResult, name: string): McpTaskState {
-    const r = result as unknown as Record<string, unknown>;
-    const taskId = r.taskId;
-    const status = r.status;
-    if (typeof taskId !== "string" || typeof status !== "string") {
-      throw new Error(
-        `[mcp-client] tool '${name}' on '${this.config.id}' returned resultType="task" without a valid taskId/status`,
-      );
-    }
-    return {
-      taskId,
-      status: status as McpTaskStatus,
-      ttlMs: typeof r.ttlMs === "number" ? r.ttlMs : null,
-      pollIntervalMs: typeof r.pollIntervalMs === "number" ? r.pollIntervalMs : undefined,
-    };
-  }
-
-  /** Drive a `CreateTaskResult` to a terminal status (§8 Tasks). Polls `tasks/get` at the server's `pollIntervalMs` (clamped) until `completed` (→ render the Result&Task), `failed`/`cancelled` (→ throw), bounded by
-   * the per-call `timeoutMs`; on timeout it issues `tasks/cancel` and throws. In-task `input_required` is a typed not-yet (No-Fallback); that MRTR-in-task path lands when the `experimental-ext-tasks` draft is pinned. */
-  private async awaitTask(
-    name: string,
-    _args: Record<string, unknown>,
-    createResult: McpToolCallResult,
-    timeoutMs: number,
-  ): Promise<McpToolCallOutput> {
-    const deadline = Date.now() + timeoutMs;
-    let current = createResult;
-    let task = this.extractTaskState(current, name);
-    let polls = 0;
-
-    for (;;) {
-      if (task.status === "completed") {
-        return this.renderToolResult(current);
-      }
-      if (task.status === "failed" || task.status === "cancelled") {
-        throw new Error(
-          `[mcp-client] task '${task.taskId}' on '${this.config.id}' ended '${task.status}'`,
-        );
-      }
-      if (task.status === "input_required") {
-        throw new Error(
-          `[mcp-client] task '${task.taskId}' on '${this.config.id}' requires input — in-task MRTR is not implemented yet (experimental-ext-tasks draft pending)`,
-        );
-      }
-
-      if (Date.now() >= deadline || polls >= MAX_TASK_POLLS) {
-        await this.sendRequest("tasks/cancel", { taskId: task.taskId }, timeoutMs).catch(() => {});
-        throw new Error(
-          `[mcp-client] task '${task.taskId}' on '${this.config.id}' did not complete within ${timeoutMs}ms`,
-        );
-      }
-
-      polls += 1;
-      const interval = Math.max(MIN_TASK_POLL_INTERVAL_MS, task.pollIntervalMs ?? DEFAULT_TASK_POLL_INTERVAL_MS);
-      await sleep(Math.min(interval, Math.max(0, deadline - Date.now())));
-      current = await this.sendRequest<McpToolCallResult>("tasks/get", { taskId: task.taskId }, timeoutMs);
-      task = this.extractTaskState(current, name);
-    }
   }
 
   /** 서버 상태 조회 */
@@ -1407,6 +1332,7 @@ export class McpClient {
       ...capabilities,
       extensions: {
         ...capabilities.extensions,
+        [MCP_TASKS_EXTENSION]: {},
         [MCP_APPS_UI_EXTENSION]: { mimeTypes: ["text/html;profile=mcp-app"] },
       },
     };
@@ -2618,10 +2544,13 @@ function parseUvxCommand(command: string): string[] | null {
 const TCHAR_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 /** Methods whose `Mcp-Name` source field is defined by the spec. */
-const NAME_SOURCE: Record<string, "name" | "uri"> = {
+const NAME_SOURCE: Record<string, "name" | "uri" | "taskId"> = {
   "tools/call": "name",
   "prompts/get": "name",
   "resources/read": "uri",
+  "tasks/get": "taskId",
+  "tasks/update": "taskId",
+  "tasks/cancel": "taskId",
 };
 
 const SENTINEL_PREFIX = "=?base64?";

@@ -2,11 +2,12 @@
 import type { Readable, Writable } from "node:stream";
 import { frameMessage, StdioFrameDecoder } from "../stdio-framing.js";
 import { RPC_INTERNAL_ERROR } from "../protocol-constants.js";
-import type { JsonRpcId, JsonRpcRequest, JsonRpcResponse } from "../mcp-client.js";
+import type { JsonRpcId, JsonRpcRequest, JsonRpcResponse, JsonRpcNotification } from "../mcp-client.js";
 import { errorMessage } from "../../shared/error-message.js";
 
 export interface StdioRequestHandler {
-  handle(request: JsonRpcRequest<JsonRpcId>): Promise<JsonRpcResponse<JsonRpcId>>;
+  handle(request: JsonRpcRequest<JsonRpcId>, notify?: (notification: JsonRpcNotification) => void): Promise<JsonRpcResponse<JsonRpcId>>;
+  closeSubscriptions?(): void;
 }
 
 export class StdioServerLoop {
@@ -32,6 +33,7 @@ export class StdioServerLoop {
     }
     this.started = true;
     this.input.on("data", (chunk: Buffer) => this.onData(chunk));
+    this.input.once("close", () => this.handler.closeSubscriptions?.());
   }
 
   private onData(chunk: Buffer): void {
@@ -45,7 +47,17 @@ export class StdioServerLoop {
   private async dispatch(request: JsonRpcRequest<JsonRpcId>): Promise<void> {
     let response: JsonRpcResponse<JsonRpcId>;
     try {
-      response = await this.handler.handle(request);
+      response = await this.handler.handle(request, (notification) => {
+        const frame = frameMessage(notification);
+        if (this.maxQueuedOutputBytes !== undefined && this.output.writableLength + frame.length > this.maxQueuedOutputBytes) {
+          // Status updates are optional, but a subscription must acknowledge or fail explicitly.
+          if (notification.method === "notifications/subscriptions/acknowledged") {
+            throw new Error("Subscription acknowledgement exceeds the output limit");
+          }
+          return;
+        }
+        this.output.write(frame);
+      });
     } catch (err) {
       response = {
         jsonrpc: "2.0",

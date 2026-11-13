@@ -17,6 +17,8 @@ import type { PluginToolOperationPolicy } from "../tools/plugin-operation-govern
 import type { McpToolCallOutput, McpUiPayload, McpUiResourceMeta, McpUiResourceRead } from "./types.js";
 import { renderMcpContent } from "./mcp-tool-content.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
+import { awaitMcpTask, MCP_TASKS_EXTENSION } from "./task-protocol.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 const log = createLogger("plugin-mcp-host");
 
@@ -35,6 +37,7 @@ const CLIENT_INFO = { name: "ave", version: getAveAppVersion() } as const;
 const CLIENT_CAPABILITIES = {
   elicitation: { form: {}, url: {} },
   extensions: {
+    [MCP_TASKS_EXTENSION]: {},
     "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
     "ai.agent-connector.ave/host": { version: HOST_PROTOCOL_VERSION },
   },
@@ -179,17 +182,15 @@ export class PluginMcpHost {
     name: string,
     args: Record<string, unknown>,
   ): Promise<McpToolCallOutput & { rawResult?: { value: unknown } }> {
-    const result = (await this.request("tools/call", { name, arguments: args })) as RcToolCallResult;
+    let result = (await this.request("tools/call", { name, arguments: args })) as RcToolCallResult;
+    if (result.resultType === "task") {
+      result = await awaitMcpTask(result, (method, params) => this.request(method, params), TOOL_TIMEOUT_POLICY.mcpRequestMaxMs) as unknown as RcToolCallResult;
+    }
 
     // Unsupported result branches fail with a typed error rather than silently degrade.
     if (result.resultType === "input_required") {
       throw new Error(
         `[plugin-mcp-host] tool '${name}' on '${this.pluginId}' returned resultType="input_required" — the MRTR input loop is not implemented yet (milestone mrtr-input-loop)`,
-      );
-    }
-    if (result.resultType === "task") {
-      throw new Error(
-        `[plugin-mcp-host] tool '${name}' on '${this.pluginId}' returned resultType="task" — the Tasks extension is not implemented yet (milestone tasks-extension)`,
       );
     }
     if (result.isError) {

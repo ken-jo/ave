@@ -1945,19 +1945,20 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
   });
 
   it("Tasks: polls a CreateTaskResult to completion and returns the completed result", async () => {
+    const task = { taskId: "t1", createdAt: "2026-07-28T00:00:00Z", lastUpdatedAt: "2026-07-28T00:00:00Z", ttlMs: null };
     let taskGets = 0;
     const { client } = rcHttpClient("task", (method, id) => {
       if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
       if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
       if (method === "tools/call")
-        return jsonRpcResponse(id, { resultType: "task", taskId: "t1", status: "working", pollIntervalMs: 1 });
+        return jsonRpcResponse(id, { ...task, resultType: "task", status: "working", pollIntervalMs: 1 });
       if (method === "tasks/get") {
         taskGets += 1;
         return jsonRpcResponse(
           id,
           taskGets >= 2
-            ? { resultType: "task", taskId: "t1", status: "completed", content: [{ type: "text", text: "task done" }] }
-            : { resultType: "task", taskId: "t1", status: "working", pollIntervalMs: 1 },
+            ? { ...task, resultType: "complete", status: "completed", result: { resultType: "complete", content: [{ type: "text", text: "task done" }] } }
+            : { ...task, resultType: "complete", status: "working", pollIntervalMs: 1 },
         );
       }
       return new Response("unexpected", { status: 500 });
@@ -1975,13 +1976,44 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
       if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
       if (method === "tools/call")
-        return jsonRpcResponse(id, { resultType: "task", taskId: "t2", status: "failed" });
+        return jsonRpcResponse(id, { resultType: "task", taskId: "t2", status: "working", createdAt: "2026-07-28T00:00:00Z", lastUpdatedAt: "2026-07-28T00:00:00Z", ttlMs: null });
+      if (method === "tasks/get") return jsonRpcResponse(id, { resultType: "complete", taskId: "t2", status: "failed", createdAt: "2026-07-28T00:00:00Z", lastUpdatedAt: "2026-07-28T00:00:00Z", ttlMs: null, error: { code: -32603, message: "Execution interrupted" } });
+      if (method === "tasks/cancel") return jsonRpcResponse(id, { resultType: "complete" });
       return new Response("unexpected", { status: 500 });
     });
 
     await client.connect();
     await expect(client.callTool("q", {})).rejects.toThrow(/ended 'failed'/);
     await client.disconnect();
+  });
+
+  it("routes task polling and cancellation through an HTTP peer that validates routing headers", async () => {
+    const task = { taskId: "routed-task", createdAt: "2026-07-28T00:00:00Z", lastUpdatedAt: "2026-07-28T00:00:00Z", ttlMs: null };
+    const routed: string[] = [];
+    const { client, fetchMock } = rcHttpClient("routed-task", () => new Response("unexpected", { status: 500 }));
+    fetchMock.mockImplementation(async (_url, init) => {
+      const method = readRpcMethod(init);
+      const id = readRpcId(init) ?? 0;
+      if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
+      if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
+      if (method === "tools/call") return jsonRpcResponse(id, { ...task, resultType: "task", status: "working" });
+      if (method === "tasks/get" || method === "tasks/cancel") {
+        const headers = new Headers(init?.headers);
+        if (headers.get("mcp-name") !== task.taskId || headers.get("mcp-method") !== method) {
+          return new Response(JSON.stringify({ jsonrpc: "2.0", id,
+            error: { code: -32020, message: "Missing task routing headers" } }), { status: 400, headers: { "content-type": "application/json" } });
+        }
+        routed.push(method);
+        if (method === "tasks/get") return jsonRpcResponse(id, { ...task, resultType: "complete", status: "failed", error: { code: -32603, message: "Execution interrupted" } });
+        return jsonRpcResponse(id, { resultType: "complete" });
+      }
+      return new Response("unexpected", { status: 500 });
+    });
+    await client.connect();
+    try {
+      await expect(client.callTool("q", {})).rejects.toThrow(/ended 'failed'/);
+      expect(routed).toEqual(["tasks/get", "tasks/cancel"]);
+    } finally { await client.disconnect(); }
   });
 
   it("MCP Apps gate: honors _meta.ui only when the server advertised the ui extension", async () => {

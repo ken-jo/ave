@@ -23,6 +23,14 @@ import {
 import { PLUGIN_RESULT_CACHE } from "./plugin-server-projection.js";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcResponse } from "./mcp-client.js";
 import { errorMessage } from "../shared/error-message.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { MCP_TASKS_EXTENSION } from "./task-protocol.js";
+import { pluginTaskStore, type McpTaskStore, type McpTaskReservation } from "./task-store.js";
+import type { JsonRpcNotification } from "./mcp-client.js";
+import { META_CLIENT_CAPABILITIES, RPC_MISSING_REQUIRED_CLIENT_CAPABILITY, RPC_INTERNAL_ERROR } from "./protocol-constants.js";
+import { createLogger } from "../lib/logger.js";
+
+const log = createLogger("plugin-mcp-server");
 
 interface PluginToolContent {
   type: string;
@@ -44,17 +52,37 @@ export type PluginToolDelegate = (
 ) => Promise<PluginToolOutcome>;
 
 export class PluginMcpServer {
+  private readonly subscriptions = new Map<JsonRpcId, () => void>();
+
   constructor(
     private readonly manifest: PluginManifest,
     private readonly callTool: PluginToolDelegate,
     /** Without a provider, resource reads fail closed and resource listing is empty. */
     private readonly uiResources?: PluginUiResourceProvider,
+    private readonly taskStore?: McpTaskStore,
   ) {}
+
+  private get tasks(): McpTaskStore {
+    return this.taskStore ?? pluginTaskStore(this.manifest.id);
+  }
+
+  closeSubscriptions(): void {
+    for (const unsubscribe of this.subscriptions.values()) unsubscribe();
+    this.subscriptions.clear();
+  }
 
   /** Tool failures return isError results; protocol failures use JSON-RPC errors.
      * Stamp server identity only on results. */
-  async handle(request: JsonRpcRequest<JsonRpcId>): Promise<JsonRpcResponse<JsonRpcId>> {
-    const response = await this.dispatch(request);
+  async handle(
+    request: JsonRpcRequest<JsonRpcId>,
+    notify?: (notification: JsonRpcNotification) => void,
+  ): Promise<JsonRpcResponse<JsonRpcId>> {
+    let response: JsonRpcResponse<JsonRpcId>;
+    try {
+      response = await this.dispatch(request, notify);
+    } catch {
+      response = { jsonrpc: "2.0", id: request.id, error: { code: RPC_INTERNAL_ERROR, message: "Task operation failed" } };
+    }
     if (
       response.result !== undefined &&
       response.result !== null &&
@@ -73,7 +101,7 @@ export class PluginMcpServer {
     return response;
   }
 
-  private async dispatch(request: JsonRpcRequest<JsonRpcId>): Promise<JsonRpcResponse<JsonRpcId>> {
+  private async dispatch(request: JsonRpcRequest<JsonRpcId>, notify?: (notification: JsonRpcNotification) => void): Promise<JsonRpcResponse<JsonRpcId>> {
     const id = request.id;
 
     const versionError = this.checkProtocolVersion(request.params);
@@ -82,8 +110,51 @@ export class PluginMcpServer {
     }
 
     switch (request.method) {
-      case "server/discover":
-        return { jsonrpc: "2.0", id, result: manifestToDiscoverResult(this.manifest) };
+      case "server/discover": {
+        const result = manifestToDiscoverResult(this.manifest);
+        result.capabilities.extensions = { ...result.capabilities.extensions, [MCP_TASKS_EXTENSION]: {} };
+        return { jsonrpc: "2.0", id, result };
+      }
+
+      case "tasks/get":
+      case "tasks/cancel":
+      case "tasks/update": {
+        if (!this.supportsTasks(request)) return this.missingTasksCapability(id);
+        const taskId = request.params?.taskId;
+        if (typeof taskId !== "string" || !taskId) return this.invalidTask(id);
+        const task = request.method === "tasks/cancel"
+          ? await this.tasks.cancel(taskId) : await this.tasks.get(taskId);
+        if (!task) return this.invalidTask(id);
+        if (request.method === "tasks/get") return { jsonrpc: "2.0", id, result: { ...task, resultType: "complete" } };
+        if (request.method === "tasks/update") {
+          const input = request.params?.inputResponses;
+          if (!input || typeof input !== "object" || Array.isArray(input)) {
+            return { jsonrpc: "2.0", id, error: { code: RPC_INVALID_PARAMS, message: "tasks/update requires inputResponses" } };
+          }
+          // Plugin delegates do not emit input requests. Every supplied key is unknown and ignored.
+        }
+        return { jsonrpc: "2.0", id, result: { resultType: "complete" } };
+      }
+
+      case "subscriptions/listen": {
+        const notifications = request.params?.notifications as { taskIds?: unknown } | undefined;
+        if (!notifications || typeof notifications !== "object" || Array.isArray(notifications)
+          || !Array.isArray(notifications.taskIds) || !notifications.taskIds.every((value) => typeof value === "string")) {
+          return { jsonrpc: "2.0", id, error: { code: RPC_INVALID_PARAMS, message: "Task subscription requires taskIds" } };
+        }
+        if (!this.supportsTasks(request)) return this.missingTasksCapability(id);
+        if (!notify) return { jsonrpc: "2.0", id, error: { code: RPC_INTERNAL_ERROR, message: "Notification channel unavailable" } };
+        const taskIds = new Set(notifications.taskIds as string[]);
+        for (const taskId of taskIds) if (!await this.tasks.get(taskId)) return this.invalidTask(id);
+        const meta = { "io.modelcontextprotocol/subscriptionId": id };
+        notify({ jsonrpc: "2.0", method: "notifications/subscriptions/acknowledged", params: { notifications: { taskIds: [...taskIds] }, _meta: meta } });
+        this.subscriptions.get(id)?.();
+        this.subscriptions.set(id, this.tasks.subscribe((task) => {
+          if (taskIds.has(task.taskId)) notify({ jsonrpc: "2.0", method: "notifications/tasks", params: { ...task, _meta: meta } });
+        }));
+        // The subscription request remains open until its transport closes.
+        return new Promise(() => {});
+      }
 
       case "tools/list":
         return {
@@ -173,29 +244,46 @@ export class PluginMcpServer {
           meta && typeof meta === "object" && !Array.isArray(meta)
             ? (meta as Record<string, unknown>)[INVOCATION_META]
             : undefined;
+        let reservation: McpTaskReservation | undefined;
         try {
-          const outcome = typeof invocation === "string"
-            ? await this.callTool(name, args, { invocation })
-            : await this.callTool(name, args);
-          const result: Record<string, unknown> = {
-            resultType: "complete",
-            content: outcome.content,
+          if (this.supportsTasks(request)) {
+            try { reservation = await this.tasks.reserve(); }
+            catch {
+              return { jsonrpc: "2.0", id, error: { code: RPC_INTERNAL_ERROR, message: "Task capacity unavailable; tool was not started" } };
+            }
+          }
+          const execute = async (): Promise<Record<string, unknown>> => {
+            try {
+              const outcome = typeof invocation === "string"
+                ? await this.callTool(name, args, { invocation }) : await this.callTool(name, args);
+              return { resultType: "complete", content: outcome.content,
+                ...(outcome.isError !== undefined ? { isError: outcome.isError } : {}),
+                ...(outcome._meta !== undefined ? { _meta: outcome._meta } : {}) };
+            } catch (err) {
+              return { resultType: "complete", content: [{ type: "text", text: errorMessage(err) }], isError: true };
+            }
           };
-          if (outcome.isError !== undefined) result.isError = outcome.isError;
-          if (outcome._meta !== undefined) result._meta = outcome._meta;
+          const operation = execute();
+          let result: Record<string, unknown>;
+          if (reservation) {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const pending = Symbol();
+            const settled = await Promise.race([operation, new Promise<typeof pending>((resolve) => {
+              timer = setTimeout(() => resolve(pending), TOOL_TIMEOUT_POLICY.mcpTaskPromotionMs);
+            })]).finally(() => clearTimeout(timer));
+            if (settled === pending) {
+              const task = await reservation.promote();
+              void operation.then((value) => this.tasks.complete(task.taskId, value))
+                .catch(async () => { await this.tasks.fail(task.taskId); })
+                .catch((err: unknown) => log.error(`Task persistence failed: ${errorMessage(err)}`));
+              return { jsonrpc: "2.0", id, result: { ...task, resultType: "task" } };
+            }
+            result = settled;
+          } else result = await operation;
           return { jsonrpc: "2.0", id, result };
-        } catch (err) {
-          // A thrown delegate is a tool failure, not a protocol-dispatch error.
-          return {
-            jsonrpc: "2.0",
-            id,
-            result: {
-              resultType: "complete",
-              content: [{ type: "text", text: errorMessage(err) }],
-              isError: true,
-            },
-          };
-        }
+        } catch {
+          return { jsonrpc: "2.0", id, error: { code: RPC_INTERNAL_ERROR, message: "Task creation failed" } };
+        } finally { reservation?.release(); }
       }
 
       default:
@@ -205,6 +293,22 @@ export class PluginMcpServer {
           error: { code: RPC_METHOD_NOT_FOUND, message: `Method not found: ${request.method}` },
         };
     }
+  }
+
+  private supportsTasks(request: JsonRpcRequest<JsonRpcId>): boolean {
+    const meta = request.params?._meta as Record<string, unknown> | undefined;
+    const capabilities = meta?.[META_CLIENT_CAPABILITIES] as { extensions?: Record<string, unknown> } | undefined;
+    const extension = capabilities?.extensions?.[MCP_TASKS_EXTENSION];
+    return extension !== null && typeof extension === "object" && !Array.isArray(extension);
+  }
+
+  private missingTasksCapability(id: JsonRpcId): JsonRpcResponse<JsonRpcId> {
+    return { jsonrpc: "2.0", id, error: { code: RPC_MISSING_REQUIRED_CLIENT_CAPABILITY,
+      message: "Missing required client capability", data: { requiredCapabilities: { extensions: { [MCP_TASKS_EXTENSION]: {} } } } } };
+  }
+
+  private invalidTask(id: JsonRpcId): JsonRpcResponse<JsonRpcId> {
+    return { jsonrpc: "2.0", id, error: { code: RPC_INVALID_PARAMS, message: "Task not found" } };
   }
 
   /** Missing protocol metadata is allowed internally; explicit mismatches are rejected. */
