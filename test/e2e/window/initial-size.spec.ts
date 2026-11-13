@@ -1,7 +1,8 @@
 // Verify native initial geometry.
 import { test, expect } from "@playwright/test";
 import { ElectronApplication, type Page } from "playwright";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,6 +34,23 @@ test.describe("initial window size", () => {
       }),
       timeout: 30_000,
     });
+    if (process.env.AVE_E2E_QUIT_DIAGNOSTICS === "1") {
+      const child = app.process();
+      const lifecycle = test.info().outputPath("native-lifecycle.jsonl");
+      const stdoutPath = test.info().outputPath("native-stdout.log");
+      const stderrPath = test.info().outputPath("native-stderr.log");
+      const record = (event: string, data: unknown) => appendFileSync(lifecycle, `${JSON.stringify({ time: performance.now(), event, data })}\n`);
+      record("launched", { pid: child.pid, spawnargs: child.spawnargs });
+      child.stdout?.on("data", data => appendFileSync(stdoutPath, data));
+      child.stderr?.on("data", data => appendFileSync(stderrPath, data));
+      child.once("exit", (code, signal) => {
+        record("root-exit", { code, signal });
+        if (process.platform === "linux") record("remaining-group", execFileSync("ps", ["-eo", "pid,ppid,pgid,args"], { encoding: "utf8" }).split("\n").filter(line => line.trim().split(/\s+/)[2] === String(child.pid)));
+      });
+      child.once("close", (code, signal) => record("pipes-close", { code, signal }));
+      app.once("close", () => record("automation-close", {}));
+      app.context().once("close", () => record("context-close", {}));
+    }
     const page = await app.firstWindow();
     return { app, page };
   }

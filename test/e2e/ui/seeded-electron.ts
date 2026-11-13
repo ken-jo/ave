@@ -331,10 +331,22 @@ export async function quitElectron(app: ElectronApplication): Promise<void> {
   if (!isRunning) return;
   const exited = once(child, "exit").then(() => {});
   if (isRunning) {
-    const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
-      runtimeApp.once("will-quit", () => resolve());
+    const readyToExit = app.evaluate(({ app: runtimeApp, BaseWindow }, diagnostics) => new Promise<void>((resolve) => {
+      if (diagnostics) {
+        console.error("Native quit snapshot", { resources: process.getActiveResourcesInfo(), windows: BaseWindow.getAllWindows().map(window => ({ id: window.id, bounds: window.getBounds(), closeListeners: window.listenerCount("close") })) });
+        for (const window of BaseWindow.getAllWindows()) {
+          window.on("close", event => console.error("Native window close", { id: window.id, prevented: event.defaultPrevented }));
+          window.on("closed", () => console.error("Native window closed", { id: window.id }));
+        }
+        runtimeApp.on("before-quit", event => console.error("Native before quit", { prevented: event.defaultPrevented }));
+        process.once("exit", code => console.error("Native process exit", { code, resources: process.getActiveResourcesInfo() }));
+      }
+      runtimeApp.once("will-quit", event => {
+        if (diagnostics) console.error("Native will quit", { prevented: event.defaultPrevented, resources: process.getActiveResourcesInfo() });
+        resolve();
+      });
       runtimeApp.quit();
-    })).catch((error: unknown) => {
+    }), process.env.AVE_E2E_QUIT_DIAGNOSTICS === "1").catch((error: unknown) => {
       if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);
       return exited;
     });
