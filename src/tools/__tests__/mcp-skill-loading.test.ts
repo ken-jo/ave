@@ -8,6 +8,7 @@ import { SkillApprovalsStore } from "../../main/skill-approvals-store.js";
 import { createSkillLoadTool } from "../skill-load.js";
 import { createSkillReadTool } from "../skill-read.js";
 import { createSkillListTool } from "../skill-list.js";
+import { createMcpResourceReadTool } from "../mcp-resource-tools.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
@@ -20,8 +21,15 @@ const clients: McpClient[] = [];
 afterEach(async () => { await Promise.all(clients.splice(0).map((client) => client.disconnect())); });
 const context = (sessionId = "skill-chat") => ({ cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId } });
 
-async function harness(bundle = skillBundle()) {
+async function harness(bundle = skillBundle(), declaredResources = false) {
   const server = new SkillServerTransport(); server.publish(bundle);
+  if (declaredResources) {
+    server.files.set("schema://public", "ordinary resource");
+    server.response = (method) => method === "resources/list" ? {
+      resultType: "complete", ttlMs: 60_000, cacheScope: "private",
+      resources: [...server.files.keys()].map((uri) => ({ uri, name: uri })),
+    } : undefined;
+  }
   const { client, registry } = await connectedSkillClient(server); clients.push(client);
   const access = {
     listSkills: () => client.getState().status === "connected" ? client.getSkillEntries().map((skill) => ({ serverId: "docs-server", skill })) : [],
@@ -76,6 +84,63 @@ describe("MCP skills use the existing skill and permission paths", () => {
       { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
     expect(result).toMatchObject({ is_error: true }); expect(called).not.toHaveBeenCalled();
     expect(h.requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("blocks padded skill reads through the real resource tool with opt-in %s", async (active) => {
+    const h = await harness(skillBundle(), true);
+    const dispatch = vi.fn((_serverId: string, uri: string) => h.client.readDeclaredResource(uri));
+    h.registry.register(createMcpResourceReadTool(() => ({ listResources: () => [], readDeclaredResource: dispatch })));
+    if (active) {
+      h.optIn();
+      expect((await h.load.execute({ skillName: h.selector }, context())).isError).toBe(false);
+    }
+    h.server.files.set("skill://reports/SKILL.md", "UNVERIFIED INSTRUCTIONS");
+    const reads = h.server.requests.filter((request) => request.method === "resources/read").length;
+    for (const uri of ["skill://reports/SKILL.md", " skill://reports/SKILL.md ", "\tskill://reports/SKILL.md\n"]) {
+      const [result] = await h.executor.executeAll([{ id: "padded", name: "mcp_resource_read", input: { serverId: "docs-server", uri } }],
+        { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
+      expect(result).toMatchObject({ is_error: true });
+      expect(result.content).not.toContain("UNVERIFIED INSTRUCTIONS");
+    }
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((request) => request.method === "resources/read")).toHaveLength(reads);
+  });
+
+  it("blocks a hook rewrite to a padded skill resource and server", async () => {
+    const h = await harness(skillBundle(), true);
+    const dispatch = vi.fn((_serverId: string, uri: string) => h.client.readDeclaredResource(uri));
+    h.registry.register(createMcpResourceReadTool(() => ({ listResources: () => [], readDeclaredResource: dispatch })));
+    h.executor.getHookRunner().registerPreHook("rewrite-resource", () => ({ action: "modify", updatedInput: {
+      serverId: " docs-server ", uri: " skill://reports/SKILL.md ",
+    } }));
+    const [result] = await h.executor.executeAll([{ id: "rewritten", name: "mcp_resource_read", input: { serverId: "docs-server", uri: "schema://public" } }],
+      { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
+    expect(result).toMatchObject({ is_error: true });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((request) => request.method === "resources/read")).toEqual([]);
+  });
+
+  it("checks the exact normalized resource identity sent on the wire after a hook rewrite", async () => {
+    const h = await harness(skillBundle(), true);
+    const dispatch = vi.fn((_serverId: string, uri: string) => h.client.readDeclaredResource(uri));
+    h.registry.register(createMcpResourceReadTool(() => ({ listResources: () => [], readDeclaredResource: dispatch })));
+    h.executor.getHookRunner().registerPreHook("rewrite-resource", () => ({ action: "modify", updatedInput: {
+      serverId: " docs-server ", uri: "\tschema://public\n",
+    } }));
+    const admission = vi.fn((sessionId: string | undefined, name: string, input: Record<string, unknown>) => h.overlay.checkAdmission(sessionId, name, input));
+    h.executor.setSkillAdmissionCheck(admission);
+    const [result] = await h.executor.executeAll([{ id: "ordinary", name: "mcp_resource_read", input: { serverId: "docs-server", uri: "skill://reports/SKILL.md" } }],
+      { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
+    expect(result.is_error).not.toBe(true);
+    expect(result.content).toContain("ordinary resource");
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith("docs-server", "schema://public");
+    const wireReads = h.server.requests.filter((request) => request.method === "resources/read");
+    expect(wireReads).toEqual([{ method: "resources/read", params: expect.objectContaining({ uri: "schema://public" }) }]);
+    expect(admission).toHaveBeenCalled();
+    for (const [, , input] of admission.mock.calls) {
+      expect(input.serverId).toBe(dispatch.mock.calls[0][0]);
+      expect(input.uri).toBe(wireReads[0].params.uri);
+    }
   });
 
   it("explicit opt-in loads fenced origin-tagged instructions and lazily verifies supporting files", async () => {

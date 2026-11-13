@@ -11,6 +11,18 @@ import type { McpResourceSummary } from "../mcp/types.js";
 import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("ave");
+const mcpResourceReadTools = new WeakSet<Tool>();
+
+// Normalize after argument hooks, before admission and permission checks. The handler
+// consumes this exact identity without changing what those checks authorized.
+export function normalizeMcpResourceReadInput(tool: Tool, input: Record<string, unknown>): Record<string, unknown> {
+  if (!mcpResourceReadTools.has(tool)) return input;
+  return {
+    ...input,
+    ...(typeof input.serverId === "string" ? { serverId: input.serverId.trim() } : {}),
+    ...(typeof input.uri === "string" ? { uri: input.uri.trim() } : {}),
+  };
+}
 
 // Match estimateTokens' four-character estimate.
 const APPROX_CHARS_PER_TOKEN = 4;
@@ -198,7 +210,7 @@ export function createMcpResourceListTool(getAccess: McpResourceAccessResolver):
 }
 
 export function createMcpResourceReadTool(getAccess: McpResourceAccessResolver): Tool {
-  return createDynamicTool({
+  const tool = createDynamicTool({
     name: "mcp_resource_read",
     description: t("be_mcpResourceTools.readDescription"),
     source: "builtin",
@@ -225,8 +237,8 @@ export function createMcpResourceReadTool(getAccess: McpResourceAccessResolver):
       const access = getAccess();
       if (!access) return toolErrorResult(t("be_mcpResourceTools.notReady"));
       const a = (rawInput ?? {}) as Record<string, unknown>;
-      const serverId = typeof a.serverId === "string" ? a.serverId.trim() : "";
-      const uri = typeof a.uri === "string" ? a.uri.trim() : "";
+      const serverId = typeof a.serverId === "string" ? a.serverId : "";
+      const uri = typeof a.uri === "string" ? a.uri : "";
       if (serverId.length === 0 || uri.length === 0 || uri.length > MCP_RESOURCE_URI_MAX_CHARS) {
         return toolErrorResult(t("be_mcpResourceTools.invalidRequest"));
       }
@@ -254,4 +266,6 @@ export function createMcpResourceReadTool(getAccess: McpResourceAccessResolver):
       }
     },
   });
+  mcpResourceReadTools.add(tool);
+  return tool;
 }

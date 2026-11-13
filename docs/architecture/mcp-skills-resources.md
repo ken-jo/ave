@@ -78,8 +78,11 @@ calls until reloading succeeds under current consent. `skill_load` remains
 available for recovery. Supporting reads remain pinned to the originating
 server and held manifest. Generic model resource reads of declared skill files
 are refused even before activation, directing callers to `skill_load` and
-`skill_read` for consent and verification. Cross-server reads
-while acting on a skill are refused; use a separate conversation for that origin.
+`skill_read` for consent and verification. The resource tool's server ID and URI
+are normalized once after argument hooks, before admission and permission checks.
+The handler dispatches those exact checked values without further normalization.
+Cross-server reads while acting on a skill are refused; use a separate
+conversation for that origin.
 
 Digests establish consistency with the server's entry, not authenticity or trust.
 They do not replace user consent, input fencing, sender validation or tool gates.
