@@ -33,7 +33,9 @@ describe("bounded durable task retention", () => {
     expect(await store.get(ids[0])).toBeUndefined();
     expect(await store.get(ids[1])).toBeUndefined();
     expect(await store.get(ids[2])).toMatchObject({ status: "completed" });
-    expect(await store.get(ids[2])).toHaveProperty("ttlMs", DAY_MS);
+    const retained = await store.get(ids[2]);
+    expect(retained).toBeDefined();
+    if (retained) expect(Date.parse(retained.createdAt) + (retained.ttlMs ?? 0)).toBe(Date.parse(retained.lastUpdatedAt) + DAY_MS);
     const restarted = new McpTaskStore(PLUGIN_ID);
     expect(await restarted.get(ids[0])).toBeUndefined();
     expect(await restarted.get(ids.at(-1) ?? "")).toMatchObject({ status: "completed", result: { content: [{ text: "129" }] } });
@@ -67,7 +69,20 @@ describe("bounded durable task retention", () => {
     expect(await new McpTaskStore(PLUGIN_ID).get(task.taskId)).toEqual(result);
   });
 
-  it("prunes expired records on access and on startup", async () => {
+  it("preserves live tasks through a forward clock jump and retains their late result", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-13T00:00:00Z"));
+    const store = new McpTaskStore(PLUGIN_ID);
+    const task = await store.create();
+    vi.setSystemTime(new Date("2026-11-15T00:00:00Z"));
+    expect(await store.get(task.taskId)).toMatchObject({ status: "working" });
+    const completed = await store.complete(task.taskId, { content: [{ type: "text", text: "late result" }] });
+    expect(completed).toMatchObject({ status: "completed", result: { content: [{ text: "late result" }] } });
+    expect(await store.get(task.taskId)).toEqual(completed);
+    expect(await new McpTaskStore(PLUGIN_ID).get(task.taskId)).toEqual(completed);
+  });
+
+  it("prunes expired terminal records and preserves the recovered interruption", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-11-13T00:00:00Z"));
     const store = new McpTaskStore(PLUGIN_ID);
@@ -76,8 +91,8 @@ describe("bounded durable task retention", () => {
     await store.complete(completed.taskId, { content: [] });
     vi.setSystemTime(new Date("2026-11-14T00:00:00.001Z"));
     expect(await store.get(completed.taskId)).toBeUndefined();
-    expect(await new McpTaskStore(PLUGIN_ID).get(working.taskId)).toBeUndefined();
-    expect(await readdir(join(home, "mcp-tasks", PLUGIN_HASH))).toEqual([]);
+    expect(await new McpTaskStore(PLUGIN_ID).get(working.taskId)).toMatchObject({ status: "failed", error: { message: "Task execution was interrupted by server restart" } });
+    expect(await readdir(join(home, "mcp-tasks", PLUGIN_HASH))).toEqual([`${working.taskId}.json`]);
   });
 
   it("refuses new tasks when every retained slot is active", async () => {

@@ -294,13 +294,18 @@ Creation is committed before returning the flat task handle. Task records live
 under `AVE_HOME/mcp-tasks/<plugin-hash>/<task-id>.json`, through
 `openFeatureNamespace` and its queued atomic writes. Each transition replaces only
 that task's file, with no aggregate history or per-transition index rewrite.
-`MCP_TASK_STORE_POLICY` bounds each plugin to 128 records, a maximum lifetime of
-24 hours from creation, 128 KiB of compact UTF-8 result JSON and 256 KiB of encoded
+`MCP_TASK_STORE_POLICY` bounds each plugin to 128 records, terminal retention of
+24 hours from the final transition, 128 KiB of compact UTF-8 result JSON and 256 KiB of encoded
 record JSON. Retained record bytes are therefore bounded to 32 MiB per plugin,
 plus one bounded atomic staging file. In-memory history has the same record and
 payload limits. Results are ordinary tool output, not an encrypted secret store.
 
-Expiry is pruned on startup and store access. Capacity pressure expires the
+Only terminal records are pruned on startup and store access. Live `working` and
+`input_required` tasks never expire through pruning, even after a clock jump.
+Active tasks advertise `ttlMs: null`; a final transition sets `ttlMs` relative to
+creation so clients see the terminal retention window, including for late
+completion. Restart recovery records an interrupted task as a fresh terminal
+failure before applying terminal retention. Capacity pressure expires the
 oldest terminal handle early; if all 128 slots are active, new task creation
 fails. Expired/evicted handles return the pinned invalid-params task-not-found
 error. Oversized results become a bounded failed task with an internal-error

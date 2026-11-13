@@ -62,20 +62,25 @@ export class McpTaskStore {
   }
 
   private failure(task: DetailedTask, message: string): DetailedTask {
-    return { taskId: task.taskId, createdAt: task.createdAt, lastUpdatedAt: new Date().toISOString(),
-      ttlMs: task.ttlMs, pollIntervalMs: TASK_POLL_INTERVAL_MS, status: "failed",
+    const lastUpdatedAt = new Date().toISOString();
+    return { taskId: task.taskId, createdAt: task.createdAt, lastUpdatedAt,
+      ttlMs: this.terminalTtl(task, lastUpdatedAt), pollIntervalMs: TASK_POLL_INTERVAL_MS, status: "failed",
       error: { code: RPC_INTERNAL_ERROR, message } };
   }
 
+  private terminalTtl(task: DetailedTask, lastUpdatedAt: string): number {
+    return Math.max(0, Date.parse(lastUpdatedAt) - Date.parse(task.createdAt)) + MCP_TASK_STORE_POLICY.ttlMs;
+  }
+
   private expired(task: DetailedTask): boolean {
-    return Date.parse(task.createdAt) + (task.ttlMs ?? MCP_TASK_STORE_POLICY.ttlMs) <= Date.now();
+    return isTerminal(task) && Date.parse(task.lastUpdatedAt) + MCP_TASK_STORE_POLICY.ttlMs <= Date.now();
   }
 
   private recover(value: unknown): DetailedTask {
     let task = DetailedTaskSchema.parse(value);
     if (!TASK_ID_RE.test(task.taskId)) throw new Error("Invalid stored task identifier");
-    task.ttlMs = Math.min(task.ttlMs ?? MCP_TASK_STORE_POLICY.ttlMs, MCP_TASK_STORE_POLICY.ttlMs);
     if (!isTerminal(task)) task = this.failure(task, "Task execution was interrupted by server restart");
+    else task.ttlMs = this.terminalTtl(task, task.lastUpdatedAt);
     if ((task.status === "completed" && jsonBytes(task.result) > MCP_TASK_STORE_POLICY.maxResultBytes)
       || Buffer.byteLength(`${JSON.stringify(task, null, 2)}\n`) > MCP_TASK_STORE_POLICY.maxRecordBytes) {
       task = this.failure(task, "Task result exceeds the storage limit");
@@ -182,7 +187,7 @@ export class McpTaskStore {
       }
       const now = new Date().toISOString();
       return this.commit({ taskId: randomUUID(), status: "working", createdAt: now,
-        lastUpdatedAt: now, ttlMs: MCP_TASK_STORE_POLICY.ttlMs, pollIntervalMs: TASK_POLL_INTERVAL_MS });
+        lastUpdatedAt: now, ttlMs: null, pollIntervalMs: TASK_POLL_INTERVAL_MS });
     });
   }
 
@@ -216,7 +221,8 @@ export class McpTaskStore {
       await this.prune();
       const task = this.records.get(taskId);
       if (!task || isTerminal(task)) return task ? structuredClone(task) : undefined;
-      return this.commit({ ...change(task), lastUpdatedAt: new Date().toISOString() });
+      const lastUpdatedAt = new Date().toISOString();
+      return this.commit({ ...change(task), lastUpdatedAt, ttlMs: this.terminalTtl(task, lastUpdatedAt) });
     });
   }
 
