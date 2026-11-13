@@ -46,7 +46,6 @@ describe("ToolExecutor background shell session control", () => {
       undefined,
       undefined,
       undefined,
-      () => true,
     );
   });
 

@@ -135,7 +135,17 @@ async function find(forward: boolean, findNext: boolean): Promise<{ matches: num
 
 async function preview() {
   const before = BrowserWindow.getFocusedWindow()?.id ?? null;
-  const image = await getBrowserWorkspaceService().preview(owner.id, target());
+  let image: BrowserPreview;
+  try { image = await getBrowserWorkspaceService().preview(owner.id, target()); }
+  catch (error) {
+    try {
+      console.error("[workspace-native:preview]", error, {
+        guestId: guest.id, throttled: guest.getBackgroundThrottling(),
+        ownerVisible: owner.isVisible(), ownerFocused: owner.isFocused(), popup: read().popup,
+      });
+    } catch (diagnosticError) { console.warn("Native preview diagnostics unavailable", diagnosticError); }
+    throw error;
+  }
   const decoded = nativeImage.createFromDataURL(image.dataUrl);
   const size = decoded.getSize();
   return {

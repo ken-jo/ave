@@ -57,7 +57,9 @@ type FakeBridge = InstanceType<typeof FakeAppBridge>;
 
 const fakeEl = { send: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn() };
 
-function build() {
+const ALL_CAPABILITIES = ["serverResources", "serverTools", "message", "updateModelContext", "downloadFile", "openLinks"];
+
+function build(declaredCapabilities: unknown = ALL_CAPABILITIES) {
   return createMcpAppBridge(
     { serverId: "s1" },
     "<html><body>card</body></html>",
@@ -73,6 +75,7 @@ function build() {
       downloadFile: vi.fn(async () => ({ ok: true as const, disposition: "saved" as const })),
       updateModelContext: vi.fn(async () => ({ ok: true as const, disposition: "stored" as const })),
     },
+    declaredCapabilities,
   );
 }
 
@@ -81,6 +84,34 @@ beforeEach(() => {
 });
 
 describe("createMcpAppBridge — capabilities are derived from the single active-handler set", () => {
+  it.each([null, [], {}, "serverTools", ["sampling", "logging"]])("registers no privileged handlers for an absent or unusable declaration: %j", (declaration) => {
+    const { bridge } = build(declaration);
+    const fake = bridge as unknown as FakeBridge;
+    expect(fake.capabilities).toEqual({});
+    expect(fake.handlersAtConnect).toEqual({
+      onsandboxready: true,
+      onreadresource: false,
+      oncalltool: false,
+      onmessage: false,
+      ondownloadfile: false,
+      onupdatemodelcontext: false,
+      onopenlink: false,
+      onsizechange: true,
+      onrequestdisplaymode: true,
+    });
+  });
+
+  it("registers only the supported intersection independently for each card", () => {
+    const first = build(["serverTools", "sampling", "logging", "serverTools"]).bridge as unknown as FakeBridge;
+    const second = build(["message"]).bridge as unknown as FakeBridge;
+    expect(first.capabilities).toEqual({ serverTools: {} });
+    expect(first.handlersAtConnect.oncalltool).toBe(true);
+    expect(first.handlersAtConnect.onmessage).toBe(false);
+    expect(second.capabilities).toEqual({ message: { text: {} } });
+    expect(second.handlersAtConnect.oncalltool).toBe(false);
+    expect(second.handlersAtConnect.onmessage).toBe(true);
+  });
+
   it("advertises exactly the capabilities whose handlers are wired, nothing else", () => {
     const { bridge } = build();
     // Advertise only wired capabilities; display modes use host-context availableDisplayModes, not a capability key.

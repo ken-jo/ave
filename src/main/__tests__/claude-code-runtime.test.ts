@@ -159,7 +159,8 @@ function spawnHarness(
   return { spawn, calls, started, probes, nextStarted: () => nextSpawn.promise };
 }
 
-async function conversation(tools: readonly ToolSchema[] = [], resolveExecutable?: (path: string) => Promise<string>) {
+async function conversation(tools: readonly ToolSchema[] = [], resolveExecutable?: (path: string) => Promise<string>,
+  onPlanUsage?: ConstructorParameters<typeof ClaudeCodeConversationRuntime>[0]["onPlanUsage"]) {
   const directories = await paths();
   const harness = spawnHarness();
   const bridge = new SubscriptionToolBridge(tools);
@@ -167,6 +168,7 @@ async function conversation(tools: readonly ToolSchema[] = [], resolveExecutable
     name: "ave-host-tools", command: "/host/mcp", args: [], env: { TEST_BRIDGE_TOKEN: "ephemeral-only" },
   });
   const runtime = new ClaudeCodeConversationRuntime({ ...directories, bridge, ...harness,
+    onPlanUsage,
     resolveRuntime: async () => ({
       executable: await (resolveExecutable ?? (async (path: string) => path))("/approved/claude"),
       identity: "approved", verify: async () => {
@@ -195,6 +197,25 @@ function rejection(turn: Promise<unknown>): Promise<unknown> {
 }
 
 describe("CLI conversation boundary", () => {
+  it("observes reported stream quota independently from the successful model result", async () => {
+    const records = JSON.parse(readFileSync(new URL("./fixtures/subscription-plan-usage-events.json", import.meta.url), "utf8"));
+    const onPlanUsage = vi.fn();
+    const h = await conversation([], undefined, onPlanUsage);
+    const done = collect(h.runtime.streamTurn("hello"));
+    const child = await arrivalBeforeCompletion(h.started, done);
+    child.send(init());
+    child.send(records.rateLimitEvent);
+    child.send(records.rateLimitAllowed);
+    child.send(assistant()); child.send(result()); child.close();
+    await expect(done).resolves.toEqual([
+      { type: "text_delta", text: "hello" }, { type: "message_complete", stopReason: "end_turn" },
+    ]);
+    expect(onPlanUsage.mock.calls).toEqual([
+      [[{ id: "five_hour", usedPercent: 85, resetsAt: 1730947200000 }]],
+      [[{ id: "seven_day", resetsAt: 1730950800000 }]],
+    ]);
+  });
+
   it("retains native ancestor rules and reports a location rejection before spawning", async () => {
     const directories = await paths();
     const harness = spawnHarness();

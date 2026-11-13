@@ -1,5 +1,6 @@
 import type { MCP_GOVERNANCE_UNAPPROVED_SERVER } from "../shared/mcp-error-code.js";
 import type { ToolSurface } from "../plugins/runtime/tool-visibility.js";
+import type { McpUiHostCapability } from "../plugins/public-contract.js";
 
 export interface McpGovernancePolicy {
   version: string;
@@ -308,6 +309,8 @@ export interface McpUiResourcePermissions {
 export interface McpUiResourceMeta {
   csp?: McpUiResourceCsp;
   permissions?: McpUiResourcePermissions;
+  /** Resource-owned host-operation declaration; separate from browser permissions. */
+  "ai.agent-connector.ave/hostCapabilities"?: McpUiHostCapability[];
 }
 
 /** What `resources/read` yields for a UI resource: the HTML plus the resource's OWN declared security metadata. `readResource` previously returned a bare
@@ -316,6 +319,7 @@ export interface McpUiResourceRead {
   html: string;
   csp?: McpUiResourceCsp;
   permissions?: McpUiResourcePermissions;
+  hostCapabilities?: McpUiHostCapability[];
 }
 
 /** Serve plugin content through the shared resource model; policy stays in the validated, integrity-covered manifest, never the runtime response.
@@ -323,6 +327,8 @@ export interface McpUiResourceRead {
 export interface PluginUiResourceDecl {
   /** `ui://<pluginId>/<path>`; authority MUST equal the declaring plugin's id. */
   uri: string;
+  /** Host bridge operations requested by this resource; omission grants none. */
+  hostCapabilities?: McpUiHostCapability[];
   /** The resource's own declared CSP (spec `McpUiResourceCsp`). @optional */
   csp?: McpUiResourceCsp;
   /** Sandbox permissions the resource requests (spec `McpUiResourcePermissions`). @optional */
@@ -384,6 +390,8 @@ export interface McpUiResourceBundle {
   proxyUrl: string;
   /** The app HTML, mounted into the inner sandboxed iframe by the relay preload. */
   html: string;
+  /** Resource-owned declaration used to select host bridge handlers; omission grants none. */
+  hostCapabilities?: McpUiHostCapability[];
 }
 
 /** Result of an MCP App's `tools/call` on its OWN server, as it crosses main → preload → renderer (`CHANNELS.mcp.callTool`). Deliberately an OUTCOME, not a thrown error: every denial (cross-server, app-visibility, permission/consent) and every tool failure comes back as `{ ok: false }` with a

@@ -4,11 +4,11 @@ import type { BridgeWebviewElement } from "../../../../src/ui/renderer/component
 
 declare global {
   interface Window {
-    __startHandshake: (opts: { proxyUrl: string; partition: string; html: string }) => void;
+    __startHandshake: (opts: { proxyUrl: string; partition: string; html: string; hostCapabilities?: string[] }) => void;
   }
 }
 
-window.__startHandshake = ({ proxyUrl, partition, html }) => {
+window.__startHandshake = ({ proxyUrl, partition, html, hostCapabilities }) => {
   const webview = document.createElement("webview");
   // Set partition before src because guest attachment binds it.
   webview.setAttribute("partition", partition);
@@ -31,7 +31,10 @@ window.__startHandshake = ({ proxyUrl, partition, html }) => {
     {
       onResize: () => {},
       openLink: async () => ({ ok: false }),
-      callTool: async () => ({ ok: false as const, error: "not-wired-in-e2e-harness" }),
+      callTool: async () => {
+        console.log("E2E_HOST TOOL_CALLED");
+        return { ok: true as const, result: "status" };
+      },
       postMessage: async () => ({ ok: false as const, error: "not-wired-in-e2e-harness" }),
       getDisplayMode: () => "inline" as const,
       applyDisplayMode: async () => "inline" as const,
@@ -46,6 +49,7 @@ window.__startHandshake = ({ proxyUrl, partition, html }) => {
         message: "not wired in the e2e harness",
       }),
     },
+    hostCapabilities,
   );
 
   // Add an independent listener without replacing the production readiness handler.

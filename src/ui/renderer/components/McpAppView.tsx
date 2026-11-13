@@ -317,6 +317,7 @@ export function McpAppView({
               params,
             ),
         },
+        bundle.hostCapabilities,
       );
       bridgeRef.current = { bridge, transport, token: tokenFromProxyUrl(bundle.proxyUrl) };
     }

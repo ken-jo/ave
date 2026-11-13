@@ -106,6 +106,52 @@ isolatedTest("CDP native popup preserves registration, hardening, opener, sessio
   } finally { await close(app); }
 });
 
+isolatedTest("native preview paints a throttled opener beneath a popup without changing window focus", { annotation: { type: "isolated-app", description: "Exercises native window lifecycle" } }, async ({}, testInfo) => {
+  const app = await launch(testInfo.project.outputDir);
+  try {
+    await openRegisteredPopup(app);
+    const baseline = await app.evaluate(async ({ BrowserWindow, webContents }) => {
+      const fixture = (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture;
+      const state = fixture.read();
+      const owner = BrowserWindow.fromId(state.ownerWindowId);
+      const popup = state.popup && BrowserWindow.fromId(state.popup.nativeWindowId);
+      const guest = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL().endsWith("/page"));
+      if (!guest || !owner || !popup) throw new Error("Native opener or popup is unavailable");
+      owner.webContents.setBackgroundThrottling(true);
+      guest.setBackgroundThrottling(true);
+      popup.setFocusable(false);
+      popup.setBounds(owner.getBounds());
+      popup.showInactive();
+      await popup.webContents.executeJavaScript("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      return { ownerThrottled: owner.webContents.getBackgroundThrottling(), guestThrottled: guest.getBackgroundThrottling(),
+        popupVisible: popup.isVisible(), popupFocusable: popup.isFocusable(), ownerFocused: owner.isFocused() };
+    });
+    expect(baseline).toEqual({ ownerThrottled: true, guestThrottled: true, popupVisible: true, popupFocusable: false, ownerFocused: false });
+    const capture = await app.evaluate(async ({ webContents }) => {
+      const guest = webContents.getAllWebContents().find(contents => contents.getType() === "webview" && contents.getURL().endsWith("/page"));
+      if (!guest) throw new Error("Native opener is unavailable");
+      const readbacks: boolean[] = [];
+      const capturePage = guest.capturePage.bind(guest);
+      guest.capturePage = (...args) => { readbacks.push(guest.getBackgroundThrottling()); return capturePage(...args); };
+      try {
+        const result = await (globalThis as unknown as { workspaceNativeFixture: WorkspaceNativeFixture }).workspaceNativeFixture.preview();
+        return { ...result, throttled: guest.getBackgroundThrottling(), readbacks };
+      } finally { guest.capturePage = capturePage; }
+    });
+    expect(capture.bytes).toBeGreaterThan(1000);
+    expect(capture.decodedWidth).toBeGreaterThan(0);
+    expect(capture.decodedHeight).toBeGreaterThan(0);
+    expect(capture.focusPreserved).toBe(true);
+    expect(capture.throttled).toBe(true);
+    expect(capture.readbacks).toEqual([false]);
+    const path = testInfo.outputPath("occluded-opener-preview.jpg");
+    const data = capture.preview.dataUrl.split(",")[1];
+    if (!data) throw new Error("Native opener preview is empty");
+    await fs.writeFile(path, Buffer.from(data, "base64"));
+    await testInfo.attach("occluded-opener-preview", { path, contentType: "image/jpeg" });
+  } finally { await close(app); }
+});
+
 isolatedTest("@os-focus native popup verifies focus, human pause, trusted title and explicit resume", { annotation: { type: "isolated-app", description: "Native OS focus requires a dedicated process" } }, async ({}, testInfo) => {
   const app = await launch(testInfo.project.outputDir, "foreground");
   try {

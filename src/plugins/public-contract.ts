@@ -165,9 +165,20 @@ export function flattenAgentPluginsManifest(document: unknown): PluginManifest {
   return flat as unknown as PluginManifest;
 }
 
+/** Host bridge operations a resource may request; omission grants none. */
+export type McpUiHostCapability =
+  | "serverResources"
+  | "serverTools"
+  | "message"
+  | "updateModelContext"
+  | "downloadFile"
+  | "openLinks";
+
 /** One signed first-party `ui://` resource declaration. */
 export interface PluginUiResourceDecl {
   uri: string;
+  /** Only declared, supported host operations are advertised and registered. */
+  hostCapabilities?: McpUiHostCapability[];
   csp?: {
     connectDomains?: string[];
     resourceDomains?: string[];

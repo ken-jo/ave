@@ -211,6 +211,40 @@ test("native parked agent tab wakes for full-page capture without selecting its 
   await attachImage(testInfo, "parked-full-page-capture", result);
 });
 
+test("parked native page retains compositor frames and trusted clicks without disturbing the host editor", async ({ sharedApp: app }, testInfo) => {
+  const host = await app.firstWindow();
+  const target = await app.evaluate(() => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    return { windowId: fixture.windowId, targetId: fixture.targetId, pageUrl: fixture.pageUrl };
+  });
+  await host.locator("#slot").evaluate(element => { element.style.display = "none"; });
+  await expect.poll(() => inspectBrowserTarget(app, target.windowId, target.pageUrl)).toMatchObject({ connected: true, attached: false });
+  await host.locator("#composer").fill("unfinished host draft");
+  await host.locator("#composer").evaluate(element => {
+    element.setAttribute("data-blurs", "0");
+    element.addEventListener("blur", () => { element.setAttribute("data-blurs", String(Number(element.getAttribute("data-blurs")) + 1)); });
+  });
+  try {
+    await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.startPreview());
+    await expect.poll(() => app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.previewFrame()?.data.length ?? 0)).toBeGreaterThan(1000);
+    const frame = await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.previewFrame());
+    if (!frame) throw new Error("Native preview frame disappeared");
+    expect(frame.width).toBeGreaterThan(0);
+    expect(frame.height).toBeGreaterThan(0);
+    expect(await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.clickHuman()))
+      .toEqual({ clicks: 1, trusted: true });
+    await expect(host.locator("#composer")).toBeFocused();
+    await expect(host.locator("#composer")).toHaveValue("unfinished host draft");
+    await expect(host.locator("#composer")).toHaveAttribute("data-blurs", "0");
+    expect(await inspectBrowserTarget(app, target.windowId, target.pageUrl)).toMatchObject({ connected: true, attached: false, ownerFocused: false });
+    const path = testInfo.outputPath("parked-compositor.jpg");
+    await fs.writeFile(path, Buffer.from(frame.data, "base64"));
+    await testInfo.attach("parked-compositor", { path, contentType: "image/jpeg" });
+  } finally {
+    await app.evaluate(() => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.stopPreview());
+  }
+});
+
 test("native parked agent tab captures its viewport and returns to sleep", async ({ sharedApp: app }, testInfo) => {
   const backgroundThrottled = () => app.evaluate(({ webContents }) => {
     const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;

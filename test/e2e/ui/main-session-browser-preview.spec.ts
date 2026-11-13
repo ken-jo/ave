@@ -382,7 +382,7 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
     await expect.poll(keyboardTarget).toEqual({ focused: true, guestFrame: true });
     await page.getByTestId("chat-side-panel-close").click();
     await expect.poll(keyboardTarget).toEqual({ focused: false, guestFrame: false });
-    // A parked binding must not change a background window's current focus or activate it.
+    // Native parking must not change a background window's current focus or activate it.
     const inactiveGuest = retained[0];
     if (!inactiveGuest || !afterEnd?.rendererTabId) throw new Error("Retained guest binding unavailable");
     await page.evaluate(() => {
@@ -396,12 +396,20 @@ async function exerciseParkedClick(deviceScale: number, appZoom: number, guestZo
       editor.addEventListener("blur", () => { state.backgroundEditBlurs++; });
     });
     await ctx.app.evaluate(({ BaseWindow }, windowId) => BaseWindow.fromId(windowId)?.blur(), host.windowId);
+    await expect.poll(() => running.app.evaluate(({ BaseWindow }, windowId) => BaseWindow.fromId(windowId)?.isFocused(), host.windowId)).toBe(false);
     const backgroundBefore = await page.evaluate(() => ({ blurs: (window as unknown as { backgroundEditBlurs: number }).backgroundEditBlurs,
       active: document.activeElement?.getAttribute("data-testid"), value: (document.activeElement as HTMLInputElement)?.value }));
-    const binding = await page.evaluate(args => window.aveApi.browserTabs?.bindTab(args), {
-      tabId: afterEnd.rendererTabId, webContentsId: inactiveGuest.id, parked: true,
-    });
-    expect(binding).toEqual({ ok: true });
+    expect(backgroundBefore).toMatchObject({ active: "background-edit-probe", value: "Background draft" });
+    const parking = await page.evaluate(async tabId => {
+      const tabs = window.aveApi.browserTabs;
+      if (!tabs) throw new Error("Native browser parking API unavailable");
+      const acquired = await tabs.nativeSurface({ action: "create", tabId });
+      if (!acquired.ok || !acquired.surface) throw new Error("Retained native surface unavailable");
+      return tabs.nativeSurface({ action: "present", tabId, webContentsId: acquired.surface.webContentsId,
+        epoch: acquired.surface.epoch, sequence: 1, bounds: null });
+    }, afterEnd.rendererTabId);
+    expect(parking).toMatchObject({ ok: true, surface: { tabId: afterEnd.rendererTabId,
+      webContentsId: inactiveGuest.id, visible: false } });
     expect(await ctx.app.evaluate(({ BaseWindow }, windowId) => BaseWindow.fromId(windowId)?.isFocused(), host.windowId)).toBe(false);
     expect(await page.evaluate(() => ({ blurs: (window as unknown as { backgroundEditBlurs: number }).backgroundEditBlurs,
       active: document.activeElement?.getAttribute("data-testid"), value: (document.activeElement as HTMLInputElement)?.value })))

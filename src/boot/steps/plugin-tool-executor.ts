@@ -47,7 +47,7 @@ function pluginInvocationSessionId(context: PluginToolInvocationContext): string
 }
 
 export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
-  const { toolRegistry, permissionManager, bashAstValidator, approvalGate, bootAuditLogger, settingsService, pluginRuntime, lateBinding } = ctx;
+  const { toolRegistry, permissionManager, bashAstValidator, approvalGate, bootAuditLogger, pluginRuntime, lateBinding } = ctx;
 
   // External hooks use the single trust-quarantine path; the in-process runner is internal only.
   const hookRunner = createHookRunner();
@@ -96,8 +96,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     approvalGate,
     scriptHookManager,
     bootAuditLogger,
-    () => settingsService.get("features")?.hostClassifiesRisk ?? false,
-    // Relax foreground reads only when the worker’s off-HostApi filesystem writes are actually confined.
+    // Only the tracked worker's filesystem confinement can relax command reads.
     isActiveSandboxFilesystemContainedForPluginEffects,
     getWorkspaceRootLifecycle,
     pluginOperationGrants,

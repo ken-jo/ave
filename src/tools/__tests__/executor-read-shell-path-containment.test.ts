@@ -53,7 +53,6 @@ async function runPluginCommand(
       undefined,
       undefined,
       undefined,
-      () => true,
     );
     const permissionContext: ToolPermissionContext = { trustOrigin: "user-keyboard" };
     const results = await executor.executeAll(

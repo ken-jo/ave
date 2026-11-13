@@ -3338,6 +3338,16 @@ export const en = {
   "memorySaveNotice.panelUndoExpired": "This undo is no longer available",
 
   // memorySearchPanel
+  "memorySearchPanel.filterKind": "Kind",
+  "memorySearchPanel.filterSource": "Source",
+  "memorySearchPanel.filterAll": "All",
+  "memorySearchPanel.source.user": "User",
+  "memorySearchPanel.source.assistant": "Assistant",
+  "memorySearchPanel.source.import": "Imported",
+  "memorySearchPanel.source.capture": "Automatic capture",
+  "memorySearchPanel.source.unknown": "Unrecorded",
+  "memorySearchPanel.noFilterResults": "No memories match these filters.",
+  "memorySearchPanel.clearFilters": "Clear filters",
   "memorySearchPanel.justNow": "Just now",
   "memorySearchPanel.minutesAgo": "{minutes} minutes ago",
   "memorySearchPanel.hoursAgo": "{hours} hours ago",
@@ -5097,6 +5107,20 @@ export const en = {
   "subAgentCard.transcriptLoadFailed": "Couldn't load transcript.",
 
   // subscriptionProvidersSection
+  "subscriptionPlanUsage.title": "Plan usage",
+  "subscriptionPlanUsage.reported": "Reported {time}",
+  "subscriptionPlanUsage.window": "{minutes} min window",
+  "subscriptionPlanUsage.primary": "Primary window",
+  "subscriptionPlanUsage.secondary": "Secondary window",
+  "subscriptionPlanUsage.fiveHour": "5-hour window",
+  "subscriptionPlanUsage.sevenDay": "7-day window",
+  "subscriptionPlanUsage.sevenDayOpus": "7-day window · Opus",
+  "subscriptionPlanUsage.sevenDaySonnet": "7-day window · Sonnet",
+  "subscriptionPlanUsage.currentPeriod": "Current period",
+  "subscriptionPlanUsage.used": "{percent}% used",
+  "subscriptionPlanUsage.resets": "Resets {time}",
+  "subscriptionPlanUsage.projected": "At the observed pace, projected to reach the limit around {time}, before reset. This is an estimate.",
+
   "subscriptionProvidersSection.title": "Subscription providers",
   "subscriptionProvidersSection.description": "Use an existing subscription with a provider-specific official runtime while keeping its login and chat selection in one place.",
   "subscriptionProvidersSection.securityNotice": "Sign-in URLs, account tokens and runtime output are never shown here.",

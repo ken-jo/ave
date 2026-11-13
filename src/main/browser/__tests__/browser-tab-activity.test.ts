@@ -184,6 +184,18 @@ it("wakes a sleeping tab before acting and reuses it until the idle grace ends",
   expect(page.setBackgroundThrottling).toHaveBeenLastCalledWith(true);
 });
 
+it("releases painting when renderer sleep notification fails", async () => {
+  const page = guest(1);
+  const controller = new AbortController();
+  const withActivity = createBrowserTabActivity((_id, awake) => {
+    if (!awake) throw new Error("Renderer sleep failed");
+    return true;
+  });
+  await expect(withActivity(page, controller.signal, async () => true, async () => { controller.abort(); }))
+    .rejects.toThrow("Renderer sleep failed");
+  expect(page.getBackgroundThrottling()).toBe(true);
+});
+
 it("keeps concurrent guests awake independently through their complete actions", async () => {
   vi.useFakeTimers();
   const setAwake = vi.fn(() => true);

@@ -574,7 +574,9 @@ describe("LlmTab provider cards", () => {
   });
 
   async function pickCompactionModel(label: string) {
-    openMenu(screen.getByTestId("compaction-model"));
+    const trigger = screen.getByTestId("compaction-model");
+    await waitFor(() => expect(trigger).toBeEnabled());
+    openMenu(trigger);
     const option = await screen.findByRole("option", { name: new RegExp(label) });
     fireEvent.click(option);
   }

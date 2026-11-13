@@ -189,6 +189,14 @@ function ownerChildren(window = owner): NativeView[] {
   return (window.contentView as unknown as NativeView).children;
 }
 
+function expectParkedPage(width = 800, height = 600): void {
+  const container = requiredValue(ownerChildren()[0], "native parking container");
+  expect(ownerChildren()).toHaveLength(1);
+  expect(container.children).toEqual([pageView()]);
+  expect(container.getBounds()).toEqual({ x: -width, y: 0, width, height });
+  expect(pageView().getBounds()).toEqual({ x: 0, y: 0, width, height });
+}
+
 function pointer(surface: BrowserNativeSurfaceState, overrides: Partial<BrowserNativeInput> = {}): BrowserNativeInput {
   return { tabId: surface.tabId, webContentsId: surface.webContentsId, epoch: surface.epoch, sequence: ++nextInputSequence,
     type: "mouseDown", x: 100, y: 120, button: "left", clickCount: 1, modifiers: [], ...overrides };
@@ -563,7 +571,7 @@ describe("native browser trusted user pointer routing", () => {
 });
 
 describe("native browser page creation", () => {
-  it("creates a detached isolated page in the browser session and binds only its blank bootstrap", async () => {
+  it("creates an isolated page outside the window while retaining its native root and binds only its blank bootstrap", async () => {
     const state = await create();
     const page = nativePage();
     expect(native.preferences[0]).toMatchObject({
@@ -575,7 +583,7 @@ describe("native browser page creation", () => {
     expect(page.loadURL).toHaveBeenCalledExactlyOnceWith("about:blank");
     expect(page.setBackgroundThrottling).toHaveBeenCalledWith(false);
     expect(pageView().getBounds()).toEqual({ x: 0, y: 0, width: 1024, height: 768 });
-    expect(ownerChildren()).toEqual([]);
+    expectParkedPage(1024, 768);
     expect(deps.attach).toHaveBeenCalledExactlyOnceWith(page, owner);
     expect(deps.bind).toHaveBeenCalledExactlyOnceWith(1, {
       tabId: state.tabId, webContentsId: page.id, parked: true, requestId: "browser-op-1",
@@ -611,7 +619,7 @@ describe("native browser page creation", () => {
     expect(second.epoch).toBeGreaterThan(first.epoch);
     expect(second.visible).toBe(false);
     expect(nativePage().loadURL).toHaveBeenCalledTimes(1);
-    expect(ownerChildren()).toEqual([]);
+    expectParkedPage();
     expect(owner.contents.focus).not.toHaveBeenCalled();
     expect(await present(first, 2)).toEqual({ ok: false, error: "stale-surface" });
     expect(await present(second)).toMatchObject({ ok: true, surface: { visible: true } });
@@ -670,14 +678,14 @@ describe("native browser pane presentation", () => {
     expect(owner.contents.focus).not.toHaveBeenCalled();
   });
 
-  it("acknowledges parking before detaching and retains the page viewport", async () => {
+  it("acknowledges parking before moving the page outside the window and retains its native root", async () => {
     const state = await create();
     await present(state);
     native.trace = [];
     const parked = await host.request(1, { action: "present", tabId: state.tabId, webContentsId: state.webContentsId, epoch: state.epoch, sequence: 2, bounds: null });
     expect(parked).toMatchObject({ ok: true, surface: { visible: false } });
-    expect(native.trace).toEqual(["bind:true", "detach", "detach"]);
-    expect(ownerChildren()).toEqual([]);
+    expect(native.trace).toEqual(["bind:true"]);
+    expectParkedPage();
     expect(pageView().getBounds()).toEqual({ x: 0, y: 0, width: 800, height: 600 });
     expect(nativePage().close).not.toHaveBeenCalled();
     expect(owner.contents.focus).not.toHaveBeenCalled();
@@ -696,14 +704,14 @@ describe("native browser pane presentation", () => {
     expect(owner.contents.focus).not.toHaveBeenCalled();
   });
 
-  it("returns actual user-owned native focus only after parking acknowledgement and detachment", async () => {
+  it("returns actual user-owned native focus only after parking acknowledgement", async () => {
     const state = await create();
     await present(state);
     nativePage().focused = true;
     owner.contents.focus.mockImplementation(() => { native.trace.push("host-focus"); });
     native.trace = [];
     expect(await host.request(1, { action: "present", tabId: state.tabId, webContentsId: state.webContentsId, epoch: state.epoch, sequence: 2, bounds: null })).toMatchObject({ ok: true });
-    expect(native.trace).toEqual(["bind:true", "detach", "detach", "host-focus"]);
+    expect(native.trace).toEqual(["bind:true", "host-focus"]);
     expect(owner.contents.focus).toHaveBeenCalledTimes(1);
   });
 
@@ -714,7 +722,7 @@ describe("native browser pane presentation", () => {
     owner.focused = false;
     expect(await host.request(1, { action: "present", tabId: state.tabId, webContentsId: state.webContentsId, epoch: state.epoch, sequence: 2, bounds: null })).toMatchObject({ ok: true });
     expect(owner.contents.focus).not.toHaveBeenCalled();
-    expect(ownerChildren()).toEqual([]);
+    expectParkedPage();
   });
 
   it("rechecks native window focus after the parking acknowledgement", async () => {
@@ -726,11 +734,11 @@ describe("native browser pane presentation", () => {
     expect(owner.contents.focus).not.toHaveBeenCalled();
   });
 
-  it("detaches a placement whose unpark acknowledgement fails", async () => {
+  it("parks a placement whose unpark acknowledgement fails", async () => {
     const state = await create();
     vi.mocked(deps.bind).mockReturnValue({ ok: false, error: "guest-not-hosted" });
     expect(await present(state)).toEqual({ ok: false, error: "native-surface-unavailable" });
-    expect(ownerChildren()).toEqual([]);
+    expectParkedPage();
     expect(nativePage().close).not.toHaveBeenCalled();
   });
 
@@ -753,12 +761,20 @@ describe("native browser pane presentation", () => {
     expect(await present(state, 5)).toMatchObject({ ok: true });
   });
 
+  it("does not reconnect a page retired during its presentation binding", async () => {
+    const state = await create();
+    vi.mocked(deps.bind).mockImplementation(() => { host.dispose(); return { ok: true }; });
+    expect(await present(state)).toEqual({ ok: false, error: "native-surface-unavailable" });
+    expect(ownerChildren()).toEqual([]);
+    expect(nativePage().close).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects malformed geometry before touching native views", async () => {
     const state = await create();
     for (const bounds of [{ x: 0, y: 0, width: 0, height: 30 }, { x: Infinity, y: 0, width: 30, height: 30 }, { x: 0, y: 0, width: 32769, height: 30 }]) {
       expect(await present(state, 1, bounds)).toEqual({ ok: false, error: "bad-request" });
     }
-    expect(ownerChildren()).toEqual([]);
+    expectParkedPage(1024, 768);
   });
 
   it("refuses a foreign window or replaced page identifier", async () => {
@@ -773,7 +789,7 @@ describe("native browser pane presentation", () => {
     await present(state);
     owner.visible = false;
     owner.emit("hide");
-    expect(ownerChildren()).toEqual([]);
+    expectParkedPage();
     expect(await present(state, 2, { x: 90, y: 120, width: 700, height: 500 })).toMatchObject({ ok: true, surface: { visible: false } });
     owner.visible = true;
     owner.emit("show");
@@ -786,7 +802,7 @@ describe("native browser pane presentation", () => {
     await present(state);
     owner.minimized = true;
     owner.emit("minimize");
-    expect(ownerChildren()).toEqual([]);
+    expectParkedPage();
     owner.minimized = false;
     owner.emit("restore");
     expect(ownerChildren()).toHaveLength(1);
@@ -827,10 +843,10 @@ describe("native browser pane presentation", () => {
     await present(state);
     if (event === "main-frame-navigation") owner.contents.emit("did-start-navigation", {}, "http://localhost/", false, true);
     else owner.contents.emit(event);
-    expect(ownerChildren()).toEqual([]);
+    expectParkedPage();
     expect(await present(state, 2)).toEqual({ ok: false, error: "stale-surface" });
     owner.emit("show");
-    expect(ownerChildren()).toEqual([]);
+    expectParkedPage();
     const refreshed = await create();
     expect(refreshed.webContentsId).toBe(state.webContentsId);
     expect(await present(refreshed)).toMatchObject({ ok: true, surface: { visible: true } });
@@ -838,6 +854,33 @@ describe("native browser pane presentation", () => {
 });
 
 describe("native browser user commands and state", () => {
+  it("returns accidental parked native focus to the visible host without pausing agent control", async () => {
+    await create();
+    nativePage().focused = true;
+    nativePage().emit("focus");
+    expect(owner.contents.focus).toHaveBeenCalledTimes(1);
+    expect(deps.userFocus).not.toHaveBeenCalled();
+  });
+
+  it("returns retained parked focus when its native owner becomes active", async () => {
+    await create();
+    owner.focused = false;
+    nativePage().focused = true;
+    nativePage().emit("focus");
+    expect(owner.contents.focus).not.toHaveBeenCalled();
+    owner.focused = true;
+    owner.emit("focus");
+    expect(owner.contents.focus).toHaveBeenCalledTimes(1);
+    expect(deps.userFocus).not.toHaveBeenCalled();
+  });
+
+  it("returns native focus from a presented page when the host document reloads", async () => {
+    await present(await create());
+    nativePage().focused = true;
+    owner.contents.emit("did-start-navigation", {}, "http://localhost/", false, true);
+    expectParkedPage();
+    expect(owner.contents.focus).toHaveBeenCalledTimes(1);
+  });
   it("refuses focus while parked, hidden or owned by an inactive native window", async () => {
     const state = await create();
     const focus = () => host.request(1, { action: "focus", tabId: state.tabId, webContentsId: state.webContentsId });

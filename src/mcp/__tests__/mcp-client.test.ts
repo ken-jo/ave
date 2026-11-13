@@ -2036,6 +2036,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
             ui: {
               csp: { connectDomains: ["https://api.example.com"] },
               permissions: { clipboardWrite: {} },
+              "ai.agent-connector.ave/hostCapabilities": ["serverTools"],
             },
           },
         },
@@ -2059,6 +2060,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       html: "<h1>app</h1>",
       csp: { connectDomains: ["https://api.example.com"] },
       permissions: { clipboardWrite: {} },
+      hostCapabilities: ["serverTools"],
     });
     await withApps.client.disconnect();
 
@@ -2070,7 +2072,7 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
     });
     await noApps.client.connect();
     const unadvertised = await noApps.client.readResource("ui://app/p.html");
-    expect(unadvertised).toEqual({ html: "<h1>app</h1>", csp: undefined, permissions: undefined });
+    expect(unadvertised).toEqual({ html: "<h1>app</h1>", csp: undefined, permissions: undefined, hostCapabilities: undefined });
     await noApps.client.disconnect();
   });
 

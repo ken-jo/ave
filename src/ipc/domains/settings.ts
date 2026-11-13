@@ -57,7 +57,7 @@ import {
 } from "../../shared/subscription-runtime.js";
 import {
   getSubscriptionRuntimeService,
-  onSubscriptionRuntimeAutoVerified,
+  onSubscriptionRuntimeStatusChanged,
   subscriptionRuntimeErrorCode,
   SubscriptionRuntimeServiceError,
   type SubscriptionRuntimeService,
@@ -361,7 +361,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     };
     broadcastToAppWindows(deps, CHANNELS.settings.subscriptionRuntimeStatusUpdated, event);
   };
-  const stopAutoVerifiedListener = onSubscriptionRuntimeAutoVerified(publishSubscriptionRuntimeStatusUpdated);
+  const stopStatusChangedListener = onSubscriptionRuntimeStatusChanged(publishSubscriptionRuntimeStatusUpdated);
 
   const auditSubscriptionMutation = (
     action: string,
@@ -1220,5 +1220,5 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   // control the same party could widen is not a bound. Host names only, which is exactly what the endpoint field needs the user to know.
   ipcMain.handle(CHANNELS.telemetry.allowedHosts, () => telemetryAllowedHosts());
 
-  return stopAutoVerifiedListener;
+  return stopStatusChangedListener;
 }

@@ -27,7 +27,6 @@ afterEach(async () => { await resources.cleanup(); vi.unstubAllEnvs(); await cle
 function fixture(options: {
   category?: Tool["category"];
   mode?: "strict" | "default" | "auto" | "allow";
-  flag?: boolean;
   contained?: boolean;
   effect?: boolean;
   hooks?: ScriptHookManager;
@@ -66,7 +65,7 @@ function fixture(options: {
   const registry = new ToolRegistry();
   registry.register(tool);
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, options.hooks,
-    undefined, () => options.flag ?? true, () => options.contained ?? true);
+    undefined, () => options.contained ?? true);
   const run = (headless = false) => executor.executeAll([
     { id: "resource", name: tool.name, input: options.category === "write" ? {} : { command: "git status" } },
   ], { sessionId: "plugin-pipeline", executionCwd: directory, permissionContext: userPermissionContext({ headless }) });
@@ -74,13 +73,10 @@ function fixture(options: {
 }
 
 describe("plugin permission pipeline", () => {
-  it.each([
-    { flag: false, contained: false }, { flag: false, contained: true },
-    { flag: true, contained: false }, { flag: true, contained: true },
-  ])("ordinary reads use the common policy with flag=$flag contained=$contained", async (options) => {
-    const { execute, requests, run } = fixture(options);
+  it.each([false, true])("ordinary reads use the common policy with containment=%s", async (contained) => {
+    const { execute, requests, run } = fixture({ contained });
     const [result] = await run();
-    if (options.contained) {
+    if (contained) {
       expect(result.is_error).not.toBe(true);
       expect(execute).toHaveBeenCalledOnce();
       expect(requests).toHaveLength(0);
@@ -92,7 +88,7 @@ describe("plugin permission pipeline", () => {
   });
 
   it.each(["strict", "default"] as const)("contained plugin writes still ask in %s", async (mode) => {
-    const { execute, requests, run } = fixture({ category: "write", mode, flag: true, contained: true });
+    const { execute, requests, run } = fixture({ category: "write", mode, contained: true });
     const [result] = await run();
     expect(result.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
@@ -134,8 +130,8 @@ describe("plugin permission pipeline", () => {
     expect(requests).toHaveLength(0);
   });
 
-  it.each([false, true])("unconfined reads ask in the write-allowing mode with risk inspection=%s", async (flag) => {
-    const { execute, requests, run } = fixture({ contained: false, mode: "default", flag });
+  it("unconfined reads ask in the write-allowing mode", async () => {
+    const { execute, requests, run } = fixture({ contained: false, mode: "default" });
     const [result] = await run();
     expect(result.is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();

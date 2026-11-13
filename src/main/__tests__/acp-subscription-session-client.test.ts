@@ -145,6 +145,7 @@ function createHarness(
   options: {
     handler?: RequestHandler;
     onHostRequest?: (request: AcpSubscriptionHostRequestObservation) => void | Promise<void>;
+    onPlanUsage?: AcpSubscriptionSessionClientOptions["onPlanUsage"];
     requestTimeoutMs?: number;
     promptTimeoutMs?: number;
     abortGraceMs?: number;
@@ -178,6 +179,7 @@ function createHarness(
       platform: "win32",
       clientVersion: "test-version",
       ...(options.onHostRequest ? { onHostRequest: options.onHostRequest } : {}),
+      ...(options.onPlanUsage ? { onPlanUsage: options.onPlanUsage } : {}),
       ...(options.requestTimeoutMs ? { requestTimeoutMs: options.requestTimeoutMs } : {}),
       ...(options.promptTimeoutMs ? { promptTimeoutMs: options.promptTimeoutMs } : {}),
       ...(options.abortGraceMs ? { abortGraceMs: options.abortGraceMs } : {}),
@@ -481,6 +483,89 @@ describe("AcpSubscriptionSessionClient", () => {
     expect(requestFor(agent, "authenticate")).toMatchObject({
       params: { methodId: "cached_token", _meta: { headless: true } },
     });
+  });
+
+  it("reads reported account gauges after authentication and completed prompts", async () => {
+    const onPlanUsage = vi.fn();
+    const normally = standardHandler("grok-build");
+    let usedPercent = 24;
+    const { client, agent } = createHarness("grok-build", {
+      onPlanUsage,
+      handler: (request, current) => {
+        if (request.method === "_x.ai/billing") {
+          current.respond(request.id as number, { config: {
+            creditUsagePercent: usedPercent,
+            currentPeriod: { end: "2026-12-01T00:00:00Z" },
+            accountId: "private-account",
+          } });
+        } else normally(request, current);
+      },
+    });
+    await client.start();
+    await new Promise<void>((done) => setImmediate(done));
+    expect(onPlanUsage).toHaveBeenLastCalledWith([{ id: "current-period", usedPercent: 24,
+      resetsAt: Date.parse("2026-12-01T00:00:00Z") }]);
+    expect(agent.requests.map((request) => request.method)).toEqual([
+      "initialize", "authenticate", "session/new", "_x.ai/billing",
+    ]);
+    usedPercent = 26;
+    const prompt = await client.startPrompt({ text: "continue" });
+    agent.respond(requestFor(agent, "session/prompt").id as number, { stopReason: "end_turn" });
+    await prompt.completion;
+    await new Promise<void>((done) => setImmediate(done));
+    expect(onPlanUsage).toHaveBeenLastCalledWith([{ id: "current-period", usedPercent: 26,
+      resetsAt: Date.parse("2026-12-01T00:00:00Z") }]);
+    expect(JSON.stringify(onPlanUsage.mock.calls)).not.toContain("private-account");
+  });
+
+  it.each(["unsupported", "timeout"])("keeps prompts available when optional account telemetry is %s", async (failure) => {
+    const onPlanUsage = vi.fn();
+    const normally = standardHandler("grok-build");
+    const { client, agent } = createHarness("grok-build", {
+      onPlanUsage,
+      requestTimeoutMs: 5,
+      handler: (request, current) => {
+        if (request.method === "_x.ai/billing") {
+          if (failure === "unsupported") current.respondError(request.id as number, { code: -32601, message: "Method not found" });
+        } else normally(request, current);
+      },
+    });
+    await client.start();
+    if (failure === "timeout") await new Promise<void>((done) => setTimeout(done, 10));
+    const prompt = await client.startPrompt({ text: "continue" });
+    agent.respond(requestFor(agent, "session/prompt").id as number, { stopReason: "end_turn" });
+    await expect(prompt.completion).resolves.toEqual({ stopReason: "end_turn" });
+    expect(agent.kill).not.toHaveBeenCalled();
+    expect(onPlanUsage).toHaveBeenCalledWith([]);
+  });
+
+  it("ignores an older account response that arrives after a newer sample", async () => {
+    const onPlanUsage = vi.fn();
+    const normally = standardHandler("grok-build");
+    const { client, agent } = createHarness("grok-build", {
+      onPlanUsage,
+      handler: (request, current) => { if (request.method !== "_x.ai/billing") normally(request, current); },
+    });
+    await client.start();
+    const prompt = await client.startPrompt({ text: "continue" });
+    agent.respond(requestFor(agent, "session/prompt").id as number, { stopReason: "end_turn" });
+    await prompt.completion;
+    const reads = agent.requests.filter((request) => request.method === "_x.ai/billing");
+    expect(reads).toHaveLength(2);
+    const [firstRead, secondRead] = reads;
+    if (!firstRead || !secondRead) throw new Error("Missing overlapping billing requests");
+    agent.respond(secondRead.id as number, { config: { creditUsagePercent: 32 } });
+    agent.respond(firstRead.id as number, { config: { creditUsagePercent: 28 } });
+    await new Promise<void>((done) => setImmediate(done));
+    expect(onPlanUsage).toHaveBeenCalledExactlyOnceWith([{ id: "current-period", usedPercent: 32 }]);
+  });
+
+  it("never asks unsupported runtimes for account telemetry", async () => {
+    const onPlanUsage = vi.fn();
+    const { client, agent } = createHarness("kimi-code", { onPlanUsage });
+    await client.start();
+    expect(agent.requests.some((request) => request.method === "_x.ai/billing")).toBe(false);
+    expect(onPlanUsage).not.toHaveBeenCalled();
   });
 
   it("sends session/cancel on AbortSignal and force-kills after the bounded grace period", async () => {

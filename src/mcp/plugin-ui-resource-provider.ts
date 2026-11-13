@@ -62,6 +62,7 @@ export function createPluginUiResourceProvider(
         html,
         ...(decl.csp !== undefined ? { csp: decl.csp } : {}),
         ...(decl.permissions !== undefined ? { permissions: decl.permissions } : {}),
+        ...(decl.hostCapabilities !== undefined ? { hostCapabilities: decl.hostCapabilities } : {}),
       };
     },
   };

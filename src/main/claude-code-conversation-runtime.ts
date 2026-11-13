@@ -29,12 +29,14 @@ import { CodexExecutableLocationError } from "./codex-executable-location.js";
 import type { SubscriptionToolBridge } from "./subscription-tool-bridge.js";
 
 import type { ClaudeCodeExecutable } from "./claude-code-executable.js";
+import type { SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
 
 const MAX_QUEUED_EVENTS = 256;
 const HOST_TOOL_ACCEPTED = "Ave accepted the host tool request and will provide its result in the next model round.";
 const ARGUMENT_ERROR_MARKERS = ["error: unknown option ", "error: unknown argument ", "error: too many arguments"] as const;
 
 export interface ClaudeCodeConversationRuntimeOptions {
+  readonly onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void;
   readonly resolveRuntime: () => Promise<ClaudeCodeExecutable>;
   readonly runtimeHome: string;
   readonly workspaceDir: string;
@@ -137,7 +139,7 @@ export class ClaudeCodeConversationRuntime {
       await writeFileAtomicAtPath(configPath, `${JSON.stringify({ mcpServers })}\n`);
       assertActive();
       const toolNames = claudeCodeMcpToolNames(bridge.tools);
-      const stream = new ClaudeCodeStream(toolNames);
+      const stream = new ClaudeCodeStream(toolNames, this.options.onPlanUsage);
       bridge.setHandler((call) => {
         if (!stream.initialized || toolBoundary || failure || ended || this.stopped || signal?.aborted) throw operationFailed();
         stream.acceptHostCall();
