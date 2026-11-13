@@ -82,6 +82,17 @@ const renderer = {
   ...base,
   name: "renderer",
   target: ["web", "es2022"],
+  module: {
+    ...base.module,
+    rules: [
+      ...base.module.rules,
+      {
+        test: /\.js$/,
+        include: require.resolve("eruda"),
+        use: { loader: path.resolve(rootDir, "scripts/loaders/bundled-font-resource-loader.cjs") },
+      },
+    ],
+  },
   entry: {
     renderer: path.resolve(rootDir, "src/renderer.tsx"),
     "floating-dock-window": path.resolve(rootDir, "src/floating-dock-window.tsx"),

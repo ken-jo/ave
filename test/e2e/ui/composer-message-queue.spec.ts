@@ -64,6 +64,12 @@ test.describe('renderer debug stream env', () => {
       enableDevConsole: true,
       debugStream: false,
     });
+    await expect.poll(() => mainWindow.evaluate(() => Boolean(document.getElementById('eruda')?.shadowRoot))).toBe(true);
+    const fonts = await mainWindow.evaluate(async () => {
+      const faces = await document.fonts.load('12px "eruda-icon"');
+      return faces.map(face => ({ family: face.family, status: face.status }));
+    });
+    expect(fonts).toContainEqual({ family: 'eruda-icon', status: 'loaded' });
   });
 });
 
