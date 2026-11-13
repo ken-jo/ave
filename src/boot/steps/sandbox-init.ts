@@ -486,20 +486,18 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       recordGate("skip", "gate-off");
     }
 
-    // Warn whenever host risk classification is enabled without active OS confinement, including degraded activation; settings remain independent.
+    // Host risk classification always applies; warn when plugin code lacks active OS confinement.
     if (
       shouldWarnHostClassifyInterlock({
-        hostClassifiesRisk: settingsService.get("features")?.hostClassifiesRisk ?? false,
         // Only worker confinement contains plugin code; shell-only runtime activation does not.
         sandboxActive: sandboxActive && workerRequested,
       })
     ) {
       log.warn(
-        "boot: hostClassifiesRisk is ON but plugin-worker confinement (pluginWorkerConfinement / AVE_PLUGIN_WORKER_CONFINEMENT) is NOT active — " +
+        "boot: plugin-worker confinement (pluginWorkerConfinement / AVE_PLUGIN_WORKER_CONFINEMENT) is NOT active — " +
           "effect-boundary classification does NOT contain off-hostApi mutations (direct node:fs, bare fetch, " +
-          "detached async frames) without the OS sandbox. For that residual, host-classify WITHOUT the sandbox is " +
-          "weaker than the pre-exec ask it replaces. Install/enable the OS sandbox to contain it, or keep the " +
-          "pre-exec ask (turn hostClassifiesRisk off) until the sandbox is active.",
+          "detached async frames) without the OS sandbox. Install/enable plugin-worker confinement to contain them; " +
+          "unconfined tools retain the pre-exec permission gate.",
       );
     }
   }

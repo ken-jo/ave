@@ -950,13 +950,8 @@ export async function runToolInvocation(
     const baseAdditionalDirectories = initialState.baseAdditionalDirectories;
     let invocationAllowedScope = initialState.allowedScope;
     let invocationRuntimeAllowedDirectories = initialState.runtimeAllowedDirectories;
-    // Permission policy host-classifies-risk — shadow mode (always) + enforced
-    // category (flag-gated). The declared category resolved above is the input;
-    // when the flag is off this is a no-op and `invocationCategory` is unchanged.
-    // Snapshot the DECLARED category before resolveEnforcedCategory may swap in
-    // the host-derived one (flag on) — the effect shadow reconciles the declared
-    // category against the host-observed effect summary post-execution.
-    const declaredCategoryForEffectShadow = invocationCategory;
+    // Host inference determines risk; governed operations retain the registered
+    // category only as a raise-only floor alongside their operation floor.
     // Parent (ambient) + per-invocation effect ledgers — created in the factory
     // (parent captured BEFORE own; full rationale lives in invocation-context.ts).
     const parentEffectLedger = initialState.parentEffectLedger;
@@ -966,7 +961,6 @@ export async function runToolInvocation(
       tool,
       invocationCategory,
       finalInput,
-      effectLedger.correlationId,
       resolvedPluginOperation?.rule.minimumRisk,
     );
     meta.category = invocationCategory;
@@ -2463,7 +2457,6 @@ export async function runToolInvocation(
       source,
       trust,
       invocationCategory,
-      declaredCategoryForEffectShadow,
       blockReadsOutsideWorkingDirectories,
       evaluationContext,
       approvalCacheKey,

@@ -43,17 +43,20 @@ function mountApp(firstMessages: HistoryMessage[] = [], sessions?: Array<{ id: s
   api.memoryGetSummaries.mockResolvedValue({ ok: true, notes: [
     { id: "m1", filename: "timeout.md", title: TITLE, content: `# ${TITLE}\n\n게이트웨이 기준`, updatedAt: new Date().toISOString() },
   ], entries: [], scopeCounts: { project: 0, global: 1, defaultProject: 0, defaultProjectApplicable: false } });
-  let emit: (event: MemorySaveResultEvent) => void = () => {};
+  api.memorySearchEntries.mockResolvedValue([
+    { id: "m1", filename: "timeout.md", title: TITLE, content: `# ${TITLE}\n\n게이트웨이 기준`, excerpt: "게이트웨이 기준", updatedAt: new Date().toISOString() },
+  ]);
+  const listeners = new Set<(event: MemorySaveResultEvent) => void>();
   api.onMemorySaveResult.mockImplementation((handler: (event: MemorySaveResultEvent) => void) => {
-    emit = handler;
-    return () => {};
+    listeners.add(handler);
+    return () => { listeners.delete(handler); };
   });
 
   vi.stubGlobal("aveApi", api);
   vi.stubGlobal("ave", ns);
   (window as unknown as { aveApi: unknown }).aveApi = api;
   (window as unknown as { ave: unknown }).ave = ns;
-  return { api, emit: (event: MemorySaveResultEvent) => act(() => emit(event)), ...render(<App />) };
+  return { api, emit: (event: MemorySaveResultEvent) => act(() => { for (const listener of listeners) listener(event); }), ...render(<App />) };
 }
 
 describe("App memory notices and Ave 에게 고치기", () => {

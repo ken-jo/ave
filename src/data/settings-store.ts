@@ -471,8 +471,6 @@ export interface FeatureFlags {
 
   /** Legacy import evidence for tour-state; new completion is stored there only. */
   onboardingCompleted?: boolean;
-  /** Host risk classification ships on and ignores untrusted declared categories; disabling it restores declared categories (docs/architecture/permission-policy-design.md). */
-  hostClassifiesRisk?: boolean;
   /** Controls host shells and workspace terminals only; worker confinement and approval policy remain independent.
    * Defaults on for macOS/Linux and off for Windows; unavailable settings activation warns, explicit macOS/Linux activation aborts, and Windows reports filesystem/network confinement only. */
   osToolSandbox?: boolean;
@@ -1627,6 +1625,9 @@ export class SettingsService {
         ? stored.appliedMigrations.filter((m): m is string => typeof m === "string")
         : [];
       let migrationWriteBack = false;
+      // Normalization drops the retired risk toggle; persist the cleanup without changing other features.
+      if (stored.features !== null && typeof stored.features === "object"
+        && Object.hasOwn(stored.features, "hostClassifiesRisk")) migrationWriteBack = true;
       // The retired percent is consumed by normalizeSystem, then the next save retains only the pixel width.
       if (stored.system !== null && typeof stored.system === "object"
         && Object.hasOwn(stored.system, "sidePanelSplitFilePercent")) migrationWriteBack = true;

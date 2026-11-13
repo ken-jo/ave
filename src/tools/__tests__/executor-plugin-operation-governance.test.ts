@@ -176,7 +176,6 @@ function setup(options: {
       auditLogger as never,
       undefined,
       undefined,
-      undefined,
       pluginOperationGrants,
       () => generationAccessAvailable ? generationAccess as never : undefined,
       options.provideModelIdentity

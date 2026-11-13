@@ -3337,6 +3337,16 @@ export const ko: Record<MessageCatalogKey, string> = {
   "memorySaveNotice.panelUndoExpired": "이 되돌리기는 이제 쓸 수 없어요",
 
   // memorySearchPanel
+  "memorySearchPanel.filterKind": "종류",
+  "memorySearchPanel.filterSource": "저장 방식",
+  "memorySearchPanel.filterAll": "전체",
+  "memorySearchPanel.source.user": "사용자",
+  "memorySearchPanel.source.assistant": "어시스턴트",
+  "memorySearchPanel.source.import": "가져오기",
+  "memorySearchPanel.source.capture": "자동 수집",
+  "memorySearchPanel.source.unknown": "기록 없음",
+  "memorySearchPanel.noFilterResults": "선택한 필터에 맞는 기억이 없습니다.",
+  "memorySearchPanel.clearFilters": "필터 지우기",
   "memorySearchPanel.justNow": "방금 전",
   "memorySearchPanel.minutesAgo": "{minutes}분 전",
   "memorySearchPanel.hoursAgo": "{hours}시간 전",
