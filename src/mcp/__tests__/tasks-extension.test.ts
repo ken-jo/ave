@@ -210,6 +210,26 @@ describe("durable task protocol", () => {
     await host.dispose();
   });
 
+  it("fails a subscription whose acknowledgement cannot fit without leaving a live listener", async () => {
+    await isolate();
+    const store = new McpTaskStore(MANIFEST.id);
+    const task = await store.create();
+    const subscribe = vi.spyOn(store, "subscribe");
+    const server = new PluginMcpServer(MANIFEST, async () => OUTCOME, undefined, store);
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const decoder = new StdioFrameDecoder(1024 * 1024);
+    const messages: Array<{ id?: unknown; error?: { code: number } }> = [];
+    output.on("data", (chunk) => messages.push(...decoder.push(chunk)));
+    new StdioServerLoop(input, output, server, 1024 * 1024, 1).start();
+    input.write(frameMessage({ jsonrpc: "2.0", id: "blocked", method: "subscriptions/listen",
+      params: { notifications: { taskIds: [task.taskId] }, _meta: META } }));
+    await expect.poll(() => messages.length).toBe(1);
+    expect(messages[0]).toMatchObject({ id: "blocked", error: { code: -32603 } });
+    expect(subscribe).not.toHaveBeenCalled();
+    input.destroy(); output.destroy();
+  });
+
   it("uses the task cancellation method on a polling deadline and rejects guessed result envelopes", async () => {
     await isolate();
     const store = new McpTaskStore(MANIFEST.id);

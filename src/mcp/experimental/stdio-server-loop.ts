@@ -49,8 +49,14 @@ export class StdioServerLoop {
     try {
       response = await this.handler.handle(request, (notification) => {
         const frame = frameMessage(notification);
-        // Task notifications are optional; a slow peer polls rather than growing this output queue.
-        if (this.maxQueuedOutputBytes === undefined || this.output.writableLength + frame.length <= this.maxQueuedOutputBytes) this.output.write(frame);
+        if (this.maxQueuedOutputBytes !== undefined && this.output.writableLength + frame.length > this.maxQueuedOutputBytes) {
+          // Status updates are optional, but a subscription must acknowledge or fail explicitly.
+          if (notification.method === "notifications/subscriptions/acknowledged") {
+            throw new Error("Subscription acknowledgement exceeds the output limit");
+          }
+          return;
+        }
+        this.output.write(frame);
       });
     } catch (err) {
       response = {

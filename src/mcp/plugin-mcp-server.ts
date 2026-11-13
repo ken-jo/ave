@@ -147,11 +147,11 @@ export class PluginMcpServer {
         const taskIds = new Set(notifications.taskIds as string[]);
         for (const taskId of taskIds) if (!await this.tasks.get(taskId)) return this.invalidTask(id);
         const meta = { "io.modelcontextprotocol/subscriptionId": id };
+        notify({ jsonrpc: "2.0", method: "notifications/subscriptions/acknowledged", params: { notifications: { taskIds: [...taskIds] }, _meta: meta } });
         this.subscriptions.get(id)?.();
         this.subscriptions.set(id, this.tasks.subscribe((task) => {
           if (taskIds.has(task.taskId)) notify({ jsonrpc: "2.0", method: "notifications/tasks", params: { ...task, _meta: meta } });
         }));
-        notify({ jsonrpc: "2.0", method: "notifications/subscriptions/acknowledged", params: { notifications: { taskIds: [...taskIds] }, _meta: meta } });
         // The subscription request remains open until its transport closes.
         return new Promise(() => {});
       }
