@@ -8,10 +8,6 @@ on:
         description: Run the complete background suite in parallel shards instead of native focus tests
         type: boolean
         default: false
-      background-probe:
-        description: Run only the background startup diagnostic partition
-        type: boolean
-        default: false
       keyboard-takeover-only:
         description: Run only the native keyboard takeover regression
         type: boolean
@@ -74,7 +70,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     outputs:
-      matrix: ${{ steps.probe.outputs.matrix || steps.partitions.outputs.matrix }}
+      matrix: ${{ steps.partitions.outputs.matrix }}
       partitions: ${{ steps.partitions.outputs.partitions }}
       regular-shards: ${{ steps.partitions.outputs.regular-shards }}
     env:
@@ -117,21 +113,6 @@ jobs:
         id: partitions
         working-directory: ave
         run: node scripts/plan-background-e2e-shards.mjs test-results/background-collection.json test-results/background-sweep-plan
-      - name: Select the background diagnostic partition
-        id: probe
-        if: inputs.background-probe
-        working-directory: ave
-        run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync, readFileSync } from "node:fs";
-          const plan = JSON.parse(readFileSync("test-results/background-sweep-plan/manifest.json", "utf8"));
-          const include = plan.matrix.include.filter(partition => partition.id === 83);
-          if (plan.regularShards !== 96 || plan.totalPartitions !== 105 || plan.selectedTests !== 358
-              || include.length !== 1 || include[0].regularShard !== 83 || include[0].testList !== "") {
-            throw new Error("Background diagnostic partition does not match the expected inventory");
-          }
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
-          NODE
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: background-ui-build
@@ -202,8 +183,6 @@ jobs:
         env:
           AVE_E2E_OS_FOCUS: "0"
           AVE_E2E_SPEC_RESULTS: ${{ github.workspace }}/ave/test-results/background-sweep/spec-results.json
-          DEBUG: ${{ inputs.background-probe && 'pw:browser,pw:protocol' || '' }}
-          AVE_E2E_STARTUP_DIAGNOSTICS: ${{ inputs.background-probe && '1' || '0' }}
           SHARD: ${{ matrix.regularShard }}
           SHARD_TOTAL: ${{ needs.background-build.outputs.regular-shards }}
           TEST_LIST: ${{ matrix.testList }}

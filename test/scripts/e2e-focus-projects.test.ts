@@ -80,7 +80,7 @@ describe("native focus test selection", () => {
     expect(collection.env.AVE_E2E_OS_FOCUS).toBe("0");
     expect(collection.run).toBe("bun run test:ui-e2e --list --retries=0 --reporter=json");
     expect(build.steps.find((step: { id?: string }) => step.id === "partitions").run).toContain("scripts/plan-background-e2e-shards.mjs");
-    expect(build.outputs.matrix).toBe("$" + "{{ steps.probe.outputs.matrix || steps.partitions.outputs.matrix }}");
+    expect(build.outputs.matrix).toBe("$" + "{{ steps.partitions.outputs.matrix }}");
     const shard = workflow.jobs["background-shard"];
     expect(shard.env.PLAYWRIGHT_BROWSERS_PATH).toContain("/.cache/ms-playwright");
     expect(shard.steps.some((step: { run?: string }) => step.run === "bun x playwright install --with-deps chromium")).toBe(true);
