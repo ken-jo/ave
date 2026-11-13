@@ -51,7 +51,7 @@ import type { PluginOperationIdentityProvider } from "./invocation-services.js";
 const log = createLogger("executor");
 /**
  * One-time guard for the shadow-sink construction warning. Process-wide so the
- * permission-shadow reconciliation dataset's deliverability is flagged at most
+ * observed-effect dataset's deliverability is flagged at most
  * once even when many ToolExecutors are constructed (boot wires one production
  * executor; tests construct many). See {@link ToolExecutor.warnIfShadowSinkUnwired}.
  */
@@ -97,7 +97,6 @@ export class ToolExecutor {
   private readonly rateLimiter = new RateLimiter();
   private readonly bashAstValidator?: BashAstValidator;
   private readonly scriptHookManager?: ScriptHookManager;
-  private readonly hostClassifiesRiskProvider: () => boolean;
   private readonly sandboxFsContainedProvider: (tool: Tool) => boolean;
   private readonly workspaceRootLifecycleProvider: () => PermissionDirectoryLifecycle | undefined;
   private readonly auditWriter: AuditWriter;
@@ -113,7 +112,6 @@ export class ToolExecutor {
     approvalGate?: ApprovalGate,
     scriptHookManager?: ScriptHookManager,
     auditLogger?: AuditLogger,
-    hostClassifiesRiskProvider?: () => boolean,
     sandboxFsContainedProvider?: (tool: Tool) => boolean,
     workspaceRootLifecycleProvider?: () => PermissionDirectoryLifecycle | undefined,
     pluginOperationGrants?: PluginOperationGrantCoordinator,
@@ -127,7 +125,6 @@ export class ToolExecutor {
     this.auditLogger = auditLogger ?? new AuditLogger();
     this.bashAstValidator = bashAstValidator;
     this.scriptHookManager = scriptHookManager;
-    this.hostClassifiesRiskProvider = hostClassifiesRiskProvider ?? (() => false);
     this.sandboxFsContainedProvider = sandboxFsContainedProvider ?? (() => false);
     this.workspaceRootLifecycleProvider = workspaceRootLifecycleProvider ?? (() => undefined);
     this.pluginOperationGrants = pluginOperationGrants ?? new PluginOperationGrantCoordinator();
@@ -157,7 +154,7 @@ export class ToolExecutor {
       if (!this.auditLogger.isShadowChannelWritable()) {
         shadowSinkWarningEmitted = true;
         log.warn(
-          "[permission-shadow] shadow reconciliation channel is unwritable (%s) — risk/effect shadow records will be silently dropped.",
+          "[permission-shadow] observed-effect channel is unwritable (%s) — effect records will be silently dropped.",
           this.auditLogger.getPermissionShadowLogFile(),
         );
       }
@@ -633,7 +630,6 @@ export class ToolExecutor {
         rateLimiter: this.rateLimiter,
         bashAstValidator: this.bashAstValidator,
         scriptHookManager: this.scriptHookManager,
-        hostClassifiesRiskProvider: this.hostClassifiesRiskProvider,
         sandboxFsContainedProvider: this.sandboxFsContainedProvider,
         workspaceRootLifecycleProvider: this.workspaceRootLifecycleProvider,
         auditWriter: this.auditWriter,

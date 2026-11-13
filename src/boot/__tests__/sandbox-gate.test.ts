@@ -73,18 +73,12 @@ describe("decideSandboxGate", () => {
 });
 
 describe("shouldWarnHostClassifyInterlock", () => {
-  it("fires only when hostClassifiesRisk is ON and the sandbox is NOT active", () => {
+  it("fires only when the sandbox is not active", () => {
     expect(
-      shouldWarnHostClassifyInterlock({ hostClassifiesRisk: true, sandboxActive: false }),
+      shouldWarnHostClassifyInterlock({ sandboxActive: false }),
     ).toBe(true);
     expect(
-      shouldWarnHostClassifyInterlock({ hostClassifiesRisk: true, sandboxActive: true }),
-    ).toBe(false);
-    expect(
-      shouldWarnHostClassifyInterlock({ hostClassifiesRisk: false, sandboxActive: false }),
-    ).toBe(false);
-    expect(
-      shouldWarnHostClassifyInterlock({ hostClassifiesRisk: false, sandboxActive: true }),
+      shouldWarnHostClassifyInterlock({ sandboxActive: true }),
     ).toBe(false);
   });
 
@@ -99,7 +93,7 @@ describe("shouldWarnHostClassifyInterlock", () => {
     expect(decision.action).toBe("degrade");
     const sandboxActive = decision.action === "activate";
     expect(
-      shouldWarnHostClassifyInterlock({ hostClassifiesRisk: true, sandboxActive }),
+      shouldWarnHostClassifyInterlock({ sandboxActive }),
     ).toBe(true);
   });
 });

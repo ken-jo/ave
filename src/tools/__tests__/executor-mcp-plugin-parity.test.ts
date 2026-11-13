@@ -14,8 +14,9 @@ import { makePermissionManager } from "./executor-reviewer-fixtures.js";
 
 // Isolate identical tools in separate registries while sharing permission, approval, and audit state.
 const PROBE = "parity_probe";
-const SCHEMA = { type: "object", properties: { payload: { type: "string" } } } as const;
-const INPUT = { payload: "send release notice" } as const;
+const SCHEMA = { type: "object", properties: { payload: { type: "string" }, url: { type: "string" } } } as const;
+// Both sources need host-visible network evidence; registration alone grants no category authority.
+const INPUT = { payload: "send release notice", url: "https://example.com/notice" } as const;
 const SECRET = "aa".repeat(32);
 
 function pluginRegistry(executeSpy: ReturnType<typeof vi.fn>): ToolRegistry {
@@ -313,7 +314,7 @@ describe("ToolExecutor MCP↔plugin permission parity (regression lock)", () => 
       for (const row of [pluginShadow, mcpShadow]) {
         expect(typeof row.correlationId).toBe("string");
         expect((row.correlationId as string).length).toBeGreaterThan(0);
-        expect(row.declaredCategory).toBe("network");
+        expect(row).not.toHaveProperty("declaredCategory");
         expect(row.hasMutatingEffect).toBe(false);
         expect(row.effects).toEqual([]);
       }
