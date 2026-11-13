@@ -109,7 +109,7 @@ jobs:
           retention-days: 1
 
   background-shard:
-    name: Background UI shard ${{ matrix.shard }}/32
+    name: Background UI shard ${{ matrix.shard }}/96
     if: github.event_name == 'workflow_dispatch' && inputs.background-sweep
     needs: background-build
     runs-on: ubuntu-24.04-arm
@@ -117,7 +117,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+                17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32,
+                33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
+                49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64,
+                65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+                81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96]
     env:
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
@@ -177,7 +182,7 @@ jobs:
           export HOME="$task_home" AVE_HOME="$task_home/.ave" TMPDIR="$task_home/tmp"
           started=$SECONDS
           trap 'elapsed=$((SECONDS - started)); echo "$elapsed" > test-results/background-sweep/wall-seconds.txt; echo "Shard wall time: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"' EXIT
-          xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e --shard="$SHARD/32" --retries=0 --reporter=list,./test/e2e/reporters/spec-results.ts --output=test-results/background-sweep/cases
+          xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e --shard="$SHARD/96" --retries=0 --reporter=list,./test/e2e/reporters/spec-results.ts --output=test-results/background-sweep/cases
       - name: Upload per-spec shard evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

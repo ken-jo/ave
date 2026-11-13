@@ -48,7 +48,7 @@ and popup focus coverage separately from the default suite.
 ## Manual full background sweep
 
 The registered workflow also accepts an explicit background sweep. This manual
-selection skips its native-focus job and builds the app once for 32 independent
+selection skips its native-focus job and builds the app once for 96 independent
 background shards on the existing Linux runner. These background jobs are not
 part of required CI and never run on a push, pull request or schedule:
 
@@ -57,8 +57,12 @@ gh workflow run e2e-os-focus.yml --repo ken-jo/ave --ref <branch> -f background-
 ```
 
 Each shard retains the default single worker and within-file ordering, with
-retries disabled. Its test step has a ten-minute budget and its job a twelve-minute
-budget; actual duration and completeness must be checked from the first run.
+retries disabled. More shards separate unrelated files without splitting their
+shared application lifetime. A long individual file still needs its underlying
+stall fixed. Target a test-command wall time below eight minutes per shard,
+measured by `wall-seconds.txt` without build or setup time. The test step has a
+ten-minute budget and its job a twelve-minute budget. A timeout cap does not
+establish actual duration or complete coverage.
 One shard failing does not cancel the others. Browser binaries use a fixed
 workspace cache path so the isolated HOME does not hide them. Build artifacts
 include both the app and generated native icons.
@@ -75,10 +79,24 @@ after the test process is interrupted; recovery requires the upload step to run.
 Use `complete` and the per-case states to distinguish a finished run from a
 snapshot with pending or running cases.
 
-Request injection uses the tested page's native window through
-[`sendRendererEvent`](ui/renderer-events.ts). Native visibility and window-list
+Expect reports for shards 1 through 96, including valid empty shards. Compare
+the union of case IDs against an unsharded `--list --reporter=json` collection
+on the same commit and platform: every selected case must occur exactly once.
+Require every report to be complete with no pending or running cases, then
+review failures, skips and runner errors separately. Complete execution alone
+does not mean the tests passed.
+
+Native actions resolve the tested page's window through
+[`withPageWindow`](ui/renderer-events.ts); request injection delegates to the same
+helper through `sendRendererEvent`. Native visibility and window-list
 order do not establish the intended recipient. Stream injection also requires
 the page explicitly, preserving its existing chat-group envelope.
+
+Seeded fixtures that request forced termination end the owned process tree,
+including descendants inheriting runtime pipes. A parent process exit alone does
+not establish that those pipes closed or that automation cleanup finished.
+Specs should use `teardownSeededElectron` instead of sending parent-only kill
+signals. Fixtures that exercise graceful shutdown retain `quitElectron`.
 
 ## Shared application lifetime
 

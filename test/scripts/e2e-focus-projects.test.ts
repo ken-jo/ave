@@ -46,6 +46,12 @@ describe("native focus test selection", () => {
     expect(PACKAGE.scripts["test:ui-e2e"]).not.toContain("AVE_E2E_OS_FOCUS");
   });
 
+  it("preserves one worker and within-file lifetime in background shards", async () => {
+    const config = await loadConfig("0");
+    expect(config.workers).toBe(1);
+    expect(config.fullyParallel).toBe(false);
+  });
+
   it("keeps native focus coverage runnable on a virtual desktop", () => {
     const workflow = readFileSync(new URL("../../.github/workflows/e2e-os-focus.yml", import.meta.url), "utf8");
     expect(workflow).toContain("xvfb-run -a -s '-screen 0 1600x1000x24'");
@@ -73,12 +79,12 @@ describe("native focus test selection", () => {
     expect(shard.env.PLAYWRIGHT_BROWSERS_PATH).toContain("/.cache/ms-playwright");
     expect(shard.steps.some((step: { run?: string }) => step.run === "bun x playwright install --with-deps chromium")).toBe(true);
     expect(shard.strategy["fail-fast"]).toBe(false);
-    expect(shard.strategy.matrix.shard).toEqual(Array.from({ length: 32 }, (_, index) => index + 1));
+    expect(shard.strategy.matrix.shard).toEqual(Array.from({ length: 96 }, (_, index) => index + 1));
     expect(shard["timeout-minutes"]).toBe(12);
     const run = shard.steps.find((step: { name?: string }) => step.name === "Run the background shard");
     expect(run["timeout-minutes"]).toBe(10);
     expect(run.env.AVE_E2E_OS_FOCUS).toBe("0");
-    expect(run.run).toContain('--shard="$SHARD/32" --retries=0');
+    expect(run.run).toContain('--shard="$SHARD/96" --retries=0');
     expect(run.run).toContain("--reporter=list,./test/e2e/reporters/spec-results.ts");
     expect(run.run).not.toMatch(/--(?:grep|max-failures|timeout|fully-parallel)/);
     expect(shard.steps.find((step: { name?: string }) => step.name === "Upload per-spec shard evidence").if).toBe("always()");
