@@ -16,7 +16,6 @@ export const MCP_TASK_STORE_POLICY = {
   ttlMs: 24 * 60 * 60 * 1000,
   maxResultBytes: 128 * 1024,
   maxRecordBytes: 256 * 1024,
-  maxLegacyBytes: 32 * 1024 * 1024,
 } as const;
 const TASK_ID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const STAGING_FILE_RE = /^[a-f0-9-]{36}\.json\.[a-f0-9]{32}\.tmp$/;
@@ -54,16 +53,16 @@ export class McpTaskStore {
     return `${this.directoryName}/${taskId}.json`;
   }
 
-  private async read(name: string, maxBytes: number): Promise<unknown | undefined> {
+  private async read(name: string): Promise<unknown | undefined> {
     const path = join(this.namespace.dir, name);
     let info: Stats;
     try { info = await lstat(path); }
     catch (error) { if (isMissing(error)) return undefined; throw error; }
     if (!info.isFile() || info.isSymbolicLink()) throw new Error("Task store entry is not a plain file");
-    if (info.size > maxBytes) throw new Error("Task store entry exceeds the read limit");
+    if (info.size > MCP_TASK_STORE_POLICY.maxRecordBytes) throw new Error("Task store entry exceeds the read limit");
     const input = await readAveHomeInput(path);
     if (input.status !== "trusted") throw new Error("Task store is unavailable or untrusted");
-    if (input.bytes.byteLength > maxBytes) throw new Error("Task store entry exceeds the read limit");
+    if (input.bytes.byteLength > MCP_TASK_STORE_POLICY.maxRecordBytes) throw new Error("Task store entry exceeds the read limit");
     return JSON.parse(input.bytes.toString("utf8")) as unknown;
   }
 
@@ -96,49 +95,24 @@ export class McpTaskStore {
 
   private async load(): Promise<void> {
     const dir = join(this.namespace.dir, this.directoryName);
-    let directoryExists = false;
     try {
       const info = await lstat(dir);
       if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Task store is not a plain directory");
-      directoryExists = true;
-    } catch (error) { if (!isMissing(error)) throw error; }
-    if (directoryExists) {
-      let count = 0;
-      for await (const entry of await opendir(dir)) {
-        if (STAGING_FILE_RE.test(entry.name)) { await unlink(join(dir, entry.name)); continue; }
-        if (!entry.name.endsWith(".json") || !TASK_ID_RE.test(entry.name.slice(0, -5))) continue;
-        if (++count > MCP_TASK_STORE_POLICY.maxTasks) throw new Error("Task store capacity exceeded on disk");
-        const name = `${this.directoryName}/${entry.name}`;
-        const raw = await this.read(name, MCP_TASK_STORE_POLICY.maxRecordBytes);
-        if (raw === undefined) throw new Error("Stored task disappeared during startup");
-        const task = this.recover(raw);
-        if (entry.name !== `${task.taskId}.json`) throw new Error("Stored task identifier mismatch");
-        if (this.expired(task)) { await unlink(join(dir, entry.name)); continue; }
-        if (JSON.stringify(raw) !== JSON.stringify(task)) await this.namespace.writeJson(name, task);
-        this.records.set(task.taskId, task);
-      }
-    }
-    // One bounded migration of the former aggregate format; never retain an archive copy.
-    const legacyName = `${this.directoryName}.json`;
-    const legacy = await this.read(legacyName, MCP_TASK_STORE_POLICY.maxLegacyBytes);
-    if (legacy === undefined) return;
-    if (!Array.isArray(legacy)) throw new Error("Invalid task store");
-    const candidates = new Map<string, DetailedTask>();
-    for (const value of legacy) {
-      const task = this.recover(value);
-      if (candidates.has(task.taskId)) throw new Error("Duplicate task identifier in store");
-      if (!this.expired(task)) candidates.set(task.taskId, task);
-    }
-    for (const task of this.records.values()) candidates.set(task.taskId, task);
-    const retained = [...candidates.values()].sort((a, b) => Date.parse(a.lastUpdatedAt) - Date.parse(b.lastUpdatedAt))
-      .slice(-MCP_TASK_STORE_POLICY.maxTasks);
-    const ids = new Set(retained.map((task) => task.taskId));
-    for (const task of this.records.values()) if (!ids.has(task.taskId)) await this.remove(task.taskId);
-    for (const task of retained) {
-      await this.namespace.writeJson(this.recordName(task.taskId), task);
+    } catch (error) { if (isMissing(error)) return; throw error; }
+    let count = 0;
+    for await (const entry of await opendir(dir)) {
+      if (STAGING_FILE_RE.test(entry.name)) { await unlink(join(dir, entry.name)); continue; }
+      if (!entry.name.endsWith(".json") || !TASK_ID_RE.test(entry.name.slice(0, -5))) continue;
+      if (++count > MCP_TASK_STORE_POLICY.maxTasks) throw new Error("Task store capacity exceeded on disk");
+      const name = `${this.directoryName}/${entry.name}`;
+      const raw = await this.read(name);
+      if (raw === undefined) throw new Error("Stored task disappeared during startup");
+      const task = this.recover(raw);
+      if (entry.name !== `${task.taskId}.json`) throw new Error("Stored task identifier mismatch");
+      if (this.expired(task)) { await unlink(join(dir, entry.name)); continue; }
+      if (JSON.stringify(raw) !== JSON.stringify(task)) await this.namespace.writeJson(name, task);
       this.records.set(task.taskId, task);
     }
-    await unlink(join(this.namespace.dir, legacyName));
   }
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {

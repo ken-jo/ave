@@ -156,10 +156,11 @@ describe("durable task protocol", () => {
   it("refuses malformed persisted state without overwriting it", async () => {
     await isolate();
     const namespace = openFeatureNamespace("mcp-tasks");
-    const filename = `${createHash("sha256").update(MANIFEST.id).digest("hex")}.json`;
-    await namespace.writeJson(filename, [{ taskId: "broken" }]);
+    const task = await new McpTaskStore(MANIFEST.id, namespace).create();
+    const filename = `${createHash("sha256").update(MANIFEST.id).digest("hex")}/${task.taskId}.json`;
+    await namespace.writeJson(filename, { taskId: "broken" });
     const bytes = await readFile(join(namespace.dir, filename), "utf8");
-    await expect(new McpTaskStore(MANIFEST.id).get("broken")).rejects.toThrow();
+    await expect(new McpTaskStore(MANIFEST.id).get(task.taskId)).rejects.toThrow();
     expect(await readFile(join(namespace.dir, filename), "utf8")).toBe(bytes);
   });
 

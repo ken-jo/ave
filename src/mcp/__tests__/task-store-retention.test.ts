@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { McpTaskStore } from "../task-store.js";
@@ -101,29 +101,11 @@ describe("bounded durable task retention", () => {
     await expect(store.create()).rejects.toThrow("Task store capacity reached");
   });
 
-  it("migrates only bounded recent history and removes the aggregate file", async () => {
-    const namespace = openFeatureNamespace("mcp-tasks");
-    const now = new Date().toISOString();
-    const legacy = Array.from({ length: 130 }, (_, index) => ({ taskId: randomUUID(), status: "completed",
-      createdAt: now, lastUpdatedAt: now, ttlMs: null, result: { content: [{ type: "text", text: String(index) }] } }));
-    await namespace.writeJson(`${PLUGIN_HASH}.json`, legacy);
-    const store = new McpTaskStore(PLUGIN_ID, namespace);
-    expect(await store.get(legacy[0].taskId)).toBeUndefined();
-    expect(await store.get(legacy[129].taskId)).toMatchObject({ status: "completed", ttlMs: DAY_MS });
-    expect(await readdir(namespace.dir)).toEqual([PLUGIN_HASH]);
-    expect(await readdir(join(namespace.dir, PLUGIN_HASH))).toHaveLength(128);
-  });
-
-  it("refuses oversized record and legacy inputs at startup", async () => {
+  it("refuses oversized records at startup", async () => {
     const namespace = openFeatureNamespace("mcp-tasks");
     const taskId = randomUUID();
     await namespace.writeJson(`${PLUGIN_HASH}/${taskId}.json`, { padding: "x".repeat(256 * 1024) });
     await expect(new McpTaskStore(PLUGIN_ID).get(taskId)).rejects.toThrow("read limit");
-    await rm(join(namespace.dir, PLUGIN_HASH), { recursive: true });
-    const legacyPath = join(namespace.dir, `${PLUGIN_HASH}.json`);
-    await writeFile(legacyPath, `${" ".repeat(32 * 1024 * 1024)}[]`);
-    await expect(new McpTaskStore(PLUGIN_ID).get(taskId)).rejects.toThrow("read limit");
-    expect((await readdir(namespace.dir))).toEqual([`${PLUGIN_HASH}.json`]);
   });
 
   it("does not accumulate uncounted records after a write reports failure following publication", async () => {
@@ -140,5 +122,17 @@ describe("bounded durable task retention", () => {
     expect(files).toHaveLength(1);
     const recovered = new McpTaskStore(PLUGIN_ID);
     expect(await recovered.get(files[0].slice(0, -5))).toMatchObject({ status: "failed" });
+  });
+
+  it("loads only its record directory without interpreting sibling files", async () => {
+    const namespace = openFeatureNamespace("mcp-tasks");
+    const store = new McpTaskStore(PLUGIN_ID, namespace);
+    const task = await store.create();
+    const completed = await store.complete(task.taskId, { content: [] });
+    const sibling = `${PLUGIN_HASH}.json`;
+    await namespace.writeJson(sibling, { unrelated: true });
+    const before = await readFile(join(namespace.dir, sibling), "utf8");
+    expect(await new McpTaskStore(PLUGIN_ID).get(task.taskId)).toEqual(completed);
+    expect(await readFile(join(namespace.dir, sibling), "utf8")).toBe(before);
   });
 });

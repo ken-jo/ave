@@ -297,10 +297,10 @@ long calls convert it into a durable task without a second capacity decision.
 Creation is committed before returning the flat task handle. Task records live
 under `AVE_HOME/mcp-tasks/<plugin-hash>/<task-id>.json`, through
 `openFeatureNamespace` and its queued atomic writes. Each transition replaces only
-that task's file, with no aggregate history or per-transition index rewrite.
+that task's file, with no per-transition index rewrite.
 `MCP_TASK_STORE_POLICY` bounds each plugin to 128 records, terminal retention of
 24 hours from the final transition, 128 KiB of compact UTF-8 result JSON and 256 KiB of encoded
-record JSON. Retained record bytes are therefore bounded to 32 MiB per plugin,
+record JSON. Storage is bounded to 128 such files per plugin,
 plus one bounded atomic staging file. In-memory history has the same record and
 payload limits. Results are ordinary tool output, not an encrypted secret store.
 
@@ -314,11 +314,10 @@ oldest terminal handle early; if all 128 slots are active, new task creation
 fails. Expired/evicted handles return the pinned invalid-params task-not-found
 error. Oversized results become a bounded failed task with an internal-error
 payload; result data is never truncated. Late completion cannot recreate an
-expired record. The prior aggregate format is validated and migrated once:
-retain at most the newest 128 unexpired records under the same limits, then
-remove the aggregate without retaining an archive. Legacy input over 32 MiB,
-malformed input, oversized record files and unexpected on-disk record counts
-refuse loading instead of reading unbounded data or silently resetting history.
+expired record. Only the plugin's task directory is read; sibling files are not
+interpreted. Malformed input, oversized record files and unexpected on-disk
+record counts refuse loading instead of reading unbounded data or silently
+resetting history.
 Known incomplete atomic staging files are discarded during startup recovery.
 Terminal results survive restart. Interrupted work becomes a protocol-level
 failure without replaying tool effects or restoring invocation authority.
