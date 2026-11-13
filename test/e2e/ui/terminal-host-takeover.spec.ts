@@ -88,13 +88,13 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     }));
     writeFileSync(join(userData, "ave-secrets.json"), JSON.stringify(buildE2eSecrets()), { mode: 0o600 });
     writeFileSync(join(featureHome, "sessions", `${parentId}.jsonl`), `${JSON.stringify({ role: "user", content: "Parent conversation" })}\n`);
-    writeFileSync(join(featureHome, "sessions", `${parentId}.meta.json`), JSON.stringify({ title: "Parent conversation" }));
+    writeFileSync(join(featureHome, "sessions", `${parentId}.meta.json`), JSON.stringify({ title: "Parent conversation", projectRoot: realpathSync(workspace) }));
     writeFileSync(join(featureHome, "sessions", ".active-session.json"), JSON.stringify({
       mainActiveMode: "resume", mainActiveSessionId: parentId, updatedAt: new Date().toISOString(),
     }));
     writeFileSync(join(featureHome, "side-chat", "sessions", `${sideId}.jsonl`), `${JSON.stringify({ role: "user", content: "Terminal conversation" })}\n`);
     writeFileSync(join(featureHome, "side-chat", "sessions", `${sideId}.meta.json`), JSON.stringify({
-      sessionKind: "main", title: "Terminal conversation", paneTabId: tabId, originSessionId: parentId,
+      sessionKind: "main", title: "Terminal conversation", paneTabId: tabId, originSessionId: parentId, projectRoot: realpathSync(workspace),
     }));
     app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userData}`, "--no-sandbox"],

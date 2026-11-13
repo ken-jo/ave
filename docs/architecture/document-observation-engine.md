@@ -141,7 +141,10 @@ is the single source for which platforms have one. Installation status, the
 install action and engine admission use it, so a platform without one (currently
 Windows) reports `unsupported` and the install action returns
 `unsupported-platform` before any download. Its release pins stay reviewed for
-when a confinement backend exists. On a supported platform, an unavailable
+when a confinement backend exists. An installation also requires a matching
+[release pin](../../src/main/document-engine-release-pins.ts): Linux currently
+has an x64 pin only, so Linux arm64 reports `unsupported` and keeps installation
+disabled while document outlines remain available. On a supported platform, an unavailable
 runtime confinement capability still fails execution with
 `engine-confinement-unavailable` and never retries unconfined. Execution uses only the payload's office executable
 and, for HWP/HWPX importer registration, its extension tool. No scripting

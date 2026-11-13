@@ -72,6 +72,19 @@ const test = createSharedElectronTest<ElectronApplication>({
   close,
 });
 
+test.beforeEach(async ({ sharedApp: app }) => {
+  const host = await app.firstWindow();
+  const slot = await host.locator("#slot").boundingBox();
+  if (!slot) throw new Error("Capture fixture slot is unavailable");
+  // Binding precedes asynchronous native presentation; measure restoration only after the page has its pane viewport.
+  await expect.poll(() => app.evaluate(async ({ webContents }) => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    const guest = webContents.fromId(fixture.targetId);
+    if (!guest) throw new Error("Capture fixture guest is unavailable");
+    return guest.executeJavaScript("({ width: innerWidth, height: innerHeight })");
+  })).toEqual({ width: Math.round(slot.width), height: Math.round(slot.height) });
+});
+
 async function capture(app: ElectronApplication, options: BrowserScreenshotOptions, zoom = 1): Promise<CaptureNativeResult> {
   return app.evaluate(async (_main, input) => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.capture(input.options, input.zoom), { options, zoom });
 }
