@@ -16,6 +16,7 @@ import {
   grokBuildGovernedAgentDefinitionPath,
 } from "../acp-subscription-runtime-config.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 
 type Spawn = NonNullable<AcpSubscriptionRuntimeClientOptions["spawn"]>;
 
@@ -290,17 +291,12 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     }
   });
 
-  it.each([
-    { reply: { result: { config: { creditUsagePercent: 37.5, currentPeriod: { end: "2026-12-01T00:00:00Z" } } } },
-      expected: [{ id: "current-period", usedPercent: 37.5, resetsAt: Date.parse("2026-12-01T00:00:00Z") }] },
-    { reply: { result: { config: { creditUsagePercent: 0 } } }, expected: [{ id: "current-period", usedPercent: 0 }] },
-    { reply: { result: { config: { creditsUsed: 3, creditLimit: 10 } } }, expected: [] },
-    { reply: { error: { code: -32601, message: "Method not found" } }, expected: [] },
-  ])("reads only optional reported gauges after fixed cached-token authentication: $expected", async ({ reply, expected }) => {
+  it("completes cached-token verification without requesting optional billing", async () => {
     const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-grok-acp-auth-probe-");
     const versionChild = new FakeRuntimeProcess();
     const probeChild = new FakeRuntimeProcess();
     const probeRequests: Array<{ id: number; method: string; params: unknown }> = [];
+    const authenticated = deferred<void>();
     let probeInput = "";
     probeChild.stdin.on("data", (chunk: Buffer | string) => {
       probeInput += String(chunk);
@@ -321,8 +317,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
           })}\n`);
         } else if (request.method === "authenticate") {
           probeChild.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} })}\n`);
-        } else if (request.method === "_x.ai/billing") {
-          probeChild.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...reply })}\n`);
+          authenticated.resolve();
         }
       }
     });
@@ -339,9 +334,14 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
       clientVersion: "test-version",
     });
 
+    const verification = client.verify();
+    let returned = false;
+    void verification.then(() => { returned = true; }, () => {});
     try {
-      await expect(client.verify()).resolves.toMatchObject({ runtime: "ready", connection: "connected" });
-      expect(client.getPlanUsage()).toEqual(expected);
+      await authenticated.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(returned).toBe(true);
+      await expect(verification).resolves.toMatchObject({ runtime: "ready", connection: "connected" });
       expect(spawnCalls).toHaveLength(2);
       expect(spawnCalls[0]).toMatchObject({
         command: "C:\\approved\\grok-build.exe",
@@ -371,9 +371,10 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
           method: "authenticate",
           params: { methodId: "cached_token", _meta: { headless: true } },
         },
-        { id: 3, method: "_x.ai/billing", params: {} },
       ]);
     } finally {
+      probeChild.emit("exit", 1);
+      await verification.catch(() => undefined);
       await client.stop();
       versionChild.stdin.destroy();
       versionChild.stdout.destroy();

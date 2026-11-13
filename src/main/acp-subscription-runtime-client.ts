@@ -24,9 +24,6 @@ import {
 import { isRecord } from "../shared/is-record.js";
 import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
-import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import type { SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
-import { parseGrokBuildPlanUsage } from "./subscription-plan-usage-parsers.js";
 
 const PROBE_TIMEOUT_MS = 10_000;
 const ACP_REQUEST_TIMEOUT_MS = 15_000;
@@ -115,7 +112,6 @@ export interface AcpSubscriptionRuntimeClientOptions {
   // Test seam for platform-sensitive validation and environment creation.
   platform?: NodeJS.Platform;
   clientVersion?: string;
-  onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void;
 }
 
 interface PendingLogin {
@@ -134,7 +130,6 @@ interface PendingLogin {
 interface AcpAuthenticationProbeResult {
   readonly connection: AcpSubscriptionConnectionState;
   readonly promptCapabilities: AcpSubscriptionPromptCapabilities;
-  readonly planUsage?: readonly SubscriptionPlanUsageWindow[];
 }
 
 class AcpRpcError extends Error {
@@ -403,16 +398,7 @@ class AcpAuthProbe {
     }
     try {
       await this.request("authenticate", manifest.authenticateParams);
-      let planUsage: readonly SubscriptionPlanUsageWindow[] | undefined;
-      if (manifest.provider === "grok-build") {
-        try {
-          planUsage = parseGrokBuildPlanUsage(await this.request("_x.ai/billing", {}));
-        } catch (error) {
-          if (this.closed) throw error;
-          planUsage = [];
-        }
-      }
-      return { connection: "connected", promptCapabilities, ...(planUsage ? { planUsage } : {}) };
+      return { connection: "connected", promptCapabilities };
     } catch (error) {
       if (error instanceof AcpRpcError && error.authenticationRequired) {
         return {
@@ -441,10 +427,10 @@ class AcpAuthProbe {
     const error = new AcpSubscriptionRuntimeError("acp-operation-failed");
     const pending = this.pending.begin({
       method,
-      timeoutMs: method === "_x.ai/billing" ? TOOL_TIMEOUT_POLICY.mcpRequestDefaultMs : ACP_REQUEST_TIMEOUT_MS,
+      timeoutMs: ACP_REQUEST_TIMEOUT_MS,
       unrefTimer: true,
       timeoutError: () => error,
-      onTimeout: () => { if (method !== "_x.ai/billing") this.close(error); },
+      onTimeout: () => this.close(error),
     });
     try {
       this.child.stdin?.write(`${payload}\n`);
@@ -510,7 +496,6 @@ export class AcpSubscriptionRuntimeClient {
   private pendingLogin: PendingLogin | null = null;
   private completedLoginError: AcpSubscriptionErrorCode | null = null;
   private operationLock: Promise<void> = Promise.resolve();
-  private planUsage: readonly SubscriptionPlanUsageWindow[] = [];
 
   constructor(private readonly options: AcpSubscriptionRuntimeClientOptions) {
     this.manifest = ACP_SUBSCRIPTION_RUNTIME_MANIFESTS[options.provider];
@@ -558,10 +543,6 @@ export class AcpSubscriptionRuntimeClient {
 
   getCachedStatus(): AcpSubscriptionStatus {
     return this.currentStatus();
-  }
-
-  getPlanUsage(): readonly SubscriptionPlanUsageWindow[] {
-    return this.status.connection === "connected" ? this.planUsage.map((window) => ({ ...window })) : [];
   }
 
   // Main-only canonical path for the config store; never crosses IPC.
@@ -621,8 +602,6 @@ export class AcpSubscriptionRuntimeClient {
           false,
           authentication.promptCapabilities,
         );
-        this.planUsage = authentication.planUsage ?? [];
-        try { this.options.onPlanUsage?.(this.getPlanUsage()); } catch { /* Observers do not change authentication. */ }
         return this.currentStatus();
       } catch (error) {
         if (error instanceof AcpSubscriptionRuntimeError) throw error;

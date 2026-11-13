@@ -147,6 +147,7 @@ export class CodexAppServerClient {
   private transportReader: JsonLineReader | null = null;
   private accountStatus: CodexSubscriptionStatus = blankStatus("ready");
   private planUsageGeneration = 0;
+  private planUsageRead: { readonly generation: number; readonly promise: Promise<void> } | null = null;
   private pendingLogin: PendingLogin | null = null;
   private completedLoginError: CodexAppServerErrorCode | null = null;
 
@@ -182,18 +183,7 @@ export class CodexAppServerClient {
       this.pendingLogin = null;
       this.completedLoginError = null;
       if (this.onPlanUsage && refreshPlanUsage) {
-        const generation = this.planUsageGeneration;
-        try {
-          const usage = await this.request("account/rateLimits/read", {});
-          if (generation === this.planUsageGeneration && this.accountStatus.connection === "connected") {
-            this.publishPlanUsage(usage);
-          }
-        } catch {
-          // Optional quota availability must not change the account connection verdict.
-          if (generation === this.planUsageGeneration && this.accountStatus.connection === "connected") {
-            this.publishPlanUsage(null);
-          }
-        }
+        this.refreshPlanUsage();
       }
     } else {
       this.invalidatePlanUsage();
@@ -505,7 +495,9 @@ export class CodexAppServerClient {
       timeoutMs: CODEX_RPC_REQUEST_TIMEOUT_MS,
       unrefTimer: false,
       timeoutError: () => error,
-      onTimeout: () => this.abortTransport(error, child),
+      onTimeout: () => {
+        if (method !== "account/rateLimits/read") this.abortTransport(error, child);
+      },
     });
     try {
       stdin.write(`${payload}\n`);
@@ -612,6 +604,27 @@ export class CodexAppServerClient {
     } catch {
       // Quota observers cannot destabilize authentication or transport.
     }
+  }
+
+  private refreshPlanUsage(): void {
+    const generation = this.planUsageGeneration;
+    if (this.planUsageRead?.generation === generation) return;
+    const promise = this.request("account/rateLimits/read", {}).then(
+      (usage) => {
+        if (generation === this.planUsageGeneration && this.accountStatus.connection === "connected") {
+          this.publishPlanUsage(usage);
+        }
+      },
+      () => {
+        if (generation === this.planUsageGeneration && this.accountStatus.connection === "connected") {
+          this.publishPlanUsage(null);
+        }
+      },
+    );
+    this.planUsageRead = { generation, promise };
+    void promise.finally(() => {
+      if (this.planUsageRead?.promise === promise) this.planUsageRead = null;
+    });
   }
 
   private invalidatePlanUsage(): void {

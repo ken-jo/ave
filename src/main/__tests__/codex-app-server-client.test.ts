@@ -9,7 +9,7 @@ import {
   CodexAppServerClient,
   type CodexAppServerClientOptions,
 } from "../codex-app-server-client.js";
-import { CODEX_APP_SERVER_ARGV } from "../codex-conversation-runtime.js";
+import { CODEX_APP_SERVER_ARGV, CODEX_RPC_REQUEST_TIMEOUT_MS } from "../codex-conversation-runtime.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "../codex-user-runtime.js";
 import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { createPrivateDirectory } from "../codex-executable-location.js";
@@ -176,10 +176,65 @@ afterEach(async () => {
     await cleanupTmpDir(harness.runtimeRoot);
   }
   vi.unstubAllEnvs();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 describe("CodexAppServerClient", () => {
+  it("returns authenticated status and models while a quota read is unanswered", async () => {
+    const requested = deferred<RpcRequest>();
+    const harness = await createHarness((request) => {
+      if (request.method === "account/read") return { account: { type: "chatgpt", planType: "plus" } };
+      if (request.method === "account/rateLimits/read") { requested.resolve(request); return DEFER_RESPONSE; }
+      if (request.method === "model/list") return { data: [] };
+      return standardInitialize(request);
+    }, { onPlanUsage: vi.fn() });
+    let returned = false;
+    const status = harness.client.getStatus().then((value) => { returned = true; return value; });
+    await requested.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(returned).toBe(true);
+    await expect(status).resolves.toMatchObject({ connection: "connected" });
+    await expect(harness.client.listModels()).resolves.toMatchObject({ status: { connection: "connected" }, models: [] });
+    expect(harness.server.requests.filter((request) => request.method === "account/rateLimits/read")).toHaveLength(1);
+  });
+
+  it("keeps the authenticated transport usable after an optional quota timeout", async () => {
+    const requested = deferred<RpcRequest>();
+    const harness = await createHarness((request) => {
+      if (request.method === "account/read") return { account: { type: "chatgpt", planType: "plus" } };
+      if (request.method === "account/rateLimits/read") { requested.resolve(request); return DEFER_RESPONSE; }
+      if (request.method === "model/list") return { data: [] };
+      return standardInitialize(request);
+    }, { onPlanUsage: vi.fn() });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const status = harness.client.getStatus();
+    const quota = await requested.promise;
+    await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
+    await expect(status).resolves.toMatchObject({ connection: "connected" });
+    expect(harness.client.getCachedStatus().connection).toBe("connected");
+    expect(harness.server.killed).toBe(false);
+    await expect(harness.client.listModels()).resolves.toMatchObject({ status: { connection: "connected" }, models: [] });
+    expect(harness.spawnCalls).toHaveLength(1);
+    harness.server.stdout.write(`${JSON.stringify({ id: quota.id, result: { rateLimits: { primary: { usedPercent: 80 } } } })}\n`);
+    expect(harness.client.getCachedStatus().connection).toBe("connected");
+  });
+
+  it("still closes the transport when the required account read times out", async () => {
+    const requested = deferred<void>();
+    const harness = await createHarness((request) => {
+      if (request.method === "account/read") { requested.resolve(); return DEFER_RESPONSE; }
+      return standardInitialize(request);
+    }, { onPlanUsage: vi.fn() });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const status = expect(harness.client.getStatus()).rejects.toMatchObject({ code: "codex-operation-failed" });
+    await requested.promise;
+    await vi.advanceTimersByTimeAsync(CODEX_RPC_REQUEST_TIMEOUT_MS);
+    await status;
+    expect(harness.server.killed).toBe(true);
+    expect(harness.client.getCachedStatus().connection).toBe("signed-out");
+  });
+
   it.each([null, "chatgpt"])("discards an old quota read after auth changes to %s", async (authMode) => {
     const quotaRequested = deferred<RpcRequest>();
     const onPlanUsage = vi.fn();
@@ -193,13 +248,15 @@ describe("CodexAppServerClient", () => {
     }, { onPlanUsage });
     const status = harness.client.getStatus();
     const quota = await quotaRequested.promise;
+    await expect(status).resolves.toMatchObject({ connection: "connected" });
     harness.server.stdout.write(`${JSON.stringify({ method: "account/updated", params: { authMode, planType: "pro" } })}\n`);
     expect(onPlanUsage).toHaveBeenLastCalledWith([]);
     onPlanUsage.mockClear();
     harness.server.stdout.write(`${JSON.stringify({ id: quota.id, result: {
       rateLimits: { limitId: "codex", primary: { usedPercent: 80, resetsAt: 1730947200 } },
     } })}\n`);
-    await expect(status).resolves.toMatchObject({ connection: authMode === null ? "signed-out" : "connected" });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(harness.client.getCachedStatus().connection).toBe(authMode === null ? "signed-out" : "connected");
     expect(onPlanUsage).not.toHaveBeenCalled();
   });
 

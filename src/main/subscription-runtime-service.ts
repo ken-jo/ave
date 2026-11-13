@@ -293,14 +293,9 @@ export class AcpSubscriptionRuntimeRegistry {
     });
   }
 
-  async verify(
-    provider: AcpSubscriptionProviderId,
-    onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void,
-  ): Promise<AcpSubscriptionStatus> {
+  async verify(provider: AcpSubscriptionProviderId): Promise<AcpSubscriptionStatus> {
     await this.prepareRuntime(provider);
-    const status = await this.clients[provider].verify();
-    if (status.connection === "connected") onPlanUsage?.(this.clients[provider].getPlanUsage());
-    return status;
+    return this.clients[provider].verify();
   }
 
   async startDeviceCodeLogin(provider: AcpSubscriptionProviderId): Promise<AcpSubscriptionStatus> {
@@ -1329,9 +1324,7 @@ export class SubscriptionRuntimeService {
         }
         return this.projectClaudeCodeStatus(status);
       }
-      const status = await this.acpRegistry.verify(runtimeId, (windows) => {
-        if (this.safetyEpochIsCurrent(runtimeId, verificationEpoch)) this.recordPlanUsage(runtimeId, windows);
-      });
+      const status = await this.acpRegistry.verify(runtimeId);
       this.assertRunning();
       if (!this.safetyEpochIsCurrent(runtimeId, verificationEpoch)) {
         return this.getStatus(runtimeId);
