@@ -10,6 +10,23 @@ import type { RiskLevel } from "./permission-review-status.js";
  * (`ui/renderer/types.ts`) can share the same SOT as the IPC payload. Cross-cutting follow-up of #802. */
 export type UserApprovalScope = "session" | "persistent" | "global";
 
+/** Historical host evidence attached when a person re-adjudicates an exact plugin request. */
+export interface PluginReadjudicationEvidence {
+  readonly pluginId: string;
+  readonly artifactSha256: string;
+  readonly signerKeyId: string;
+  readonly staticReason: "write-path-not-declared";
+}
+
+export function isPluginReadjudicationEvidence(value: unknown): value is PluginReadjudicationEvidence {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const evidence = value as Record<string, unknown>;
+  return typeof evidence.pluginId === "string" && /^[a-z][a-z0-9-]*$/.test(evidence.pluginId) &&
+    typeof evidence.artifactSha256 === "string" && /^[a-f0-9]{64}$/.test(evidence.artifactSha256) &&
+    typeof evidence.signerKeyId === "string" && evidence.signerKeyId.trim().length > 0 &&
+    evidence.staticReason === "write-path-not-declared";
+}
+
 export type BrowserSiteChoice = "this-site" | "any-site";
 
 export function isBrowserSiteChoice(value: unknown): value is BrowserSiteChoice {

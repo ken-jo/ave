@@ -39,6 +39,7 @@ import { shellExfiltrationSignal, inspectShellCommand } from "../rules/literal-s
 import { powerShellExfiltrationSignal, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { isBrowserToolName, isBrowserUrlToolName } from "../../shared/browser-tools.js";
 import { reviewUserOwnedSurface, type UserOwnedSurfaceReviewInput, type UserOwnedSurfaceReviewResult } from "./user-owned-surface-reviewer.js";
+import { exactCanonicalStringify } from "../../shared/exact-json.js";
 
 // Verdict shape returned by every classifier.
 export interface RiskVerdict {
@@ -1533,11 +1534,50 @@ const RULES: Array<(ctx: ToolInvocationContext) => RiskVerdict | null> = [
   },
 ];
 
+interface StaticRiskSubject {
+  readonly toolName: string;
+  readonly source: string;
+  readonly category: string;
+  readonly trustOrigin?: string;
+  readonly finalInput: unknown;
+  readonly executionCwd: string;
+  readonly sandboxCapability: SandboxCapability;
+}
+
+const missingWritePathVerdicts = new WeakMap<RiskVerdict, string>();
+
+function staticRiskSubjectIdentity(input: StaticRiskSubject): string | undefined {
+  try {
+    // Non-JSON arguments cannot carry an exact authorization receipt.
+    return exactCanonicalStringify({
+      toolName: input.toolName, source: input.source, category: input.category,
+      ...(input.trustOrigin === undefined ? {} : { trustOrigin: input.trustOrigin }),
+      finalInput: input.finalInput, executionCwd: input.executionCwd,
+      sandboxCapability: input.sandboxCapability,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+// Display reasons may be replaced; only the exact host-classified verdict retains its static provenance.
+export function matchesStaticMissingWritePathVerdict(verdict: RiskVerdict, subject: StaticRiskSubject): boolean {
+  const identity = staticRiskSubjectIdentity(subject);
+  return identity !== undefined && verdict.level === "high" && missingWritePathVerdicts.get(verdict) === identity;
+}
+
 export class RuleBasedRiskClassifier implements RiskClassifier {
   classify(input: ToolInvocationContext): RiskVerdict {
     for (const rule of RULES) {
       const v = rule(input);
-      if (v) return input.permissionReason === undefined ? v : { ...v, reason: input.permissionReason };
+      if (v) {
+        const verdict = input.permissionReason === undefined ? v : { ...v, reason: input.permissionReason };
+        if (v.level === "high" && v.reason === "write path not declared") {
+          const identity = staticRiskSubjectIdentity(input);
+          if (identity !== undefined) missingWritePathVerdicts.set(verdict, identity);
+        }
+        return verdict;
+      }
     }
     // Default fail-safe: MEDIUM (never silently LOW for an unknown shape).
     return { level: "medium", reason: "no rule matched (fail-safe medium)" };

@@ -594,11 +594,6 @@
     },
     {
       "type": "types",
-      "file": "src/permissions/sandbox-capability.ts",
-      "name": "SandboxConfidence"
-    },
-    {
-      "type": "types",
       "file": "src/permissions/worker-spawn.ts",
       "name": "WorkerOutputListener"
     },

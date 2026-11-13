@@ -4,6 +4,7 @@ import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pi
 import { isConfinedHostShellExecution, requiresUnsandboxedShellAsk } from "../permissions/host-shell-execution-plan.js";
 import { randomUUID } from "node:crypto";
 import type { Tool } from "./base.js";
+import type { RuntimePlugin } from "../plugins/types.js";
 import type { ToolCategory, ToolSource, TrustLevel } from "./types.js";
 import {
   isIssuedShellAllowRuleDecision,
@@ -29,6 +30,7 @@ import { preparedShellFacts, type PreparedShellInvocation } from "./prepared-she
 import { isCanonicalTerminalRunTool, terminalCommandScopeOf, type HostTerminalCommandScope } from "./terminal-run.js";
 import { scopedRuleSubjectFor } from "./pipeline/scoped-rule-subject.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
+import { createPluginReadjudicationBasis } from "../permissions/plugin-readjudication-evidence.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import {
   isRemoteControllerBoundToSession,
@@ -89,6 +91,7 @@ type AuditPermissionAsk = (
 export interface AuthorizationStageContext {
   services: InvocationRunnerServices;
   tool: Tool;
+  pluginRuntimeInstance?: RuntimePlugin;
   toolUse: ToolUseBlock;
   source: ToolSource;
   trust: TrustLevel;
@@ -893,8 +896,7 @@ export async function authorizeToolInvocation(
         return returnAuthorizationRequired(permissionResult);
       } else if (services.approvalGate) {
         const hostTerminalFacts = hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command);
-        const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
-          ? classifyApprovalRuleVerdict({
+        const classifyCurrentRule = () => classifyApprovalRuleVerdict({
             toolName: toolUse.name,
             source,
             category: invocationCategory,
@@ -911,8 +913,23 @@ export async function authorizeToolInvocation(
             pluginId: tool.pluginId,
             hostShellExecutionPlan,
             ...(hostTerminalFacts.sandboxCapability ? { sandboxCapability: hostTerminalFacts.sandboxCapability } : {}),
-          }) : undefined;
+          });
+        const approvalRuleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
+          ? classifyCurrentRule() : undefined;
         const approvalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
+        const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
+          permissionResult.forceModal !== true && !evaluationContext.headless &&
+          !permissionResult.pipelineRequest?.userOwnedSurface &&
+          (permissionResult.reviewer?.verdict?.level === "high" || approvalRuleAssessment?.verdict.level === "high")
+          ? approvalRuleAssessment ?? classifyCurrentRule() : undefined;
+        const readjudicationBasis = readjudicationAssessment?.verdict.level === "high"
+          ? createPluginReadjudicationBasis({
+              toolName: toolUse.name, source, pluginId: tool.pluginId, category: invocationCategory,
+              finalInput, executionCwd, trustOrigin: invocationPermissionContext.trustOrigin, approvalCacheKey,
+              ruleVerdict: readjudicationAssessment.verdict,
+              reviewerVerdict: permissionResult.reviewer?.verdict, reviewerOutcome: permissionResult.reviewer?.outcome,
+              runtimeInstance: context.pluginRuntimeInstance, sandboxCapability: readjudicationAssessment.ctx.sandboxCapability,
+            }) : undefined;
         const approvalRequest = {
           id: context.cardRequestId ?? randomUUID(),
           ...browserApprovalCardFacts(tool, invocationPermissionContext.approvalMemory),
@@ -956,6 +973,7 @@ export async function authorizeToolInvocation(
           ...(approvalRuleAssessment ? { ruleVerdict: approvalRuleAssessment.verdict, approvalRuleBasis: approvalRuleAssessment.basis } : {}),
           reviewerOutcome: permissionResult.reviewer?.outcome,
           reviewerApprovalBasis: permissionResult.reviewer?.approvalBasis,
+          ...(readjudicationBasis === undefined ? {} : { readjudicationBasis }),
           // Hard policy/A2A asks are per invocation. A reviewer failure alone
           // remains an ordinary human decision that may be remembered exactly.
           ...(permissionResult.forceModal === true
