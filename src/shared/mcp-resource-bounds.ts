@@ -76,12 +76,35 @@ const RESERVED_SCHEMES = Object.freeze([
   "file-loopback:",
 ]);
 
+/** Only the invocation boundary rewrites an input URI; wire declarations are validated, never repaired. */
+export function canonicalizeResourceUriScheme(uri: string): string {
+  return uri.replace(/^[A-Za-z][A-Za-z0-9+.-]*:/, (scheme) => scheme.toLowerCase());
+}
+
+/** Skill identities have one spelling: lowercase scheme/authority, literal segments and no optional URL components.
+ * Refuse percent escapes rather than letting a server choose which decoding or alias resolves to approved bytes. */
+export function isCanonicalSkillResourceUri(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 4096 || hasUnsafeUriChars(value)
+    || !/^[a-z][a-z0-9+.-]*:\/\//.test(value) || /[%?#\uD800-\uDFFF]/u.test(value)) return false;
+  try {
+    const uri = new URL(value);
+    const segments = value.slice(value.indexOf("://") + 3).split("/");
+    const authority = segments[0];
+    if (!authority || authority !== authority.toLowerCase() || authority !== decodeURIComponent(uri.host)
+      || uri.username || uri.password || uri.port || authority.includes(":")) return false;
+    return segments.every((segment) => segment !== "" && segment !== "." && segment !== "..");
+  } catch {
+    return false;
+  }
+}
+
 export function isUsableResourceUri(value: unknown): value is string {
   if (typeof value !== "string") return false;
   if (value.length === 0 || value.length > MCP_RESOURCE_URI_MAX_CHARS) return false;
   // Percent-encoded forms remain usable; ordinary non-ASCII paths are allowed, invisible selectors are not.
   if (hasUnsafeUriChars(value)) return false;
   const lowered = value.toLowerCase();
+  if (lowered.startsWith("skill:") && !isCanonicalSkillResourceUri(value)) return false;
   if (RESERVED_SCHEMES.some((scheme) => lowered.startsWith(scheme))) return false;
   if (ALLOWED_URI_SCHEMES.some((scheme) => lowered.startsWith(scheme))) return true;
   return CUSTOM_SCHEME_RE.test(lowered);

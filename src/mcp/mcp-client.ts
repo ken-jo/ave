@@ -28,6 +28,7 @@ import {
   validateHttpUrl,
 } from "../core/network-guard.js";
 import {
+  isCanonicalSkillResourceUri,
   isHostFetchRefusedUri,
   isUsableResourceUri,
   MCP_RESOURCE_DESCRIPTION_MAX_CHARS,
@@ -652,6 +653,7 @@ export class McpClient {
   async getSkill(uri: string): Promise<McpSkill> {
     // An explicit refresh withdraws the old snapshot until a valid response replaces it.
     this.skills.delete(uri);
+    if (!isCanonicalSkillResourceUri(uri)) throw new Error("Invalid skill URI");
     await this.assertSkillsAdvertised();
     const result = this.skillResult(await this.sendRequest("skills/get", { uri }));
     const skill = parseMcpSkill(result.skill);

@@ -4,7 +4,7 @@ import { createDynamicTool, toolErrorResult, type Tool } from "./base.js";
 import { createLogger } from "../lib/logger.js";
 import { scrubShortError } from "../shared/dlp.js";
 import { t } from "../i18n/index.js";
-import { MCP_RESOURCE_URI_MAX_CHARS } from "../shared/mcp-resource-bounds.js";
+import { canonicalizeResourceUriScheme, isUsableResourceUri, MCP_RESOURCE_URI_MAX_CHARS } from "../shared/mcp-resource-bounds.js";
 import { MAX_TOOL_RESULT_TOKENS } from "../shared/tool-result-trim.js";
 import { estimateTokens } from "../shared/token-estimate.js";
 import type { McpResourceSummary } from "../mcp/types.js";
@@ -20,7 +20,7 @@ export function normalizeMcpResourceReadInput(tool: Tool, input: Record<string, 
   return {
     ...input,
     ...(typeof input.serverId === "string" ? { serverId: input.serverId.trim() } : {}),
-    ...(typeof input.uri === "string" ? { uri: input.uri.trim() } : {}),
+    ...(typeof input.uri === "string" ? { uri: canonicalizeResourceUriScheme(input.uri.trim()) } : {}),
   };
 }
 
@@ -239,7 +239,7 @@ export function createMcpResourceReadTool(getAccess: McpResourceAccessResolver):
       const a = (rawInput ?? {}) as Record<string, unknown>;
       const serverId = typeof a.serverId === "string" ? a.serverId : "";
       const uri = typeof a.uri === "string" ? a.uri : "";
-      if (serverId.length === 0 || uri.length === 0 || uri.length > MCP_RESOURCE_URI_MAX_CHARS) {
+      if (serverId.length === 0 || !isUsableResourceUri(uri) || uri.length > MCP_RESOURCE_URI_MAX_CHARS) {
         return toolErrorResult(t("be_mcpResourceTools.invalidRequest"));
       }
       try {

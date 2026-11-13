@@ -95,9 +95,60 @@ describe("skill transport discovery and integrity", () => {
     expect(server.requests).toHaveLength(count);
     await client.disconnect(); expect(client.getSkillEntries()).toEqual([]);
   });
+
+  it.each(["SKILL", "sKiLl", "SCHEMA"])("rejects noncanonical %s skill entries at discovery and direct lookup", async (scheme) => {
+    const server = new SkillServerTransport();
+    const bundle = skillBundle({ uri: `${scheme.toLowerCase()}://reports/SKILL.md` });
+    const uri = `${scheme}://reports/SKILL.md`;
+    const skill = { ...bundle.skill, uri, resources: (bundle.skill.resources as Exclude<typeof bundle.skill.resources, string>)
+      .map((file) => ({ ...file, uri: file.uri.replace(`${scheme.toLowerCase()}:`, `${scheme}:`) })) };
+    server.catalog = [skill];
+    const { client } = await connect(server);
+    expect(client.getSkillEntries()).toEqual([]);
+    const requests = server.requests.length;
+    await expect(client.getSkill(uri)).rejects.toThrow();
+    expect(server.requests).toHaveLength(requests);
+    server.response = (method) => method === "skills/get" ? { resultType: "complete", ttlMs: 1, cacheScope: "private", skill } : undefined;
+    await expect(client.getSkill(bundle.skill.uri)).rejects.toThrow();
+    expect(client.getSkillEntries()).toEqual([]);
+  });
+
+  it.each(["SKILL://reports/SKILL.md", "sKiLl://reports/SKILL.md", "skill://%72eports/SKILL.md",
+    "skill://Reports/reports/SKILL.md", "skill://reports:443/reports/SKILL.md", "skill://reports/%53KILL.md",
+    "skill://reports/./SKILL.md", "skill://reports//SKILL.md"])("refuses a declared noncanonical skill resource %s before dispatch", async (uri) => {
+    const server = new SkillServerTransport();
+    server.files.set(uri, "unverified");
+    server.response = (method) => method === "resources/list" ? {
+      resultType: "complete", ttlMs: 1, cacheScope: "private", resources: [{ uri, name: "alias" }],
+    } : undefined;
+    const { client } = await connect(server);
+    expect(client.getState().resources).toEqual([]);
+    await expect(client.readDeclaredResource(uri)).rejects.toThrow();
+    expect(server.requests.filter((request) => request.method === "resources/read")).toEqual([]);
+  });
 });
 
 describe("skill entry validation", () => {
+  it.each(["SKILL://reports/SKILL.md", "sKiLl://reports/SKILL.md", "schema://Reports/reports/SKILL.md",
+    "skill://%72eports/SKILL.md", "skill://reports:443/reports/SKILL.md"])("rejects noncanonical skill identity %s", (uri) => {
+    const { skill } = skillBundle();
+    expect(() => parseMcpSkill({ ...skill, uri, resources: [{ ...(skill.resources as Exclude<typeof skill.resources, string>)[0], uri }] })).toThrow();
+  });
+
+  it.each(["references/%67uide.md", "references/guide.md?", "references/guide.md#", "references/%252e.md"])("rejects an ambiguous manifest file %s", (path) => {
+    const { skill } = skillBundle();
+    expect(() => parseMcpSkill({ ...skill, resources: [...skill.resources as unknown[], {
+      uri: `skill://reports/${path}`, digest: `sha256:${"0".repeat(64)}`, size: 0,
+    }] })).toThrow();
+  });
+
+  it("refuses matching noncanonical URI aliases even when the supplied digest matches", () => {
+    const { skill } = skillBundle();
+    const text = "unverified";
+    const uri = "SKILL://reports/SKILL.md";
+    const entry = { ...skill, uri, resources: [{ uri, size: Buffer.byteLength(text), digest: `sha256:${createHash("sha256").update(text).digest("hex")}` }] };
+    expect(() => verifyMcpSkillRead(entry, uri, { contents: [{ uri, text }] })).toThrow();
+  });
   it.each(["écriture", "日本語", "보고서"])("accepts the format's lowercase Unicode skill name %s", (name) => {
     const { skill } = skillBundle({ uri: `skill://${name}/SKILL.md` });
     expect(skill.frontmatter.name).toBe(name);

@@ -81,6 +81,19 @@ are refused even before activation, directing callers to `skill_load` and
 `skill_read` for consent and verification. The resource tool's server ID and URI
 are normalized once after argument hooks, before admission and permission checks.
 The handler dispatches those exact checked values without further normalization.
+That boundary lowercases only the URI scheme, as required by
+[RFC 3986 §3.1](https://www.rfc-editor.org/rfc/rfc3986#section-3.1), preserving path
+case and Unicode. Skill entries and manifests must already have canonical
+lowercase schemes and authorities; wire identities are rejected rather than
+repaired. The same validator rejects noncanonical `skill:` resource declarations.
+Percent escapes, dot or empty segments, credentials, ports, queries and fragments
+are refused for skill identities. Ambiguous generic reads using a declared
+skill's scheme are also refused, including skills served under another scheme.
+This deliberately includes unrelated noncanonical reads on that scheme: a
+`schema://reports/SKILL.md` entry also refuses `schema://public?version=1`.
+Callers must supply a canonical identity rather than rely on server aliasing.
+Verification compares the exact canonical manifest, requested and returned URIs
+before digest and size checks. A scheme alone never activates a skill.
 Cross-server reads while acting on a skill are refused; use a separate
 conversation for that origin.
 

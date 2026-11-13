@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { parse as parseYaml } from "yaml";
 import { isRecord } from "../shared/is-record.js";
-import { hasUnsafeUriChars } from "../shared/mcp-resource-bounds.js";
+import { isCanonicalSkillResourceUri } from "../shared/mcp-resource-bounds.js";
 
 export const MCP_SKILLS_EXTENSION = "io.modelcontextprotocol/skills";
 export const MCP_SKILLS_SPEC_COMMIT = "649f7aee87d631ac4d1fdd3b12eef0c6264fdb3a";
@@ -22,34 +22,14 @@ export interface McpSkill {
   readonly resources: readonly McpSkillResource[] | "dynamic";
 }
 
-function isSkillResourceUri(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 4096 || hasUnsafeUriChars(value)) return false;
-  try {
-    const uri = new URL(value);
-    if (uri.username || uri.password || uri.search || uri.hash || !uri.host) return false;
-    const segments = value.slice(value.indexOf("://") + 3).split("/");
-    return value.includes("://") && segments.every((segment) => {
-      const decoded = decodeURIComponent(segment);
-      if (decoded === "." || decoded === ".." || !decoded || decoded.includes("/") || decoded.includes("\\")) return false;
-      for (const character of decoded) {
-        const code = character.codePointAt(0) ?? 0;
-        if (code <= 0x1f || code === 0x7f) return false;
-      }
-      return true;
-    });
-  } catch {
-    return false;
-  }
-}
-
 export function skillResourcePath(skillUri: string, uri: string): string {
   const prefix = skillUri.slice(0, -"SKILL.md".length);
-  if (!isSkillResourceUri(uri) || !uri.startsWith(prefix)) throw new Error("Skill resource is outside its origin directory");
+  if (!isCanonicalSkillResourceUri(skillUri) || !isCanonicalSkillResourceUri(uri) || !uri.startsWith(prefix)) throw new Error("Skill resource is outside its origin directory");
   return uri.slice(prefix.length);
 }
 
 export function parseMcpSkill(value: unknown): McpSkill {
-  if (!isRecord(value) || !isSkillResourceUri(value.uri) || !value.uri.endsWith("/SKILL.md") || !isRecord(value.frontmatter)) {
+  if (!isRecord(value) || !isCanonicalSkillResourceUri(value.uri) || !value.uri.endsWith("/SKILL.md") || !isRecord(value.frontmatter)) {
     throw new Error("Invalid skill entry");
   }
   const { name, description } = value.frontmatter;
@@ -85,6 +65,7 @@ export function mcpSkillFingerprint(skill: McpSkill): string {
 }
 
 export function verifyMcpSkillRead(skill: McpSkill, uri: string, result: unknown): Buffer {
+  if (!isCanonicalSkillResourceUri(skill.uri) || !isCanonicalSkillResourceUri(uri)) throw new Error("Invalid skill resource URI");
   if (skill.resources === "dynamic") throw new Error("Dynamic skills cannot be verified or approved");
   const file = skill.resources.find((entry) => entry.uri === uri);
   if (!file) throw new Error("Skill resource is not in the approved manifest");

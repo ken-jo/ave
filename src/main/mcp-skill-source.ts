@@ -1,6 +1,7 @@
 import type { LoadedSkill, SkillCatalogEntry, SkillResourceContent } from "./skill-store.js";
 import { MCP_SKILLS_SPEC_COMMIT, mcpSkillFingerprint, mcpSkillText, skillResourcePath, verifiedMcpSkillBody, type McpSkill } from "../mcp/mcp-skills.js";
 import { mcpSkillSelector, parseMcpSkillSelector } from "../shared/mcp-skill-selector.js";
+import { isCanonicalSkillResourceUri } from "../shared/mcp-resource-bounds.js";
 
 export interface McpSkillAccess {
   listSkills(): Array<{ serverId: string; skill: McpSkill }>;
@@ -34,7 +35,9 @@ export class McpSkillSource {
 
   isSkillResource(serverId: string, uri: string): boolean {
     return (this.getAccess()?.listSkills() ?? []).some((entry) => entry.serverId === serverId
-      && (uri === entry.skill.uri || uri.startsWith(entry.skill.uri.slice(0, -"SKILL.md".length))));
+      && (uri === entry.skill.uri || uri.startsWith(entry.skill.uri.slice(0, -"SKILL.md".length))
+        // A noncanonical URI in a declared skill's scheme cannot establish a distinct resource identity.
+        || uri.startsWith(entry.skill.uri.slice(0, entry.skill.uri.indexOf(":") + 1)) && !isCanonicalSkillResourceUri(uri)));
   }
 
   async load(selector: string): Promise<LoadedSkill | null> {

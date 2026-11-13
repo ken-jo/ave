@@ -21,10 +21,11 @@ const clients: McpClient[] = [];
 afterEach(async () => { await Promise.all(clients.splice(0).map((client) => client.disconnect())); });
 const context = (sessionId = "skill-chat") => ({ cwd: process.cwd(), extraAllowedDirectories: [], metadata: { sessionId } });
 
-async function harness(bundle = skillBundle(), declaredResources = false) {
+async function harness(bundle = skillBundle(), declaredResources = false, resourceAliases: readonly string[] = []) {
   const server = new SkillServerTransport(); server.publish(bundle);
   if (declaredResources) {
     server.files.set("schema://public", "ordinary resource");
+    for (const uri of resourceAliases) server.files.set(uri, "UNVERIFIED ALIAS INSTRUCTIONS");
     server.response = (method) => method === "resources/list" ? {
       resultType: "complete", ttlMs: 60_000, cacheScope: "private",
       resources: [...server.files.keys()].map((uri) => ({ uri, name: uri })),
@@ -120,12 +121,52 @@ describe("MCP skills use the existing skill and permission paths", () => {
     expect(h.server.requests.filter((request) => request.method === "resources/read")).toEqual([]);
   });
 
+  it.each([
+    ["skill", "SKILL", false], ["skill", "sKiLl", false],
+    ["skill", "SKILL", true], ["skill", "sKiLl", true],
+    ["schema", "SCHEMA", false], ["schema", "ScHeMa", true],
+  ] as const)("blocks a listed %s resource alias using %s with opt-in %s", async (scheme, aliasScheme, active) => {
+    const uri = `${scheme}://reports/SKILL.md`;
+    const alias = `${aliasScheme}://reports/SKILL.md`;
+    const h = await harness(skillBundle({ uri }), true, [alias]);
+    // The server actually advertises and serves the alias, rather than merely accepting an unlisted spelling.
+    expect(h.server.response?.("resources/list", {})).toMatchObject({ resources: expect.arrayContaining([{ uri: alias, name: alias }]) });
+    const dispatch = vi.fn((_serverId: string, requestedUri: string) => h.client.readDeclaredResource(requestedUri));
+    h.registry.register(createMcpResourceReadTool(() => ({ listResources: () => [], readDeclaredResource: dispatch })));
+    if (active) {
+      h.optIn();
+      expect((await h.load.execute({ skillName: h.selector }, context())).isError).toBe(false);
+    }
+    const reads = h.server.requests.filter((request) => request.method === "resources/read").length;
+    const admission = vi.fn((sessionId: string | undefined, name: string, input: Record<string, unknown>) => h.overlay.checkAdmission(sessionId, name, input));
+    h.executor.setSkillAdmissionCheck(admission);
+    const [result] = await h.executor.executeAll([{ id: "alias", name: "mcp_resource_read", input: { serverId: "docs-server", uri: alias } }],
+      { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
+    expect(result).toMatchObject({ is_error: true });
+    expect(result.content).not.toContain("UNVERIFIED ALIAS INSTRUCTIONS");
+    expect(admission).toHaveBeenCalled();
+    for (const [, , input] of admission.mock.calls) expect(input.uri).toBe(uri);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((request) => request.method === "resources/read")).toHaveLength(reads);
+  });
+
+  it.each(["schema://Reports/SKILL.md", "schema://%72eports/SKILL.md", "schema://reports:443/SKILL.md"])("refuses an ambiguous identity in a declared skill's scheme: %s", async (alias) => {
+    const h = await harness(skillBundle({ uri: "schema://reports/SKILL.md" }), true, [alias]);
+    const dispatch = vi.fn((_serverId: string, uri: string) => h.client.readDeclaredResource(uri));
+    h.registry.register(createMcpResourceReadTool(() => ({ listResources: () => [], readDeclaredResource: dispatch })));
+    const [result] = await h.executor.executeAll([{ id: "ambiguous", name: "mcp_resource_read", input: { serverId: "docs-server", uri: alias } }],
+      { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
+    expect(result).toMatchObject({ is_error: true });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(h.server.requests.filter((request) => request.method === "resources/read")).toEqual([]);
+  });
+
   it("checks the exact normalized resource identity sent on the wire after a hook rewrite", async () => {
     const h = await harness(skillBundle(), true);
     const dispatch = vi.fn((_serverId: string, uri: string) => h.client.readDeclaredResource(uri));
     h.registry.register(createMcpResourceReadTool(() => ({ listResources: () => [], readDeclaredResource: dispatch })));
     h.executor.getHookRunner().registerPreHook("rewrite-resource", () => ({ action: "modify", updatedInput: {
-      serverId: " docs-server ", uri: "\tschema://public\n",
+      serverId: " docs-server ", uri: "\tScHeMa://public\n",
     } }));
     const admission = vi.fn((sessionId: string | undefined, name: string, input: Record<string, unknown>) => h.overlay.checkAdmission(sessionId, name, input));
     h.executor.setSkillAdmissionCheck(admission);
@@ -141,6 +182,24 @@ describe("MCP skills use the existing skill and permission paths", () => {
       expect(input.serverId).toBe(dispatch.mock.calls[0][0]);
       expect(input.uri).toBe(wireReads[0].params.uri);
     }
+  });
+
+  it("preserves path case and Unicode without activating an undeclared skill-scheme resource", async () => {
+    const uri = "skill://public/ReadMe-한글.md";
+    const h = await harness(skillBundle(), true, [uri]);
+    h.server.files.set(uri, "ordinary resource data");
+    h.registry.register(createMcpResourceReadTool(() => ({ listResources: () => [],
+      readDeclaredResource: (_serverId, requestedUri) => h.client.readDeclaredResource(requestedUri),
+    })));
+    const [result] = await h.executor.executeAll([{ id: "ordinary-skill-scheme", name: "mcp_resource_read", input: { serverId: "docs-server", uri } }],
+      { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
+    expect(result.is_error).not.toBe(true);
+    expect(result.content).toContain("ordinary resource data");
+    expect(h.server.requests.filter((request) => request.method === "resources/read")).toEqual([
+      { method: "resources/read", params: expect.objectContaining({ uri }) },
+    ]);
+    expect(h.overlay.list("skill-chat")).toEqual([]);
+    expect(h.requestAndWait).not.toHaveBeenCalled();
   });
 
   it("explicit opt-in loads fenced origin-tagged instructions and lazily verifies supporting files", async () => {
