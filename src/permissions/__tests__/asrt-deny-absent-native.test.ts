@@ -9,6 +9,7 @@ import { hasNativeSrtWinBuildReceipt } from "../../__tests__/support/srt-win-bui
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { initializeRequiredSandbox } from "../../__tests__/support/native-sandbox.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { checkAsrtDependencies, getVendoredSrtWinExePath, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 import { windowsSandboxCanSpawn } from "./test-helpers.js";
 import { holdWindowsFilesystemGrant } from "../windows-acl-grant-holder.js";
@@ -99,7 +100,7 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
       } finally {
         vi.restoreAllMocks();
         vi.unstubAllEnvs();
-        rmSync(container, { recursive: true, force: true });
+        await cleanupTmpDir(container);
       }
     }
   });
@@ -228,7 +229,7 @@ describe.runIf(process.platform === "win32" && hasNativeSrtWinBuildReceipt())("W
     finally {
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
-      rmSync(container, { recursive: true, force: true });
+      await cleanupTmpDir(container);
     }
   });
 
