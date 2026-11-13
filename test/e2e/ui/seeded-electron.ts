@@ -227,6 +227,7 @@ export async function launchSeededElectron(opts: {
   launchEnv?: LaunchEnv;
   launchArgs?: readonly string[];
   prepareHome?: (aveHome: string) => void | Promise<void>;
+  onLaunched?: (app: ElectronApplication) => void;
 }): Promise<SeededElectronContext> {
   const sessionId = opts.sessionId ?? "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const userDataDir = mkdtempSync(
@@ -290,6 +291,7 @@ export async function launchSeededElectron(opts: {
       }),
       timeout: 30_000,
     });
+    opts.onLaunched?.(app);
 
     app
       .process()
@@ -310,7 +312,7 @@ export async function launchSeededElectron(opts: {
 
     return { app, page, userDataDir, tempHome, aveHome };
   } catch (error) {
-    await app?.close().catch(() => {});
+    if (app) await quitElectron(app);
     try {
       await removeSeededElectronDirectories(userDataDir, tempHome);
     } catch (cleanupError) {
@@ -330,7 +332,7 @@ export async function quitElectron(app: ElectronApplication): Promise<void> {
   const stopped = Promise.all([exited, closed]);
   if (isRunning) {
     const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
-      runtimeApp.once("will-quit", resolve);
+      runtimeApp.once("will-quit", () => resolve());
       runtimeApp.quit();
     })).catch((error: unknown) => {
       if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);

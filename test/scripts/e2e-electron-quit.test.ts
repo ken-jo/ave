@@ -5,7 +5,7 @@ import type { Page } from "playwright";
 import { EventEmitter } from "node:events";
 import type { ElectronApplication } from "playwright";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { launchElectron, quitElectron, teardownSeededElectron } from "../e2e/ui/seeded-electron.js";
+import { launchElectron, launchSeededElectron, quitElectron, teardownSeededElectron } from "../e2e/ui/seeded-electron.js";
 const launcher = vi.hoisted(() => vi.fn());
 const terminateTree = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({ execFile: terminateTree }));
@@ -125,6 +125,25 @@ describe("native test application quit", () => {
     expect(runtime.evaluate).not.toHaveBeenCalled();
     expect(runtime.close).toHaveBeenCalledOnce();
     expect(runtime.child.kill).not.toHaveBeenCalled();
+  });
+
+  it("exposes the launched process and waits for its pipes when startup fails", async () => {
+    const runtime = await application();
+    Object.assign(runtime.app, { firstWindow: vi.fn().mockRejectedValue(new Error("Window startup failed")) });
+    launcher.mockResolvedValueOnce(runtime.app);
+    const onLaunched = vi.fn();
+    const starting = launchSeededElectron({ historyRows: [], onLaunched });
+    const rejected = expect(starting).rejects.toThrow("Window startup failed");
+    await vi.waitFor(() => expect(runtime.quit).toHaveBeenCalledOnce());
+    expect(onLaunched).toHaveBeenCalledWith(runtime.app);
+    runtime.nativeApp.emit("will-quit");
+    runtime.child.exitCode = 0;
+    runtime.child.emit("exit", 0, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(runtime.close).not.toHaveBeenCalled();
+    runtime.child.emit("close", 0, null);
+    await rejected;
+    expect(runtime.close).toHaveBeenCalledOnce();
   });
 });
 
