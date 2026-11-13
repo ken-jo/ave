@@ -1024,6 +1024,9 @@ export const en = {
   "be_skillList.toolDescription": "Returns the list of currently available Ave skills. Use this to see which skills exist before calling skill_load.",
 
   // be_skillLoad
+  "be_skillLoad.serverIdDescription": "For an MCP skill, the host-assigned server ID. Supply this with uri instead of skillName; unlisted skills are supported.",
+  "be_skillLoad.uriDescription": "The MCP skill's SKILL.md resource URI, confirmed with skills/get when absent from the catalog.",
+  "be_skillLoad.mcpApprovalReason": "Opt in to untrusted skill instructions that may ask the assistant to execute code on this computer. Skill '{uri}' from MCP server '{server}'. Approve this skill and its exact file digests? Normal tool permissions still apply; hooks and permission grants in the skill are ignored. Consent is off until you approve and is revoked when the file manifest changes.",
   "be_skillLoad.toolDescription": "Reads a skill's instructions (its SKILL.md body) by name. The system prompt lists only skill names and descriptions; call this before acting on a skill, then follow the returned instructions. The result is an <ave-skill name base> block holding the body and any bundled files (fetch one with skill_read). It stays in this conversation: do not read the same skill again while its earlier result is still visible; read it again if it is gone (for example after compaction). The first read of a skill, and a read after its content changed, asks the user for approval.",
   "be_skillLoad.skillNameDescription": "The skill name to read (must match the file/directory name and the frontmatter name field).",
   "be_skillLoad.approvalReason": "Reads skill '{name}' into this conversation so the assistant follows its instructions. The approval record is stored permanently and bound to the current body and its bundled file list — if either changes, confirmation is requested again.",

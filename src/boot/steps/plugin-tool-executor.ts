@@ -102,6 +102,8 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     pluginOperationGrants,
     () => ctx.pluginBundleLifecycle,
   );
+  pluginSurfaceExecutor.setSkillAdmissionCheck((sessionId, toolName, input) =>
+    ctx.skillOverlay?.checkAdmission(sessionId, toolName, input));
   const pluginSurfacePermissionScope = createPluginSurfacePermissionScope({
     readPersistedDirectories: () => readPermissionSettings().permissions.additionalDirectories,
     onSessionDirectoryAdded: () => {

@@ -4,13 +4,26 @@ import { createDynamicTool, toolErrorResult, type Tool } from "./base.js";
 import { createLogger } from "../lib/logger.js";
 import { scrubShortError } from "../shared/dlp.js";
 import { t } from "../i18n/index.js";
-import { MCP_RESOURCE_URI_MAX_CHARS } from "../shared/mcp-resource-bounds.js";
+import { isUsableResourceUri, MCP_RESOURCE_URI_MAX_CHARS } from "../shared/mcp-resource-bounds.js";
 import { MAX_TOOL_RESULT_TOKENS } from "../shared/tool-result-trim.js";
 import { estimateTokens } from "../shared/token-estimate.js";
 import type { McpResourceSummary } from "../mcp/types.js";
 import { errorMessage } from "../shared/error-message.js";
 
 const log = createLogger("ave");
+const mcpResourceReadTools = new WeakSet<Tool>();
+
+// Normalize after argument hooks, before admission and permission checks. The handler
+// consumes this exact identity without changing what those checks authorized.
+// Fold the skill scheme only; ordinary resources retain their exact listed spelling.
+export function normalizeMcpResourceReadInput(tool: Tool, input: Record<string, unknown>): Record<string, unknown> {
+  if (!mcpResourceReadTools.has(tool)) return input;
+  return {
+    ...input,
+    ...(typeof input.serverId === "string" ? { serverId: input.serverId.trim() } : {}),
+    ...(typeof input.uri === "string" ? { uri: input.uri.trim().replace(/^skill:/i, "skill:") } : {}),
+  };
+}
 
 // Match estimateTokens' four-character estimate.
 const APPROX_CHARS_PER_TOKEN = 4;
@@ -198,7 +211,7 @@ export function createMcpResourceListTool(getAccess: McpResourceAccessResolver):
 }
 
 export function createMcpResourceReadTool(getAccess: McpResourceAccessResolver): Tool {
-  return createDynamicTool({
+  const tool = createDynamicTool({
     name: "mcp_resource_read",
     description: t("be_mcpResourceTools.readDescription"),
     source: "builtin",
@@ -225,9 +238,9 @@ export function createMcpResourceReadTool(getAccess: McpResourceAccessResolver):
       const access = getAccess();
       if (!access) return toolErrorResult(t("be_mcpResourceTools.notReady"));
       const a = (rawInput ?? {}) as Record<string, unknown>;
-      const serverId = typeof a.serverId === "string" ? a.serverId.trim() : "";
-      const uri = typeof a.uri === "string" ? a.uri.trim() : "";
-      if (serverId.length === 0 || uri.length === 0 || uri.length > MCP_RESOURCE_URI_MAX_CHARS) {
+      const serverId = typeof a.serverId === "string" ? a.serverId : "";
+      const uri = typeof a.uri === "string" ? a.uri : "";
+      if (serverId.length === 0 || !isUsableResourceUri(uri) || uri.length > MCP_RESOURCE_URI_MAX_CHARS) {
         return toolErrorResult(t("be_mcpResourceTools.invalidRequest"));
       }
       try {
@@ -254,4 +267,6 @@ export function createMcpResourceReadTool(getAccess: McpResourceAccessResolver):
       }
     },
   });
+  mcpResourceReadTools.add(tool);
+  return tool;
 }

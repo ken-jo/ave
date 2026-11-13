@@ -19,6 +19,7 @@ import type {
 } from "./types.js";
 import { McpGovernance } from "./mcp-governance.js";
 import { McpClient, scrubSecrets } from "./mcp-client.js";
+import type { McpSkill } from "./mcp-skills.js";
 import { McpOAuthError, McpOAuthSession, tryMcpOAuthCredentialKey, type McpOAuthDependencies, type McpOAuthSecrets } from "./mcp-oauth.js";
 import { ToolRegistry, type PreparedMcpRegistryReplacement } from "../tools/registry.js";
 import type { Tool } from "../tools/base.js";
@@ -1285,6 +1286,23 @@ export class McpManager {
   /** Resolve server-local names through governance; registry mcpServerId, not namespacing, proves ownership. */
   namespacedToolName(serverId: string, toolName: string): string {
     return this.governance.applyToolNamespace(serverId, toolName);
+  }
+
+  listSkills(): Array<{ serverId: string; skill: McpSkill }> {
+    return this.listServers().filter((server) => server.status === "connected").flatMap((server) =>
+      (this.clients.get(server.id)?.getSkillEntries() ?? []).map((skill) => ({ serverId: server.id, skill })));
+  }
+
+  async getSkill(serverId: string, uri: string): Promise<McpSkill> {
+    const client = this.clients.get(serverId);
+    if (!client || this.getServerState(serverId)?.status !== "connected") throw new Error("Skill server is disconnected");
+    return this.withBundledLease(serverId, () => client.getSkill(uri));
+  }
+
+  async readSkillResource(serverId: string, skill: McpSkill, uri: string): Promise<Buffer> {
+    const client = this.clients.get(serverId);
+    if (!client || this.getServerState(serverId)?.status !== "connected") throw new Error("Skill server is disconnected");
+    return this.withBundledLease(serverId, () => client.readSkillResource(skill, uri));
   }
 
   async getConfigs(): Promise<McpServerConfigDto[]> {

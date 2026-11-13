@@ -11,6 +11,8 @@ import { AGENT_PLUGIN_SKILL_SELECTOR_PATTERN, parseAgentPluginSkillSelector, PLU
 import type { InstalledAgentPlugin } from "../marketplace/content/service.js";
 import type { ActivePluginGeneration } from "../plugins/plugin-generation-coordinator.js";
 import type { MaterializedPluginContribution } from "../plugins/plugin-contributions.js";
+import { MCP_SKILL_SELECTOR_PATTERN, parseMcpSkillSelector } from "../shared/mcp-skill-selector.js";
+import type { McpSkillOwner, McpSkillSource } from "./mcp-skill-source.js";
 const log = createLogger("ave");
 
 // Skill names use the schema’s path-safe charset; reject traversal and control characters at the filesystem boundary.
@@ -34,7 +36,7 @@ function boundedTriggers(triggers: readonly string[] | undefined): readonly stri
 const PLUGIN_SKILL_SELECTOR_ALLOWLIST = new RegExp(`^${PLUGIN_SKILL_SELECTOR_PATTERN}$`);
 const AGENT_PLUGIN_SKILL_SELECTOR_ALLOWLIST = new RegExp(`^${AGENT_PLUGIN_SKILL_SELECTOR_PATTERN}$`);
 export const SKILL_SELECTOR_ALLOWLIST = new RegExp(
-  `^(?:[a-zA-Z0-9_-]+|${PLUGIN_SKILL_SELECTOR_PATTERN}|${AGENT_PLUGIN_SKILL_SELECTOR_PATTERN})$`,
+  `^(?:[a-zA-Z0-9_-]+|${PLUGIN_SKILL_SELECTOR_PATTERN}|${AGENT_PLUGIN_SKILL_SELECTOR_PATTERN}|${MCP_SKILL_SELECTOR_PATTERN})$`,
 );
 
 // C2(e): skills with a body larger than this are refused at load time.
@@ -177,6 +179,7 @@ interface SkillComponentFields {
 }
 
 export interface LoadedSkill extends SkillComponentFields {
+  mcpOwner?: McpSkillOwner;
   name: string;
   description: string;
   body: string;
@@ -191,6 +194,7 @@ export interface LoadedSkill extends SkillComponentFields {
 
 // Catalog rows carry bounded selection hints for the skill’s lifetime; other fields stay available on the loaded skill.
 export interface SkillCatalogEntry {
+  mcpOrigin?: { serverId: string; uri: string };
   name: string;
   description: string;
   triggers: readonly string[];
@@ -326,6 +330,7 @@ function warnOnShortenedScalar(
 }
 
 export interface SkillStoreOptions {
+  mcpSource?: McpSkillSource;
   // Override user-skills directory.
   userDir?: string;
   // Read-only packaged directory skills; user and installed skills take precedence.
@@ -333,6 +338,7 @@ export interface SkillStoreOptions {
 }
 
 export class SkillStore {
+  private readonly mcpSource: McpSkillSource | undefined;
   private readonly userDir: string;
   private readonly bundledDir: string | undefined;
   private pluginSkills = new Map<string, LoadedSkill>();
@@ -342,6 +348,7 @@ export class SkillStore {
   private packageDirs = new Map<string, string>();
 
   constructor(opts: SkillStoreOptions = {}) {
+    this.mcpSource = opts.mcpSource;
     this.userDir = opts.userDir ?? userSkillsDir();
     this.bundledDir = opts.bundledDir;
   }
@@ -406,6 +413,19 @@ export class SkillStore {
     const content = data.toString("utf8");
     assertTextResource(content, path);
     return { path, content, bytes: data.length };
+  }
+
+  isMcpSkillCurrent(owner: McpSkillOwner): boolean {
+    return this.mcpSource?.isCurrent(owner) === true;
+  }
+
+  isMcpSkillResource(serverId: string, uri: string): boolean {
+    return this.mcpSource?.isSkillResource(serverId, uri) === true;
+  }
+
+  async readMcpResource(owner: McpSkillOwner, path: string): Promise<SkillResourceContent> {
+    if (!this.mcpSource) throw new Error("Skill transport is unavailable");
+    return this.mcpSource.readResource(owner, path);
   }
 
   // The SKILL.md of an installed package, realpath-contained in its directory; null when absent or escaping.
@@ -490,6 +510,7 @@ export class SkillStore {
     }
     return [
       ...byName.values(),
+      ...this.mcpSource?.listCatalogSync() ?? [],
       ...[...this.pluginSkills.values()].map((skill) => ({
         name: skill.name,
         description: skill.description,
@@ -505,6 +526,7 @@ export class SkillStore {
   }
 
   async load(name: string): Promise<LoadedSkill | null> {
+    if (parseMcpSkillSelector(name)) return this.mcpSource?.load(name) ?? null;
     if (AGENT_PLUGIN_SKILL_SELECTOR_ALLOWLIST.test(name)) {
       const selector = parseAgentPluginSkillSelector(name);
       return selector ? this.agentPluginSkills.get(name) ?? null : null;

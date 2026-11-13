@@ -29,7 +29,7 @@ const log = createLogger("mcp-governance");
 /** Exhaustive capability mapping makes new methods opt in; task management uses tools authority. */
 const CAPABILITY_METHODS = {
   tools: ["tools/list", "tools/call", "tasks/get", "tasks/cancel"],
-  resources: ["resources/list", "resources/read", "resources/templates/list"],
+  resources: ["resources/list", "resources/read", "resources/templates/list", "skills/list", "skills/get"],
   prompts: ["prompts/list", "prompts/get"],
 } satisfies Record<McpCapability, string[]>;
 

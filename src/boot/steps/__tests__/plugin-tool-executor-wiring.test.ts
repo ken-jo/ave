@@ -28,6 +28,7 @@ vi.mock("../hook-system-wiring.js", () => ({
 
 vi.mock("../../../tools/executor.js", () => ({
   ToolExecutor: class {
+    setSkillAdmissionCheck = vi.fn();
     revokePluginOperationAccount = mocks.revokePluginOperationAccount;
     executeAll = mocks.executeAll;
   },
