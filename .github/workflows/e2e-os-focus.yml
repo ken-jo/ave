@@ -8,10 +8,6 @@ on:
         description: Run the complete background suite in parallel shards instead of native focus tests
         type: boolean
         default: false
-      capture-comparison:
-        description: Compare repeated native captures on pinned source revisions
-        type: boolean
-        default: false
       keyboard-takeover-only:
         description: Run only the native keyboard takeover regression
         type: boolean
@@ -23,7 +19,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   os-focus:
-    if: github.event_name != 'workflow_dispatch' || (!inputs.background-sweep && !inputs.capture-comparison)
+    if: github.event_name != 'workflow_dispatch' || !inputs.background-sweep
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -67,87 +63,6 @@ jobs:
         with:
           name: native-os-focus-results
           path: ave/test-results
-          retention-days: 7
-
-  capture-comparison:
-    name: Capture comparison (${{ matrix.name }})
-    if: github.event_name == 'workflow_dispatch' && inputs.capture-comparison
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 12
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: main
-            ref: aa613d3dcd8f70ae1dfb8f8a8e2627fa036dfa7f
-          - name: sweep
-            ref: 47dc55c339dec9631bc0f3fd23a22d8d19c01169
-    env:
-      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
-      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
-      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ matrix.ref }}
-          path: ave
-          persist-credentials: false
-      - uses: ./ave/.github/actions/setup-bun
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          bun-version-file: ave/.bun-version
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ave/node_modules
-          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
-      - uses: ./ave/.github/actions/linux-packages
-        with:
-          packages: xvfb xauth libgtk-3-0t64 libnss3 libasound2t64 libgbm1 bubblewrap socat ripgrep zsh
-      - name: Enable the sandbox backend
-        run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -r "$knob" ] && [ "$(cat "$knob")" != "0" ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
-      - run: bun install --frozen-lockfile
-        working-directory: ave
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-      - run: node scripts/fetch-uv.mjs
-        working-directory: ave
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-      - run: bun run build
-        working-directory: ave
-        env:
-          AVE_BUILD_MINIFIER: esbuild
-      - run: bun x playwright install --with-deps chromium
-        working-directory: ave
-      - name: Measure repeated captures
-        timeout-minutes: 10
-        working-directory: ave
-        env:
-          AVE_E2E_OS_FOCUS: "0"
-          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/ave/test-results/capture-comparison/results.json
-        run: |
-          set -euo pipefail
-          task_home=$(mktemp -d "$RUNNER_TEMP/capture-comparison-home.XXXXXX")
-          mkdir -p "$task_home/tmp" test-results/capture-comparison
-          export HOME="$task_home" AVE_HOME="$task_home/.ave" TMPDIR="$task_home/tmp"
-          git rev-parse HEAD > test-results/capture-comparison/source-revision.txt
-          uname -a > test-results/capture-comparison/runner.txt
-          node -p 'JSON.stringify({versions:process.versions,arch:process.arch,platform:process.platform})' >> test-results/capture-comparison/runner.txt
-          started=$SECONDS
-          trap 'echo "$((SECONDS - started))" > test-results/capture-comparison/wall-seconds.txt' EXIT
-          xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e ui/browser-capture-native.spec.ts --repeat-each=8 --workers=1 --retries=0 --reporter=list,json --output=test-results/capture-comparison/cases
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: capture-comparison-${{ matrix.name }}
-          path: ave/test-results/capture-comparison
-          if-no-files-found: error
           retention-days: 7
 
   background-build:
