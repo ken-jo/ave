@@ -216,6 +216,14 @@
                   },
                   "permissions": {
                     "$ref": "#/definitions/mcpUiResourcePermissions"
+                  },
+                  "hostCapabilities": {
+                    "type": "array",
+                    "description": "Host bridge operations requested by this resource. Omission grants none; existing per-invocation permission checks still apply.",
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": ["serverResources", "serverTools", "message", "updateModelContext", "downloadFile", "openLinks"]
+                    }
                   }
                 }
               }

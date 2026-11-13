@@ -25,6 +25,7 @@ The rule that ties them together is **declared policy, served content**: the man
   "uiResources": [
     {
       "uri": "ui://my-plugin/report",          // authority MUST equal your plugin id
+      "hostCapabilities": ["serverTools"],     // omit or [] for a display-only card
       "csp": {
         "connectDomains": ["https://api.example.com"],  // fetch/XHR/WebSocket → connect-src
         "resourceDomains": ["https://cdn.example.com"], // img/script/style/font/media
@@ -39,6 +40,39 @@ The rule that ties them together is **declared policy, served content**: the man
 - **`uri`** — `ui://<your-plugin-id>/<path>`. The authority must be your own plugin id; the host re-checks this fail-closed at serve time. You cannot serve into another plugin's namespace.
 - **`csp`** — domain *buckets*, not CSP directive names. Main **computes** the Content-Security-Policy response header from these; you never supply a header string. Omit a bucket to allow nothing in it. **Least privilege is not advice here — it is the whole point of the field being in the manifest**: a reviewer sees exactly what your card may reach before any of your code runs.
 - **Clipboard write only.** A resource may declare `permissions: { clipboardWrite: {} }` and use `navigator.clipboard.writeText()` in response to a user action. Clipboard read is blocked and `clipboardRead` is rejected. Other declared standard resource permissions retain their existing host policy. A declaration requests access rather than guaranteeing browser availability; handle a refused write in your UI.
+
+### Declare host operations per resource
+
+Plugin resources use `uiResources[].hostCapabilities`, as in the manifest example above. Omission or an empty list grants none.
+
+| Declaration | Request enabled |
+|---|---|
+| `serverTools` | `tools/call` on the resource's own server |
+| `serverResources` | `resources/read` for `ui://` resources on that server |
+| `message` | `ui/message` |
+| `updateModelContext` | `ui/update-model-context` |
+| `downloadFile` | `ui/download-file` |
+| `openLinks` | `ui/open-link` |
+
+Initialization, `ping`, resizing and `ui/request-display-mode` remain available to display-only cards.
+
+The host intersects the declaration with its handler table and uses that same selection for capability advertisement and request-handler registration. A raw JSON-RPC request for an undeclared or unsupported operation returns method-not-found (`-32601`), before any tool invocation, conversation update, save dialog or URL opener. For external resources, unknown string entries are ignored and duplicates collapse: `["serverTools", "unknown"]` grants only `serverTools`. A value that is not an array of strings grants none, including `["serverTools", null]`. Plugin manifests reject unknown names, duplicates and malformed lists at validation.
+
+For an external server, put the declaration on the `resources/read` content item's `_meta.ui`, beside `csp` and `permissions`:
+
+```json
+{
+  "_meta": {
+    "ui": {
+      "ai.agent-connector.ave/hostCapabilities": ["serverTools", "message"]
+    }
+  }
+}
+```
+
+This is an Ave extension. The [stable `2026-01-26` specification](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx) and the [current draft](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/draft/apps.mdx) define `_meta.ui.permissions` for browser features and `McpUiHostCapabilities` for host-to-view negotiation; neither defines this per-resource host-operation declaration or requires granting all operations when it is absent. Browser permissions do not grant host operations. Tool-result metadata and served plugin HTML cannot widen the resource declaration; plugin policy comes from `uiResources[]` in the reviewed manifest.
+
+A declaration only makes the request handler available. Tool visibility, server ownership and all invocation decisions still follow the [permission decision tree](../architecture/permission-decision-tree.md) in its existing order. Panel tools with `readOnlyHint: true` follow its read-only edge under the [read-only tool conditions](#declare-a-read-only-tool) below; other panel calls retain ordinary approval. `message` covers both popup notifications and conversation text, each with its existing delivery policy.
 
 ### Sidebar and floating placement
 

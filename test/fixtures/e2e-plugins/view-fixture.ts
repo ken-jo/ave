@@ -20,11 +20,15 @@ const VIEW_FIXTURE_MANIFEST = {
     description: "Return a marker that proves the host dispatched this call into the plugin.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     _meta: { ui: { visibility: ["model", "app"] } },
+  }, {
+    name: "viewfixture_read", description: "Read passive fixture state",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true }, _meta: { ui: { visibility: ["app"] } },
   }, ...["viewfixture_status", "viewfixture_login", "viewfixture_set_auth", "viewfixture_open_dock"].map((name) => ({
     name, description: "Fixture authentication and dock controls", inputSchema: { type: "object", properties: { authenticated: { type: "boolean" } }, additionalProperties: false },
     _meta: { ui: { visibility: ["app"] } },
   }))],
-  uiResources: [{ uri: "ui://viewfixture/control" }],
+  uiResources: [{ uri: "ui://viewfixture/control", hostCapabilities: ["message", "serverTools"] }],
   ui: [{
     id: "viewfixture_control",
     slot: "sidebar",
@@ -66,6 +70,7 @@ const result = await request('ui/initialize', {protocolVersion:'2026-01-26', app
 applyHostContext(result.hostContext);
 parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}}, '*');
 document.getElementById('status').textContent = 'Standard app ready';
+window.fixtureRead = () => request('tools/call', {name:'viewfixture_read', arguments:{}});
 document.getElementById('draft').onclick = async () => {
   await request('ui/message', {role:'user', content:[{type:'text',text:'Review the selected fixture item'}]});
   document.getElementById('status').textContent = 'Draft staged';
@@ -77,6 +82,7 @@ const VIEW_FIXTURE_FILES: Readonly<Record<string, string>> = {
   let authenticated = true;
   return {
     handlers: {
+      viewfixture_read: async () => ({ state: "passive-read-completed" }),
       viewfixture_status: async () => ({ authenticated, account: "fixture-account" }),
       viewfixture_login: async () => ({ authenticated: (authenticated = true) }),
       viewfixture_set_auth: async ({ authenticated: next }) => ({ authenticated: (authenticated = next) }),

@@ -98,7 +98,7 @@ export type ElectronOptions = {
   onboardingCompleted: boolean;
   seedTogglePlugin: boolean;
   seedAlertPlugin: boolean;
-  seedPermissionMode: "default" | "allow" | undefined;
+  seedPermissionMode: "strict" | "default" | "allow" | undefined;
   seedViewFixturePlugin: boolean;
   seedApiKey: boolean;
   /** Raw persisted provider id, including an id a newer build has retired. */

@@ -5677,6 +5677,17 @@
           "number"
         ]
       },
+      "McpUiHostCapability": {
+        "enum": [
+          "serverResources",
+          "serverTools",
+          "message",
+          "updateModelContext",
+          "downloadFile",
+          "openLinks"
+        ],
+        "type": "string"
+      },
       "PluginAccessSpec": {
         "properties": {
           "plugins": {
@@ -6482,6 +6493,12 @@
               }
             },
             "type": "object"
+          },
+          "hostCapabilities": {
+            "items": {
+              "$ref": "#/$defs/types/McpUiHostCapability"
+            },
+            "type": "array"
           },
           "permissions": {
             "properties": {

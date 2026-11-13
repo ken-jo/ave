@@ -5,7 +5,7 @@ import { build } from "esbuild";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { launchElectron } from "./seeded-electron.js";
+import { launchElectron, quitElectron } from "./seeded-electron.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "../../..");
@@ -49,9 +49,10 @@ test.beforeAll(async () => {
   });
 });
 
-test("real <webview> completes ui/initialize with an UNMODIFIED ext-apps App", async () => {
+for (const capabilityCase of ["undeclared", "declared", "over-declared"] as const) {
+test(`real <webview> initializes and enforces ${capabilityCase} resource host capabilities`, async () => {
   const app = await launchElectron({
-    args: [MAIN_OUT, "--no-sandbox"],
+    args: [MAIN_OUT, "--no-sandbox", `--capability-case=${capabilityCase}`],
     timeout: 30_000,
   });
 
@@ -80,11 +81,16 @@ test("real <webview> completes ui/initialize with an UNMODIFIED ext-apps App", a
     // Host initialization proves the unmodified guest accepted the response across the full transport.
     await waitFor("HANDSHAKE_OK");
     await waitFor("INNER_CONNECTED");
+    await waitFor(`REQUEST_RESULT:tools/call:${capabilityCase === "undeclared" ? "-32601" : "ok"}`);
+    await waitFor("REQUEST_RESULT:ui/message:-32601");
+    await waitFor("REQUEST_RESULT:sampling/createMessage:-32601");
+    expect(lines.filter((line) => line.includes("TOOL_CALLED"))).toHaveLength(capabilityCase === "undeclared" ? 0 : 1);
 
     expect(lines.join("\n")).not.toContain("INNER_CONNECT_FAILED");
     expect(lines.join("\n")).not.toContain("BRIDGE_CONNECT_FAILED");
     expect(lines.some((l) => l.includes("PARENT_IS_SELF:true"))).toBe(false);
   } finally {
-    await app.close().catch(() => {});
+    await quitElectron(app);
   }
 });
+}
