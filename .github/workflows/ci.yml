@@ -258,6 +258,7 @@ jobs:
       electron_config_cache: ${{ github.workspace }}/.cache/electron
       BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
       AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.cache/ms-playwright
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -294,6 +295,11 @@ jobs:
         with:
           name: ci-build
           path: ave/dist
+      - name: Prepare full background runtime assets
+        working-directory: ave
+        run: |
+          bun run build:icons
+          bun x playwright install --with-deps chromium
       - name: Run every background UI spec without retries
         working-directory: ave
         env:
@@ -307,6 +313,7 @@ jobs:
           task_home=$(mktemp -d "$RUNNER_TEMP/background-full-home.XXXXXX")
           mkdir -p "$task_home/tmp"
           export HOME="$task_home" AVE_HOME="$task_home/.ave" TMPDIR="$task_home/tmp"
+          bun x playwright test --config config/playwright.config.ts --project=background --retries=0 --list --reporter=json > test-results/background-full/collected.json
           xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e --retries=0 --reporter=list,json --output=test-results/background-full/cases 2>&1 | tee test-results/background-full/console.log
       - name: Upload full background UI evidence
         if: always()

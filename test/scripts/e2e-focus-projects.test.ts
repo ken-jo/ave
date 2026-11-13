@@ -76,6 +76,11 @@ describe("native focus test selection", () => {
     const audit = workflow.jobs["background-ui-audit"];
     expect(audit.needs).toBe("build");
     expect(audit["runs-on"]).toBe("ubuntu-24.04-arm");
+    expect(audit.env.PLAYWRIGHT_BROWSERS_PATH).toContain("/.cache/ms-playwright");
+    const prepare = audit.steps.findIndex((entry: { name?: string }) => entry.name === "Prepare full background runtime assets");
+    expect(audit.steps[prepare].run).toContain("bun run build:icons");
+    expect(audit.steps[prepare].run).toContain("bun x playwright install --with-deps chromium");
+    expect(prepare).toBeLessThan(audit.steps.findIndex((entry: { name?: string }) => entry.name === "Run every background UI spec without retries"));
     const step = audit.steps.find((entry: { name?: string }) => entry.name === "Run every background UI spec without retries");
     expect(step.env.AVE_E2E_OS_FOCUS).toBe("0");
     expect(step.run).toContain("bun run test:ui-e2e --retries=0 --reporter=list,json");
