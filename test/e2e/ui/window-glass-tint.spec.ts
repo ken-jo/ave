@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SCHEMES } from '../../../src/ui/renderer/theme/schemes/index.js';
 import { relativeLuminance } from '../../contrast-helpers.js';
+import { normalizeCssColor } from '../../color-helpers.js';
 import { openInlineSettings } from './inline-settings.js';
 import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from './seeded-electron.js';
 
@@ -81,8 +82,19 @@ test('glass tint spans bare material to opaque and preserves opaque safety surfa
         mode: shell, [shell === 'dark' ? 'darkScheme' : 'lightScheme']: id, glassTint: 40,
       } }), scheme);
       await expect(page.locator('html')).toHaveAttribute('data-scheme', scheme.id);
-      const foreground = await card.evaluate(element => getComputedStyle(element).color);
-      // Scheme changes animate control colours; measure the settled label, not the transition.
+      const foreground = await card.evaluate(element => {
+        const probe = document.createElement('span');
+        // Native material promotes this inherited token to full-strength foreground.
+        probe.style.color = 'hsl(var(--muted-foreground))';
+        probe.style.transition = 'none';
+        element.appendChild(probe);
+        try {
+          return getComputedStyle(probe).color;
+        } finally {
+          probe.remove();
+        }
+      });
+      // Scheme changes animate control colours; wait for the exact semantic token.
       await expect(page.getByTestId('sidebar-search').locator('svg')).toHaveCSS('color', foreground);
       await expect(page.getByTestId('sidebar-collapse-toggle').locator('svg')).toHaveCSS('color', foreground);
       const colors = await page.evaluate(() => {
@@ -131,20 +143,40 @@ test('glass tint spans bare material to opaque and preserves opaque safety surfa
       await page.getByTestId('sidebar-session-e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee').click();
       const selectedRow = page.getByTestId('sidebar-row-session-e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee');
       await expect(selectedRow).toHaveAttribute('aria-selected', 'true');
+      const expectedSelectedBackground = await card.evaluate((element, material) => {
+        const probe = document.createElement('span');
+        // Material needs an opaque selection; an opaque card supports the semantic wash.
+        probe.style.backgroundColor = material ? 'hsl(var(--muted))' : 'hsl(var(--primary) / var(--opacity-subtle))';
+        probe.style.transition = 'none';
+        element.appendChild(probe);
+        try {
+          return getComputedStyle(probe).backgroundColor;
+        } finally {
+          probe.remove();
+        }
+      }, glass);
+      const expectedSelectedChannels = normalizeCssColor(expectedSelectedBackground);
+      await expect.poll(async () => normalizeCssColor(await selectedRow.evaluate(element =>
+        getComputedStyle(element).backgroundColor))).toEqual(expectedSelectedChannels);
       const selectedPaint = () => selectedRow.evaluate(element => {
         const title = element.querySelector('[data-testid^="sidebar-conversation-title-"]');
         if (!title) throw new Error('Selected conversation title missing');
         return {
-          background: getComputedStyle(element).backgroundColor.match(/[\d.]+/g)?.map(Number) ?? [],
-          foreground: getComputedStyle(title).color.match(/[\d.]+/g)?.map(Number) ?? [],
+          background: getComputedStyle(element).backgroundColor,
+          foreground: getComputedStyle(title).color,
         };
       });
-      await expect.poll(async () => (await selectedPaint()).background[3] ?? 1).toBe(1);
-      const selected = await selectedPaint();
-      expect(selected.background).toHaveLength(3);
-      expect(selected.foreground).toHaveLength(3);
-      const selectedBackground = relativeLuminance(selected.background.map(channel => channel / 255) as [number, number, number]);
-      const selectedForeground = relativeLuminance(selected.foreground.map(channel => channel / 255) as [number, number, number]);
+      const selectedCss = await selectedPaint();
+      const selected = {
+        background: normalizeCssColor(selectedCss.background),
+        foreground: normalizeCssColor(selectedCss.foreground),
+      };
+      expect(selected.background).toEqual(expectedSelectedChannels);
+      expect(selected.foreground[3]).toBe(1);
+      const selectedAlpha = selected.background[3] ?? 1;
+      const selectedBackground = relativeLuminance(selected.background.slice(0, 3).map((channel, index) =>
+        (channel * selectedAlpha + colors.background[index] * (1 - selectedAlpha)) / 255) as [number, number, number]);
+      const selectedForeground = relativeLuminance(selected.foreground.slice(0, 3).map(channel => channel / 255) as [number, number, number]);
       const selectedRatio = (Math.max(selectedForeground, selectedBackground) + 0.05) / (Math.min(selectedForeground, selectedBackground) + 0.05);
       expect(selectedRatio, `${scheme.id}: selected conversation`).toBeGreaterThanOrEqual(4.5);
       contrasts.push({ scheme: scheme.id, shell: scheme.shell, tint: 40, kind: 'body', ratio: selectedRatio });

@@ -1780,20 +1780,24 @@ it.each(["full-page", "ref", "region"] as const)("captures a parked %s page with
     try {
       const { actions, approve, registry, tab, layoutOps, cdp, guest, navigate } = adapterFixture({ agent: true });
       cdp.nodes = page([ax("button", "button", "Capture target", { backendDOMNodeId: 5 })]);
+      let readbackStarted = 0;
+      const snapshot = vi.fn(async () => {
+        readbackStarted = cdp.calls.length;
+        if (change === "document") navigate("https://a.example/replaced");
+        if (change === "takeover") registry.userInput(guest.id, { type: "keyDown" });
+        if (change === "debugger") guest.debugger.emit("detach", {}, "target closed");
+        return { data: png.toString("base64") };
+      });
+      const rawCopy = vi.fn(async () => { throw new Error("Raw copy is unavailable"); });
+      Object.assign(guest, { capturePage: rawCopy });
       const send = cdp.send.bind(cdp);
       vi.spyOn(cdp, "send").mockImplementation(async (method, params) => {
         const result = await send(method, params);
         if (method === "Page.getLayoutMetrics") return { ...result as object, cssContentSize: { x: 0, y: 0, width: 1024, height: 768 } };
         if (method === "DOM.getBoxModel") return { model: { border: [10, 10, 30, 10, 30, 20, 10, 20] } };
+        if (method === "Page.captureScreenshot") return snapshot();
         return result;
       });
-      const capturePage = vi.fn(async () => {
-        if (change === "document") navigate("https://a.example/replaced");
-        if (change === "takeover") registry.userInput(guest.id, { type: "keyDown" });
-        if (change === "debugger") guest.debugger.emit("detach", {}, "target closed");
-        return { isEmpty: () => false, getSize: () => ({ width: 1024, height: 768 }), toPNG: () => png };
-      });
-      Object.assign(guest, { capturePage });
       const live = await approve("browser_screenshot");
       const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
       if (!ref) throw new Error("Capture target ref is unavailable");
@@ -1803,10 +1807,11 @@ it.each(["full-page", "ref", "region"] as const)("captures a parked %s page with
       else await expect(pending).rejects.toMatchObject({ code: change === "document" ? "document-changed" : change === "debugger" ? "debugger-unavailable" : "cancelled" });
       if (change === "debugger") {
         expect(guest.debugger.isAttached()).toBe(true);
-        expect(cdp.calls.filter(call => call.method === "Runtime.callFunctionOn"
-          && (call.params?.arguments as Array<{ value: unknown }> | undefined)?.[2]?.value === false)).toEqual([]);
+        expect(cdp.calls.slice(readbackStarted).filter(call => call.method === "Runtime.callFunctionOn")).toEqual([]);
       }
-      expect(capturePage).toHaveBeenCalledTimes(1);
+      expect(snapshot).toHaveBeenCalledTimes(1);
+      expect(cdp.calls.filter(call => call.method === "Page.captureScreenshot")).toHaveLength(1);
+      expect(rawCopy).not.toHaveBeenCalled();
       expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);
       expect(layoutOps).toContain("wake");
       expect(layoutOps.filter(op => ["select", "focus", "capture-focus"].includes(op))).toEqual([]);

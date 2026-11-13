@@ -1,3 +1,4 @@
+import { withPageWindow } from "./renderer-events.js";
 import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
@@ -28,7 +29,7 @@ test('approval cards return from a browser surface without an in-app notificatio
   const browser = mainWindow.locator('[data-surface-kind="browser"]');
   await expect(browser).toBeVisible();
   // Target the page's own native window; background rendering does not imply OS visibility.
-  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
+  await withPageWindow(app, mainWindow,(win, sid) => {
     win.webContents.send('ave:approval:request', {
       id: 'approval-notice-e2e', sessionId: sid, category: 'tool', kind: 'tool',
       toolName: 'write_file', toolCategory: 'write', source: 'builtin', trustOrigin: 'user-keyboard',
@@ -62,7 +63,7 @@ test('approval dock floats over the route without changing its layout', async ({
 }) => {
   // Session ownership determines composer blocking and focus; sessionless requests belong in the lane.
   const sessionId = await currentSessionId(mainWindow);
-  await setWindowSize(app, 460, 841);
+  await setWindowSize(app, 460, 841, mainWindow);
 
   // At 460px a sidebar nobody chose a state for folds to the rail once the width is measured; wait for that, then unfold it
   // as the user would, so the read cannot race the fold.
@@ -100,7 +101,7 @@ test('approval dock floats over the route without changing its layout', async ({
     if (active instanceof HTMLElement) active.blur();
   });
 
-  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
+  await withPageWindow(app, mainWindow,(win, sid) => {
     win.webContents.send('ave:approval:request', {
       id: 'approval-dock-e2e',
       sessionId: sid,
@@ -258,7 +259,7 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(dock).toBeVisible();
 
   // Approval floats above the composer and takes precedence over simultaneous questions.
-  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
+  await withPageWindow(app, mainWindow,(win, sid) => {
     win.webContents.send('ave:ask-user-question:request', {
       id: 'approval-dock-question-overlap-e2e',
       sessionId: sid,
@@ -297,7 +298,7 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(composerDock).not.toHaveAttribute('inert', '');
   await expect(composerDock).not.toHaveAttribute('aria-hidden', 'true');
 
-  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
+  await withPageWindow(app, mainWindow,(win, sid) => {
     win.webContents.send('ave:approval:request', {
       id: 'approval-dock-layout-continuation-e2e',
       sessionId: sid,
@@ -321,7 +322,7 @@ test('approval dock floats over the route without changing its layout', async ({
   // At minimum height, scroll only the card body while header and decisions remain visible.
   await openWorkBoard();
   await expect(workBoardPanel).toBeVisible();
-  await setWindowSize(app, 460, 640);
+  await setWindowSize(app, 460, 640, mainWindow);
   const reviewDetails = dock.getByTestId(TEST_IDS.approvalReviewDetails);
   await reviewDetails.locator('summary').click();
   await expect(reviewDetails).toHaveAttribute('open', '');
@@ -383,7 +384,7 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(dock).toHaveCount(0);
 
   // Preserve native Space activation alongside directional focus movement.
-  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
+  await withPageWindow(app, mainWindow,(win, sid) => {
     win.webContents.send('ave:approval:request', {
       id: 'approval-dock-space-e2e',
       sessionId: sid,
@@ -417,12 +418,12 @@ test('an ask that names no conversation is a lane card that covers no composer',
   mainWindow,
 }) => {
   // Sessionless requests belong to the focused pane lane and must not block any composer.
-  await setWindowSize(app, 460, 841);
+  await setWindowSize(app, 460, 841, mainWindow);
 
   const composerDock = mainWindow.locator('[data-composer-placement]').first();
   await expect(composerDock).toBeVisible();
 
-  await (await app.browserWindow(mainWindow)).evaluate((win) => {
+  await withPageWindow(app, mainWindow,(win) => {
     win.webContents.send('ave:approval:request', {
       id: 'approval-lane-unattributed-e2e',
       category: 'tool',

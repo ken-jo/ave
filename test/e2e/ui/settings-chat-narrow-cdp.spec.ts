@@ -1,42 +1,32 @@
 import { test, expect } from './fixtures.js';
 import { closeInlineSettings } from './inline-settings.js';
 import { setWindowSize } from './seeded-electron.js';
+import { sendRendererEvent, withPageWindow } from './renderer-events.js';
 import { TEST_IDS, execModeTestId } from "../../../src/shared/test-ids.js";
 
 type WindowBounds = { x: number; y: number; width: number; height: number };
 
 async function readMainWindowBounds(
   app: import('@playwright/test').ElectronApplication,
+  page: import('@playwright/test').Page,
 ): Promise<WindowBounds> {
-  return app.evaluate(({ BrowserWindow }) => {
-    const windows = BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed() && window.isVisible());
-    const target = windows.sort((a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1])[0];
-    if (!target) throw new Error('main window is unavailable');
-    return target.getBounds();
-  });
+  return withPageWindow(app, page, (window) => window.getBounds());
 }
 
 async function restoreMainWindowBounds(
   app: import('@playwright/test').ElectronApplication,
+  page: import('@playwright/test').Page,
   bounds: WindowBounds,
 ): Promise<void> {
-  await app.evaluate(({ BrowserWindow }, original) => {
-    const windows = BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed() && window.isVisible());
-    const target = windows.sort((a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1])[0];
-    target?.setBounds(original);
-  }, bounds);
+  await withPageWindow(app, page, (window, original) => window.setBounds(original), bounds);
 }
 
 async function activateSettingsWithoutResize(
   app: import('@playwright/test').ElectronApplication,
+  page: import('@playwright/test').Page,
   settingsTab: string,
 ): Promise<void> {
-  await app.evaluate(({ BrowserWindow }, tab) => {
-    const windows = BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed() && window.isVisible());
-    const target = windows.sort((a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1])[0];
-    if (!target) throw new Error('main window is unavailable');
-    target.webContents.send('ave:view:activate', { viewKey: 'settings', settingsTab: tab });
-  }, settingsTab);
+  await sendRendererEvent(app, page, 'ave:view:activate', { viewKey: 'settings', settingsTab });
 }
 
 async function readNarrowLayoutMetrics(page: import('@playwright/test').Page) {
@@ -257,14 +247,14 @@ async function readSwitchAppearanceViaCdp(
 }
 
 test('A narrow window opens Settings as a two-depth list without a forced resize (CDP)', async ({ app, mainWindow }) => {
-  const originalBounds = await readMainWindowBounds(app);
+  const originalBounds = await readMainWindowBounds(app, mainWindow);
   try {
-    await setWindowSize(app, 600, 820);
+    await setWindowSize(app, 600, 820, mainWindow);
     await expect.poll(() => mainWindow.evaluate(() => window.innerWidth), { timeout: 10_000 }).toBeLessThan(640);
 
-    const narrowBounds = await readMainWindowBounds(app);
-    await activateSettingsWithoutResize(app, 'llm');
-    expect(await readMainWindowBounds(app)).toEqual(narrowBounds);
+    const narrowBounds = await readMainWindowBounds(app, mainWindow);
+    await activateSettingsWithoutResize(app, mainWindow, 'llm');
+    expect(await readMainWindowBounds(app, mainWindow)).toEqual(narrowBounds);
     const root = mainWindow.locator('[data-settings-layout]');
     await expect.poll(() => root.getAttribute('data-settings-layout'), { timeout: 5_000 }).toBe('narrow');
     await expect(mainWindow.getByTestId('settings-mobile-list')).toBeVisible();
@@ -283,19 +273,16 @@ test('A narrow window opens Settings as a two-depth list without a forced resize
     await expect(root).toHaveCount(0);
   } finally {
     if (await mainWindow.locator('[data-settings-layout]').count()) {
-      await app.evaluate(({ BrowserWindow }) => {
-        const target = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
-        target?.webContents.send('ave:view:activate', { viewKey: 'home' });
-      });
+      await sendRendererEvent(app, mainWindow, 'ave:view:activate', { viewKey: 'home' });
     }
-    await restoreMainWindowBounds(app, originalBounds);
+    await restoreMainWindowBounds(app, mainWindow, originalBounds);
   }
 });
 
 test('Settings stay horizontally contained on every narrow tab (CDP)', async ({ app, mainWindow }) => {
   test.slow();
 
-  await setWindowSize(app, 400, 820);
+  await setWindowSize(app, 400, 820, mainWindow);
   const sidebarToggle = mainWindow.getByTestId("sidebar-collapse-toggle");
   // An unchosen sidebar folds to the rail once the 400px width is measured, so one early read can see it still expanded and
   // the click would then unfold it again; fold it until the rail holds instead of deciding from a single read.
@@ -303,7 +290,7 @@ test('Settings stay horizontally contained on every narrow tab (CDP)', async ({ 
     if (await sidebarToggle.getAttribute("aria-pressed") === "true") await sidebarToggle.click();
     return sidebarToggle.getAttribute("aria-pressed");
   }).toBe("false");
-  await activateSettingsWithoutResize(app, 'llm');
+  await activateSettingsWithoutResize(app, mainWindow, 'llm');
   await expect(mainWindow.getByTestId(TEST_IDS.viewPathBack)).toBeEnabled();
 
   const root = mainWindow.locator('[data-settings-layout]');

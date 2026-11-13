@@ -112,18 +112,24 @@ async function capture(options: BrowserScreenshotOptions, zoom = 1): Promise<Cap
   const lease = browserTabRegistry.acquireControl(tab, actor);
   const live: BrowserActionTab<WebContents> = { tab, signal: tab.actions.signal, leaseId: lease.id,
     approval: { tabId, origin, documentId: tab.documentId, controlGeneration: tab.controlGeneration } };
-  const pending = new Set<string>();
+  const pending = new Map<number, { method: string; executionContextId?: number; awaitPromise?: boolean }>();
+  let nextRequestId = 0;
   const sendCommand = guest.debugger.sendCommand.bind(guest.debugger);
   const capturePage = guest.capturePage.bind(guest);
   guest.debugger.sendCommand = async (method, parameters, sessionId) => {
-    pending.add(method);
+    const requestId = ++nextRequestId;
+    pending.set(requestId, { method, ...(method === "Runtime.callFunctionOn" ? {
+      executionContextId: parameters?.executionContextId,
+      awaitPromise: parameters?.awaitPromise,
+    } : {}) });
     try { return await sendCommand(method, parameters, sessionId); }
-    finally { pending.delete(method); }
+    finally { pending.delete(requestId); }
   };
   guest.capturePage = async (rect, options) => {
-    pending.add("native-readback");
+    const requestId = ++nextRequestId;
+    pending.set(requestId, { method: "native-readback" });
     try { return await capturePage(rect, options); }
-    finally { pending.delete("native-readback"); }
+    finally { pending.delete(requestId); }
   };
   try {
     let ref: string | undefined;
@@ -156,7 +162,7 @@ async function capture(options: BrowserScreenshotOptions, zoom = 1): Promise<Cap
       bandPixelsRGB: [200, 500, 700, 980, 1200, 1460, 1700, 1940, 2200].map((y) => pixel((dimensions.width * Math.min(dimensions.height - 1, y) + Math.min(dimensions.width - 1, 700)) * 4)),
       bottomPixelRGB: pixel(offset), elementPixelsRGB: [0.25, 0.5, 0.75].map((fraction) => pixel((dimensions.width * Math.floor(dimensions.height * fraction) + Math.floor(dimensions.width / 2)) * 4)), truncated: image.truncated };
   } catch (error) {
-    console.error("Native capture failed", { pending: [...pending] });
+    console.error("Native capture failed", JSON.stringify({ pending: [...pending] }));
     throw error;
   } finally {
     guest.debugger.sendCommand = sendCommand;

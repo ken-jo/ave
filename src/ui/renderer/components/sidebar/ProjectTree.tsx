@@ -234,11 +234,9 @@ function SessionRow({
       style={treeIndentStyle(tree.level)}
     >
       <TreeIndentGuides guides={tree.guides} />
-      {/* The row's content, apart from its guides: an archived row dims only this, so the lines of the rows around it that
-          pass through it keep their contrast. Archived rows stay READABLE. Dimming them to the point of illegibility would
-          make the archive a place things go to be lost, which is what delete is for. */}
+      {/* Muted ink keeps archived rows distinct without reducing the scheme's text contrast. Guides retain their own ink. */}
       <div
-        className={`ave-sidebar-label flex min-w-0 flex-1 items-center ${archived ? "opacity-70" : ""}`}
+        className="ave-sidebar-label flex min-w-0 flex-1 items-center"
         data-testid={`sidebar-row-content-${session.id}`}
       >
       {/* ── Leading slot. One 14px square that holds the row's KIND at rest and
@@ -367,7 +365,7 @@ function SessionRow({
           </button>
         ) : null}
       {time ? (
-        <span className="ave-sidebar-label shrink-0 pr-1 text-tiny text-muted-foreground/(--opacity-intense) group-hover:hidden group-focus-within:hidden">
+        <span className="ave-sidebar-label shrink-0 pr-1 text-tiny text-muted-foreground group-hover:hidden group-focus-within:hidden">
           {time}
         </span>
       ) : null}

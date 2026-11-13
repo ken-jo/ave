@@ -1314,7 +1314,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     fullPageTiling: live.tab.targetKind === "embedded",
     restoreCaptureScroll: async (position) => {
       if (guest.isDestroyed() || live.tab.guest !== guest || live.tab.documentId !== captureDocumentId || live.tab.controlGeneration !== captureControlGeneration) return;
-      try { await session.send("Runtime.callFunctionOn", captureScrollParameters(position, false)); }
+      try { await session.send("Runtime.callFunctionOn", captureScrollParameters(position)); }
       catch (error) { if (!captureContextGone(error)) throw error; }
     },
     clearDeviceMetrics: session.clearDeviceMetrics,
@@ -1690,7 +1690,7 @@ export function createBrowserPageActions(
             target.assertCurrent?.(false);
             if (capturePixelRatioForGuest(guest) !== pixelRatio) throw new BrowserActionError("screenshot-unavailable", "the viewport changed during capture");
           };
-          return captureScreenshot({ ...target, captureViewport: () => captureBrowserViewport(guest, assertCaptureCurrent, pixelRatio) }, operation, options ?? {}, browserRefs, pixelRatio);
+          return captureScreenshot({ ...target, captureViewport: () => captureBrowserViewport(guest, assertCaptureCurrent, pixelRatio, target.cdp) }, operation, options ?? {}, browserRefs, pixelRatio);
         });
       });
     },

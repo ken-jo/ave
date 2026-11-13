@@ -1,10 +1,11 @@
+import { sendRendererEvent } from "./renderer-events.js";
 import { test, expect } from "./fixtures";
 import { type ElectronApplication, type Locator, type Page } from "playwright";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { setWindowSize, buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
+import { setWindowSize, buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron, quitElectron } from "./seeded-electron";
 import type { AgentSpawnEvent } from "../../../src/shared/subagent-events.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
 import { FONT_SIZE_SCALE_VALUES } from "../../../src/shared/appearance-font.js";
@@ -32,32 +33,27 @@ test.describe("workspace rail UX redesign", () => {
   let workspaceDir: string;
 
   async function launch() {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      app = await launchElectron({
-        args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
-        env: buildIsolatedElectronEnv({
-          HOME: tempHome,
-          USERPROFILE: tempHome,
-          AVE_HOME: resolve(tempHome, ".ave"),
-          AVE_DEV: "1",
-          AVE_E2E: "1",
-          AVE_MAIN_ENTRY: MAIN_ENTRY,
-          NODE_ENV: "test",
-          ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
-        }),
-        timeout: 30_000,
-      });
-      try {
-        page = await app.firstWindow();
-        await page.locator('[data-testid="main-toolbar"]').first().waitFor({ state: "visible", timeout: 60_000 });
-        return;
-      } catch (err) {
-        lastError = err;
-        await app?.close().catch(() => {});
-      }
+    app = await launchElectron({
+      args: [MAIN_ENTRY, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
+      env: buildIsolatedElectronEnv({
+        HOME: tempHome,
+        USERPROFILE: tempHome,
+        AVE_HOME: resolve(tempHome, ".ave"),
+        AVE_DEV: "1",
+        AVE_E2E: "1",
+        AVE_MAIN_ENTRY: MAIN_ENTRY,
+        NODE_ENV: "test",
+        ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
+      }),
+      timeout: 30_000,
+    });
+    try {
+      page = await app.firstWindow();
+      await page.locator('[data-testid="main-toolbar"]').first().waitFor({ state: "visible", timeout: 60_000 });
+    } catch (error) {
+      await quitElectron(app);
+      throw error;
     }
-    throw lastError instanceof Error ? lastError : new Error("Electron launch failed");
   }
 
   test.beforeEach(async () => {
@@ -75,7 +71,7 @@ test.describe("workspace rail UX redesign", () => {
   });
 
   test.afterEach(async () => {
-    await app?.close().catch(() => {});
+    if (app) await quitElectron(app);
     if (userDataDir) rmSync(userDataDir, CLEANUP_RM_OPTIONS);
     if (tempHome) rmSync(tempHome, CLEANUP_RM_OPTIONS);
   });
@@ -169,7 +165,7 @@ test.describe("workspace rail UX redesign", () => {
     await expect.poll(async () => tree.evaluate((el) => (el as HTMLElement).style.width)).not.toBe(before);
     const afterResize = await tree.evaluate((el) => (el as HTMLElement).style.width);
 
-    await app.close();
+    await quitElectron(app);
     await launch();
     await setWindowSize(app, 1400, 840);
     // The window layout restores the open side panel at its widened width, on its empty landing: content tabs are not
@@ -189,7 +185,7 @@ test.describe("workspace rail UX redesign", () => {
   // on the side panel's empty landing.
   test("browser: visited pages are searchable on the landing and a browser tab has a single address bar", async () => {
     // Local artifacts provide distinct visited rows without network requests.
-    await app.close();
+    await quitElectron(app);
     const browserSessionId = "b2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
     const sessionsDir = resolve(tempHome, ".ave", "sessions");
     mkdirSync(sessionsDir, { recursive: true });
@@ -267,11 +263,7 @@ test.describe("workspace rail UX redesign", () => {
       }).aveApi.chatSessions()).current,
     );
     const sendSpawn = async (event: Omit<AgentSpawnEvent, "parentSessionId">): Promise<void> => {
-      await app.evaluate(({ BrowserWindow }, ev) => {
-        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-        if (!win) return;
-        win.webContents.send("ave:agent-spawn:event", ev);
-      }, { ...event, parentSessionId });
+      await sendRendererEvent(app, page, "ave:agent-spawn:event", { ...event, parentSessionId });
     };
 
     const CHILD = "e2e-child-session";

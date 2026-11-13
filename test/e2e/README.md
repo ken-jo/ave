@@ -63,25 +63,38 @@ and popup focus coverage separately from the default suite.
 ## Manual full background sweep
 
 The registered workflow also accepts an explicit background sweep. This manual
-selection skips its native-focus job and builds the app once for 32 independent
-background shards on the existing Linux runner. These background jobs are not
-part of required CI and never run on a push, pull request or schedule:
+selection skips its native-focus job and builds the app once for 96 ordinary
+background shards plus generated partitions for long independent cases on the
+existing Linux runner. These background jobs are not part of required CI and
+never run on a push, pull request or schedule:
 
 ```sh
 gh workflow run e2e-os-focus.yml --repo ken-jo/ave --ref <branch> -f background-sweep=true
 ```
 
-Each shard retains the default single worker and within-file ordering, with
-retries disabled. Its test step has a ten-minute budget and its job a twelve-minute
-budget; actual duration and completeness must be checked from the first run.
+The build collects the full suite before [the planner](../../scripts/plan-background-e2e-shards.mjs)
+creates exact-title lists from the current cases. Only the planner's explicitly
+named files are partitioned within a file: each case creates and closes its own
+application. Ordinary shards exclude those files, preserving shared application
+lifetime everywhere else. Every partition retains one worker, original case
+order and zero retries; global parallel execution within files stays disabled.
+
+The `background-ui-build` artifact includes `test-results/background-sweep-plan/`.
+Its `collection.json` holds the complete inventory, and `manifest.json` maps each
+matrix ID to its native shard or generated test list. The number of independent
+partitions grows with the collected cases rather than a fixed title inventory.
+Target a test-command wall time below eight minutes per partition,
+measured by `wall-seconds.txt` without build or setup time. The test step has a
+ten-minute budget and its job a twelve-minute budget. A timeout cap does not
+establish actual duration or complete coverage.
 One shard failing does not cancel the others. Browser binaries use a fixed
 workspace cache path so the isolated HOME does not hide them. Build artifacts
 include both the app and generated native icons.
 
-Artifacts are named `background-ui-shard-<number>`. They include `spec-results.json`
+Artifacts are named `background-ui-shard-<matrix-id>`. They include `spec-results.json`
 once collection starts, failure traces when available, and `wall-seconds.txt`
 when the test shell exits. Missing output indicates incomplete setup, execution
-or upload, rather than a successful empty shard. The report records its shard, commit,
+or upload, rather than a successful empty shard. The report records its native shard, commit,
 project, retry policy and selected cases, then atomically saves every case start
 and result grouped by spec. `pending` and `running` are incomplete cases, never
 skips or passes. Real skips retain their annotations, while runner errors stay
@@ -90,10 +103,27 @@ after the test process is interrupted; recovery requires the upload step to run.
 Use `complete` and the per-case states to distinguish a finished run from a
 snapshot with pending or running cases.
 
-Request injection uses the tested page's native window through
-[`sendRendererEvent`](ui/renderer-events.ts). Native visibility and window-list
+The report's raw `shard` is `null` for an independent test-list partition; its
+artifact name and the manifest identify that partition. Expect a report for
+every matrix ID in the manifest, including valid empty ordinary shards. Compare
+the union of case IDs against the bundled full collection: every selected case
+must occur exactly once, with the same commit and platform throughout.
+Require every report to be complete with no pending or running cases, then
+review failures, skips and runner errors separately. Complete execution alone
+does not mean the tests passed.
+
+Native actions resolve the tested page's window through
+[`withPageWindow`](ui/renderer-events.ts); request injection delegates to the same
+helper through `sendRendererEvent`. Native visibility and window-list
 order do not establish the intended recipient. Stream injection also requires
 the page explicitly, preserving its existing chat-group envelope.
+
+Forced seeded-fixture termination targets the owned process group on POSIX and
+waits for runtime pipes to close. On Windows, native tree termination requires
+the root process to remain alive. A parent exit alone does not establish
+descendant or pipe cleanup.
+Specs should use `teardownSeededElectron` instead of sending parent-only kill
+signals. Fixtures that exercise graceful shutdown retain `quitElectron`.
 
 ## Shared application lifetime
 

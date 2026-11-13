@@ -1,5 +1,6 @@
 import { TEST_OWNER } from "../../main/__tests__/routines-fixture.js";
 import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__/support/host-runtime.js";
+import { deferred } from "../../__tests__/support/deferred.js";
 import * as tracing from "../../engine/telemetry/tracing.js";
 /** Boot integration checks service shape and construction order with heavy dependencies mocked.
  * It does not verify the behavior of closures wired to those mocks. */
@@ -650,6 +651,26 @@ function bootWithWindow(
 }
 
 describe("bootstrap desktop identity registration", () => {
+  it("does not start another resource phase after cancellation during initialization", async () => {
+    const controller = new AbortController();
+    const inactiveTracing = await tracing.configureTracing({ kind: "off" }, "test");
+    const { promise, resolve } = deferred<Awaited<ReturnType<typeof tracing.configureTracing>>>();
+    const configure = vi.spyOn(tracing, "configureTracing").mockReturnValueOnce(promise);
+    const order = h.order.length;
+    const window = fakeWindow();
+    const boot = bootstrap("/tmp/ave-boot-test/project", window, () => window, "interactive", createBootHostFixture(), controller.signal);
+    const stopped = expect(boot).rejects.toMatchObject({ name: "AbortError" });
+    try {
+      controller.abort();
+      resolve(inactiveTracing);
+      await stopped;
+      expect(h.order.slice(order)).not.toContain("core");
+      expect(h.order.slice(order)).not.toContain("startPlugins");
+    } finally {
+      configure.mockRestore();
+    }
+  });
+
   it.each([true, false])("initializes the presenter before asynchronous startup when support is %s", async (supported) => {
     const failure = new Error("Startup is held before core services");
     let release!: (error: Error) => void;

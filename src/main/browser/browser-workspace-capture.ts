@@ -53,7 +53,7 @@ export class BrowserWorkspaceCapture {
           restoreCaptureScroll: async (position) => {
             const live = this.deps.liveTab(windowId, request.tabId);
             if (guest.isDestroyed() || live?.guest !== guest || live.documentGeneration !== request.documentGeneration) return;
-            try { await pageDebugger.sendCommand("Runtime.callFunctionOn", captureScrollParameters(position, false)); }
+            try { await pageDebugger.sendCommand("Runtime.callFunctionOn", captureScrollParameters(position)); }
             catch (error) { if (!captureContextGone(error)) throw error; }
           },
           clearDeviceMetrics: async () => {
@@ -83,7 +83,7 @@ export class BrowserWorkspaceCapture {
         const result = await captureBrowserPage(cdp, operation.signal, {
           ...(request.fullPage === undefined ? {} : { fullPage: request.fullPage }),
           ...(clip === undefined ? {} : { clip }),
-        }, pixelRatio, maxMs, () => captureBrowserViewport(guest, assertCurrent, pixelRatio), operation);
+        }, pixelRatio, maxMs, () => captureBrowserViewport(guest, assertCurrent, pixelRatio, cdp), operation);
         assertCurrent();
         const bytes = Buffer.from(result.data, "base64");
         const image = nativeImage.createFromBuffer(bytes);

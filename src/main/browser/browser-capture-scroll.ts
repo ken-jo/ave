@@ -1,16 +1,16 @@
 import type { BrowserCaptureScroll } from "../../shared/browser-capture.js";
 import { BrowserActionError, type CdpSession } from "./browser-action-guard.js";
 
-const CAPTURE_SCROLL = "function(x,y,paint){window.scrollTo({left:x,top:y,behavior:'instant'});const position=()=>({x:scrollX,y:scrollY});return paint?new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(position())))):position();}";
+const CAPTURE_SCROLL = "function(x,y){window.scrollTo({left:x,top:y,behavior:'instant'});return {x:scrollX,y:scrollY};}";
 
 export function captureContextGone(error: unknown): boolean {
   return error instanceof Error && /Cannot find context|Execution context was destroyed/iu.test(error.message);
 }
 
-/** The host supplies only coordinates and one frame-wait flag to a fixed isolated-world function. */
-export function captureScrollParameters(position: BrowserCaptureScroll, paint: boolean): Record<string, unknown> {
-  return { executionContextId: position.executionContextId, functionDeclaration: CAPTURE_SCROLL, returnByValue: true, awaitPromise: paint,
-    arguments: [{ value: position.x }, { value: position.y }, { value: paint }] };
+/** The fixed isolated-world function accepts only coordinates; image readback owns rendering. */
+export function captureScrollParameters(position: BrowserCaptureScroll): Record<string, unknown> {
+  return { executionContextId: position.executionContextId, functionDeclaration: CAPTURE_SCROLL, returnByValue: true, awaitPromise: false,
+    arguments: [{ value: position.x }, { value: position.y }] };
 }
 
 export async function captureScrollContext(cdp: CdpSession): Promise<number> {
@@ -22,6 +22,6 @@ export async function captureScrollContext(cdp: CdpSession): Promise<number> {
 }
 
 export async function scrollBrowserCapture(cdp: CdpSession, position: BrowserCaptureScroll): Promise<void> {
-  const result = await cdp.send("Runtime.callFunctionOn", captureScrollParameters(position, true)) as { exceptionDetails?: unknown };
+  const result = await cdp.send("Runtime.callFunctionOn", captureScrollParameters(position)) as { exceptionDetails?: unknown };
   if (result.exceptionDetails) throw new BrowserActionError("screenshot-unavailable", "the page could not scroll for capture");
 }

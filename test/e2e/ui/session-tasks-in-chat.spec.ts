@@ -1,3 +1,4 @@
+import { sendRendererEvent } from "./renderer-events.js";
 // Inject a session-owned task update and verify the panel belongs inside chat rather than an overlay.
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
@@ -28,13 +29,8 @@ test('session-tasks-panel is NOT present when no tasks exist', async ({ mainWind
 
 test('session-tasks-panel appears inside ChatView after session-tasks:changed event', async ({ app, mainWindow }) => {
   const sessionId = await currentSessionId(mainWindow);
-  await app.evaluate(({ BrowserWindow }, sid) => {
-    const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    if (!win) return false;
-    const item = { id: 'e2e-1', content: 'E2E: Write the fix', status: 'in_progress' };
-    win.webContents.send('ave:session-tasks:changed', { sessionId: sid, items: [item] });
-    return true;
-  }, sessionId);
+  const item = { id: 'e2e-1', content: 'E2E: Write the fix', status: 'in_progress' };
+  await sendRendererEvent(app, mainWindow, 'ave:session-tasks:changed', { sessionId, items: [item] });
 
   const panel = mainWindow.locator('[data-testid="session-tasks-panel"]');
   const found = await panel
@@ -86,12 +82,7 @@ test('session-tasks-panel appears inside ChatView after session-tasks:changed ev
 test('session-tasks-panel drops transient header badges and dismisses at completion', async ({ app, mainWindow }) => {
   const sessionId = await currentSessionId(mainWindow);
   const emitTasks = async (items: Array<{ id: string; content: string; status: string }>) => {
-    await app.evaluate(({ BrowserWindow }, payload) => {
-      const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-      if (!win) return false;
-      win.webContents.send('ave:session-tasks:changed', payload);
-      return true;
-    }, { sessionId, items });
+    await sendRendererEvent(app, mainWindow, 'ave:session-tasks:changed', { sessionId, items });
   };
 
   await emitTasks([{ id: 'fresh-1', content: 'fresh step', status: 'pending' }]);

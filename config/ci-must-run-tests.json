@@ -73,6 +73,7 @@
       "src/tools/__tests__/xlsx-edit-journal-open.test.ts",
       "src/tools/__tests__/xlsx-edit-skill.test.ts",
       "test/scripts/ave-home-guard-bundle.test.ts",
+      "test/scripts/e2e-xlsx-publication-barrier.test.ts",
       "test/scripts/main-bundle-budget.test.ts",
       "test/scripts/preview-document-bundle.test.ts"
     ],

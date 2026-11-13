@@ -1,3 +1,4 @@
+import { sendRendererEvent } from "./renderer-events.js";
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,11 +35,8 @@ const proofread: PackageUpdate = {
   state: 'manual',
 };
 
-async function injectUpdatesAvailable(app: ElectronApplication, updates: PackageUpdate[]): Promise<void> {
-  await app.evaluate(({ BrowserWindow }, payload) => {
-    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-    win?.webContents.send('marketplace:updates-available', payload);
-  }, updates);
+async function injectUpdatesAvailable(app: ElectronApplication, page: Page, updates: PackageUpdate[]): Promise<void> {
+  await sendRendererEvent(app, page, 'marketplace:updates-available', updates);
 }
 
 function pill(page: Page) {
@@ -49,12 +47,12 @@ test.skip(!existsSync(MAIN_ENTRY), 'dist/src/main/main.js not built; run bun run
 
 test.describe('update pill → review (design §15.6)', () => {
   test('several updates open the Installed view, and nothing installs from the pill', async ({ app, mainWindow }) => {
-    await injectUpdatesAvailable(app, [meeting, proofread]);
+    await injectUpdatesAvailable(app, mainWindow, [meeting, proofread]);
     await expect(pill(mainWindow)).toBeVisible({ timeout: 10_000 });
     await expect(pill(mainWindow)).toHaveAttribute('title', /Meeting → 1\.1\.0/);
     await expect(pill(mainWindow)).toHaveAttribute('title', /Proofread → 0\.3\.0/);
 
-    await forceWideMainWindow(app);
+    await forceWideMainWindow(app, mainWindow);
     await pill(mainWindow).click();
 
     await expect(mainWindow.getByTestId('git-marketplace')).toBeVisible({ timeout: 15_000 });
@@ -67,10 +65,10 @@ test.describe('update pill → review (design §15.6)', () => {
   });
 
   test('one update opens its package sheet', async ({ app, mainWindow }) => {
-    await injectUpdatesAvailable(app, [meeting]);
+    await injectUpdatesAvailable(app, mainWindow, [meeting]);
     await expect(pill(mainWindow)).toBeVisible({ timeout: 10_000 });
 
-    await forceWideMainWindow(app);
+    await forceWideMainWindow(app, mainWindow);
     await pill(mainWindow).click();
 
     await expect(mainWindow.getByTestId('git-marketplace:sheet')).toBeVisible({ timeout: 15_000 });
@@ -79,17 +77,17 @@ test.describe('update pill → review (design §15.6)', () => {
   });
 
   test('counts only the updates that need the user (design §18.7.5)', async ({ app, mainWindow }) => {
-    await injectUpdatesAvailable(app, [meeting, { ...proofread, state: 'applied' }]);
+    await injectUpdatesAvailable(app, mainWindow, [meeting, { ...proofread, state: 'applied' }]);
     await expect(pill(mainWindow)).toBeVisible({ timeout: 10_000 });
     await expect(pill(mainWindow)).toHaveAttribute('title', /Meeting → 1\.1\.0/);
     await expect(pill(mainWindow)).not.toHaveAttribute('title', /Proofread/);
 
-    await injectUpdatesAvailable(app, [{ ...meeting, state: 'waiting' }, { ...proofread, state: 'automatic' }]);
+    await injectUpdatesAvailable(app, mainWindow, [{ ...meeting, state: 'waiting' }, { ...proofread, state: 'automatic' }]);
     await expect(pill(mainWindow)).toHaveCount(0);
   });
 
   test('skip hides the pill and records the skipped versions', async ({ app, mainWindow }) => {
-    await injectUpdatesAvailable(app, [meeting, proofread]);
+    await injectUpdatesAvailable(app, mainWindow, [meeting, proofread]);
     await expect(pill(mainWindow)).toBeVisible({ timeout: 10_000 });
 
     await mainWindow.getByTestId('marketplace-update-skip').click();
@@ -105,9 +103,9 @@ test.describe('update pill → review (design §15.6)', () => {
       )
       .toEqual({ meeting: '1.1.0', 'skill:proofread': '0.3.0' });
 
-    await injectUpdatesAvailable(app, [meeting]);
+    await injectUpdatesAvailable(app, mainWindow, [meeting]);
     await expect(pill(mainWindow)).toHaveCount(0);
-    await injectUpdatesAvailable(app, [{ ...meeting, to: '1.2.0' }]);
+    await injectUpdatesAvailable(app, mainWindow, [{ ...meeting, to: '1.2.0' }]);
     await expect(pill(mainWindow)).toBeVisible();
   });
 });

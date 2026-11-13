@@ -365,7 +365,7 @@ export function ApprovalLaneCard({
   const remaining = Math.max(0, queue.length - 1);
   return (
     <section
-      className={`${chatSurface({ elevation: "floating" })} pointer-events-auto flex ${FLOATING_LANE_ITEM_WIDTH} max-h-[min(60dvh,28rem)] min-w-0 flex-col overflow-hidden @max-[14rem]:overflow-y-auto text-input-bar-foreground`}
+      className={`${chatSurface({ elevation: "floating" })} pointer-events-auto flex ${FLOATING_LANE_ITEM_WIDTH} max-h-[min(100%,60dvh,28rem)] min-w-0 flex-col overflow-hidden @max-[14rem]:max-h-[min(60dvh,28rem)] @max-[14rem]:overflow-y-auto text-input-bar-foreground`}
       data-testid="approval-lane-card"
       data-approval-request-id={request.id}
       data-approval-tool-name={request.toolName}

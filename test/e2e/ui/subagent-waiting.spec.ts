@@ -1,6 +1,7 @@
 import { test, expect } from "./fixtures.js";
 import type { AgentSpawnEvent } from "../../../src/shared/subagent-events.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { withPageWindow } from "./renderer-events.js";
 
 
 test("budget-suspended sub-agent renders waiting in the workspace rail", async ({
@@ -42,9 +43,7 @@ test("budget-suspended sub-agent renders waiting in the workspace rail", async (
       aveApi: { chatSessions: () => Promise<{ current: string }> };
     }).aveApi.chatSessions()).current,
   );
-  await app.evaluate(({ BrowserWindow }, injectedEvents) => {
-    const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-    if (!win) throw new Error("agent-spawn-e2e-window-missing");
+  await withPageWindow(app, mainWindow, (win, injectedEvents) => {
     for (const event of injectedEvents) {
       win.webContents.send("ave:agent-spawn:event", event);
     }

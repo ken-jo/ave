@@ -71,6 +71,8 @@ describe("ApprovalDock", () => {
     const actions = approval.querySelector<HTMLElement>('[data-testid="approval-decision-actions"]')!;
     expect(lane.classList.contains("@container")).toBe(true);
     expect(lane.classList.contains("[&>*]:shrink-0")).toBe(true);
+    expect(approval.classList.contains("max-h-[min(100%,60dvh,28rem)]")).toBe(true);
+    expect(approval.classList.contains("@max-[14rem]:max-h-[min(60dvh,28rem)]")).toBe(true);
     expect(approval.classList.contains("@max-[14rem]:overflow-y-auto")).toBe(true);
     expect(panel.classList.contains("@max-[14rem]:flex-none")).toBe(true);
     expect(body.classList.contains("@max-[14rem]:overscroll-auto")).toBe(true);

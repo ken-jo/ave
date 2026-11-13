@@ -1,3 +1,4 @@
+import { sendRendererEvent } from "./renderer-events.js";
 // Verify real approval mounting and keyboard decisions; missing wiring otherwise times out into denial.
 import { test, expect } from "@playwright/test";
 import type { ElectronApplication, Page } from "playwright";
@@ -126,10 +127,7 @@ test.describe("release check — docked approval card", () => {
     const overlay = page.getByTestId(TEST_IDS.approvalDock);
     let attempt = 0;
     await expect.poll(async () => {
-      await app.evaluate(({ BrowserWindow }, payload) => {
-        const win = BrowserWindow.getAllWindows()[0];
-        win?.webContents.send("ave:approval:request", payload);
-      }, { ...OUT_OF_DIR_REQUEST, id: `release-check-${attempt}` });
+      await sendRendererEvent(app, page, "ave:approval:request", { ...OUT_OF_DIR_REQUEST, id: `release-check-${attempt}` });
       attempt += 1;
       return overlay.count();
     }, { timeout: 10_000, intervals: [250, 500, 1_000] }).toBeGreaterThan(0);

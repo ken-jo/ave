@@ -1,3 +1,4 @@
+import { sendRendererEvent, withPageWindow } from "./renderer-events.js";
 import { expect } from '@playwright/test';
 import type { ElectronApplication, Page } from 'playwright';
 
@@ -9,13 +10,8 @@ type MainWindowBounds = { x: number; y: number; width: number; height: number };
 const originalMainWindowBounds = new WeakMap<ElectronApplication, MainWindowBounds>();
 
 // Restore saved window bounds when closing settings.
-export async function forceWideMainWindow(app: ElectronApplication): Promise<void> {
-  const originalBounds = await app.evaluate(({ BaseWindow }, size) => {
-    const wins = BaseWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible());
-    const target = wins.sort(
-      (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
-    )[0];
-    if (!target) return null;
+export async function forceWideMainWindow(app: ElectronApplication, page: Page): Promise<void> {
+  const originalBounds = await withPageWindow(app, page, (target, size) => {
     const bounds = target.getBounds();
     target.setContentSize(size.w, size.h);
     return bounds;
@@ -25,16 +21,10 @@ export async function forceWideMainWindow(app: ElectronApplication): Promise<voi
   }
 }
 
-async function restoreMainWindowBounds(app: ElectronApplication): Promise<void> {
+async function restoreMainWindowBounds(app: ElectronApplication, page: Page): Promise<void> {
   const bounds = originalMainWindowBounds.get(app);
   if (!bounds) return;
-  await app.evaluate(({ BaseWindow }, original) => {
-    const wins = BaseWindow.getAllWindows().filter((w) => !w.isDestroyed() && w.isVisible());
-    const target = wins.sort(
-      (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
-    )[0];
-    target?.setBounds(original);
-  }, bounds);
+  await withPageWindow(app, page, (target, original) => target.setBounds(original), bounds);
   originalMainWindowBounds.delete(app);
 }
 
@@ -44,17 +34,8 @@ export async function openInlineSettings(
   mainWindow: Page,
   initialTab = 'llm',
 ): Promise<Page> {
-  await forceWideMainWindow(app);
-  await app.evaluate(({ BaseWindow, webContents }, tab) => {
-    const wins = BaseWindow.getAllWindows().filter((win) => !win.isDestroyed() && win.isVisible());
-    const target = wins.sort(
-      (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
-    )[0];
-    if (!target) throw new Error('main window is unavailable');
-    const chrome = webContents.getAllWebContents().find(contents => contents === Reflect.get(target, "webContents"));
-    if (!chrome) throw new Error('main window UI is unavailable');
-    chrome.send('ave:view:activate', { viewKey: 'settings', settingsTab: tab });
-  }, initialTab);
+  await forceWideMainWindow(app, mainWindow);
+  await sendRendererEvent(app, mainWindow, 'ave:view:activate', { viewKey: 'settings', settingsTab: initialTab });
 
   // Use the layout marker for locale-independent settings readiness.
   await expect(mainWindow.locator('[data-settings-layout]')).toBeVisible({ timeout: 15_000 });
@@ -93,6 +74,6 @@ export async function closeInlineSettings(
 
     throw new Error('settings history did not reach a non-settings view within 52 back steps');
   } finally {
-    await restoreMainWindowBounds(app);
+    await restoreMainWindowBounds(app, settingsPage);
   }
 }

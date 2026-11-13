@@ -1,3 +1,4 @@
+import { sendRendererEvent } from "./renderer-events.js";
 import { buildE2eBaseSettings, launchSeededElectron, teardownSeededElectron, MAIN_ENTRY, type SeededElectronContext } from "./seeded-electron";
 /** Playwright E2E; Sandbox approval flow (PR-A4 R-2/R-3/R-4) Issue: #691 PR-A4 Covers: 1. HIGH verdict requires NL justification before Approve is enabled. 2. LOW/MEDIUM verdict shows scope selector (session / persistent). 3. Approval dock shows correct Korean
  * sandbox isolation label for partial. 4. PermissionsTab lists user approvals and allows revocation. Prerequisites: `bun run build` must produce dist/src/main/main.js. Tests are automatically skipped when the dist is absent (same pattern as deferred-queue-modal.spec.ts). */
@@ -67,12 +68,7 @@ test.describe("Sandbox approval flow", () => {
   });
 
   test("HIGH verdict shows a read-only audit reason and requires explicit Allow once", async () => {
-    // Inject a HIGH-verdict approval request via IPC Electron main-process `evaluate` is loaded as ESM in this build; the CommonJS
-    // `require()` shim is not available, so use the destructured `electron` arg (`BrowserWindow`) that Playwright already injects.
-    await app.evaluate(({ BrowserWindow }, req) => {
-      const win = BrowserWindow.getAllWindows()[0];
-      win?.webContents.send("ave:approval:request", req);
-    }, buildApprovalRequest({ reviewerVerdict: { level: "high", reason: "shell destructive verb" } }));
+    await sendRendererEvent(app, page, "ave:approval:request", buildApprovalRequest({ reviewerVerdict: { level: "high", reason: "shell destructive verb" } }));
 
     // Dialog should appear
     const dialog = page.getByRole("region", { name: t("toolApprovalDialog.builtinActionTitle"), exact: true });
@@ -91,12 +87,7 @@ test.describe("Sandbox approval flow", () => {
   });
 
   test("LOW verdict shows exactly three decisions and Allow once is enabled without NL", async () => {
-    // Electron main-process `evaluate` is loaded as ESM in this build; the CommonJS `require()` shim is not
-    // available, so use the destructured `electron` arg (`BrowserWindow`) that Playwright already injects.
-    await app.evaluate(({ BrowserWindow }, req) => {
-      const win = BrowserWindow.getAllWindows()[0];
-      win?.webContents.send("ave:approval:request", req);
-    }, buildApprovalRequest({
+    await sendRendererEvent(app, page, "ave:approval:request", buildApprovalRequest({
       toolCategory: "read",
       reviewerVerdict: { level: "low", reason: "read inside allowed dirs" },
     }));
@@ -119,12 +110,7 @@ test.describe("Sandbox approval flow", () => {
   });
 
   test("partial sandbox shows correct Korean label in approval dock", async () => {
-    // Electron main-process `evaluate` is loaded as ESM in this build; the CommonJS `require()` shim is not
-    // available, so use the destructured `electron` arg (`BrowserWindow`) that Playwright already injects.
-    await app.evaluate(({ BrowserWindow }, req) => {
-      const win = BrowserWindow.getAllWindows()[0];
-      win?.webContents.send("ave:approval:request", req);
-    }, buildApprovalRequest({
+    await sendRendererEvent(app, page, "ave:approval:request", buildApprovalRequest({
       sandboxCapability: {
         kind: "partial",
         confidence: "policy-best-effort",
@@ -147,9 +133,7 @@ test.describe("Sandbox approval flow", () => {
       activeCapability: { reason: "Fixture sandbox available", kind: "asrt", confidence: "verified", platform: "darwin", confines: { filesystem: true, process: true, network: true } },
     });
     const command = `printf '%s' '${"a".repeat(700)}-complete-command'`;
-    await app.evaluate(({ BrowserWindow }, req) => {
-      BrowserWindow.getAllWindows()[0]?.webContents.send("ave:approval:request", req);
-    }, buildApprovalRequest({
+    await sendRendererEvent(app, page, "ave:approval:request", buildApprovalRequest({
       toolName: "bash",
       reviewerVerdict: { level: "high", reason: "Explicit host execution" },
       args: { command, executionMode: "host", justification: "Use the configured host client" },

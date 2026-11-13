@@ -1,11 +1,12 @@
 // Verify native initial geometry.
 import { test, expect } from "@playwright/test";
-import { ElectronApplication } from "playwright";
+import { ElectronApplication, type Page } from "playwright";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIsolatedElectronEnv, launchElectron } from "../ui/seeded-electron.js";
+import { buildIsolatedElectronEnv, launchElectron, quitElectron } from "../ui/seeded-electron.js";
+import { withPageWindow } from "../ui/renderer-events.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST_MAIN = resolve(HERE, "../../../dist/src/main/main.js");
@@ -16,7 +17,7 @@ test.describe("initial window size", () => {
   let tempHome: string | undefined;
   let userDataDir: string | undefined;
 
-  async function launch(): Promise<ElectronApplication> {
+  async function launch(): Promise<{ app: ElectronApplication; page: Page }> {
     tempHome = mkdtempSync(resolve(tmpdir(), "ave-e2e-home-"));
     userDataDir = mkdtempSync(resolve(tmpdir(), "ave-e2e-initial-size-"));
     app = await launchElectron({
@@ -32,24 +33,23 @@ test.describe("initial window size", () => {
       }),
       timeout: 30_000,
     });
-    await app.firstWindow();
-    return app;
+    const page = await app.firstWindow();
+    return { app, page };
   }
 
   test.afterEach(async () => {
-    await app?.close();
+    if (app) await quitElectron(app);
     app = undefined;
     if (userDataDir) rmSync(userDataDir, { recursive: true, force: true });
     if (tempHome) rmSync(tempHome, { recursive: true, force: true });
   });
 
   test("opens centered at 1243 by 768 with a 360px minimum width", async () => {
-    const launched = await launch();
-    const { bounds, workArea, minimumSize } = await launched.evaluate(({ BrowserWindow, screen }) => {
-      const [win] = BrowserWindow.getAllWindows();
-      if (!win) throw new Error("main BrowserWindow was not created");
-      return { bounds: win.getBounds(), workArea: screen.getPrimaryDisplay().workArea, minimumSize: win.getMinimumSize() };
-    });
+    const { app: launched, page } = await launch();
+    const { bounds, minimumSize } = await withPageWindow(launched, page, (window) => ({
+      bounds: window.getBounds(), minimumSize: window.getMinimumSize(),
+    }));
+    const workArea = await launched.evaluate(({ screen }) => screen.getPrimaryDisplay().workArea);
     const width = Math.min(1243, workArea.width);
     const height = Math.min(768, workArea.height);
     expect(Math.abs(bounds.width - width)).toBeLessThanOrEqual(8);

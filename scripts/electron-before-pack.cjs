@@ -6,6 +6,8 @@ const { assertSrtWinVendor, assertSrtWinReceiptModule } = require("./lib/srt-win
 module.exports = async function beforePack(context) {
   const { assertMxcVerificationPayload } = await import("./lib/mxc-verification-build.mjs");
   assertMxcVerificationPayload(join(context.packager.projectDir, "dist", "src", "main"));
+  const { assertSkillScriptInventory } = await import("./lib/skill-script-inventory.mjs");
+  assertSkillScriptInventory(join(context.packager.projectDir, "dist", "skill-scripts"));
   if (context.electronPlatformName !== "win32") return;
   const { assertMxcSupervisorFuse } = await import("./lib/mxc-sdk-packaging.mjs");
   assertMxcSupervisorFuse(context.packager.config);

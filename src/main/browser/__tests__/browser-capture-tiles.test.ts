@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
 import { captureBrowserPage, captureBrowserViewport } from "../browser-capture.js";
-import type { WebContents } from "electron";
 import { captureScrollParameters } from "../browser-capture-scroll.js";
 import type { CdpSession } from "../browser-action-guard.js";
 
@@ -46,6 +45,11 @@ function tiledSession(pixelRatio = 1, zoom = 1) {
       pageY = Math.min(Number(values[1]?.value), CONTENT_HEIGHT - VIEWPORT_HEIGHT);
       return {};
     }
+    if (method === "Page.captureScreenshot") {
+      const png = await sharp(Buffer.from(await tile(pageY), "base64"))
+        .resize({ width: WIDTH * pixelRatio * zoom, height: VIEWPORT_HEIGHT * pixelRatio * zoom, kernel: "nearest" }).png().toBuffer();
+      return { data: png.toString("base64") };
+    }
     throw new Error(`unexpected protocol call: ${method}`);
   });
   const cdp: CdpSession = {
@@ -56,14 +60,7 @@ function tiledSession(pixelRatio = 1, zoom = 1) {
   };
   return {
     cdp, send, restore,
-    captureViewport: async () => {
-      const png = await sharp(Buffer.from(await tile(pageY), "base64"))
-        .resize({ width: WIDTH * pixelRatio * zoom, height: VIEWPORT_HEIGHT * pixelRatio * zoom, kernel: "nearest" }).png().toBuffer();
-      const guest = { getZoomFactor: () => zoom, capturePage: async () => ({
-        getSize: () => ({ width: WIDTH * pixelRatio * zoom, height: VIEWPORT_HEIGHT * pixelRatio * zoom }), isEmpty: () => false, toPNG: () => png,
-      }) } as unknown as Pick<WebContents, "capturePage" | "getZoomFactor">;
-      return captureBrowserViewport(guest, () => {}, pixelRatio);
-    },
+    captureViewport: () => captureBrowserViewport({ getZoomFactor: () => zoom }, () => {}, pixelRatio, cdp),
   };
 }
 
@@ -88,11 +85,14 @@ describe("browser capture tiles", () => {
       (params as { arguments: Array<{ value: unknown }> }).arguments.slice(0, 2).map((argument) => argument.value),
     )).toEqual([[0, 0], [0, 4], [0, 8]]);
     expect(restore).toHaveBeenCalledWith({ executionContextId: 73, x: 0, y: 0 });
+    expect(send.mock.calls.filter(([method]) => method === "Page.captureScreenshot")).toEqual(Array.from({ length: 3 }, () => [
+      "Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true },
+    ]));
   });
 
-  it("uses a fixed isolated-world function with only coordinate and paint values", () => {
-    const parameters = captureScrollParameters({ executionContextId: 73, x: 4, y: 8 }, true);
-    expect(parameters).toMatchObject({ executionContextId: 73, returnByValue: true, awaitPromise: true, arguments: [{ value: 4 }, { value: 8 }, { value: true }] });
+  it("uses a fixed isolated-world function with only coordinate values", () => {
+    const parameters = captureScrollParameters({ executionContextId: 73, x: 4, y: 8 });
+    expect(parameters).toMatchObject({ executionContextId: 73, returnByValue: true, awaitPromise: false, arguments: [{ value: 4 }, { value: 8 }] });
     expect(parameters.functionDeclaration).toContain("window.scrollTo");
     expect(parameters.functionDeclaration).not.toContain("${");
     expect(Object.keys(parameters)).toEqual(["executionContextId", "functionDeclaration", "returnByValue", "awaitPromise", "arguments"]);
@@ -108,6 +108,7 @@ describe("browser capture tiles", () => {
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 73 };
       if (method === "Runtime.callFunctionOn") return {};
+      if (method === "Page.captureScreenshot") return { data: await tile(0) };
       throw new Error(`unexpected protocol call: ${method} ${String(params)}`);
     });
     await expect(captureBrowserPage(cdp, new AbortController().signal, { fullPage: true }, 1, 10_000, captureViewport)).rejects.toMatchObject({ code: "screenshot-unavailable" });

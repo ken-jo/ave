@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ElectronApplication, Page } from "playwright";
-import { sendRendererEvent } from "../e2e/ui/renderer-events.js";
+import { sendRendererEvent, withPageWindow } from "../e2e/ui/renderer-events.js";
 
 describe("page-owned renderer event delivery", () => {
   it("delivers to the tested page even when a different window is first or visible", async () => {
@@ -30,5 +30,21 @@ describe("page-owned renderer event delivery", () => {
       .rejects.toThrow("Test page window is unavailable");
     expect(send).not.toHaveBeenCalled();
     expect(target.dispose).toHaveBeenCalledOnce();
+  });
+});
+
+describe("page-owned native actions", () => {
+  it("returns the native action result and always releases its handle", async () => {
+    const window = { isDestroyed: () => false, getBounds: () => ({ width: 1200 }) };
+    const target = { evaluate: vi.fn(async (callback, arg) => callback(window, arg)), dispose: vi.fn() };
+    const app = { browserWindow: vi.fn(async () => target) };
+    const page = {} as Page;
+    const result = await withPageWindow(app as unknown as ElectronApplication, page, (owned, offset) => owned.getBounds().width + offset, 4);
+    expect(result).toBe(1204);
+    expect(app.browserWindow).toHaveBeenCalledWith(page);
+    expect(target.dispose).toHaveBeenCalledOnce();
+    await expect(withPageWindow(app as unknown as ElectronApplication, page, () => { throw new Error("Action failed"); }))
+      .rejects.toThrow("Action failed");
+    expect(target.dispose).toHaveBeenCalledTimes(2);
   });
 });

@@ -16,11 +16,20 @@ describe("app update install intent source contract", () => {
   });
 
   it("runs cleanup before resuming updater-owned before-quit", () => {
-    const source = readFileSync(new URL("../../main.ts", import.meta.url), "utf8");
+    const mainSource = readFileSync(new URL("../../main.ts", import.meta.url), "utf8");
+    expect(mainSource).toContain('app.on("before-quit", createAppBeforeQuitHandler({');
+    expect(mainSource).toContain("app.quit();");
+    const shutdownSource = readFileSync(new URL("../app-shutdown.ts", import.meta.url), "utf8");
+    const handlerStart = shutdownSource.indexOf("export function createAppBeforeQuitHandler");
+    const source = shutdownSource.slice(handlerStart, shutdownSource.indexOf("async function flushLogger", handlerStart));
     expect(source).toContain("if (isAppUpdateInstallPrepared()) return;");
     expect(source).toContain('reason: appUpdateInstallRequested ? "app-update-install" : "before-quit"');
     expect(source).toContain("markAppUpdateInstallPrepared();");
-    expect(source).toContain("app.quit();");
+    const cleanup = source.indexOf("await runAppShutdownCleanup({");
+    const prepared = source.indexOf("markAppUpdateInstallPrepared();");
+    expect(cleanup).toBeGreaterThan(-1);
+    expect(prepared).toBeGreaterThan(cleanup);
+    expect(source.indexOf("options.quit(", prepared)).toBeGreaterThan(prepared);
   });
 
   it("keeps boot-time plugin cleanup in the ordered shutdown lifecycle", () => {

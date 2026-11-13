@@ -26,41 +26,44 @@ function fixture() {
     if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
     if (method === "Page.createIsolatedWorld") return { executionContextId: 73 };
     if (method === "Runtime.callFunctionOn") return {};
+    if (method === "Page.captureScreenshot") return snapshot();
     throw new Error(`Unexpected capture command: ${method}`);
   });
-  const capturePage = vi.fn(async () => {
+  const snapshot = vi.fn(async () => {
     const image = await sharp({ create: { width: 800, height: 600, channels: 3, background: { r: 40, g: 160, b: 80 } } }).png().toBuffer();
-    return { getSize: () => ({ width: 800, height: 600 }), isEmpty: () => false, toPNG: () => image };
+    return { data: image.toString("base64") };
   });
+  const rawCopy = vi.fn(async () => { throw new Error("Raw copy is unavailable"); });
   const attach = vi.fn(), detach = vi.fn();
-  const guest = { id: 7, isDestroyed: () => false, getZoomFactor: () => zoom, capturePage, debugger: { isAttached: () => true, attach, detach, sendCommand } } as unknown as WebContents;
+  const guest = { id: 7, isDestroyed: () => false, getZoomFactor: () => zoom, capturePage: rawCopy, debugger: { isAttached: () => true, attach, detach, sendCommand } } as unknown as WebContents;
   const capture = new BrowserWorkspaceCapture({
     liveTab: (windowId, tabId) => live && windowId === 1 && tabId === TARGET.tabId ? { guest, documentGeneration: generation } : null,
     isWindowVisible: () => visible,
   });
-  return { capture, guest, sendCommand, capturePage, attach, detach, setGeneration: (value: number) => { generation = value; }, setZoom: (value: number) => { zoom = value; }, setVisible: (value: boolean) => { visible = value; }, setLive: (value: boolean) => { live = value; } };
+  return { capture, guest, sendCommand, snapshot, rawCopy, attach, detach, setGeneration: (value: number) => { generation = value; }, setZoom: (value: number) => { zoom = value; }, setVisible: (value: boolean) => { visible = value; }, setLive: (value: boolean) => { live = value; } };
 }
 
 describe("user browser capture boundary", () => {
   it("does not turn a user capture's attached debugger into an agent preview session", async () => {
-    const { capture, guest, sendCommand, capturePage, attach, detach } = fixture();
+    const { capture, guest, sendCommand, snapshot, rawCopy, attach, detach } = fixture();
     expect(guest.debugger.isAttached()).toBe(true);
     expect(ownsPageSession(guest)).toBe(false);
     await expect(capture.capture(1, TARGET)).resolves.toMatchObject({ ...TARGET, width: 800, height: 600 });
-    expect(capturePage).toHaveBeenCalledOnce();
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(rawCopy).not.toHaveBeenCalled();
     expect(writeImage).toHaveBeenCalledOnce();
     expect(ownsPageSession(guest)).toBe(false);
     expect(() => startBrowserPreview(guest, { frame: vi.fn(), updating: vi.fn(), ended: vi.fn(), isBlank: () => false }))
       .toThrow("agent's page session");
     expect(sendCommand.mock.calls.map(([method]) => method)).toEqual([
-      "Page.getLayoutMetrics", "Page.getFrameTree", "Page.createIsolatedWorld", "Runtime.callFunctionOn", "Page.getLayoutMetrics",
+      "Page.getLayoutMetrics", "Page.captureScreenshot", "Page.getLayoutMetrics",
     ]);
     expect(attach).not.toHaveBeenCalled();
     expect(detach).not.toHaveBeenCalled();
   });
 
   it("maps a user area to device-scaled bitmap rows without trusting the 1x image tag", async () => {
-    const { capture, capturePage } = fixture();
+    const { capture, snapshot } = fixture();
     display.scaleFactor = 2;
     const pixels = Buffer.alloc(1600 * 1200 * 3);
     for (let row = 0; row < 1200; row += 1) for (let column = 0; column < 1600; column += 1) {
@@ -69,7 +72,7 @@ describe("user browser capture boundary", () => {
       pixels[offset] = color[0] ?? 0; pixels[offset + 1] = color[1] ?? 0; pixels[offset + 2] = color[2] ?? 0;
     }
     const png = await sharp(pixels, { raw: { width: 1600, height: 1200, channels: 3 } }).png().toBuffer();
-    capturePage.mockImplementation(async () => ({ getSize: () => ({ width: 1600, height: 1200 }), isEmpty: () => false, toPNG: () => png }));
+    snapshot.mockImplementation(async () => ({ data: png.toString("base64") }));
     const result = await capture.capture(1, { ...TARGET, clip: { x: 30, y: 100, width: 160, height: 100 } });
     const decoded = await sharp(Buffer.from(result.dataUrl.split(",")[1] ?? "", "base64")).raw().toBuffer();
     expect(result).toMatchObject({ width: 160, height: 100 });
@@ -78,10 +81,10 @@ describe("user browser capture boundary", () => {
   });
 
   it("rejects a display-density change during readback without writing the clipboard", async () => {
-    const { capture, capturePage } = fixture();
-    const original = capturePage.getMockImplementation();
+    const { capture, snapshot } = fixture();
+    const original = snapshot.getMockImplementation();
     if (!original) throw new Error("Missing capture implementation");
-    capturePage.mockImplementation(async () => {
+    snapshot.mockImplementation(async () => {
       const image = await original();
       display.scaleFactor = 2;
       return image;
@@ -91,10 +94,12 @@ describe("user browser capture boundary", () => {
   });
 
   it("converts viewport clips to document CSS coordinates and copies only the revalidated image", async () => {
-    const { capture, sendCommand, capturePage, attach, detach } = fixture();
+    const { capture, sendCommand, snapshot, attach, detach } = fixture();
     const result = await capture.capture(1, { ...TARGET, clip: { x: 20, y: 30, width: 200, height: 100 } });
-    expect(capturePage).toHaveBeenCalledExactlyOnceWith(undefined, { stayHidden: true, stayAwake: false });
-    expect(sendCommand.mock.calls.map(([method]) => method)).not.toContain("Page.captureScreenshot");
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(sendCommand.mock.calls.filter(([method]) => method === "Page.captureScreenshot")).toEqual([
+      ["Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true }],
+    ]);
     expect(result).toMatchObject({ ...TARGET, width: 200, height: 100, truncated: false });
     expect(result.dataUrl).toMatch(/^data:image\/png;base64,/);
     const image = await sharp(Buffer.from(result.dataUrl.split(",")[1] ?? "", "base64")).metadata();
@@ -124,10 +129,10 @@ describe("user browser capture boundary", () => {
   });
 
   it("rejects a zoom change after capture before writing the clipboard", async () => {
-    const { capture, capturePage, setZoom } = fixture();
-    const original = capturePage.getMockImplementation();
+    const { capture, snapshot, setZoom } = fixture();
+    const original = snapshot.getMockImplementation();
     if (!original) throw new Error("Missing capture implementation");
-    capturePage.mockImplementation(async () => {
+    snapshot.mockImplementation(async () => {
       const result = await original();
       setZoom(1.25);
       return result;
@@ -146,10 +151,14 @@ describe("user browser capture boundary", () => {
       };
       if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
       if (method === "Page.createIsolatedWorld") return { executionContextId: 73 };
+      if (method === "Page.captureScreenshot") {
+        const data = await sharp({ create: { width: 4, height: 4, channels: 3, background: "blue" } }).png().toBuffer();
+        return { data: data.toString("base64") };
+      }
       if (method === "Runtime.callFunctionOn") {
         const values = (params as { arguments: Array<{ value: unknown }> }).arguments;
         pageY = Number(values[1]?.value);
-        if (values[2]?.value === true && pageY === 4) {
+        if (pageY === 4) {
           setZoom(1.25);
           if (replacement) setGeneration(2);
         }
@@ -176,7 +185,7 @@ describe("user browser capture boundary", () => {
   });
 
   it.each([false, true])("bounds user-area preparation and stops late readback (cancelled=%s)", async (cancelled) => {
-    const { capture, sendCommand, capturePage } = fixture();
+    const { capture, sendCommand, snapshot } = fixture();
     const entered = deferred<void>(), response = deferred<unknown>();
     sendCommand.mockImplementationOnce(() => { entered.resolve(); return response.promise; });
     vi.useFakeTimers();
@@ -190,7 +199,7 @@ describe("user browser capture boundary", () => {
       expect(vi.getTimerCount()).toBe(0);
       response.resolve({});
       await vi.advanceTimersByTimeAsync(1);
-      expect(capturePage).not.toHaveBeenCalled();
+      expect(snapshot).not.toHaveBeenCalled();
       expect(writeImage).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
   });

@@ -46,6 +46,12 @@ describe("native focus test selection", () => {
     expect(PACKAGE.scripts["test:ui-e2e"]).not.toContain("AVE_E2E_OS_FOCUS");
   });
 
+  it("preserves one worker and within-file lifetime in background shards", async () => {
+    const config = await loadConfig("0");
+    expect(config.workers).toBe(1);
+    expect(config.fullyParallel).toBe(false);
+  });
+
   it("keeps native focus coverage runnable on a virtual desktop", () => {
     const workflow = readFileSync(new URL("../../.github/workflows/e2e-os-focus.yml", import.meta.url), "utf8");
     expect(workflow).toContain("xvfb-run -a -s '-screen 0 1600x1000x24'");
@@ -69,19 +75,31 @@ describe("native focus test selection", () => {
     const upload = build.steps.find((step: { with?: { name?: string } }) => step.with?.name === "background-ui-build");
     expect(upload.with.path).toContain("ave/build");
     expect(upload.with.path).toContain("ave/dist");
+    expect(upload.with.path).toContain("ave/test-results/background-sweep-plan");
+    const collection = build.steps.find((step: { name?: string }) => step.name === "Collect the complete background inventory");
+    expect(collection.env.AVE_E2E_OS_FOCUS).toBe("0");
+    expect(collection.run).toBe("bun run test:ui-e2e --list --retries=0 --reporter=json");
+    expect(build.steps.find((step: { id?: string }) => step.id === "partitions").run).toContain("scripts/plan-background-e2e-shards.mjs");
+    expect(build.outputs.matrix).toBe("$" + "{{ steps.partitions.outputs.matrix }}");
     const shard = workflow.jobs["background-shard"];
     expect(shard.env.PLAYWRIGHT_BROWSERS_PATH).toContain("/.cache/ms-playwright");
     expect(shard.steps.some((step: { run?: string }) => step.run === "bun x playwright install --with-deps chromium")).toBe(true);
     expect(shard.strategy["fail-fast"]).toBe(false);
-    expect(shard.strategy.matrix.shard).toEqual(Array.from({ length: 32 }, (_, index) => index + 1));
+    expect(shard.strategy.matrix).toBe("$" + "{{ fromJSON(needs.background-build.outputs.matrix) }}");
     expect(shard["timeout-minutes"]).toBe(12);
     const run = shard.steps.find((step: { name?: string }) => step.name === "Run the background shard");
     expect(run["timeout-minutes"]).toBe(10);
     expect(run.env.AVE_E2E_OS_FOCUS).toBe("0");
-    expect(run.run).toContain('--shard="$SHARD/32" --retries=0');
+    expect(run.env.SHARD).toBe("$" + "{{ matrix.regularShard }}");
+    expect(run.env.SHARD_TOTAL).toBe("$" + "{{ needs.background-build.outputs.regular-shards }}");
+    expect(run.env.TEST_LIST).toBe("$" + "{{ matrix.testList }}");
+    expect(run.run).toContain('--test-list="$plan/$TEST_LIST"');
+    expect(run.run).toContain('--test-list-invert="$plan/special-files.txt" --shard="$SHARD/$SHARD_TOTAL"');
+    expect(run.run).toContain('"$' + '{selection[@]}" --retries=0');
     expect(run.run).toContain("--reporter=list,./test/e2e/reporters/spec-results.ts");
     expect(run.run).not.toMatch(/--(?:grep|max-failures|timeout|fully-parallel)/);
     expect(shard.steps.find((step: { name?: string }) => step.name === "Upload per-spec shard evidence").if).toBe("always()");
+    expect(shard.steps.find((step: { name?: string }) => step.name === "Upload per-spec shard evidence").with.name).toBe("background-ui-shard-$" + "{{ matrix.id }}");
     const ci = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
     expect(ci).not.toContain("background-shard");
   });

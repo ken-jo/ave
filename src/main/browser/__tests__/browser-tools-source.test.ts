@@ -133,7 +133,7 @@ describe("browser tool CDP surface", () => {
     // Direct focus setup and cleanup route no OS input; all interactive effects still use the checked wrapper.
     expect([...body.matchAll(/session\.send\("[^"]+"[^)]*\)/g)].map((match) => match[0])).toEqual([
       'session.send("Emulation.setFocusEmulationEnabled", { enabled: true })',
-      'session.send("Runtime.callFunctionOn", captureScrollParameters(position, false)',
+      'session.send("Runtime.callFunctionOn", captureScrollParameters(position)',
       'session.send("DOM.getDocument", { depth: -1, pierce: true })',
       'session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] })',
       'session.send("Input.dispatchDragEvent", { type: "dragCancel", ...destination })',
@@ -148,9 +148,10 @@ describe("browser tool CDP surface", () => {
     const capture = readFileSync(join(REPO, "src/main/browser/browser-capture.ts"), "utf8");
     const workspace = readFileSync(join(REPO, "src/main/browser/browser-workspace-capture.ts"), "utf8");
     const actions = readFileSync(join(REPO, "src/main/browser/browser-actions.ts"), "utf8");
-    expect(scroll).toContain('const CAPTURE_SCROLL = "function(x,y,paint)');
-    expect(scroll).toContain('cdp.send("Runtime.callFunctionOn", captureScrollParameters(position, true))');
-    for (const [source, restore] of [[capture, 'captureScrollParameters(scrollRestore, false)'], [workspace, 'captureScrollParameters(position, false)'], [actions, 'captureScrollParameters(position, false)']] as const) {
+    expect(scroll).toContain('const CAPTURE_SCROLL = "function(x,y)');
+    expect(scroll).toContain('cdp.send("Runtime.callFunctionOn", captureScrollParameters(position))');
+    expect(scroll).not.toContain("requestAnimationFrame");
+    for (const [source, restore] of [[capture, 'captureScrollParameters(scrollRestore)'], [workspace, 'captureScrollParameters(position)'], [actions, 'captureScrollParameters(position)']] as const) {
       expect(source).toContain(restore);
       expect(source).not.toMatch(/Runtime\.callFunctionOn[^\n]*functionDeclaration:/);
       expect(source).not.toMatch(/Runtime\.callFunctionOn[^\n]*expression:/);
