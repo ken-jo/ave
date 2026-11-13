@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SUGGESTIONS_SESSION_ID } from "../../../src/shared/suggestions-session.js";
 import { buildE2eBaseSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
 test("an older alert snapshot cannot undo a live withdrawal or refresh", async ({}, testInfo) => {
   const ctx = await launchSeededElectron({ historyRows: [], settings: buildE2eBaseSettings(true, "en") });
@@ -36,12 +37,8 @@ test("an older alert snapshot cannot undo a live withdrawal or refresh", async (
     const old = card("refreshed", "Current mail");
     const refreshed = { ...old, summary: "Latest live summary" };
     const control = { ...card("control", "Snapshot control"), priority: "low" as const };
-    await ctx.app.evaluate(({ BrowserWindow }, payload) => {
-      const win = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
-      if (!win) throw new Error("No visible window");
-      win.webContents.send(payload.channels.dismiss, payload.withdrawnId);
-      win.webContents.send(payload.channels.show, payload.refreshed);
-    }, { channels: OVERLAY_V1, withdrawnId: withdrawn.id, refreshed });
+    await sendRendererEvent(ctx.app, ctx.page, OVERLAY_V1.dismiss, withdrawn.id);
+    await sendRendererEvent(ctx.app, ctx.page, OVERLAY_V1.show, refreshed);
     // Shared transport ordering means the second push also observes dismissal.
     await expect(ctx.page.getByText(refreshed.summary, { exact: true })).toBeVisible();
 

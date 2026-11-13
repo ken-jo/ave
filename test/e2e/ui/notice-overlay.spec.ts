@@ -5,15 +5,15 @@ import { test, expect } from "./fixtures.js";
 import { test as providerTest } from "../../screenshots/fixtures.js";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
-async function captureWindow(app: ElectronApplication, path: string, width: number) {
-  const capture = await app.evaluate(async ({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows()[0];
-    if (!win) throw new Error("Missing main window");
+async function captureWindow(app: ElectronApplication, page: Page, path: string, width: number) {
+  const target = await app.browserWindow(page);
+  const capture = await target.evaluate(async (win) => {
     await win.webContents.executeJavaScript("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
     const image = await win.webContents.capturePage();
     return { png: image.toPNG().toString("base64"), size: image.getSize() };
-  });
+  }).finally(() => target.dispose());
   expect(capture.size).toEqual({ width, height: 640 });
   await writeFile(path, Buffer.from(capture.png, "base64"));
 }
@@ -52,10 +52,8 @@ async function expectControlReceivesClick(control: Locator) {
   await target.dispose();
 }
 
-async function activateView(app: ElectronApplication, viewKey: string) {
-  await app.evaluate(({ BrowserWindow }, { channel, viewKey }) => {
-    BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { viewKey });
-  }, { channel: CHANNELS.view.activate, viewKey });
+async function activateView(app: ElectronApplication, page: Page, viewKey: string) {
+  await sendRendererEvent(app, page, CHANNELS.view.activate, { viewKey });
 }
 
 async function clearHistory(page: Page) {
@@ -66,13 +64,11 @@ async function clearHistory(page: Page) {
   await expect(page.getByTestId("notification-center")).toHaveCount(0);
 }
 
-async function showInstallNotice(app: ElectronApplication, slug: string, success: boolean) {
-  await app.evaluate(({ BrowserWindow }, { channel, slug, success }) => {
-    BrowserWindow.getAllWindows()[0]?.webContents.send(channel, {
+async function showInstallNotice(app: ElectronApplication, page: Page, slug: string, success: boolean) {
+  await sendRendererEvent(app, page, CHANNELS.plugins.installResult, {
       slug, success,
       ...(!success ? { error: "install-failed", message: "The install could not finish. Review the settings and try again." } : {}),
-    });
-  }, { channel: CHANNELS.plugins.installResult, slug, success });
+  });
 }
 
 for (const width of [360, 1243]) {
@@ -83,7 +79,7 @@ for (const width of [360, 1243]) {
     await clearHistory(page);
     const canvas = page.getByTestId(TEST_IDS.routeCanvas);
     const before = await canvas.boundingBox();
-    await showInstallNotice(app, "bell-install-result", true);
+    await showInstallNotice(app, page, "bell-install-result", true);
     await expect(page.getByTestId("notification-bell-count")).toHaveText("1");
     await expect(page.getByTestId("window-notice-slot")).toHaveCount(0);
     await expect(page.getByTestId("status-toast")).toHaveCount(0);
@@ -105,14 +101,14 @@ for (const width of [360, 1243]) {
     await expect(row).toBeVisible();
     await expect(row.locator("time")).toBeVisible();
     await expect(page.getByTestId("notification-bell-count")).toHaveCount(0);
-    await captureWindow(app, testInfo.outputPath(`notification-bell-open-${width}.png`), width);
+    await captureWindow(app, page, testInfo.outputPath(`notification-bell-open-${width}.png`), width);
     await expectControlReceivesClick(row.getByTestId("notification-history-clear"));
     await expect(row).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(center).toHaveCount(0);
     await expect(bell).toBeFocused();
 
-    await showInstallNotice(app, "bell-error-result", false);
+    await showInstallNotice(app, page, "bell-error-result", false);
     await expect(page.getByTestId("notification-bell-count")).toHaveText("1");
     const errorDot = page.getByTestId("notification-bell-error");
     await expect(errorDot).toHaveClass(/bg-destructive/);
@@ -127,9 +123,7 @@ for (const width of [360, 1243]) {
 
     const composer = page.getByTestId("composer-textarea").first();
     const composerBounds = await composer.boundingBox();
-    await app.evaluate(({ BrowserWindow }, { channel, chatGroupId }) => {
-      BrowserWindow.getAllWindows()[0]?.webContents.send(channel, { chatGroupId, from: "primary/model", to: "secondary/model" });
-    }, { channel: CHANNELS.chat.fallback, chatGroupId: MAIN_CHAT_GROUP_ID });
+    await sendRendererEvent(app, page, CHANNELS.chat.fallback, { chatGroupId: MAIN_CHAT_GROUP_ID, from: "primary/model", to: "secondary/model" });
     const localNotice = page.getByTestId("composer-toast-dock").getByTestId("status-toast");
     await expect(localNotice).toBeVisible();
     await expect(localNotice).toContainText("secondary/model");
@@ -234,7 +228,7 @@ for (const width of [360, 1243]) {
         await expect(row.locator("time")).toHaveAttribute("datetime", createdAt ?? "");
         await expect(page.getByTestId("notification-bell-count")).toHaveCount(0);
       }
-      await captureWindow(app, testInfo.outputPath(`notification-bell-reloaded-${width}.png`), width);
+      await captureWindow(app, page, testInfo.outputPath(`notification-bell-reloaded-${width}.png`), width);
     } finally {
       await app.evaluate(({ Notification }, previous) => {
         if (previous === undefined) delete process.env.NODE_ENV;
@@ -259,17 +253,14 @@ for (const [width, zoomLevel] of [[360, 0], [360, 2], [1243, 0]] as const) {
     }, zoomLevel);
     await expect.poll(() => page.evaluate(async () => (await window.aveApi.getSettings()).appearance.zoomLevel)).toBe(zoomLevel);
     await clearHistory(page);
-    await activateView(app, "settings");
+    await activateView(app, page, "settings");
     await expect(page.getByRole("searchbox")).toBeVisible();
-    await app.evaluate(({ BrowserWindow }, channels) => {
-      const contents = BrowserWindow.getAllWindows()[0]?.webContents;
-      contents?.send(channels.update.state, { kind: "available", version: "9.9.9" });
-      contents?.send(channels.marketplace.updatesAvailable, [{
+    await sendRendererEvent(app, page, CHANNELS.update.state, { kind: "available", version: "9.9.9" });
+    await sendRendererEvent(app, page, CHANNELS.marketplace.updatesAvailable, [{
         key: { sourceId: "ave", kind: "plugin", name: "notice-update" },
         displayName: "Notice update", from: "1.0.0", to: "2.0.0", state: "manual",
-      }]);
-    }, CHANNELS);
-    await showInstallNotice(app, "bell-controls-error", false);
+    }]);
+    await showInstallNotice(app, page, "bell-controls-error", false);
     await expect(page.getByTestId("notification-bell-error")).toBeVisible();
     const bell = page.getByTestId("notification-bell");
     await expectUnclippedHit(bell);
@@ -302,7 +293,7 @@ for (const [width, zoomLevel] of [[360, 0], [360, 2], [1243, 0]] as const) {
     await expectControlReceivesClick(bell);
     const row = page.getByTestId("notification-history-row").filter({ hasText: "bell-controls-error" });
     await expectUnclippedHit(row.getByTestId("notification-history-clear"));
-    await captureWindow(app, testInfo.outputPath(`notification-controls-${width}-zoom-${zoomLevel}.png`), width);
+    await captureWindow(app, page, testInfo.outputPath(`notification-controls-${width}-zoom-${zoomLevel}.png`), width);
     await row.getByTestId("notification-history-clear").click();
     await expect(row).toHaveCount(0);
     await page.keyboard.press("Escape");

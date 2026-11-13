@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { parse } from "yaml";
 
 const PACKAGE = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> };
 
@@ -54,5 +55,34 @@ describe("native focus test selection", () => {
     expect(workflow).toContain("--retries=0");
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("schedule:");
+  });
+
+  it("runs the full background sweep only on explicit manual selection", () => {
+    const workflow = parse(readFileSync(new URL("../../.github/workflows/e2e-os-focus.yml", import.meta.url), "utf8"));
+    expect(workflow.on.workflow_dispatch.inputs["background-sweep"].default).toBe(false);
+    expect(workflow.jobs["os-focus"].if).toBe("github.event_name != 'workflow_dispatch' || !inputs.background-sweep");
+    for (const id of ["background-build", "background-shard"]) {
+      expect(workflow.jobs[id].if).toBe("github.event_name == 'workflow_dispatch' && inputs.background-sweep");
+      expect(workflow.jobs[id].steps.some((step: { run?: string }) => step.run === "node scripts/fetch-uv.mjs")).toBe(true);
+    }
+    const build = workflow.jobs["background-build"];
+    const upload = build.steps.find((step: { with?: { name?: string } }) => step.with?.name === "background-ui-build");
+    expect(upload.with.path).toContain("ave/build");
+    expect(upload.with.path).toContain("ave/dist");
+    const shard = workflow.jobs["background-shard"];
+    expect(shard.env.PLAYWRIGHT_BROWSERS_PATH).toContain("/.cache/ms-playwright");
+    expect(shard.steps.some((step: { run?: string }) => step.run === "bun x playwright install --with-deps chromium")).toBe(true);
+    expect(shard.strategy["fail-fast"]).toBe(false);
+    expect(shard.strategy.matrix.shard).toEqual(Array.from({ length: 32 }, (_, index) => index + 1));
+    expect(shard["timeout-minutes"]).toBe(12);
+    const run = shard.steps.find((step: { name?: string }) => step.name === "Run the background shard");
+    expect(run["timeout-minutes"]).toBe(10);
+    expect(run.env.AVE_E2E_OS_FOCUS).toBe("0");
+    expect(run.run).toContain('--shard="$SHARD/32" --retries=0');
+    expect(run.run).toContain("--reporter=list,./test/e2e/reporters/spec-results.ts");
+    expect(run.run).not.toMatch(/--(?:grep|max-failures|timeout|fully-parallel)/);
+    expect(shard.steps.find((step: { name?: string }) => step.name === "Upload per-spec shard evidence").if).toBe("always()");
+    const ci = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+    expect(ci).not.toContain("background-shard");
   });
 });

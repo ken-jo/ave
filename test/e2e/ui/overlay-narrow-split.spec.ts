@@ -7,6 +7,7 @@ import { SUGGESTIONS_SESSION_ID } from "../../../src/shared/suggestions-session.
 import { makeTestT } from "./i18n.js";
 import type { AlertCard } from "../../../src/shared/alerts-types.js";
 import { setWindowSize, buildE2eBaseSettings, launchSeededElectron, teardownSeededElectron } from "./seeded-electron.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
 test("a narrowed split keeps alert and approval actions reachable", async ({}, testInfo) => {
   const t = makeTestT("en");
@@ -57,11 +58,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
       priority: "normal",
       createdAt: new Date().toISOString(),
     };
-    await app.evaluate(({ BrowserWindow }, payload) => {
-      const win = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
-      if (!win) throw new Error("No visible window");
-      win.webContents.send(payload.channel, payload.card);
-    }, { channel: OVERLAY_V1.show, card });
+    await sendRendererEvent(app, page, OVERLAY_V1.show, card);
     const overlay = page.getByTestId("routine-card");
     await expect(overlay.getByTestId("plugin-provenance-id")).toHaveText(t("alerts.pluginIdOnly", { id: pluginId }));
     // A narrow window shows only the focused tile, so focus the one holding Suggestions and its card.
@@ -127,11 +124,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
     await page.getByTestId("pane-split-column").click();
     await expect(page.getByTestId("pane")).toHaveCount(3);
     await suggestionsPane.getByRole("heading").first().click();
-    await app.evaluate(({ BrowserWindow }, payload) => {
-      const win = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
-      if (!win) throw new Error("No visible window");
-      win.webContents.send(payload.channel, payload.card);
-    }, { channel: OVERLAY_V1.show, card: { ...card, summary: "Review the pending workspace changes before continuing. ".repeat(12) } });
+    await sendRendererEvent(app, page, OVERLAY_V1.show, { ...card, summary: "Review the pending workspace changes before continuing. ".repeat(12) });
     await overlay.getByTestId("overlay-card-expand-toggle").click();
     await expect(overlay.getByTestId("overlay-card-summary")).toHaveAttribute("data-expanded", "true");
     await expect.poll(async () => {
@@ -195,13 +188,7 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
     // The approval segment checks the approval card on its own, so the user dismisses the alert first.
     await overlay.getByTestId("routine-card-dismiss").click();
     await expect(overlay).toHaveCount(0);
-    await app.evaluate(({ BrowserWindow }, payload) => {
-      const win = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
-      if (!win) throw new Error("No visible window");
-      win.webContents.send(payload.channel, payload.request);
-    }, {
-      channel: CHANNELS.approval.request,
-      request: {
+    await sendRendererEvent(app, page, CHANNELS.approval.request, {
         id: "approval:narrow-split",
         category: "tool",
         toolName: "read_file",
@@ -210,7 +197,6 @@ test("a narrowed split keeps alert and approval actions reachable", async ({}, t
         reason: "Review the requested workspace file before allowing this read. ".repeat(3),
         createdAt: Date.now(),
         requireExplicit: false,
-      },
     });
     const approval = page.getByTestId("approval-lane-card");
     await expect(approval).toBeVisible();

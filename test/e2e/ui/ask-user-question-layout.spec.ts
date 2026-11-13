@@ -2,6 +2,7 @@ import { setWindowSize } from "./seeded-electron.js";
 import type { ElectronApplication, Page } from 'playwright';
 import { test, expect } from './fixtures.js';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
 type AskQuestionItem = {
   question: string;
@@ -11,24 +12,15 @@ type AskQuestionItem = {
 
 async function injectAskQuestion(
   app: ElectronApplication,
+  page: Page,
   id: string,
   item: AskQuestionItem,
   sessionId: string,
 ): Promise<boolean> {
-  return app.evaluate(
-    ({ BrowserWindow }, payload) => {
-      const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-      if (!win) return false;
-      win.webContents.send('ave:ask-user-question:request', {
-        id: payload.id,
-        sessionId: payload.sessionId,
-        createdAt: Date.now(),
-        questions: [payload.item],
-      });
-      return true;
-    },
-    { id, item, sessionId },
-  );
+  await sendRendererEvent(app, page, 'ave:ask-user-question:request', {
+    id, sessionId, createdAt: Date.now(), questions: [item],
+  });
+  return true;
 }
 
 async function ensureQuestionOverlayVisible(
@@ -44,7 +36,7 @@ async function ensureQuestionOverlayVisible(
     const api = (window as unknown as { aveApi: { chatSessions: () => Promise<{ current: string }> } }).aveApi;
     return (await api.chatSessions()).current;
   });
-  const injected = await injectAskQuestion(app, id, item, sessionId);
+  const injected = await injectAskQuestion(app, mainWindow, id, item, sessionId);
   const overlay = mainWindow.locator(testIdSelector(TEST_IDS.questionOverlay));
   return overlay
     .waitFor({ state: 'visible', timeout: injected ? 5_000 : 10_000 })
