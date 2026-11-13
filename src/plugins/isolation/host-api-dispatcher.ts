@@ -2,6 +2,7 @@
 // Bind caller and generation identity to the connection, never request fields.
 // Host error classification stays here; children import only the wire contract.
 import { workerOutputFlowOf } from "../../permissions/worker-flow.js";
+import { isDeviceCodeAuthorizationErrorCode, PluginDeviceAuthError } from "../../auth/plugin-device-auth-error.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isAbsolute } from "node:path";
@@ -1216,6 +1217,13 @@ export function createConfigSubscriptionHostApiPaths(
 
 /** Classify host errors by class, never message text; JSON does not preserve Error identity. */
 export function classifyHostApiError(error: unknown): HostApiWireError {
+  if (error instanceof PluginDeviceAuthError) {
+    if (!isDeviceCodeAuthorizationErrorCode(error.code)) {
+      return { code: "host-internal", name: "Error", message: "Host request failed.", detail: { kind: "other" } };
+    }
+    const sanitized = new PluginDeviceAuthError(error.code);
+    return { code: sanitized.code, name: sanitized.name, message: sanitized.message };
+  }
   if (error instanceof CredentialLeaseError) {
     return { code: error.code, name: error.name, message: error.message, detail: error.detail };
   }

@@ -43,6 +43,7 @@ import { RPC_METHOD_NOT_FOUND } from "../../mcp/protocol-constants.js";
 import { WORKER_CONTROL_METHOD } from "../public-contract.js";
 import type {
   DeviceCodeAuthorizationOptions,
+  DeviceCodeAuthorizationErrorCode,
   DeviceCodeFetchOptions,
   PluginWorkerControl,
   PluginWorkerExitReason,
@@ -532,6 +533,13 @@ export const HOST_API_WIRE_ERROR_CODES = [
   "worker-transport-unsupported",
   "worker-control-failed",
   "worker-already-running",
+  "oauth-device-human-required",
+  "oauth-device-encrypted-storage-unavailable",
+  "oauth-device-denied",
+  "oauth-device-expired",
+  "oauth-device-canceled",
+  "oauth-device-unsupported",
+  "oauth-device-failed",
   // ── Anything the host threw that is none of the above. Deliberately last and
   //    deliberately opaque: a host internal is not a contract.
   "host-internal",
@@ -539,6 +547,17 @@ export const HOST_API_WIRE_ERROR_CODES = [
 
 /** One of {@link HOST_API_WIRE_ERROR_CODES}. */
 export type HostApiWireErrorCode = (typeof HOST_API_WIRE_ERROR_CODES)[number];
+
+/** Device authorization and credential refresh share the same sanitized failures. */
+const DEVICE_CODE_WIRE_ERRORS: readonly DeviceCodeAuthorizationErrorCode[] = [
+  "oauth-device-human-required",
+  "oauth-device-encrypted-storage-unavailable",
+  "oauth-device-denied",
+  "oauth-device-expired",
+  "oauth-device-canceled",
+  "oauth-device-unsupported",
+  "oauth-device-failed",
+];
 
 /**
  * Codes any path may reply with, because they are produced by the boundary
@@ -1087,14 +1106,14 @@ export const HOSTAPI_PATH_CONTRACTS = {
     arguments: "encoded",
     result: "plain-json",
     lifetime: "none",
-    errors: ["effect-boundary-denied"],
+    errors: ["effect-boundary-denied", ...DEVICE_CODE_WIRE_ERRORS],
   },
   "authDeviceCode.fetch": {
     params: ["options"],
     arguments: "encoded",
     result: "encoded",
     lifetime: "none",
-    errors: ["effect-boundary-denied"],
+    errors: ["effect-boundary-denied", ...DEVICE_CODE_WIRE_ERRORS],
   },
   "authDeviceCode.clear": {
     params: ["options"],

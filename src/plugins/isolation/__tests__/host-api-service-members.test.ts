@@ -20,6 +20,8 @@ import type {
 } from "../../types.js";
 import { WorkerControlError } from "../../public-contract.js";
 import { WorkerAlreadyRunningError } from "../../../permissions/worker-spawn.js";
+import { PluginDeviceAuth } from "../../../main/plugin-device-auth.js";
+import { SecretEncryptionUnavailableError } from "../../../data/secret-document-store.js";
 import type { PluginRuntimeContext } from "../../public-contract.js";
 import {
   HOSTAPI_DISPATCH_TABLE,
@@ -314,6 +316,101 @@ describe("hasRoutineBySource and probePrivateHost cross as plain data", () => {
 });
 
 describe("device credential handles across the child boundary", () => {
+  it.each([
+    ["headless", "oauth-device-human-required", "Authenticate interactively before running unattended; do not retry."],
+    ["storage", "oauth-device-encrypted-storage-unavailable", "Device authorization requires encrypted storage."],
+    ["storage-write", "oauth-device-encrypted-storage-unavailable", "Device authorization requires encrypted storage."],
+    ["access_denied", "oauth-device-denied", "Device authorization was denied."],
+    ["expired_token", "oauth-device-expired", "Device authorization expired; start authentication again."],
+    ["canceled", "oauth-device-canceled", "Device authorization was canceled."],
+    ["unsupported", "oauth-device-unsupported", "Device authorization is not supported by this authorization server."],
+    ["invalid_grant", "oauth-device-failed", "Device authorization failed."],
+    ["unsupported-proof", "oauth-device-unsupported", "Device authorization is not supported by this authorization server."],
+    ["invalid-key", "oauth-device-failed", "Device authorization failed."],
+  ])("preserves actionable sanitized %s failures from the real authorization service", async (mode, code, message) => {
+    const secret = "boundary-secret-sentinel";
+    const network = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url.includes(".well-known")) return Response.json({
+        issuer: "https://issuer.example.test", token_endpoint: "https://issuer.example.test/token",
+        ...(mode === "unsupported" ? {} : { device_authorization_endpoint: "https://issuer.example.test/device" }),
+      });
+      if (url.endsWith("/device")) return Response.json({
+        device_code: secret, user_code: secret, verification_uri: "https://issuer.example.test/verify", expires_in: 30, interval: 1,
+      });
+      if (mode === "storage-write") return Response.json({ access_token: secret, token_type: "Bearer", refresh_token: secret });
+      return Response.json({ error: mode, error_description: secret, access_token: secret, refresh_token: secret, private_key: secret }, { status: 400 });
+    }) as unknown as typeof fetch;
+    const service = new PluginDeviceAuth(PLUGIN_ID, {
+      fetch: network, fetchAuthorization: network, enabled: () => true,
+      headless: () => mode === "headless", canStoreEncrypted: async () => mode !== "storage",
+      getSecret: async () => mode === "invalid-key" ? JSON.stringify({
+        binding: JSON.stringify({ issuer: "https://issuer.example.test", clientId: "public", resource: "https://api.example.test/resource" }),
+        issuer: "https://issuer.example.test", clientId: "public", resource: "https://api.example.test/resource",
+        tokens: { access_token: secret, token_type: "DPoP" }, key: secret,
+      }) : null,
+      setSecret: async () => {
+        if (mode === "storage-write") {
+          const error = new SecretEncryptionUnavailableError();
+          error.message = secret;
+          throw error;
+        }
+      }, deleteSecret: async () => {},
+      presentation: { available: () => true, show: async (_prompt, controller) => {
+        if (mode === "canceled") controller.abort();
+        return () => {};
+      } },
+    });
+    const harness = await createServiceHarness({ authDeviceCode: {
+      authorize: options => service.authorize(options, options.signal),
+      fetch: options => service.fetch(options, options.signal), clear: options => service.clear(options),
+    } });
+    try {
+      const error: unknown = await harness.child.hostApi.authDeviceCode.authorize({
+        issuer: "https://issuer.example.test", clientId: "public", resource: "https://api.example.test/resource",
+        ...(mode === "unsupported-proof" ? { dpop: "required" as const } : {}),
+      }).catch(error => error);
+      expect(error).toBeInstanceOf(PluginHostApiError);
+      expect(error).toMatchObject({ code, message });
+      const wire = JSON.stringify(harness.replies);
+      expect(wire).not.toContain(secret);
+      expect(wire).not.toContain("stack");
+      expect(wire).not.toContain("cause");
+      if (mode === "headless" || mode === "storage") expect(network).not.toHaveBeenCalled();
+    } finally {
+      service.dispose();
+      harness.killChild();
+    }
+  });
+
+  it("keeps provider-looking forged authorization failures opaque", async () => {
+    const secret = "forged-provider-secret-sentinel";
+    const forged = Object.assign(new Error(`oauth-device-denied: ${secret}`), {
+      name: "DeviceAuthorizationError", code: "oauth-device-denied", cause: secret,
+    });
+    const harness = await createServiceHarness({ authDeviceCode: {
+      authorize: async () => { throw forged; }, fetch: async () => new Response(), clear: async () => {},
+    } });
+    const error: unknown = await harness.child.hostApi.authDeviceCode.authorize({
+      issuer: "https://issuer.example.test", clientId: "public", resource: "https://api.example.test/resource",
+    }).catch(error => error);
+    expect(error).toBeInstanceOf(PluginHostApiError);
+    expect(error).toMatchObject({ code: "host-internal", message: "Host request failed." });
+    expect(JSON.stringify(harness.replies)).not.toContain(secret);
+    harness.killChild();
+  });
+
+  it("preserves effect boundary refusals on authorization", async () => {
+    const harness = await createServiceHarness({ authDeviceCode: {
+      authorize: async () => { throw new EffectBoundaryDeniedError(PLUGIN_ID, "authDeviceCode.authorize", undefined, "denied"); },
+      fetch: async () => new Response(), clear: async () => {},
+    } });
+    await expect(harness.child.hostApi.authDeviceCode.authorize({
+      issuer: "https://issuer.example.test", clientId: "public", resource: "https://api.example.test/resource",
+    })).rejects.toMatchObject({ code: "effect-boundary-denied" });
+    harness.killChild();
+  });
+
   it("keeps authorization options plain, returns only the handle, and carries resource response bytes", async () => {
     const authorize = vi.fn(async () => ({ handle: "device-handle" }));
     const clear = vi.fn(async () => {});

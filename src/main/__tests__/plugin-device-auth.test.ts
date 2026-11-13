@@ -77,7 +77,7 @@ describe("plugin device credentials", () => {
   it("requires explicit configuration and encrypted storage before egress", async () => {
     const f = fixture();
     await expect(f.manager({ enabled: () => false }).authorize(OPTIONS)).rejects.toThrow("oauth-device-not-enabled");
-    await expect(f.manager({ canStoreEncrypted: async () => false }).authorize(OPTIONS)).rejects.toThrow("oauth-device-encrypted-storage-required");
+    await expect(f.manager({ canStoreEncrypted: async () => false }).authorize(OPTIONS)).rejects.toMatchObject({ code: "oauth-device-encrypted-storage-unavailable" });
     expect(f.fetch).not.toHaveBeenCalled();
     expect(f.show).not.toHaveBeenCalled();
   });
@@ -91,7 +91,7 @@ describe("plugin device credentials", () => {
 
   it("denies required proof binding when metadata does not advertise it", async () => {
     const f = fixture();
-    await expect(f.manager().authorize({ ...OPTIONS, dpop: "required" })).rejects.toThrow("required proof algorithm");
+    await expect(f.manager().authorize({ ...OPTIONS, dpop: "required" })).rejects.toMatchObject({ code: "oauth-device-unsupported" });
     expect(f.requests.map(request => new URL(request.url).pathname)).not.toContain("/device");
     expect(f.storage.size).toBe(0);
   });

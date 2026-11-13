@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { refreshAuthorization } from "@modelcontextprotocol/sdk/client/auth.js";
 import { OAuthTokensSchema, type OAuthTokens, type AuthorizationServerMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
-import { authorizeDeviceCode, discoverDeviceAuthorizationMetadata, isOAuthConnectionTimeout, type DeviceCodePresentation } from "../auth/oauth-device-code.js";
-import { createDpopFetch, DpopKey, negotiateDpop } from "../auth/oauth-dpop.js";
+import { authorizeDeviceCode, discoverDeviceAuthorizationMetadata, isOAuthConnectionTimeout, DeviceAuthorizationError, type DeviceCodePresentation } from "../auth/oauth-device-code.js";
+import { createDpopFetch, DpopError, DpopKey, negotiateDpop } from "../auth/oauth-dpop.js";
+import { PluginDeviceAuthError } from "../auth/plugin-device-auth-error.js";
+import { SecretEncryptionUnavailableError } from "../data/secret-document-store.js";
 import type { DeviceCodeAuthorizationOptions, DeviceCodeFetchOptions } from "../plugins/public-contract.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
@@ -43,6 +45,17 @@ export interface PluginDeviceAuthDependencies {
 
 const MAX_AUTH_BODY_BYTES = 1024 * 1024;
 const MAX_CREDENTIAL_HANDLES = 64;
+
+/** Only trusted authorization failures acquire public failure identities. */
+function authorizationError(error: unknown): unknown {
+  if (error instanceof DeviceAuthorizationError) {
+    return new PluginDeviceAuthError(error.code === "oauth-device-headless" ? "oauth-device-human-required" : error.code);
+  }
+  if (error instanceof DpopError) {
+    return new PluginDeviceAuthError(error.code === "oauth-dpop-unsupported" ? "oauth-device-unsupported" : "oauth-device-failed");
+  }
+  return error;
+}
 
 function authUrl(raw: unknown): URL {
   if (typeof raw !== "string") throw new Error("oauth-device-invalid-url");
@@ -100,7 +113,9 @@ export class PluginDeviceAuth {
 
   authorize(options: DeviceCodeAuthorizationOptions, signal?: AbortSignal): Promise<{ handle: string }> {
     if (this.authorization) return Promise.reject(new Error("oauth-device-already-pending"));
-    this.authorization = this.authorizeOnce(options, signal).finally(() => { this.authorization = undefined; });
+    this.authorization = this.authorizeOnce(options, signal)
+      .catch(error => { throw authorizationError(error); })
+      .finally(() => { this.authorization = undefined; });
     return this.authorization;
   }
 
@@ -110,7 +125,7 @@ export class PluginDeviceAuth {
     if (!this.dependencies.enabled()) throw new Error("oauth-device-not-enabled");
     if (this.credentials.size >= MAX_CREDENTIAL_HANDLES) throw new Error("oauth-device-handle-limit");
     const options = validateOptions(raw);
-    if (!await this.dependencies.canStoreEncrypted()) throw new Error("oauth-device-encrypted-storage-required");
+    if (!await this.dependencies.canStoreEncrypted()) throw new PluginDeviceAuthError("oauth-device-encrypted-storage-unavailable");
     this.assertActive();
     const binding = JSON.stringify(options);
     const storageKey = `oauth.plugin-device.${createHash("sha256").update(JSON.stringify([this.pluginId, binding])).digest("hex")}`;
@@ -143,7 +158,7 @@ export class PluginDeviceAuth {
       live = { storageKey, saved, controller: new AbortController(), ...(saved.key !== undefined ? { key: await DpopKey.restore(saved.key) } : {}) };
     } else {
       if (this.dependencies.headless() || !this.dependencies.presentation?.available()) {
-        throw new Error("oauth-device-headless: Authenticate interactively before running unattended; do not retry");
+        throw new PluginDeviceAuthError("oauth-device-human-required");
       }
       const signal = callerSignal ? AbortSignal.any([this.controller.signal, callerSignal]) : this.controller.signal;
       const metadata = await this.discover(options.issuer, signal);
@@ -215,10 +230,16 @@ export class PluginDeviceAuth {
     const serialized = JSON.stringify(live.saved);
     this.writes = this.writes.catch(() => {}).then(async () => {
       this.assertActive();
-      if (!await this.dependencies.canStoreEncrypted()) throw new Error("oauth-device-encrypted-storage-required");
+      if (!await this.dependencies.canStoreEncrypted()) throw new PluginDeviceAuthError("oauth-device-encrypted-storage-unavailable");
       this.assertActive();
       if (live.revoked) throw new Error("oauth-device-unknown-handle");
-      await this.dependencies.setSecret(live.storageKey, serialized);
+      try { await this.dependencies.setSecret(live.storageKey, serialized); }
+      catch (error) {
+        if (error instanceof SecretEncryptionUnavailableError) {
+          throw new PluginDeviceAuthError("oauth-device-encrypted-storage-unavailable");
+        }
+        throw error;
+      }
     });
     await this.writes;
     this.assertActive();
@@ -254,7 +275,11 @@ export class PluginDeviceAuth {
     return live.refresh;
   }
 
-  async fetch(options: DeviceCodeFetchOptions, signal?: AbortSignal): Promise<Response> {
+  fetch(options: DeviceCodeFetchOptions, signal?: AbortSignal): Promise<Response> {
+    return this.fetchResource(options, signal).catch(error => { throw authorizationError(error); });
+  }
+
+  private async fetchResource(options: DeviceCodeFetchOptions, signal?: AbortSignal): Promise<Response> {
     this.assertActive();
     signal?.throwIfAborted();
     if (!this.dependencies.enabled()) throw new Error("oauth-device-not-enabled");

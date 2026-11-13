@@ -1483,6 +1483,16 @@ export interface HostFetchInit extends RequestInit {
   auth?: { lease: string };
 }
 
+/** Fixed sanitized failure identities exposed by host-owned device authorization. */
+export type DeviceCodeAuthorizationErrorCode =
+  | "oauth-device-human-required"
+  | "oauth-device-encrypted-storage-unavailable"
+  | "oauth-device-denied"
+  | "oauth-device-expired"
+  | "oauth-device-canceled"
+  | "oauth-device-unsupported"
+  | "oauth-device-failed";
+
 export interface DeviceCodeAuthorizationOptions {
   issuer: string;
   clientId: string;
@@ -1643,7 +1653,7 @@ export interface PluginHostApi {
     options: OpenAuthWindowCookieOptions,
   ): Promise<AuthWindowCookie[]>;
 
-  /** Host-owned device authorization and opaque credential use. */
+  /** Host-owned device authorization and opaque credential use. Recognized authorization failures expose a sanitized {@link DeviceCodeAuthorizationErrorCode} on `code`. */
   authDeviceCode: {
     /** Discover and authorize a public client; credentials remain encrypted in the host. */
     authorize(options: DeviceCodeAuthorizationOptions): Promise<{ handle: string }>;

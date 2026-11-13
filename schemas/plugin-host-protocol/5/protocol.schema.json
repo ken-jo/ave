@@ -103,6 +103,13 @@
                 "worker-transport-unsupported",
                 "worker-control-failed",
                 "worker-already-running",
+                "oauth-device-human-required",
+                "oauth-device-encrypted-storage-unavailable",
+                "oauth-device-denied",
+                "oauth-device-expired",
+                "oauth-device-canceled",
+                "oauth-device-unsupported",
+                "oauth-device-failed",
                 "host-internal"
               ]
             },
@@ -158,6 +165,13 @@
         "worker-transport-unsupported",
         "worker-control-failed",
         "worker-already-running",
+        "oauth-device-human-required",
+        "oauth-device-encrypted-storage-unavailable",
+        "oauth-device-denied",
+        "oauth-device-expired",
+        "oauth-device-canceled",
+        "oauth-device-unsupported",
+        "oauth-device-failed",
         "host-internal"
       ]
     },
@@ -220,6 +234,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -298,7 +319,7 @@
       "ai.agent-connector.ave/host/authDeviceCode/authorize": {
         "description": "Discover and authorize a public client; credentials remain encrypted in the host.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, oauth-device-human-required, oauth-device-encrypted-storage-unavailable, oauth-device-denied, oauth-device-expired, oauth-device-canceled, oauth-device-unsupported, oauth-device-failed.",
           "properties": {
             "code": {
               "type": "integer"
@@ -353,6 +374,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -466,6 +494,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -524,7 +559,7 @@
       "ai.agent-connector.ave/host/authDeviceCode/fetch": {
         "description": "Fetch only the exact authorized resource through the host network policy.",
         "errors": {
-          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied, oauth-device-human-required, oauth-device-encrypted-storage-unavailable, oauth-device-denied, oauth-device-expired, oauth-device-canceled, oauth-device-unsupported, oauth-device-failed.",
           "properties": {
             "code": {
               "type": "integer"
@@ -579,6 +614,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -684,6 +726,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -797,6 +846,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -911,6 +967,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -1030,6 +1093,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -1138,6 +1208,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -1243,6 +1320,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -1386,6 +1470,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -1495,6 +1586,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -1633,6 +1731,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -1741,6 +1846,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -1846,6 +1958,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -1954,6 +2073,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -2055,6 +2181,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -2171,6 +2304,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -2395,6 +2535,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -2500,6 +2647,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -2613,6 +2767,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -2726,6 +2887,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -3022,6 +3190,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -3131,6 +3306,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -3239,6 +3421,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -3546,6 +3735,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -3722,6 +3918,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -3827,6 +4030,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -3932,6 +4142,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -4037,6 +4254,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -4142,6 +4366,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -4247,6 +4478,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -4359,6 +4597,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -4477,6 +4722,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -4590,6 +4842,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -4712,6 +4971,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -4821,6 +5087,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
@@ -4933,6 +5206,13 @@
                     "worker-transport-unsupported",
                     "worker-control-failed",
                     "worker-already-running",
+                    "oauth-device-human-required",
+                    "oauth-device-encrypted-storage-unavailable",
+                    "oauth-device-denied",
+                    "oauth-device-expired",
+                    "oauth-device-canceled",
+                    "oauth-device-unsupported",
+                    "oauth-device-failed",
                     "host-internal"
                   ]
                 },
