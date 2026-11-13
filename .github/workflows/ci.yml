@@ -247,6 +247,76 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  background-ui-audit:
+    name: Full background UI E2E
+    needs: build
+    if: needs.build.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/.cache/electron
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
+      BUN_INSTALL_CACHE_DIR: ${{ github.workspace }}/.cache/bun
+      AVE_UV_DOWNLOAD_CACHE_DIR: ${{ github.workspace }}/.cache/uv-archives
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ave
+          persist-credentials: false
+      - uses: ./ave/.github/actions/setup-bun
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          bun-version-file: ave/.bun-version
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ave/node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-ci-nm-${{ hashFiles('ave/bun.lock', 'ave/patches/**') }}
+      - uses: ./ave/.github/actions/cache-runtime-tools
+        with:
+          repository: ave
+      - name: Install full background runtime dependencies
+        uses: ./ave/.github/actions/linux-packages
+        with:
+          packages: xvfb xauth libgtk-3-0t64 libnss3 libasound2t64 libgbm1 bubblewrap socat ripgrep zsh
+      - name: Allow unprivileged user namespaces
+        run: |
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -r "$knob" ] && [ "$(cat "$knob")" != "0" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true
+      - run: bun install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        working-directory: ave
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ci-build
+          path: ave/dist
+      - name: Run every background UI spec without retries
+        working-directory: ave
+        env:
+          AVE_E2E_OS_FOCUS: "0"
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/ave/test-results/background-full/results.json
+        run: |
+          set -euo pipefail
+          mkdir -p test-results/background-full
+          started=$SECONDS
+          trap 'elapsed=$((SECONDS - started)); echo "$elapsed" > test-results/background-full/wall-seconds.txt; echo "Full background UI wall time: ${elapsed}s" | tee -a "$GITHUB_STEP_SUMMARY"' EXIT
+          task_home=$(mktemp -d "$RUNNER_TEMP/background-full-home.XXXXXX")
+          mkdir -p "$task_home/tmp"
+          export HOME="$task_home" AVE_HOME="$task_home/.ave" TMPDIR="$task_home/tmp"
+          xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e --retries=0 --reporter=list,json --output=test-results/background-full/cases 2>&1 | tee test-results/background-full/console.log
+      - name: Upload full background UI evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: background-ui-full-results
+          path: ave/test-results/background-full
+          if-no-files-found: error
+          retention-days: 7
+
   vitest:
     name: Vitest shard ${{ matrix.shard }}
     needs: build
@@ -275,8 +345,8 @@ jobs:
       # The suite's sandbox tests need bwrap, socat and rg, and the terminal's
       # real-shell tests (typing, and the differential check of what zsh and
       # bash run against what the permission rules read) need zsh, which the
-      # Ubuntu image lacks. The build job and build-and-test run no tests, so
-      # only the shards install them.
+      # runner image lacks. The shards and full background audit exercise real
+      # shells; the build's approval subset does not.
       - name: Install Linux sandbox and real-shell tools
         uses: ./ave/.github/actions/linux-packages
         with:

@@ -70,4 +70,17 @@ describe("native focus test selection", () => {
     expect(step.run).toContain("GITHUB_STEP_SUMMARY");
     expect(build.steps.find((entry: { name?: string }) => entry.name === "Upload background UI evidence").if).toContain("always()");
   });
+
+  it("audits every background spec using the existing build and no retries", () => {
+    const workflow = parse(readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"));
+    const audit = workflow.jobs["background-ui-audit"];
+    expect(audit.needs).toBe("build");
+    expect(audit["runs-on"]).toBe("ubuntu-24.04-arm");
+    const step = audit.steps.find((entry: { name?: string }) => entry.name === "Run every background UI spec without retries");
+    expect(step.env.AVE_E2E_OS_FOCUS).toBe("0");
+    expect(step.run).toContain("bun run test:ui-e2e --retries=0 --reporter=list,json");
+    expect(step.run).not.toMatch(/--(?:grep|shard|max-failures|workers|timeout)/);
+    expect(step.run).toContain("wall-seconds.txt");
+    expect(audit.steps.find((entry: { name?: string }) => entry.name === "Upload full background UI evidence").if).toBe("always()");
+  });
 });
