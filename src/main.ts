@@ -19,11 +19,6 @@ import {
 import { setIsPackaged } from "./boot/dev-flags.js";
 import { createLogger } from "./lib/logger.js";
 import { bootstrapErrorForLog } from "./main/bootstrap-error-log.js";
-import {
-  isAppUpdateInstallPrepared,
-  isAppUpdateInstallRequested,
-  markAppUpdateInstallPrepared,
-} from "./main/app-update-install-intent.js";
 import { projectRoot } from "./main/main-paths.js";
 import { applyRuntimeAppIcon, runEarlyBootEnv } from "./main/early-boot-env.js";
 import { defaultAveHome } from "./shared/ave-home.js";
@@ -32,7 +27,8 @@ import { readPersistedCorpCaConfigSync } from "./main/persisted-corp-ca.js";
 import { loadMainStartupDependencies } from "./main/startup-dependencies.js";
 import { showConfigurationBootError } from "./main/configuration-boot-error.js";
 import { updateSplashStatus, waitForMinimumBootstrapSplash } from "./main/bootstrap-splash.js";
-import { registerShutdownHook, runAppShutdownCleanup, runShutdownHooks } from "./main/app-shutdown.js";
+import { createAppBeforeQuitHandler, registerShutdownHook } from "./main/app-shutdown.js";
+import type { AppServices } from "./boot/types.js";
 import {
   createWindow,
   getAppWindows,
@@ -87,11 +83,10 @@ import {
 import {
   getMainWindow,
   getPendingAveUri,
-  getServices,
   isAppShutdownCompleted,
   isAppShutdownStarted,
+  isAppQuitRequested,
   isPendingRendererReload,
-  setAppQuitRequested,
   setPendingAveUri,
   setRendererReloadReady,
   setServices,
@@ -143,8 +138,10 @@ const execRequest = parseExecFlags(process.argv, launchCwd);
 // answer, so it is derived once here rather than re-tested at each site.
 const bootLaunch = execRequest === null ? "interactive" : "headless";
 let guiBootstrapFailed = false;
+let resourceStartupPromise: Promise<void> | null = null;
 
 async function main() {
+  if (isAppQuitRequested()) return;
   // A malformed `--exec` / `--set-secret` command line is answered before a
   // window, a splash, or a service exists: there is nothing to boot for.
   if (execRequest !== null && "error" in execRequest) {
@@ -154,12 +151,17 @@ async function main() {
     return;
   }
   if (execRequest?.workloadBroker) {
-    await initializeWorkloadBroker(execRequest.workloadBroker);
+    resourceStartupPromise = initializeWorkloadBroker(execRequest.workloadBroker).then(() => undefined);
+    await resourceStartupPromise;
+    if (isAppQuitRequested()) return;
     if (!execRequest.turn || !isActiveWorkloadBrokerCwd(execRequest.turn.cwd)) {
       throw new Error("workload-broker:cwd-binding-mismatch");
     }
   }
+  let finishResourceStartup: (() => void) | undefined;
   const startDesktop = async () => {
+    if (isAppQuitRequested()) return null;
+    resourceStartupPromise = new Promise<void>((resolve) => { finishResourceStartup = resolve; });
     configureNativeWindowCoordinator({
       showOrCreateMainWindow,
       openNewMainWindow,
@@ -185,21 +187,24 @@ async function main() {
       () => updateSplashStatus(t("be_main.splashLoadingSettings")),
     );
   };
-  const operatorAttestationPath = execRequest?.operatorAttestationPath;
-  const desktopBoot = operatorAttestationPath !== undefined
-    ? await (await import("./main/operator-attestation-boot.js"))
-      .startAfterOperatorAttestation(operatorAttestationPath, startDesktop)
-    : await startDesktop();
-  const { bootstrap } = desktopBoot;
-
-  // Drive splash status from the real bootstrap pipeline so the text below
-  // the wordmark matches what's actually happening rather than cycling
-  // through a setInterval list. The fallback idle cycle inside the splash
-  // still runs until the first explicit update lands.
-  // `bootLaunch` is the single fact boot derives every service-connection
-  // decision from: a headless one-shot run opens none of its own.
-  const services = await bootstrap(projectRoot, getMainWindow(), () => getMainWindow(), bootLaunch);
-  setServices(services);
+  let initializedServices: AppServices | undefined;
+  try {
+    const operatorAttestationPath = execRequest?.operatorAttestationPath;
+    const desktopBoot = operatorAttestationPath !== undefined
+      ? await (await import("./main/operator-attestation-boot.js"))
+        .startAfterOperatorAttestation(operatorAttestationPath, startDesktop)
+      : await startDesktop();
+    if (!desktopBoot || isAppQuitRequested()) return;
+    // Keep the resource barrier through service publication, independently of later host work.
+    const initialized = await desktopBoot.bootstrap(projectRoot, getMainWindow(), () => getMainWindow(), bootLaunch);
+    if (!initialized) return;
+    initializedServices = initialized;
+    setServices(initialized);
+  } finally {
+    finishResourceStartup?.();
+  }
+  if (!initializedServices || isAppQuitRequested()) return;
+  const services = initializedServices;
   configureAppZoom(() => broadcastSettingsSnapshot({ settingsService: services.settingsService, getAppWindows, getMainWindow }));
   // Electron's native theme (window frames and material, native menus, `prefers-color-scheme` in every web contents) follows
   // the app's appearance mode; `createWindow` set it
@@ -646,7 +651,7 @@ if (!gotSingleInstanceLock) {
     installSideBrowserPartitionPolicy();
     void main().catch(async (error) => {
       log.error({ err: bootstrapErrorForLog(error) }, "bootstrap failed");
-      if (bootLaunch !== "headless" && execRequest === null) {
+      if (!isAppQuitRequested() && bootLaunch !== "headless" && execRequest === null) {
         showConfigurationBootError(error);
         try {
           const { showProviderSettingsStartupError } = await import("./main/provider-settings-startup-error.js");
@@ -747,31 +752,13 @@ app.on("will-quit", (event) => {
 // needs to stop a timer, a watcher or a batch exporter registers a shutdown
 // hook instead of a listener of its own, so this count does not grow with the
 // service graph and Electron's `App` never crosses Node's listener ceiling.
-app.on("before-quit", (event) => {
-  setAppQuitRequested(true);
-  // Hooks run first and unconditionally. Eight of them were prepended
-  // listeners, which fired ahead of this handler; all of them fired on quits
-  // where the guards below return early.
-  runShutdownHooks();
-  const appUpdateInstallRequested = isAppUpdateInstallRequested();
-  if (isAppUpdateInstallPrepared()) return;
-  if (!getServices() || isAppShutdownCompleted()) return;
-  if (isAppShutdownStarted()) {
-    event.preventDefault();
-    return;
-  }
-  event.preventDefault();
-  void (async () => {
-    const outcome = await runAppShutdownCleanup({
-      reason: appUpdateInstallRequested ? "app-update-install" : "before-quit",
-      exitOnTimeout: !appUpdateInstallRequested,
-    });
-    if (appUpdateInstallRequested) {
-      markAppUpdateInstallPrepared();
-      app.quit();
-      return;
+app.on("before-quit", createAppBeforeQuitHandler({
+  getResourceStartup: () => resourceStartupPromise,
+  quit: (outcome) => {
+    if (outcome === "failed" || outcome === "timed-out") {
+      guiBootstrapFailed = true;
+      if (process.exitCode === undefined || process.exitCode === 0) process.exitCode = GUI_BOOT_FAILURE_EXIT_CODE;
     }
-    if (outcome === "timed-out") return;
     app.quit();
-  })();
-});
+  },
+}));

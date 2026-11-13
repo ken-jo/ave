@@ -24,9 +24,16 @@ import {
 import {
   getServices,
   isAppShutdownCompleted,
+  isAppShutdownStarted,
+  setAppQuitRequested,
   setAppShutdownCompleted,
   setAppShutdownStarted,
 } from "./app-state.js";
+import {
+  isAppUpdateInstallPrepared,
+  isAppUpdateInstallRequested,
+  markAppUpdateInstallPrepared,
+} from "./app-update-install-intent.js";
 import { errorMessage } from "../shared/error-message.js";
 import { interruptRunningTurnsForExit } from "../engine/turn/turn-journal.js";
 import { disposeBrowserUploads } from "./browser/browser-upload.js";
@@ -94,6 +101,46 @@ export function runShutdownHooks(): void {
   for (const hook of shutdownHooks) runShutdownHook(hook);
 }
 
+export function createAppBeforeQuitHandler(options: {
+  quit: (outcome?: AppShutdownCleanupOutcome) => void;
+  getResourceStartup: () => Promise<void> | null;
+}): (event: { preventDefault(): void }) => void {
+  let startupShutdownPending = false;
+  return (event) => {
+    setAppQuitRequested(true);
+    runShutdownHooks();
+    const appUpdateInstallRequested = isAppUpdateInstallRequested();
+    if (isAppUpdateInstallPrepared()) return;
+    if (isAppShutdownCompleted()) return;
+    const resourceStartup = getServices() ? null : options.getResourceStartup();
+    if (!getServices() && !resourceStartup) return;
+    if (startupShutdownPending || isAppShutdownStarted()) {
+      event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    startupShutdownPending = resourceStartup !== null;
+    void (async () => {
+      // Startup reports its own failure; its resource lifetime must settle before cleanup.
+      if (resourceStartup) await resourceStartup.catch(() => {});
+      const incomplete = !getServices();
+      const outcome = incomplete
+        ? await runIncompleteBootShutdown()
+        : await runAppShutdownCleanup({
+          reason: appUpdateInstallRequested ? "app-update-install" : "before-quit",
+          exitOnTimeout: !appUpdateInstallRequested,
+        });
+      if (appUpdateInstallRequested) {
+        markAppUpdateInstallPrepared();
+        options.quit(incomplete ? outcome : undefined);
+        return;
+      }
+      if (outcome === "timed-out" && !incomplete) return;
+      options.quit(incomplete ? outcome : undefined);
+    })();
+  };
+}
+
 // Flush the final timeout diagnostic before hard exit, with its own short deadline so logging cannot defeat shutdown.
 async function flushLogger(): Promise<void> {
   await new Promise<void>((resolve) => {
@@ -147,7 +194,7 @@ export type AppShutdownCleanupOutcome = "completed" | "skipped" | "timed-out" | 
 let appShutdownCleanupPromise: Promise<AppShutdownCleanupOutcome> | null = null;
 
 // Stop a rejected or interrupted bootstrap before AppServices is published.
-export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShutdownCleanupOutcome> {
+export async function runIncompleteBootShutdown(host: BootHost | undefined = shutdownHost): Promise<AppShutdownCleanupOutcome> {
   const reason = "host bootstrap interrupted or failed";
   setAppShutdownStarted(true);
   sealMxcHolderLifetimeAdmission(reason);
@@ -184,6 +231,7 @@ export async function runIncompleteBootShutdown(host?: BootHost): Promise<AppShu
   }
   await flushLogger();
   closeFileLogSink();
+  setAppShutdownCompleted(true);
   return result.status;
 }
 
