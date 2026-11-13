@@ -244,7 +244,8 @@ async function reset(): Promise<void> {
   const opened = browserTabRegistry.requestTabOp(win.id, { op: "new", url: `${origin}/page`, actor, active: true });
   // Agent pages own an independent native compositor from their initial blank document.
   const view = new WebContentsView({ webPreferences: {
-    partition: NATIVE_BROWSER_PARTITION, contextIsolation: true, sandbox: true, nodeIntegration: false,
+    partition: NATIVE_BROWSER_PARTITION, focusOnNavigation: false, backgroundThrottling: false,
+    contextIsolation: true, sandbox: true, nodeIntegration: false,
   } });
   guest = view.webContents;
   const ownedGuest = guest;
@@ -269,6 +270,15 @@ async function reset(): Promise<void> {
   finally { browserTabRegistry.releaseControl(tabId, bootstrapLease.id); }
   guest.setZoomFactor(1);
   win.webContents.setZoomFactor(1);
+  // Loading alone does not establish a rendered viewport. Let guest animation
+  // frames advance at the final geometry before its first pointer gesture.
+  await guest.executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve({
+    width: innerWidth, height: innerHeight, visibility: document.visibilityState
+  }))))`).then((viewport: { width: number; height: number; visibility: string }) => {
+    if (viewport.width !== 900 || viewport.height !== 720 || viewport.visibility !== "visible") {
+      throw new Error(`Native fixture presentation unavailable: ${JSON.stringify(viewport)}`);
+    }
+  });
   if (fixtureMode === "foreground") { win.show(); app.focus({ steal: true }); win.focus(); }
 
 }

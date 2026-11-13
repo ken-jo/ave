@@ -200,7 +200,19 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await page.keyboard.press("Control+C");
     await page.keyboard.type(`echo ${userSentinel}`);
     await page.keyboard.press("Enter");
-    await expect.poll(async () => (await hostOutput()).split(userSentinel).length, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+    // Read the shell-marked output: terminal wrapping may split the echoed command.
+    await expect.poll(() => terminalPage.evaluate(async ({ session, command }) => {
+      const terminal = window.aveApi.terminal;
+      if (!terminal) throw new Error("Terminal API is unavailable");
+      const blocks = await terminal.listBlocks(session);
+      if (!blocks.ok) throw new Error(`Terminal blocks unavailable: ${blocks.error}`);
+      const summary = blocks.blocks.find(block => block.command === command);
+      if (!summary || summary.status !== "done") return null;
+      const result = await terminal.getBlock(session, summary.id);
+      if (!result.ok) throw new Error(`Terminal block unavailable: ${result.error}`);
+      return { output: result.block.output, exitCode: result.block.exitCode };
+    }, { session: terminalSession, command: `echo ${userSentinel}` }), { timeout: 10_000 })
+      .toEqual({ output: `${userSentinel}\n`, exitCode: 0 });
     await expect(pane.locator(".xterm-rows")).toContainText(userSentinel);
     await expect(observationFailed).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("host-user-takeover.png") });
