@@ -20,6 +20,7 @@ import type {
 import type { McpGovernance } from "./mcp-governance.js";
 import type { ToolRegistry } from "../tools/registry.js";
 import { mcpToolToTool } from "./mcp-tool-adapter.js";
+import { MCP_SKILLS_EXTENSION, parseMcpSkill, mcpSkillFingerprint, verifyMcpSkillRead, type McpSkill } from "./mcp-skills.js";
 import {
   NetworkGuardError,
   ensurePublicHttpUrl,
@@ -27,6 +28,7 @@ import {
   validateHttpUrl,
 } from "../core/network-guard.js";
 import {
+  isCanonicalSkillResourceUri,
   isHostFetchRefusedUri,
   isUsableResourceUri,
   MCP_RESOURCE_DESCRIPTION_MAX_CHARS,
@@ -393,6 +395,7 @@ interface PendingRequest extends PendingJsonRpcRequest<NodeJS.Timeout | null> {
 }
 
 export class McpClient {
+  private readonly skills = new Map<string, McpSkill>();
   private nextRequestId = 1;
   private readonly pendingRequests = new Map<number, PendingRequest>();
   /** Per-tool validated `x-mcp-header` annotations (HTTP transport only), captured at discovery so
@@ -559,6 +562,7 @@ export class McpClient {
       // Same for application-driven resources.
       await this.discoverResources();
       await this.discoverResourceTemplates();
+      await this.discoverSkills();
 
       this.state.status = "connected";
       this.state.connectedAt = new Date().toISOString();
@@ -579,8 +583,87 @@ export class McpClient {
     }
   }
 
-  /** Discover the server's user-controlled prompts. Gated on BOTH the server having ADVERTISED the `prompts` capability at discovery AND the server being APPROVED for it (the same governance whitelist
-   * every request is gated on). Non-fatal: prompts are an optional surface, so a failure never breaks the tool connection. Pagination is bounded so a hostile `nextCursor` loop cannot hang the handshake. */
+  /** Validated metadata only; files remain behind the skill loading path. */
+  getSkillEntries(): readonly McpSkill[] {
+    return [...this.skills.values()];
+  }
+
+  private async assertSkillsAdvertised(): Promise<void> {
+    if (!await this.capabilityAdvertised("skills", { securityGate: true })) {
+      throw new Error("Server did not advertise the skills extension and resources");
+    }
+  }
+
+  private skillResult(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid skills response");
+    const result = value as Record<string, unknown>;
+    if (result.resultType !== "complete" || typeof result.ttlMs !== "number" || !Number.isFinite(result.ttlMs)
+      || result.ttlMs < 0 || (result.cacheScope !== "public" && result.cacheScope !== "private")) {
+      throw new Error("Invalid skills response envelope");
+    }
+    return result;
+  }
+
+  private async discoverSkills(): Promise<void> {
+    if (!await this.capabilityAdvertised("skills", { securityGate: true })
+      || !this.governance.validateRequestCapability(this.config.id, "skills/list", {}).valid) return;
+    try {
+      const next = new Map<string, McpSkill>();
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < 20; page++) {
+        const result = this.skillResult(await this.sendRequest("skills/list", cursor ? { cursor } : {}));
+        if (!Array.isArray(result.skills)) throw new Error("Invalid skills list");
+        for (const value of result.skills) {
+          const skill = parseMcpSkill(value);
+          if (next.has(skill.uri)) throw new Error("Duplicate skill URI");
+          next.set(skill.uri, skill);
+          if (next.size > 256) throw new Error("Skill catalog exceeds 256 entries");
+        }
+        if (result.nextCursor === undefined) break;
+        if (typeof result.nextCursor !== "string" || !result.nextCursor || cursors.has(result.nextCursor) || page === 19) {
+          throw new Error("Invalid skills pagination");
+        }
+        cursor = result.nextCursor;
+        cursors.add(cursor);
+      }
+      this.skills.clear();
+      for (const [uri, skill] of next) this.skills.set(uri, skill);
+    } catch (error) {
+      this.skills.clear();
+      log.warn("Skill discovery failed: %s", errorMessage(error));
+    }
+  }
+
+  async getSkill(uri: string): Promise<McpSkill> {
+    // An explicit refresh withdraws the old snapshot until a valid response replaces it.
+    this.skills.delete(uri);
+    if (!isCanonicalSkillResourceUri(uri)) throw new Error("Invalid skill URI");
+    await this.assertSkillsAdvertised();
+    const result = this.skillResult(await this.sendRequest("skills/get", { uri }));
+    const skill = parseMcpSkill(result.skill);
+    if (skill.uri !== uri) throw new Error("Skill response identity mismatch");
+    this.skills.set(uri, skill);
+    return skill;
+  }
+
+  async readSkillResource(skill: McpSkill, uri: string): Promise<Buffer> {
+    try {
+      await this.assertSkillsAdvertised();
+      const current = this.skills.get(skill.uri);
+      if (!current || mcpSkillFingerprint(current) !== mcpSkillFingerprint(skill)) throw new Error("Skill changed; reload and approve it again");
+      // Reject unlisted reads before sending a request, including cross-origin references.
+      if (skill.resources === "dynamic" || !skill.resources.some((file) => file.uri === uri)) throw new Error("Skill resource is not in the approved manifest");
+      const bytes = verifyMcpSkillRead(skill, uri, await this.sendRequest("resources/read", { uri }));
+      if (this.skills.get(skill.uri) !== current) throw new Error("Skill changed during read");
+      return bytes;
+    } catch (error) {
+      this.skills.delete(skill.uri);
+      throw error;
+    }
+  }
+
+  /** Discover advertised, approved prompts without reading their content. Pagination is bounded. */
   private async discoverPrompts(): Promise<void> {
     if (!(await this.capabilityAdvertised("prompts"))) return;
     if (!this.governance.validateRequestCapability(this.config.id, "prompts/list", {}).valid) {
@@ -1182,7 +1265,7 @@ export class McpClient {
   /** Whether the server currently advertises `kind` (§6a.2). On an expired snapshot this refreshes single-flight first. Refresh FAILURE splits by consumer: an availability read keeps serving the stale snapshot (a fetch hiccup must not disable
    * working surfaces); the Apps `_meta.ui` honor gate passes `securityGate` and fails CLOSED instead; it decides whether server-authored UI is honored, so a stale-and-unrefreshable claim is not good enough. Legacy servers never advertise these surfaces. */
   private async capabilityAdvertised(
-    kind: "appsUi" | "prompts" | "resources",
+    kind: "appsUi" | "prompts" | "resources" | "skills",
     opts?: { securityGate?: boolean },
   ): Promise<boolean> {
     if (this.mode === "legacy") return false;
@@ -1192,7 +1275,7 @@ export class McpClient {
       } catch (err) {
         if (opts?.securityGate) {
           log.warn(
-            `${this.config.id} capability snapshot refresh failed — failing the Apps gate closed: %s`,
+            `${this.config.id} capability snapshot refresh failed — failing the capability gate closed: %s`,
             err,
           );
           return false;
@@ -1203,6 +1286,11 @@ export class McpClient {
     const capabilities = this.capabilitySnapshot?.discover.capabilities;
     if (!capabilities) return false;
     switch (kind) {
+      case "skills": {
+        const extension = capabilities.extensions?.[MCP_SKILLS_EXTENSION];
+        return capabilities.resources !== undefined && extension !== null
+          && typeof extension === "object" && !Array.isArray(extension);
+      }
       case "appsUi":
         return capabilities.extensions?.[MCP_APPS_UI_EXTENSION] !== undefined;
       case "prompts":
@@ -1490,6 +1578,7 @@ export class McpClient {
   /** Drop everything discovery produced. Called by BOTH teardown paths, because a catalogue that outlives its connection is worse than an empty one: every consumer keeps offering
    * names and URIs whose call can only fail, and the failure surfaces far from the cause. `handleTransportClose` used to clear the tools and leave prompts and resources behind. */
   private clearDiscoveredSurfaces(): void {
+    this.skills.clear();
     if (this.toolsRefreshTimer) {
       clearTimeout(this.toolsRefreshTimer);
       this.toolsRefreshTimer = null;

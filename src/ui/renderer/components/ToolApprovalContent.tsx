@@ -106,7 +106,7 @@ const UNSUPPORTED_ELICITATION_SCHEMA: ElicitationSchemaParseResult = { supported
 
 function isBoilerplateApprovalReason(value: string): boolean {
   const normalized = value.trim();
-  return /^user confirmation required(?:\s*\([^)]*\))?[.!]?$/i.test(normalized)
+  return !normalized || /^user confirmation required(?:\s*\([^)]*\))?[.!]?$/i.test(normalized)
     || /^approval required(?:\s*\([^)]*\))?[.!]?$/i.test(normalized)
     || /^상태 변경 도구\s*\([^)]*\)$/.test(normalized)
     || /\(\s*(?:category|trust)\s*:[^)]+\)\s*$/i.test(normalized);

@@ -303,6 +303,10 @@ new way to load an entire large plugin.
 
 ## Skill Loading Policy
 
+MCP-served skills use these same loading and reading tools. Their protocol pin,
+origin selectors, content-bound execution opt-in and fail-closed resource reads
+are defined in the [MCP skill resource contract](../architecture/mcp-skills-resources.md).
+
 > Status: target policy for Ave `manifest.skills` instruction discovery. It is
 > the skill-side twin of `#tool-loading-policy` and complements
 > `docs/architecture/architecture.md` §4.5/§6.4. Where the tool policy governs

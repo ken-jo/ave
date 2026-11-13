@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { t } from "../i18n/index.js";
 import { createDynamicTool, type Tool } from "./base.js";
-import type { SkillStore } from "../main/skill-store.js";
+import type { LoadedSkill, SkillStore } from "../main/skill-store.js";
 import { SKILL_SELECTOR_ALLOWLIST } from "../main/skill-store.js";
 import { parsePluginSkillSelector } from "../shared/plugin-skill-selector.js";
 import { renderSkillReadResult, type SkillOverlay } from "../main/skill-overlay.js";
@@ -11,6 +11,8 @@ import type { SkillApprovalsStore } from "../main/skill-approvals-store.js";
 import { isHostApprovalRejectedDecision, type ApprovalGate } from "../permissions/approval-gate.js";
 import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession, remoteControllerOriginOf } from "../shared/chat-origin.js";
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
+import { mcpSkillSelector, parseMcpSkillSelector } from "../shared/mcp-skill-selector.js";
+import { errorMessage } from "../shared/error-message.js";
 import { createLogger } from "../lib/logger.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 const log = createLogger("ave");
@@ -24,7 +26,8 @@ export interface SkillLoadEvent {
 
 // Bind approval to body plus bundled names and sizes shown in the fence; resource bytes require separate reads.
 // Keep flat-body and bundled-digest encodings in separate key spaces while preserving existing flat approvals.
-function approvalMaterial(skill: { body: string; resources: readonly { path: string; bytes: number }[] }): string {
+function approvalMaterial(skill: Pick<LoadedSkill, "body" | "resources" | "mcpOwner">): string {
+  if (skill.mcpOwner) return `${skill.mcpOwner.fingerprint}|${sha256Hex(skill.body)}`;
   if (skill.resources.length === 0) return skill.body;
   const manifest = skill.resources
     .map((resource) => `${resource.path}:${resource.bytes}`)
@@ -38,8 +41,10 @@ function approvalRecordKey(skill: {
   name: string;
   approvalKey?: string;
   resources: readonly { path: string; bytes: number }[];
+  mcpOwner?: LoadedSkill["mcpOwner"];
 }): string {
   const base = skill.approvalKey ?? skill.name;
+  if (skill.mcpOwner) return `${base}#mcp-execution`;
   return skill.resources.length === 0 ? base : `${base}#bundled`;
 }
 
@@ -73,8 +78,10 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
     isReadOnly: () => true,
     jsonSchema: {
       type: "object",
-      required: ["skillName"],
+      anyOf: [{ required: ["skillName"] }, { required: ["serverId", "uri"] }],
       properties: {
+        serverId: { type: "string", description: t("be_skillLoad.serverIdDescription") },
+        uri: { type: "string", description: t("be_skillLoad.uriDescription") },
         skillName: {
           type: "string",
           description: t("be_skillLoad.skillNameDescription"),
@@ -89,7 +96,17 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
       const revoked = () => ({ output: JSON.stringify({ error: "Remote controller authority was revoked or is not bound to this session" }), isError: true });
       if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
       const a = (rawInput ?? {}) as Record<string, unknown>;
-      const skillName = typeof a.skillName === "string" ? a.skillName.trim() : "";
+      if ((a.serverId !== undefined || a.uri !== undefined) && (a.skillName !== undefined
+        || typeof a.serverId !== "string" || !a.serverId || typeof a.uri !== "string" || !a.uri || a.uri.length > 4096)) {
+        return { output: JSON.stringify({ error: "Provide skillName or both serverId and uri" }), isError: true };
+      }
+      const skillName = typeof a.serverId === "string" && typeof a.uri === "string" ? mcpSkillSelector(a.serverId, a.uri)
+        : typeof a.skillName === "string" ? a.skillName.trim() : "";
+      if (parseMcpSkillSelector(skillName) && (ctx.headless === true || turnExtensionPolicyContext.getStore()?.headless === true)) {
+        return { output: JSON.stringify({ error: "MCP skills require an interactive conversation" }), isError: true };
+      }
+      const skillDenial = deps.overlay.mcpAdmissionDenial?.(deps.store, sessionId, "skill_load", { ...a, skillName });
+      if (skillDenial) return { output: JSON.stringify({ error: skillDenial }), isError: true };
       if (!skillName) {
         return {
           output: JSON.stringify({ error: "skillName is required" }),
@@ -121,9 +138,15 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
             localId: selectorMatch.localId,
           })
         : undefined;
-      const skill = generationLease
-        ? deps.store.loadPluginGeneration(generationLease.generation, skillName)
-        : await deps.store.load(skillName);
+      let skill: LoadedSkill | null;
+      try {
+        skill = generationLease
+          ? deps.store.loadPluginGeneration(generationLease.generation, skillName)
+          : await deps.store.load(skillName);
+      } catch (error) {
+        generationLease?.release();
+        return { output: JSON.stringify({ error: errorMessage(error) }), isError: true };
+      }
       if (!skill) {
         generationLease?.release();
         return {
@@ -143,21 +166,22 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
           id: randomUUID(),
           category: "tool",
           toolName: "skill_load",
-          // Leave allowedChoices unset so loading unseen skill bodies retains its own approval contract.
+          // Remote activation is an explicit code-execution opt-in; local loads keep their existing choices.
           toolCategory: SKILL_LOAD_CATEGORY,
           // Attribute approval to the loading session; preserve rejection of missing identity after the user's decision.
           ...(typeof ctx.metadata?.sessionId === "string" && ctx.metadata.sessionId
             ? { sessionId: ctx.metadata.sessionId }
             : {}),
           remoteControllerAuthority, remoteControllerOrigin,
-          args: { skillName: skill.name },
-          reason: t("be_skillLoad.approvalReason", { name: skill.name }),
+          args: { skillName: skill.name, ...(skill.mcpOwner ? { serverId: skill.mcpOwner.serverId, uri: skill.mcpOwner.entry.uri, codeExecutionOptIn: true, manifestDigest: skill.mcpOwner.fingerprint } : {}) },
+          reason: skill.mcpOwner ? t("be_skillLoad.mcpApprovalReason", { server: skill.mcpOwner.serverId, uri: skill.mcpOwner.entry.uri }) : t("be_skillLoad.approvalReason", { name: skill.name }),
+          ...(skill.mcpOwner ? { forceExplicit: true, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false } : {}),
           source: "builtin",
           createdAt: Date.now(),
         });
         if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
         const rejected = Boolean(isHostApprovalRejectedDecision(decision));
-        if (rejected || decision.choice.startsWith("deny")) {
+        if (rejected || decision.choice.startsWith("deny") || (skill.mcpOwner && decision.choice !== "allow-once")) {
           return {
             output: JSON.stringify({
               error: `user denied skill load: ${skill.name}`,
@@ -179,12 +203,20 @@ export function createSkillLoadTool(deps: SkillLoadToolDeps): Tool {
         };
       }
       if (!alreadyApproved) {
+        if (skill.mcpOwner && !deps.store.isMcpSkillCurrent(skill.mcpOwner)) {
+          return { output: JSON.stringify({ error: "Skill changed during approval; reload and approve it again" }), isError: true };
+        }
         // The fresh probe above precedes the store's write queue; the synchronous fence guards the commit after any time spent queued or preparing the write.
-        await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), controllerCurrent).catch((err) => {
+        await deps.approvals.approve(approvalRecordKey(skill), approvalMaterial(skill), () => controllerCurrent() && (!skill.mcpOwner || deps.store.isMcpSkillCurrent(skill.mcpOwner))).catch((err) => {
           log.warn("skill_load: approval persistence failed (non-fatal): %s", (err as Error).message);
         });
         if (!await refreshRemoteControllerBoundToSession(remoteControllerAuthority, sessionId) || !controllerCurrent()) return revoked();
       }
+      if (skill.mcpOwner && !deps.store.isMcpSkillCurrent(skill.mcpOwner)) {
+        return { output: JSON.stringify({ error: "Skill changed during approval; reload and approve it again" }), isError: true };
+      }
+      const lateSkillDenial = deps.overlay.mcpAdmissionDenial?.(deps.store, sessionId, "skill_load", { skillName });
+      if (lateSkillDenial) return { output: JSON.stringify({ error: lateSkillDenial }), isError: true };
       // Record approved identity in this conversation's overlay; skill_read reacquires and compares generation rather than retaining the lease.
       deps.overlay.register(sessionId, skill);
 

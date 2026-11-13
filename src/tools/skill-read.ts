@@ -75,6 +75,10 @@ export function createSkillReadTool(deps: SkillReadToolDeps): Tool {
 
       const selectorMatch = /^plugin:([^:]+):([^:]+)$/.exec(skillName);
       try {
+        if (entry.mcpOwner) {
+          const resource = await deps.store.readMcpResource(entry.mcpOwner, resourcePath);
+          return { output: JSON.stringify({ skillName, serverId: entry.mcpOwner.serverId, ...resource }), isError: false };
+        }
         if (parseAgentPluginSkillSelector(skillName)) {
           if (!entry.agentPluginOwner) return toolErrorResult("skill package identity is missing");
           const resource = deps.store.readAgentPluginResource(skillName, entry.agentPluginOwner, resourcePath);

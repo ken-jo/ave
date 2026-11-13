@@ -28,6 +28,16 @@ function makeOneShotPluginRequest(): ApprovalRequest {
 }
 
 describe("ToolApprovalContent allowed choices", () => {
+  it("shows the host's remote skill code-execution consent without requiring review details", () => {
+    const reason = "Untrusted skill instructions may ask the assistant to execute code on this computer.";
+    renderApproval({ ...makeOneShotPluginRequest(), source: "builtin", sourcePluginId: undefined, toolName: "skill_load", toolCategory: "read",
+      args: { serverId: "docs-server", uri: "skill://reports/SKILL.md", codeExecutionOptIn: true },
+      reviewerVerdict: undefined, reason,
+    }, vi.fn());
+    expect(screen.getByTestId("approval-impact-summary")).toHaveTextContent(reason);
+    expect(screen.getByTestId("approval-impact-summary")).toBeVisible();
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
+  });
   it("remembers an ordinary request with unavailable review only when the host permits it", async () => {
     const onDecide = vi.fn();
     const record = vi.fn().mockResolvedValue({ ok: true });

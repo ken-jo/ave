@@ -35,6 +35,7 @@ import {
   validatePowerShellCommandStructure,
 } from "./shell-tools.js";
 import { isCanonicalTerminalRunTool, terminalCommandScopeOf } from "./terminal-run.js";
+import { normalizeMcpResourceReadInput } from "./mcp-resource-tools.js";
 import {
   isCanonicalFileTool,
   normalizeCanonicalFileToolInput,
@@ -771,9 +772,10 @@ export async function runToolInvocation(
       return withHostShellExecutionPlan({ tool_use_id: toolUse.id, content: msg, is_error: true, durationMs });
     }
 
-    const finalInput = preResult.action === "modify" && preResult.updatedInput
+    const rewrittenInput = preResult.action === "modify" && preResult.updatedInput
       ? preResult.updatedInput
       : sessionInput;
+    const finalInput = normalizeMcpResourceReadInput(tool, rewrittenInput);
     let resolvedPluginOperation: ResolvedPluginOperation | undefined;
     let pluginOperationPrincipal: PluginOperationPrincipal | undefined;
     if (tool.operationPolicy) {
@@ -2329,7 +2331,10 @@ export async function runToolInvocation(
       paths: invocationPermissionContext.paths,
       secretRead: invocationPermissionContext.secretRead,
       floor: invocationPermissionContext.floor,
-      admissionDenial: invocationPermissionContext.admissionDenial,
+      admissionDenial: invocationPermissionContext.admissionDenial ?? (() => {
+        const reason = services.skillAdmissionCheck?.(sessionId, toolUse.name, finalInput);
+        return reason ? { code: "mcp-skill-consent", reason } : undefined;
+      })(),
       fileWritePolicy,
       services,
       tool,
