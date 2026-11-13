@@ -4,8 +4,9 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { deferred } from "../../__tests__/support/deferred.js";
 import { setIsPackaged, _resetForTest } from "../../boot/dev-flags.js";
 
-const runtime = vi.hoisted(() => ({ isPackaged: false, setActivationPolicy: vi.fn(), on: vi.fn(), exit: vi.fn() }));
+const runtime = vi.hoisted(() => ({ quitting: false, isPackaged: false, setActivationPolicy: vi.fn(), on: vi.fn(), exit: vi.fn() }));
 vi.mock("electron", () => ({ app: runtime }));
+vi.mock("../app-quit-intent.js", () => ({ isAppQuitRequested: () => runtime.quitting }));
 import { configureE2eWindowPolicy } from "../e2e-window-policy.js";
 import { showWindowForRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
 
@@ -14,11 +15,65 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.clearAllMocks();
   runtime.isPackaged = false;
+  runtime.quitting = false;
   _resetForTest();
   setProcessPlatform(originalPlatform);
 });
 
 describe("background test windows", () => {
+  it("does not start focus emulation after quit has begun", () => {
+    setIsPackaged(false);
+    vi.stubEnv("AVE_E2E", "1");
+    vi.stubEnv("NODE_ENV", "test");
+    configureE2eWindowPolicy();
+    const sendCommand = vi.fn();
+    const contents = Object.assign(new EventEmitter(), {
+      getType: () => "window", isDestroyed: () => false,
+      setBackgroundThrottling: vi.fn(), debugger: { sendCommand },
+    });
+    const listener = runtime.on.mock.calls.find(([event]) => event === "web-contents-created")?.[1];
+    if (!listener) throw new Error("Page policy listener is missing");
+    listener({}, contents);
+    runtime.quitting = true;
+    contents.emit("dom-ready");
+    expect(sendCommand).not.toHaveBeenCalled();
+    expect(contents.setBackgroundThrottling).not.toHaveBeenCalled();
+    expect(runtime.exit).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("fails focus setup only while the app remains live (quitting=%s)", async (quitting) => {
+    setIsPackaged(false);
+    vi.stubEnv("AVE_E2E", "1");
+    vi.stubEnv("NODE_ENV", "test");
+    configureE2eWindowPolicy();
+    let reject!: (error: Error) => void;
+    const command = new Promise<void>((_resolve, fail) => { reject = fail; });
+    const contents = Object.assign(new EventEmitter(), {
+      getType: () => "window", isDestroyed: () => false, setBackgroundThrottling: vi.fn(),
+      debugger: Object.assign(new EventEmitter(), { isAttached: () => true, sendCommand: () => command }),
+    });
+    const listener = runtime.on.mock.calls.find(([event]) => event === "web-contents-created")?.[1];
+    if (!listener) throw new Error("Page policy listener is missing");
+    const report = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      listener({}, contents);
+      contents.emit("dom-ready");
+      runtime.quitting = quitting;
+      reject(new Error("Target closed during focus setup"));
+      await command.catch(() => {});
+      await Promise.resolve();
+      if (quitting) {
+        expect(runtime.exit).not.toHaveBeenCalled();
+        expect(report).not.toHaveBeenCalled();
+      } else {
+        expect(runtime.exit).toHaveBeenCalledExactlyOnceWith(1);
+        expect(report).toHaveBeenCalledOnce();
+      }
+    } finally {
+      report.mockRestore();
+    }
+  });
+
   it.each([
     [false, "1", "test", false, true],
     [true, "1", "test", false, false],

@@ -1003,6 +1003,7 @@ async function loadSandboxManager() {
 
 // Whether initializeAsrtSandbox has run to completion in this process. This is the host-tool spawn path's gate: tool code (bash.ts/powershell.ts) asks THIS module — not the settings service — whether to route through ASRT, so the gate is decided once at boot and cannot be re-evaluated mid-run. That preserves the seal-after-boot security property the registry had: there is no runtime channel to flip the sandbox on/off after boot. Set to `true` only on a successful `initialize`; stays `false` after resetAsrtSandbox.
 let active = false;
+let sandboxInitializationPending = false;
 // Set with `active` when boot initialized ASRT as the Windows proxy only.
 let windowsExternalConfinement = false;
 
@@ -2219,17 +2220,32 @@ export async function initializeAsrtSandbox(
   trustedSettings: TrustedSandboxSettings,
   askCb?: SandboxAskCallback,
   enableLogMonitor = false,
+  startupSignal?: AbortSignal,
+): Promise<AsrtSandboxInitialization> {
+  startupSignal?.throwIfAborted();
+  if (active || sandboxInitializationPending) {
+    throw new Error("initializeAsrtSandbox: already active or initializing — refusing to re-initialize");
+  }
+  sandboxInitializationPending = true;
+  // Cancellation must not release the startup barrier before its current resource owner settles.
+  try {
+    return await initializeSandboxRuntime(trustedSettings, askCb, enableLogMonitor, startupSignal);
+  } finally {
+    sandboxInitializationPending = false;
+  }
+}
+
+async function initializeSandboxRuntime(
+  trustedSettings: TrustedSandboxSettings,
+  askCb: SandboxAskCallback | undefined,
+  enableLogMonitor: boolean,
+  startupSignal: AbortSignal | undefined,
 ): Promise<AsrtSandboxInitialization> {
   if (trustedSettings.windows?.externalConfinement !== true) {
     assertAveHomePrivacyForConfinement();
   }
-  // Idempotency guard. The boot gate must decide exactly once; a double-initialize means two boot paths raced or a runtime channel tried to re-seal the sandbox with a different config. Fail loud rather than silently overwriting the live config.
-  if (active) {
-    throw new Error(
-      "initializeAsrtSandbox: already active — refusing to re-initialize",
-    );
-  }
   const SandboxManager = await loadSandboxManager();
+  startupSignal?.throwIfAborted();
   const backgroundInitialization = process.platform === "win32"
     && trustedSettings.windows?.backgroundInitialization === true
     && trustedSettings.windows.externalConfinement !== true;
@@ -2249,6 +2265,7 @@ export async function initializeAsrtSandbox(
   try {
     useAppOwnedSandboxTempRoot();
     _baseReadDenyEvidence = await gatherWindowsReadDenyEvidence(trustedSettings);
+    startupSignal?.throwIfAborted();
     const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
     fullConfig = config;
     assertNoLocalBinding(config);
@@ -2266,8 +2283,12 @@ export async function initializeAsrtSandbox(
       ? { ...config, windows: { ...config.windows, externalConfinement: "embedder" as const } }
       : config;
     await SandboxManager.initialize(initialConfig, askCb, enableLogMonitor);
+    startupSignal?.throwIfAborted();
+    if (sandboxSession !== session) throw new Error("Sandbox initialization was cancelled");
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.
     await verifyAsrtRuntime(SandboxManager);
+    startupSignal?.throwIfAborted();
+    if (sandboxSession !== session) throw new Error("Sandbox initialization was cancelled");
   } catch (error) {
     await discardFailedAsrtInitialization(SandboxManager);
     throw error;
@@ -3116,7 +3137,8 @@ export async function resetAsrtSandbox(): Promise<void> {
 // The quit sequence's release: after every confined child is down, reset an initialized runtime while its private helper copy still exists, so on
 // Windows the session's ACEs are revoked and restored now rather than by the next boot's recovery. A failure propagates to the caller's shutdown outcome.
 export async function releaseAsrtSandboxForExit(): Promise<void> {
-  if (!active) return;
+  // An initializing owner can already hold proxies or bridges without an active capability.
+  if (!active && !sandboxInitializationPending) return;
   await resetAsrtSandbox();
 }
 

@@ -139,6 +139,7 @@ const execRequest = parseExecFlags(process.argv, launchCwd);
 const bootLaunch = execRequest === null ? "interactive" : "headless";
 let guiBootstrapFailed = false;
 let resourceStartupPromise: Promise<void> | null = null;
+const resourceStartupController = new AbortController();
 
 async function main() {
   if (isAppQuitRequested()) return;
@@ -151,7 +152,7 @@ async function main() {
     return;
   }
   if (execRequest?.workloadBroker) {
-    resourceStartupPromise = initializeWorkloadBroker(execRequest.workloadBroker).then(() => undefined);
+    resourceStartupPromise = initializeWorkloadBroker(execRequest.workloadBroker, resourceStartupController.signal).then(() => undefined);
     await resourceStartupPromise;
     if (isAppQuitRequested()) return;
     if (!execRequest.turn || !isActiveWorkloadBrokerCwd(execRequest.turn.cwd)) {
@@ -196,8 +197,9 @@ async function main() {
       : await startDesktop();
     if (!desktopBoot || isAppQuitRequested()) return;
     // Keep the resource barrier through service publication, independently of later host work.
-    const initialized = await desktopBoot.bootstrap(projectRoot, getMainWindow(), () => getMainWindow(), bootLaunch);
+    const initialized = await desktopBoot.bootstrap(projectRoot, getMainWindow(), () => getMainWindow(), bootLaunch, resourceStartupController.signal);
     if (!initialized) return;
+    resourceStartupController.signal.throwIfAborted();
     initializedServices = initialized;
     setServices(initialized);
   } finally {
@@ -650,6 +652,7 @@ if (!gotSingleInstanceLock) {
     installHtmlPreviewPartitionBlock();
     installSideBrowserPartitionPolicy();
     void main().catch(async (error) => {
+      if (isAppQuitRequested() && resourceStartupController.signal.aborted && error === resourceStartupController.signal.reason) return;
       log.error({ err: bootstrapErrorForLog(error) }, "bootstrap failed");
       if (!isAppQuitRequested() && bootLaunch !== "headless" && execRequest === null) {
         showConfigurationBootError(error);
@@ -754,6 +757,7 @@ app.on("will-quit", (event) => {
 // service graph and Electron's `App` never crosses Node's listener ceiling.
 app.on("before-quit", createAppBeforeQuitHandler({
   getResourceStartup: () => resourceStartupPromise,
+  cancelResourceStartup: () => resourceStartupController.abort(),
   quit: (outcome) => {
     if (outcome === "failed" || outcome === "timed-out") {
       guiBootstrapFailed = true;

@@ -19,12 +19,14 @@ describe("workload broker boot ordering", () => {
   it("verifies the Electron headless binding before desktop startup", () => {
     const text = readFileSync(resolve(process.cwd(), "src/main.ts"), "utf8")
       .replace(/\r\n/g, "\n");
-    const initialize = text.indexOf("await initializeWorkloadBroker(execRequest.workloadBroker)");
-    const binding = text.indexOf("isActiveWorkloadBrokerCwd(execRequest.turn.cwd)", initialize);
+    const initialize = text.indexOf("resourceStartupPromise = initializeWorkloadBroker(execRequest.workloadBroker, resourceStartupController.signal)");
+    const settled = text.indexOf("await resourceStartupPromise;", initialize);
+    const binding = text.indexOf("isActiveWorkloadBrokerCwd(execRequest.turn.cwd)", settled);
     const startDesktop = text.indexOf("const startDesktop = async () =>", binding);
     const bootstrap = text.indexOf("bootstrap(projectRoot", startDesktop);
     expect(initialize).toBeGreaterThan(-1);
-    expect(binding).toBeGreaterThan(initialize);
+    expect(settled).toBeGreaterThan(initialize);
+    expect(binding).toBeGreaterThan(settled);
     expect(startDesktop).toBeGreaterThan(binding);
     expect(bootstrap).toBeGreaterThan(startDesktop);
   });

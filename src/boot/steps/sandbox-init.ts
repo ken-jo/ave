@@ -31,7 +31,8 @@ import type { AsrtSandboxInitialization } from "../../permissions/asrt-sandbox.j
 
 const log = createLogger("ave");
 
-export async function initSandboxGate(ctx: BootContext): Promise<void> {
+export async function initSandboxGate(ctx: BootContext, startupSignal?: AbortSignal): Promise<void> {
+  startupSignal?.throwIfAborted();
   const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
   // Sandbox HOMEs are made whether or not the gate activates, so their sweep does not wait on it.
   // Not awaited: the in-use set and live owner markers keep this process's HOMEs, and a slow probe must not hold boot.
@@ -321,11 +322,12 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               userDataDir: ctx.host.userDataPath,
               ...(start === "proxy-only" ? { windows: { externalConfinement: true } } : {}),
               ...(start === "srt-win" ? { windows: { backgroundInitialization: true } } : {}),
-            }, egressAskCallback);
+            }, egressAskCallback, false, startupSignal);
           let initialization: AsrtSandboxInitialization | undefined;
           try {
             initialization = await initializeAs(windowsStart);
           } catch (srtWinErr) {
+            startupSignal?.throwIfAborted();
             // A failed session setup clears runtime config, permitting clean proxy-only initialization for container shells.
             // An unverifiable Ave home boundary refuses every confined start, so a proxy-only retry cannot help.
             if (windowsInputs === undefined || windowsStart === undefined || !canRetryWindowsAsProxyOnly(windowsInputs, windowsStart)
@@ -417,6 +419,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
               [cause], ["init-failed"]);
           });
         } catch (initErr) {
+          startupSignal?.throwIfAborted();
           const boundaryFailure = process.platform === "win32" ? aveHomeBoundaryFailure(initErr) : undefined;
           if (boundaryFailure !== undefined) {
             // Not the generic Windows degrade: publish it as an AVE_HOME privacy refusal, so confined extension starts refuse until the

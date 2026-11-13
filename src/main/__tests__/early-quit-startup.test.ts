@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createBootHostFixture } from "../../__tests__/support/host-runtime.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import type { AppServices } from "../../boot/types.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 const calls: string[] = [];
 const releaseSandbox = vi.fn(async () => {});
@@ -59,6 +60,103 @@ beforeEach(() => {
 });
 
 describe("quit during resource startup", () => {
+  it("retains quit ownership when the startup barrier clears during partial cleanup", async () => {
+    const shutdown = await import("../app-shutdown.js");
+    const initialize = deferred<void>();
+    const reset = deferred<void>();
+    let startup: Promise<void> | null = initialize.promise;
+    releaseSandbox.mockImplementation(() => reset.promise);
+    const quit = vi.fn();
+    const handler = shutdown.createAppBeforeQuitHandler({
+      getResourceStartup: () => startup,
+      cancelResourceStartup: vi.fn(),
+      quit,
+    });
+    try {
+      handler({ preventDefault: vi.fn() });
+      initialize.resolve();
+      await vi.waitFor(() => expect(releaseSandbox).toHaveBeenCalledOnce());
+      startup = null;
+      const preventDefault = vi.fn();
+      handler({ preventDefault });
+      expect(preventDefault).toHaveBeenCalledOnce();
+      expect(quit).not.toHaveBeenCalled();
+      reset.resolve();
+      await vi.waitFor(() => expect(quit).toHaveBeenCalledExactlyOnceWith("completed"));
+      const later = vi.fn();
+      handler({ preventDefault: later });
+      expect(later).not.toHaveBeenCalled();
+    } finally {
+      initialize.resolve();
+      reset.resolve();
+    }
+  });
+
+  it("shares the original quit deadline between startup settlement and resource cleanup", async () => {
+    const shutdown = await import("../app-shutdown.js");
+    const initialize = deferred<void>();
+    const quit = vi.fn();
+    releaseSandbox.mockImplementationOnce(() => new Promise<void>(() => {}));
+    const handler = shutdown.createAppBeforeQuitHandler({
+      getResourceStartup: () => initialize.promise,
+      cancelResourceStartup: vi.fn(),
+      quit,
+    });
+    vi.useFakeTimers();
+    try {
+      handler({ preventDefault: vi.fn() });
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.shutdownCleanupMs - 1);
+      initialize.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(releaseSandbox).toHaveBeenCalledOnce();
+      expect(quit).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(quit).toHaveBeenCalledExactlyOnceWith("timed-out");
+      expect(releaseSandbox).toHaveBeenCalledTimes(2);
+    } finally {
+      initialize.resolve();
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a never-settling startup and permits subsequent native quit attempts", async () => {
+    const shutdown = await import("../app-shutdown.js");
+    const resources = new Set(["partial-proxy"]);
+    const controller = new AbortController();
+    const startup = new Promise<void>(() => {});
+    const exits: string[][] = [];
+    const quit = vi.fn(() => attemptQuit());
+    releaseSandbox.mockImplementation(async () => { resources.clear(); });
+    const handler = shutdown.createAppBeforeQuitHandler({
+      getResourceStartup: () => startup,
+      cancelResourceStartup: () => controller.abort(),
+      quit,
+    });
+    function attemptQuit() {
+      let prevented = false;
+      handler({ preventDefault: () => { prevented = true; } });
+      if (!prevented) exits.push([...resources]);
+    }
+    vi.useFakeTimers();
+    try {
+      attemptQuit();
+      attemptQuit();
+      await vi.advanceTimersByTimeAsync(TOOL_TIMEOUT_POLICY.shutdownCleanupMs - 1);
+      expect(exits).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(quit).toHaveBeenCalledExactlyOnceWith("timed-out");
+      expect(controller.signal.aborted).toBe(true);
+      expect(forceKillChildren).toHaveBeenCalledOnce();
+      expect(releaseSandbox).toHaveBeenCalledOnce();
+      expect(exits).toEqual([[]]);
+      attemptQuit();
+      expect(exits).toEqual([[], []]);
+      expect(quit).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("holds native exit through initialization and the normal asynchronous sandbox reset", async () => {
     const state = await import("../app-state.js");
     const shutdown = await import("../app-shutdown.js");
@@ -80,6 +178,7 @@ describe("quit during resource startup", () => {
     shutdown.configureAppShutdownHost(createBootHostFixture({ close: async () => { calls.push("host-close"); } }));
     const handler = shutdown.createAppBeforeQuitHandler({
       getResourceStartup: () => startup,
+      cancelResourceStartup: vi.fn(),
       quit: attemptQuit,
     });
     function attemptQuit() {
@@ -131,7 +230,7 @@ describe("quit during resource startup", () => {
       await reset.promise;
       resources.clear();
     });
-    const handler = shutdown.createAppBeforeQuitHandler({ getResourceStartup: () => startup, quit });
+    const handler = shutdown.createAppBeforeQuitHandler({ getResourceStartup: () => startup, cancelResourceStartup: vi.fn(), quit });
     try {
       if (timing === "before") {
         initialize.resolve();
@@ -161,7 +260,7 @@ describe("quit during resource startup", () => {
   it("does not hold an ordinary quit before any resource startup", async () => {
     const shutdown = await import("../app-shutdown.js");
     const quit = vi.fn();
-    const handler = shutdown.createAppBeforeQuitHandler({ getResourceStartup: () => null, quit });
+    const handler = shutdown.createAppBeforeQuitHandler({ getResourceStartup: () => null, cancelResourceStartup: vi.fn(), quit });
     const preventDefault = vi.fn();
     handler({ preventDefault });
     expect(preventDefault).not.toHaveBeenCalled();
@@ -175,7 +274,7 @@ describe("quit during resource startup", () => {
     const unrelated = deferred<void>();
     const quit = vi.fn();
     state.setServices(services());
-    const handler = shutdown.createAppBeforeQuitHandler({ getResourceStartup: () => unrelated.promise, quit });
+    const handler = shutdown.createAppBeforeQuitHandler({ getResourceStartup: () => unrelated.promise, cancelResourceStartup: vi.fn(), quit });
     handler({ preventDefault: vi.fn() });
     await vi.waitFor(() => expect(quit).toHaveBeenCalledOnce());
     expect(releaseSandbox).toHaveBeenCalledOnce();
@@ -186,7 +285,7 @@ describe("quit during resource startup", () => {
     const shutdown = await import("../app-shutdown.js");
     const quit = vi.fn();
     releaseSandbox.mockRejectedValueOnce(new Error("Sandbox reset failed"));
-    const handler = shutdown.createAppBeforeQuitHandler({ getResourceStartup: () => Promise.resolve(), quit });
+    const handler = shutdown.createAppBeforeQuitHandler({ getResourceStartup: () => Promise.resolve(), cancelResourceStartup: vi.fn(), quit });
     handler({ preventDefault: vi.fn() });
     await vi.waitFor(() => expect(quit).toHaveBeenCalledExactlyOnceWith("failed"));
     expect(logError).toHaveBeenCalledWith({ status: "failed" }, "incomplete host bootstrap cleanup did not complete");
@@ -201,6 +300,20 @@ describe("quit during resource startup", () => {
     state.setAppQuitRequested(true);
     acquired.resolve();
     expect(await startup).toBeNull();
+    expect(createDesktopBootHost).not.toHaveBeenCalled();
+    expect(bootstrapHost).not.toHaveBeenCalled();
+  });
+
+  it("honors startup cancellation after a pending host lock settles", async () => {
+    const desktop = await import("../../desktop-boot.js");
+    const acquired = deferred<void>();
+    const controller = new AbortController();
+    acquireHostInstanceLock.mockReturnValueOnce(acquired.promise);
+    const startup = desktop.bootstrap("/workspace", null, () => null, "interactive", controller.signal);
+    const stopped = expect(startup).rejects.toMatchObject({ name: "AbortError" });
+    controller.abort();
+    acquired.resolve();
+    await stopped;
     expect(createDesktopBootHost).not.toHaveBeenCalled();
     expect(bootstrapHost).not.toHaveBeenCalled();
   });

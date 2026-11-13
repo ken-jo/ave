@@ -10,10 +10,13 @@ export async function bootstrap(
   mainWindow: MainWindow | null,
   getMainWindow: () => MainWindow | null,
   launch: BootLaunch,
+  startupSignal?: AbortSignal,
 ) {
+  startupSignal?.throwIfAborted();
   if (isAppQuitRequested()) return null;
   await acquireHostInstanceLock();
+  startupSignal?.throwIfAborted();
   if (isAppQuitRequested()) return null;
   const host = createDesktopBootHost(projectRoot);
-  return bootstrapHost(projectRoot, mainWindow, getMainWindow, launch, host);
+  return bootstrapHost(projectRoot, mainWindow, getMainWindow, launch, host, startupSignal);
 }

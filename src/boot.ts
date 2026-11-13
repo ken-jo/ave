@@ -164,13 +164,16 @@ export async function bootstrap(
   getMainWindow: () => MainWindow | null,
   launch: BootLaunch,
   host: BootHost,
+  startupSignal?: AbortSignal,
 ): Promise<AppServices> {
+  startupSignal?.throwIfAborted();
   configureAppShutdownHost(host);
   configureHostResources(host);
   log.info("boot: starting...");
   const bootStarted = performance.now();
   let phaseStarted = bootStarted;
   const recordBootPhase = (phase: string): void => {
+    startupSignal?.throwIfAborted();
     const now = performance.now();
     log.info({ phase, durationMs: Math.round(now - phaseStarted), elapsedMs: Math.round(now - bootStarted) }, "boot: phase completed");
     phaseStarted = now;
@@ -842,15 +845,15 @@ export async function bootstrap(
   // startPluginsOnce refreshes it (same builder, safe global live-swap) after
   // load() and before startAll().
   recordBootPhase("conversation-wiring");
-  await initSandboxGate(ctx);
+  await initSandboxGate(ctx, startupSignal);
   recordBootPhase("sandbox-gate");
 
   // §9.5: MCP servers + signed marketplace artifact stores.
   await setupMcp(ctx);
-  recordBootPhase("mcp");
   // An interrupted bootstrap disconnects MCP before it stops the plugin
   // runtime, as the normal shutdown does (see runIncompleteBootShutdown).
   registerBootMcpDisconnect(() => ctx.mcpManager.disconnectAll());
+  recordBootPhase("mcp");
 
   // Skills, Hook runtime, and external MCP manager now all exist. Bind the
   // lifecycle callback and replay boot-loaded plugins because initial startAll
@@ -884,6 +887,7 @@ export async function bootstrap(
   setBundleLifecycleHandler?.(pluginBundleLifecycle);
   await pluginBundleLifecycle.recoverRetirements();
 
+  startupSignal?.throwIfAborted();
   await startPlugins();
   recordBootPhase("plugin-start");
 
@@ -963,5 +967,6 @@ export async function bootstrap(
   ctx.autoUpdaterStop = autoUpdaterStop;
 
   assertBootContextReady(ctx);
+  startupSignal?.throwIfAborted();
   return assembleAppServices(ctx);
 }

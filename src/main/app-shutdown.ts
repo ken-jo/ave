@@ -45,6 +45,7 @@ const RUNNING_TURN_EXIT_WAIT_MS = 3_000;
 // How long a shutdown that already failed or timed out waits for the sandbox runtime's reset. On Windows the ACL release is the reset's first,
 // synchronous step; the wait covers only its proxy teardown, so the process still leaves promptly.
 const OS_SANDBOX_RELEASE_FALLBACK_WAIT_MS = 2_000;
+const INCOMPLETE_BOOT_SHUTDOWN_REASON = "host bootstrap interrupted or failed";
 
 const log = createLogger("ave");
 let shutdownHost: BootHost | undefined;
@@ -104,32 +105,28 @@ export function runShutdownHooks(): void {
 export function createAppBeforeQuitHandler(options: {
   quit: (outcome?: AppShutdownCleanupOutcome) => void;
   getResourceStartup: () => Promise<void> | null;
+  cancelResourceStartup: () => void;
 }): (event: { preventDefault(): void }) => void {
-  let startupShutdownPending = false;
   return (event) => {
     setAppQuitRequested(true);
     runShutdownHooks();
     const appUpdateInstallRequested = isAppUpdateInstallRequested();
     if (isAppUpdateInstallPrepared()) return;
     if (isAppShutdownCompleted()) return;
-    const resourceStartup = getServices() ? null : options.getResourceStartup();
-    if (!getServices() && !resourceStartup) return;
-    if (startupShutdownPending || isAppShutdownStarted()) {
+    if (isAppShutdownStarted()) {
       event.preventDefault();
       return;
     }
+    const resourceStartup = getServices() ? null : options.getResourceStartup();
+    if (!getServices() && !resourceStartup) return;
     event.preventDefault();
-    startupShutdownPending = resourceStartup !== null;
     void (async () => {
-      // Startup reports its own failure; its resource lifetime must settle before cleanup.
-      if (resourceStartup) await resourceStartup.catch(() => {});
+      const outcome = await runAppShutdownCleanup({
+        reason: appUpdateInstallRequested ? "app-update-install" : "before-quit",
+        exitOnTimeout: !appUpdateInstallRequested,
+        resourceStartup: resourceStartup ? { settled: resourceStartup, cancel: options.cancelResourceStartup } : undefined,
+      });
       const incomplete = !getServices();
-      const outcome = incomplete
-        ? await runIncompleteBootShutdown()
-        : await runAppShutdownCleanup({
-          reason: appUpdateInstallRequested ? "app-update-install" : "before-quit",
-          exitOnTimeout: !appUpdateInstallRequested,
-        });
       if (appUpdateInstallRequested) {
         markAppUpdateInstallPrepared();
         options.quit(incomplete ? outcome : undefined);
@@ -195,33 +192,41 @@ let appShutdownCleanupPromise: Promise<AppShutdownCleanupOutcome> | null = null;
 
 // Stop a rejected or interrupted bootstrap before AppServices is published.
 export async function runIncompleteBootShutdown(host: BootHost | undefined = shutdownHost): Promise<AppShutdownCleanupOutcome> {
-  const reason = "host bootstrap interrupted or failed";
+  const reason = INCOMPLETE_BOOT_SHUTDOWN_REASON;
   setAppShutdownStarted(true);
   sealMxcHolderLifetimeAdmission(reason);
   sealManagedChildProcessAdmission(reason);
   runShutdownHooks();
-  const result = await runCleanupWithHardTimeout(async (signal) => {
-    const failures: unknown[] = [];
-    const stages = [
-      // Close plugin admission before MCP disconnects, then stop the runtime only after in-flight MCP calls finish.
-      () => bootPluginShutdown?.closeAdmission(),
-      () => bootMcpDisconnect?.(),
-      () => bootPluginShutdown?.stopRuntime(signal),
-      () => stopHostDocumentEngineSessions(),
-      () => stopSubscriptionRuntimes(),
-      () => disposeBrowserUploads(),
-      () => forceKillAllTerminalsForShutdown(),
-      () => drainMxcHolderLifetimes(),
-      () => forceKillAndDrainManagedChildProcesses(reason),
-      () => releaseOsSandboxForExit(),
-      () => host?.close(),
-    ];
-    for (const stage of stages) {
-      if (signal.aborted) return;
-      try { await stage(); } catch (error) { failures.push(error); }
-    }
-    if (failures.length > 0) throw new AggregateError(failures, "incomplete host bootstrap cleanup failed");
-  }, resolveShutdownCleanupTimeoutMs(undefined));
+  const result = await runCleanupWithHardTimeout((signal) => cleanupIncompleteBoot(host, signal), resolveShutdownCleanupTimeoutMs(undefined));
+  return finishIncompleteBootShutdown(result);
+}
+
+async function cleanupIncompleteBoot(host: BootHost | undefined, signal: AbortSignal): Promise<void> {
+  const reason = INCOMPLETE_BOOT_SHUTDOWN_REASON;
+  const failures: unknown[] = [];
+  const stages = [
+    // Close plugin admission before MCP disconnects, then stop the runtime only after in-flight MCP calls finish.
+    () => bootPluginShutdown?.closeAdmission(),
+    () => bootMcpDisconnect?.(),
+    () => bootPluginShutdown?.stopRuntime(signal),
+    () => stopHostDocumentEngineSessions(),
+    () => stopSubscriptionRuntimes(),
+    () => disposeBrowserUploads(),
+    () => forceKillAllTerminalsForShutdown(),
+    () => drainMxcHolderLifetimes(),
+    () => forceKillAndDrainManagedChildProcesses(reason),
+    () => releaseOsSandboxForExit(),
+    () => host?.close(),
+  ];
+  for (const stage of stages) {
+    if (signal.aborted) return;
+    try { await stage(); } catch (error) { failures.push(error); }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "incomplete host bootstrap cleanup failed");
+}
+
+async function finishIncompleteBootShutdown(result: { status: "completed" | "failed" | "timed-out" }): Promise<AppShutdownCleanupOutcome> {
+  const reason = INCOMPLETE_BOOT_SHUTDOWN_REASON;
   if (result.status !== "completed") {
     forceKillManagedChildProcesses(reason);
     // PTYs use a separate native owner. Signal them even if an earlier stage exhausted the deadline; a zero wait budget does not extend that deadline.
@@ -238,20 +243,31 @@ export async function runIncompleteBootShutdown(host: BootHost | undefined = shu
 export async function runAppShutdownCleanup(options: {
   reason: "before-quit" | "app-update-install";
   exitOnTimeout: boolean;
+  resourceStartup?: { settled: Promise<void>; cancel(): void };
 }): Promise<AppShutdownCleanupOutcome> {
-  const services = getServices();
-  if (!services || isAppShutdownCompleted()) return "skipped";
+  let svc = getServices();
+  if ((!svc && !options.resourceStartup) || isAppShutdownCompleted()) return "skipped";
   if (appShutdownCleanupPromise) return appShutdownCleanupPromise;
 
   setAppShutdownStarted(true);
   sealMxcHolderLifetimeAdmission(options.reason);
   sealManagedChildProcessAdmission(options.reason);
-  const svc = services;
   const cleanupTimeoutMs = resolveShutdownCleanupTimeoutMs(
-    svc.settingsService.get("system")?.shutdownCleanupTimeoutMs,
+    svc?.settingsService.get("system")?.shutdownCleanupTimeoutMs,
   );
   appShutdownCleanupPromise = (async () => {
     const result = await runCleanupWithHardTimeout(async (signal) => {
+      if (options.resourceStartup) {
+        // Cancellation stops subsequent boot phases; retain in-flight resource ownership until settlement or the same hard deadline.
+        options.resourceStartup.cancel();
+        await options.resourceStartup.settled.catch(() => {});
+        if (signal.aborted) return;
+        svc = getServices();
+      }
+      if (!svc) {
+        await cleanupIncompleteBoot(shutdownHost, signal);
+        return;
+      }
       // Keep runtime children through normal plugin teardown, but stop them on earlier failure or timeout without masking the original error.
       let subscriptionRuntimesStopped = false;
       let holderDrainAttempted = false;
@@ -362,6 +378,8 @@ export async function runAppShutdownCleanup(options: {
         }
       }
     }, cleanupTimeoutMs);
+
+    if (!svc) return finishIncompleteBootShutdown(result);
 
     if (result.status === "timed-out") {
       // Force-kill BEFORE the log line so killedChildCount reflects what actually happened, not an optimistic pre-kill count.

@@ -252,10 +252,11 @@ describe("boot sandbox outcome", () => {
 
   it("subscribes the proxy-deny monitor before the sandbox proxy starts, and only when it activates", async () => {
     const order: string[] = [];
+    const controller = new AbortController();
     h.subscribe.mockImplementation(async () => { order.push("subscribe"); return () => {}; });
     h.initialize.mockImplementation(async () => { order.push("initialize"); });
 
-    await initSandboxGate(harness.context(true));
+    await initSandboxGate(harness.context(true), controller.signal);
 
     expect(getSandboxBootOutcome()?.action).toBe("activate");
     expect(order).toEqual(["subscribe", "initialize"]);
@@ -263,8 +264,10 @@ describe("boot sandbox outcome", () => {
     expect(h.initialize).toHaveBeenCalledWith(
       expect.objectContaining({ allowedDomains: [], strictAllowlist: false }),
       expect.any(Function),
+      false,
+      controller.signal,
     );
-    expect(h.initialize.mock.calls[0]).toHaveLength(2);
+    expect(h.initialize.mock.calls[0]).toHaveLength(4);
 
     order.length = 0;
     __resetSandboxBootOutcomeForTest();

@@ -13,6 +13,14 @@ const windowSource = readFileSync(resolve(process.cwd(), "src/main/main-window.t
   .replace(/\r\n/g, "\n");
 const bootSource = readFileSync(resolve(process.cwd(), "src/boot.ts"), "utf-8")
   .replace(/\r\n/g, "\n");
+const shutdownSource = readFileSync(resolve(process.cwd(), "src/main/app-shutdown.ts"), "utf-8")
+  .replace(/\r\n/g, "\n");
+
+function beforeQuitHandlerSource(): string {
+  const handler = shutdownSource.indexOf("export function createAppBeforeQuitHandler");
+  expect(handler).toBeGreaterThanOrEqual(0);
+  return shutdownSource.slice(handler, shutdownSource.indexOf("async function flushLogger", handler));
+}
 
 function extractExecBranch(text: string): string | null {
   const opener = text.match(/if\s*\(\s*execRequest\s*!==\s*null\s*\)\s*\{/);
@@ -81,11 +89,14 @@ describe("main.ts — headless exec branch", () => {
   });
 
   it("runs after setServices and before the workspace is opened", () => {
-    const setServices = mainSource.indexOf("setServices(services)");
+    const setServices = mainSource.indexOf("setServices(initialized)");
     const execBranch = mainSource.indexOf("if (execRequest !== null)");
     const openSurface = mainSource.indexOf("const conversationSurfaceRuntime = createConversationSurfaceRuntime();");
 
     expect(setServices).toBeGreaterThanOrEqual(0);
+    const cancellation = mainSource.indexOf("resourceStartupController.signal.throwIfAborted();");
+    expect(cancellation).toBeGreaterThanOrEqual(0);
+    expect(cancellation).toBeLessThan(setServices);
     expect(execBranch).toBeGreaterThan(setServices);
     expect(openSurface).toBeGreaterThan(execBranch);
   });
@@ -100,9 +111,8 @@ describe("main.ts — headless exec branch", () => {
 
   it("drains the shutdown hooks before the guards that can return early", () => {
     // Early quit can arrive before services exist; cleanup hooks must respect boot ordering.
-    const handler = mainSource.indexOf('app.on("before-quit"');
-    expect(handler).toBeGreaterThanOrEqual(0);
-    const body = mainSource.slice(handler, mainSource.indexOf("\n});", handler));
+    expect(mainSource).toContain('app.on("before-quit", createAppBeforeQuitHandler({');
+    const body = beforeQuitHandlerSource();
     const hooks = body.indexOf("runShutdownHooks()");
     const servicesGuard = body.indexOf("if (!getServices()");
     expect(hooks).toBeGreaterThanOrEqual(0);
@@ -110,8 +120,7 @@ describe("main.ts — headless exec branch", () => {
   });
 
   it("records application quit before an early bootstrap return so the native exit-code bridge can run", () => {
-    const handler = mainSource.indexOf('app.on("before-quit"');
-    const body = mainSource.slice(handler, mainSource.indexOf("\n});", handler));
+    const body = beforeQuitHandlerSource();
     const intent = body.indexOf("setAppQuitRequested(true)");
     expect(intent).toBeGreaterThanOrEqual(0);
     expect(intent).toBeLessThan(body.indexOf("runShutdownHooks()"));
@@ -152,7 +161,7 @@ describe("main.ts — headless exec branch", () => {
     expect(mainSource).toContain('createWindow({ headless: bootLaunch === "headless" });');
     // Both consumers must use the same derived execution-mode value.
     expect(mainSource).toContain(
-      "bootstrap(projectRoot, getMainWindow(), () => getMainWindow(), bootLaunch)",
+      "bootstrap(projectRoot, getMainWindow(), () => getMainWindow(), bootLaunch, resourceStartupController.signal)",
     );
   });
 
