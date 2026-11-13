@@ -115,6 +115,12 @@ the `shared-app-pid` annotations show reuse within each worker. Keep the project
 Background mode is the default, and background runs may execute in parallel.
 Keep every `--output` directory inside the checkout.
 
+The host-terminal takeover fixture uses `/bin/zsh` on macOS and `/bin/bash` on
+Linux with an isolated home and startup profile. Distribution startup can ask
+interactive configuration questions before shell integration runs. A plain
+fixture prompt keeps authenticated shell markers, permission approval and
+takeover privacy assertions observable without answering those questions.
+
 Run `@os-focus` cases only with `AVE_E2E_OS_FOCUS=1`. Their tagged foreground
 fixtures present native windows. Rerun a focus-only failure alone before
 reporting it as a regression.

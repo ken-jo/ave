@@ -2,7 +2,7 @@ import { test, expect } from "./fixtures.js";
 import type { ElectronApplication, Page } from "playwright";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -29,6 +29,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
   const parentId = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const sideId = "a2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const model = "terminal-host-model";
+  const shell = process.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
   // The post-sleep line is assembled by printf so its text never appears in the command itself.
   const agentCommand = "printf 'agent-period-marker\\n'; sleep 30; printf 'agent-%s\\n' after-sleep";
   const userSentinel = "user-period-secret-sentinel";
@@ -73,7 +74,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     mkdirSync(home, { recursive: true });
     // System login startup can install a command-not-found handler, which correctly refuses agent typing.
     // This fixture owns a plain prompt; handler refusals have dedicated shell integration coverage.
-    if (!existsSync("/bin/zsh")) writeFileSync(join(home, ".bash_profile"), "unset -f command_not_found_handle\n");
+    if (shell === "/bin/bash") writeFileSync(join(home, ".bash_profile"), "unset -f command_not_found_handle\n");
     mkdirSync(featureHome, { recursive: true });
     mkdirSync(join(featureHome, "sessions"), { recursive: true });
     mkdirSync(join(featureHome, "side-chat", "sessions"), { recursive: true });
@@ -104,7 +105,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userData}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: featureHome, AVE_DEV: "1", AVE_E2E: "1", NODE_ENV: "test",
-        ...(existsSync("/bin/zsh") ? { SHELL: "/bin/zsh" } : {}) }),
+        SHELL: shell }),
     });
     const bootLog = testInfo.outputPath("isolated-app-boot.log");
     app.process().stdout?.on("data", (chunk) => appendFileSync(bootLog, chunk));
