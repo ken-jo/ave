@@ -235,7 +235,7 @@ export class PluginMcpHost {
       );
     }
     const ui = textPart._meta?.ui;
-    return { html: textPart.text, csp: ui?.csp, permissions: ui?.permissions };
+    return { html: textPart.text, csp: ui?.csp, permissions: ui?.permissions, hostCapabilities: ui?.["ai.agent-connector.ave/hostCapabilities"] };
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {

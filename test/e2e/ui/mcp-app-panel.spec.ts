@@ -223,6 +223,23 @@ test('mounting a dock panel preserves the main renderer theme throughout initial
   } finally { await quitElectron(app); }
 });
 
+test.describe('panel read-only declaration', () => {
+  test.use({ seedPermissionMode: 'strict' });
+  test('declared server tools follow the read-only edge without an approval card', async ({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome }) => {
+    const { app, page } = await admittedApp({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome });
+    try {
+      await openPanel(app, page);
+      const result = await app.evaluate(async ({ webContents }) => {
+        const guest = webContents.getAllWebContents().find((contents) => contents.getURL().startsWith('ave-mcp-app://'));
+        if (!guest) throw new Error('App guest not found');
+        return guest.executeJavaScript("document.querySelector('iframe').contentWindow.fixtureRead()");
+      });
+      expect(result).toMatchObject({ content: [{ type: 'text', text: JSON.stringify({ state: 'passive-read-completed' }) }] });
+      await expect(page.getByRole('button', { name: 'Allow once', exact: true })).toHaveCount(0);
+    } finally { await quitElectron(app); }
+  });
+});
+
 test('sidebar app messages fill the composer without sending a turn', async ({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome }, testInfo) => {
   test.setTimeout(120_000);
   const { app, page } = await admittedApp({ app: originalApp, mainWindow, aveHome, userDataDir, tempHome });
@@ -256,6 +273,9 @@ test('sidebar app messages fill the composer without sending a turn', async ({ a
     await stageFromPanel(app);
     await page.getByRole('button', { name: 'Replace draft', exact: true }).click();
     await expect(composer).toHaveValue('Review the selected fixture item');
+    // Retire the app bridge and guest before shutting down its host inspector connection.
+    await page.getByTestId('pane-close').filter({ visible: true }).last().click();
+    await expect(page.locator('webview')).toHaveCount(0);
   } finally { await quitElectron(app); }
 });
 
