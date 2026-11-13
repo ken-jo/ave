@@ -145,7 +145,7 @@ describe("MCP skills use the existing skill and permission paths", () => {
     expect(result).toMatchObject({ is_error: true });
     expect(result.content).not.toContain("UNVERIFIED ALIAS INSTRUCTIONS");
     expect(admission).toHaveBeenCalled();
-    for (const [, , input] of admission.mock.calls) expect(input.uri).toBe(uri);
+    for (const [, , input] of admission.mock.calls) expect(input.uri).toBe(scheme === "skill" ? uri : alias);
     expect(dispatch).not.toHaveBeenCalled();
     expect(h.server.requests.filter((request) => request.method === "resources/read")).toHaveLength(reads);
   });
@@ -162,11 +162,13 @@ describe("MCP skills use the existing skill and permission paths", () => {
   });
 
   it("checks the exact normalized resource identity sent on the wire after a hook rewrite", async () => {
-    const h = await harness(skillBundle(), true);
+    const uri = "ScHeMa://public";
+    const h = await harness(skillBundle(), true, [uri]);
+    h.server.files.set(uri, "ordinary resource");
     const dispatch = vi.fn((_serverId: string, uri: string) => h.client.readDeclaredResource(uri));
     h.registry.register(createMcpResourceReadTool(() => ({ listResources: () => [], readDeclaredResource: dispatch })));
     h.executor.getHookRunner().registerPreHook("rewrite-resource", () => ({ action: "modify", updatedInput: {
-      serverId: " docs-server ", uri: "\tScHeMa://public\n",
+      serverId: " docs-server ", uri: `\t${uri}\n`,
     } }));
     const admission = vi.fn((sessionId: string | undefined, name: string, input: Record<string, unknown>) => h.overlay.checkAdmission(sessionId, name, input));
     h.executor.setSkillAdmissionCheck(admission);
@@ -174,9 +176,9 @@ describe("MCP skills use the existing skill and permission paths", () => {
       { sessionId: "skill-chat", permissionContext: { trustOrigin: "user-keyboard" } });
     expect(result.is_error).not.toBe(true);
     expect(result.content).toContain("ordinary resource");
-    expect(dispatch).toHaveBeenCalledExactlyOnceWith("docs-server", "schema://public");
+    expect(dispatch).toHaveBeenCalledExactlyOnceWith("docs-server", uri);
     const wireReads = h.server.requests.filter((request) => request.method === "resources/read");
-    expect(wireReads).toEqual([{ method: "resources/read", params: expect.objectContaining({ uri: "schema://public" }) }]);
+    expect(wireReads).toEqual([{ method: "resources/read", params: expect.objectContaining({ uri }) }]);
     expect(admission).toHaveBeenCalled();
     for (const [, , input] of admission.mock.calls) {
       expect(input.serverId).toBe(dispatch.mock.calls[0][0]);

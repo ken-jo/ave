@@ -81,9 +81,11 @@ are refused even before activation, directing callers to `skill_load` and
 `skill_read` for consent and verification. The resource tool's server ID and URI
 are normalized once after argument hooks, before admission and permission checks.
 The handler dispatches those exact checked values without further normalization.
-That boundary lowercases only the URI scheme, as required by
-[RFC 3986 §3.1](https://www.rfc-editor.org/rfc/rfc3986#section-3.1), preserving path
-case and Unicode. Skill entries and manifests must already have canonical
+That boundary lowercases the scheme only when it case-insensitively equals
+`skill`, following [RFC 3986 §3.1](https://www.rfc-editor.org/rfc/rfc3986#section-3.1).
+Other schemes retain the exact URI spelling from the server's catalog after
+outer whitespace cleanup, including scheme case, path case and Unicode.
+Skill entries and manifests must already have canonical
 lowercase schemes and authorities; wire identities are rejected rather than
 repaired. The same validator rejects noncanonical `skill:` resource declarations.
 Percent escapes, dot or empty segments, credentials, ports, queries and fragments

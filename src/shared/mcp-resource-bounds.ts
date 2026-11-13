@@ -76,11 +76,6 @@ const RESERVED_SCHEMES = Object.freeze([
   "file-loopback:",
 ]);
 
-/** Only the invocation boundary rewrites an input URI; wire declarations are validated, never repaired. */
-export function canonicalizeResourceUriScheme(uri: string): string {
-  return uri.replace(/^[A-Za-z][A-Za-z0-9+.-]*:/, (scheme) => scheme.toLowerCase());
-}
-
 /** Skill identities have one spelling: lowercase scheme/authority, literal segments and no optional URL components.
  * Refuse percent escapes rather than letting a server choose which decoding or alias resolves to approved bytes. */
 export function isCanonicalSkillResourceUri(value: unknown): value is string {

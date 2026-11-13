@@ -34,10 +34,13 @@ export class McpSkillSource {
   }
 
   isSkillResource(serverId: string, uri: string): boolean {
-    return (this.getAccess()?.listSkills() ?? []).some((entry) => entry.serverId === serverId
-      && (uri === entry.skill.uri || uri.startsWith(entry.skill.uri.slice(0, -"SKILL.md".length))
-        // A noncanonical URI in a declared skill's scheme cannot establish a distinct resource identity.
-        || uri.startsWith(entry.skill.uri.slice(0, entry.skill.uri.indexOf(":") + 1)) && !isCanonicalSkillResourceUri(uri)));
+    return (this.getAccess()?.listSkills() ?? []).some((entry) => {
+      if (entry.serverId !== serverId) return false;
+      const scheme = entry.skill.uri.slice(0, entry.skill.uri.indexOf(":") + 1);
+      // Compare scheme case only to refuse aliases; leave the requested URI unchanged.
+      return uri === entry.skill.uri || uri.startsWith(entry.skill.uri.slice(0, -"SKILL.md".length))
+        || uri.slice(0, scheme.length).toLowerCase() === scheme && !isCanonicalSkillResourceUri(uri);
+    });
   }
 
   async load(selector: string): Promise<LoadedSkill | null> {

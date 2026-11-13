@@ -4,7 +4,7 @@ import { createDynamicTool, toolErrorResult, type Tool } from "./base.js";
 import { createLogger } from "../lib/logger.js";
 import { scrubShortError } from "../shared/dlp.js";
 import { t } from "../i18n/index.js";
-import { canonicalizeResourceUriScheme, isUsableResourceUri, MCP_RESOURCE_URI_MAX_CHARS } from "../shared/mcp-resource-bounds.js";
+import { isUsableResourceUri, MCP_RESOURCE_URI_MAX_CHARS } from "../shared/mcp-resource-bounds.js";
 import { MAX_TOOL_RESULT_TOKENS } from "../shared/tool-result-trim.js";
 import { estimateTokens } from "../shared/token-estimate.js";
 import type { McpResourceSummary } from "../mcp/types.js";
@@ -15,12 +15,13 @@ const mcpResourceReadTools = new WeakSet<Tool>();
 
 // Normalize after argument hooks, before admission and permission checks. The handler
 // consumes this exact identity without changing what those checks authorized.
+// Fold the skill scheme only; ordinary resources retain their exact listed spelling.
 export function normalizeMcpResourceReadInput(tool: Tool, input: Record<string, unknown>): Record<string, unknown> {
   if (!mcpResourceReadTools.has(tool)) return input;
   return {
     ...input,
     ...(typeof input.serverId === "string" ? { serverId: input.serverId.trim() } : {}),
-    ...(typeof input.uri === "string" ? { uri: canonicalizeResourceUriScheme(input.uri.trim()) } : {}),
+    ...(typeof input.uri === "string" ? { uri: input.uri.trim().replace(/^skill:/i, "skill:") } : {}),
   };
 }
 
