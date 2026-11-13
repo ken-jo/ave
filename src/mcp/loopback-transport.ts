@@ -50,17 +50,23 @@ export class LoopbackTransport implements McpTransport {
       // Params cross the boundary too. A caller handing the server a live
       // object would otherwise have the server mutate the caller's copy.
       params: marshal(message.params, "params", message.id),
+    }, (notification) => {
+      const wire = marshal(notification, "notification", message.id);
+      queueMicrotask(() => {
+        if (this.alive) this.messageHandler?.(wire as unknown as JsonRpcResponse);
+      });
     });
     const result = marshal(response.result, "result", message.id);
     const error = marshal(response.error, "error", message.id);
     queueMicrotask(() => {
-      this.messageHandler?.({ jsonrpc: "2.0", id: message.id, result, error });
+      if (this.alive) this.messageHandler?.({ jsonrpc: "2.0", id: message.id, result, error });
     });
   }
 
   async close(): Promise<void> {
     if (!this.alive) return;
     this.alive = false;
+    this.server.closeSubscriptions();
     this.closeHandler?.("loopback closed");
   }
 

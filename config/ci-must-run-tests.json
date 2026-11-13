@@ -61,6 +61,7 @@
       "src/engine/telemetry/__tests__/tracing.test.ts",
       "src/ipc/domains/__tests__/preview-document.test.ts",
       "src/main/__tests__/codex-conversation-runtime.test.ts",
+      "src/mcp/__tests__/tasks-extension.test.ts",
       "src/plugins/__tests__/registry-atomicity.test.ts",
       "src/plugins/isolation/__tests__/host-protocol-schema-parity.test.ts",
       "src/plugins/isolation/__tests__/validation-session.test.ts",

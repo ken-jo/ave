@@ -1945,19 +1945,20 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
   });
 
   it("Tasks: polls a CreateTaskResult to completion and returns the completed result", async () => {
+    const task = { taskId: "t1", createdAt: "2026-07-28T00:00:00Z", lastUpdatedAt: "2026-07-28T00:00:00Z", ttlMs: null };
     let taskGets = 0;
     const { client } = rcHttpClient("task", (method, id) => {
       if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
       if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
       if (method === "tools/call")
-        return jsonRpcResponse(id, { resultType: "task", taskId: "t1", status: "working", pollIntervalMs: 1 });
+        return jsonRpcResponse(id, { ...task, resultType: "task", status: "working", pollIntervalMs: 1 });
       if (method === "tasks/get") {
         taskGets += 1;
         return jsonRpcResponse(
           id,
           taskGets >= 2
-            ? { resultType: "task", taskId: "t1", status: "completed", content: [{ type: "text", text: "task done" }] }
-            : { resultType: "task", taskId: "t1", status: "working", pollIntervalMs: 1 },
+            ? { ...task, resultType: "complete", status: "completed", result: { resultType: "complete", content: [{ type: "text", text: "task done" }] } }
+            : { ...task, resultType: "complete", status: "working", pollIntervalMs: 1 },
         );
       }
       return new Response("unexpected", { status: 500 });
@@ -1975,7 +1976,9 @@ describe("McpClient — 2026-07-28 RC stateless handshake (#1230)", () => {
       if (method === "server/discover") return jsonRpcResponse(id, RC_DISCOVER_RESULT);
       if (method === "tools/list") return jsonRpcResponse(id, { tools: [] });
       if (method === "tools/call")
-        return jsonRpcResponse(id, { resultType: "task", taskId: "t2", status: "failed" });
+        return jsonRpcResponse(id, { resultType: "task", taskId: "t2", status: "working", createdAt: "2026-07-28T00:00:00Z", lastUpdatedAt: "2026-07-28T00:00:00Z", ttlMs: null });
+      if (method === "tasks/get") return jsonRpcResponse(id, { resultType: "complete", taskId: "t2", status: "failed", createdAt: "2026-07-28T00:00:00Z", lastUpdatedAt: "2026-07-28T00:00:00Z", ttlMs: null, error: { code: -32603, message: "Execution interrupted" } });
+      if (method === "tasks/cancel") return jsonRpcResponse(id, { resultType: "complete" });
       return new Response("unexpected", { status: 500 });
     });
 

@@ -85,6 +85,8 @@ export const TOOL_TIMEOUT_POLICY = {
   // hostFetch bounds each hop to response headers; the caller owns body consumption so large downloads are not mistaken for hangs.
   pluginFetchResponseCeilingMs: 60_000,
   mcpRequestDefaultMs: 60_000,
+  // Promote a still-running plugin call after this foreground wait.
+  mcpTaskPromotionMs: 1_000,
   mcpRequestMaxMs: 120_000,
   networkFetchDefaultMs: 15_000,
   // Marketplace health checks and catalog fetches share this deadline.
