@@ -31,6 +31,11 @@ function jsonBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
+export interface McpTaskReservation {
+  promote(): Promise<DetailedTask>;
+  release(): void;
+}
+
 export class McpTaskStore {
   private readonly records = new Map<string, DetailedTask>();
   private queue: Promise<unknown> = Promise.resolve();
@@ -38,6 +43,7 @@ export class McpTaskStore {
   private readonly listeners = new Set<(task: DetailedTask) => void>();
   private readonly directoryName: string;
   private writeFailed = false;
+  private reservedSlots = 0;
 
   constructor(pluginId: string, private readonly namespace: FeatureNamespaceHandle = openFeatureNamespace("mcp-tasks")) {
     this.directoryName = createHash("sha256").update(pluginId).digest("hex");
@@ -175,20 +181,41 @@ export class McpTaskStore {
     return structuredClone(snapshot);
   }
 
-  create(): Promise<DetailedTask> {
+  reserve(): Promise<McpTaskReservation> {
     return this.serialize(async () => {
       await this.prune();
-      if (this.records.size >= MCP_TASK_STORE_POLICY.maxTasks) {
+      if (this.records.size + this.reservedSlots >= MCP_TASK_STORE_POLICY.maxTasks) {
         const oldest = [...this.records.values()].filter(isTerminal)
           .sort((a, b) => Date.parse(a.lastUpdatedAt) - Date.parse(b.lastUpdatedAt))[0];
         if (!oldest) throw new Error("Task store capacity reached");
         // Capacity pressure shortens the oldest terminal handle's remaining lifetime to zero.
         await this.remove(oldest.taskId);
       }
-      const now = new Date().toISOString();
-      return this.commit({ taskId: randomUUID(), status: "working", createdAt: now,
-        lastUpdatedAt: now, ttlMs: null, pollIntervalMs: TASK_POLL_INTERVAL_MS });
+      this.reservedSlots++;
+      let released = false;
+      const release = (): void => {
+        if (released) return;
+        released = true;
+        this.reservedSlots--;
+      };
+      return {
+        release,
+        promote: () => this.serialize(async () => {
+          if (released) throw new Error("Task capacity reservation was released");
+          try {
+            const now = new Date().toISOString();
+            return await this.commit({ taskId: randomUUID(), status: "working", createdAt: now,
+              lastUpdatedAt: now, ttlMs: null, pollIntervalMs: TASK_POLL_INTERVAL_MS });
+          } finally { release(); }
+        }),
+      };
     });
+  }
+
+  async create(): Promise<DetailedTask> {
+    const reservation = await this.reserve();
+    try { return await reservation.promote(); }
+    finally { reservation.release(); }
   }
 
   get(taskId: string): Promise<DetailedTask | undefined> {

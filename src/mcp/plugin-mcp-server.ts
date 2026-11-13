@@ -25,7 +25,7 @@ import type { JsonRpcId, JsonRpcRequest, JsonRpcResponse } from "./mcp-client.js
 import { errorMessage } from "../shared/error-message.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { MCP_TASKS_EXTENSION } from "./task-protocol.js";
-import { pluginTaskStore, type McpTaskStore } from "./task-store.js";
+import { pluginTaskStore, type McpTaskStore, type McpTaskReservation } from "./task-store.js";
 import type { JsonRpcNotification } from "./mcp-client.js";
 import { META_CLIENT_CAPABILITIES, RPC_MISSING_REQUIRED_CLIENT_CAPABILITY, RPC_INTERNAL_ERROR } from "./protocol-constants.js";
 import { createLogger } from "../lib/logger.js";
@@ -243,7 +243,14 @@ export class PluginMcpServer {
           meta && typeof meta === "object" && !Array.isArray(meta)
             ? (meta as Record<string, unknown>)[INVOCATION_META]
             : undefined;
+        let reservation: McpTaskReservation | undefined;
         try {
+          if (this.supportsTasks(request)) {
+            try { reservation = await this.tasks.reserve(); }
+            catch {
+              return { jsonrpc: "2.0", id, error: { code: RPC_INTERNAL_ERROR, message: "Task capacity unavailable; tool was not started" } };
+            }
+          }
           const execute = async (): Promise<Record<string, unknown>> => {
             try {
               const outcome = typeof invocation === "string"
@@ -257,14 +264,14 @@ export class PluginMcpServer {
           };
           const operation = execute();
           let result: Record<string, unknown>;
-          if (this.supportsTasks(request)) {
+          if (reservation) {
             let timer: ReturnType<typeof setTimeout> | undefined;
             const pending = Symbol();
             const settled = await Promise.race([operation, new Promise<typeof pending>((resolve) => {
               timer = setTimeout(() => resolve(pending), TOOL_TIMEOUT_POLICY.mcpTaskPromotionMs);
             })]).finally(() => clearTimeout(timer));
             if (settled === pending) {
-              const task = await this.tasks.create();
+              const task = await reservation.promote();
               void operation.then((value) => this.tasks.complete(task.taskId, value))
                 .catch(async () => { await this.tasks.fail(task.taskId); })
                 .catch((err: unknown) => log.error(`Task persistence failed: ${errorMessage(err)}`));
@@ -275,7 +282,7 @@ export class PluginMcpServer {
           return { jsonrpc: "2.0", id, result };
         } catch {
           return { jsonrpc: "2.0", id, error: { code: RPC_INTERNAL_ERROR, message: "Task creation failed" } };
-        }
+        } finally { reservation?.release(); }
       }
 
       default:

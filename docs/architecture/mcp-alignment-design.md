@@ -290,6 +290,10 @@ is `9f3de4d0a022a3b1d20db86ff2219641f6632d3529e6fbcd580c958dc9dd6526`.
 `PluginMcpServer` promotes calls still running after
 `TOOL_TIMEOUT_POLICY.mcpTaskPromotionMs` only when that request declares the Tasks
 capability. Quick calls and non-declaring clients retain immediate results.
+Task-capable calls atomically reserve a slot before the delegate starts, counting
+both durable tasks and calls still awaiting promotion. A full active store
+refuses the call before execution. Quick results release their reservation;
+long calls convert it into a durable task without a second capacity decision.
 Creation is committed before returning the flat task handle. Task records live
 under `AVE_HOME/mcp-tasks/<plugin-hash>/<task-id>.json`, through
 `openFeatureNamespace` and its queued atomic writes. Each transition replaces only

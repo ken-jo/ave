@@ -174,6 +174,43 @@ describe("durable task protocol", () => {
     work.resolve(OUTCOME);
   });
 
+  it("refuses a full task store before starting the delegate", async () => {
+    await isolate();
+    const store = new McpTaskStore(MANIFEST.id);
+    for (let index = 0; index < 128; index++) await store.create();
+    const work = deferred();
+    const delegate = vi.fn(() => work.promise);
+    const server = new PluginMcpServer(MANIFEST, delegate, undefined, store);
+    try {
+      const response = await request(server, "tools/call", { name: "compute" });
+      expect(response.error?.code).toBe(-32603);
+      expect(delegate).not.toHaveBeenCalled();
+    } finally { work.resolve(OUTCOME); }
+  });
+
+  it("reserves capacity atomically for calls that have not reached promotion yet", async () => {
+    await isolate();
+    const store = new McpTaskStore(MANIFEST.id);
+    const work = deferred();
+    const delegate = vi.fn(() => work.promise);
+    const server = new PluginMcpServer(MANIFEST, delegate, undefined, store);
+    const accepted = Array.from({ length: 128 }, () => request(server, "tools/call", { name: "compute" }));
+    await expect.poll(() => delegate.mock.calls.length).toBe(128);
+    const overflow = request(server, "tools/call", { name: "compute" });
+    try {
+      expect((await overflow).error?.code).toBe(-32603);
+      expect(delegate).toHaveBeenCalledTimes(128);
+    } finally {
+      work.resolve(OUTCOME);
+      const responses = await Promise.all([...accepted, overflow]);
+      for (const response of responses) {
+        const taskId = (response.result as { taskId?: string } | undefined)?.taskId;
+        if (taskId) await expect.poll(async () => (await store.get(taskId))?.status).toBe("completed");
+      }
+    }
+    expect((await request(server, "tools/call", { name: "compute" })).result).toMatchObject({ resultType: "complete" });
+  });
+
   it("delivers subscribed full task notifications through newline-framed streams", async () => {
     await isolate();
     const store = new McpTaskStore(MANIFEST.id);
