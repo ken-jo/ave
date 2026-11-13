@@ -2,6 +2,7 @@
 import { CLAUDE_CODE_CLI_MINIMUM_VERSION } from "./claude-code-subscription.js";
 import { CODEX_CLI_MINIMUM_VERSION } from "./codex-subscription.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
+import type { SubscriptionPlanUsage } from "./subscription-plan-usage.js";
 
 const SUBSCRIPTION_RUNTIME_IDS = ["codex", "kimi-code", "grok-build", "claude-code", "chatgpt-plan"] as const;
 
@@ -497,6 +498,7 @@ export type SubscriptionRuntimeNotice =
 
 /** Never include verification URLs, access tokens, raw CLI output, or executable paths in renderer status. */
 export interface SubscriptionRuntimeStatus {
+  readonly planUsage?: SubscriptionPlanUsage;
   provider: SubscriptionRuntimeId;
   runtime: SubscriptionRuntimeState;
   connection: SubscriptionConnectionState;

@@ -112,6 +112,7 @@ function projectStatus(
     version: status.version,
     errorCode: state.errorCode,
     ...(status.notice ? { notice: status.notice } : {}),
+    ...(status.connection === "connected" && status.planUsage ? { planUsage: status.planUsage } : {}),
   };
 }
 

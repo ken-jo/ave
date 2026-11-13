@@ -19,7 +19,7 @@ import { AcpSubscriptionSessionError } from "../acp-subscription-session-client.
 import { MAX_ACP_SUBSCRIPTION_IMAGE_BYTES } from "../acp-subscription-session-client.js";
 import { DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS } from "../subscription-attachment-input.js";
 import {
-  onSubscriptionRuntimeAutoVerified,
+  onSubscriptionRuntimeStatusChanged,
   SubscriptionRuntimeService,
   subscriptionRuntimeErrorCode,
 } from "../subscription-runtime-service.js";
@@ -75,6 +75,40 @@ const HOST_TOOL: ToolSchema = {
     additionalProperties: false,
   },
 };
+
+it("projects account quota updates through cached status and clears them at sign-out", async () => {
+  let accountOptions: CodexAppServerClientOptions | undefined;
+  const client = fakeCodexClient();
+  const registry = { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry;
+  const service = await SubscriptionRuntimeService.create(async () => undefined, {
+    claudeCodeReleaseFetch: RELEASE_FETCH, namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
+    acpRegistry: registry,
+    createCodexAppServerClient: (options) => { accountOptions = options; return client; },
+  });
+  const announcements: string[] = [];
+  const unsubscribe = onSubscriptionRuntimeStatusChanged((provider) => announcements.push(provider));
+  const start = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(start);
+  try {
+    const publish = accountOptions?.onPlanUsage;
+    if (!publish) throw new Error("Missing account quota observer");
+    expect((await service.getStatus("codex", { allowCached: true })).planUsage).toBeUndefined();
+    publish([{ id: "codex:primary", usedPercent: 20, resetsAt: start + 3_600_000 }]);
+    await service.getStatus("codex", { allowCached: true });
+    expect(client.getStatus).toHaveBeenLastCalledWith(false);
+    clock.mockReturnValue(start + 60_000);
+    publish([{ id: "codex:primary", usedPercent: 40, resetsAt: start + 3_600_000 }]);
+    expect((await service.getStatus("codex", { allowCached: true })).planUsage?.windows[0])
+      .toMatchObject({ usedPercent: 40, projectedLimitAt: start + 240_000 });
+    expect(announcements).toEqual(["codex", "codex"]);
+    publish([]);
+    expect((await service.getStatus("codex", { allowCached: true })).planUsage).toBeUndefined();
+  } finally {
+    clock.mockRestore();
+    unsubscribe();
+    await service.stop();
+  }
+});
 
 function fakeCodexClient(): CodexAppServerClient {
   return {
@@ -305,7 +339,7 @@ describe("SubscriptionRuntimeService", () => {
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await runtimeService(registry);
     const announced: string[] = [];
-    const unsubscribe = onSubscriptionRuntimeAutoVerified((provider) => announced.push(provider));
+    const unsubscribe = onSubscriptionRuntimeStatusChanged((provider) => announced.push(provider));
     try {
       expect((await service.getStatus("grok-build")).capabilities.chat).toBe(false);
       await (await service.openTextSession({ kind: "subscription", provider: "grok-build" })).stop();

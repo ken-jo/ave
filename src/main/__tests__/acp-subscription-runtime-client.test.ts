@@ -290,7 +290,13 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     }
   });
 
-  it("performs the fixed Grok cached-token ACP verification handshake", async () => {
+  it.each([
+    { reply: { result: { config: { creditUsagePercent: 37.5, currentPeriod: { end: "2026-12-01T00:00:00Z" } } } },
+      expected: [{ id: "current-period", usedPercent: 37.5, resetsAt: Date.parse("2026-12-01T00:00:00Z") }] },
+    { reply: { result: { config: { creditUsagePercent: 0 } } }, expected: [{ id: "current-period", usedPercent: 0 }] },
+    { reply: { result: { config: { creditsUsed: 3, creditLimit: 10 } } }, expected: [] },
+    { reply: { error: { code: -32601, message: "Method not found" } }, expected: [] },
+  ])("reads only optional reported gauges after fixed cached-token authentication: $expected", async ({ reply, expected }) => {
     const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-grok-acp-auth-probe-");
     const versionChild = new FakeRuntimeProcess();
     const probeChild = new FakeRuntimeProcess();
@@ -315,6 +321,8 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
           })}\n`);
         } else if (request.method === "authenticate") {
           probeChild.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} })}\n`);
+        } else if (request.method === "_x.ai/billing") {
+          probeChild.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, ...reply })}\n`);
         }
       }
     });
@@ -333,6 +341,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
 
     try {
       await expect(client.verify()).resolves.toMatchObject({ runtime: "ready", connection: "connected" });
+      expect(client.getPlanUsage()).toEqual(expected);
       expect(spawnCalls).toHaveLength(2);
       expect(spawnCalls[0]).toMatchObject({
         command: "C:\\approved\\grok-build.exe",
@@ -362,6 +371,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
           method: "authenticate",
           params: { methodId: "cached_token", _meta: { headless: true } },
         },
+        { id: 3, method: "_x.ai/billing", params: {} },
       ]);
     } finally {
       await client.stop();

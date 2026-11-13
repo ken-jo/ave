@@ -1,0 +1,51 @@
+{
+  "accountRead": {
+    "rateLimits": {
+      "limitId": "codex",
+      "limitName": null,
+      "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 },
+      "secondary": null
+    },
+    "rateLimitsByLimitId": {
+      "codex": {
+        "limitId": "codex",
+        "primary": { "usedPercent": 25, "windowDurationMins": 15, "resetsAt": 1730947200 },
+        "secondary": null
+      },
+      "codex_other": {
+        "limitId": "codex_other",
+        "limitName": "codex_other",
+        "primary": { "usedPercent": 42, "windowDurationMins": 60, "resetsAt": 1730950800 },
+        "secondary": null
+      }
+    }
+  },
+  "accountUpdated": {
+    "method": "account/rateLimits/updated",
+    "params": {
+      "rateLimits": {
+        "limitId": "codex",
+        "primary": { "usedPercent": 31, "windowDurationMins": 15, "resetsAt": 1730948100 }
+      }
+    }
+  },
+  "rateLimitEvent": {
+    "type": "rate_limit_event",
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "rate_limit_info": {
+      "status": "allowed_warning",
+      "rateLimitType": "five_hour",
+      "utilization": 0.85,
+      "resetsAt": 1730947200
+    }
+  },
+  "rateLimitAllowed": {
+    "type": "rate_limit_event",
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "rate_limit_info": {
+      "status": "allowed",
+      "rateLimitType": "seven_day",
+      "resetsAt": 1730950800
+    }
+  }
+}

@@ -6,6 +6,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
 import { useTranslation } from "../../../i18n/react.js";
+import type { SubscriptionPlanUsage } from "../../../shared/subscription-plan-usage.js";
+import { SubscriptionPlanUsageView } from "./SubscriptionPlanUsageView.js";
 import {
   isSubscriptionRuntimeId,
   subscriptionRuntimeDescriptor,
@@ -75,6 +77,7 @@ interface SubscriptionProviderDescriptor {
 }
 
 export interface SubscriptionProviderStatus {
+  planUsage?: SubscriptionPlanUsage;
   runtime: SubscriptionProviderRuntimeState;
   connection: SubscriptionConnectionState;
   /** Only a short, validated one-time device code may be projected here. */
@@ -285,6 +288,7 @@ export function SubscriptionAuthControls({
 
   return (
     <div className="space-y-3" data-testid={`subscription-provider:${descriptor.id}`}>
+      {connection === "connected" ? <SubscriptionPlanUsageView usage={status?.planUsage} /> : null}
       {usesOwnCli ? (
         <p
           className="text-xs text-muted-foreground"

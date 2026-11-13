@@ -10,6 +10,8 @@ import {
   isAcpSubscriptionProviderId,
 } from "../shared/acp-subscription.js";
 import type { CodexSubscriptionStatus } from "../shared/codex-subscription.js";
+import type { SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
+import { SubscriptionPlanUsageStore } from "./subscription-plan-usage-store.js";
 import {
   DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
   MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
@@ -112,6 +114,7 @@ export interface AcpSubscriptionTextSession {
 }
 
 export interface AcpSubscriptionTextSessionOptions {
+  readonly onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void;
   readonly onHostRequest?: (
     request: AcpSubscriptionHostRequestObservation,
   ) => void | Promise<void>;
@@ -252,6 +255,7 @@ export class AcpSubscriptionRuntimeRegistry {
       workspaceDir: directories.workspaceDir,
       runtimeTempDir: directories.runtimeTempDir,
       onHostRequest: options.onHostRequest,
+      onPlanUsage: options.onPlanUsage,
       mcpServers,
     });
     this.textSessions.add(session);
@@ -289,9 +293,14 @@ export class AcpSubscriptionRuntimeRegistry {
     });
   }
 
-  async verify(provider: AcpSubscriptionProviderId): Promise<AcpSubscriptionStatus> {
+  async verify(
+    provider: AcpSubscriptionProviderId,
+    onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void,
+  ): Promise<AcpSubscriptionStatus> {
     await this.prepareRuntime(provider);
-    return this.clients[provider].verify();
+    const status = await this.clients[provider].verify();
+    if (status.connection === "connected") onPlanUsage?.(this.clients[provider].getPlanUsage());
+    return status;
   }
 
   async startDeviceCodeLogin(provider: AcpSubscriptionProviderId): Promise<AcpSubscriptionStatus> {
@@ -1080,6 +1089,7 @@ function isSettledStatus(status: SubscriptionRuntimeStatus): boolean {
 // Main-process-only facade. It is the only owner of authenticated runtime state and live governed model sessions. Chat availability is intentionally
 // stricter than authentication: it becomes true only after safety verification.
 export class SubscriptionRuntimeService {
+  private readonly planUsage = new SubscriptionPlanUsageStore();
   private readonly safelyVerified = new Set<SubscriptionRuntimeId>();
   private readonly safetyEpochByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly activeSessions = new Set<SubscriptionTextSession>();
@@ -1111,6 +1121,7 @@ export class SubscriptionRuntimeService {
     openAuthorizationUrl: SubscriptionOpenAuthorizationUrl,
     options: SubscriptionRuntimeServiceCreateOptions = {},
   ): Promise<SubscriptionRuntimeService> {
+    let created: SubscriptionRuntimeService | undefined;
     // Resolved before any directory, registry or client is made, so a creation attempted before boot configured the transport leaves nothing behind
     // and the lazy getter's next call starts clean.
     const claudeCodeReleaseFetch = options.claudeCodeClient ? null : requireClaudeCodeReleaseFetch(options.claudeCodeReleaseFetch);
@@ -1162,6 +1173,7 @@ export class SubscriptionRuntimeService {
       openAuthorizationUrl,
       resolveRuntime: () => codexRuntimeLocator.resolve(),
       lastKnownVersion: () => codexRuntimeLocator.lastKnownVersion(),
+      onPlanUsage: (windows) => created?.recordPlanUsage("codex", windows),
     });
     const planDeps = configuredChatGptPlanRuntimeDeps();
     const chatGptPlanRuntime = options.chatGptPlanRuntime !== undefined
@@ -1176,7 +1188,7 @@ export class SubscriptionRuntimeService {
       openAuthorizationUrl,
       releaseFetch: claudeCodeReleaseFetch!,
     });
-    return new SubscriptionRuntimeService(
+    created = new SubscriptionRuntimeService(
       codexClient,
       codexRuntimeLocator,
       registry,
@@ -1194,6 +1206,7 @@ export class SubscriptionRuntimeService {
       options.audit,
       chatGptPlanRuntime,
     );
+    return created;
   }
 
   // Read-only status. A connected account remains unavailable until verify() proves isolation.
@@ -1203,7 +1216,10 @@ export class SubscriptionRuntimeService {
   ): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     return this.withStableErrors(() => this.readThrough(this.cachedStatuses, runtimeId, options, async () => {
-      if (runtimeId === "codex") return this.projectCodexStatus(await this.codexClient.getStatus());
+      if (runtimeId === "codex") {
+        const refreshPlanUsage = options.allowCached !== true || !this.planUsage.get("codex");
+        return this.projectCodexStatus(await this.codexClient.getStatus(refreshPlanUsage));
+      }
       if (runtimeId === "chatgpt-plan") return this.chatGptPlanStatus();
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         return this.projectClaudeCodeStatus(await this.claudeCodeClient.getStatus());
@@ -1313,7 +1329,9 @@ export class SubscriptionRuntimeService {
         }
         return this.projectClaudeCodeStatus(status);
       }
-      const status = await this.acpRegistry.verify(runtimeId);
+      const status = await this.acpRegistry.verify(runtimeId, (windows) => {
+        if (this.safetyEpochIsCurrent(runtimeId, verificationEpoch)) this.recordPlanUsage(runtimeId, windows);
+      });
       this.assertRunning();
       if (!this.safetyEpochIsCurrent(runtimeId, verificationEpoch)) {
         return this.getStatus(runtimeId);
@@ -1473,7 +1491,7 @@ export class SubscriptionRuntimeService {
       status = await this.verify(safeSelection.provider);
       this.assertRunning();
       safetyEpoch = this.safetyEpoch(safeSelection.provider);
-      if (status.capabilities.chat) notifyAutoVerified(safeSelection.provider);
+      if (status.capabilities.chat) notifyStatusChanged(safeSelection.provider);
     }
     if (!status.capabilities.chat) throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
 
@@ -1506,7 +1524,12 @@ export class SubscriptionRuntimeService {
       const bridge = new SubscriptionToolBridge(options.tools);
       try {
         if (effectiveSelection.provider === "codex") {
-          const runtime = this.createCodexConversationRuntime(this.codexTextRuntimePaths);
+          const runtime = this.createCodexConversationRuntime({
+            ...this.codexTextRuntimePaths,
+            onPlanUsage: (windows) => {
+              if (this.safetyEpochIsCurrent("codex", safetyEpoch)) this.recordPlanUsage("codex", windows);
+            },
+          });
           return await this.trackVerifiedSession(new CodexSubscriptionTextSession(
             runtime,
             effectiveSelection,
@@ -1523,6 +1546,9 @@ export class SubscriptionRuntimeService {
             workspaceDir: paths.workspaceDir,
             runtimeTempDir: paths.runtimeTempDir,
             bridge,
+            onPlanUsage: (windows) => {
+              if (this.safetyEpochIsCurrent("claude-code", safetyEpoch)) this.recordPlanUsage("claude-code", windows);
+            },
             ...(effectiveSelection.model !== undefined ? { model: effectiveSelection.model } : {}),
           });
           return await this.trackVerifiedSession(runtime, safetyEpoch);
@@ -1535,6 +1561,9 @@ export class SubscriptionRuntimeService {
         this.assertSafetyEpoch(effectiveSelection.provider, safetyEpoch);
         let unsafeHostRequest = false;
         const session = await this.acpRegistry.openTextSession(acpProvider, {
+          onPlanUsage: (windows) => {
+            if (this.safetyEpochIsCurrent(acpProvider, safetyEpoch)) this.recordPlanUsage(acpProvider, windows);
+          },
           onHostRequest: (request) => {
             unsafeHostRequest = true;
             this.rejectUnsafeRequest(effectiveSelection.provider, request.kind);
@@ -1599,12 +1628,12 @@ export class SubscriptionRuntimeService {
 
   private projectCodexStatus(status: CodexSubscriptionStatus): SubscriptionRuntimeStatus {
     this.reconcileSafety("codex", status);
-    return codexStatus(status, this.safelyVerified.has("codex"));
+    return this.withPlanUsage(codexStatus(status, this.safelyVerified.has("codex")));
   }
 
   private projectAcpStatus(status: AcpSubscriptionStatus): SubscriptionRuntimeStatus {
     this.reconcileSafety(status.provider, status);
-    return acpStatus(status, this.safelyVerified.has(status.provider));
+    return this.withPlanUsage(acpStatus(status, this.safelyVerified.has(status.provider)));
   }
 
   private projectClaudeCodeStatus(status: ClaudeCodeSubscriptionStatus): SubscriptionRuntimeStatus {
@@ -1613,7 +1642,7 @@ export class SubscriptionRuntimeService {
   }
 
   private claudeCodeStatusProjection(status: ClaudeCodeSubscriptionStatus): SubscriptionRuntimeStatus {
-    return {
+    return this.withPlanUsage({
       provider: status.provider,
       runtime: status.runtime,
       connection: status.connection,
@@ -1626,7 +1655,22 @@ export class SubscriptionRuntimeService {
         status.provider,
         this.safelyVerified.has(status.provider) && isConnectedAndReady(status),
       ),
-    };
+    });
+  }
+
+  private recordPlanUsage(provider: SubscriptionRuntimeId, windows: readonly SubscriptionPlanUsageWindow[]): void {
+    if (this.stopped || !this.planUsage.update(provider, windows)) return;
+    this.invalidateCachedReads(provider);
+    notifyStatusChanged(provider);
+  }
+
+  private withPlanUsage(status: SubscriptionRuntimeStatus): SubscriptionRuntimeStatus {
+    if (!isConnectedAndReady(status)) {
+      this.planUsage.clear(status.provider);
+      return status;
+    }
+    const planUsage = this.planUsage.get(status.provider);
+    return planUsage ? { ...status, planUsage } : status;
   }
 
   private reconcileSafety(
@@ -1696,6 +1740,7 @@ export class SubscriptionRuntimeService {
   // Synchronously revoke every proof tied to this provider and advance its epoch. Any in-flight verify/open operation that captured an earlier epoch must
   // fail closed rather than re-authorizing a newly selected runtime.
   private invalidateSafety(provider: SubscriptionRuntimeId): number {
+    this.planUsage.clear(provider);
     this.invalidateCachedReads(provider);
     return this.revokeSafety(provider);
   }
@@ -1853,16 +1898,16 @@ export class SubscriptionRuntimeService {
   }
 }
 
-const autoVerifiedListeners = new Set<(provider: SubscriptionRuntimeId) => void>();
+const statusChangedListeners = new Set<(provider: SubscriptionRuntimeId) => void>();
 
-// A turn's re-proof changes status outside every settings mutation, so the IPC layer is told to publish it.
-export function onSubscriptionRuntimeAutoVerified(listener: (provider: SubscriptionRuntimeId) => void): () => void {
-  autoVerifiedListeners.add(listener);
-  return () => { autoVerifiedListeners.delete(listener); };
+// Account gauges and a turn's re-proof change status outside settings mutations.
+export function onSubscriptionRuntimeStatusChanged(listener: (provider: SubscriptionRuntimeId) => void): () => void {
+  statusChangedListeners.add(listener);
+  return () => { statusChangedListeners.delete(listener); };
 }
 
-function notifyAutoVerified(provider: SubscriptionRuntimeId): void {
-  for (const listener of autoVerifiedListeners) listener(provider);
+function notifyStatusChanged(provider: SubscriptionRuntimeId): void {
+  for (const listener of statusChangedListeners) listener(provider);
 }
 
 let service: SubscriptionRuntimeService | null = null;

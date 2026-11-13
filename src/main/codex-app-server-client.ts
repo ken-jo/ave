@@ -30,6 +30,8 @@ import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "./codex-user-runtime.js";
 import { verifyCodexExecutableArtifact } from "./codex-executable-artifact.js";
+import { parseCodexPlanUsage } from "./subscription-plan-usage-parsers.js";
+import type { SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
 
 const MAX_MODEL_COUNT = 100;
 const MAX_PLAN_TYPE_LENGTH = 80;
@@ -45,6 +47,7 @@ export class CodexAppServerError extends Error {
 }
 
 export interface CodexAppServerClientOptions {
+  onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void;
   // Opens a trusted login URL with the runtime-owned completion signal.
   openAuthorizationUrl: OpenOAuthLogin;
   // Existing isolated directory owned by the host integration's runtime.
@@ -128,6 +131,7 @@ function runtimeResolutionError(error: unknown): CodexAppServerError {
 // Main-process adapter for the stable App Server account APIs. The server owns browser callbacks, credential persistence, and token refresh. This client
 // intentionally never reads Codex auth files or token values.
 export class CodexAppServerClient {
+  private readonly onPlanUsage: CodexAppServerClientOptions["onPlanUsage"];
   private readonly openAuthorizationUrl: OpenOAuthLogin;
   private readonly resolveRuntime: () => Promise<CodexResolvedRuntime>;
   private readonly lastKnownVersion: () => string | null;
@@ -142,11 +146,13 @@ export class CodexAppServerClient {
   private readonly pendingRequests = new JsonRpcPendingRequests();
   private transportReader: JsonLineReader | null = null;
   private accountStatus: CodexSubscriptionStatus = blankStatus("ready");
+  private planUsageGeneration = 0;
   private pendingLogin: PendingLogin | null = null;
   private completedLoginError: CodexAppServerErrorCode | null = null;
 
   private loginLock: Promise<void> = Promise.resolve();
   constructor(options: CodexAppServerClientOptions) {
+    this.onPlanUsage = options.onPlanUsage;
     this.openAuthorizationUrl = options.openAuthorizationUrl;
     this.resolveRuntime = options.resolveRuntime;
     this.lastKnownVersion = options.lastKnownVersion ?? (() => null);
@@ -159,7 +165,7 @@ export class CodexAppServerClient {
     this.runtimeTempDir = options.runtimeTempDir ?? options.runtimeHome;
   }
 
-  async getStatus(): Promise<CodexSubscriptionStatus> {
+  async getStatus(refreshPlanUsage = true): Promise<CodexSubscriptionStatus> {
     try {
       await this.ensureStarted();
     } catch (error) {
@@ -175,6 +181,22 @@ export class CodexAppServerClient {
       this.pendingLogin?.window.finish();
       this.pendingLogin = null;
       this.completedLoginError = null;
+      if (this.onPlanUsage && refreshPlanUsage) {
+        const generation = this.planUsageGeneration;
+        try {
+          const usage = await this.request("account/rateLimits/read", {});
+          if (generation === this.planUsageGeneration && this.accountStatus.connection === "connected") {
+            this.publishPlanUsage(usage);
+          }
+        } catch {
+          // Optional quota availability must not change the account connection verdict.
+          if (generation === this.planUsageGeneration && this.accountStatus.connection === "connected") {
+            this.publishPlanUsage(null);
+          }
+        }
+      }
+    } else {
+      this.invalidatePlanUsage();
     }
     const completedLoginError = this.completedLoginError;
     if (completedLoginError) {
@@ -193,6 +215,7 @@ export class CodexAppServerClient {
     return this.withLoginLock(async () => {
       await this.ensureStarted();
       this.assertNoPendingLogin();
+      this.invalidatePlanUsage();
       this.completedLoginError = null;
       const result = await this.request("account/login/start", {
         type: "chatgpt",
@@ -215,6 +238,7 @@ export class CodexAppServerClient {
     return this.withLoginLock(async () => {
       await this.ensureStarted();
       this.assertNoPendingLogin();
+      this.invalidatePlanUsage();
       this.completedLoginError = null;
       const result = await this.request("account/login/start", {
         type: "chatgptDeviceCode",
@@ -250,6 +274,7 @@ export class CodexAppServerClient {
   async logout(): Promise<CodexSubscriptionStatus> {
     return this.withLoginLock(async () => {
       await this.ensureStarted();
+      this.invalidatePlanUsage();
       // Do not leave an abandoned login attempt blocking future sign-ins when the server rejects logout. The account projection remains unchanged until the
       // parameterless logout request succeeds.
       this.pendingLogin?.window.finish();
@@ -546,7 +571,12 @@ export class CodexAppServerClient {
   }
   private handleNotification(method: string, params: unknown): void {
     const payload = isCodexJsonRecord(params) ? params : null;
+    if (method === "account/rateLimits/updated") {
+      if (this.accountStatus.connection === "connected") this.publishPlanUsage(params);
+      return;
+    }
     if (method === "account/updated" && payload) {
+      this.invalidatePlanUsage();
       if (payload.authMode === "chatgpt") {
         this.pendingLogin?.window.finish();
         this.pendingLogin = null;
@@ -576,6 +606,19 @@ export class CodexAppServerClient {
     }
   }
 
+  private publishPlanUsage(value: unknown): void {
+    try {
+      this.onPlanUsage?.(parseCodexPlanUsage(value));
+    } catch {
+      // Quota observers cannot destabilize authentication or transport.
+    }
+  }
+
+  private invalidatePlanUsage(): void {
+    this.planUsageGeneration += 1;
+    this.publishPlanUsage(null);
+  }
+
   private abortTransport(
     error: CodexAppServerError,
     expectedChild?: ChildProcess,
@@ -597,6 +640,7 @@ export class CodexAppServerClient {
     expectedChild?: ChildProcess | null,
   ): void {
     if (expectedChild && this.child !== expectedChild) return;
+    this.invalidatePlanUsage();
     this.child = null;
     this.transportReader?.close();
     this.transportReader = null;

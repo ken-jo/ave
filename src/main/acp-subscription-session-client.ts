@@ -39,6 +39,8 @@ import {
 import { isRecord } from "../shared/is-record.js";
 import { JsonLineReader } from "../lib/json-line-reader.js";
 import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
+import type { SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
+import { parseGrokBuildPlanUsage } from "./subscription-plan-usage-parsers.js";
 
 const MAX_RPC_LINE_BYTES = 1_000_000;
 // Native image cap that always fits the ACP JSONL transport with room for text.
@@ -169,6 +171,7 @@ export interface AcpSubscriptionSessionClientOptions {
   mcpServers?: readonly AcpSubscriptionMcpServerConfig[];
   // Main-only callback for a rejected reverse RPC request. It never receives params.
   onHostRequest?: (request: AcpSubscriptionHostRequestObservation) => void | Promise<void>;
+  onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void;
   // Test seam; production uses the managed-child registry.
   spawn?: SpawnAcpRuntime;
   // Test seam; production reuses the executable validator from the auth client.
@@ -393,6 +396,7 @@ export class AcpSubscriptionSessionClient {
   private promptCapabilities: AcpSubscriptionPromptCapabilities = DEFAULT_ACP_SUBSCRIPTION_PROMPT_CAPABILITIES;
   private activePrompt: StartedPrompt | null = null;
   private stopped = false;
+  private planUsageRevision = 0;
 
   constructor(private readonly options: AcpSubscriptionSessionClientOptions) {
     this.manifest = ACP_SUBSCRIPTION_RUNTIME_MANIFESTS[options.provider];
@@ -574,6 +578,23 @@ export class AcpSubscriptionSessionClient {
     const sessionId = isRecord(created) ? boundedString(created.sessionId, MAX_SESSION_ID_LENGTH) : null;
     if (!sessionId) throw new AcpSubscriptionSessionError("acp-session-invalid-response");
     this.sessionId = sessionId;
+    void this.readPlanUsage();
+  }
+
+  private async readPlanUsage(): Promise<void> {
+    if (this.options.provider !== "grok-build" || !this.options.onPlanUsage || !this.sessionId || this.stopped) return;
+    const sessionId = this.sessionId;
+    const revision = ++this.planUsageRevision;
+    let windows: readonly SubscriptionPlanUsageWindow[] = [];
+    try {
+      const result = await this.sendRequest("_x.ai/billing", {}, this.requestTimeoutMs).promise;
+      windows = parseGrokBuildPlanUsage(result);
+    } catch {
+      // Optional account telemetry cannot change the prompt outcome.
+    }
+    if (!this.stopped && this.sessionId === sessionId && revision === this.planUsageRevision) {
+      try { this.options.onPlanUsage(windows); } catch { /* Observers do not change the prompt outcome. */ }
+    }
   }
 
   // Build only standard ACP blocks after runtime-owned capability negotiation.
@@ -665,14 +686,15 @@ export class AcpSubscriptionSessionClient {
   }
 
   private sendRequest(
-    method: ProviderRpcOperation,
+    method: ProviderRpcOperation | "_x.ai/billing",
     params: Record<string, unknown>,
     timeoutMs: number,
     onTimeout?: (error: AcpSubscriptionSessionError) => void,
   ): { id: number; promise: Promise<unknown> } {
     const timeoutError = new AcpSubscriptionSessionError(
       method === "session/prompt" ? "acp-session-prompt-timeout" : "acp-session-request-timeout",
-      subscriptionTransportFailure({ phase: "rpc-timeout", kind: "timeout", operation: method }),
+      subscriptionTransportFailure({ phase: "rpc-timeout", kind: "timeout",
+        ...(method === "_x.ai/billing" ? {} : { operation: method }) }),
     );
     const pending = this.pending.begin({
       method,
@@ -681,7 +703,7 @@ export class AcpSubscriptionSessionClient {
       timeoutError: () => timeoutError,
       onTimeout: () => {
         onTimeout?.(timeoutError);
-        if (method !== "session/prompt") {
+        if (method !== "session/prompt" && method !== "_x.ai/billing") {
           this.abortTransport(timeoutError);
         }
       },
@@ -871,6 +893,7 @@ export class AcpSubscriptionSessionClient {
     this.clearPromptListeners(active);
     active.queue.finish();
     active.resolve({ stopReason });
+    void this.readPlanUsage();
   }
 
   private rejectPrompt(active: StartedPrompt, error: Error): void {

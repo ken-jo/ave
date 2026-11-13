@@ -5096,6 +5096,20 @@ export const ko: Record<MessageCatalogKey, string> = {
   "subAgentCard.transcriptLoadFailed": "대화 기록을 불러오지 못했습니다.",
 
   // subscriptionProvidersSection
+  "subscriptionPlanUsage.title": "요금제 사용량",
+  "subscriptionPlanUsage.reported": "보고 시각 {time}",
+  "subscriptionPlanUsage.window": "{minutes}분 구간",
+  "subscriptionPlanUsage.primary": "기본 구간",
+  "subscriptionPlanUsage.secondary": "보조 구간",
+  "subscriptionPlanUsage.fiveHour": "5시간 구간",
+  "subscriptionPlanUsage.sevenDay": "7일 구간",
+  "subscriptionPlanUsage.sevenDayOpus": "7일 구간 · Opus",
+  "subscriptionPlanUsage.sevenDaySonnet": "7일 구간 · Sonnet",
+  "subscriptionPlanUsage.currentPeriod": "현재 이용 기간",
+  "subscriptionPlanUsage.used": "{percent}% 사용",
+  "subscriptionPlanUsage.resets": "초기화 {time}",
+  "subscriptionPlanUsage.projected": "관측된 속도가 유지되면 초기화 전인 {time}경 한도에 도달할 것으로 추정됩니다.",
+
   "subscriptionProvidersSection.title": "구독 공급자",
   "subscriptionProvidersSection.description": "공급자별 공식 런타임의 기존 구독을 사용하면서 로그인과 대화 선택을 한 곳에서 관리합니다.",
   "subscriptionProvidersSection.securityNotice": "로그인 URL, 계정 토큰, 런타임 출력은 이 화면에 표시되지 않습니다.",
