@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SCHEMES } from '../../../src/ui/renderer/theme/schemes/index.js';
 import { relativeLuminance } from '../../contrast-helpers.js';
+import { normalizeCssColor } from '../../color-helpers.js';
 import { openInlineSettings } from './inline-settings.js';
 import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from './seeded-electron.js';
 
@@ -154,22 +155,28 @@ test('glass tint spans bare material to opaque and preserves opaque safety surfa
           probe.remove();
         }
       }, glass);
-      await expect(selectedRow).toHaveCSS('background-color', expectedSelectedBackground);
+      const expectedSelectedChannels = normalizeCssColor(expectedSelectedBackground);
+      await expect.poll(async () => normalizeCssColor(await selectedRow.evaluate(element =>
+        getComputedStyle(element).backgroundColor))).toEqual(expectedSelectedChannels);
       const selectedPaint = () => selectedRow.evaluate(element => {
         const title = element.querySelector('[data-testid^="sidebar-conversation-title-"]');
         if (!title) throw new Error('Selected conversation title missing');
         return {
-          background: getComputedStyle(element).backgroundColor.match(/[\d.]+/g)?.map(Number) ?? [],
-          foreground: getComputedStyle(title).color.match(/[\d.]+/g)?.map(Number) ?? [],
+          background: getComputedStyle(element).backgroundColor,
+          foreground: getComputedStyle(title).color,
         };
       });
-      const selected = await selectedPaint();
-      expect(selected.background).toEqual(expectedSelectedBackground.match(/[\d.]+/g)?.map(Number) ?? []);
-      expect(selected.foreground).toHaveLength(3);
+      const selectedCss = await selectedPaint();
+      const selected = {
+        background: normalizeCssColor(selectedCss.background),
+        foreground: normalizeCssColor(selectedCss.foreground),
+      };
+      expect(selected.background).toEqual(expectedSelectedChannels);
+      expect(selected.foreground[3]).toBe(1);
       const selectedAlpha = selected.background[3] ?? 1;
       const selectedBackground = relativeLuminance(selected.background.slice(0, 3).map((channel, index) =>
         (channel * selectedAlpha + colors.background[index] * (1 - selectedAlpha)) / 255) as [number, number, number]);
-      const selectedForeground = relativeLuminance(selected.foreground.map(channel => channel / 255) as [number, number, number]);
+      const selectedForeground = relativeLuminance(selected.foreground.slice(0, 3).map(channel => channel / 255) as [number, number, number]);
       const selectedRatio = (Math.max(selectedForeground, selectedBackground) + 0.05) / (Math.min(selectedForeground, selectedBackground) + 0.05);
       expect(selectedRatio, `${scheme.id}: selected conversation`).toBeGreaterThanOrEqual(4.5);
       contrasts.push({ scheme: scheme.id, shell: scheme.shell, tint: 40, kind: 'body', ratio: selectedRatio });
