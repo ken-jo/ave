@@ -1736,6 +1736,7 @@ describe("installer smoke and packaging discipline", () => {
     // full run and the affected tests on a traceable pull request.
     expect(matched(jobRunCommands(build as string), VERIFIES_THE_CODE)).toEqual([
       "bun run build",
+      "bun run test:ui-e2e",
       "bun run typecheck",
       "check:typecheck-tests",
     ]);

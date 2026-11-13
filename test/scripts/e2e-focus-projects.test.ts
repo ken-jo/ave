@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { parse } from "yaml";
 
 const PACKAGE = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> };
 
@@ -55,4 +56,19 @@ describe("native focus test selection", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("schedule:");
   });
+
+  it("requires background approvals and keyboard authority in the existing build job", () => {
+    const workflow = parse(readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"));
+    const build = workflow.jobs.build;
+    expect(build["runs-on"]).toBe("ubuntu-24.04-arm");
+    const step = build.steps.find((entry: { name?: string }) => entry.name === "Verify background approvals and keyboard authority");
+    expect(step.if).toBe("steps.docs-impact.outputs.docs_only != 'true'");
+    expect(step["timeout-minutes"]).toBe(5);
+    expect(step.env.AVE_E2E_OS_FOCUS).toBe("0");
+    expect(step.run).toContain("xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e ui/approval-dialog.spec.ts ui/background-focus.spec.ts --retries=0");
+    expect(step.run).toContain("--output=test-results/background/cases");
+    expect(step.run).toContain("GITHUB_STEP_SUMMARY");
+    expect(build.steps.find((entry: { name?: string }) => entry.name === "Upload background UI evidence").if).toContain("always()");
+  });
+
 });

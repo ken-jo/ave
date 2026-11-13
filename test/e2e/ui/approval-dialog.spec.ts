@@ -27,9 +27,8 @@ test('approval cards return from a browser surface without an in-app notificatio
   await mainWindow.getByTestId('sidebar-web').click();
   const browser = mainWindow.locator('[data-surface-kind="browser"]');
   await expect(browser).toBeVisible();
-  await app.evaluate(({ BrowserWindow }, sid) => {
-    const win = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.isVisible());
-    if (!win) throw new Error('Visible window unavailable');
+  // Target the page's own native window; background rendering does not imply OS visibility.
+  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
     win.webContents.send('ave:approval:request', {
       id: 'approval-notice-e2e', sessionId: sid, category: 'tool', kind: 'tool',
       toolName: 'write_file', toolCategory: 'write', source: 'builtin', trustOrigin: 'user-keyboard',
@@ -101,11 +100,8 @@ test('approval dock floats over the route without changing its layout', async ({
     if (active instanceof HTMLElement) active.blur();
   });
 
-  await app.evaluate(({ BrowserWindow }, sid) => {
-    const win = BrowserWindow.getAllWindows().find(
-      (window) => !window.isDestroyed() && window.isVisible(),
-    );
-    win?.webContents.send('ave:approval:request', {
+  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
+    win.webContents.send('ave:approval:request', {
       id: 'approval-dock-e2e',
       sessionId: sid,
       category: 'tool',
@@ -262,11 +258,8 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(dock).toBeVisible();
 
   // Approval floats above the composer and takes precedence over simultaneous questions.
-  await app.evaluate(({ BrowserWindow }, sid) => {
-    const win = BrowserWindow.getAllWindows().find(
-      (window) => !window.isDestroyed() && window.isVisible(),
-    );
-    win?.webContents.send('ave:ask-user-question:request', {
+  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
+    win.webContents.send('ave:ask-user-question:request', {
       id: 'approval-dock-question-overlap-e2e',
       sessionId: sid,
       createdAt: Date.now(),
@@ -304,11 +297,8 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(composerDock).not.toHaveAttribute('inert', '');
   await expect(composerDock).not.toHaveAttribute('aria-hidden', 'true');
 
-  await app.evaluate(({ BrowserWindow }, sid) => {
-    const win = BrowserWindow.getAllWindows().find(
-      (window) => !window.isDestroyed() && window.isVisible(),
-    );
-    win?.webContents.send('ave:approval:request', {
+  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
+    win.webContents.send('ave:approval:request', {
       id: 'approval-dock-layout-continuation-e2e',
       sessionId: sid,
       category: 'tool',
@@ -393,11 +383,8 @@ test('approval dock floats over the route without changing its layout', async ({
   await expect(dock).toHaveCount(0);
 
   // Preserve native Space activation alongside directional focus movement.
-  await app.evaluate(({ BrowserWindow }, sid) => {
-    const win = BrowserWindow.getAllWindows().find(
-      (window) => !window.isDestroyed() && window.isVisible(),
-    );
-    win?.webContents.send('ave:approval:request', {
+  await (await app.browserWindow(mainWindow)).evaluate((win, sid) => {
+    win.webContents.send('ave:approval:request', {
       id: 'approval-dock-space-e2e',
       sessionId: sid,
       category: 'tool',
@@ -435,11 +422,8 @@ test('an ask that names no conversation is a lane card that covers no composer',
   const composerDock = mainWindow.locator('[data-composer-placement]').first();
   await expect(composerDock).toBeVisible();
 
-  await app.evaluate(({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows().find(
-      (window) => !window.isDestroyed() && window.isVisible(),
-    );
-    win?.webContents.send('ave:approval:request', {
+  await (await app.browserWindow(mainWindow)).evaluate((win) => {
+    win.webContents.send('ave:approval:request', {
       id: 'approval-lane-unattributed-e2e',
       category: 'tool',
       kind: 'tool',
