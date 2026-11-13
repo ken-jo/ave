@@ -17,6 +17,8 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
+import type { ActivePluginGeneration } from "../../plugins/plugin-generation-coordinator.js";
+import type { HostPluginGenerationState } from "../../plugins/plugin-host-generation.js";
 
 const principal = {
   ownerPluginId: "sampleportal",
@@ -147,10 +149,25 @@ function setup(options: {
     isShadowChannelWritable: vi.fn(() => true),
     getPermissionShadowLogFile: vi.fn(() => "/tmp/shadow"),
   };
-  const activeGeneration = {
+  const pluginRoot = join(tmpdir(), principal.ownerPluginId);
+  const activeGeneration: ActivePluginGeneration<HostPluginGenerationState> = {
     pluginId: principal.ownerPluginId,
+    pluginVersion: principal.ownerVersion,
     generationId: principal.generationId,
-    state: {},
+    artifactGenerationId: "a".repeat(64),
+    manifestSha256: "b".repeat(64),
+    receiptSha256: "c".repeat(64),
+    contributions: [],
+    state: {
+      payloadRoot: pluginRoot,
+      runtime: {
+        activationId: principal.generationId, installId: null, pluginRoot,
+        manifest: { id: principal.ownerPluginId, version: principal.ownerVersion,
+          description: "Governed operation fixture", entry: "entry.mjs", tools: [] },
+        instance: { handlers: {} }, methods: new Map(), arm: "child", confinement: "unconfined",
+      },
+      hooks: [], mcpServers: [],
+    },
   };
   const generationAccess = {
     getActive: vi.fn((pluginId: string) =>

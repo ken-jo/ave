@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
-import type { ScopedPermissionRule, ScopedPermissionRuleError } from "../../../shared/permissions-events.js";
+import type { PluginReadjudicationEvidence, ScopedPermissionRule, ScopedPermissionRuleError } from "../../../shared/permissions-events.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { UNAUTHORIZED_FRAME } from "../../gated.js";
@@ -104,6 +104,7 @@ function makeDeps(options: {
   snapshotVerdict?: "low" | "medium" | "high";
   snapshotApprovalCacheKey?: string;
   snapshotApprovalMemory?: import("../../../shared/permissions-events.js").ApprovalMemory;
+  snapshotReadjudication?: PluginReadjudicationEvidence;
   /** Index into the card's own choice list the simulated user picks. */
   answerChoiceIndex?: number;
 } = {}) {
@@ -196,6 +197,7 @@ function makeDeps(options: {
         persistentAllowAllowed: options.persistentAllowAllowed ?? options.snapshotVerdict !== "high",
         workingDirectoryIdentity: options.workingDirectoryIdentity ?? "a".repeat(64),
         verdictAtApproval: options.snapshotVerdict ?? "medium",
+        readjudication: options.snapshotReadjudication,
       })),
     },
     auditLogger: {
@@ -690,6 +692,141 @@ describe("policyGet exposes host-derived editability", () => {
 });
 
 // HIGH verdict IPC enforcement: explicit one-shot only
+
+describe("human plugin re-adjudication records", () => {
+  const evidence: PluginReadjudicationEvidence = {
+    pluginId: "document-tools", artifactSha256: "b".repeat(64), signerKeyId: "receipt-signer",
+    staticReason: "write-path-not-declared",
+  };
+  const payload = {
+    requestId: "readjudication-request", args: '{"renderer":"cannot choose identity"}',
+    verdictAtApproval: "high", nlJustification: null, readjudicate: true,
+  };
+  const eligible = {
+    snapshotToolName: "plugin_document_update", snapshotSource: "plugin", snapshotVerdict: "high" as const,
+    snapshotArgs: { value: "host input" }, snapshotReadjudication: evidence, persistentAllowAllowed: true,
+  };
+
+  it.each(["session", "persistent", "global"] as const)("records the human's %s scope with host evidence and effective MEDIUM", async scope => {
+    const { deps } = await setup({ ...eligible, snapshotApprovalCacheKey: "ordinary-policy-key",
+      snapshotApprovalMemory: { kind: "key", key: "ordinary-all-inputs", scope: { kind: "path", path: "/srv/project/document" } },
+    });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope,
+      readjudication: { ...evidence, pluginId: "forged-plugin" },
+      source: "builtin", toolName: "forged_tool", trustOrigin: "plugin-emitted",
+    })).toEqual({ ok: true });
+    expect(recordApprovalMock).toHaveBeenCalledWith("plugin_document_update", '{"value":"host input"}', "plugin",
+      expect.objectContaining({ scope, verdictAtApproval: "medium", readjudication: evidence,
+        approvalCacheKey: undefined, trustOrigin: "user-keyboard" }),
+      expect.objectContaining({ refresh: expect.any(Function), isCurrent: expect.any(Function) }));
+    const recorded = (recordApprovalMock.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
+    expect(recorded).not.toHaveProperty("riskCeilingAtApproval");
+    expect(deps.approvalGate.completeExactApprovalSave).toHaveBeenCalledWith(expect.any(Object), expect.any(String), scope);
+    expect(deps.auditLogger.append).toHaveBeenCalledWith(expect.objectContaining({ type: "approval",
+      output: expect.stringContaining("rawVerdict=high effectiveVerdict=medium") }));
+  });
+
+  it("leaves an ordinary HIGH save unchanged unless the person selects re-adjudication", async () => {
+    await setup(eligible);
+    const { readjudicate: _readjudicate, ...ordinary } = payload;
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...ordinary, scope: "persistent" })).toEqual({ ok: true });
+    expect(recordApprovalMock).toHaveBeenCalledWith("plugin_document_update", '{"value":"host input"}', "plugin",
+      expect.objectContaining({ verdictAtApproval: "high" }), expect.any(Object));
+    const recorded = (recordApprovalMock.mock.calls[0] as unknown[])[3] as Record<string, unknown>;
+    expect(recorded).not.toHaveProperty("readjudication");
+  });
+
+  it("does not manufacture host eligibility from renderer self-report", async () => {
+    await setup({ ...eligible, snapshotReadjudication: undefined });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent", readjudication: evidence }))
+      .toMatchObject({ ok: false, error: "readjudication-unavailable" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a forced one-shot snapshot even if evidence was incorrectly supplied", async () => {
+    await setup({ ...eligible, durableApprovalRecordAllowed: false });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "session" }))
+      .toMatchObject({ ok: false, error: "one-shot-not-recordable" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["low", "medium"] as const)("does not lower a %s host snapshot through the new intent", async verdict => {
+    await setup({ ...eligible, snapshotVerdict: verdict });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent", verdictAtApproval: verdict }))
+      .toMatchObject({ ok: false, error: "readjudication-unavailable" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("requires the original displayed HIGH rather than trusting renderer MEDIUM", async () => {
+    await setup(eligible);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent", verdictAtApproval: "medium" }))
+      .toMatchObject({ ok: false, error: "verdict-mismatch" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it.each([false, "medium", {}, null])("refuses a malformed re-adjudication intent %j", async readjudicate => {
+    await setup(eligible);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent", readjudicate }))
+      .toMatchObject({ ok: false, error: "invalid-payload" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("cannot convert a deny or a rule save into re-adjudication", async () => {
+    await setup(eligible);
+    for (const extra of [{ decision: "deny" }, { rule: { action: "allow", scope: "always" } }]) {
+      expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent", ...extra }))
+        .toMatchObject({ ok: false, error: "readjudication-unavailable" });
+    }
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("requires native user intent and the delivered card's exact sender", async () => {
+    const { deps } = await setup(eligible);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent", intent: {} }))
+      .toMatchObject({ ok: false, error: "user-keyboard-required" });
+    deps.approvalGate.canAccessRendererRequest.mockReturnValueOnce(false);
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent" })).toEqual(UNAUTHORIZED_FRAME);
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("does not persist when live authority expires before the answer", async () => {
+    const { deps } = await setup(eligible);
+    deps.approvalGate.capturePendingRequestIdentityGuard.mockReturnValueOnce({ refresh: vi.fn(async () => false), isCurrent: vi.fn(() => true) });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent" }))
+      .toMatchObject({ ok: false, error: "no-such-request" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it("does not complete an approval receipt when re-adjudication persistence fails", async () => {
+    const { deps } = await setup(eligible);
+    recordApprovalMock.mockRejectedValueOnce(new Error("Approval storage refused the write"));
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent" }))
+      .toMatchObject({ ok: false, error: "managed" });
+    expect(deps.approvalGate.completeExactApprovalSave).not.toHaveBeenCalled();
+    expect(deps.approvalGate.resolve).not.toHaveBeenCalled();
+  });
+
+  it("records no grant when the re-adjudication audit write fails", async () => {
+    const { deps } = await setup(eligible);
+    deps.auditLogger.append.mockRejectedValueOnce(new Error("Approval audit write failed"));
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent" }))
+      .toMatchObject({ ok: false, error: "managed" });
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+    expect(deps.approvalGate.beginExactApprovalSave).not.toHaveBeenCalled();
+    expect(deps.approvalGate.completeExactApprovalSave).not.toHaveBeenCalled();
+  });
+
+  it("refuses deeply nested exact input before appending audit or recording a grant", async () => {
+    let args: Record<string, unknown> = { value: "different past the nesting boundary" };
+    for (let depth = 0; depth < 105; depth += 1) args = { nested: args };
+    const { deps } = await setup({ ...eligible, snapshotArgs: args });
+    expect(await invoke(PERMISSIONS.userApprovalRecord, { ...payload, scope: "persistent" }))
+      .toMatchObject({ ok: false, error: "args-not-json" });
+    expect(deps.auditLogger.append).not.toHaveBeenCalled();
+    expect(recordApprovalMock).not.toHaveBeenCalled();
+    expect(deps.approvalGate.beginExactApprovalSave).not.toHaveBeenCalled();
+  });
+});
 
 describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => {
   it("refuses remembered answers when fresh controller authority is unavailable", async () => {

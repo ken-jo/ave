@@ -1,0 +1,4844 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`existing plugin invocation decisions > preserves full category, rule verdict and mode decisions for the command corpus 1`] = `
+[
+  {
+    "category": "read",
+    "command": "git log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git log --oneline -n 2",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git log 'HEAD'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git show --no-patch HEAD",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --name-only HEAD main",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff HEAD main --name-status",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --raw HEAD main",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git rev-parse --verify HEAD",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git rev-parse --show-toplevel",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git branch --list",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -p -c 'printf ready'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -p -c 'cat ~/.ssh/id_rsa'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git status",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff HEAD",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --cached",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --cached --name-only",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --cached --name-status",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --cached --raw",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --staged --name-only",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --staged --name-status",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --staged --raw",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --cached --stat",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git show HEAD",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git log --ext-diff",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git show --no-patch --textconv HEAD",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git log --show-signature",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git log '--format=%G?'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git branch --list --sort=signature:grade",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git -c core.fsmonitor=marker log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --config-env=core.fsmonitor=MARKER log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --exec-path=bin log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --git-dir=other log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --work-tree=other log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git -C .. log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git -C . log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git --paginate log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git alias-name",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "read",
+    "command": "env git log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git log | cat",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git log; git log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git log > output.txt",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "git log --alternate-refs",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git log '.ssh/config'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git diff --cached --name-only --recurse-submodules",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "python3 -I -S ordinary.py",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "env python3 -I -S ordinary.py",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "shell reversible verb",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "./bin/python3 -I -S ordinary.py",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash -c 'printf ready'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -c 'printf ready'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -p -c '$runtime' extra",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "fish -N --command 'printf ready'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "node --no-addons -e 'console.log(1)'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "pwsh -NoProfile -File ordinary.ps1",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "pwsh -File - -enc P",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "pwsh '-enc' P",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "zsh -f -c 'printf ready'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+  {
+    "category": "read",
+    "command": "git log",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Ordinary reads are allowed.",
+          "reasonCode": "ordinary-read",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "low",
+      "reason": "read inside allowed dirs",
+    },
+  },
+  {
+    "category": "shell",
+    "command": "bash --noprofile --norc -p -c 'printf ready'",
+    "decisions": [
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "strict",
+      },
+      {
+        "decision": {
+          "outcome": "ask",
+          "reason": "This shell action requires approval.",
+          "reasonCode": "shell-approval",
+        },
+        "headless": false,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "deny",
+          "reason": "Nobody can approve this request; do not retry.",
+          "reasonCode": "no-approver",
+        },
+        "headless": true,
+        "mode": "default",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": false,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "Automatic review allowed this action.",
+          "reasonCode": "reviewer-allow",
+        },
+        "headless": true,
+        "mode": "auto",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": false,
+        "mode": "allow",
+      },
+      {
+        "decision": {
+          "outcome": "allow",
+          "reason": "The mode allows this action.",
+          "reasonCode": "allow-mode",
+        },
+        "headless": true,
+        "mode": "allow",
+      },
+    ],
+    "verdict": {
+      "level": "medium",
+      "reason": "shell unclassified",
+    },
+  },
+]
+`;
