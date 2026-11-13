@@ -2455,10 +2455,13 @@ function parseUvxCommand(command: string): string[] | null {
 const TCHAR_RE = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
 /** Methods whose `Mcp-Name` source field is defined by the spec. */
-const NAME_SOURCE: Record<string, "name" | "uri"> = {
+const NAME_SOURCE: Record<string, "name" | "uri" | "taskId"> = {
   "tools/call": "name",
   "prompts/get": "name",
   "resources/read": "uri",
+  "tasks/get": "taskId",
+  "tasks/update": "taskId",
+  "tasks/cancel": "taskId",
 };
 
 const SENTINEL_PREFIX = "=?base64?";

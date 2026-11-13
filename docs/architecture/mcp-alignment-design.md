@@ -336,6 +336,10 @@ Polling waits at least 100ms and no longer than the remaining caller budget.
 Cancellation acknowledgement failures preserve the original error; that wait is
 bounded by `TOOL_TIMEOUT_POLICY.mcpRequestDefaultMs`. Requests declare support at
 `params._meta["io.modelcontextprotocol/clientCapabilities"].extensions["io.modelcontextprotocol/tasks"]`.
+Over Streamable HTTP, `tasks/get`, `tasks/update` and `tasks/cancel` derive
+`Mcp-Name` from `params.taskId`, alongside `Mcp-Method` and the per-request
+protocol version. Task identifiers use the same header-safe encoding as other
+standard routing values; a tool name cannot replace a task identifier.
 The [task tests](../../src/mcp/__tests__/tasks-extension.test.ts) cover wire
 conformance against the pinned schema, process restart, cancellation races,
 subscription delivery, creation failure and the plugin host round trip; the
