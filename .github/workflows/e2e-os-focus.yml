@@ -8,10 +8,6 @@ on:
         description: Run the complete background suite in parallel shards instead of native focus tests
         type: boolean
         default: false
-      background-quit-probe:
-        description: Capture the early native quit boundary in one background partition
-        type: boolean
-        default: false
       keyboard-takeover-only:
         description: Run only the native keyboard takeover regression
         type: boolean
@@ -74,7 +70,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     outputs:
-      matrix: ${{ steps.quit-probe.outputs.matrix || steps.partitions.outputs.matrix }}
+      matrix: ${{ steps.partitions.outputs.matrix }}
       partitions: ${{ steps.partitions.outputs.partitions }}
       regular-shards: ${{ steps.partitions.outputs.regular-shards }}
     env:
@@ -117,21 +113,6 @@ jobs:
         id: partitions
         working-directory: ave
         run: node scripts/plan-background-e2e-shards.mjs test-results/background-collection.json test-results/background-sweep-plan
-      - name: Select the early native quit probe
-        id: quit-probe
-        if: inputs.background-quit-probe
-        working-directory: ave
-        run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync, readFileSync } from "node:fs";
-          const plan = JSON.parse(readFileSync("test-results/background-sweep-plan/manifest.json", "utf8"));
-          const include = plan.matrix.include.filter(partition => partition.id === 83);
-          if (plan.selectedTests !== 359 || plan.regularShards !== 96 || include.length !== 1
-              || include[0].regularShard !== 83 || include[0].testList !== "") {
-            throw new Error("Native quit probe no longer matches the expected inventory");
-          }
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
-          NODE
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: background-ui-build
@@ -202,8 +183,6 @@ jobs:
         env:
           AVE_E2E_OS_FOCUS: "0"
           AVE_E2E_SPEC_RESULTS: ${{ github.workspace }}/ave/test-results/background-sweep/spec-results.json
-          DEBUG: ${{ inputs.background-quit-probe && 'pw:browser,pw:protocol,pw:channel*' || '' }}
-          AVE_E2E_QUIT_DIAGNOSTICS: ${{ inputs.background-quit-probe && '1' || '0' }}
           SHARD: ${{ matrix.regularShard }}
           SHARD_TOTAL: ${{ needs.background-build.outputs.regular-shards }}
           TEST_LIST: ${{ matrix.testList }}
@@ -220,11 +199,7 @@ jobs:
           else
             selection=(--test-list-invert="$plan/special-files.txt" --shard="$SHARD/$SHARD_TOTAL")
           fi
-          if [ "$AVE_E2E_QUIT_DIAGNOSTICS" = "1" ]; then
-            xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e "${selection[@]}" --retries=0 --reporter=list,./test/e2e/reporters/spec-results.ts --output=test-results/background-sweep/cases > test-results/background-sweep/native-protocol.log 2>&1
-          else
-            xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e "${selection[@]}" --retries=0 --reporter=list,./test/e2e/reporters/spec-results.ts --output=test-results/background-sweep/cases
-          fi
+          xvfb-run -a -s '-screen 0 1600x1000x24' bun run test:ui-e2e "${selection[@]}" --retries=0 --reporter=list,./test/e2e/reporters/spec-results.ts --output=test-results/background-sweep/cases
       - name: Upload per-spec shard evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

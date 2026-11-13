@@ -39,6 +39,7 @@ describe("native test application quit", () => {
     await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
+    runtime.child.emit("close", 0, null);
     await quitting;
     expect(runtime.close).toHaveBeenCalledOnce();
   });
@@ -49,6 +50,7 @@ describe("native test application quit", () => {
     runtime.close.mockImplementation(async () => {
       runtime.child.exitCode = 0;
       runtime.child.emit("exit", 0, null);
+      runtime.child.emit("close", 0, null);
     });
     await quitElectron(runtime.app);
     expect(runtime.close).toHaveBeenCalledOnce();
@@ -60,6 +62,7 @@ describe("native test application quit", () => {
     runtime.quit.mockImplementation(() => {
       runtime.child.exitCode = 0;
       runtime.child.emit("exit", 0, null);
+      runtime.child.emit("close", 0, null);
     });
     await quitElectron(runtime.app);
     expect(runtime.close).not.toHaveBeenCalled();
@@ -74,6 +77,7 @@ describe("native test application quit", () => {
     expect(runtime.close).not.toHaveBeenCalled();
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
+    runtime.child.emit("close", 0, null);
     await quitting;
     expect(runtime.close).not.toHaveBeenCalled();
   });
@@ -84,6 +88,7 @@ describe("native test application quit", () => {
     const quitting = quitElectron(runtime.app);
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
+    runtime.child.emit("close", 0, null);
     await quitting;
     expect(runtime.close).not.toHaveBeenCalled();
   });
@@ -108,6 +113,8 @@ describe("native test application quit", () => {
   it("does not close automation for a process terminated by signal", async () => {
     const runtime = await application();
     runtime.child.signalCode = "SIGKILL";
+    runtime.child.emit("exit", null, "SIGKILL");
+    runtime.child.emit("close", null, "SIGKILL");
     await quitElectron(runtime.app);
     expect(runtime.evaluate).not.toHaveBeenCalled();
     expect(runtime.close).not.toHaveBeenCalled();
@@ -120,6 +127,64 @@ describe("native test application quit", () => {
     await expect(quitElectron(runtime.app)).resolves.toBeUndefined();
     expect(runtime.process).toHaveBeenCalledOnce();
     expect(runtime.evaluate).not.toHaveBeenCalled();
+    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.child.kill).not.toHaveBeenCalled();
+  });
+
+  it("completes from native closure when an in-flight context request cannot answer", async () => {
+    const runtime = await application();
+    runtime.close.mockImplementation(() => new Promise<void>(() => {}));
+    let settled = false;
+    const quitting = quitElectron(runtime.app).then(() => { settled = true; });
+    runtime.nativeApp.emit("will-quit");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    runtime.child.exitCode = 0;
+    runtime.child.emit("exit", 0, null);
+    runtime.child.emit("close", 0, null);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(true);
+    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.quit).toHaveBeenCalledOnce();
+    await quitting;
+  });
+
+  it("still waits for inherited pipes when the root has already exited", async () => {
+    const runtime = await application(0, false);
+    let settled = false;
+    const quitting = quitElectron(runtime.app).then(() => { settled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(runtime.evaluate).not.toHaveBeenCalled();
+    expect(runtime.close).not.toHaveBeenCalled();
+    runtime.child.emit("close", 0, null);
+    await quitting;
+  });
+
+  it("does not acknowledge a prevented quit or add another quit request", async () => {
+    const runtime = await application();
+    let settled = false;
+    const quitting = quitElectron(runtime.app);
+    void quitting.then(() => { settled = true; }, () => { settled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    expect(runtime.quit).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.child.kill).not.toHaveBeenCalled();
+    const failure = new Error("Native quit remains blocked");
+    const rejected = expect(quitting).rejects.toThrow(failure.message);
+    runtime.child.emit("error", failure);
+    await rejected;
+  });
+
+  it("reports an abnormal native exit instead of acknowledging clean shutdown", async () => {
+    const runtime = await application();
+    runtime.quit.mockImplementation(() => {
+      runtime.nativeApp.emit("will-quit");
+      runtime.child.exitCode = 2;
+      runtime.child.emit("exit", 2, null);
+      runtime.child.emit("close", 2, null);
+    });
+    await expect(quitElectron(runtime.app)).rejects.toThrow("Native application quit failed: exit=2, signal=null");
     expect(runtime.close).not.toHaveBeenCalled();
     expect(runtime.child.kill).not.toHaveBeenCalled();
   });
@@ -137,16 +202,20 @@ describe("native fixture startup ownership", () => {
       receipt = once(app.process(), "close").then(() => { closed = true; });
     });
     const starting = launchSeededElectron({ historyRows: [], onLaunched });
+    let startupSettled = false;
+    void starting.then(() => { startupSettled = true; }, () => { startupSettled = true; });
     const rejected = expect(starting).rejects.toThrow("Window startup failed");
     await vi.waitFor(() => expect(runtime.quit).toHaveBeenCalledOnce());
     expect(onLaunched).toHaveBeenCalledWith(runtime.app);
     runtime.nativeApp.emit("will-quit");
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
-    await rejected;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(startupSettled).toBe(false);
     expect(runtime.close).not.toHaveBeenCalled();
     expect(closed).toBe(false);
     runtime.child.emit("close", 0, null);
+    await rejected;
     await receipt;
     expect(closed).toBe(true);
   });

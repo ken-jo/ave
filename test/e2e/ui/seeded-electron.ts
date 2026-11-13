@@ -322,39 +322,35 @@ export async function launchSeededElectron(opts: {
   }
 }
 
-/** Keep the inspector connected through native cleanup, then release it so the process can exit. */
+/** Keep automation through native cleanup and require process and inherited-pipe closure. */
 export async function quitElectron(app: ElectronApplication): Promise<void> {
   const child = electronProcesses.get(app);
   if (!child) throw new Error("The native process was not registered at launch");
+  const closed = closedElectronProcesses.has(child) ? Promise.resolve() : once(child, "close").then(() => {});
   const isRunning = child.exitCode === null && child.signalCode === null;
-  // Native exit disconnects automation. Closing its context again can wait on disposed transports.
-  if (!isRunning) return;
-  const exited = once(child, "exit").then(() => {});
-  if (isRunning) {
-    const readyToExit = app.evaluate(({ app: runtimeApp, BaseWindow }, diagnostics) => new Promise<void>((resolve) => {
-      if (diagnostics) {
-        console.error("Native quit snapshot", { resources: process.getActiveResourcesInfo(), windows: BaseWindow.getAllWindows().map(window => ({ id: window.id, bounds: window.getBounds(), closeListeners: window.listenerCount("close") })) });
-        for (const window of BaseWindow.getAllWindows()) {
-          const id = window.id;
-          window.on("close", event => console.error("Native window close", { id, prevented: event.defaultPrevented }));
-          window.on("closed", () => console.error("Native window closed", { id }));
-        }
-        runtimeApp.on("before-quit", event => console.error("Native before quit", { prevented: event.defaultPrevented }));
-        process.once("exit", code => console.error("Native process exit", { code, resources: process.getActiveResourcesInfo() }));
-      }
-      runtimeApp.once("will-quit", event => {
-        if (diagnostics) console.error("Native will quit", { prevented: event.defaultPrevented, resources: process.getActiveResourcesInfo() });
-        resolve();
-      });
-      runtimeApp.quit();
-    }), process.env.AVE_E2E_QUIT_DIAGNOSTICS === "1").catch((error: unknown) => {
-      if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);
-      return exited;
-    });
-    await Promise.race([readyToExit, exited]);
+  // Explicitly terminated fixtures still drain inherited pipes without reopening disposed automation.
+  if (!isRunning) {
+    await closed;
+    return;
   }
-  if (child.exitCode === null && child.signalCode === null) await app.close();
-  await exited;
+  const exited = once(child, "exit").then(() => {});
+  const stopped = Promise.all([exited, closed]);
+  const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
+    runtimeApp.once("will-quit", () => resolve());
+    runtimeApp.quit();
+  })).catch((error: unknown) => {
+    if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);
+    return exited;
+  });
+  await Promise.race([readyToExit, stopped]);
+  if (child.exitCode === null && child.signalCode === null) {
+    // Native exit can overtake an in-flight context request, but never substitutes for pipe closure.
+    await Promise.race([app.close(), exited]);
+  }
+  await stopped;
+  if (child.exitCode !== 0 || child.signalCode !== null) {
+    throw new Error(`Native application quit failed: exit=${child.exitCode}, signal=${child.signalCode}`);
+  }
 }
 
 export async function teardownSeededElectron(
