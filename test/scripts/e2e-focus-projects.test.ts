@@ -66,7 +66,7 @@ describe("native focus test selection", () => {
   it("runs the full background sweep only on explicit manual selection", () => {
     const workflow = parse(readFileSync(new URL("../../.github/workflows/e2e-os-focus.yml", import.meta.url), "utf8"));
     expect(workflow.on.workflow_dispatch.inputs["background-sweep"].default).toBe(false);
-    expect(workflow.jobs["os-focus"].if).toBe("github.event_name != 'workflow_dispatch' || !inputs.background-sweep");
+    expect(workflow.jobs["os-focus"].if).toBe("github.event_name != 'workflow_dispatch' || (!inputs.background-sweep && !inputs.capture-comparison)");
     for (const id of ["background-build", "background-shard"]) {
       expect(workflow.jobs[id].if).toBe("github.event_name == 'workflow_dispatch' && inputs.background-sweep");
       expect(workflow.jobs[id].steps.some((step: { run?: string }) => step.run === "node scripts/fetch-uv.mjs")).toBe(true);
