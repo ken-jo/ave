@@ -1,6 +1,5 @@
 import { test, expect } from "@playwright/test";
 import { createHash } from "node:crypto";
-import { once } from "node:events";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { buildE2eBaseSettings, buildLlmSettings, launchSeededElectron, teardownSeededElectron, type SeededElectronContext } from "./seeded-electron.js";
@@ -11,13 +10,7 @@ let ctx: SeededElectronContext;
 test.afterEach(async () => {
   if (!ctx) return;
   // End only the isolated fixture before directory cleanup; shutdown behavior is outside this spec.
-  const child = ctx.app.process();
-  if (child.exitCode === null && child.signalCode === null) {
-    const exited = once(child, "exit");
-    child.kill("SIGKILL");
-    await exited;
-  }
-  await teardownSeededElectron(ctx);
+  await teardownSeededElectron(ctx, { terminate: true });
 });
 
 async function setup() {

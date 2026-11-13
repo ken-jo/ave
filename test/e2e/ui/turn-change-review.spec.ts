@@ -1,6 +1,5 @@
 import { test, expect } from "@playwright/test";
 import { createHash, randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -15,13 +14,7 @@ let context: SeededElectronContext | undefined;
 
 test.afterEach(async () => {
   if (!context) return;
-  const child = context.app.process();
-  if (child.exitCode === null && child.signalCode === null) {
-    const exited = once(child, "exit");
-    child.kill("SIGKILL");
-    await exited;
-  }
-  await teardownSeededElectron(context);
+  await teardownSeededElectron(context, { terminate: true });
   context = undefined;
 });
 

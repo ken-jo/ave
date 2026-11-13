@@ -1,5 +1,6 @@
 import { test, expect } from "./fixtures.js";
 import { CHANNELS } from "../../../src/contract/app-contract.js";
+import { withPageWindow } from "./renderer-events.js";
 
 // These renderer fixtures verify the shared selector. Native gate and invocation suites own consent and session-state authority.
 test.use({ seedViewFixturePlugin: false });
@@ -8,9 +9,7 @@ for (const surface of ["browser", "host-terminal"] as const) {
   test(`the ${surface} session card starts at ask and exposes all three choices`, async ({ app, mainWindow }, testInfo) => {
     const sessionId = await mainWindow.evaluate(async () => (await window.aveApi.chatSessions({ kind: "main" })).current);
     if (!sessionId) throw new Error("Current conversation unavailable");
-    await app.evaluate(({ BrowserWindow }, input) => {
-      const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
-      if (!window) throw new Error("Visible window unavailable");
+    await withPageWindow(app, mainWindow, (window, input) => {
       window.webContents.send(input.channel, {
         id: `surface-selector-${input.surface}`, sessionId: input.sessionId, category: "tool", kind: "tool",
         toolName: input.surface === "browser" ? "browser_click" : "terminal_run",

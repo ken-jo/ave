@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { setWindowSize, buildE2eBaseSettings, buildIsolatedElectronEnv, launchElectron } from "./seeded-electron";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../src/shared/side-panel.js";
 import { TEST_IDS, chatSidePanelLauncherTestId } from "../../../src/shared/test-ids.js";
+import { withPageWindow } from "./renderer-events.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../..");
@@ -53,7 +54,7 @@ test.describe("workspace rail redesign", () => {
   });
 
   test("docked rail: no header count, drag splitter, launcher opens a tab", async () => {
-    await setWindowSize(app, 1400, 840);
+    await setWindowSize(app, 1400, 840, page);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
 
     const panel = page.getByTestId(TEST_IDS.chatSidePanel);
@@ -74,7 +75,7 @@ test.describe("workspace rail redesign", () => {
   test("the sidebar card and the chat tile share a top line, a corner and a header centre line", async () => {
     test.skip(process.platform !== "darwin", "the shared top line is the darwin title band's");
     for (const [width, height] of [[1440, 900], [1100, 750]] as const) {
-      await setWindowSize(app, width, height);
+      await setWindowSize(app, width, height, page);
       const geometry = await page.evaluate(() => {
         const textMid = (root: Element) => {
           const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode: (node) => node.textContent?.trim() ? 1 : 3 });
@@ -103,17 +104,17 @@ test.describe("workspace rail redesign", () => {
   });
 
   test("a canvas with space for the transcript and side panel docks", async () => {
-    await setWindowSize(app, 1243, 768);
-    const originalBounds = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getBounds());
+    await setWindowSize(app, 1243, 768, page);
+    const originalBounds = await withPageWindow(app, page, (window) => window.getBounds());
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
-    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getBounds())).toEqual(originalBounds);
+    expect(await withPageWindow(app, page, (window) => window.getBounds())).toEqual(originalBounds);
 
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-width-splitter")).toBeVisible();
   });
 
   test("a narrow tile floats the panel over its transcript instead of crushing it", async () => {
-    await setWindowSize(app, 1400, 840);
+    await setWindowSize(app, 1400, 840, page);
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
     const motion = page.getByTestId("chat-side-panel-motion");
     await expect(motion).toHaveAttribute("data-panel-mode", "docked");
@@ -122,7 +123,7 @@ test.describe("workspace rail redesign", () => {
     const sidebarToggle = page.getByTestId("sidebar-collapse-toggle");
     if (await sidebarToggle.getAttribute("aria-pressed") === "true") await sidebarToggle.click();
     // Below docking width, float inside the tile without dimming or narrowing the transcript.
-    await setWindowSize(app, 360, 840);
+    await setWindowSize(app, 360, 840, page);
     await expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
     await expect(motion).toHaveAttribute("data-panel-mode", "overlay");
     // The panel portal belongs beside its pane transcript, not inside it.
@@ -145,7 +146,7 @@ test.describe("workspace rail redesign", () => {
     expect(composer?.width ?? 0).toBeGreaterThan((root?.width ?? 0) - (panel?.width ?? 0));
     await test.info().attach("narrow-panel-360.png", { body: await page.screenshot({ path: test.info().outputPath("narrow-panel-360.png") }), contentType: "image/png" });
 
-    await setWindowSize(app, 1400, 840);
+    await setWindowSize(app, 1400, 840, page);
     await expect(motion).toHaveAttribute("data-panel-mode", "docked");
     await expect(page.getByTestId("chat-side-panel-width-splitter")).toBeVisible();
   });

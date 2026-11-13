@@ -1,13 +1,19 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Page } from "playwright";
 import { EventEmitter } from "node:events";
 import type { ElectronApplication } from "playwright";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { launchElectron, quitElectron } from "../e2e/ui/seeded-electron.js";
+import { launchElectron, quitElectron, teardownSeededElectron } from "../e2e/ui/seeded-electron.js";
 const launcher = vi.hoisted(() => vi.fn());
+const terminateTree = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", () => ({ execFile: terminateTree }));
 vi.mock("playwright", () => ({ _electron: { launch: launcher } }));
 vi.mock("../e2e/ui/background-electron.js", () => ({ resolveE2eExecutable: () => undefined }));
 
 async function application(exitCode: number | null = null) {
-  const child = Object.assign(new EventEmitter(), { exitCode, signalCode: null, kill: vi.fn() });
+  const child = Object.assign(new EventEmitter(), { exitCode, signalCode: null as NodeJS.Signals | null, kill: vi.fn() });
   const nativeApp = Object.assign(new EventEmitter(), { quit: vi.fn() });
   const quit = nativeApp.quit;
   const evaluate = vi.fn(async (operation: (module: { app: typeof nativeApp }) => void) => operation({ app: nativeApp }));
@@ -107,4 +113,43 @@ describe("native test application quit", () => {
     expect(runtime.close).toHaveBeenCalledOnce();
     expect(runtime.child.kill).not.toHaveBeenCalled();
   });
+});
+
+describe("forced native fixture teardown", () => {
+  afterEach(() => vi.restoreAllMocks());
+  it("ends the owned tree rather than leaving pipe-holding descendants alive", async () => {
+    const runtime = await application();
+    const pid = 424242;
+    Object.assign(runtime.child, { pid });
+    const exited = (): true => {
+      runtime.child.signalCode = "SIGKILL";
+      runtime.child.emit("exit", null, "SIGKILL");
+      return true;
+    };
+    const kill = vi.spyOn(process, "kill").mockImplementation(exited);
+    terminateTree.mockImplementationOnce((_command, _args, _options, callback) => { exited(); callback(null); });
+    const userDataDir = mkdtempSync(join(tmpdir(), "owned-runtime-profile-"));
+    const tempHome = mkdtempSync(join(tmpdir(), "owned-runtime-home-"));
+    await teardownSeededElectron({ app: runtime.app, page: {} as Page, userDataDir, tempHome, aveHome: join(tempHome, ".ave") }, { terminate: true });
+    if (process.platform === "win32") {
+      expect(terminateTree).toHaveBeenCalledWith("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }, expect.any(Function));
+      expect(kill).not.toHaveBeenCalled();
+    } else {
+      expect(kill).toHaveBeenCalledWith(-pid, "SIGKILL");
+    }
+    expect(runtime.child.kill).not.toHaveBeenCalled();
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+  it("cleans a POSIX group whose root exited before its inherited pipes closed", async () => {
+    const runtime = await application(0);
+    const pid = 424243;
+    Object.assign(runtime.child, { pid });
+    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
+    const userDataDir = mkdtempSync(join(tmpdir(), "exited-runtime-profile-"));
+    const tempHome = mkdtempSync(join(tmpdir(), "exited-runtime-home-"));
+    await teardownSeededElectron({ app: runtime.app, page: {} as Page, userDataDir, tempHome, aveHome: join(tempHome, ".ave") }, { terminate: true });
+    if (process.platform !== "win32") expect(kill).toHaveBeenCalledWith(-pid, "SIGKILL");
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
 });

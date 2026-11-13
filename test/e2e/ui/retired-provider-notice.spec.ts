@@ -13,7 +13,7 @@ test.describe('a profile that also saved a model for the fallback vendor', () =>
   test.use({ seedLlmVendors: { [DEFAULT_LLM_VENDOR]: { model: 'gpt-5.4' } } });
 
   test('choosing the migrated model from the composer resolves provider retirement', async ({ app, mainWindow }) => {
-    await forceWideMainWindow(app);
+    await forceWideMainWindow(app, mainWindow);
     const notice = mainWindow.getByTestId('retired-provider-notice');
     await expect(notice).toBeVisible();
     await mainWindow.getByTestId(TEST_IDS.composerTextarea).fill('A draft held for an explicit model choice');
@@ -37,7 +37,7 @@ test.describe('a profile that also saved a model for the fallback vendor', () =>
 });
 
 test('a retired profile stays blocked until an explicit model choice', async ({ app, mainWindow }) => {
-  await forceWideMainWindow(app);
+  await forceWideMainWindow(app, mainWindow);
   const notice = mainWindow.getByTestId('retired-provider-notice');
   await expect(notice).toBeVisible();
   await expect(notice).toContainText('no longer used');
@@ -85,7 +85,7 @@ for (const locale of ['en', 'ko'] as const) {
     test.use({ seedLlmProvider: 'openai', seedLocale: locale });
 
     test('tells about a deprecated model without blocking chat', async ({ app, mainWindow, t }, testInfo) => {
-      await forceWideMainWindow(app);
+      await forceWideMainWindow(app, mainWindow);
       await mainWindow.evaluate(async () => {
         await (window as unknown as { aveApi: AveApi }).aveApi.updateSettings({
           llm: { provider: 'openai', vendors: { openai: { model: 'o4-mini' } } },
@@ -133,7 +133,7 @@ for (const locale of ['en', 'ko'] as const) {
       } finally { await cdp.detach(); }
       await testInfo.attach('deprecated-notice-metrics-narrow', { body: JSON.stringify(metrics), contentType: 'application/json' });
       await testInfo.attach('deprecated-notice-narrow', { body: await notice.screenshot(), contentType: 'image/png' });
-      await forceWideMainWindow(app);
+      await forceWideMainWindow(app, mainWindow);
 
       await mainWindow.getByTestId('deprecated-model-notice-action').click();
       await expect(mainWindow.getByTestId(TEST_IDS.llmModelSelect))

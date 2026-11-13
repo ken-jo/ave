@@ -1,6 +1,7 @@
 import { _electron as electron, type ElectronApplication, type Page,
 } from "playwright";
 import { once } from "node:events";
+import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { expect } from "@playwright/test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync,
@@ -16,10 +17,11 @@ import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
 import { launchBaseEnv, windowsProfileEnv } from "./windows-e2e-profile.js";
 export { withNativeFocusDiagnostics } from "./native-focus.js";
 import { resolveE2eExecutable } from "./background-electron.js";
-import { sendRendererEvent } from "./renderer-events.js";
+import { sendRendererEvent, withPageWindow } from "./renderer-events.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const electronProcesses = new WeakMap<ElectronApplication, ReturnType<ElectronApplication["process"]>>();
+const closedElectronProcesses = new WeakSet<ReturnType<ElectronApplication["process"]>>();
 export const REPO_ROOT = resolve(HERE, "../../..");
 export const MAIN_ENTRY = resolve(REPO_ROOT, "dist/src/main/main.js");
 
@@ -79,7 +81,9 @@ export async function launchElectron(options: Parameters<typeof electron.launch>
     env: { ...baseEnv, ...E2E_RUNTIME_ENV },
   });
   // The automation object releases its native implementation on close; retain the process before a spec closes or restarts it.
-  electronProcesses.set(app, app.process());
+  const child = app.process();
+  electronProcesses.set(app, child);
+  child.once("close", () => closedElectronProcesses.add(child));
   return app;
 }
 
@@ -341,10 +345,28 @@ export async function teardownSeededElectron(
   options: { terminate?: boolean } = {},
 ): Promise<void> {
   // Terminate only the owned fixture when the spec does not exercise runtime shutdown.
-  const child = ctx.app.process();
-  if (options.terminate && child.exitCode === null && child.signalCode === null) {
-    const exited = once(child, "exit");
-    child.kill("SIGKILL");
+  const child = electronProcesses.get(ctx.app);
+  if (!child) throw new Error("The native process was not registered at launch");
+  if (options.terminate && !closedElectronProcesses.has(child)) {
+    const isRunning = child.exitCode === null && child.signalCode === null;
+    const exited = isRunning ? once(child, "exit") : Promise.resolve();
+    if (!child.pid) throw new Error("The native process has no identity");
+    // Native launches own a process group. End its descendants too so inherited pipes can close.
+    if (process.platform === "win32") {
+      if (isRunning) {
+        try {
+          await new Promise<void>((resolve, reject) => {
+            execFile("taskkill", ["/pid", String(child.pid), "/T", "/F"], { windowsHide: true }, (error) => error ? reject(error) : resolve());
+          });
+        } catch (error) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          if (child.exitCode === null && child.signalCode === null) throw error;
+        }
+      }
+    } else {
+      try { process.kill(-child.pid, "SIGKILL"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+    }
     await exited;
   }
   await quitElectron(ctx.app);
@@ -385,51 +407,42 @@ export async function sendRendererStreamEvent(
   await sendRendererEvent(app, page, "ave:chat:stream", labelled);
 }
 
-/** Resize the app's main window to `w` x `h` content pixels. "Main" is the largest non-destroyed window, including hidden startup windows: a spec that has opened a
- * plugin or approval window must still size the shell it is measuring, and area is the only property that distinguishes them from the main process.
+/** Resize the app's first page-owned native window to `w` x `h` content pixels, including inactive background windows.
  * Reject below-minimum sizes before resizing, then wait up to five seconds for native content and renderer dimensions to agree within one pixel. */
 export async function setWindowSize(
   app: ElectronApplication,
   w: number,
   h: number,
+  page?: Page,
 ): Promise<void> {
   if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
     throw new Error(`Invalid window content size: ${w}x${h}`);
   }
-  const { windowId, chromeId, workArea, workAreaContentLimit } = await app.evaluate(({ BaseWindow, webContents, screen }, size) => {
-    const windows = BaseWindow.getAllWindows().filter(
-      (window) => !window.isDestroyed(),
-    );
-    const target = windows.sort(
-      (a, b) => b.getSize()[0] * b.getSize()[1] - a.getSize()[0] * a.getSize()[1],
-    )[0];
-    if (!target) throw new Error("No main window to resize");
-    const chrome = webContents.getAllWebContents().find(contents => contents === Reflect.get(target, "webContents"));
-    if (!chrome || chrome.isDestroyed()) throw new Error("Main window UI is unavailable");
+  const mainPage = page ?? await app.firstWindow();
+  const bounds = await withPageWindow(app, mainPage, (target) => target.getBounds());
+  const workArea = await app.evaluate(({ screen }, bounds) => screen.getDisplayMatching(bounds).workArea, bounds);
+  const { workAreaContentLimit } = await withPageWindow(app, mainPage, (target, size) => {
     const bounds = target.getBounds();
     const content = target.getContentBounds();
     const outerWidth = size.w + bounds.width - content.width;
     const outerHeight = size.h + bounds.height - content.height;
     const [minWidth, minHeight] = target.getMinimumSize();
-    const workArea = screen.getDisplayMatching(bounds).workArea;
     if (outerWidth < minWidth || outerHeight < minHeight) {
       throw new Error(`Requested content ${size.w}x${size.h} is below window minimum ${minWidth}x${minHeight} (outer size ${outerWidth}x${outerHeight}); no test minimum-size override is available`);
     }
-    target.setPosition(workArea.x, workArea.y);
+    target.setPosition(size.workArea.x, size.workArea.y);
     target.setContentSize(size.w, size.h);
-    const workAreaContentLimit = [workArea.width - (bounds.width - content.width), workArea.height - (bounds.height - content.height)];
-    return { windowId: target.id, chromeId: chrome.id, workArea, workAreaContentLimit };
-  }, { w, h });
+    const workAreaContentLimit = [size.workArea.width - (bounds.width - content.width), size.workArea.height - (bounds.height - content.height)];
+    return { workAreaContentLimit };
+  }, { w, h, workArea });
   let actual: { content: number[]; renderer: { width: number; height: number } } | undefined;
   // Renderer CSS pixels and native content pixels agree only at zoom factor 1.
   try {
     await expect.poll(async () => {
       actual = undefined;
-      const measured = await app.evaluate(async ({ BaseWindow, webContents }, identity) => {
-        const target = BaseWindow.fromId(identity.windowId);
-        if (!target || target.isDestroyed()) throw new Error("Main window closed during resize");
-        const chrome = webContents.fromId(identity.chromeId);
-        if (!chrome || chrome.isDestroyed() || Reflect.get(target, "webContents") !== chrome) throw new Error("Main window UI changed during resize");
+      const measured = await withPageWindow(app, mainPage, async (target) => {
+        const chrome = target.webContents;
+        if (chrome.isDestroyed()) throw new Error("Main window UI changed during resize");
         const content = target.getContentSize();
         let timer: ReturnType<typeof setTimeout> | undefined;
         const renderer = await Promise.race([
@@ -439,7 +452,7 @@ export async function setWindowSize(
           }),
         ]).finally(() => clearTimeout(timer));
         return { content, renderer };
-      }, { windowId, chromeId });
+      });
       actual = measured;
       return Math.abs(measured.renderer.width - w) <= 1
         && Math.abs(measured.renderer.height - h) <= 1

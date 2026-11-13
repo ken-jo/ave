@@ -1,3 +1,4 @@
+import { sendRendererEvent } from "./renderer-events.js";
 import { test, expect } from "./fixtures";
 import { type ElectronApplication, type Locator, type Page } from "playwright";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -267,11 +268,7 @@ test.describe("workspace rail UX redesign", () => {
       }).aveApi.chatSessions()).current,
     );
     const sendSpawn = async (event: Omit<AgentSpawnEvent, "parentSessionId">): Promise<void> => {
-      await app.evaluate(({ BrowserWindow }, ev) => {
-        const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-        if (!win) return;
-        win.webContents.send("ave:agent-spawn:event", ev);
-      }, { ...event, parentSessionId });
+      await sendRendererEvent(app, page, "ave:agent-spawn:event", { ...event, parentSessionId });
     };
 
     const CHILD = "e2e-child-session";

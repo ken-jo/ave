@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures.js';
 import { TEST_IDS } from '../../../src/shared/test-ids.js';
+import { withPageWindow } from './renderer-events.js';
 
 for (const locale of ['en', 'ko'] as const) {
   test.describe(`automatic approval pause (${locale})`, () => {
@@ -15,9 +16,7 @@ for (const locale of ['en', 'ko'] as const) {
         return sessions.current;
       });
       const reason = t('permissionJudge.pausedConsecutive');
-      await app.evaluate(({ BrowserWindow }, input) => {
-        const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed() && candidate.isVisible());
-        if (!window) throw new Error('Approval window is unavailable');
+      await withPageWindow(app, mainWindow, (window, input) => {
         window.webContents.send('ave:approval:request', {
           id: 'automatic-approval-paused', sessionId: input.sessionId,
           category: 'tool', kind: 'tool', toolName: 'bash', toolCategory: 'shell', source: 'builtin',
