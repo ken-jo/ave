@@ -1314,7 +1314,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
     fullPageTiling: live.tab.targetKind === "embedded",
     restoreCaptureScroll: async (position) => {
       if (guest.isDestroyed() || live.tab.guest !== guest || live.tab.documentId !== captureDocumentId || live.tab.controlGeneration !== captureControlGeneration) return;
-      try { await session.send("Runtime.callFunctionOn", captureScrollParameters(position, false)); }
+      try { await session.send("Runtime.callFunctionOn", captureScrollParameters(position)); }
       catch (error) { if (!captureContextGone(error)) throw error; }
     },
     clearDeviceMetrics: session.clearDeviceMetrics,

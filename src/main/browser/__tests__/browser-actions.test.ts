@@ -1787,7 +1787,9 @@ it.each(["full-page", "ref", "region"] as const)("captures a parked %s page with
         if (method === "DOM.getBoxModel") return { model: { border: [10, 10, 30, 10, 30, 20, 10, 20] } };
         return result;
       });
+      let readbackStarted = 0;
       const capturePage = vi.fn(async () => {
+        readbackStarted = cdp.calls.length;
         if (change === "document") navigate("https://a.example/replaced");
         if (change === "takeover") registry.userInput(guest.id, { type: "keyDown" });
         if (change === "debugger") guest.debugger.emit("detach", {}, "target closed");
@@ -1803,8 +1805,7 @@ it.each(["full-page", "ref", "region"] as const)("captures a parked %s page with
       else await expect(pending).rejects.toMatchObject({ code: change === "document" ? "document-changed" : change === "debugger" ? "debugger-unavailable" : "cancelled" });
       if (change === "debugger") {
         expect(guest.debugger.isAttached()).toBe(true);
-        expect(cdp.calls.filter(call => call.method === "Runtime.callFunctionOn"
-          && (call.params?.arguments as Array<{ value: unknown }> | undefined)?.[2]?.value === false)).toEqual([]);
+        expect(cdp.calls.slice(readbackStarted).filter(call => call.method === "Runtime.callFunctionOn")).toEqual([]);
       }
       expect(capturePage).toHaveBeenCalledTimes(1);
       expect(registry.activeBrowserTab(1)).not.toBe(tab.handle);

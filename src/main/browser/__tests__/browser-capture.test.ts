@@ -92,7 +92,7 @@ describe("browser capture", () => {
     expect(send).toHaveBeenCalledWith("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
     expect(send).toHaveBeenCalledWith("Emulation.clearDeviceMetricsOverride");
     expect(send).toHaveBeenLastCalledWith("Runtime.callFunctionOn", expect.objectContaining({
-      arguments: [{ value: 10 }, { value: 20 }, { value: false }],
+      arguments: [{ value: 10 }, { value: 20 }],
     }));
   });
   it("captures the scrolled viewport by default", async () => {
@@ -100,6 +100,31 @@ describe("browser capture", () => {
     expect(await captureBrowserPage(cdp, signal)).toMatchObject({ width: 800, height: 600 });
     expect(send).toHaveBeenCalledWith("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
     expect(send).toHaveBeenLastCalledWith("Page.getLayoutMetrics");
+  });
+  it("captures the full page while animation callbacks are suspended and restores its scroll", async () => {
+    const { cdp, send, signal } = fixture();
+    const original = send.getMockImplementation();
+    if (!original) throw new Error("Capture fixture has no protocol session");
+    let x = 10, y = 20;
+    const animationFrame = vi.fn(() => 1);
+    const world = {
+      window: { scrollTo: (position: { left: number; top: number }) => { x = position.left; y = position.top; } },
+      requestAnimationFrame: animationFrame,
+    };
+    send.mockImplementation(async (method, params) => {
+      if (method === "Runtime.callFunctionOn") {
+        const args = (params?.arguments as Array<{ value: unknown }>).map(argument => argument.value);
+        await runInNewContext(`(${params?.functionDeclaration})(...args)`, { ...world,
+          get scrollX() { return x; }, get scrollY() { return y; }, args });
+      }
+      if (method === "Page.captureScreenshot") expect({ x, y }).toEqual({ x: 0, y: 0 });
+      return original(method, params);
+    });
+    expect(await captureBrowserPage(cdp, signal, { fullPage: true }, 1, 1000)).toMatchObject({ width: 800, height: 2400 });
+    expect(animationFrame).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
+    expect({ x, y }).toEqual({ x: 10, y: 20 });
+    expect(send).toHaveBeenCalledWith("Emulation.clearDeviceMetricsOverride");
   });
   it("waits for viewport paint before native readback without changing scroll", async () => {
     const { cdp, send, signal } = fixture();
@@ -204,7 +229,7 @@ describe("browser capture", () => {
     const scrolls = send.mock.calls.filter(([method]) => method === "Runtime.callFunctionOn").map(([, params]) =>
       (params as { arguments: Array<{ value: unknown }> }).arguments.map((argument) => argument.value),
     );
-    expect(scrolls).toEqual([[0, 0, true], [10, 20, false]]);
+    expect(scrolls).toEqual([[0, 0], [10, 20]]);
     const cleared = send.mock.calls.findIndex(([method]) => method === "Emulation.clearDeviceMetricsOverride");
     const restored = send.mock.calls.findLastIndex(([method]) => method === "Runtime.callFunctionOn");
     expect(cleared).toBeGreaterThanOrEqual(0);

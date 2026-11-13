@@ -149,7 +149,7 @@ describe("user browser capture boundary", () => {
       if (method === "Runtime.callFunctionOn") {
         const values = (params as { arguments: Array<{ value: unknown }> }).arguments;
         pageY = Number(values[1]?.value);
-        if (values[2]?.value === true && pageY === 4) {
+        if (pageY === 4) {
           setZoom(1.25);
           if (replacement) setGeneration(2);
         }

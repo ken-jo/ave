@@ -206,7 +206,7 @@ async function capturePage(
           try {
             if (metricsOverridden) await (cdp.clearDeviceMetrics ? cdp.clearDeviceMetrics() : cdp.send("Emulation.clearDeviceMetricsOverride"));
           } finally {
-            if (scrollRestore) await (cdp.restoreCaptureScroll ? cdp.restoreCaptureScroll(scrollRestore) : cdp.send("Runtime.callFunctionOn", captureScrollParameters(scrollRestore, false)));
+            if (scrollRestore) await (cdp.restoreCaptureScroll ? cdp.restoreCaptureScroll(scrollRestore) : cdp.send("Runtime.callFunctionOn", captureScrollParameters(scrollRestore)));
           }
         };
         releaseCapture = false;

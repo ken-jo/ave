@@ -230,6 +230,92 @@ for (const zoom of [1, 1.25]) {
   });
 }
 
+test("native full-page capture preserves all pixels without animation callbacks", async ({ sharedApp: app }, testInfo) => {
+  await setGuestZoom(app, 1);
+  await app.evaluate(async ({ webContents }) => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    const guest = webContents.fromId(fixture.targetId);
+    if (!guest) throw new Error("Capture fixture guest is unavailable");
+    await guest.executeJavaScript("scrollTo(0,123)");
+  });
+  const before = await layout(app);
+  expect(Math.abs(before.guest.y - 123)).toBeLessThanOrEqual(1);
+  const contextId = await app.evaluate(async ({ webContents }) => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    const guest = webContents.fromId(fixture.targetId);
+    if (!guest) throw new Error("Capture fixture guest is unavailable");
+    const tree = await guest.debugger.sendCommand("Page.getFrameTree");
+    const frameId = tree.frameTree?.frame?.id;
+    if (typeof frameId !== "string") throw new Error("Capture fixture main frame is unavailable");
+    const world = await guest.debugger.sendCommand("Page.createIsolatedWorld", { frameId, worldName: "ave-browser-capture" });
+    if (!Number.isSafeInteger(world.executionContextId)) throw new Error("Capture fixture isolated world is unavailable");
+    return Number(world.executionContextId);
+  });
+  try {
+    await app.evaluate(async ({ webContents }, executionContextId) => {
+      const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+      const guest = webContents.fromId(fixture.targetId);
+      if (!guest) throw new Error("Capture fixture guest is unavailable");
+      const paused = await guest.debugger.sendCommand("Runtime.callFunctionOn", {
+        executionContextId, returnByValue: true,
+        functionDeclaration: `function() {
+          if (window.__aveCaptureFramePause) throw new Error('Capture frame pause is already installed');
+          const state = { original: window.requestAnimationFrame, requested: 0, released: 0, callbacks: [] };
+          window.__aveCaptureFramePause = state;
+          window.requestAnimationFrame = callback => {
+            state.requested += 1;
+            state.callbacks.push(callback);
+            return -state.requested;
+          };
+        }`,
+      });
+      if (paused.exceptionDetails) throw new Error("Capture frame pause failed");
+    }, contextId);
+    const result = await capture(app, { fullPage: true });
+    await attachImage(testInfo, "full-page-capture-without-animation-callbacks", result);
+    expect(result.dimensions.height).toBeGreaterThan(result.viewport.height * 2);
+    expect(result.dimensions.width).toBe(Math.ceil(result.viewport.width));
+    expect(Math.abs(result.dimensions.height - result.content.height)).toBeLessThanOrEqual(1);
+    expectFixtureBands(result);
+    expect(result.truncated).toBe(false);
+  } finally {
+    const frames = await app.evaluate(async ({ webContents }, executionContextId) => {
+      const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+      const guest = webContents.fromId(fixture.targetId);
+      if (!guest) throw new Error("Capture fixture guest is unavailable");
+      const restored = await guest.debugger.sendCommand("Runtime.callFunctionOn", {
+        executionContextId, returnByValue: true,
+        functionDeclaration: `function() {
+          const state = window.__aveCaptureFramePause;
+          if (!state) return { installed: false, requested: 0, released: 0, pending: 0 };
+          try {
+            while (state.callbacks.length > 0) {
+              const callbacks = state.callbacks.splice(0);
+              for (const callback of callbacks) {
+                callback(performance.now());
+                state.released += 1;
+              }
+            }
+            return { installed: true, requested: state.requested, released: state.released, pending: state.callbacks.length };
+          } finally {
+            window.requestAnimationFrame = state.original;
+            delete window.__aveCaptureFramePause;
+          }
+        }`,
+      });
+      if (restored.exceptionDetails) throw new Error("Capture frame restoration failed");
+      return restored.result.value;
+    }, contextId);
+    const frameReceipt = testInfo.outputPath("capture-animation-callbacks.json");
+    await fs.writeFile(frameReceipt, JSON.stringify({ worldName: "ave-browser-capture", contextId, frames, before }));
+    await testInfo.attach("capture-animation-callbacks", { path: frameReceipt, contentType: "application/json" });
+    await expect.poll(() => layout(app)).toEqual(before);
+    await testInfo.attach("restored-panel-layout", {
+      body: JSON.stringify({ before, after: await layout(app) }), contentType: "application/json",
+    });
+  }
+});
+
 test("native parked agent tab wakes for full-page capture without selecting its slot", async ({ sharedApp: app }, testInfo) => {
   const host = await app.firstWindow();
   const target = await app.evaluate(() => {

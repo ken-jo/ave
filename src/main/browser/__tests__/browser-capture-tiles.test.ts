@@ -90,9 +90,9 @@ describe("browser capture tiles", () => {
     expect(restore).toHaveBeenCalledWith({ executionContextId: 73, x: 0, y: 0 });
   });
 
-  it("uses a fixed isolated-world function with only coordinate and paint values", () => {
-    const parameters = captureScrollParameters({ executionContextId: 73, x: 4, y: 8 }, true);
-    expect(parameters).toMatchObject({ executionContextId: 73, returnByValue: true, awaitPromise: true, arguments: [{ value: 4 }, { value: 8 }, { value: true }] });
+  it("uses a fixed isolated-world function with only coordinate values", () => {
+    const parameters = captureScrollParameters({ executionContextId: 73, x: 4, y: 8 });
+    expect(parameters).toMatchObject({ executionContextId: 73, returnByValue: true, awaitPromise: false, arguments: [{ value: 4 }, { value: 8 }] });
     expect(parameters.functionDeclaration).toContain("window.scrollTo");
     expect(parameters.functionDeclaration).not.toContain("${");
     expect(Object.keys(parameters)).toEqual(["executionContextId", "functionDeclaration", "returnByValue", "awaitPromise", "arguments"]);

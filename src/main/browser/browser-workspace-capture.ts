@@ -53,7 +53,7 @@ export class BrowserWorkspaceCapture {
           restoreCaptureScroll: async (position) => {
             const live = this.deps.liveTab(windowId, request.tabId);
             if (guest.isDestroyed() || live?.guest !== guest || live.documentGeneration !== request.documentGeneration) return;
-            try { await pageDebugger.sendCommand("Runtime.callFunctionOn", captureScrollParameters(position, false)); }
+            try { await pageDebugger.sendCommand("Runtime.callFunctionOn", captureScrollParameters(position)); }
             catch (error) { if (!captureContextGone(error)) throw error; }
           },
           clearDeviceMetrics: async () => {
