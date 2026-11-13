@@ -1,4 +1,5 @@
 import type { BaseWindow } from "electron";
+import { PluginDeviceAuth } from "../../../main/plugin-device-auth.js";
 import type { MainWindow } from "../../../main/main-window-host.js";
 import { requireDesktopHost, type BootHost } from "../../host-runtime.js";
 /** Resolve runtime bindings lazily; effect-wrapper order and the single HTTP-verb read are security invariants. */
@@ -64,6 +65,7 @@ import type {
   ConversationTriggerSpec,
   OpenAuthWindowBaseOptions,
   OpenAuthWindowFinalUrlResult,
+  HostFetchInit,
   PluginHostApi,
   PluginManifest,
 } from "../../../plugins/types.js";
@@ -476,9 +478,36 @@ export function createHostApiFactory(
       );
       // Compare the parsed manifest document digest to the install pin; projections and unparsed manifests cannot match.
       const manifestSha256 = manifestDocumentSha256(manifest);
+      let boundApi: PluginHostApi;
+      const credentialPayloadInits = new WeakSet<HostFetchInit>();
+      const deviceAuthFetch = (credentialPayload: boolean): typeof fetch => (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
+        const hostFetch = boundApi.hostFetch;
+        if (!hostFetch) throw new Error("Device authorization requires the host network service");
+        const transportInit: HostFetchInit = Object.freeze({
+          method: request.method, headers: request.headers, body, signal: request.signal, redirect: "error",
+        });
+        // Only this host closure can brand the exact immutable request carrying private grant material.
+        if (credentialPayload) credentialPayloadInits.add(transportInit);
+        return hostFetch(request.url, transportInit);
+      }) as typeof fetch;
+      const deviceAuth = new PluginDeviceAuth(pluginId, {
+        enabled: () => manifest.networkAccess?.deviceCodeAuth === true &&
+          manifest.capabilities?.includes(CAPABILITY_EXTERNAL_AUTH_CONSUMER) === true,
+        headless: () => currentEffectGateContext()?.headless === true || deps.host.desktop === undefined,
+        presentation: deps.host.desktop?.deviceCodePresentation,
+        fetch: deviceAuthFetch(false),
+        fetchAuthorization: deviceAuthFetch(true),
+        canStoreEncrypted: () => settingsService.isSecretStorageEncrypted(),
+        getSecret: key => settingsService.getEncryptedSecret(key),
+        setSecret: (key, value) => settingsService.setSecret(key, value, { requireEncrypted: true }),
+        deleteSecret: key => settingsService.deleteSecret(key),
+      });
+      registerOwnedDisposer(() => deviceAuth.dispose());
       // Record every HostApi effect from the shared path classification; storage instrumentation is idempotent.
       // Enforce outside the recorder so denied mutations are not recorded as observed; hostFetch gates its own verb.
-      return enforceActiveHostApi(pluginId, hostIncarnation, enforceMutatingEffects<PluginHostApi>(
+      boundApi = enforceActiveHostApi(pluginId, hostIncarnation, enforceMutatingEffects<PluginHostApi>(
         instrumentEffectsByPath<PluginHostApi>({
       storage: pluginStorage,
       // Read merged config live so changes from other surfaces are immediately visible.
@@ -757,6 +786,7 @@ export function createHostApiFactory(
       },
       hostFetch: async (input, init) => {
         try {
+        const credentialPayload = init !== undefined && credentialPayloadInits.delete(init);
         const fetchEffectContext = currentEffectGateContext();
         // Use the host’s OS proxy and trust-store transport for declared network access.
         // The shared evaluator owns scheme, HTTPS, allow-list, and DNS-aware SSRF checks; audit stays here.
@@ -866,7 +896,7 @@ export function createHostApiFactory(
           },
           authorizeHop: async (hop) => {
             const reviewHeaders = new Headers(hop.headers);
-            let capabilityBound = Boolean(auth || injectSessionCookie);
+            let capabilityBound = Boolean(auth || injectSessionCookie || credentialPayload);
             for (const name of CREDENTIAL_HEADERS) {
               if (reviewHeaders.has(name)) capabilityBound = true;
               reviewHeaders.delete(name);
@@ -874,6 +904,9 @@ export function createHostApiFactory(
             await gateMutatingEffect({
               pluginId, methodPath: "hostFetch", effect: methodEffect(hop.method), target: hop.url.origin,
               input: [hop.url.toString(), { method: hop.method, body: hop.body, headers: Array.from(reviewHeaders.entries()), credentialAttached: capabilityBound }],
+              ...(credentialPayload ? { reviewInput: [hop.url.toString(), {
+                method: hop.method, headers: Array.from(reviewHeaders.entries()), credentialAttached: true, body: "[host authorization material]",
+              }] } : {}),
               capabilityBound, approvalGate, permissionManager,
             });
             assertActiveHostApi(pluginId, hostIncarnation, "hostApi.hostFetch");
@@ -971,6 +1004,11 @@ export function createHostApiFactory(
         close: async (opts: { handle: string }) => {
           authRedirectCatchers.close(pluginId, opts.handle);
         },
+      },
+      authDeviceCode: {
+        authorize: options => deviceAuth.authorize(options, options.signal),
+        fetch: options => deviceAuth.fetch(options, options.signal),
+        clear: options => deviceAuth.clear(options),
       },
       /** Bind chooser identity host-side; prefer the focused window and allow an unparented chooser when none exists. */
       pickFolders: async () => {
@@ -1316,6 +1354,7 @@ export function createHostApiFactory(
             assertActiveHostApi(pluginId, hostIncarnation, "hostApi.approvedEffect"),
         },
       ));
+      return boundApi;
   };
 }
 

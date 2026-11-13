@@ -2,7 +2,7 @@ import { useConfigurationOwner as configureConfigurationOwner } from "../../__te
 
 configureConfigurationOwner();
 
-import { createCipheriv, createDecipheriv, createPublicKey, randomBytes, verify, type JsonWebKey } from "node:crypto";
+import { createCipheriv, createDecipheriv, createPublicKey, randomBytes, verify, type webcrypto } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -83,7 +83,7 @@ describe("encrypted proof credential persistence", () => {
     const [headerSegment, payloadSegment, signatureSegment] = (await restored.proof("https://resource.example.test/mcp", "POST", {
       accessToken: "restored-access-token",
     })).split(".");
-    const header = JSON.parse(Buffer.from(headerSegment, "base64url").toString("utf8")) as { jwk: JsonWebKey };
+    const header = JSON.parse(Buffer.from(headerSegment, "base64url").toString("utf8")) as { jwk: webcrypto.JsonWebKey };
     expect(verify("sha256", Buffer.from(`${headerSegment}.${payloadSegment}`), {
       key: createPublicKey({ key: header.jwk, format: "jwk" }), dsaEncoding: "ieee-p1363",
     }, Buffer.from(signatureSegment, "base64url"))).toBe(true);
@@ -103,6 +103,93 @@ describe("encrypted proof credential persistence", () => {
     expect(encrypt).not.toHaveBeenCalled();
     await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
     expect(await readdir(directories[directories.length - 1])).toEqual([]);
+  });
+
+  it("refuses a development-policy encryption loss after preflight without writing plaintext", async () => {
+    const path = await secretDocumentPath();
+    const encryption = authenticatedEncryption();
+    let available = true;
+    encryption.isAsyncEncryptionAvailable = async () => available;
+    const document = new SecretDocumentStore({ path, encryption, policy: "development" });
+    expect(await document.canStoreEncrypted()).toBe(true);
+    available = false;
+    const serialized = (await DpopKey.create()).serialize();
+    await expect(document.set("oauth.bound-credential", serialized, { requireEncrypted: true })).rejects.toBeInstanceOf(SecretEncryptionUnavailableError);
+    await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(directories[directories.length - 1])).toEqual([]);
+  });
+
+  it.each(["basic_text", "unknown"] as const)("refuses a development-policy unencrypted backend for required writes (%s)", async backend => {
+    const path = await secretDocumentPath();
+    const encryption = authenticatedEncryption();
+    encryption.getSelectedStorageBackend = () => backend;
+    const document = new SecretDocumentStore({ path, encryption, policy: "development", platform: "linux" });
+    expect(await document.canStoreEncrypted()).toBe(false);
+    await expect(document.set("oauth.bound-credential", (await DpopKey.create()).serialize(), { requireEncrypted: true })).rejects.toBeInstanceOf(SecretEncryptionUnavailableError);
+    await expect(readFile(path)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(directories[directories.length - 1])).toEqual([]);
+  });
+
+  it("preserves encrypted credentials when encryption disappears during pending re-encryption", async () => {
+    const path = await secretDocumentPath();
+    const base = authenticatedEncryption();
+    let available = true;
+    let loseDuringDecrypt = false;
+    const encryption: SecretEncryption = {
+      ...base,
+      isAsyncEncryptionAvailable: async () => available,
+      decryptStringAsync: async bytes => {
+        const plaintext = await base.decryptStringAsync(bytes);
+        if (loseDuringDecrypt) available = false;
+        return { ...plaintext, shouldReEncrypt: true };
+      },
+    };
+    const store = new SecretDocumentStore({ path, encryption, policy: "development" });
+    const serialized = (await DpopKey.create()).serialize();
+    await store.set("oauth.bound-credential", serialized, { requireEncrypted: true });
+    const before = JSON.parse(await readFile(path, "utf8")) as { entries: Record<string, { encoding: string; value: string }> };
+    expect(await store.getEncrypted("oauth.bound-credential")).toBe(serialized);
+    loseDuringDecrypt = true;
+    await store.set("ordinary.setting", "unrelated-value");
+    const bytes = await readFile(path, "utf8");
+    const after = JSON.parse(bytes) as typeof before;
+    expect(after.entries["oauth.bound-credential"]).toEqual(before.entries["oauth.bound-credential"]);
+    expect(after.entries["oauth.bound-credential"].encoding).toBe("safe-storage");
+    expect(after.entries["ordinary.setting"]).toBeDefined();
+    expect(bytes).not.toContain(serialized);
+    expect(bytes).not.toContain("pkcs8");
+
+    available = true;
+    loseDuringDecrypt = false;
+    await store.set("ordinary.next-setting", "next-value");
+    const retried = JSON.parse(await readFile(path, "utf8")) as typeof before;
+    expect(retried.entries["oauth.bound-credential"].encoding).toBe("safe-storage");
+    expect(retried.entries["oauth.bound-credential"].value).not.toBe(before.entries["oauth.bound-credential"].value);
+    expect(await store.getEncrypted("oauth.bound-credential")).toBe(serialized);
+  });
+
+  it("preserves encrypted legacy documents when encryption disappears during migration", async () => {
+    const path = await secretDocumentPath();
+    const base = authenticatedEncryption();
+    const serialized = (await DpopKey.create()).serialize();
+    await newDocument(path, base).set("oauth.bound-credential", serialized, { requireEncrypted: true });
+    const canonical = JSON.parse(await readFile(path, "utf8")) as { entries: Record<string, { value: string }> };
+    const legacy = JSON.stringify({ "oauth.bound-credential": canonical.entries["oauth.bound-credential"].value });
+    await writeFile(path, legacy);
+    let available = true;
+    const encryption: SecretEncryption = {
+      ...base,
+      isAsyncEncryptionAvailable: async () => available,
+      decryptStringAsync: async bytes => {
+        const plaintext = await base.decryptStringAsync(bytes);
+        available = false;
+        return plaintext;
+      },
+    };
+    const store = new SecretDocumentStore({ path, encryption, policy: "development" });
+    await expect(store.migrate()).rejects.toBeInstanceOf(SecretEncryptionUnavailableError);
+    expect(await readFile(path, "utf8")).toBe(legacy);
+    expect(await readFile(path, "utf8")).not.toContain(serialized);
   });
 
   it("rejects authenticated-ciphertext corruption instead of restoring another credential", async () => {

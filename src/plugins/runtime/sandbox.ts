@@ -145,6 +145,11 @@ export function createNoopHostApi(
         throw new Error("authRedirect.close not available in noop context");
       },
     },
+    authDeviceCode: {
+      authorize: async () => { throw new Error("Device authorization is unavailable in this host"); },
+      fetch: async () => { throw new Error("Device credentials are unavailable in this host"); },
+      clear: async () => { throw new Error("Device credentials are unavailable in this host"); },
+    },
     pickFolders: async () => {
       throw new Error("pickFolders not available in noop context");
     },

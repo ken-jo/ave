@@ -255,6 +255,9 @@ export const HOSTAPI_DISPATCH_TABLE: Record<HostApiPath, HostApiPathHandler> = {
   resolveApiKey: unimplementedHostApiPath("resolveApiKey"),
   callLlm: unimplementedHostApiPath("callLlm"),
   hostFetch: unimplementedHostApiPath("hostFetch"),
+  "authDeviceCode.authorize": unimplementedHostApiPath("authDeviceCode.authorize"),
+  "authDeviceCode.fetch": unimplementedHostApiPath("authDeviceCode.fetch"),
+  "authDeviceCode.clear": unimplementedHostApiPath("authDeviceCode.clear"),
   spawnWorker: unimplementedHostApiPath("spawnWorker"),
   resolveMappedDriveRoot: unimplementedHostApiPath("resolveMappedDriveRoot"),
   listAudioInputDevices: unimplementedHostApiPath("listAudioInputDevices"),
@@ -345,6 +348,7 @@ export type ServiceHostApi = Pick<
   | "resolveApiKey"
   | "callLlm"
   | "hostFetch"
+  | "authDeviceCode"
   | "spawnWorker"
   | "resolveMappedDriveRoot"
   | "listAudioInputDevices"
@@ -965,6 +969,13 @@ export function createServiceHostApiPaths(
     callLlm: callLlmPath(hostApi),
     hostFetch: bindOptional("hostFetch", hostApi.hostFetch, () =>
       hostFetchPath(hostApi, onMalformedCredentialSelector)),
+    "authDeviceCode.authorize": defineHostApiPath("authDeviceCode.authorize", async call =>
+      hostApi.authDeviceCode.authorize({ ...call.args[0] as import("../public-contract.js").DeviceCodeAuthorizationOptions, signal: call.signal })),
+    "authDeviceCode.fetch": defineHostApiPath("authDeviceCode.fetch", async call =>
+      encodeWireHttpResponse(await hostApi.authDeviceCode.fetch(
+        { ...call.args[0] as import("../public-contract.js").DeviceCodeFetchOptions, signal: call.signal }), `${call.path}(result)`)),
+    "authDeviceCode.clear": defineHostApiPath("authDeviceCode.clear", async call =>
+      hostApi.authDeviceCode.clear(call.args[0] as { handle: string })),
     spawnWorker: bindOptional("spawnWorker", hostApi.spawnWorker, () =>
       spawnWorkerPath(hostApi, confinement)),
     resolveMappedDriveRoot: resolveMappedDriveRootPath(hostApi),

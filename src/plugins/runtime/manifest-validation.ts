@@ -640,6 +640,10 @@ export async function parsePluginJson(
         );
       }
     }
+    const deviceCodeAuth = (networkAccessRaw as { deviceCodeAuth?: unknown }).deviceCodeAuth;
+    if (deviceCodeAuth !== undefined && typeof deviceCodeAuth !== "boolean") {
+      fail("networkAccess.deviceCodeAuth", "must be a boolean", '"networkAccess": { "deviceCodeAuth": true }');
+    }
     // Reject colons in partition suffixes so declarations cannot inject extra host-composed segments.
     const authCookieRaw = (networkAccessRaw as { authCookiePartition?: unknown })
       .authCookiePartition;

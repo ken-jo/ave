@@ -42,6 +42,8 @@ import {
 import { RPC_METHOD_NOT_FOUND } from "../../mcp/protocol-constants.js";
 import { WORKER_CONTROL_METHOD } from "../public-contract.js";
 import type {
+  DeviceCodeAuthorizationOptions,
+  DeviceCodeFetchOptions,
   PluginWorkerControl,
   PluginWorkerExitReason,
   WorkerControlErrorCode,
@@ -1080,6 +1082,27 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
+  "authDeviceCode.authorize": {
+    params: ["options"],
+    arguments: "encoded",
+    result: "plain-json",
+    lifetime: "none",
+    errors: ["effect-boundary-denied"],
+  },
+  "authDeviceCode.fetch": {
+    params: ["options"],
+    arguments: "encoded",
+    result: "encoded",
+    lifetime: "none",
+    errors: ["effect-boundary-denied"],
+  },
+  "authDeviceCode.clear": {
+    params: ["options"],
+    arguments: "plain-json",
+    result: "void",
+    lifetime: "none",
+    errors: ["effect-boundary-denied"],
+  },
   // A read of what already arrived, so no mutating-effect verdict applies —
   // the same reasoning `getAuthPartitionCookies` carries. Its bound is the
   // host's ownership check plus the timeout, neither of which is a boundary
@@ -1242,6 +1265,9 @@ export const SERVICE_HOSTAPI_PATHS = [
   "resolveApiKey",
   "callLlm",
   "hostFetch",
+  "authDeviceCode.authorize",
+  "authDeviceCode.fetch",
+  "authDeviceCode.clear",
   "spawnWorker",
   "resolveMappedDriveRoot",
   "listAudioInputDevices",
@@ -2157,3 +2183,7 @@ export function asWireWorkerSend(payload: unknown, label: string): WireWorkerSen
   }
   return send as unknown as WireWorkerSend;
 }
+
+/** Cancellation uses the request notification; signals never enter JSON. */
+export type WireDeviceCodeAuthorizationOptions = Omit<DeviceCodeAuthorizationOptions, "signal">;
+export type WireDeviceCodeFetchOptions = Omit<DeviceCodeFetchOptions, "signal">;

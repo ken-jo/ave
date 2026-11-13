@@ -135,8 +135,8 @@ export function createDeviceCodePresentation(parentWindow: () => BaseWindow | nu
         if (finished || contents.isDestroyed() || contents.getURL() !== documentUrl || !event.isMainFrame ||
           event.frame !== contents.mainFrame || event.initiator !== contents.mainFrame) return;
         if (event.url === actions.cancel) cancel();
-        else if (event.url === actions.copyCode) clipboard.writeText(prompt.userCode);
-        else if (event.url === actions.copyUri) clipboard.writeText(uri);
+        else if (event.url === actions.copyCode) void clipboard.writeText(prompt.userCode).catch(cancel);
+        else if (event.url === actions.copyUri) void clipboard.writeText(uri).catch(cancel);
         else if (event.url === actions.openUri || (completeUri !== undefined && event.url === actions.openComplete)) {
           const target = event.url === actions.openUri ? uri : completeUri;
           if (target === undefined) throw new Error("Device verification link is unavailable");

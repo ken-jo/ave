@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 28,
+    "id": 31,
     "jsonrpc": "2.0",
     "method": "ai.agent-connector.ave/host/pickFolders",
     "params": {
@@ -10,7 +10,7 @@
     }
   },
   "response": {
-    "id": 28,
+    "id": 31,
     "jsonrpc": "2.0",
     "result": {
       "canceled": false,

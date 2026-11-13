@@ -53,8 +53,8 @@ test("device sign-in shows both verification paths, copies fixed values and canc
     await expect.poll(async () => (await state()).opened).toEqual([
       "https://auth.example.test/verify", "https://auth.example.test/verify?user_code=ABCD-EFGH",
     ]);
-    const window = await app.browserWindow(page);
-    expect(await window.evaluate(target => ({ focused: target.isFocused(), modal: target.isModal() }))).toEqual({ focused: false, modal: false });
+    const nativeWindow = await app.browserWindow(page);
+    expect(await nativeWindow.evaluate(target => ({ focused: target.isFocused(), modal: target.isModal() }))).toEqual({ focused: false, modal: false });
     await clickAction("Cancel");
     await expect.poll(async () => (await state()).canceled).toBe(true);
     await expect.poll(() => page.isClosed()).toBe(true);

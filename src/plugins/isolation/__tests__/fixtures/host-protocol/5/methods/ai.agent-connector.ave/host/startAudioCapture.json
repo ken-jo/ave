@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 31,
+    "id": 34,
     "jsonrpc": "2.0",
     "method": "ai.agent-connector.ave/host/startAudioCapture",
     "params": {
@@ -16,7 +16,7 @@
     }
   },
   "response": {
-    "id": 31,
+    "id": 34,
     "jsonrpc": "2.0",
     "result": {
       "captureId": "capture-1",

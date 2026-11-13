@@ -313,6 +313,44 @@ describe("hasRoutineBySource and probePrivateHost cross as plain data", () => {
   });
 });
 
+describe("device credential handles across the child boundary", () => {
+  it("keeps authorization options plain, returns only the handle, and carries resource response bytes", async () => {
+    const authorize = vi.fn(async () => ({ handle: "device-handle" }));
+    const clear = vi.fn(async () => {});
+    const harness = await createServiceHarness({ authDeviceCode: {
+      authorize, fetch: async () => new Response(HOSTILE_BYTES), clear,
+    } });
+    const controller = new AbortController();
+    await expect(harness.child.hostApi.authDeviceCode.authorize({ issuer: "https://issuer.example.test", clientId: "public", resource: "https://api.example.test/resource", signal: controller.signal }))
+      .resolves.toEqual({ handle: "device-handle" });
+    expect(wireArg(harness, "authDeviceCode.authorize", 0)).toEqual({ issuer: "https://issuer.example.test", clientId: "public", resource: "https://api.example.test/resource" });
+    const response = await harness.child.hostApi.authDeviceCode.fetch({ handle: "device-handle", url: "https://api.example.test/resource" });
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(HOSTILE_BYTES);
+    await harness.child.hostApi.authDeviceCode.clear({ handle: "device-handle" });
+    expect(clear).toHaveBeenCalledWith({ handle: "device-handle" });
+  });
+
+  it("aborts the host authorization request when the child caller cancels", async () => {
+    let hostSignal: AbortSignal | undefined;
+    const harness = await createServiceHarness({ authDeviceCode: {
+      authorize: async options => {
+        hostSignal = options.signal;
+        if (!hostSignal) throw new Error("Missing host cancellation signal");
+        const signal = hostSignal;
+        return new Promise<{ handle: string }>((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("Authorization canceled")), { once: true }));
+      },
+      fetch: async () => new Response(), clear: async () => {},
+    } });
+    const controller = new AbortController();
+    const pending = harness.child.hostApi.authDeviceCode.authorize({ issuer: "https://issuer.example.test", clientId: "public", resource: "https://api.example.test/resource", signal: controller.signal });
+    const rejection = expect(pending).rejects.toThrow();
+    await vi.waitFor(() => expect(hostSignal).toBeDefined());
+    controller.abort();
+    await rejection;
+    expect(hostSignal?.aborted).toBe(true);
+  });
+});
+
 describe("hostFetch carries bytes a text codec would corrupt", () => {
   it("reconstructs the body byte-for-byte, tagged base64 on the wire", async () => {
     const hostFetch = vi.fn(

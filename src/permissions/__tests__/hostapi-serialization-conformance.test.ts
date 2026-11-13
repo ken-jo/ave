@@ -220,6 +220,21 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
     args: "partition: string",
     returns: "Promise<void>",
   },
+  "authDeviceCode.authorize": {
+    jsonRepresentable: false,
+    args: "options: DeviceCodeAuthorizationOptions — optional AbortSignal stays local and cancels the wire request",
+    returns: "Promise<{ handle: string }> — opaque host credential identity",
+  },
+  "authDeviceCode.fetch": {
+    jsonRepresentable: false,
+    args: "options: DeviceCodeFetchOptions — optional AbortSignal stays local",
+    returns: "Promise<Response> — status, headers and bounded base64 body cross as WireHttpResponse",
+  },
+  "authDeviceCode.clear": {
+    jsonRepresentable: true,
+    args: "options: { handle: string }",
+    returns: "Promise<void>",
+  },
   // The handle is a STRING that NAMES a host-owned listener, not a reference to one. That is what makes this family crossable at all: the socket never leaves the host, and the child holds nothing it could fail to dispose.
   "authRedirect.open": {
     jsonRepresentable: true,
@@ -306,6 +321,8 @@ const HOSTAPI_MARSHALLING: Record<string, MarshallingDecision> = {
 
 // The members that CANNOT cross as JSON and therefore owe the boundary an explicit representation. Pinned literally, not derived, so that flipping a member's verdict in the table above is a deliberate two-place edit reviewed as a contract change — never a silent one. `docs/blueprints/plugin-process-isolation.md` carry the decided representation for each of these.
 const REQUIRES_DECIDED_REPRESENTATION: readonly string[] = [
+  "authDeviceCode.authorize",
+  "authDeviceCode.fetch",
   "callLlm",
   "config.onChange",
   "hostFetch",

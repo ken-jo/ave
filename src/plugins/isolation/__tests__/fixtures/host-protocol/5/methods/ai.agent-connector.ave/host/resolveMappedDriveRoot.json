@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 29,
+    "id": 32,
     "jsonrpc": "2.0",
     "method": "ai.agent-connector.ave/host/resolveMappedDriveRoot",
     "params": {
@@ -11,7 +11,7 @@
     }
   },
   "response": {
-    "id": 29,
+    "id": 32,
     "jsonrpc": "2.0",
     "result": "/Volumes/share"
   }

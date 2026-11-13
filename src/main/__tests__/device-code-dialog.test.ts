@@ -6,7 +6,7 @@ import { en } from "../../i18n/messages/en.js";
 import { ko } from "../../i18n/messages/ko.js";
 
 const state = vi.hoisted(() => ({
-  windows: [] as unknown[], clipboard: vi.fn(), external: vi.fn(async () => undefined),
+  windows: [] as unknown[], clipboard: vi.fn(async () => undefined), external: vi.fn(async () => undefined),
   background: false, loadError: false,
   permissions: { request: vi.fn(), check: vi.fn(), device: vi.fn(), requestFilter: vi.fn() },
 }));
@@ -171,6 +171,14 @@ describe("device sign-in dialog", () => {
     expect(state.clipboard).toHaveBeenCalledTimes(2);
     expect(state.external).toHaveBeenCalledTimes(2);
     close();
+  });
+
+  it("cancels cleanly when the clipboard service rejects a copy", async () => {
+    const controller = new AbortController();
+    await createDeviceCodePresentation(parent).show(prompt(), controller);
+    state.clipboard.mockRejectedValueOnce(new Error("clipboard-unavailable"));
+    navigate(action("copy-code"));
+    await vi.waitFor(() => expect(controller.signal.aborted).toBe(true));
   });
 
   it("rejects child frames, mismatched initiators, foreign action tokens and replaced documents", async () => {

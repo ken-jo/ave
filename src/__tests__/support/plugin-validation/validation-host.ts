@@ -153,6 +153,11 @@ export function createValidationHost(overrides: ValidationHostOverrides = {}): V
       wait: async () => ({ code: "the-auth-code", state: "the-state" }),
       close: async () => undefined,
     },
+    authDeviceCode: {
+      authorize: async () => ({ handle: "device-1" }),
+      fetch: async () => new Response("device-resource", { status: 200 }),
+      clear: async () => undefined,
+    },
     pickFolders: async () => ({ canceled: false, folders: ["/validation/user/Documents"] }),
     resolveMappedDriveRoot: async () => "/Volumes/share",
     listAudioInputDevices: async () => [{ deviceId: "default", label: "Built-in Microphone" }],

@@ -11,7 +11,7 @@ void app.whenReady().then(async () => {
   await parent.loadURL("data:text/html,<title>Device sign-in owner</title>");
   const controller = new AbortController();
   const state = { copied: [] as string[], opened: [] as string[], canceled: false, ready: false };
-  clipboard.writeText = (value) => { state.copied.push(value); };
+  clipboard.writeText = async (value) => { state.copied.push(value); };
   shell.openExternal = async (url) => { state.opened.push(url); };
   controller.signal.addEventListener("abort", () => { state.canceled = true; });
   const close = await createDeviceCodePresentation(() => parent).show({

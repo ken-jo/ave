@@ -5,6 +5,9 @@
       "items": {
         "enum": [
           "ai.agent-connector.ave/host/attachFloatingPanel",
+          "ai.agent-connector.ave/host/authDeviceCode/authorize",
+          "ai.agent-connector.ave/host/authDeviceCode/clear",
+          "ai.agent-connector.ave/host/authDeviceCode/fetch",
           "ai.agent-connector.ave/host/authRedirect/close",
           "ai.agent-connector.ave/host/authRedirect/open",
           "ai.agent-connector.ave/host/authRedirect/wait",
@@ -290,6 +293,337 @@
         },
         "result": {
           "$ref": "#/$defs/types/WireFloatingPanelHandle"
+        }
+      },
+      "ai.agent-connector.ave/host/authDeviceCode/authorize": {
+        "description": "Discover and authorize a public client; credentials remain encrypted in the host.",
+        "errors": {
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "properties": {
+            "code": {
+              "type": "integer"
+            },
+            "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "plugin-inactive",
+                    "path-unknown",
+                    "path-not-dispatchable",
+                    "path-not-implemented",
+                    "argument-marshalling-rejected",
+                    "result-marshalling-rejected",
+                    "payload-too-large",
+                    "subscription-unknown",
+                    "rate-limited",
+                    "effect-boundary-denied",
+                    "manifest-integrity-violation",
+                    "detached-operation",
+                    "plugin-storage",
+                    "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
+                    "worker-transport-unsupported",
+                    "worker-control-failed",
+                    "worker-already-running",
+                    "host-internal"
+                  ]
+                },
+                "detail": {
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "code",
+                "name"
+              ],
+              "type": "object"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "params": {
+          "properties": {
+            "options": {
+              "$ref": "#/$defs/types/WireDeviceCodeAuthorizationOptions"
+            }
+          },
+          "required": [
+            "options"
+          ],
+          "type": "object"
+        },
+        "result": {
+          "properties": {
+            "handle": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "handle"
+          ],
+          "type": "object"
+        }
+      },
+      "ai.agent-connector.ave/host/authDeviceCode/clear": {
+        "description": "Revoke this incarnation's handle and remove its persisted credentials.",
+        "errors": {
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "properties": {
+            "code": {
+              "type": "integer"
+            },
+            "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "plugin-inactive",
+                    "path-unknown",
+                    "path-not-dispatchable",
+                    "path-not-implemented",
+                    "argument-marshalling-rejected",
+                    "result-marshalling-rejected",
+                    "payload-too-large",
+                    "subscription-unknown",
+                    "rate-limited",
+                    "effect-boundary-denied",
+                    "manifest-integrity-violation",
+                    "detached-operation",
+                    "plugin-storage",
+                    "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
+                    "worker-transport-unsupported",
+                    "worker-control-failed",
+                    "worker-already-running",
+                    "host-internal"
+                  ]
+                },
+                "detail": {
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "code",
+                "name"
+              ],
+              "type": "object"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "params": {
+          "properties": {
+            "options": {
+              "properties": {
+                "handle": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "handle"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "options"
+          ],
+          "type": "object"
+        },
+        "result": {
+          "type": "null"
+        }
+      },
+      "ai.agent-connector.ave/host/authDeviceCode/fetch": {
+        "description": "Fetch only the exact authorized resource through the host network policy.",
+        "errors": {
+          "description": "The boundary's own refusals (plugin-inactive, path-unknown, path-not-dispatchable, path-not-implemented, argument-marshalling-rejected, result-marshalling-rejected, payload-too-large, rate-limited, host-internal) can reply to any call; this member's implementation raises effect-boundary-denied.",
+          "properties": {
+            "code": {
+              "type": "integer"
+            },
+            "data": {
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "code": {
+                        "const": "rate-limited"
+                      }
+                    },
+                    "required": [
+                      "code"
+                    ]
+                  },
+                  "then": {
+                    "properties": {
+                      "retryAfterMs": {
+                        "maximum": 5000,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "retryAfterMs"
+                    ]
+                  }
+                }
+              ],
+              "properties": {
+                "code": {
+                  "enum": [
+                    "plugin-inactive",
+                    "path-unknown",
+                    "path-not-dispatchable",
+                    "path-not-implemented",
+                    "argument-marshalling-rejected",
+                    "result-marshalling-rejected",
+                    "payload-too-large",
+                    "subscription-unknown",
+                    "rate-limited",
+                    "effect-boundary-denied",
+                    "manifest-integrity-violation",
+                    "detached-operation",
+                    "plugin-storage",
+                    "plugin-storage-encryption-unavailable",
+                    "lease-unavailable",
+                    "lease-audience-denied",
+                    "credential-conflict",
+                    "worker-transport-unsupported",
+                    "worker-control-failed",
+                    "worker-already-running",
+                    "host-internal"
+                  ]
+                },
+                "detail": {
+                  "type": "object"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "retryAfterMs": {
+                  "maximum": 5000,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "code",
+                "name"
+              ],
+              "type": "object"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "data"
+          ],
+          "type": "object"
+        },
+        "params": {
+          "properties": {
+            "options": {
+              "$ref": "#/$defs/types/WireDeviceCodeFetchOptions"
+            }
+          },
+          "required": [
+            "options"
+          ],
+          "type": "object"
+        },
+        "result": {
+          "$ref": "#/$defs/types/WireHttpResponse"
         }
       },
       "ai.agent-connector.ave/host/authRedirect/close": {
@@ -5546,6 +5880,9 @@
               "authCookiePartition": {
                 "type": "string"
               },
+              "deviceCodeAuth": {
+                "type": "boolean"
+              },
               "reasoning": {
                 "type": "string"
               }
@@ -6641,6 +6978,9 @@
               "authCookiePartition": {
                 "type": "string"
               },
+              "deviceCodeAuth": {
+                "type": "boolean"
+              },
               "reasoning": {
                 "type": "string"
               }
@@ -7033,6 +7373,62 @@
             "type": "string"
           }
         },
+        "type": "object"
+      },
+      "WireDeviceCodeAuthorizationOptions": {
+        "properties": {
+          "clientId": {
+            "type": "string"
+          },
+          "dpop": {
+            "const": "required",
+            "type": "string"
+          },
+          "issuer": {
+            "type": "string"
+          },
+          "resource": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "issuer",
+          "clientId",
+          "resource"
+        ],
+        "type": "object"
+      },
+      "WireDeviceCodeFetchOptions": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "method": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "handle",
+          "url"
+        ],
         "type": "object"
       },
       "WireFloatingPanelHandle": {

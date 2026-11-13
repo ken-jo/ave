@@ -1,6 +1,6 @@
 {
   "request": {
-    "id": 26,
+    "id": 29,
     "jsonrpc": "2.0",
     "method": "ai.agent-connector.ave/host/authRedirect/wait",
     "params": {
@@ -14,7 +14,7 @@
     }
   },
   "response": {
-    "id": 26,
+    "id": 29,
     "jsonrpc": "2.0",
     "result": {
       "code": "the-auth-code",

@@ -1492,7 +1492,7 @@ export class SettingsService {
   }
 
   /** Encrypt and store a secret value such as an API key. */
-  async setSecret(key: string, value: string): Promise<void> {
+  async setSecret(key: string, value: string, options?: { requireEncrypted?: boolean }): Promise<void> {
     // Entered for the preset shown now, while an invalidation may be moving it: recorded at once,
     // so a rollback or deletion running while the key is written already leaves it with that preset.
     const invalidating = this.invalidatingSecretKeys.has(key);
@@ -1505,7 +1505,7 @@ export class SettingsService {
       this.secretStateChanged(key);
     }
     try {
-      await this.secretStore.set(key, value);
+      await this.secretStore.set(key, value, options);
     } catch (err) {
       if (invalidating) {
         // The invalidation may have kept its preset, or skipped the old key, for this entry: whatever

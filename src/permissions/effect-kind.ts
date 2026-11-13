@@ -27,6 +27,9 @@ export type ChokepointKind =
   | "authRedirectOpen"
   | "authRedirectWait"
   | "authRedirectClose"
+  | "authDeviceAuthorize"
+  | "authDeviceFetch"
+  | "authDeviceClear"
   // pickFolders Shows the user a native folder chooser and returns what they named. It returns state and mutates none — a picked path carries no new reach, because the child's read confinement is deny-only and the directory was already readable. A READ, and still recorded: the moment a plugin puts a modal in front of the user is worth having in the trail.
   | "pickFolders"
   // resolveMappedDriveRoot Answers what UNC path backs a Windows mapped drive. Returns state and mutates none; the host runs the lookup, so the plugin gains no ability to execute anything. A READ, recorded because the host running a command on a plugin's behalf is worth having in the trail even when the command is fixed.
@@ -78,6 +81,9 @@ export const CHOKEPOINT_EFFECT: Record<StaticChokepointKind, Effect> = {
   authRedirectOpen: "write",
   authRedirectWait: "read",
   authRedirectClose: "write",
+  authDeviceAuthorize: "write",
+  authDeviceFetch: "write",
+  authDeviceClear: "write",
   pickFolders: "read",
   resolveMappedDriveRoot: "read",
   listAudioInputDevices: "read",
@@ -245,6 +251,9 @@ export const HOSTAPI_EFFECT_BY_PATH: Record<string, HostApiEffectSpec> = {
     targetFromArgs: objectStringField("partitionSub"),
   },
   "authRedirect.open": { kind: "authRedirectOpen", async: true },
+  "authDeviceCode.authorize": { kind: "authDeviceAuthorize", async: true },
+  "authDeviceCode.fetch": { kind: "authDeviceFetch", async: true },
+  "authDeviceCode.clear": { kind: "authDeviceClear", async: true },
   "authRedirect.wait": {
     kind: "authRedirectWait", async: true,
     targetFromArgs: objectStringField("handle"),

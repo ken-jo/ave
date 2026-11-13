@@ -71,7 +71,7 @@ describe("remote authorization boot boundaries", () => {
   it("stores credentials through the existing secret store and opens only the host browser surface", async () => {
     const { settings, shellOpenExternal, openOAuthLogin, oauth } = await wiring();
     await oauth.secrets.setSecret("mcp.oauth.record", "throwaway-secret");
-    expect(settings.setSecret).toHaveBeenCalledWith("mcp.oauth.record", "throwaway-secret");
+    expect(settings.setSecret).toHaveBeenCalledWith("mcp.oauth.record", "throwaway-secret", { requireEncrypted: true });
     await oauth.secrets.deleteSecret("mcp.oauth.record");
     expect(settings.deleteSecret).toHaveBeenCalledWith("mcp.oauth.record");
     const login = { completion: Promise.resolve(), onCancel: vi.fn(), timeoutMs: 10_000 };

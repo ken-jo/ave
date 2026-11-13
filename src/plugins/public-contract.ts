@@ -552,6 +552,8 @@ export interface PluginManifestFields {
      * axis this flag neither grants nor requires — see `allowedDomains` above.
      */
     allowPrivateNetworks?: boolean;
+    /** Explicit opt-in for host-owned device authorization; requires external-auth-consumer. */
+    deviceCodeAuth?: boolean;
     /**
      * Opt-in: the sub-namespace of this plugin's own auth partition
      * (`persist:plugin-auth:<pluginId>:<sub>`) whose harvested session cookies
@@ -1481,6 +1483,24 @@ export interface HostFetchInit extends RequestInit {
   auth?: { lease: string };
 }
 
+export interface DeviceCodeAuthorizationOptions {
+  issuer: string;
+  clientId: string;
+  resource: string;
+  scopes?: string[];
+  dpop?: "required";
+  signal?: AbortSignal;
+}
+
+export interface DeviceCodeFetchOptions {
+  handle: string;
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+  signal?: AbortSignal;
+}
+
 export interface PluginHostApi {
   /**
    * Sandboxed filesystem API scoped to this plugin's host-only storage
@@ -1622,6 +1642,16 @@ export interface PluginHostApi {
   openAuthWindow(
     options: OpenAuthWindowCookieOptions,
   ): Promise<AuthWindowCookie[]>;
+
+  /** Host-owned device authorization and opaque credential use. */
+  authDeviceCode: {
+    /** Discover and authorize a public client; credentials remain encrypted in the host. */
+    authorize(options: DeviceCodeAuthorizationOptions): Promise<{ handle: string }>;
+    /** Fetch only the exact authorized resource through the host network policy. */
+    fetch(options: DeviceCodeFetchOptions): Promise<Response>;
+    /** Revoke this incarnation's handle and remove its persisted credentials. */
+    clear(options: { handle: string }): Promise<void>;
+  };
 
   /**
    * A host-owned loopback listener that catches ONE OAuth authorization-code
