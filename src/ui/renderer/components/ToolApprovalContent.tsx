@@ -462,6 +462,7 @@ export function ToolApprovalContent({
   const [expanded, setExpanded] = useState(false);
   const [recordingDecision, setRecordingDecision] = useState(false);
   const [recordError, setRecordError] = useState<string | null>(null);
+  const [readjudicationRequestId, setReadjudicationRequestId] = useState<string | null>(null);
   const activeRequestIdRef = useRef<string | null>(request?.id ?? null);
   const recordingRequestIdRef = useRef<string | null>(null);
   const decisionButtonRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -514,6 +515,7 @@ export function ToolApprovalContent({
     recordingRequestIdRef.current = null;
     setRecordingDecision(false);
     setRecordError(null);
+    setReadjudicationRequestId(null);
   }, [request?.id]);
 
   useEffect(() => () => {
@@ -590,6 +592,10 @@ export function ToolApprovalContent({
     return exactDecisionModel({ sessionOnly: rememberIsSessionOnly, hasSession, allowRefusalKey: exactAllowRefusal, denyRefusalKey: exactDenyRefusal, settingsEditing });
   }, [shellRule, outOfDirScopes, outOfDirSuggestedParent, settingsEditing, approvalIsOneShot, finalVerdict, rememberIsSessionOnly, hasSession, exactAllowRefusal, exactDenyRefusal]);
   const decision = useApprovalDecisionState(request?.id ?? null);
+  const readjudicationOffered = request?.readjudication !== undefined && request.source === "plugin"
+    && finalVerdict === "high" && decisionModel.variant === "exact" && !approvalIsOneShot
+    && request.persistentAllowAllowed === true;
+  const readjudicateSelected = readjudicationOffered && readjudicationRequestId === request?.id;
   const selectedFolderScope = decision.selected === "allow-session" ? outOfDirScopes?.session : outOfDirScopes?.always;
   const slotsDisabled = decisionSlotsDisabled(decisionModel, decision, {
     locked: recordingDecision || interactionLocked,
@@ -685,7 +691,7 @@ export function ToolApprovalContent({
   // tool approval. The request is answered only when the save succeeded, and only while it is still the card's request. When the host
   // refused the save because boot refused the home folder, the card answers once (`respondOnce`) and the notice says why.
   const recordThenRespond = useCallback(async (
-    record: { readonly decision: "allow" | "deny"; readonly scope: UserApprovalScope; readonly rule?: ApprovalRuleSave } | null,
+    record: { readonly decision: "allow" | "deny"; readonly scope: UserApprovalScope; readonly rule?: ApprovalRuleSave; readonly readjudicate?: true } | null,
     respond: () => void,
     respondOnce: () => void = respond,
   ) => {
@@ -708,17 +714,20 @@ export function ToolApprovalContent({
           decision: record.decision,
           scope: record.scope,
           ...(record.rule === undefined ? {} : { rule: record.rule }),
+          ...(record.readjudicate === true ? { readjudicate: true } : {}),
           verdictAtApproval: finalVerdict as UserApprovalVerdict,
           nlJustification: null,
           trustOrigin: request.trustOrigin,
           approvalCacheKey: request.approvalCacheKey,
         });
-        if (!result?.ok && result?.error === HOME_FOLDER_REFUSED) {
+        if (!record.readjudicate && !result?.ok && result?.error === HOME_FOLDER_REFUSED) {
           approvalNotice?.(tHook(record.decision === "deny" ? "toolApprovalDialog.homeFolderRefusedDeniedOnce" : "toolApprovalDialog.homeFolderRefusedOnce"));
           answer = respondOnce;
         } else if (!result?.ok) {
           if (activeRequestIdRef.current === request.id) {
-            setRecordError(record.rule ? ruleSaveErrorText(result, tHook(failureKey)) : tHook(failureKey));
+            setRecordError(record.readjudicate && result?.error === "readjudication-unavailable"
+              ? tHook("formatIpcError.readjudicationUnavailable")
+              : record.rule ? ruleSaveErrorText(result, tHook(failureKey)) : tHook(failureKey));
           }
           return;
         }
@@ -797,7 +806,7 @@ export function ToolApprovalContent({
         // The gate answer matches the record: a conversation approval answers allow-session (so a host-held descriptor grant lasts the
         // conversation too), a project or user-global one allow-always.
         const scope: UserApprovalScope = choice === "allow-session" ? "session" : choice === "allow-project" ? "persistent" : "global";
-        void recordThenRespond({ decision: "allow", scope }, () => onDecide(scope === "session" ? "allow-session" : "allow-always", undefined),
+        void recordThenRespond({ decision: "allow", scope, ...(readjudicateSelected ? { readjudicate: true } : {}) }, () => onDecide(scope === "session" ? "allow-session" : "allow-always", undefined),
           () => onDecide("allow-once", undefined));
         return;
       }
@@ -805,7 +814,7 @@ export function ToolApprovalContent({
       case "network":
         return;
     }
-  }, [onDecide, recordThenRespond, approvalExtras, decisionModel, outOfDirScopes, request, approvalNotice, tHook]);
+  }, [onDecide, recordThenRespond, approvalExtras, decisionModel, outOfDirScopes, request, approvalNotice, tHook, readjudicateSelected]);
 
   const approveDisabledDescriptionId = isUnsupportedElicitationForm || elicitationInvalid
     ? "mcp-elicitation-input-unavailable"
@@ -1302,6 +1311,27 @@ export function ToolApprovalContent({
                 ))}
               </div>
             ) : null}
+            {readjudicationOffered ? (
+              <div className="min-w-0 space-y-1 rounded-md border p-2" data-testid="approval-readjudication">
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`approval-readjudication-${request.id}`}
+                    aria-describedby={`approval-readjudication-note-${request.id}`}
+                    data-testid="approval-readjudication-opt-in"
+                    checked={readjudicateSelected}
+                    disabled={recordingDecision || interactionLocked}
+                    onCheckedChange={(checked) => setReadjudicationRequestId(checked === true ? request.id : null)}
+                  />
+                  <Label htmlFor={`approval-readjudication-${request.id}`} className="text-xs">
+                    {tHook("toolApprovalDialog.readjudicationLabel")}
+                  </Label>
+                </div>
+                <p id={`approval-readjudication-note-${request.id}`} className="text-tiny text-muted-foreground">{tHook("toolApprovalDialog.readjudicationNote")}</p>
+                <code className="block break-all text-tiny text-muted-foreground" data-testid="approval-readjudication-evidence">
+                  {request.readjudication?.pluginId} · {request.readjudication?.signerKeyId} · {request.readjudication?.artifactSha256}
+                </code>
+              </div>
+            ) : null}
             <ApprovalDecisionBar
               model={decisionModel}
               state={decision}
@@ -1383,10 +1413,12 @@ export function ToolApprovalContent({
             {decisionModel.variant === "exact" && allowRefusal === null && request.persistentApprovalCwd ? (
               <p className="text-tiny text-muted-foreground" data-testid="allow-always-exact-scope">
                 {decision.selected === "allow-everywhere"
-                  ? request.approvalMemory?.kind === "key" && request.approvalMemory.scope.kind === "mcp-tool"
+                  ? !readjudicateSelected && request.approvalMemory?.kind === "key" && request.approvalMemory.scope.kind === "mcp-tool"
                     ? tHook("toolApprovalDialog.rememberScopeMcpToolGlobal", { serverId: request.approvalMemory.scope.serverId, toolName: request.approvalMemory.scope.toolName })
                     : tHook("toolApprovalDialog.exactScopeEverywhere")
-                  : rememberScopeText(tHook, request, request.persistentApprovalCwd)}
+                  : readjudicateSelected
+                    ? tHook("toolApprovalDialog.exactPersistentScope", { path: request.persistentApprovalCwd })
+                    : rememberScopeText(tHook, request, request.persistentApprovalCwd)}
               </p>
             ) : null}
             {interactionLocked ? (

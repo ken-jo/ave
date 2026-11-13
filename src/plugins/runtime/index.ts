@@ -54,6 +54,7 @@ import { withPluginInstallLock, hasExclusivePluginLifecycleMutation, isPluginIns
 import type { SpawnConfinement } from "../../permissions/confined-child.js";
 import { capturePluginSandboxGrant, createOutOfProcessPluginFactory, isPluginSandboxGrantCovered, PluginSandboxGrantError, pluginFactoryDeadlineMs, pluginStopBudgetMs } from "../isolation/out-of-process-plugin.js";
 import { PluginChildTerminationUnverifiedError } from "../isolation/plugin-child-transport.js";
+import { bindPluginInstanceIntegrity, recordPluginFactoryIntegrity } from "../runtime-integrity-evidence.js";
 import {
   HOST_PROTOCOL_VERSION,
   IncompatibleHostProtocolError,
@@ -1464,6 +1465,7 @@ abstract class PluginRuntimeState {
 
   protected loadedConfinement(instance: RuntimePlugin, createPlugin: RuntimePluginFactory): PluginConfinementReport {
     this.instanceConfinementSources.set(instance, createPlugin);
+    bindPluginInstanceIntegrity(instance, createPlugin);
     return this.confinementReport(createPlugin);
   }
 
@@ -4919,6 +4921,7 @@ class PluginRuntimeLifecycle extends PluginRuntimeCapabilityLifecycle {
         ...outOfProcess,
         launch: { kind: "entry", entryPath: source.resolvedEntryPath },
       });
+    recordPluginFactoryIntegrity(createPlugin, pluginId, verified);
     return { createPlugin, arm: "child" };
   }
 

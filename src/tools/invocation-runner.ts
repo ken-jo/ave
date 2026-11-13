@@ -2327,6 +2327,7 @@ export async function runToolInvocation(
     });
 
     const authorization = await authorizeToolInvocation({
+      pluginRuntimeInstance: generationLease?.generation.state.runtime.instance,
       directoryAuthorization,
       paths: invocationPermissionContext.paths,
       secretRead: invocationPermissionContext.secretRead,
@@ -2456,6 +2457,7 @@ export async function runToolInvocation(
     }
 
     const executeAuthorized = () => executeAuthorizedToolInvocation({
+      pluginRuntimeInstance: generationLease?.generation.state.runtime.instance,
       services,
       tool,
       toolUse,

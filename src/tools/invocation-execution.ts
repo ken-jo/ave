@@ -7,6 +7,7 @@ import { isHostApprovalRejectedDecision } from "../permissions/approval-gate.js"
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
+import { createPluginReadjudicationBasis } from "../permissions/plugin-readjudication-evidence.js";
 import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
@@ -44,6 +45,7 @@ import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
 import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.js";
 import type { Tool } from "./base.js";
+import type { RuntimePlugin } from "../plugins/types.js";
 import type { HookRunner } from "../hooks/hook-runner.js";
 import type { HostShellExecutionPlan, HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
 import type { ExecutionGrant } from "../permissions/execution-router.js";
@@ -158,6 +160,7 @@ function satisfiesDeclaredReadResultStatus(
 export interface ExecutionStageContext {
   services: InvocationRunnerServices;
   tool: Tool;
+  pluginRuntimeInstance?: RuntimePlugin;
   toolUse: ToolUseBlock;
   source: ToolSource;
   trust: TrustLevel;
@@ -990,8 +993,7 @@ export async function executeAuthorizedToolInvocation(
       if (permissionResult.decision !== "ask") throw new Error(permissionResult.reason);
     }
     const hostTerminalFacts = hostTerminalApprovalFacts(tool, invocationPermissionContext.approvalMemory, finalInput.command);
-    const ruleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
-      ? classifyApprovalRuleVerdict({
+    const classifyCurrentRule = () => classifyApprovalRuleVerdict({
           toolName: toolUse.name, source, category: invocationCategory,
           pathFields: tool.pathFields ?? [], finalInput, approvalCacheKey, executionCwd,
           allowedDirectories: invocationAllowedScope.directories,
@@ -1001,6 +1003,21 @@ export async function executeAuthorizedToolInvocation(
           mcpServerId: tool.mcpServerId, workerId: tool.workerId, pluginId: tool.pluginId,
           hostShellExecutionPlan,
           ...(hostTerminalFacts.sandboxCapability ? { sandboxCapability: hostTerminalFacts.sandboxCapability } : {}),
+        });
+    const ruleAssessment = permissionResult.reviewer?.verdict === undefined && permissionResult.forceModal !== true && !permissionResult.pipelineRequest?.userOwnedSurface
+      ? classifyCurrentRule() : undefined;
+    const readjudicationAssessment = source === "plugin" && context.pluginRuntimeInstance !== undefined &&
+      permissionResult.forceModal !== true && !evaluationContext.headless &&
+      !permissionResult.pipelineRequest?.userOwnedSurface &&
+      (permissionResult.reviewer?.verdict?.level === "high" || ruleAssessment?.verdict.level === "high")
+      ? ruleAssessment ?? classifyCurrentRule() : undefined;
+    const readjudicationBasis = readjudicationAssessment?.verdict.level === "high"
+      ? createPluginReadjudicationBasis({
+          toolName: toolUse.name, source, pluginId: tool.pluginId, category: invocationCategory,
+          finalInput, executionCwd, trustOrigin: invocationPermissionContext.trustOrigin, approvalCacheKey,
+          ruleVerdict: readjudicationAssessment.verdict,
+          reviewerVerdict: permissionResult.reviewer?.verdict, reviewerOutcome: permissionResult.reviewer?.outcome,
+          runtimeInstance: context.pluginRuntimeInstance, sandboxCapability: readjudicationAssessment.ctx.sandboxCapability,
         }) : undefined;
     return {
       id: randomUUID(),
@@ -1025,6 +1042,7 @@ export async function executeAuthorizedToolInvocation(
       reviewerVerdict: permissionResult.reviewer?.verdict,
       reviewerOutcome: permissionResult.reviewer?.outcome,
       reviewerApprovalBasis: permissionResult.reviewer?.approvalBasis,
+      ...(readjudicationBasis === undefined ? {} : { readjudicationBasis }),
       ...(ruleAssessment ? { ruleVerdict: ruleAssessment.verdict, approvalRuleBasis: ruleAssessment.basis } : {}),
       ...(hostShellExecutionPlanAudit && invocationPermissionContext.disposableSubstrate === undefined
         ? { executionPlan: hostShellExecutionPlanAudit }

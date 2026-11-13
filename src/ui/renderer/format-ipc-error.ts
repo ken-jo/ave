@@ -87,6 +87,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "managed": "formatIpcError.managed",
   "durable-mode-denied": "formatIpcError.durableModeDenied",
   "one-shot-not-recordable": "formatIpcError.oneShotNotRecordable",
+  "readjudication-unavailable": "formatIpcError.readjudicationUnavailable",
   "session-only-scope": "formatIpcError.sessionOnlyScope",
   // ── Browser tabs (agent browser tools) ──
   "bad-request": "formatIpcError.invalidRequest",

@@ -7,12 +7,15 @@ import { aveHome } from "../shared/ave-home.js";
 import { assertAveHomeInputWritable, readAveHomeInput } from "../shared/ave-home-trust.js";
 import { matchesMcpToolApprovalMemory, mcpToolApprovalCacheKey, isMcpToolApprovalScope } from "../shared/mcp-tool-approval.js";
 import { canonicalStringify } from "../shared/canonical-json.js";
+import { exactCanonicalStringify } from "../shared/exact-json.js";
 import type {
   ApprovalMemory,
+  PluginReadjudicationEvidence,
   UserApprovalDecision,
   UserApprovalScope,
   UserApprovalVerdict,
 } from "../shared/permissions-events.js";
+import { isPluginReadjudicationEvidence } from "../shared/permissions-events.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { sessionAuthorityWithheld } from "../shared/turn-extension-policy.js";
 import { createSerialQueue } from "../lib/with-file-lock.js";
@@ -35,6 +38,8 @@ export interface UserApprovalEntry {
   scope: UserApprovalScope;
   // The reviewer verdict that was shown to the user when they approved.
   verdictAtApproval: UserApprovalVerdict;
+  // Historical evidence for an explicit human MEDIUM disposition; never a generic allow.
+  readjudication?: PluginReadjudicationEvidence;
   // Host rule risk, separate from a conservative failed-assessment display.
   riskCeilingAtApproval?: UserApprovalVerdict;
   // Optional historical justification. The approval dock does not require renderer-authored prose to record an eligible exact decision.
@@ -198,6 +203,10 @@ function conversationEntryKey(key: string, sessionId: string): string {
   return sha256Hex(canonicalStringify({ version: "conversation/v1", key, sessionId }));
 }
 
+function readjudicationEntryKey(key: string, pluginId: string): string {
+  return sha256Hex(canonicalStringify({ version: "plugin-readjudication/v1", pluginId, key }));
+}
+
 function entryKey(
   toolName: string,
   args: string,
@@ -301,6 +310,7 @@ export async function recordApproval(
     riskCeilingAtApproval?: UserApprovalVerdict;
     sessionId?: string;
     projectCwd?: string;
+    readjudication?: PluginReadjudicationEvidence;
   },
   authority?: ApprovalPersistenceGuard,
 ): Promise<void> {
@@ -308,10 +318,19 @@ export async function recordApproval(
       (entry.riskCeilingAtApproval !== undefined && !isApprovalVerdict(entry.riskCeilingAtApproval))) {
     throw new Error("Invalid approval risk provenance");
   }
+  if (entry.readjudication !== undefined &&
+      (!isPluginReadjudicationEvidence(entry.readjudication) || source !== "plugin" ||
+       entry.decision === "deny" || entry.verdictAtApproval !== "medium" ||
+       entry.riskCeilingAtApproval !== undefined || entry.approvalCacheKey !== undefined)) {
+    throw new Error("Invalid plugin re-adjudication record");
+  }
   // A global decision is keyed without the working directory: it applies in every project.
-  const baseKey = entry.scope === "global"
-    ? globalEntryKey(entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey))
-    : entryKey(toolName, args, source, entry.trustOrigin, entry.approvalCacheKey, entry.workingDirectoryIdentity);
+  const exactArgs = entry.readjudication === undefined ? args : exactCanonicalStringify(JSON.parse(args));
+  const exactKey = entry.scope === "global"
+    ? globalEntryKey(entryKey(toolName, exactArgs, source, entry.trustOrigin, entry.approvalCacheKey))
+    : entryKey(toolName, exactArgs, source, entry.trustOrigin, entry.approvalCacheKey, entry.workingDirectoryIdentity);
+  const baseKey = entry.readjudication === undefined ? exactKey
+    : readjudicationEntryKey(exactKey, entry.readjudication.pluginId);
   if (entry.scope === "global" && entry.projectCwd !== undefined) throw new Error("A global approval names no project");
   if (entry.sessionId !== undefined && entry.scope !== "session") throw new Error("Conversation identity requires session scope");
   // A session approval requires an exact session identity.
@@ -326,6 +345,7 @@ export async function recordApproval(
     approvedAt: entry.approvedAt ?? new Date().toISOString(),
     scope: entry.scope,
     verdictAtApproval: entry.verdictAtApproval,
+    ...(entry.readjudication === undefined ? {} : { readjudication: { ...entry.readjudication } }),
     ...(entry.riskCeilingAtApproval === undefined ? {} : { riskCeilingAtApproval: entry.riskCeilingAtApproval }),
     nlJustification: entry.nlJustification,
     revokedAt: null,
@@ -413,6 +433,7 @@ export async function lookupUserDecision(
   const readActive = (candidate: string): UserApprovalEntry | null => {
     const entry = sessionStore.get(candidate) ?? file?.approvals[candidate];
     if (!entry || entry.revokedAt) return null;
+    if (entry.decision !== "deny" && Object.hasOwn(entry, "readjudication")) return null;
     // Invalid allow provenance is a miss; exact denies remain restrictive regardless of the historical display risk stored alongside them.
     if (entry.decision !== "deny" && !hasValidRiskProvenance(entry)) return null;
     sessionStore.set(candidate, entry);
@@ -430,9 +451,45 @@ export async function lookupUserDecision(
   if (global?.decision === "deny") return global;
   const conversation = sessionKey === undefined ? undefined : sessionStore.get(sessionKey);
   // A scheduled wake turn reads only a conversation deny: it does not inherit the conversation's allows.
-  if (conversation && !conversation.revokedAt
+  if (conversation && !conversation.revokedAt && !Object.hasOwn(conversation, "readjudication")
     && (sessionAuthorityWithheld(sessionId, sessionId === undefined ? undefined : approvalConversationRoot(sessionId)) ? conversation.decision === "deny" : hasValidRiskProvenance(conversation))) return conversation;
   return legacy ?? global;
+}
+
+/** Exact human re-adjudication memory. Evidence is historical; reuse checks identity and revocation only. */
+export async function lookupReadjudicationApproval(
+  toolName: string,
+  args: string,
+  source: string,
+  pluginId: string,
+  trustOrigin?: string,
+  executionCwd?: string,
+  sessionId?: string,
+): Promise<UserApprovalEntry | null> {
+  if (source !== "plugin") return null;
+  const exactArgs = exactCanonicalStringify(JSON.parse(args));
+  const cwdIdentity = executionCwd === undefined ? undefined : captureApprovalWorkingDirectory(executionCwd).identity;
+  const projectKey = readjudicationEntryKey(entryKey(toolName, exactArgs, source, trustOrigin, undefined, cwdIdentity), pluginId);
+  const globalKey = readjudicationEntryKey(globalEntryKey(entryKey(toolName, exactArgs, source, trustOrigin, undefined)), pluginId);
+  const sessionKey = sessionId === undefined ? undefined : conversationEntryKey(projectKey, sessionId);
+  const candidates: { key: string; scope: UserApprovalScope }[] = [
+    ...(sessionKey === undefined ? [] : [{ key: sessionKey, scope: "session" as const }]),
+    { key: projectKey, scope: "persistent" }, { key: globalKey, scope: "global" },
+  ];
+  const file = candidates.some(({ key }) => !sessionStore.has(key)) ? await readApprovalsFile() : undefined;
+  for (const { key, scope } of candidates) {
+    const entry = sessionStore.get(key) ?? file?.approvals[key];
+    if (!entry || entry.revokedAt || entry.decision !== "allow" || entry.verdictAtApproval !== "medium" ||
+        entry.scope !== scope || entry.riskCeilingAtApproval !== undefined || entry.approvalCacheKey !== undefined ||
+        entry.rememberBy !== "args" || !isPluginReadjudicationEvidence(entry.readjudication) ||
+        entry.readjudication.pluginId !== pluginId || entry.toolName !== toolName || entry.source !== source) continue;
+    if (entry.scope === "session" && (sessionId === undefined || entry.sessionId === undefined ||
+        approvalConversationRoot(entry.sessionId) !== approvalConversationRoot(sessionId) ||
+        sessionAuthorityWithheld(sessionId, approvalConversationRoot(sessionId)))) continue;
+    sessionStore.set(key, entry);
+    return entry;
+  }
+  return null;
 }
 
 // Backward-compatible allow-only lookup used by the existing reviewer and foreground memory-skip lanes. Exact denies are deliberately invisible here: the authorization choke point reads them through lookupUserDecision and returns a deny before either auto-allow lane can run.

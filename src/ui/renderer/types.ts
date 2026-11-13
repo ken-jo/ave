@@ -1332,6 +1332,7 @@ export type AveUserApprovalApi = {
      *  below are ignored (kept on the wire for legacy callers + audit). */
     requestId: string;
     rule?: ApprovalRuleSave;
+    readjudicate?: true;
     toolName: string;
     args: string;
     source: string;

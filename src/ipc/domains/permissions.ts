@@ -18,6 +18,7 @@ import {
 /** The destination the Settings diagnostic line resolves. */
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
+import { exactCanonicalStringify } from "../../shared/exact-json.js";
 import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, AveHomeConfigurationRefusedWriteError, getAveHomePrivacyFailure, isAveHomeBoundaryCategory } from "../../shared/ave-home.js";
 import { approveAveHomeTrustItems, AveHomeTrustReviewError, getAveHomeTrustReview, removeAveHomeTrustItem, type AveHomeTrustReviewView } from "../../shared/ave-home-trust.js";
 import { AveHomeConfigurationNotOwnerError } from "../../shared/ave-home-configuration-access.js";
@@ -1088,6 +1089,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const scope = body.scope;
     const decision = body.decision ?? "allow";
     const displayedVerdictAtApproval = body.verdictAtApproval;
+    const readjudicate = body.readjudicate === true;
     const nlJustification = body.nlJustification;
     const args = body.args;
     // Bind approval identity and input to the host's pending requestId; renderer-supplied identity would permit cache-key spoofing.
@@ -1101,6 +1103,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       (decision !== "allow" && decision !== "deny") ||
       (scope !== "session" && scope !== "persistent" && scope !== "global") ||
       (displayedVerdictAtApproval !== "low" && displayedVerdictAtApproval !== "medium" && displayedVerdictAtApproval !== "high")
+      || (body.readjudicate !== undefined && body.readjudicate !== true)
     ) {
       return { ok: false, error: "invalid-payload", message: "user-approval record: invalid payload" };
     }
@@ -1122,6 +1125,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     };
     if (!await authority.refresh() || !authority.isCurrent()) {
       return { ok: false, error: "no-such-request", message: "Approval authority is unavailable" };
+    }
+    if (readjudicate && (decision !== "allow" || snapshot.readjudication === undefined ||
+        snapshot.verdictAtApproval !== "high" || body.rule !== undefined)) {
+      return { ok: false, error: "readjudication-unavailable", message: "This request is not eligible for re-adjudication" };
     }
     if (body.rule !== undefined) {
       // A card's rule save (owner 2026-10-25, unified approval card): the renderer names the choice's action and scope and, only when the person edited it, the rule text. The host checks an edited rule against the card's own rule grammar and requires it to decide this very request; without one it stores the rule it derived itself.
@@ -1168,7 +1175,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) {
       return { ok: false, error: "verdict-mismatch", message: "user-approval record: displayed verdict does not match the host request" };
     }
-    const verdictAtApproval = snapshot.verdictAtApproval;
+    const verdictAtApproval = readjudicate ? "medium" : snapshot.verdictAtApproval;
     // Conservative risk display during a failed assessment does not decide persistence. Only the gate's live eligibility snapshot can authorize it.
     // Every session approval (shell, browser, terminal, any exact tool approval) belongs to the
     // root conversation of the request, so one without a conversation has nothing to be scoped to.
@@ -1188,12 +1195,20 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         if (snapshot.args === null || typeof snapshot.args !== "object" || Array.isArray(snapshot.args)) {
           return { ok: false, error: "args-not-object", message: "user-approval record: args must be a JSON object" };
         }
-        canonicalArgs = canonicalStringify(snapshot.args);
+        canonicalArgs = readjudicate ? exactCanonicalStringify(snapshot.args) : canonicalStringify(snapshot.args);
       } catch {
         return { ok: false, error: "args-not-json", message: "user-approval record: args must be canonicalizable JSON" };
       }
       // Authority fields come from the main-process snapshot, never the renderer body. The renderer
       // contribution is reduced to decision metadata; the exact tool/input identity remains host-owned.
+      if (readjudicate) {
+        await auditLogger.append({
+          timestamp: new Date().toISOString(),
+          sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+          type: "approval",
+          output: `[approval:readjudication] scope=${scope} rawVerdict=high effectiveVerdict=medium evidence=${JSON.stringify(snapshot.readjudication)}`,
+        });
+      }
       const exactSaveToken = decision === "allow" ? approvalGate.beginExactApprovalSave(requestId, getUserApprovalGeneration()) : undefined;
       await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
         decision,
@@ -1204,16 +1219,16 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,
         trustOrigin: snapshot.trustOrigin,
         // Throws (→ "managed") when the host request carried a key without its identity mode: never guess which identity to persist under.
-        approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey,
+        approvalCacheKey: readjudicate ? undefined : approvalCacheKeyIdentity(snapshot.approvalCacheKey,
           decision === "deny" && snapshot.approvalMemory?.kind === "key" && snapshot.approvalMemory.scope.kind === "mcp-tool"
             ? { kind: "args" } : snapshot.approvalMemory),
         ...(decision === "allow" ? {
           workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
-          riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
+          ...(readjudicate ? { readjudication: snapshot.readjudication } : { riskCeilingAtApproval: snapshot.riskCeilingAtApproval }),
         } : {}),
       }, authority);
       if (decision === "allow") approvalGate.completeExactApprovalSave(exactSaveToken, getUserApprovalGeneration(), scope);
-      auditLogger.log({
+      if (!readjudicate) auditLogger.log({
         timestamp: new Date().toISOString(),
         sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
         type: "approval",

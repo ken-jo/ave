@@ -31,6 +31,9 @@ import { isUserOwnedSurface, isUserOwnedSurfaceChoice, resolveUserApprovalVerdic
 import { buildShellRuleApproval, type HostTerminalApprovalBinding } from "./rules/shell-rule-approval.js";
 import type { ShellRuleApproval } from "../shared/permissions-events.js";
 import { captureApprovalWorkingDirectory } from "./user-approval-store.js";
+import { matchesPluginReadjudicationBasis, type PluginReadjudicationBasis } from "./plugin-readjudication-evidence.js";
+import type { PluginReadjudicationEvidence } from "../shared/permissions-events.js";
+import { exactCanonicalStringify } from "../shared/exact-json.js";
 import type {
   RemoteControllerAuthority,
   RemoteControllerOrigin,
@@ -125,6 +128,8 @@ export interface ApprovalRequest {
   allowedChoices?: readonly ApprovalChoice[];
   // Host-derived permission to remember an exact allow for this request.
   persistentAllowAllowed?: boolean;
+  // Display-only evidence for the separate human re-adjudication option.
+  readjudication?: PluginReadjudicationEvidence;
   // Host-derived: the exact-approval store may record a decision for this request at all (an Always deny included). False for a one-shot request, which the record handler refuses with `one-shot-not-recordable`; the card then offers no remembered choice of that store.
   exactRecordAllowed?: boolean;
   // Canonical scope captured by the host before a remembered decision is shown.
@@ -223,7 +228,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule" | "hostTerminalAfterExternalContent" | "homeFolderRefused" | "requestingAgentTitle" | "readjudication"
 > & {
   // Host-only native execution proof; removed before renderer/audit payloads.
   readonly hostShellExecutionPlan?: import("./host-shell-execution-plan.js").HostShellExecutionPlan;
@@ -232,6 +237,7 @@ export type ApprovalRequestInput = Omit<
   readonly reviewerOutcome?: ReviewerDispatchOutcome;
   readonly reviewerApprovalBasis?: ReviewerApprovalBasis;
   readonly approvalRuleBasis?: ApprovalRuleBasis;
+  readonly readjudicationBasis?: PluginReadjudicationBasis;
   // Host-issued safe projection; structural lookalikes are rejected before IPC.
   readonly executionPlan?: HostShellExecutionPlanAuditProjection;
   readonly forceExplicit?: true;
@@ -486,6 +492,7 @@ interface PendingEntry {
   toolCategory?: ToolCategory;
   // Host-derived verdict shown by the renderer and enforced for recording.
   verdictAtApproval: RiskVerdict["level"];
+  readjudication?: PluginReadjudicationEvidence;
   source?: ToolSource;
   sourcePluginId?: string;
   approvalScope?: string;
@@ -983,10 +990,12 @@ export class ApprovalGate {
       reviewerOutcome,
       reviewerApprovalBasis,
       approvalRuleBasis,
+      readjudicationBasis,
+      readjudication: _requestedReadjudication,
       verifiedShellCommand,
       hostShellExecutionPlan,
       ...request
-    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown };
+    } = req as ApprovalRequestInput & { hostTerminalAfterExternalContent?: unknown; homeFolderRefused?: unknown; requestingAgentTitle?: unknown; readjudication?: unknown };
     if (toolApprovalWait !== undefined && !isIssuedToolApprovalWait(toolApprovalWait)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
@@ -1164,6 +1173,10 @@ export class ApprovalGate {
           ? captureApprovalWorkingDirectory(req.evaluationContext.executionCwd) : undefined)
       : undefined;
     const persistentAllowAllowed = canRememberRequest && workingDirectory !== undefined;
+    const readjudication = persistentAllowAllowed && verdictAtApproval === "high" &&
+      req.source === "plugin" && req.evaluationContext?.headless === false &&
+      !assessmentUnavailable && matchesPluginReadjudicationBasis(readjudicationBasis, req)
+      ? Object.freeze({ ...readjudicationBasis.evidence }) : undefined;
     const shellRuleCwd = req.evaluationContext?.executionCwd;
     // Ordinary shell cards may save a rule; forced one-shot cards cannot create remembered authority.
     const shellRuleSaveAllowed = hasShellRuleApprovalContract && !hasOneShotApprovalChoiceContract || floorSessionGrant !== undefined;
@@ -1184,6 +1197,7 @@ export class ApprovalGate {
       : builtShellRule;
     const fullReq: ApprovalRequest = {
       ...request,
+      ...(readjudication === undefined ? {} : { args: JSON.parse(exactCanonicalStringify(req.args)) }),
       ...(childProvenance === undefined ? {} : { requestingAgentTitle: maskSensitiveData(childProvenance.childTitle).masked.slice(0, 240) }),
       ...(hostTerminal?.afterExternalContent === true ? { hostTerminalAfterExternalContent: true as const } : {}),
       ...(isAveHomeConfigurationRefused(aveHome()) ? { homeFolderRefused: true as const } : {}),
@@ -1209,6 +1223,7 @@ export class ApprovalGate {
           ? ["allow-once", "deny-once"]
           : req.allowedChoices,
       persistentAllowAllowed,
+      ...(readjudication === undefined ? {} : { readjudication }),
       exactRecordAllowed: durableApprovalRecordAllowed,
       ...(shellRule === undefined ? {} : { shellRule }),
       persistentApprovalCwd: persistentAllowAllowed ? workingDirectory?.path : undefined,
@@ -1419,6 +1434,7 @@ export class ApprovalGate {
         allowedChoices: fullReq.allowedChoices,
         toolCategory: fullReq.toolCategory,
         verdictAtApproval,
+        ...(readjudication === undefined ? {} : { readjudication }),
         source: fullReq.source,
         sourcePluginId: fullReq.sourcePluginId,
         approvalScope: fullReq.approvalScope,
@@ -1922,6 +1938,7 @@ export class ApprovalGate {
     workingDirectoryIdentity: string | undefined;
     riskCeilingAtApproval: RiskLevel | undefined;
     verdictAtApproval: RiskVerdict["level"];
+    readjudication: PluginReadjudicationEvidence | undefined;
   } | null {
     const entry = this.pending.get(requestId);
     if (!entry || !isRemoteControllerBoundToSession(entry.remoteControllerAuthority, entry.sessionId)) return null;
@@ -1949,6 +1966,7 @@ export class ApprovalGate {
       workingDirectoryIdentity: entry.workingDirectoryIdentity,
       riskCeilingAtApproval: entry.riskCeilingAtApproval,
       verdictAtApproval: entry.verdictAtApproval,
+      readjudication: entry.readjudication,
     };
   }
 
