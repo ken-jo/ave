@@ -62,4 +62,14 @@ describe("incremental per-spec evidence", () => {
     expect(snapshot.specs[1].tests[0].annotations).toEqual([{ type: "skip", description: "Live model opt-in is absent" }]);
     expect(snapshot.errors).toEqual(["Worker cleanup did not finish"]);
   });
+
+  it("remains incomplete after the final test ends when runner shutdown is interrupted", () => {
+    const { reporter, tests, read } = setup();
+    for (const test of tests) reporter.onTestEnd(test, result("passed"));
+    // Worker shutdown can hang after every test ends, without reaching onEnd.
+    const snapshot = read();
+    expect(snapshot.status).toBe("running");
+    expect(snapshot.completedTests).toBe(snapshot.selectedTests);
+    expect(snapshot.complete).toBe(false);
+  });
 });
