@@ -56,6 +56,9 @@ flowchart TD
   MC -->|"사용자에게 카드 요청"| ASK
   RV -->|"재요청 뒤 high · 오류 · 3연속 / 턴 20회 거부 뒤"| ASK
   ASK -->|"승인 (내부 스킬·훅 카드 포함)"| LIVE{"응답·실행 직전 본인 계정·세션·권한 유효?"}
+  ASK -->|"사람: MEDIUM 재판정 · 동일 입력 기억"| EA{"정적 경로 미선언 HIGH · 호스트 근거 · EA 적격?"}
+  EA -->|"예: 선택한 범위에 동일 입력 저장"| LIVE
+  EA -->|"아니오: 실행·저장 거부"| DENY
   LIVE -->|예| ALLOW
   LIVE -->|아니오| DENY
   ASK -->|"거절 · 부재 중 자동 스킵(옵션)"| DENY
@@ -76,6 +79,7 @@ flowchart TD
 ```
 
 Notes that are part of the contract:
+- **Human evidence re-adjudication (owner decision 2026-11-13, EA only):** an ordinary card may offer a separate, unselected human action to re-adjudicate the sole host-proven static `write path not declared` HIGH as MEDIUM and remember the exact input in the user's chosen scope. Missing host evidence, concrete danger, other HIGH reasons, forced floors, reviewer failures and plugin self-report cannot use EA. The raw classifier verdict remains unchanged. Evidence records use a dedicated exact-input matcher and never fall through to ordinary allow matching. Reuse enters the existing R remembered-allow edge without revalidating evidence; there is no EV node. Admission, deny/ask rules, live authority and effect permissions retain their existing checks and order. The [EA design](../design/evidence-readjudication-333.md) owns the evidence and card contract.
 - **Agent browser sites (owner decision 2026-11-08):** builtin tool use in agent-opened tabs is allowed. Opening a new HTTP(S) origin asks the human to allow that exact scheme, host and port for this session, allow any HTTP(S) site for this session, or deny. Dismissal denies. Grants are memory-only, never inherited by children, and end with the session. Top-level requests, including click/submit navigation, redirects and new windows, must pass site consent before loading. Non-web schemes and embedded credentials stay denied. Admission, deny rules, explicit asks, human-only exfiltration checks, sensitive input and irreversible-submit guards remain authoritative. User-owned tabs retain the shared surface choice; headless actions deny.
 - **Plugin read declarations (owner decision 2026-11-06, 읽기 선언만 허용):** the existing `K → readOnly MCP → allow` edge also covers plugin tools declaring `annotations.readOnlyHint: true`. This is the only authorable annotation. Missing/false hints or an operation policy with a write kind or a higher minimum risk retain ordinary approval. Admission, forced floors, rules and remembered decisions keep their existing order. Command/network evidence, path checks, active filesystem-containment requirements for command reads, egress/hostFetch, secret leases and actual host effects retain their own gates; the declaration grants no effect capability. App-written text and app-initiated write/shell/network actions retain their confirmation requirements.
 - **App approval delivery (bug correction, no tree change):** sidebar and floating-dock app calls use the focused main window’s unattributed approval lane, with plugin attribution. Each card stays with its recipient across focus changes; if that window leaves, the host re-sends it to the next main window and retires its old copy. No registered main-window surface means an action requiring a card is denied under Q. An iframe click supplies no user-gesture authority.

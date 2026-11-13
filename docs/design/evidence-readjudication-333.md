@@ -1,65 +1,58 @@
 # Evidence-carrying re-adjudication
 
-**Owner decision needed (2026-11-13).** Design only for [#333](https://github.com/ken-jo/ave/issues/333). The attached [permission decision tree](../architecture/permission-decision-tree.md) stays authoritative and unchanged. Decide the additions below before implementation.
+**Owner decision, 2026-11-13: “EA 만 채택”.** [#333](https://github.com/ken-jo/ave/issues/333) adopts human-only EA and rejects EV. The [permission decision tree](../architecture/permission-decision-tree.md) owns routing. Existing decisions and ordinary card choices stay unchanged unless the person explicitly selects EA.
 
-## Decision-tree delta
+## Exact tree delta
 
-At `4cd4afb63`, ordinary HIGH cards already support approval memory; the issue's blanket one-shot premise is stale ([gate](../../src/permissions/approval-gate.ts), [policy](../architecture/permission-policy-design.md#reviewer-failure)). Add an evidence-bound human disposition while preserving the classifier.
-
-Preserve all branches and order, including `T → H → F → U → R → K → Q → RV` and `MC → RR → RV`. R checks rules/memory; K selects tool kind; ASK is the normal card; LIVE checks account/session/authority; 질문† is forced approval. New nodes: EV/EA. Only this delta applies:
+Add only these edges beside ASK's existing approval response; every existing node, edge and order remains unchanged:
 
 ```mermaid
 flowchart LR
-  %% REPLACE R -->|allow| ALLOW with these two alternatives
-  R -->|ordinary allow| ALLOW
-  R -->|evidence record| EV{"EV: current?"}
-  EV -->|yes| LIVE
-  EV -->|no: ignore record| K
-  %% ADD alongside ASK's existing approve and deny responses
-  ASK -->|human: MEDIUM and remember| EA{"EA: eligible?"}
-  EA -->|yes: stage exact record| LIVE
-  EA -->|no: invalidate answer, refresh card| ASK
+  ASK -->|"사람: MEDIUM 재판정 · 동일 입력 기억"| EA{"정적 경로 미선언 HIGH · 호스트 근거 · EA 적격?"}
+  EA -->|"예: 선택한 범위에 동일 입력 저장"| LIVE
+  EA -->|"아니오: 실행·저장 거부"| DENY
 ```
 
-`EV` runs **inside R's remembered-allow lookup**, after deny/ask rules. Evidence records never fall through to ordinary matching. `EA` revalidates eligibility/evidence after the human's ordinary-card response. Eligible: a plugin invocation whose sole HIGH reason is host-tagged `write path not declared`, with verified artifact identity and active filesystem/process confinement of its exact worker/child. Known outside-directory targets, untrusted network destinations, destructive/exfiltration findings, reviewer failures, other HIGH reasons and missing provenance are ineligible. Actual effects retain their gates.
+EA validates the host-owned pending request and evidence when the person chooses re-adjudication. Only a plugin invocation whose sole HIGH reason is the host-proven static `write path not declared` is eligible. Missing evidence or provenance, known outside-directory targets, untrusted destinations, concrete destructive/exfiltration findings, other HIGH reasons, forced floors, one-shot requests, headless creation and reviewer failures are excluded. A displayed reason string or plugin claim cannot establish eligibility.
 
-Keep raw `max(rule, model)` HIGH. **MEDIUM enables only this exact remembered allow at R**; it never feeds RV or changes tool kind. No LOW. At `LIVE → ALLOW`, recheck authority/evidence/action, append required audit and atomically commit the staged record before handler entry. Failure denies without storing. Reuse retains LIVE/pre-effect guards. Model resubmission, parent authority, 질문†, headless and mode routes stay unchanged.
+Raw `max(rule, model)` remains HIGH. The human's MEDIUM disposition authorizes this invocation and an exact-input remembered allow at the existing R stage; it never feeds RV, changes tool kind or grants nested effects. LOW is out of scope. Existing local/owner-bound remote consent, live account/session/authority, audit and execution checks remain. Failed EA denies execution and storage; it never silently becomes Allow once.
 
 ## Approval card
 
-Use the existing host-owned card and verified local/owner-bound remote answer path. Show plugin/tool, exact input/project, HIGH reason, artifact/signer, containment dimensions and evidence status. Escape plugin text; no plugin-rendered controls.
+Use the existing host-owned normal card. Show tool/plugin, exact input and project, static HIGH reason, verified artifact identity and recorded signer metadata. Escape plugin text; plugin-rendered controls cannot grant consent.
 
 | Element | 한국어 | English |
 | --- | --- | --- |
-| Heading | 근거 부족으로 HIGH로 분류된 요청 | Request rated HIGH because evidence is missing |
-| Explanation | 호스트가 검증한 근거를 확인하세요. MEDIUM 재판정은 이 요청과 동일한 입력에만 적용되며, 실제 효과의 권한 검사는 계속됩니다. | Review host-verified evidence. A MEDIUM disposition applies only to this request and identical input; effect permissions still apply. |
-| Default approval | HIGH 유지 · 이번만 허용 | Keep HIGH · Allow once |
-| Explicit alternative | MEDIUM으로 재판정하고 동일 요청 기억 | Re-adjudicate as MEDIUM and remember this exact request |
-| Denial | 거절 | Deny |
+| Unselected option | MEDIUM으로 재판정 | Re-adjudicate as MEDIUM |
+| Explanation | 호스트가 검증한 근거는 이 입력에만 적용됩니다. 기억할 범위를 선택하세요. 실제 효과의 권한 검사는 계속됩니다. | Host-verified evidence supports this exact input. Choose how long to remember it; effect permissions still apply. |
+| Ordinary default | 이번만 허용 | Allow once |
+| Rejection | 거절 | Deny |
 
-The alternative is unselected; disable it with a host reason when ineligible. It approves this invocation and remembers MEDIUM for identical input, without wildcard/session/global scope. Dismissal denies; existing owner-away waiting and ordinary approval choices remain. Evidence changes invalidate the answer; refresh without silently substituting Allow once. Manage/revoke in existing approval memory UI.
+The option exists only when the host supplies eligible evidence. A person must select it explicitly; sentence suggestions, scope selection and model output never select it. It affects lasting allow only, using the existing session/project/global scope choices. Allow once and Deny keep their ordinary meaning. Reset the option when the request changes. Dismissal denies; owner-away waiting is unchanged. A save failure, including a refused home, leaves no remembered authority or successful ordinary response. Existing approval memory UI manages revocation.
 
-## Evidence and record verification
+## Host evidence and exact memory
 
-**Artifact identity, required:** current-generation `verifyPluginIntegrity` in [runtime](../../src/plugins/runtime/index.ts), backed by `verifyInstallReceipt`. Require marketplace origin and a host-trusted production signer; revalidate receipt/loaded artifact identity at consent/reuse. Historical `plugin_integrity_verified` rows, key names or first-party labels are insufficient. Reject absent/rejected/dev evidence. Provenance is not safety.
+**Static provenance:** retain the classifier's matched rule through host-private issued evidence. Display wording can replace the reason, so comparing renderer text is insufficient. The gate binds evidence to the pending tool, plugin, final input, trust origin and cwd; the renderer sends only its choice and request identity.
 
-**Containment, required:** resolve the exact host-owned worker/child generation's live [sandbox capability](../../src/permissions/sandbox-capability.ts) and policy/root identity; require filesystem and process confinement. Shell settings, manifest claims and filesystem-only proof are insufficient. Network, secrets and nested effects retain their gates.
+**Artifact identity:** use the load-time `verifyPluginIntegrity` result retained for the invocation's pinned runtime instance in [runtime](../../src/plugins/runtime/index.ts). Require signed-marketplace receipt provenance, artifact hash and nonblank signer metadata. `verifyInstallReceipt` checks covered payload against the host-trusted stored receipt; it does not reauthorize a signer against current keys or refresh signature verification. Historical audit rows, labels and plugin claims are insufficient; unsigned/dev/missing evidence is absent. An admitted pinned generation may finish after replacement under existing lifecycle/effect guards. Provenance does not prove safety.
 
-**Effect history, advisory:** [shadow logs](../../src/permissions/reviewer/risk-shadow-log.ts) are non-HMAC and cannot authorize or populate trusted history; initially show trusted history as unavailable. Future host-mediated observations must disclose coverage. `hostObservable:false`, empty history and past non-mutation never prove future read-only behavior.
+**Containment:** require host-verified filesystem and process confinement of the exact worker/child at creation. A shell setting or manifest claim cannot establish this. Sandbox, network, secret and nested-effect gates remain separate from the remembered approval.
 
-Extend exact approval records with raw/effective verdict, human decision and host evidence digest/reference. Bind tool/source, canonical arguments, cwd and trust origin additionally to plugin/descriptor generation, artifact hash, trusted signer, static reason, confinement policy/root identity and permission-policy version. The host builds/compares these; the renderer submits only choice/request identity. Hashing plugin claims does not verify them.
+**Effect history:** [shadow logs](../../src/permissions/reviewer/risk-shadow-log.ts) are non-HMAC and cannot authorize or populate trusted history. Empty history, `hostObservable:false` and past non-mutation never prove future behavior. No trusted-history promotion is needed.
 
-Reload/restart, artifact/descriptor/policy change, signer revocation, integrity rejection, confinement loss or revocation invalidates the record and restores ordinary routing. Revalidate after waits/before effects. Never migrate existing approvals automatically. Use the protected approval store; audit raw HIGH, human MEDIUM, scope, digest and invalidation without secrets.
+Store EA records in a dedicated namespace with historical HIGH, effective MEDIUM and the host evidence reference. Match exact tool/plugin ID, canonical input and trust origin within the user's chosen session/project/global scope and applicable cwd identity. Tool-wide cache keys cannot broaden input coverage. Evidence records never fall through to ordinary allow matching; old approvals are not migrated.
 
-## Security and precedent
+**No EV:** reuse reads that dedicated exact record through R, without rechecking artifact/generation, evidence, confinement or rule risk. Scope expiry and explicit revocation end the grant. Evidence changes do not automatically revoke it. Existing admission, deny/ask rules, forced floors, live authority and effect checks still run; they are independent enforcement, not evidence revalidation.
 
-An attacker-controlled plugin can misdescribe calls, behave benignly during observation and cause repeated prompts. It cannot supply evidence, set MEDIUM, answer its card, widen this grant, inherit another principal's consent or authorize nested effects through this record. Admission, deny rules, forced floors, egress and secret leases remain enforced. Signed malicious code can still damage permitted resources after approval. Compromised hosts/renderers and sandbox escapes remain outside this guarantee.
+## Security and comparison
 
-**VS Code comparison (official docs checked 2026-11-13).** Per the owner's ambiguity rule, follow [tool approvals](https://code.visualstudio.com/docs/agents/run/approvals#tool-approval): inspect tool inputs, default to Allow Once, offer explicit broader scopes only where supported, honor manual-only policy, and let users manage/reset approvals. [Sandbox documentation](https://code.visualstudio.com/docs/agents/run/agent-sandboxing#understand-the-sandbox-boundary) separates approval from containment. Apply those properties here; evidence-bound risk re-adjudication is an Ave proposal, not a documented VS Code feature.
+An attacker-controlled plugin can misdescribe calls, behave benignly during observation and induce repeated prompts. It cannot supply host evidence, select MEDIUM, answer its card, widen the exact record or inherit another principal's consent. Signed malicious code can still damage permitted resources after approval. Remembered consent intentionally outlives its original evidence; the user controls scope and revocation. Compromised hosts/renderers and sandbox escapes remain outside this guarantee.
 
-## Smallest implementation
+The owner's reference is [VS Code tool approvals](https://code.visualstudio.com/docs/agents/run/approvals#tool-approval), checked 2026-11-13: inspect inputs, choose one-use or supported broader approval scopes, and manage/reset saved approvals. Approval and sandboxing are separate layers. The owner adopts that scope model here with no reuse evidence revalidation; EA risk re-adjudication is an Ave feature, not a claim that the reference implements it.
 
-1. Obtain the owner decision on EA/EV, MEDIUM-only scope and mandatory evidence; then update the canonical tree and owning policy together.
-2. Add host evidence eligibility/identity and exact-record invalidation using existing runtime, capability and approval stores. Leave shadow-history promotion out.
-3. Extend the shared pending-card/IPC schema, validators, preload, guarded handler, renderer and ko/en catalogs together. Preserve sender, live-authority and audit checks.
-4. Test valid consent/reuse/revocation, every missing evidence input, tampering, reload/sandbox-loss races, explicit ask/deny/質問†/headless parity and nested-effect isolation; run the changed card's background E2E, relevant lock suites and typecheck. No product implementation in this PR.
+## Smallest implementation and validation
+
+1. Preserve classifier results; retain host-only static provenance and pinned-generation receipt evidence for EA creation.
+2. Add the card opt-in, shared payload, guarded save and dedicated exact-memory namespace. Reuse needs no evidence provider, new settings or EV stage.
+3. Cover eligible creation and every exclusion, forged input, exact scope/revocation, save failures, unchanged ordinary choices and reuse after evidence changes. Freeze existing decision fixtures before implementation and require zero differences.
+4. Run targeted permission/card tests, typecheck, unused-code/lint gates, packaging/script lock suites and the approval-card background E2E. No skips, retries, raised timeouts or default-value fallbacks.

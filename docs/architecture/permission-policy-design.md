@@ -2936,8 +2936,20 @@ captures the canonical directory before displaying its scope and recording its
 frozen identity. The UI does not create a wildcard rule. Recording
 requires fresh user intent and a live host approval snapshot. On subsequent
 calls, hard denies and per-invocation approval requirements still run before the
-remembered-decision lookup. Both memory consumers compare current deterministic
-risk with the stored reuse ceiling, separately from conservative display risk.
+remembered-decision lookup. Both ordinary memory consumers compare current
+deterministic risk with the stored reuse ceiling, separately from conservative
+display risk.
+
+The owner-approved [human evidence re-adjudication](../design/evidence-readjudication-333.md)
+is a separate opt-in on the normal card for the sole host-proven static
+`write path not declared` HIGH. EA records the human's MEDIUM disposition for
+exact input in the chosen session, project or global scope. Missing host
+evidence, concrete danger, other HIGH reasons, forced floors and reviewer
+failures are ineligible; plugin self-report grants nothing. EA records cannot
+match ordinary allow memory. Their dedicated exact-input lookup uses the
+existing R stage without live evidence or risk revalidation on reuse. The raw
+classifier verdict, ordinary choices, deny/ask precedence, live authority and
+actual effect permissions are unchanged. There is no EV stage.
 
 ## Plugin And MCP Tools
 
