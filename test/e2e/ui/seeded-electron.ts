@@ -335,8 +335,9 @@ export async function quitElectron(app: ElectronApplication): Promise<void> {
       if (diagnostics) {
         console.error("Native quit snapshot", { resources: process.getActiveResourcesInfo(), windows: BaseWindow.getAllWindows().map(window => ({ id: window.id, bounds: window.getBounds(), closeListeners: window.listenerCount("close") })) });
         for (const window of BaseWindow.getAllWindows()) {
-          window.on("close", event => console.error("Native window close", { id: window.id, prevented: event.defaultPrevented }));
-          window.on("closed", () => console.error("Native window closed", { id: window.id }));
+          const id = window.id;
+          window.on("close", event => console.error("Native window close", { id, prevented: event.defaultPrevented }));
+          window.on("closed", () => console.error("Native window closed", { id }));
         }
         runtimeApp.on("before-quit", event => console.error("Native before quit", { prevented: event.defaultPrevented }));
         process.once("exit", code => console.error("Native process exit", { code, resources: process.getActiveResourcesInfo() }));
