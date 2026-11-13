@@ -31,7 +31,7 @@ import { JsonRpcPendingRequests } from "../lib/json-rpc-pending-request.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "./codex-user-runtime.js";
 import { verifyCodexExecutableArtifact } from "./codex-executable-artifact.js";
 import { parseCodexPlanUsage } from "./subscription-plan-usage-parsers.js";
-import type { SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
+import type { SubscriptionPlanUsageUpdate } from "../shared/subscription-plan-usage.js";
 
 const MAX_MODEL_COUNT = 100;
 const MAX_PLAN_TYPE_LENGTH = 80;
@@ -47,7 +47,7 @@ export class CodexAppServerError extends Error {
 }
 
 export interface CodexAppServerClientOptions {
-  onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void;
+  onPlanUsage?: (windows: readonly SubscriptionPlanUsageUpdate[]) => void;
   // Opens a trusted login URL with the runtime-owned completion signal.
   openAuthorizationUrl: OpenOAuthLogin;
   // Existing isolated directory owned by the host integration's runtime.
@@ -199,6 +199,11 @@ export class CodexAppServerClient {
   // Returns the in-memory projection only; it never causes token refresh.
   getCachedStatus(): CodexSubscriptionStatus {
     return this.currentStatus();
+  }
+
+  /** Advance telemetry freshness after another runtime reports an account update. */
+  invalidatePlanUsageReads(): void {
+    this.planUsageGeneration += 1;
   }
 
   async startBrowserLogin(): Promise<CodexSubscriptionStatus> {
@@ -564,7 +569,7 @@ export class CodexAppServerClient {
   private handleNotification(method: string, params: unknown): void {
     const payload = isCodexJsonRecord(params) ? params : null;
     if (method === "account/rateLimits/updated") {
-      if (this.accountStatus.connection === "connected") this.publishPlanUsage(params);
+      if (this.accountStatus.connection === "connected") this.publishPlanUsage(params, false);
       return;
     }
     if (method === "account/updated" && payload) {
@@ -598,9 +603,12 @@ export class CodexAppServerClient {
     }
   }
 
-  private publishPlanUsage(value: unknown): void {
+  private publishPlanUsage(value: unknown, clearWhenEmpty = true): void {
     try {
-      this.onPlanUsage?.(parseCodexPlanUsage(value));
+      const updates = parseCodexPlanUsage(value);
+      // A newer incremental report supersedes account reads that were already in flight.
+      if (!clearWhenEmpty && updates.length > 0) this.invalidatePlanUsageReads();
+      if (clearWhenEmpty || updates.length > 0) this.onPlanUsage?.(updates);
     } catch {
       // Quota observers cannot destabilize authentication or transport.
     }
@@ -628,7 +636,7 @@ export class CodexAppServerClient {
   }
 
   private invalidatePlanUsage(): void {
-    this.planUsageGeneration += 1;
+    this.invalidatePlanUsageReads();
     this.publishPlanUsage(null);
   }
 

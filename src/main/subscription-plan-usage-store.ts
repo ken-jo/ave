@@ -1,19 +1,29 @@
 import type { SubscriptionRuntimeId } from "../shared/subscription-runtime.js";
-import { normalizePlanUsageWindow, type SubscriptionPlanUsage, type SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
+import { isPlanUsageWindowId, normalizePlanUsageWindow, type SubscriptionPlanUsage, type SubscriptionPlanUsageUpdate } from "../shared/subscription-plan-usage.js";
 
 /** Ephemeral account gauges. Restart and authentication changes discard the samples. */
 export class SubscriptionPlanUsageStore {
   private readonly samples = new Map<SubscriptionRuntimeId, SubscriptionPlanUsage>();
 
-  update(provider: SubscriptionRuntimeId, windows: readonly SubscriptionPlanUsageWindow[], observedAt = Date.now()): boolean {
+  update(provider: SubscriptionRuntimeId, windows: readonly SubscriptionPlanUsageUpdate[], observedAt = Date.now()): boolean {
     if (!Number.isSafeInteger(observedAt) || observedAt <= 0) return false;
     const previous = this.samples.get(provider);
     if (previous && previous.observedAt > observedAt) return false;
-    if (windows.length === 0) return this.samples.delete(provider);
+    // Empty updates explicitly clear the provider; keep the watermark until its account lifecycle is reset.
+    if (windows.length === 0) {
+      this.samples.set(provider, { observedAt, windows: [] });
+      return (previous?.windows.length ?? 0) > 0;
+    }
     const rows = new Map(previous?.windows.map((row) => [row.id, row]));
     let changed = false;
     let visibleChange = false;
     for (const input of windows.slice(0, 32)) {
+      if ("removed" in input) {
+        if (input.removed !== true || !isPlanUsageWindowId(input.id)) continue;
+        visibleChange = rows.delete(input.id) || visibleChange;
+        changed = true;
+        continue;
+      }
       const row = normalizePlanUsageWindow(input);
       if (!row || (row.resetsAt !== undefined && row.resetsAt <= observedAt)) continue;
       const before = rows.get(row.id);

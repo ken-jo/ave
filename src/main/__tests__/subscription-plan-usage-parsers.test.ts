@@ -7,10 +7,19 @@ import { ClaudeCodeStream } from "../claude-code-stream.js";
 const records = JSON.parse(readFileSync(new URL("./fixtures/subscription-plan-usage-events.json", import.meta.url), "utf8"));
 
 describe("reported subscription quota projection", () => {
+  it("distinguishes explicit slot withdrawals from omitted snapshot fields", () => {
+    expect(parseCodexPlanUsage({ rateLimits: { primary: null } })).toEqual([{ id: "codex:primary", removed: true }]);
+    expect(parseCodexPlanUsage({ rateLimits: { secondary: null } })).toEqual([{ id: "codex:secondary", removed: true }]);
+    expect(parseCodexPlanUsage({ rateLimits: { primary: { usedPercent: 10 } } }))
+      .toEqual([{ id: "codex:primary", usedPercent: 10 }]);
+    expect(parseCodexPlanUsage({ rateLimitsByLimitId: { "invalid id": { secondary: null } } })).toEqual([]);
+  });
   it("replays account quota buckets without duplicating the compatibility bucket", () => {
     expect(parseCodexPlanUsage(records.accountRead)).toEqual([
       { id: "codex:primary", usedPercent: 25, resetsAt: 1730947200000, windowDurationMins: 15 },
+      { id: "codex:secondary", removed: true },
       { id: "codex_other:primary", usedPercent: 42, resetsAt: 1730950800000, windowDurationMins: 60 },
+      { id: "codex_other:secondary", removed: true },
     ]);
     expect(parseCodexPlanUsage(records.accountUpdated.params)).toEqual([
       { id: "codex:primary", usedPercent: 31, resetsAt: 1730948100000, windowDurationMins: 15 },

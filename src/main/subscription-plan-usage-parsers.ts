@@ -1,20 +1,24 @@
 import { isRecord } from "../shared/is-record.js";
-import { normalizePlanUsageWindow, type SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
+import { normalizePlanUsageWindow, type SubscriptionPlanUsageUpdate, type SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
 
 const MAX_PLAN_USAGE_WINDOWS = 32;
 
 /** Account RPC results and notifications share the same numeric quota projection. */
-export function parseCodexPlanUsage(value: unknown): readonly SubscriptionPlanUsageWindow[] {
+export function parseCodexPlanUsage(value: unknown): readonly SubscriptionPlanUsageUpdate[] {
   if (!isRecord(value)) return [];
   const buckets = isRecord(value.rateLimitsByLimitId)
     ? Object.entries(value.rateLimitsByLimitId).slice(0, MAX_PLAN_USAGE_WINDOWS)
     : isRecord(value.rateLimits) ? [[value.rateLimits.limitId ?? "codex", value.rateLimits]] : [];
-  const windows: SubscriptionPlanUsageWindow[] = [];
+  const windows: SubscriptionPlanUsageUpdate[] = [];
   for (const [key, bucket] of buckets) {
     if (!isRecord(bucket) || typeof key !== "string" || !/^[a-zA-Z0-9_.:-]{1,80}$/.test(key)) continue;
     for (const kind of ["primary", "secondary"] as const) {
       if (windows.length >= MAX_PLAN_USAGE_WINDOWS) return windows;
       const raw = bucket[kind];
+      if (raw === null) {
+        windows.push({ id: `${key}:${kind}`, removed: true });
+        continue;
+      }
       if (!isRecord(raw)) continue;
       const window = normalizePlanUsageWindow({
         id: `${key}:${kind}`,

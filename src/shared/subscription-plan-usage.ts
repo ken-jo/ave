@@ -6,6 +6,13 @@ export interface SubscriptionPlanUsageWindow {
   readonly windowDurationMins?: number;
 }
 
+/** Runtime updates may explicitly withdraw one window; removal markers never enter renderer status. */
+export type SubscriptionPlanUsageUpdate = SubscriptionPlanUsageWindow | { readonly id: string; readonly removed: true };
+
+export function isPlanUsageWindowId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-zA-Z0-9_.:-]{1,100}$/.test(value);
+}
+
 export interface SubscriptionPlanUsage {
   readonly observedAt: number;
   readonly windows: readonly (SubscriptionPlanUsageWindow & {
@@ -19,7 +26,7 @@ export interface SubscriptionPlanUsage {
 export function normalizePlanUsageWindow(value: unknown): SubscriptionPlanUsageWindow | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const row = value as Record<string, unknown>;
-  if (typeof row.id !== "string" || !/^[a-zA-Z0-9_.:-]{1,100}$/.test(row.id)) return undefined;
+  if (!isPlanUsageWindowId(row.id)) return undefined;
   const usedPercent = row.usedPercent;
   const resetsAt = row.resetsAt;
   const windowDurationMins = row.windowDurationMins;

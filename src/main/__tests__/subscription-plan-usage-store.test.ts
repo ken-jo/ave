@@ -1,11 +1,73 @@
 import { describe, expect, it } from "vitest";
 import { SubscriptionPlanUsageStore } from "../subscription-plan-usage-store.js";
 import { normalizePlanUsageWindow } from "../../shared/subscription-plan-usage.js";
+import { parseCodexPlanUsage } from "../subscription-plan-usage-parsers.js";
 
 const START = 1_900_000_000_000;
 const RESET = START + 3_600_000;
 
 describe("subscription quota samples", () => {
+  it("withdraws a null snapshot window and its warning without erasing unrelated reports", () => {
+    const store = new SubscriptionPlanUsageStore();
+    const window = (usedPercent: number) => ({ usedPercent, resetsAt: RESET / 1_000 });
+    store.update("codex", parseCodexPlanUsage({ rateLimitsByLimitId: {
+      codex: { primary: window(20), secondary: window(20) },
+      other: { primary: window(3) },
+    } }), START);
+    store.update("codex", parseCodexPlanUsage({ rateLimits: {
+      limitId: "codex", secondary: window(40),
+    } }), START + 60_000);
+    expect(store.get("codex", START + 60_000)?.windows.find((row) => row.id === "codex:primary")?.usedPercent).toBe(20);
+    expect(store.get("codex", START + 60_000)?.windows.find((row) => row.id === "codex:secondary")?.projectedLimitAt)
+      .toBe(START + 240_000);
+    store.update("codex", parseCodexPlanUsage({ rateLimits: {
+      limitId: "codex", primary: window(21), secondary: null,
+    } }), START + 120_000);
+    const rows = store.get("codex", START + 120_000)?.windows;
+    expect(rows?.find((row) => row.id === "codex:secondary")).toBeUndefined();
+    expect(rows?.find((row) => row.id === "codex:primary")?.usedPercent).toBe(21);
+    expect(rows?.find((row) => row.id === "other:primary")?.usedPercent).toBe(3);
+    store.update("codex", parseCodexPlanUsage({ rateLimits: {
+      limitId: "codex", secondary: window(50),
+    } }), START + 180_000);
+    expect(store.get("codex", START + 180_000)?.windows.find((row) => row.id === "codex:secondary")?.projectedLimitAt)
+      .toBeUndefined();
+  });
+
+  it("keeps withdrawal ordering when every window in the snapshot is null", () => {
+    const store = new SubscriptionPlanUsageStore();
+    store.update("codex", [{ id: "codex:primary", usedPercent: 20, resetsAt: RESET }], START);
+    store.update("codex", parseCodexPlanUsage({ rateLimits: {
+      limitId: "codex", primary: null, secondary: null,
+    } }), START + 120_000);
+    expect(store.get("codex", START + 120_000)).toBeUndefined();
+    expect(store.update("codex", [{ id: "codex:primary", usedPercent: 30, resetsAt: RESET }], START + 60_000)).toBe(false);
+    expect(store.get("codex", START + 120_000)).toBeUndefined();
+  });
+
+  it("retains the observation watermark after an explicit provider clear", () => {
+    const store = new SubscriptionPlanUsageStore();
+    store.update("codex", [{ id: "codex:primary", usedPercent: 20 }], START);
+    expect(store.update("codex", [], START + 120_000)).toBe(true);
+    expect(store.update("codex", [{ id: "codex:primary", usedPercent: 30 }], START + 60_000)).toBe(false);
+    expect(store.get("codex", START + 120_000)).toBeUndefined();
+  });
+
+  it("removes only the named window and ignores obsolete or invalid withdrawals", () => {
+    const store = new SubscriptionPlanUsageStore();
+    store.update("codex", [
+      { id: "codex:primary", usedPercent: 20, resetsAt: RESET },
+      { id: "codex:secondary", usedPercent: 30, resetsAt: RESET },
+    ], START + 120_000);
+    expect(store.update("codex", [{ id: "codex:primary", removed: true }], START + 60_000)).toBe(false);
+    expect(store.update("codex", [{ id: "invalid id", removed: true }], START + 180_000)).toBe(false);
+    expect(store.update("codex", [{ id: "codex:primary", removed: true }], START + 180_000)).toBe(true);
+    expect(store.get("codex", START + 180_000)?.windows).toEqual([
+      { id: "codex:secondary", usedPercent: 30, resetsAt: RESET, observedAt: START + 120_000 },
+    ]);
+    expect(store.update("codex", [{ id: "codex:primary", removed: true }], START + 240_000)).toBe(false);
+  });
+
   it("projects only after two increasing reports in the same reset window", () => {
     const store = new SubscriptionPlanUsageStore();
     store.update("codex", [{ id: "codex:primary", usedPercent: 20, resetsAt: RESET }], START);

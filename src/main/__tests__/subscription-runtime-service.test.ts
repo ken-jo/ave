@@ -101,6 +101,16 @@ it("projects account quota updates through cached status and clears them at sign
     expect((await service.getStatus("codex", { allowCached: true })).planUsage?.windows[0])
       .toMatchObject({ usedPercent: 40, projectedLimitAt: start + 240_000 });
     expect(announcements).toEqual(["codex", "codex"]);
+    publish([{ id: "codex:secondary", usedPercent: 20, resetsAt: start + 3_600_000 }]);
+    clock.mockReturnValue(start + 120_000);
+    publish([{ id: "codex:secondary", usedPercent: 40, resetsAt: start + 3_600_000 }]);
+    expect((await service.getStatus("codex", { allowCached: true })).planUsage?.windows
+      .find((row) => row.id === "codex:secondary")?.projectedLimitAt).toBeDefined();
+    publish([{ id: "codex:secondary", removed: true }]);
+    const remaining = (await service.getStatus("codex", { allowCached: true })).planUsage?.windows;
+    expect(remaining?.find((row) => row.id === "codex:secondary")).toBeUndefined();
+    expect(remaining?.find((row) => row.id === "codex:primary")?.usedPercent).toBe(40);
+    expect(remaining?.some((row) => "removed" in row)).toBe(false);
     publish([]);
     expect((await service.getStatus("codex", { allowCached: true })).planUsage).toBeUndefined();
   } finally {
@@ -112,6 +122,7 @@ it("projects account quota updates through cached status and clears them at sign
 
 function fakeCodexClient(): CodexAppServerClient {
   return {
+    invalidatePlanUsageReads: vi.fn(),
     getStatus: vi.fn(async () => CODEX_CONNECTED),
     getCachedStatus: vi.fn(() => CODEX_CONNECTED),
     listModels: vi.fn(async () => ({

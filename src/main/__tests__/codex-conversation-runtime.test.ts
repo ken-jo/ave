@@ -421,6 +421,11 @@ describe("CodexConversationRuntime", () => {
       { id: "codex:primary", usedPercent: 31, resetsAt: 1730948100000, windowDurationMins: 15 },
     ]);
     expect(harness.runtime.isTurnActive()).toBe(false);
+    notify(harness.child, "account/rateLimits/updated", { rateLimits: { limitId: "codex", secondary: null } });
+    expect(onPlanUsage).toHaveBeenLastCalledWith([{ id: "codex:secondary", removed: true }]);
+    onPlanUsage.mockClear();
+    notify(harness.child, "account/rateLimits/updated", { rateLimits: { limitId: "other" } });
+    expect(onPlanUsage).not.toHaveBeenCalled();
     onPlanUsage.mockImplementation(() => { throw new Error("Observer failed"); });
     expect(() => notify(harness.child, records.accountUpdated.method, records.accountUpdated.params)).not.toThrow();
   });

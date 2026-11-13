@@ -10,7 +10,7 @@ import {
   isAcpSubscriptionProviderId,
 } from "../shared/acp-subscription.js";
 import type { CodexSubscriptionStatus } from "../shared/codex-subscription.js";
-import type { SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
+import type { SubscriptionPlanUsageUpdate, SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
 import { SubscriptionPlanUsageStore } from "./subscription-plan-usage-store.js";
 import {
   DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES,
@@ -1520,7 +1520,10 @@ export class SubscriptionRuntimeService {
           const runtime = this.createCodexConversationRuntime({
             ...this.codexTextRuntimePaths,
             onPlanUsage: (windows) => {
-              if (this.safetyEpochIsCurrent("codex", safetyEpoch)) this.recordPlanUsage("codex", windows);
+              if (this.safetyEpochIsCurrent("codex", safetyEpoch)) {
+                this.codexClient.invalidatePlanUsageReads();
+                this.recordPlanUsage("codex", windows);
+              }
             },
           });
           return await this.trackVerifiedSession(new CodexSubscriptionTextSession(
@@ -1651,7 +1654,7 @@ export class SubscriptionRuntimeService {
     });
   }
 
-  private recordPlanUsage(provider: SubscriptionRuntimeId, windows: readonly SubscriptionPlanUsageWindow[]): void {
+  private recordPlanUsage(provider: SubscriptionRuntimeId, windows: readonly SubscriptionPlanUsageUpdate[]): void {
     if (this.stopped || !this.planUsage.update(provider, windows)) return;
     this.invalidateCachedReads(provider);
     notifyStatusChanged(provider);

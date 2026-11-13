@@ -9,7 +9,9 @@ import {
   CodexAppServerClient,
   type CodexAppServerClientOptions,
 } from "../codex-app-server-client.js";
-import { CODEX_APP_SERVER_ARGV, CODEX_RPC_REQUEST_TIMEOUT_MS } from "../codex-conversation-runtime.js";
+import { CODEX_APP_SERVER_ARGV, CODEX_RPC_REQUEST_TIMEOUT_MS, type CodexConversationRuntime, type CodexConversationRuntimeOptions } from "../codex-conversation-runtime.js";
+import { SubscriptionRuntimeService, type AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
+import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace } from "../../__tests__/support/subscription-runtime-namespace.js";
 import { CodexUserRuntimeError, type CodexResolvedRuntime } from "../codex-user-runtime.js";
 import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
 import { createPrivateDirectory } from "../codex-executable-location.js";
@@ -235,6 +237,68 @@ describe("CodexAppServerClient", () => {
     expect(harness.client.getCachedStatus().connection).toBe("signed-out");
   });
 
+  it("does not restore a withdrawn window from an older in-flight quota read", async () => {
+    const requested = deferred<RpcRequest>();
+    const onPlanUsage = vi.fn();
+    const harness = await createHarness((request) => {
+      if (request.method === "account/read") return { account: { type: "chatgpt", planType: "plus" } };
+      if (request.method === "account/rateLimits/read") { requested.resolve(request); return DEFER_RESPONSE; }
+      return standardInitialize(request);
+    }, { onPlanUsage });
+    await expect(harness.client.getStatus()).resolves.toMatchObject({ connection: "connected" });
+    const quota = await requested.promise;
+    harness.server.stdout.write(`${JSON.stringify({ method: "account/rateLimits/updated", params: {
+      rateLimits: { limitId: "codex", secondary: null },
+    } })}\n`);
+    expect(onPlanUsage).toHaveBeenLastCalledWith([{ id: "codex:secondary", removed: true }]);
+    onPlanUsage.mockClear();
+    harness.server.stdout.write(`${JSON.stringify({ id: quota.id, result: {
+      rateLimits: { limitId: "codex", secondary: { usedPercent: 80 } },
+    } })}\n`);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(onPlanUsage).not.toHaveBeenCalled();
+  });
+
+  it("keeps conversation withdrawals when a separate account read replies late", async () => {
+    const requested = deferred<RpcRequest>();
+    let accountOptions: CodexAppServerClientOptions | undefined;
+    let conversationOptions: CodexConversationRuntimeOptions | undefined;
+    const harness = await createHarness((request) => {
+      if (request.method === "account/read") return { account: { type: "chatgpt", planType: "plus" } };
+      if (request.method === "account/rateLimits/read") { requested.resolve(request); return DEFER_RESPONSE; }
+      return standardInitialize(request);
+    }, { onPlanUsage: (updates) => accountOptions?.onPlanUsage?.(updates) });
+    const service = await SubscriptionRuntimeService.create(async () => undefined, {
+      namespace: createSubscriptionRuntimeNamespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
+      claudeCodeReleaseFetch: async () => { throw new Error("Unexpected release request"); },
+      acpRegistry: { stopAll: async () => {} } as unknown as AcpSubscriptionRuntimeRegistry,
+      createCodexAppServerClient: (options) => { accountOptions = options; return harness.client; },
+      createCodexConversationRuntime: (options) => {
+        conversationOptions = options;
+        return { verifyIsolation: async () => {}, stop: () => {} } as unknown as CodexConversationRuntime;
+      },
+    });
+    try {
+      await service.verify("codex");
+      const quota = await requested.promise;
+      await service.openTextSession({ kind: "subscription", provider: "codex" });
+      const accountReport = accountOptions?.onPlanUsage;
+      const conversationReport = conversationOptions?.onPlanUsage;
+      if (!accountReport || !conversationReport) throw new Error("Missing quota observers");
+      accountReport([{ id: "codex:primary", usedPercent: 20 }, { id: "codex:secondary", usedPercent: 20 }]);
+      conversationReport([{ id: "codex:secondary", removed: true }]);
+      harness.server.stdout.write(`${JSON.stringify({ id: quota.id, result: {
+        rateLimits: { limitId: "codex", secondary: { usedPercent: 80 } },
+      } })}\n`);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const rows = (await service.getCachedStatus("codex"))?.planUsage?.windows;
+      expect(rows?.find((row) => row.id === "codex:secondary")).toBeUndefined();
+      expect(rows?.find((row) => row.id === "codex:primary")?.usedPercent).toBe(20);
+    } finally {
+      await service.stop();
+    }
+  });
+
   it.each([null, "chatgpt"])("discards an old quota read after auth changes to %s", async (authMode) => {
     const quotaRequested = deferred<RpcRequest>();
     const onPlanUsage = vi.fn();
@@ -271,12 +335,19 @@ describe("CodexAppServerClient", () => {
     await expect(harness.client.getStatus()).resolves.toMatchObject({ connection: "connected" });
     expect(onPlanUsage).toHaveBeenCalledWith([
       { id: "codex:primary", usedPercent: 25, resetsAt: 1730947200000, windowDurationMins: 15 },
+      { id: "codex:secondary", removed: true },
       { id: "codex_other:primary", usedPercent: 42, resetsAt: 1730950800000, windowDurationMins: 60 },
+      { id: "codex_other:secondary", removed: true },
     ]);
     harness.server.stdout.write(`${JSON.stringify(records.accountUpdated)}\n`);
     expect(onPlanUsage).toHaveBeenLastCalledWith([
       { id: "codex:primary", usedPercent: 31, resetsAt: 1730948100000, windowDurationMins: 15 },
     ]);
+    onPlanUsage.mockClear();
+    harness.server.stdout.write(`${JSON.stringify({ method: "account/rateLimits/updated", params: {
+      rateLimits: { limitId: "other" },
+    } })}\n`);
+    expect(onPlanUsage).not.toHaveBeenCalled();
     onPlanUsage.mockImplementation(() => { throw new Error("Observer failed"); });
     await expect(harness.client.getStatus()).resolves.toMatchObject({ connection: "connected" });
   });
