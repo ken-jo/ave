@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "playwright";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import type { ElectronApplication } from "playwright";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { launchElectron, launchSeededElectron, quitElectron, teardownSeededElectron } from "../e2e/ui/seeded-electron.js";
@@ -13,7 +13,7 @@ vi.mock("playwright", () => ({ _electron: { launch: launcher } }));
 vi.mock("../e2e/ui/background-electron.js", () => ({ resolveE2eExecutable: () => undefined }));
 
 async function application(exitCode: number | null = null, closed = exitCode !== null) {
-  const child = Object.assign(new EventEmitter(), { exitCode, signalCode: null as NodeJS.Signals | null, kill: vi.fn() });
+  const child = Object.assign(new EventEmitter(), { exitCode, signalCode: null as string | null, kill: vi.fn() });
   const nativeApp = Object.assign(new EventEmitter(), { quit: vi.fn() });
   const quit = nativeApp.quit;
   const evaluate = vi.fn(async (operation: (module: { app: typeof nativeApp }) => void) => operation({ app: nativeApp }));
@@ -28,7 +28,7 @@ async function application(exitCode: number | null = null, closed = exitCode !==
 
 describe("native test application quit", () => {
   afterEach(() => vi.restoreAllMocks());
-  it("waits for native exit before closing automation over the dying inspector", async () => {
+  it("keeps the connection through cleanup and waits for native exit after releasing it", async () => {
     const runtime = await application();
     const quitting = quitElectron(runtime.app);
     await Promise.resolve();
@@ -36,30 +36,21 @@ describe("native test application quit", () => {
     expect(runtime.close).not.toHaveBeenCalled();
     expect(runtime.child.kill).not.toHaveBeenCalled();
     runtime.nativeApp.emit("will-quit");
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(runtime.close).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(runtime.close).toHaveBeenCalledOnce());
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(runtime.close).not.toHaveBeenCalled();
-    runtime.child.emit("close", 0, null);
     await quitting;
     expect(runtime.close).toHaveBeenCalledOnce();
   });
 
-  it("does not request a second quit after native cleanup but before process exit", async () => {
+  it("releases the debugger when native cleanup is done but exit still needs disconnection", async () => {
     const runtime = await application();
     runtime.quit.mockImplementation(() => runtime.nativeApp.emit("will-quit"));
     runtime.close.mockImplementation(async () => {
-      if (runtime.child.exitCode === null) throw new Error("A second native quit cannot complete during inspector teardown");
+      runtime.child.exitCode = 0;
+      runtime.child.emit("exit", 0, null);
     });
-    const quitting = quitElectron(runtime.app);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(runtime.close).not.toHaveBeenCalled();
-    runtime.child.exitCode = 0;
-    runtime.child.emit("exit", 0, null);
-    runtime.child.emit("close", 0, null);
-    await quitting;
+    await quitElectron(runtime.app);
     expect(runtime.close).toHaveBeenCalledOnce();
     expect(runtime.child.kill).not.toHaveBeenCalled();
   });
@@ -69,10 +60,9 @@ describe("native test application quit", () => {
     runtime.quit.mockImplementation(() => {
       runtime.child.exitCode = 0;
       runtime.child.emit("exit", 0, null);
-      runtime.child.emit("close", 0, null);
     });
     await quitElectron(runtime.app);
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("still requires native exit when the quit response transport closes", async () => {
@@ -84,9 +74,8 @@ describe("native test application quit", () => {
     expect(runtime.close).not.toHaveBeenCalled();
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
-    runtime.child.emit("close", 0, null);
     await quitting;
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("does not hold native exit behind a pending quit response", async () => {
@@ -95,9 +84,8 @@ describe("native test application quit", () => {
     const quitting = quitElectron(runtime.app);
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
-    runtime.child.emit("close", 0, null);
     await quitting;
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
   it("reports a child-process error without waiting for the quit response", async () => {
@@ -111,27 +99,43 @@ describe("native test application quit", () => {
     expect(runtime.close).not.toHaveBeenCalled();
   });
 
-  it("does not request quit again after the native process has exited", async () => {
+  it("does not reopen automation teardown after the native process has exited", async () => {
     const runtime = await application(0);
     await quitElectron(runtime.app);
     expect(runtime.evaluate).not.toHaveBeenCalled();
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
+  it("does not close automation for a process terminated by signal", async () => {
+    const runtime = await application();
+    runtime.child.signalCode = "SIGKILL";
+    await quitElectron(runtime.app);
+    expect(runtime.evaluate).not.toHaveBeenCalled();
+    expect(runtime.close).not.toHaveBeenCalled();
+    expect(runtime.child.kill).not.toHaveBeenCalled();
+  });
+
   it("accepts a process already closed by a spec after its automation implementation is disposed", async () => {
     const runtime = await application(0);
     runtime.process.mockImplementation(() => { throw new TypeError("Native implementation was disposed"); });
     await expect(quitElectron(runtime.app)).resolves.toBeUndefined();
     expect(runtime.process).toHaveBeenCalledOnce();
     expect(runtime.evaluate).not.toHaveBeenCalled();
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
     expect(runtime.child.kill).not.toHaveBeenCalled();
   });
+});
 
-  it("exposes the launched process and waits for its pipes when startup fails", async () => {
+describe("native fixture startup ownership", () => {
+  afterEach(() => vi.restoreAllMocks());
+  it("exposes a child-close receipt before startup readiness can fail", async () => {
     const runtime = await application();
     Object.assign(runtime.app, { firstWindow: vi.fn().mockRejectedValue(new Error("Window startup failed")) });
     launcher.mockResolvedValueOnce(runtime.app);
-    const onLaunched = vi.fn();
+    let closed = false;
+    let receipt: Promise<void> | undefined;
+    const onLaunched = vi.fn((app: ElectronApplication) => {
+      receipt = once(app.process(), "close").then(() => { closed = true; });
+    });
     const starting = launchSeededElectron({ historyRows: [], onLaunched });
     const rejected = expect(starting).rejects.toThrow("Window startup failed");
     await vi.waitFor(() => expect(runtime.quit).toHaveBeenCalledOnce());
@@ -139,11 +143,12 @@ describe("native test application quit", () => {
     runtime.nativeApp.emit("will-quit");
     runtime.child.exitCode = 0;
     runtime.child.emit("exit", 0, null);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(runtime.close).not.toHaveBeenCalled();
-    runtime.child.emit("close", 0, null);
     await rejected;
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
+    expect(closed).toBe(false);
+    runtime.child.emit("close", 0, null);
+    await receipt;
+    expect(closed).toBe(true);
   });
 });
 
@@ -171,7 +176,7 @@ describe("forced native fixture teardown", () => {
       expect(kill).toHaveBeenCalledWith(-pid, "SIGKILL");
     }
     expect(runtime.child.kill).not.toHaveBeenCalled();
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
   it("cleans a POSIX group whose root exited before its inherited pipes closed", async () => {
     const runtime = await application(0, false);
@@ -186,7 +191,7 @@ describe("forced native fixture teardown", () => {
     const tempHome = mkdtempSync(join(tmpdir(), "exited-runtime-home-"));
     await teardownSeededElectron({ app: runtime.app, page: {} as Page, userDataDir, tempHome, aveHome: join(tempHome, ".ave") }, { terminate: true });
     if (process.platform !== "win32") expect(kill).toHaveBeenCalledWith(-pid, "SIGKILL");
-    expect(runtime.close).toHaveBeenCalledOnce();
+    expect(runtime.close).not.toHaveBeenCalled();
   });
 
 });

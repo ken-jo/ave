@@ -19,6 +19,7 @@ export default class SpecResultsReporter implements Reporter {
   private readonly path: string;
   private startedAt = Date.now();
   private status: string = "collecting";
+  private ended = false;
   private shard: FullConfig["shard"] = null;
   private projects: Array<{ name: string; retries: number }> = [];
   private workers = 0;
@@ -32,6 +33,7 @@ export default class SpecResultsReporter implements Reporter {
   onBegin(config: FullConfig, suite: Suite): void {
     this.startedAt = Date.now();
     this.status = "running";
+    this.ended = false;
     this.shard = config.shard;
     this.projects = config.projects.map(project => ({ name: project.name, retries: project.retries }));
     this.workers = config.workers;
@@ -71,6 +73,7 @@ export default class SpecResultsReporter implements Reporter {
 
   onEnd(result: FullResult): void {
     this.status = result.status;
+    this.ended = true;
     this.write();
   }
 
@@ -100,7 +103,7 @@ export default class SpecResultsReporter implements Reporter {
       updatedAt: new Date().toISOString(),
       selectedTests: cases.length,
       completedTests: cases.filter(test => test.status !== "pending" && test.status !== "running").length,
-      complete: this.status !== "collecting" && cases.every(test => test.status !== "pending" && test.status !== "running"),
+      complete: this.ended && cases.every(test => test.status !== "pending" && test.status !== "running"),
       wallMs: Date.now() - this.startedAt,
       errors: this.errors,
       specs,

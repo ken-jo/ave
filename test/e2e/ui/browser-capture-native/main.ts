@@ -112,6 +112,19 @@ async function capture(options: BrowserScreenshotOptions, zoom = 1): Promise<Cap
   const lease = browserTabRegistry.acquireControl(tab, actor);
   const live: BrowserActionTab<WebContents> = { tab, signal: tab.actions.signal, leaseId: lease.id,
     approval: { tabId, origin, documentId: tab.documentId, controlGeneration: tab.controlGeneration } };
+  const pending = new Set<string>();
+  const sendCommand = guest.debugger.sendCommand.bind(guest.debugger);
+  const capturePage = guest.capturePage.bind(guest);
+  guest.debugger.sendCommand = async (method, parameters, sessionId) => {
+    pending.add(method);
+    try { return await sendCommand(method, parameters, sessionId); }
+    finally { pending.delete(method); }
+  };
+  guest.capturePage = async (rect, options) => {
+    pending.add("native-readback");
+    try { return await capturePage(rect, options); }
+    finally { pending.delete("native-readback"); }
+  };
   try {
     let ref: string | undefined;
     if (options.ref) {
@@ -142,7 +155,14 @@ async function capture(options: BrowserScreenshotOptions, zoom = 1): Promise<Cap
     return { data: image.data, dimensions, viewport: state.viewport, content: state.content, element: state.element,
       bandPixelsRGB: [200, 500, 700, 980, 1200, 1460, 1700, 1940, 2200].map((y) => pixel((dimensions.width * Math.min(dimensions.height - 1, y) + Math.min(dimensions.width - 1, 700)) * 4)),
       bottomPixelRGB: pixel(offset), elementPixelsRGB: [0.25, 0.5, 0.75].map((fraction) => pixel((dimensions.width * Math.floor(dimensions.height * fraction) + Math.floor(dimensions.width / 2)) * 4)), truncated: image.truncated };
-  } finally { browserTabRegistry.releaseControl(tabId, lease.id); }
+  } catch (error) {
+    console.error("Native capture failed", { pending: [...pending] });
+    throw error;
+  } finally {
+    guest.debugger.sendCommand = sendCommand;
+    guest.capturePage = capturePage;
+    browserTabRegistry.releaseControl(tabId, lease.id);
+  }
 }
 
 let origin = "";

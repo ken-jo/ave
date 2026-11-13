@@ -34,6 +34,8 @@ export interface NativeActionResult {
 
 export interface NativeBrowserFixture {
   readonly ready: boolean;
+  readonly targetId: number;
+  readonly pendingWindowStartup: number;
   run(action: NativeAction): Promise<NativeActionResult>;
   read(): Promise<NativeActionResult>;
   reset(): Promise<void>;

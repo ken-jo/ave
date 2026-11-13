@@ -3,6 +3,8 @@ import { createServer, type ServerResponse } from "node:http";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from "./seeded-electron.js";
 
+import { browserHostIdentity, browserTargetId, inspectBrowserTarget } from "./browser-native-target.js";
+
 test.use({ trace: "on" });
 for (const [width, height] of [[1243, 800], [1243, 600], [360, 800], [360, 600]]) {
   test(`floats real agent tabs below chrome at ${width}×${height}`, async () => {
@@ -149,15 +151,20 @@ for (const [width, height] of [[1243, 800], [1243, 600], [360, 800], [360, 600]]
         await expect(page.getByRole("tooltip")).toHaveCount(0);
       };
       const firstId = await cards.first().getAttribute("data-tab-id");
-      const guest = page.locator(`webview[data-tab-id="${firstId}"]`);
-      const guestId = await guest.evaluate((element) => (element as HTMLElement & { getWebContentsId(): number }).getWebContentsId());
+      if (!firstId) throw new Error("First agent tab is unavailable");
+      const nativeApp = ctx.app;
+      const host = await browserHostIdentity(nativeApp, page);
+      const guestId = await browserTargetId(nativeApp, `${baseUrl}/page-1`);
+      expect(await inspectBrowserTarget(nativeApp, host.windowId, `${baseUrl}/page-1`))
+        .toMatchObject({ id: guestId, type: "window", embedded: false, connected: true, attached: false });
       await toggle.click(); await expect(cards).toHaveCount(0);
       await closePanel(); await expect(cards).toHaveCount(1);
       await cards.getByRole("button", { name: /^(Open browser tab:|브라우저 탭 열기:)/ }).click();
       await expect(toggle).toHaveAttribute("aria-pressed", "true");
       await expect(page.getByTestId("chat-side-panel-url-viewer")).toContainText(`${baseUrl}/page-1`);
       await expect(cards).toHaveCount(0);
-      expect(await guest.evaluate((element) => (element as HTMLElement & { getWebContentsId(): number }).getWebContentsId())).toBe(guestId);
+      await expect.poll(() => inspectBrowserTarget(nativeApp, host.windowId, `${baseUrl}/page-1`))
+        .toMatchObject({ id: guestId, type: "window", embedded: false, connected: true, attached: true });
       await closePanel(); await expect(cards).toHaveCount(1);
       await cards.getByRole("button", { name: /^(Hide browser preview:|브라우저 미리보기 숨기기:)/ }).click();
       await expect(cards).toHaveCount(0);
@@ -166,7 +173,7 @@ for (const [width, height] of [[1243, 800], [1243, 600], [360, 800], [360, 600]]
       expect(firstHandle).toMatch(/^tab-\d+$/);
       await expect(cards).toHaveCount(0);
       await toggle.click();
-      await expect(page.locator(`[data-testid="web-surface-frame"][data-tab-id="${firstId}"]`)).toHaveCSS("opacity", "1");
+      await expect(page.locator(`[data-testid="chat-side-panel-browser-native"][data-tab-id="${firstId}"]`)).toBeVisible();
       await closePanel(); await expect(cards).toHaveCount(1);
       holdApproval = true;
       const requestApproval = releaseApproval; releaseApproval = undefined; requestApproval?.();
@@ -318,8 +325,8 @@ test("keeps the overflow chip above a native browser guest and opens its first h
       dataTransfer.setData("application/x-ave-surface", JSON.stringify({ tabId: id, kind: "browser", from: { side: "main" } }));
       element.dispatchEvent(new DragEvent("drop", { bubbles: true, dataTransfer, clientX: rect.right - 2, clientY: rect.top + rect.height / 2 }));
     }, movedId);
-    const mainGuest = page.locator(`[data-testid="web-surface-frame"][data-tab-id="${movedId}"]`);
-    await expect(mainGuest).toHaveCSS("opacity", "1");
+    const mainGuest = page.locator(`[data-testid="chat-side-panel-browser-native"][data-tab-id="${movedId}"]`);
+    await expect(mainGuest).toBeVisible();
     const overflow = page.getByTestId("agent-browser-pip-overflow");
     const assertHitArea = async () => {
       await expect(overflow).toBeVisible();
@@ -337,7 +344,7 @@ test("keeps the overflow chip above a native browser guest and opens its first h
     await setWindowSize(ctx.app, 1243, 720); await assertHitArea();
     await setWindowSize(ctx.app, 1243, 640); await assertHitArea();
     const shown = new Set(await page.getByTestId("agent-browser-pip-card").evaluateAll((cards) => cards.map((card) => card.getAttribute("data-tab-id"))));
-    const visible = new Set(await page.getByTestId("web-surface-frame").evaluateAll((frames) => frames.filter((frame) => {
+    const visible = new Set(await page.getByTestId("chat-side-panel-browser-native").evaluateAll((frames) => frames.filter((frame) => {
       const style = getComputedStyle(frame); return style.visibility === "visible" && style.opacity === "1";
     }).map((frame) => frame.getAttribute("data-tab-id"))));
     const hidden = created.sort((a, b) => b.page - a.page).filter((tab) => !shown.has(tab.id) && !visible.has(tab.id));
@@ -350,7 +357,7 @@ test("keeps the overflow chip above a native browser guest and opens its first h
     expect(point.x).toBeGreaterThan(underlying.x); expect(point.x).toBeLessThan(underlying.x + underlying.width);
     expect(point.y).toBeGreaterThan(underlying.y); expect(point.y).toBeLessThan(underlying.y + underlying.height);
     await page.mouse.click(point.x, point.y);
-    await expect(page.locator(`[data-testid="web-surface-frame"][data-tab-id="${expectedId}"]`)).toHaveCSS("opacity", "1");
+    await expect(page.locator(`[data-testid="chat-side-panel-browser-native"][data-tab-id="${expectedId}"]`)).toBeVisible();
   } finally {
     approving = false; finish?.();
     if (approvals) await approvals.catch(() => {});

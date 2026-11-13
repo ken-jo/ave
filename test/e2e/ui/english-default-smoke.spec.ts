@@ -11,7 +11,7 @@ test('boots in English: composer placeholder renders the English catalog', async
   const placeholder = await textarea.getAttribute('placeholder');
 
   // The shared hint does not distinguish locales; the settings heading proves English rendering.
-  expect(placeholder).toBe('typing, ⌘+V, /');
+  expect(placeholder).toBe(`typing, ${process.platform === 'darwin' ? '⌘' : 'Ctrl'}+V, /`);
 });
 
 test('boots in English: inline settings heading is "Settings"', async ({ app, mainWindow }) => {

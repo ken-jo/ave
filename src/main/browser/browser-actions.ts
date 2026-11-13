@@ -640,7 +640,8 @@ export async function hover(target: ActionTarget, ref: string, refs: BrowserRefT
     const id = await resolveRef(target, ref, refs);
     target.expectNode(id);
     const point = await centerOf(target.cdp, id);
-    await target.injectInput(() => target.pointerInput(() => target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point })));
+    await target.injectInput(() => target.pointerInput(() => withPageFocus(target,
+      () => target.cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", ...point }))));
   });
 }
 

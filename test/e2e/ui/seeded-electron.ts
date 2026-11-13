@@ -322,14 +322,14 @@ export async function launchSeededElectron(opts: {
   }
 }
 
-/** Keep the inspector through native cleanup and await process/pipe closure before releasing automation. */
+/** Keep the inspector connected through native cleanup, then release it so the process can exit. */
 export async function quitElectron(app: ElectronApplication): Promise<void> {
   const child = electronProcesses.get(app);
   if (!child) throw new Error("The native process was not registered at launch");
   const isRunning = child.exitCode === null && child.signalCode === null;
-  const exited = isRunning ? once(child, "exit").then(() => {}) : Promise.resolve();
-  const closed = closedElectronProcesses.has(child) ? Promise.resolve() : once(child, "close").then(() => {});
-  const stopped = Promise.all([exited, closed]);
+  // Native exit disconnects automation. Closing its context again can wait on disposed transports.
+  if (!isRunning) return;
+  const exited = once(child, "exit").then(() => {});
   if (isRunning) {
     const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
       runtimeApp.once("will-quit", () => resolve());
@@ -338,11 +338,10 @@ export async function quitElectron(app: ElectronApplication): Promise<void> {
       if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);
       return exited;
     });
-    await Promise.race([readyToExit, stopped]);
+    await Promise.race([readyToExit, exited]);
   }
-  // The launcher disconnects the inspector at native exit. Do not send a second quit while that transport is closing.
-  await stopped;
-  await app.close().catch(() => {});
+  if (child.exitCode === null && child.signalCode === null) await app.close();
+  await exited;
 }
 
 export async function teardownSeededElectron(
