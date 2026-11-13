@@ -320,28 +320,27 @@ export async function launchSeededElectron(opts: {
   }
 }
 
-/** Keep the inspector connected through native cleanup, then release it so the process can exit. */
+/** Keep the inspector through native cleanup and await process/pipe closure before releasing automation. */
 export async function quitElectron(app: ElectronApplication): Promise<void> {
   const child = electronProcesses.get(app);
   if (!child) throw new Error("The native process was not registered at launch");
   const isRunning = child.exitCode === null && child.signalCode === null;
   const exited = isRunning ? once(child, "exit").then(() => {}) : Promise.resolve();
+  const closed = closedElectronProcesses.has(child) ? Promise.resolve() : once(child, "close").then(() => {});
+  const stopped = Promise.all([exited, closed]);
   if (isRunning) {
-    const readyToExit = app.evaluate(({ app: runtimeApp }, diagnostics) => new Promise<void>((resolve) => {
-      runtimeApp.once("will-quit", () => {
-        if (diagnostics) console.log("Native will quit", process.getActiveResourcesInfo());
-        resolve();
-      });
+    const readyToExit = app.evaluate(({ app: runtimeApp }) => new Promise<void>((resolve) => {
+      runtimeApp.once("will-quit", resolve);
       runtimeApp.quit();
-    }), process.env.AVE_E2E_STARTUP_DIAGNOSTICS === "1").catch((error: unknown) => {
+    })).catch((error: unknown) => {
       if (child.exitCode === null && child.signalCode === null) console.warn("Native quit response failed before process exit", error);
       return exited;
     });
-    await Promise.race([readyToExit, exited]);
-    if (process.env.AVE_E2E_STARTUP_DIAGNOSTICS === "1") console.log("Native quit acknowledged", { pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode });
+    await Promise.race([readyToExit, stopped]);
   }
+  // The launcher disconnects the inspector at native exit. Do not send a second quit while that transport is closing.
+  await stopped;
   await app.close().catch(() => {});
-  await exited;
 }
 
 export async function teardownSeededElectron(
