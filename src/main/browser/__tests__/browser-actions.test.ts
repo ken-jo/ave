@@ -2554,6 +2554,26 @@ describe("approved navigation lifetime", () => {
   });
 });
 
+it.each([false, true])("scopes independent hover to page-local focus when parked=%s", async (parked) => {
+  const { cdp, guest, registry, actions, approve, layoutOps } = adapterFixture({ agent: true, independent: true });
+  registry.bindTab(1, { tabId: "user", webContentsId: guest.id, parked });
+  const nativeFocus = vi.fn();
+  Object.assign(guest, { focus: nativeFocus, isFocused: () => false });
+  const release = vi.spyOn(registry, "releaseFocus");
+  const live = await approve("browser_hover");
+  const ref = /\[ref=(e\d+)\]/.exec((await actions.snapshot(live, {})).text)?.[1];
+  if (!ref) throw new Error("Missing hover ref");
+  await actions.hover(live, ref);
+  expect(cdp.calls.filter(call => call.method === "Emulation.setFocusEmulationEnabled")).toEqual([
+    { method: "Emulation.setFocusEmulationEnabled", params: { enabled: true } },
+    { method: "Emulation.setFocusEmulationEnabled", params: { enabled: false } },
+  ]);
+  expect(cdp.inputs()).toEqual(["Input.dispatchMouseEvent"]);
+  expect(nativeFocus).not.toHaveBeenCalled();
+  expect(release).not.toHaveBeenCalled();
+  expect(layoutOps.filter(op => op === "capture-focus" || op === "restore-focus")).toEqual([]);
+});
+
 it("fails hover when the native pointer move is not reported", async () => {
   const { cdp, actions, approve, echo } = adapterFixture();
   cdp.nodes = page([ax("button", "button", "Hover", { backendDOMNodeId: 11 })]);

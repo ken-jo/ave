@@ -17,7 +17,7 @@ test.describe('compact recovery banners (#916 + #917)', () => {
       .catch(() => false);
     test.skip(!booted, 'Chat surface not booted.');
 
-    await sendStreamEvent(app, {
+    await sendStreamEvent(app, mainWindow, {
       type: 'compact_started',
       triggerSource: 'force-recover',
       estimatedBefore: 90_000,
@@ -33,7 +33,7 @@ test.describe('compact recovery banners (#916 + #917)', () => {
       )
       .toContain(t('app.compactForceRecoverValue'));
 
-    await sendStreamEvent(app, {
+    await sendStreamEvent(app, mainWindow, {
       type: 'compact_notice',
       removedMessages: 5,
       freedTokens: 4_000,
@@ -52,7 +52,7 @@ test.describe('compact recovery banners (#916 + #917)', () => {
       .catch(() => false);
     test.skip(!booted, 'Chat surface not booted.');
 
-    await sendStreamEvent(app, {
+    await sendStreamEvent(app, mainWindow, {
       type: 'compact_started',
       triggerSource: 'estimate',
       estimatedBefore: 90_000,
@@ -71,7 +71,7 @@ test.describe('compact recovery banners (#916 + #917)', () => {
     const text = (await statusBar.textContent()) ?? '';
     expect(text).not.toContain(t('app.compactForceRecoverValue'));
 
-    await sendStreamEvent(app, {
+    await sendStreamEvent(app, mainWindow, {
       type: 'compact_notice',
       removedMessages: 5,
       freedTokens: 4_000,
@@ -90,7 +90,7 @@ test.describe('compact recovery banners (#916 + #917)', () => {
       .catch(() => false);
     test.skip(!booted, 'Chat surface not booted.');
 
-    await sendStreamEvent(app, { type: 'recovery_exhausted' });
+    await sendStreamEvent(app, mainWindow, { type: 'recovery_exhausted' });
     const statusBar = mainWindow.locator('[data-testid="status-bar"]');
     await statusBar.waitFor({ state: 'visible', timeout: 8_000 });
 
@@ -114,7 +114,7 @@ test.describe('compact recovery banners (#916 + #917)', () => {
       .catch(() => false);
     test.skip(!booted, 'Chat surface not booted.');
 
-    await sendStreamEvent(app, { type: 'recovery_exhausted' });
+    await sendStreamEvent(app, mainWindow, { type: 'recovery_exhausted' });
     const statusBar = mainWindow.locator('[data-testid="status-bar"]');
     await statusBar.waitFor({ state: 'visible', timeout: 8_000 });
 
@@ -125,13 +125,13 @@ test.describe('compact recovery banners (#916 + #917)', () => {
       )
       .toContain(t('app.compactExhaustedValue'));
 
-    await sendStreamEvent(app, {
+    await sendStreamEvent(app, mainWindow, {
       type: 'compact_started',
       triggerSource: 'estimate',
       estimatedBefore: 90_000,
       preflight: 88_000,
     });
-    await sendStreamEvent(app, {
+    await sendStreamEvent(app, mainWindow, {
       type: 'compact_notice',
       removedMessages: 3,
       freedTokens: 2_000,

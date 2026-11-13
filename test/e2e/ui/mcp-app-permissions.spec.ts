@@ -51,7 +51,7 @@ test.beforeAll(async () => {
 test.setTimeout(180_000);
 
 test("MCP-App permissions: what the host can actually deliver, measured in a real <webview>", async ({}, testInfo) => {
-  const app = await launchElectron({ args: [MAIN_OUT, "--no-sandbox", `--probe-output=${testInfo.outputPath("permissions")}`], timeout: 30_000 });
+  const app = await launchElectron({ args: [MAIN_OUT, "--no-sandbox", "--use-fake-device-for-media-stream", `--probe-output=${testInfo.outputPath("permissions")}`], timeout: 30_000 });
 
   const lines: string[] = [];
   app.process().stdout?.on("data", (d: Buffer) => {
@@ -71,8 +71,8 @@ test("MCP-App permissions: what the host can actually deliver, measured in a rea
     return JSON.parse(line.slice(prefix.length));
   };
 
-  // Only NotAllowedError proves denial; missing or unreadable hardware can still mean permission was granted.
-  const mediaGranted = (o: string): boolean => o === "ok" || !/NotAllowedError/.test(o);
+  // Synthetic devices isolate runtime permission handling from hardware availability.
+  const mediaGranted = (o: string): boolean => o === "ok";
   const mediaDenied = (o: string): boolean => /NotAllowedError/.test(o);
   // Geolocation code 1 means denied; unavailable positioning does not.
   const geoGranted = (o: string): boolean => o === "ok" || (!/code=1/.test(o) && !/permissions policy/i.test(o));

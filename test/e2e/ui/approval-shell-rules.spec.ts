@@ -7,6 +7,7 @@ import { test, expect } from "./fixtures.js";
 import { openInlineSettings } from "./inline-settings.js";
 import { captureApprovalWorkingDirectory } from "../../../src/permissions/user-approval-store.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
 test.use({ seedViewFixturePlugin: false });
 
@@ -16,10 +17,8 @@ async function showShellRequest(app: ElectronApplication, page: Page, persistent
     if (!listed.current) throw new Error("Current conversation is unavailable");
     return listed.current;
   });
-  await app.evaluate(({ BrowserWindow }, input) => {
-    const window = BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible());
-    if (!window) throw new Error("Main window is unavailable");
-    window.webContents.send("ave:approval:request", {
+  const input = { sessionId, persistentAllowed };
+  await sendRendererEvent(app, page, "ave:approval:request", {
       id: `shell-rule-${input.persistentAllowed ? "ordinary" : "floor"}`,
       sessionId: input.sessionId,
       category: "tool",
@@ -46,8 +45,7 @@ async function showShellRequest(app: ElectronApplication, page: Page, persistent
         sessionAllowed: input.persistentAllowed,
         persistentAllowed: input.persistentAllowed,
       },
-    });
-  }, { sessionId, persistentAllowed });
+  });
 }
 
 for (const locale of ["en", "ko"] as const) {

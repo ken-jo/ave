@@ -41,7 +41,7 @@ function processExists(pid: number): boolean {
   }
 }
 
-/** Preview behavior owns this fixture; application shutdown is verified separately. */
+/** Native quit reaps the owned children before their absence is verified. */
 export async function teardownDocumentPreview(ctx: SeededElectronContext): Promise<void> {
   const child = ctx.app.process();
   const pid = child.pid;
@@ -49,7 +49,7 @@ export async function teardownDocumentPreview(ctx: SeededElectronContext): Promi
   let metricsError: unknown;
   try { ownedPids = await ctx.app.evaluate(({ app }) => app.getAppMetrics().map((metric) => metric.pid)); }
   catch (error) { metricsError = error; }
-  finally { await teardownSeededElectron(ctx, { terminate: true }); }
+  finally { await teardownSeededElectron(ctx); }
   expect(child.exitCode !== null || child.signalCode !== null, `Fixture ${String(pid)} did not exit`).toBe(true);
   for (const ownedPid of new Set([...(pid ? [pid] : []), ...ownedPids])) {
     await expect.poll(() => processExists(ownedPid), { message: `Owned fixture process ${ownedPid} remained alive` }).toBe(false);

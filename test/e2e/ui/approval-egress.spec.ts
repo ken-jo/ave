@@ -2,6 +2,7 @@ import type { ElectronApplication, Page } from "playwright";
 import { test, expect } from "./fixtures.js";
 import { makeTestT } from "./i18n.js";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
 test.use({ seedViewFixturePlugin: false });
 
@@ -11,10 +12,7 @@ async function showDomainRequest(app: ElectronApplication, page: Page) {
     if (!sessions.current) throw new Error("Current conversation is unavailable");
     return sessions.current;
   });
-  await app.evaluate(({ BrowserWindow }, sessionId) => {
-    const window = BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible());
-    if (!window) throw new Error("Main window is unavailable");
-    window.webContents.send("ave:approval:request", {
+  await sendRendererEvent(app, page, "ave:approval:request", {
       id: "sandbox-domain-request", sessionId, category: "tool", kind: "egress-host",
       toolName: "bash", toolCategory: "network", source: "builtin",
       args: { host: "downloads.example.com", port: 443 },
@@ -22,8 +20,7 @@ async function showDomainRequest(app: ElectronApplication, page: Page) {
       createdAt: Date.now(), requireExplicit: true,
       allowedChoices: ["allow-once", "deny-once"],
       egressHost: { host: "downloads.example.com", port: 443, network: "public", scopes: ["once", "session", "project", "always"] },
-    });
-  }, sessionId);
+  });
 }
 
 for (const locale of ["en", "ko"] as const) {

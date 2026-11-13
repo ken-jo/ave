@@ -135,7 +135,7 @@ test.describe('git marketplace automatic updates', () => {
       expect(status.packages.find((update) => update.key.kind === 'plugin')?.reasons).toEqual(['consent-changed']);
 
       const installed = await call<CatalogView>(mainWindow, 'listCatalog', { installedOnly: true });
-      expect(installed.entries.map((entry) => `${entry.key.kind}/${entry.key.name}@${JSON.stringify(entry.state)}`).sort()).toEqual([
+      expect(installed.entries.filter((entry) => entry.key.sourceId === SOURCE_ID).map((entry) => `${entry.key.kind}/${entry.key.name}@${JSON.stringify(entry.state)}`).sort()).toEqual([
         `plugin/harbor-panel@${JSON.stringify({ state: 'update', from: '1.0.0', to: '1.0.1' })}`,
         `skill/harbor-review@${JSON.stringify({ state: 'installed', version: '1.0.1' })}`,
       ]);

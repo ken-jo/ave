@@ -2,7 +2,7 @@ import { test, expect } from "./fixtures.js";
 import type { ElectronApplication, Page } from "playwright";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -29,6 +29,7 @@ if (process.platform !== "win32") test("the user takes over an approved host com
   const parentId = "e2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const sideId = "a2000000-bb11-4cc2-8dd3-eeeeeeeeeeee";
   const model = "terminal-host-model";
+  const shell = process.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
   // The post-sleep line is assembled by printf so its text never appears in the command itself.
   const agentCommand = "printf 'agent-period-marker\\n'; sleep 30; printf 'agent-%s\\n' after-sleep";
   const userSentinel = "user-period-secret-sentinel";
@@ -66,9 +67,14 @@ if (process.platform !== "win32") test("the user takes over an approved host com
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   let app: ElectronApplication | undefined;
   let page: Page | undefined;
+  let terminalStartup: unknown;
   try {
     mkdirSync(userData, { recursive: true });
     mkdirSync(workspace, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    // System login startup can install a command-not-found handler, which correctly refuses agent typing.
+    // This fixture owns a plain prompt; handler refusals have dedicated shell integration coverage.
+    if (shell === "/bin/bash") writeFileSync(join(home, ".bash_profile"), "unset -f command_not_found_handle\n");
     mkdirSync(featureHome, { recursive: true });
     mkdirSync(join(featureHome, "sessions"), { recursive: true });
     mkdirSync(join(featureHome, "side-chat", "sessions"), { recursive: true });
@@ -88,18 +94,18 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     }));
     writeFileSync(join(userData, "ave-secrets.json"), JSON.stringify(buildE2eSecrets()), { mode: 0o600 });
     writeFileSync(join(featureHome, "sessions", `${parentId}.jsonl`), `${JSON.stringify({ role: "user", content: "Parent conversation" })}\n`);
-    writeFileSync(join(featureHome, "sessions", `${parentId}.meta.json`), JSON.stringify({ title: "Parent conversation" }));
+    writeFileSync(join(featureHome, "sessions", `${parentId}.meta.json`), JSON.stringify({ title: "Parent conversation", projectRoot: realpathSync(workspace) }));
     writeFileSync(join(featureHome, "sessions", ".active-session.json"), JSON.stringify({
       mainActiveMode: "resume", mainActiveSessionId: parentId, updatedAt: new Date().toISOString(),
     }));
     writeFileSync(join(featureHome, "side-chat", "sessions", `${sideId}.jsonl`), `${JSON.stringify({ role: "user", content: "Terminal conversation" })}\n`);
     writeFileSync(join(featureHome, "side-chat", "sessions", `${sideId}.meta.json`), JSON.stringify({
-      sessionKind: "main", title: "Terminal conversation", paneTabId: tabId, originSessionId: parentId,
+      sessionKind: "main", title: "Terminal conversation", paneTabId: tabId, originSessionId: parentId, projectRoot: realpathSync(workspace),
     }));
     app = await launchElectron({
       args: [MAIN_ENTRY, `--user-data-dir=${userData}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({ HOME: home, USERPROFILE: home, AVE_HOME: featureHome, AVE_DEV: "1", AVE_E2E: "1", NODE_ENV: "test",
-        ...(existsSync("/bin/zsh") ? { SHELL: "/bin/zsh" } : {}) }),
+        SHELL: shell }),
     });
     const bootLog = testInfo.outputPath("isolated-app-boot.log");
     app.process().stdout?.on("data", (chunk) => appendFileSync(bootLog, chunk));
@@ -134,6 +140,22 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await expect(chip).toHaveText("Host · conversation permissions");
     await expect(chip).toHaveAttribute("title", /My terminal \(host\) · Agent access follows this conversation/);
     await expect(pane.locator(".xterm")).toBeVisible();
+    const terminalPage = page;
+    const terminalSession = await terminalPage.evaluate(async ({ tabId, cwd }) => {
+      const terminal = window.aveApi.terminal;
+      if (!terminal) throw new Error("Terminal API is unavailable");
+      const result = await terminal.spawn({ tabId, lane: "manual", purpose: "workspace", cwd });
+      if (!result.ok) throw new Error(`Terminal fixture replay failed: ${result.reason}`);
+      return result.session;
+    }, { tabId, cwd: realpathSync(workspace) });
+    terminalStartup = terminalSession;
+    await expect.poll(() => terminalPage.evaluate(async (session) => {
+      const terminal = window.aveApi.terminal;
+      if (!terminal) throw new Error("Terminal API is unavailable");
+      const result = await terminal.listBlocks(session);
+      if (!result.ok) throw new Error(`Terminal fixture state unavailable: ${result.error}`);
+      return { integrated: result.integrated, cwd: result.session.currentCwd };
+    }, terminalSession)).toEqual({ integrated: true, cwd: realpathSync(workspace) });
     await expect(observationFailed).toHaveCount(0);
 
     const composer = paneChat.getByTestId("composer-textarea");
@@ -178,7 +200,19 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await page.keyboard.press("Control+C");
     await page.keyboard.type(`echo ${userSentinel}`);
     await page.keyboard.press("Enter");
-    await expect.poll(async () => (await hostOutput()).split(userSentinel).length, { timeout: 10_000 }).toBeGreaterThanOrEqual(3);
+    // Read the shell-marked output: terminal wrapping may split the echoed command.
+    await expect.poll(() => terminalPage.evaluate(async ({ session, command }) => {
+      const terminal = window.aveApi.terminal;
+      if (!terminal) throw new Error("Terminal API is unavailable");
+      const blocks = await terminal.listBlocks(session);
+      if (!blocks.ok) throw new Error(`Terminal blocks unavailable: ${blocks.error}`);
+      const summary = blocks.blocks.find(block => block.command === command);
+      if (summary?.status !== "done") return null;
+      const result = await terminal.getBlock(session, summary.id);
+      if (!result.ok) throw new Error(`Terminal block unavailable: ${result.error}`);
+      return { output: result.block.output, exitCode: result.block.exitCode };
+    }, { session: terminalSession, command: `echo ${userSentinel}` }), { timeout: 10_000 })
+      .toEqual({ output: `${userSentinel}\n`, exitCode: 0 });
     await expect(pane.locator(".xterm-rows")).toContainText(userSentinel);
     await expect(observationFailed).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath("host-user-takeover.png") });
@@ -199,6 +233,12 @@ if (process.platform !== "win32") test("the user takes over an approved host com
     await expect(pane.getByTestId("terminal-agent-control")).toHaveCount(0);
     expect(appErrors).toEqual([]);
   } finally {
+    if (app && page && !page.isClosed()) {
+      const runtime = await app.evaluate(() => ({ platform: process.platform, shell: process.env.SHELL }));
+      const output = await page.evaluate(() => (window as unknown as { hostOutput?: string }).hostOutput);
+      await testInfo.attach("host-terminal-startup", { body: JSON.stringify({ runtime, session: terminalStartup, output }, null, 2), contentType: "application/json" });
+    }
+    await testInfo.attach("host-tool-results", { body: JSON.stringify(toolResults, null, 2), contentType: "application/json" });
     if (app && page) await teardownSeededElectron({ app, page, userDataDir: userData, tempHome: home, aveHome: featureHome }, { terminate: true });
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     rmSync(root, { recursive: true, force: true });

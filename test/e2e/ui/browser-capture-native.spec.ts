@@ -72,6 +72,42 @@ const test = createSharedElectronTest<ElectronApplication>({
   close,
 });
 
+test.beforeEach(async ({ sharedApp: app }) => {
+  const host = await app.firstWindow();
+  const slot = await host.locator("#slot").boundingBox();
+  if (!slot) throw new Error("Capture fixture slot is unavailable");
+  const target = await app.evaluate(() => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    return { windowId: fixture.windowId, url: fixture.pageUrl };
+  });
+  await expect.poll(() => inspectBrowserTarget(app, target.windowId, target.url))
+    .toMatchObject({ type: "window", embedded: false, connected: true, attached: true });
+  // Binding precedes asynchronous native presentation; measure restoration only after the page has its pane viewport.
+  await expect.poll(() => app.evaluate(async ({ webContents }) => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    const guest = webContents.fromId(fixture.targetId);
+    if (!guest) throw new Error("Capture fixture guest is unavailable");
+    return guest.executeJavaScript("({ width: innerWidth, height: innerHeight })");
+  })).toEqual({ width: Math.round(slot.width), height: Math.round(slot.height) });
+});
+
+async function setGuestZoom(app: ElectronApplication, zoom: number): Promise<void> {
+  const slot = await (await app.firstWindow()).locator("#slot").boundingBox();
+  if (!slot) throw new Error("Capture fixture slot is unavailable");
+  await app.evaluate(({ webContents }, factor) => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    const guest = webContents.fromId(fixture.targetId);
+    if (!guest) throw new Error("Capture fixture guest is unavailable");
+    guest.setZoomFactor(factor);
+  }, zoom);
+  await expect.poll(() => app.evaluate(async ({ webContents }) => {
+    const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
+    const guest = webContents.fromId(fixture.targetId);
+    if (!guest) throw new Error("Capture fixture guest is unavailable");
+    return guest.executeJavaScript("({ width: innerWidth, height: innerHeight, visibility: document.visibilityState })");
+  })).toEqual({ width: Math.round(slot.width / zoom), height: Math.round(slot.height / zoom), visibility: "visible" });
+}
+
 async function capture(app: ElectronApplication, options: BrowserScreenshotOptions, zoom = 1): Promise<CaptureNativeResult> {
   return app.evaluate(async (_main, input) => (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture.capture(input.options, input.zoom), { options, zoom });
 }
@@ -144,13 +180,13 @@ for (const zoom of [1, 1.25]) {
   test(`native full-page capture includes the tall page bottom pixels at zoom ${zoom}`, async ({ sharedApp: app }, testInfo) => {
     let before: Awaited<ReturnType<typeof layout>> | undefined;
     try {
-      await app.evaluate(async ({ webContents }, zoom) => {
+      await setGuestZoom(app, zoom);
+      await app.evaluate(async ({ webContents }) => {
         const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
       const guest = webContents.fromId(fixture.targetId);
         if (!guest) throw new Error("Capture fixture guest is unavailable");
-        guest.setZoomFactor(zoom);
         await guest.executeJavaScript("scrollTo(0,123)");
-      }, zoom);
+      });
       before = await layout(app);
       // Scroll positions quantize to rendered pixels at guest zoom.
       expect(Math.abs(before.guest.y - 123)).toBeLessThanOrEqual(1 / zoom);
@@ -173,13 +209,13 @@ for (const zoom of [1, 1.25]) {
 
 for (const zoom of [1, 1.25]) {
   test(`native ref capture keeps the element CSS size at zoom ${zoom}`, async ({ sharedApp: app }, testInfo) => {
-    await app.evaluate(async ({ webContents }, zoom) => {
+    await setGuestZoom(app, zoom);
+    await app.evaluate(async ({ webContents }) => {
       const fixture = (globalThis as unknown as { captureNativeFixture: CaptureNativeFixture }).captureNativeFixture;
       const guest = webContents.fromId(fixture.targetId);
       if (!guest) throw new Error("Capture fixture guest is unavailable");
-      guest.setZoomFactor(zoom);
       await guest.executeJavaScript("scrollTo(0,20)");
-    }, zoom);
+    });
     const result = await capture(app, { ref: "Drag source" }, zoom);
     await attachImage(testInfo, `ref-capture-${zoom}`, result);
     expect(result.element).toEqual({ width: 145, height: 56 });

@@ -7,10 +7,13 @@ import { openDocumentSessionFiles, openDocumentSessionFile, teardownDocumentPrev
 import { openInlineSettings } from "./inline-settings.js";
 import { makeTestT } from "./i18n.js";
 import { documentEngineImportSupported } from "../../../src/observation/libreoffice-engine.js";
+import { documentEngineReleaseFor } from "../../../src/main/document-engine-release-pins.js";
+import { offlineProcessConfinementImplemented } from "../../../src/permissions/offline-confinement-platforms.js";
 import { wordDocumentFixture, textDocumentFixture } from "../../../src/__tests__/support/structured-document-fixtures.js";
 
 // launchSeededElectron seeds the Korean UI.
 const t = makeTestT("ko");
+const INSTALLATION_SUPPORTED = offlineProcessConfinementImplemented() && documentEngineReleaseFor() !== null;
 
 test("optional engine absence keeps document outlines and an explicit installation surface", async () => {
   expect(builtMainExists()).toBe(true);
@@ -58,7 +61,12 @@ test("optional engine absence keeps document outlines and an explicit installati
     await expect(installation).toContainText("문서 엔진 설치");
     await expect(installation).toContainText("선택 사항");
     await expect(installation.getByTestId("document-engine-size")).toContainText("MiB");
-    await expect(installation.getByRole("button", { name: "다운로드 및 설치" })).toBeEnabled();
+    const install = installation.getByRole("button", { name: "다운로드 및 설치" });
+    if (INSTALLATION_SUPPORTED) await expect(install).toBeEnabled();
+    else {
+      await expect(install).toBeDisabled();
+      await expect(installation).toContainText(t("documentEngine.unsupported"));
+    }
     const screenshot = test.info().outputPath("document-engine-install.png");
     await installation.screenshot({ path: screenshot });
     await test.info().attach("document-engine-install", { path: screenshot, contentType: "image/png" });

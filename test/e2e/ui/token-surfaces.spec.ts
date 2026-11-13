@@ -242,7 +242,7 @@ test.describe("context-budget token surfaces", () => {
       await expect(ctx.page.getByText("180,000").first()).toBeVisible();
 
       const statusBar = ctx.page.locator('[data-testid="status-bar"]');
-      await sendRendererStreamEvent(ctx.app, {
+      await sendRendererStreamEvent(ctx.app, ctx.page, {
         type: "compact_started",
         triggerSource: "force-recover",
         estimatedBefore: 390_000,

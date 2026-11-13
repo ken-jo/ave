@@ -60,6 +60,41 @@ The `Native OS focus` workflow runs this project on a hosted Linux virtual
 display nightly and on manual dispatch. It preserves native select/navigation
 and popup focus coverage separately from the default suite.
 
+## Manual full background sweep
+
+The registered workflow also accepts an explicit background sweep. This manual
+selection skips its native-focus job and builds the app once for 32 independent
+background shards on the existing Linux runner. These background jobs are not
+part of required CI and never run on a push, pull request or schedule:
+
+```sh
+gh workflow run e2e-os-focus.yml --repo ken-jo/ave --ref <branch> -f background-sweep=true
+```
+
+Each shard retains the default single worker and within-file ordering, with
+retries disabled. Its test step has a ten-minute budget and its job a twelve-minute
+budget; actual duration and completeness must be checked from the first run.
+One shard failing does not cancel the others. Browser binaries use a fixed
+workspace cache path so the isolated HOME does not hide them. Build artifacts
+include both the app and generated native icons.
+
+Artifacts are named `background-ui-shard-<number>`. They include `spec-results.json`
+once collection starts, failure traces when available, and `wall-seconds.txt`
+when the test shell exits. Missing output indicates incomplete setup, execution
+or upload, rather than a successful empty shard. The report records its shard, commit,
+project, retry policy and selected cases, then atomically saves every case start
+and result grouped by spec. `pending` and `running` are incomplete cases, never
+skips or passes. Real skips retain their annotations, while runner errors stay
+separate from test failures. A live runner can upload the last saved snapshot
+after the test process is interrupted; recovery requires the upload step to run.
+Use `complete` and the per-case states to distinguish a finished run from a
+snapshot with pending or running cases.
+
+Request injection uses the tested page's native window through
+[`sendRendererEvent`](ui/renderer-events.ts). Native visibility and window-list
+order do not establish the intended recipient. Stream injection also requires
+the page explicitly, preserving its existing chat-group envelope.
+
 ## Shared application lifetime
 
 The native browser action and capture specs and the workspace find/preview cases
@@ -94,6 +129,12 @@ the `shared-app-pid` annotations show reuse within each worker. Keep the project
 
 Background mode is the default, and background runs may execute in parallel.
 Keep every `--output` directory inside the checkout.
+
+The host-terminal takeover fixture uses `/bin/zsh` on macOS and `/bin/bash` on
+Linux with an isolated home and startup profile. Distribution startup can ask
+interactive configuration questions before shell integration runs. A plain
+fixture prompt keeps authenticated shell markers, permission approval and
+takeover privacy assertions observable without answering those questions.
 
 Run `@os-focus` cases only with `AVE_E2E_OS_FOCUS=1`. Their tagged foreground
 fixtures present native windows. Rerun a focus-only failure alone before

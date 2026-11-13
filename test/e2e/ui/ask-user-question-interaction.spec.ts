@@ -1,5 +1,6 @@
 import type { ElectronApplication, Page } from "playwright";
 import { expect, test } from "./fixtures.js";
+import { sendRendererEvent } from "./renderer-events.js";
 
 type CapturedResponse = {
   requestId?: string;
@@ -25,7 +26,7 @@ async function installQuestionHarness(
 ): Promise<void> {
   const sessionId = await currentSessionId(page);
   await app.evaluate(
-    ({ BrowserWindow, ipcMain }, payload) => {
+    ({ ipcMain }, payload) => {
       const state = globalThis as unknown as { __askUserQuestionResponses: unknown[] };
       state.__askUserQuestionResponses = [];
       ipcMain.removeHandler("ave:ask-user-question:respond");
@@ -33,22 +34,15 @@ async function installQuestionHarness(
         state.__askUserQuestionResponses.push(response);
         return payload.responseResult;
       });
-
-      const win = BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
-      win?.webContents.send("ave:ask-user-question:request", {
-        id: payload.requestId,
-        sessionId: payload.sessionId,
-        createdAt: Date.now(),
-        questions: [
-          {
-            question: "진행 방식을 선택하세요.",
-            choices: ["계속 진행", "중단"],
-          },
-        ],
-      });
     },
     { requestId, responseResult, sessionId },
   );
+  await sendRendererEvent(app, page, "ave:ask-user-question:request", {
+    id: requestId,
+    sessionId,
+    createdAt: Date.now(),
+    questions: [{ question: "진행 방식을 선택하세요.", choices: ["계속 진행", "중단"] }],
+  });
 }
 
 async function capturedResponses(app: ElectronApplication): Promise<CapturedResponse[]> {
