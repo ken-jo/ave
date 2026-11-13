@@ -77,6 +77,8 @@ export function parseMcpRuntimeSpec(value: unknown): McpRuntimeSpec | undefined 
       out.allowPrivateNetworks = r.allowPrivateNetworks;
     }
     const oauth = parseMcpOAuthMetadata(r.oauth);
+    if (!oauth && r.oauth !== null && typeof r.oauth === "object" &&
+      ((r.oauth as Record<string, unknown>).grantType !== undefined || (r.oauth as Record<string, unknown>).dpop !== undefined)) return undefined;
     if (oauth) out.oauth = oauth;
     return out;
   }
@@ -87,6 +89,14 @@ function parseMcpOAuthMetadata(value: unknown): McpOAuthMetadata | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
   const out: McpOAuthMetadata = {};
+  if (raw.grantType !== undefined) {
+    if (raw.grantType !== "authorization-code" && raw.grantType !== "device-code") return undefined;
+    out.grantType = raw.grantType;
+  }
+  if (raw.dpop !== undefined) {
+    if (raw.dpop !== "required") return undefined;
+    out.dpop = raw.dpop;
+  }
   if (typeof raw.resource === "string" && raw.resource.trim()) {
     out.resource = raw.resource.trim();
   }

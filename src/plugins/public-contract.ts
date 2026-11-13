@@ -1072,6 +1072,10 @@ export type McpRuntimeSpec =
     };
 
 export interface McpOAuthMetadata {
+  /** Explicit grant selection; omission retains authorization code with PKCE. */
+  grantType?: "authorization-code" | "device-code";
+  /** Require sender-constrained tokens and reject unsupported servers. */
+  dpop?: "required";
   /** RFC 8707 resource identifier for the target MCP server. */
   resource?: string;
   /** RFC 9728 protected resource metadata URL, when advertised by the server/catalog. */

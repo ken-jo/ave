@@ -29,6 +29,7 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
     ctx.settingsService,
     {
       redirectCatchers: new AuthRedirectCatchers(),
+      deviceCodePresentation: ctx.host.desktop?.deviceCodePresentation,
       openAuthorizationUrl: async (url, options) => {
         await requireDesktopHost(ctx.host).openOAuthLogin(url, options);
       },

@@ -57,6 +57,13 @@ function getAuthStatusLabel(status: NonNullable<McpServerState["authStatus"]>): 
 function getAuthErrorMessage(code: McpAuthErrorCode | undefined): string {
   switch (code) {
     case "mcp-auth-required": return t("mcpTab.authRequiredMessage");
+    case "mcp-auth-device-unsupported": return t("mcpTab.authDeviceUnsupportedMessage");
+    case "mcp-auth-device-headless": return t("mcpTab.authDeviceHeadlessMessage");
+    case "mcp-auth-device-denied": return t("mcpTab.authDeviceDeniedMessage");
+    case "mcp-auth-device-expired": return t("mcpTab.authDeviceExpiredMessage");
+    case "mcp-auth-device-canceled": return t("mcpTab.authDeviceCanceledMessage");
+    case "mcp-auth-dpop-unsupported": return t("mcpTab.authDpopUnsupportedMessage");
+    case "mcp-auth-dpop-failed": return t("mcpTab.authDpopFailedMessage");
     case "mcp-auth-storage-unavailable": return t("mcpTab.authStorageUnavailableMessage");
     case "mcp-auth-storage-unreadable": return t("mcpTab.authStorageUnreadableMessage");
     case "mcp-auth-registration-unsupported": return t("mcpTab.authRegistrationUnsupportedMessage");

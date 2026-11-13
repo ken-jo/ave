@@ -30,3 +30,17 @@ describe("parseMcpRuntimeSpec OAuth metadata", () => {
     expect(oauthOf({ scopes: ["tools"], clientRegistration: "dynamic" })).toEqual({ scopes: ["tools"], clientRegistration: "dynamic" });
   });
 });
+
+describe("proof and device runtime options", () => {
+  it("preserves empty legacy metadata as the default code flow", () => {
+    expect(http({})).toEqual({ transport: "http", url: "https://mcp.example.test/mcp", auth: "oauth" });
+  });
+  it("retains explicit device and required proof settings", () => {
+    expect(oauthOf({ grantType: "device-code", dpop: "required" })).toEqual({ grantType: "device-code", dpop: "required" });
+  });
+  it.each([{ grantType: "other" }, { grantType: true }, { dpop: false }, { dpop: "optional" }])(
+    "rejects invalid security settings instead of dropping them: %j", oauth => {
+      expect(http(oauth)).toBeUndefined();
+    },
+  );
+});

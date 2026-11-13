@@ -539,11 +539,6 @@
     },
     {
       "type": "types",
-      "file": "src/mcp/types.ts",
-      "name": "McpOAuthConfig"
-    },
-    {
-      "type": "types",
       "file": "src/permissions/agent-action-approver.ts",
       "name": "AgentActionApprovalDiagnostic"
     },

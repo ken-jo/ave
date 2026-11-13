@@ -1,3 +1,5 @@
+import { authorizeDeviceCode, discoverDeviceAuthorizationMetadata, isOAuthConnectionTimeout, DeviceAuthorizationError, DEVICE_CODE_GRANT_TYPE, type DeviceCodePresentation } from "../auth/oauth-device-code.js";
+import { createDpopFetch, DpopKey, DpopError, negotiateDpop } from "../auth/oauth-dpop.js";
 import { createHash, randomBytes } from "node:crypto";
 import {
   discoverAuthorizationServerMetadata,
@@ -40,6 +42,7 @@ export interface McpOAuthDependencies {
   secrets: McpOAuthSecrets;
   redirectCatchers: AuthRedirectCatchers;
   openAuthorizationUrl: OpenOAuthLogin;
+  deviceCodePresentation?: DeviceCodePresentation;
 }
 
 export interface McpOAuthSessionOptions {
@@ -60,6 +63,8 @@ interface Discovery {
   resourceMetadataFromChallenge: boolean;
   metadata: AuthorizationServerMetadata;
   requireIssuerResponse: boolean;
+  deviceAuthorizationEndpoint?: string;
+  dpop: boolean;
   scope?: string;
 }
 
@@ -74,11 +79,20 @@ interface Credentials {
   tokens?: OAuthTokens;
   expiresAt?: number;
   grantedScope?: string;
+  /** Serialized only through encrypted host storage, never through IPC. */
+  dpopKey?: string;
 }
 
 const MESSAGES: Record<McpAuthErrorCode, string> = {
   "mcp-auth-required": "MCP authentication required",
   "mcp-auth-failed": "MCP authentication failed",
+  "mcp-auth-device-unsupported": "Device authorization is not supported",
+  "mcp-auth-device-headless": "Device sign-in needs a person. Authenticate in the desktop app before running unattended; do not retry here.",
+  "mcp-auth-device-denied": "Device authorization was denied",
+  "mcp-auth-device-expired": "Device authorization expired",
+  "mcp-auth-device-canceled": "Device authorization was canceled",
+  "mcp-auth-dpop-unsupported": "Proof-bound authorization is not supported",
+  "mcp-auth-dpop-failed": "Proof-bound authorization failed",
   "mcp-auth-storage-unavailable": "MCP authorization requires encrypted storage",
   "mcp-auth-storage-unreadable": "MCP authorization storage cannot be read",
   "mcp-auth-registration-unsupported": "MCP client registration mode is not supported",
@@ -107,8 +121,8 @@ class MetadataDocumentRejectedError extends Error {
 }
 
 /** Validate token responses before storing or attaching them. */
-function validateTokens(tokens: OAuthTokens): void {
-  if (tokens.token_type.toLowerCase() !== "bearer" || !/^[A-Za-z0-9._~+/-]+=*$/u.test(tokens.access_token) ||
+function validateTokens(tokens: OAuthTokens, dpop = false): void {
+  if (tokens.token_type.toLowerCase() !== (dpop ? "dpop" : "bearer") || !/^[A-Za-z0-9._~+/-]+=*$/u.test(tokens.access_token) ||
     (tokens.expires_in !== undefined && (!Number.isSafeInteger(tokens.expires_in) || tokens.expires_in < 0))) {
     throw new Error(AUTH_FAILED);
   }
@@ -161,6 +175,8 @@ export function tryMcpOAuthCredentialKey(config: McpHttpServerConfig): string | 
 
 /** Reject contradictory registration modes rather than silently selecting one. */
 function registrationBlock(config: McpHttpServerConfig): McpAuthErrorCode | undefined {
+  if ((config.oauth?.grantType !== undefined && !["authorization-code", "device-code"].includes(config.oauth.grantType)) ||
+    (config.oauth?.dpop !== undefined && config.oauth.dpop !== "required")) return "mcp-auth-failed";
   const mode = config.oauth?.clientRegistration;
   const clientId = config.oauth?.clientId;
   if (clientId !== undefined) {
@@ -188,6 +204,8 @@ export class McpOAuthSession {
   private status: McpAuthStatus = "required";
   private blocked?: McpAuthErrorCode;
   private credentials?: Credentials;
+  private dpopKey?: DpopKey;
+  private resourceProofFetch?: { key: DpopKey; token: string; fetch: typeof fetch };
   private challengeMetadataUrl?: URL;
   private challengeScope?: string;
   private pendingStepUp?: string;
@@ -276,12 +294,29 @@ export class McpOAuthSession {
         resourceMetadataFromChallenge: saved.resourceMetadataFromChallenge === true,
       };
       credentials.grantedScope = typeof saved.grantedScope === "string" ? saved.grantedScope : credentials.tokens?.scope;
+      if (saved.dpopKey !== undefined) {
+        if (typeof saved.dpopKey !== "string" || !await this.dependencies.secrets.canStoreEncrypted()) {
+          throw new McpOAuthError("mcp-auth-storage-unavailable");
+        }
+        this.dpopKey = await DpopKey.restore(saved.dpopKey);
+        credentials.dpopKey = saved.dpopKey;
+      }
+      if (credentials.tokens) validateTokens(credentials.tokens, Boolean(credentials.dpopKey));
+      if (this.config.oauth?.dpop === "required" && credentials.tokens && !credentials.dpopKey) {
+        throw new McpOAuthError("mcp-auth-dpop-failed");
+      }
+      if (superseded()) return;
       this.credentials = credentials;
       if (credentials.tokens) {
         this.status = "authenticated";
         this.challengeProbeAvailable = false;
       }
-    } catch {  }
+    } catch (error) {
+      this.dpopKey = undefined;
+      this.credentials = undefined;
+      this.blocked = error instanceof McpOAuthError ? error.code : "mcp-auth-storage-unreadable";
+      this.status = "error";
+    }
   }
 
   authenticate(): Promise<void> {
@@ -307,6 +342,8 @@ export class McpOAuthSession {
     this.controller.abort();
     this.dependencies.redirectCatchers.closeAllFor(this.ownerKey);
     this.credentials = undefined;
+    this.dpopKey = undefined;
+    this.resourceProofFetch = undefined;
     this.status = "required";
   }
 
@@ -371,7 +408,12 @@ export class McpOAuthSession {
       }
       return new Response(new Uint8Array(Buffer.concat(chunks)), { status: response.status, headers: response.headers });
     }, TOOL_TIMEOUT_POLICY.networkFetchDefaultMs, signal, "MCP authorization");
-    if (!outcome.ok) throw new Error(AUTH_FAILED);
+    if (!outcome.ok) {
+      if (outcome.reason === "ceiling" || isOAuthConnectionTimeout(outcome.error)) {
+        throw new DOMException("MCP authorization timed out", "TimeoutError");
+      }
+      throw new Error(AUTH_FAILED);
+    }
     this.assertActive();
     return outcome.value;
   }) as typeof fetch;
@@ -405,6 +447,7 @@ export class McpOAuthSession {
     if (secureUrl(issuer, allowPrivate).search) throw new Error(AUTH_FAILED);
     // Discovery parsing may strip extension fields, so retain this security capability before parsing.
     let requireIssuerResponse = false;
+    let extensions: Record<string, unknown> = {};
     const metadataFetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const response = await this.authFetch(input, init);
       if (response.ok) {
@@ -412,38 +455,54 @@ export class McpOAuthSession {
         if (raw.authorization_response_iss_parameter_supported !== undefined &&
           typeof raw.authorization_response_iss_parameter_supported !== "boolean") throw new Error(AUTH_FAILED);
         requireIssuerResponse = raw.authorization_response_iss_parameter_supported === true;
+        extensions = raw;
       }
       return response;
     }) as typeof fetch;
-    const metadata = await discoverAuthorizationServerMetadata(issuer, { fetchFn: metadataFetch, protocolVersion: MCP_PROTOCOL_VERSION });
-    if (!metadata || metadata.issuer !== issuer || !metadata.code_challenge_methods_supported?.includes("S256")) throw new Error(AUTH_FAILED);
-    secureUrl(metadata.authorization_endpoint, allowPrivate);
+    // Device-only servers need not advertise a browser authorization endpoint. The token and
+    // registration SDK helpers consume only their validated endpoints from this metadata.
+    const metadata = this.config.oauth?.grantType === "device-code"
+      ? await discoverDeviceAuthorizationMetadata(issuer, metadataFetch, { allowLoopback: allowPrivate, signal: this.controller.signal }) as unknown as AuthorizationServerMetadata
+      : await discoverAuthorizationServerMetadata(issuer, { fetchFn: metadataFetch, protocolVersion: MCP_PROTOCOL_VERSION });
+    if (!metadata || metadata.issuer !== issuer ||
+      (this.config.oauth?.grantType !== "device-code" && !metadata.code_challenge_methods_supported?.includes("S256"))) throw new Error(AUTH_FAILED);
+    let dpop: boolean;
+    try { dpop = negotiateDpop(extensions, this.config.oauth?.dpop === "required"); }
+    catch { throw new McpOAuthError("mcp-auth-dpop-unsupported"); }
+    if (this.credentials?.dpopKey && !dpop) throw new McpOAuthError("mcp-auth-dpop-unsupported");
+    const deviceEndpoint = extensions.device_authorization_endpoint;
+    if (deviceEndpoint !== undefined && typeof deviceEndpoint !== "string") throw new Error(AUTH_FAILED);
+    if (typeof deviceEndpoint === "string") secureUrl(deviceEndpoint, allowPrivate);
+    if (this.config.oauth?.grantType === "device-code" && !deviceEndpoint) throw new McpOAuthError("mcp-auth-device-unsupported");
+    if (this.config.oauth?.grantType !== "device-code") secureUrl(metadata.authorization_endpoint, allowPrivate);
     if (!metadata.token_endpoint) throw new Error(AUTH_FAILED);
     secureUrl(metadata.token_endpoint, allowPrivate);
     if (metadata.registration_endpoint) secureUrl(metadata.registration_endpoint, allowPrivate);
     if (this.credentials && (this.credentials.resource !== resourceId || this.credentials.issuer !== issuer)) {
       if (!interactive) throw new McpOAuthBindingChangedError();
       this.credentials = undefined;
+      this.dpopKey = undefined;
+      this.resourceProofFetch = undefined;
       const generation = ++this.credentialGeneration;
       await this.removeStoredCredentials(generation);
     }
     const selectedScope = this.challengeScope || this.config.oauth?.scopes?.join(" ") || resource.scopes_supported?.join(" ");
     const scope = scopeSet(selectedScope, this.credentials?.grantedScope).join(" ") || undefined;
     return { issuer, resource: resourceId, resourceMetadataUrl: resourceMetadataUrl?.href, resourceMetadataFromChallenge,
-      metadata, requireIssuerResponse, scope };
+      metadata, requireIssuerResponse, scope, deviceAuthorizationEndpoint: deviceEndpoint as string | undefined, dpop };
   }
 
   /** Reuse registration only if it covers this flow loopback redirect, whose port changes each time. */
-  private async selectClient(discovery: Discovery, redirectUri: string): Promise<{ client: OAuthClientInformationFull; source: ClientSource }> {
+  private async selectClient(discovery: Discovery, redirectUri?: string): Promise<{ client: OAuthClientInformationFull; source: ClientSource }> {
     const mode = this.config.oauth?.clientRegistration;
     // Prefer pre-registration, then advertised client metadata, then dynamic registration.
     const clientId = this.config.oauth?.clientId;
     if (clientId !== undefined) {
-      return { source: "preregistered", client: { client_id: clientId, redirect_uris: [redirectUri], token_endpoint_auth_method: "none" } };
+      return { source: "preregistered", client: { client_id: clientId, redirect_uris: redirectUri ? [redirectUri] : [], token_endpoint_auth_method: "none" } };
     }
-    const metadataDocumentUsable = discovery.metadata.client_id_metadata_document_supported === true &&
+    const metadataDocumentUsable = Boolean(redirectUri) && discovery.metadata.client_id_metadata_document_supported === true &&
       (!discovery.metadata.token_endpoint_auth_methods_supported || discovery.metadata.token_endpoint_auth_methods_supported.includes("none"));
-    if ((mode === "client-id-metadata-document" || (mode === undefined && !this.metadataDocumentRejected.has(discovery.issuer))) &&
+    if (redirectUri && (mode === "client-id-metadata-document" || (mode === undefined && !this.metadataDocumentRejected.has(discovery.issuer))) &&
       metadataDocumentUsable) {
       if (!isHttpsUrl(MCP_CLIENT_METADATA_DOCUMENT_URL)) throw new Error(AUTH_FAILED);
       return { source: "metadata-document", client: { client_id: MCP_CLIENT_METADATA_DOCUMENT_URL,
@@ -454,11 +513,12 @@ export class McpOAuthSession {
     const secretExpiresAt = stored?.client.client_secret_expires_at;
     const storedUsable = stored && stored.clientSource === "dynamic" && stored.issuer === discovery.issuer &&
       !(secretExpiresAt && secretExpiresAt <= Date.now() / 1000) &&
-      stored.client.redirect_uris.includes(redirectUri);
+      (redirectUri ? stored.client.redirect_uris.includes(redirectUri) : stored.client.grant_types?.includes(DEVICE_CODE_GRANT_TYPE));
     if (storedUsable) return { client: stored.client, source: stored.clientSource };
     if (!discovery.metadata.registration_endpoint) throw new McpOAuthError("mcp-auth-registration-unsupported");
-    const clientMetadata = { client_name: "Ave", redirect_uris: [redirectUri], application_type: "native",
-      grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" };
+    const clientMetadata = { client_name: "Ave", redirect_uris: redirectUri ? [redirectUri] : [], application_type: "native",
+      grant_types: [redirectUri ? "authorization_code" : DEVICE_CODE_GRANT_TYPE, "refresh_token"],
+      response_types: redirectUri ? ["code"] : [], token_endpoint_auth_method: "none" };
     const client = await registerClient(discovery.issuer, {
       metadata: discovery.metadata,
       clientMetadata,
@@ -473,7 +533,7 @@ export class McpOAuthSession {
         !discovery.metadata.token_endpoint_auth_methods_supported.includes(method)))) {
       throw new Error(AUTH_FAILED);
     }
-    if (!client.redirect_uris.includes(redirectUri)) throw new Error(AUTH_FAILED);
+    if (redirectUri && !client.redirect_uris.includes(redirectUri)) throw new Error(AUTH_FAILED);
     return { client, source: "dynamic" };
   }
 
@@ -504,7 +564,29 @@ export class McpOAuthSession {
       if (!await this.dependencies.secrets.canStoreEncrypted()) throw new McpOAuthError("mcp-auth-storage-unavailable");
       this.credentialGeneration += 1;
       this.status = "authenticating";
+      if (this.config.oauth?.grantType === "device-code" && !this.dependencies.deviceCodePresentation?.available()) {
+        throw new McpOAuthError("mcp-auth-device-headless");
+      }
+      const presentation = this.dependencies.deviceCodePresentation;
       const discovery = await this.discover(true);
+      const key = discovery.dpop ? (this.dpopKey ?? await DpopKey.create()) : undefined;
+      if (this.config.oauth?.grantType === "device-code") {
+        if (!presentation) throw new McpOAuthError("mcp-auth-device-headless");
+        ({ client, source } = await this.selectClient(discovery));
+        if (client.token_endpoint_auth_method && client.token_endpoint_auth_method !== "none") {
+          throw new McpOAuthError("mcp-auth-registration-unsupported");
+        }
+        const tokens = await authorizeDeviceCode({ metadata: {
+          device_authorization_endpoint: discovery.deviceAuthorizationEndpoint,
+          token_endpoint: discovery.metadata.token_endpoint,
+        }, clientId: client.client_id, scope: discovery.scope, resource: discovery.resource,
+          fetchFn: key ? this.tokenFetch(discovery, key) : this.authFetch,
+          presentation: presentation, signal: this.controller.signal,
+          allowLoopback: this.config.allowPrivateNetworks === true,
+        });
+        await this.completeAuthorization(discovery, client, source, tokens, key, stepUp);
+        return;
+      }
       const state = randomBytes(32).toString("base64url");
       // The loopback IP literal: RFC 8252 §7.3 obliges the server to accept any port for it.
       const catcher = await this.dependencies.redirectCatchers.open(this.ownerKey, { state, redirectHost: "127.0.0.1" });
@@ -515,6 +597,7 @@ export class McpOAuthSession {
       this.assertActive();
       const authorization = await startAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
         redirectUrl: catcher.redirectUri, state, scope: discovery.scope, resource: discovery.resource });
+      if (key) authorization.authorizationUrl.searchParams.set("dpop_jkt", await key.thumbprint());
       await ensurePublicHttpUrl(authorization.authorizationUrl.href, {
         allowPrivateNetworks: this.config.allowPrivateNetworks === true,
         allowLoopback: this.config.allowPrivateNetworks === true,
@@ -548,21 +631,9 @@ export class McpOAuthSession {
       if (!params.code || params.error !== undefined) throw new Error(AUTH_FAILED);
       const tokens = await exchangeAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
         authorizationCode: params.code, codeVerifier: authorization.codeVerifier, redirectUri: catcher.redirectUri,
-        resource: discovery.resource, fetchFn: this.authFetch });
+        resource: discovery.resource, fetchFn: key ? this.tokenFetch(discovery, key) : this.authFetch });
       this.assertActive();
-      // Refuse a malformed token response before it can displace a working grant.
-      validateTokens(tokens);
-      this.credentials = {
-        serverUrl: this.serverUrl, issuer: discovery.issuer, resource: discovery.resource,
-        resourceMetadataUrl: discovery.resourceMetadataUrl, resourceMetadataFromChallenge: discovery.resourceMetadataFromChallenge,
-        client, clientSource: source,
-        grantedScope: this.credentials?.issuer === discovery.issuer ? this.credentials.grantedScope : undefined,
-      };
-      if (stepUp) {
-        this.stepUpAttempts.set(stepUp, (this.stepUpAttempts.get(stepUp) ?? 0) + 1);
-        if (this.pendingStepUp === stepUp) this.pendingStepUp = undefined;
-      }
-      await this.acceptTokens(tokens, discovery.scope);
+      await this.completeAuthorization(discovery, client, source, tokens, key, stepUp);
     } catch (error) {
       if (this.controller.signal.aborted) this.status = "required";
       else if (this.credentials?.tokens && (previousStatus === "authenticated" || previousStatus === "insufficient_scope")) {
@@ -575,6 +646,17 @@ export class McpOAuthSession {
         this.status = previousStatus;
         throw new MetadataDocumentRejectedError(issuer);
       }
+      if (error instanceof DeviceAuthorizationError) {
+        const codes: Record<string, McpAuthErrorCode> = {
+          "oauth-device-headless": "mcp-auth-device-headless", "oauth-device-unsupported": "mcp-auth-device-unsupported",
+          "oauth-device-denied": "mcp-auth-device-denied", "oauth-device-expired": "mcp-auth-device-expired",
+          "oauth-device-canceled": "mcp-auth-device-canceled", "oauth-device-failed": "mcp-auth-failed",
+        };
+        const code = codes[error.code];
+        if (!code) throw new Error(AUTH_FAILED);
+        throw new McpOAuthError(code);
+      }
+      if (error instanceof DpopError) throw new McpOAuthError("mcp-auth-dpop-failed");
       if (error instanceof McpOAuthError && error.code !== "mcp-auth-required" && error.code !== "mcp-auth-failed") throw error;
       throw new Error(AUTH_FAILED);
     } finally {
@@ -582,10 +664,39 @@ export class McpOAuthSession {
     }
   }
 
+  /** A proof is attached only to the discovered token endpoint, never registration or metadata. */
+  private tokenFetch(discovery: Discovery, key: DpopKey): typeof fetch {
+    const signed = createDpopFetch(key, this.authFetch, "token");
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      return new URL(url).href === new URL(discovery.metadata.token_endpoint).href
+        ? signed(input, init) : this.authFetch(input, init);
+    }) as typeof fetch;
+  }
+
+  private async completeAuthorization(discovery: Discovery, client: OAuthClientInformationFull, source: ClientSource,
+    tokens: OAuthTokens, key: DpopKey | undefined, stepUp: string | undefined): Promise<void> {
+    this.assertActive();
+    validateTokens(tokens, Boolean(key));
+    this.credentials = {
+      serverUrl: this.serverUrl, issuer: discovery.issuer, resource: discovery.resource,
+      resourceMetadataUrl: discovery.resourceMetadataUrl, resourceMetadataFromChallenge: discovery.resourceMetadataFromChallenge,
+      client, clientSource: source, dpopKey: key?.serialize(),
+      grantedScope: this.credentials?.issuer === discovery.issuer ? this.credentials.grantedScope : undefined,
+    };
+    this.dpopKey = key;
+    this.resourceProofFetch = undefined;
+    if (stepUp) {
+      this.stepUpAttempts.set(stepUp, (this.stepUpAttempts.get(stepUp) ?? 0) + 1);
+      if (this.pendingStepUp === stepUp) this.pendingStepUp = undefined;
+    }
+    await this.acceptTokens(tokens, discovery.scope);
+  }
+
   private async acceptTokens(tokens: OAuthTokens, requestedScope?: string): Promise<void> {
     this.assertActive();
     if (!this.credentials) throw new Error(AUTH_FAILED);
-    validateTokens(tokens);
+    validateTokens(tokens, Boolean(this.credentials.dpopKey));
     const generation = ++this.credentialGeneration;
     this.challengeProbeAvailable = false;
     this.credentials.grantedScope = tokens.scope ?? requestedScope ?? this.credentials.grantedScope;
@@ -613,11 +724,13 @@ export class McpOAuthSession {
         return false;
       }
       const discovery = await this.discover();
+      if (discovery.dpop !== Boolean(this.dpopKey)) throw new McpOAuthBindingChangedError();
       if (!isCurrent()) return Boolean(this.credentials?.tokens);
       credentials.resourceMetadataUrl = discovery.resourceMetadataUrl;
       credentials.resourceMetadataFromChallenge = discovery.resourceMetadataFromChallenge;
       const tokens = await refreshAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: credentials.client,
-        refreshToken, resource: discovery.resource, fetchFn: this.authFetch });
+        refreshToken, resource: discovery.resource,
+        fetchFn: this.dpopKey ? this.tokenFetch(discovery, this.dpopKey) : this.authFetch });
       if (!isCurrent()) return Boolean(this.credentials?.tokens);
       const accepted = this.acceptTokens(tokens);
       acceptedGeneration = this.credentialGeneration;
@@ -676,10 +789,19 @@ export class McpOAuthSession {
         sentToken = Boolean(accessToken);
         const headers = new Headers(request.headers);
         headers.delete("authorization");
-        if (accessToken) headers.set("authorization", `Bearer ${accessToken}`);
+        headers.delete("dpop");
+        if (accessToken && !this.dpopKey) headers.set("authorization", `Bearer ${accessToken}`);
+        let resourceFetch = this.dependencies.networkFetch;
+        if (accessToken && this.dpopKey) {
+          if (this.resourceProofFetch?.key !== this.dpopKey || this.resourceProofFetch.token !== accessToken) {
+            this.resourceProofFetch = { key: this.dpopKey, token: accessToken,
+              fetch: createDpopFetch(this.dpopKey, this.dependencies.networkFetch, "resource", accessToken) };
+          }
+          resourceFetch = this.resourceProofFetch.fetch;
+        }
         let response: Response;
         try {
-          response = await this.dependencies.networkFetch(new Request(request.clone(), { headers, redirect: "error",
+          response = await resourceFetch(new Request(request.clone(), { headers, redirect: "error",
             signal: AbortSignal.any([this.controller.signal, request.signal]) }));
         } catch (error) {
           if (!accessToken && this.credentialGeneration === generation) this.challengeProbeAvailable = true;
