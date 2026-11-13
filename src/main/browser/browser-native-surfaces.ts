@@ -47,6 +47,7 @@ interface Surface {
   revision: number;
   sequence: number;
   bound: boolean;
+  connected: boolean;
   attached: boolean;
   retired: boolean;
   initialNavigation: boolean;
@@ -303,7 +304,7 @@ export class BrowserNativeSurfaceHost {
       entry = {
         key, owner, windowId, tabId: request.tabId, view, container: new View(), contents, contentsId: contents.id,
         abort: new AbortController(), ready: Promise.resolve(), unsubscribe: () => {}, epoch, revision: 0,
-        sequence: 0, bound: false, attached: false, retired: false, initialNavigation: true, favicon: null, viewport: { width: 1024, height: 768 }, placement: null,
+        sequence: 0, bound: false, connected: false, attached: false, retired: false, initialNavigation: true, favicon: null, viewport: { width: 1024, height: 768 }, placement: null,
       };
       this.surfaces.set(key, entry);
       this.observeOwner(owner);
@@ -322,10 +323,13 @@ export class BrowserNativeSurfaceHost {
     try {
       this.deps.attach(entry.contents, entry.owner);
       if (!this.current(entry)) throw new Error("Native page creation ended");
+      this.park(entry);
       const changed = () => this.publish(entry);
       const focused = () => {
-        if (this.current(entry) && entry.attached && this.ownerVisible(entry.owner)
-          && entry.owner.isFocused() && entry.contents.isFocused()) this.deps.userFocus(entry.contentsId);
+        if (!this.current(entry) || !this.ownerVisible(entry.owner)
+          || !entry.owner.isFocused() || !entry.contents.isFocused()) return;
+        if (entry.attached) this.deps.userFocus(entry.contentsId);
+        else entry.owner.webContents.focus();
       };
       const cursorChanged = (_event: unknown, type: string, image?: NativeImage, scale?: number, size?: Size, hotspot?: Point) => {
         if (!this.current(entry) || !entry.attached || !this.ownerVisible(entry.owner)) return;
@@ -386,7 +390,7 @@ export class BrowserNativeSurfaceHost {
       const returnUserFocus = handBackFocus && entry.attached && entry.contents.isFocused() && entry.owner.isFocused();
       const bound = this.deps.bind(entry.windowId, { tabId: entry.tabId, webContentsId: entry.contentsId, parked: true });
       if (!bound.ok || !this.current(entry)) return false;
-      this.detach(entry);
+      this.park(entry);
       if (returnUserFocus && this.current(entry) && entry.owner.isFocused()) entry.owner.webContents.focus();
     } else {
       const zoom = entry.owner.webContents.getZoomFactor();
@@ -401,26 +405,44 @@ export class BrowserNativeSurfaceHost {
       entry.container.setBounds(clip);
       entry.container.setBorderRadius(Math.round((placement.borderRadius ?? 0) * zoom));
       entry.view.setBounds({ x: bounds.x - clip.x, y: bounds.y - clip.y, width: bounds.width, height: bounds.height });
-      if (!entry.attached) {
+      if (!entry.connected) {
         entry.container.addChildView(entry.view);
         attachMainWindowPage(entry.owner, entry.container);
-        entry.attached = true;
+        entry.connected = true;
+      } else if (!entry.attached) {
+        attachMainWindowPage(entry.owner, entry.container);
       }
+      entry.attached = true;
       const bound = this.deps.bind(entry.windowId, { tabId: entry.tabId, webContentsId: entry.contentsId, parked: false });
-      if (!bound.ok || !this.current(entry)) { this.detach(entry); return false; }
+      if (!this.current(entry)) return false;
+      if (!bound.ok) { this.park(entry); return false; }
     }
     entry.placement = placement;
     this.publish(entry);
     return true;
   }
 
+  private park(entry: Surface): void {
+    if (this.gestures.get(entry.windowId)?.entry === entry) this.clearGesture(entry.windowId);
+    entry.attached = false;
+    // The native root supplies compositor frames and input routing even while the page is parked.
+    // Keep a nonzero viewport connected, wholly outside the window, without exposing a user input surface.
+    entry.container.setBounds({ x: -entry.viewport.width, y: 0, ...entry.viewport });
+    entry.view.setBounds({ x: 0, y: 0, ...entry.viewport });
+    if (!entry.connected) {
+      entry.container.addChildView(entry.view);
+      attachMainWindowPage(entry.owner, entry.container);
+      entry.connected = true;
+    }
+  }
+
   private detach(entry: Surface): void {
     if (this.gestures.get(entry.windowId)?.entry === entry) this.clearGesture(entry.windowId);
-    if (!entry.attached) return;
     entry.attached = false;
+    if (!entry.connected) return;
+    entry.connected = false;
     try { entry.container.removeChildView(entry.view); }
     finally { if (!entry.owner.isDestroyed()) entry.owner.contentView.removeChildView(entry.container); }
-    if (!entry.contents.isDestroyed()) entry.view.setBounds({ x: 0, y: 0, ...entry.viewport });
   }
 
   private observeOwner(owner: MainWindow): void {
@@ -430,14 +452,23 @@ export class BrowserNativeSurfaceHost {
     const park = (invalidate: boolean) => {
       for (const entry of this.surfaces.values()) {
         if (entry.owner !== owner) continue;
+        const returnUserFocus = entry.attached && entry.contents.isFocused() && owner.isFocused();
         if (invalidate) { entry.epoch = ++this.nextEpoch; entry.sequence = 0; entry.placement = null; }
         if (entry.bound) this.deps.bind(windowId, { tabId: entry.tabId, webContentsId: entry.contentsId, parked: true });
-        this.detach(entry);
+        if (!this.current(entry)) continue;
+        this.park(entry);
+        if (returnUserFocus && this.current(entry) && owner.isFocused()) owner.webContents.focus();
         this.publish(entry);
       }
     };
     const hidden = () => park(false);
     const blurred = () => { this.clearGesture(windowId); };
+    const focused = () => {
+      if (!this.ownerVisible(owner) || !owner.isFocused()) return;
+      for (const entry of this.surfaces.values()) {
+        if (entry.owner === owner && this.current(entry) && !entry.attached && entry.contents.isFocused()) ownerContents.focus();
+      }
+    };
     const reloaded = () => { this.inputSequences.delete(windowId); park(true); };
     const navigating = (_event: unknown, _url: string, inPlace: boolean, mainFrame: boolean) => {
       if (mainFrame && !inPlace) reloaded();
@@ -448,6 +479,7 @@ export class BrowserNativeSurfaceHost {
     const closed = () => this.disposeWindow(windowId);
     owner.on("hide", hidden);
     owner.on("blur", blurred);
+    owner.on("focus", focused);
     owner.on("minimize", hidden);
     owner.on("show", shown);
     owner.on("restore", shown);
@@ -457,6 +489,7 @@ export class BrowserNativeSurfaceHost {
     this.owners.set(windowId, () => {
       owner.removeListener("hide", hidden);
       owner.removeListener("blur", blurred);
+      owner.removeListener("focus", focused);
       owner.removeListener("minimize", hidden);
       owner.removeListener("show", shown);
       owner.removeListener("restore", shown);

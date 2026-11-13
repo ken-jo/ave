@@ -37,13 +37,27 @@ export async function inspectBrowserTarget(app: ElectronApplication, windowId: n
     if (!owner || matches.length !== 1 || !contents) throw new Error("Native browser target or owner is unavailable");
     const chrome = webContents.getAllWebContents().find(candidate => candidate === Reflect.get(owner, "webContents"));
     if (!chrome || chrome.isDestroyed()) throw new Error("Native UI contents are unavailable");
-    type NativeView = { children: NativeView[]; webContents?: { id: number } };
+    type NativeView = { children: NativeView[]; webContents?: { id: number }; getBounds(): { x: number; y: number; width: number; height: number } };
     const contains = (view: NativeView): boolean => view.webContents?.id === contents.id || view.children.some(contains);
+    const intersect = (a: ReturnType<NativeView["getBounds"]>, b: ReturnType<NativeView["getBounds"]>) => {
+      const x = Math.max(a.x, b.x), y = Math.max(a.y, b.y);
+      return { x, y, width: Math.max(0, Math.min(a.x + a.width, b.x + b.width) - x),
+        height: Math.max(0, Math.min(a.y + a.height, b.y + b.height) - y) };
+    };
+    const presented = (view: NativeView, origin: { x: number; y: number }, clip: ReturnType<NativeView["getBounds"]>): boolean => {
+      const bounds = view.getBounds();
+      const position = { x: origin.x + bounds.x, y: origin.y + bounds.y };
+      const visible = intersect(clip, { ...bounds, ...position });
+      return visible.width > 0 && visible.height > 0 && (view.webContents?.id === contents.id || view.children.some(child => presented(child, position, visible)));
+    };
+    const { width, height } = owner.getContentBounds();
     return {
       id: contents.id,
       type: contents.getType(),
       embedded: Boolean(contents.hostWebContents),
-      attached: contains(owner.contentView as NativeView),
+      connected: contains(owner.contentView as NativeView),
+      // A parked page retains a native root but occupies no part of the displayed window.
+      attached: owner.contentView.children.some(child => presented(child as NativeView, { x: 0, y: 0 }, { x: 0, y: 0, width, height })),
       focused: contents.isFocused(),
       mainFrameFocused: contents.focusedFrame === contents.mainFrame,
       ownerFocused: owner.isFocused(),
