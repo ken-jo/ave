@@ -1,4 +1,6 @@
 import { isRecord } from "../shared/is-record.js";
+import type { SubscriptionPlanUsageWindow } from "../shared/subscription-plan-usage.js";
+import { parseClaudeCodePlanUsage } from "./subscription-plan-usage-parsers.js";
 
 export const CLAUDE_CODE_MCP_SERVER_NAME = "ave-host-tools";
 export const CLAUDE_CODE_MAX_PROMPT_BYTES = 512 * 1024;
@@ -36,7 +38,7 @@ export class ClaudeCodeStream {
   stopReason: "end_turn" | "max_tokens" = "end_turn";
   private readonly allowedTools: ReadonlySet<string>;
 
-  constructor(toolNames: readonly string[]) {
+  constructor(toolNames: readonly string[], private readonly onPlanUsage?: (windows: readonly SubscriptionPlanUsageWindow[]) => void) {
     this.allowedTools = new Set(toolNames);
   }
 
@@ -99,7 +101,12 @@ export class ClaudeCodeStream {
     }
     // Metadata carries no execution authority. Unexpected hooks, native tasks, and unknown wire records are errors, not evidence of a successful turn.
     if (event.type === "system" && ["api_retry", "status"].includes(String(event.subtype))) return [];
-    if (event.type === "rate_limit_event") return [];
+    if (event.type === "rate_limit_event") {
+      try { this.onPlanUsage?.(parseClaudeCodePlanUsage(event)); } catch {
+        // Optional quota observers cannot change the invocation's execution verdict.
+      }
+      return [];
+    }
     if (event.type === "user" && isRecord(event.message)
       && Array.isArray(event.message.content)
       && event.message.content.every((part) => isRecord(part) && part.type === "tool_result")) return [];

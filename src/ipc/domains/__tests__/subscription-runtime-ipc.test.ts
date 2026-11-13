@@ -53,7 +53,7 @@ vi.mock("electron", () => ({
 
 vi.mock("../../../main/subscription-runtime-service.js", () => ({
   getSubscriptionRuntimeService: runtimeServiceMock.get,
-  onSubscriptionRuntimeAutoVerified: runtimeServiceMock.onAutoVerified,
+  onSubscriptionRuntimeStatusChanged: runtimeServiceMock.onAutoVerified,
   subscriptionRuntimeErrorCode: runtimeServiceMock.errorCode,
   SubscriptionRuntimeServiceError: runtimeServiceMock.RuntimeError,
 }));

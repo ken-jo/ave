@@ -6,6 +6,8 @@ import { spawnCodexNative } from "./codex-native-spawn.js";
 import { lstatSync, promises as fs } from "node:fs";
 import { isAbsolute, join, resolve, win32 } from "node:path";
 import { getAveAppVersion } from "../shared/app-version.js";
+import type { SubscriptionPlanUsageUpdate } from "../shared/subscription-plan-usage.js";
+import { parseCodexPlanUsage } from "./subscription-plan-usage-parsers.js";
 import { MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH, isSubscriptionToolDescription } from "../shared/subscription-runtime.js";
 import {
   projectSubscriptionTransportErrorDiagnostics,
@@ -214,6 +216,7 @@ export type CodexConversationDynamicToolHandler = (
 // Every thread runs in the host-created blank workspace with network access disabled. Native Codex command, file, and permission paths remain denied;
 // only explicitly declared Ave dynamic tools can cross this boundary.
 export interface CodexConversationRuntimeOptions {
+  onPlanUsage?: (windows: readonly SubscriptionPlanUsageUpdate[]) => void;
   // Existing isolated Codex home owned by the main process.
   runtimeHome: string;
   // Existing isolated Codex SQLite directory owned by the main process.
@@ -672,6 +675,7 @@ function projectTurnTokenUsage(
 // A reusable App Server conversation transport for subscription-backed Codex chat. It intentionally exposes only Ave-governed dynamic tools, never
 // project-native tools, approval grants, raw reverse-RPC payloads, or arbitrary App Server methods.
 export class CodexConversationRuntime {
+  private readonly onPlanUsage: CodexConversationRuntimeOptions["onPlanUsage"];
   private readonly resolveRuntime: () => Promise<CodexExecutableArtifact>;
   private readonly spawn: CodexSpawnAppServer;
   private readonly clientVersion: string;
@@ -692,6 +696,7 @@ export class CodexConversationRuntime {
   private transportReader: JsonLineReader | null = null;
 
   constructor(options: CodexConversationRuntimeOptions) {
+    this.onPlanUsage = options.onPlanUsage;
     this.resolveRuntime = options.resolveRuntime;
     this.spawn = options.spawn
       ?? ((command, args, options_) => spawnCodexAppServer(command, args, options_, "codex-conversation-runtime"));
@@ -1404,6 +1409,11 @@ export class CodexConversationRuntime {
   private handleNotification(method: string, params: unknown): void {
     const payload = isCodexJsonRecord(params) ? params : null;
     if (!payload) return;
+    if (method === "account/rateLimits/updated") {
+      const updates = parseCodexPlanUsage(payload);
+      if (updates.length > 0) this.invokeCallback(this.onPlanUsage, updates);
+      return;
+    }
     if (method === "item/started") {
       this.rejectUnsafeNativeItemStart(payload);
       return;

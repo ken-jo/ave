@@ -163,6 +163,31 @@ afterEach(() => {
 });
 
 describe("SubscriptionProvidersController", () => {
+  it("projects quota reports through status invalidations and clears them on sign-out", async () => {
+    const { api } = controllerApi();
+    let connected = true;
+    let usedPercent = 32;
+    let emitStatusUpdated: ((event: SubscriptionRuntimeStatusUpdatedEvent) => void) | undefined;
+    const quotaStatus = (provider: SubscriptionRuntimeId): SubscriptionRuntimeStatus => ({
+      ...(provider === "codex" && !connected ? signedOutStatus(provider) : connectedStatus(provider)),
+      ...(provider === "codex" ? { planUsage: { observedAt: Date.now(), windows: [{ id: "codex:primary", usedPercent }] } } : {}),
+    });
+    api.subscriptionRuntimeStatus = vi.fn(async (provider: SubscriptionRuntimeId) => ({ ok: true as const, status: quotaStatus(provider) }));
+    api.subscriptionListModels = vi.fn(async (provider: SubscriptionRuntimeId) => ({ ok: true as const, status: quotaStatus(provider), models: [] }));
+    api.onSubscriptionRuntimeStatusUpdated = (handler) => {
+      emitStatusUpdated = handler;
+      return () => {};
+    };
+    render(<SubscriptionProvidersController api={api} />);
+    expect(await screen.findByText("32% used")).toBeVisible();
+    usedPercent = 46;
+    act(() => emitStatusUpdated?.({ provider: "codex", revision: 1 }));
+    expect(await screen.findByText("46% used")).toBeVisible();
+    connected = false;
+    act(() => emitStatusUpdated?.({ provider: "codex", revision: 2 }));
+    await waitFor(() => expect(screen.queryByTestId("subscription-plan-usage")).toBeNull());
+  });
+
   it.each(["en", "ko"] as const)("shows a verify failure on the card when the status refresh also fails in %s", async (locale) => {
     await loadLocaleMessages(locale);
     setLocale(locale);
