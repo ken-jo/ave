@@ -1952,17 +1952,17 @@ describe("Sidebar — every conversation family", () => {
       expect(caption.textContent).toContain("이전 터미널 채팅");
       expect(guidesOf(caption)).toEqual(["line"]);
       expect(guidesOf(view.getByTestId("sidebar-row-session-later-chat"))).toEqual(["last"]);
-      // Only the archived row's content is dimmed: its guide strip is outside the dimmed element, and the row is not dimmed.
+      // Archived content uses full-strength semantic ink so the palette contrast floor is preserved.
       const row = view.getByTestId("sidebar-row-session-archived-chat");
       expect(row.getAttribute("data-archived")).toBe("true");
       expect(guidesOf(row)).toEqual(["mid"]);
       const content = view.getByTestId("sidebar-row-content-archived-chat");
-      expect(content.className).toContain("opacity-70");
+      expect(content.className).not.toMatch(/opacity-/);
       expect(row.className).not.toContain("opacity-70");
       const strip = row.querySelector('[data-testid="tree-indent-guides"]')!;
       expect(content.contains(strip)).toBe(false);
       expect(strip.closest(".opacity-70")).toBeNull();
-      // An unarchived row carries no dimming at all.
+      // Unarchived content retains the same opacity guarantee.
       expect(view.getByTestId("sidebar-row-content-later-chat").className).not.toContain("opacity-70");
     } finally { view.restore(); }
   });
