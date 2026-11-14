@@ -462,7 +462,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     expect(screen.getByTestId("hook-quarantine-notice")).toBeTruthy();
     expect(screen.getByText("검토 대기 1")).toBeTruthy();
     expect(screen.getByText("/permission hooks list")).toBeTruthy();
-    expect(screen.getByText("pre-scan.sh")).toBeTruthy();
+    expect(screen.getByTestId("hook-quarantine-notice").textContent).toContain("pre-scan.sh");
   });
 
   it("clears the notice after the quarantined list becomes empty", async () => {

@@ -219,6 +219,7 @@ describe("preload contextBridge world shape lock", () => {
             "homeTrustRemove",
             "homeTrustReview",
             "hookTrustList",
+            "hookTrustReview",
             "judgeGet",
             "judgeSet",
             "listRules",

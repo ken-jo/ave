@@ -1,7 +1,7 @@
 // Config bytes and referenced script hashes form one trust unit; edits re-quarantine it. Commands enter the registry only after explicit trust (docs/architecture/hook-runtime-expansion-design.md).
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { basename, join, resolve as pathResolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
   classifyCommand,
@@ -24,18 +24,18 @@ export function defaultHooksConfigPath(dir: string = defaultHooksDir()): string 
 }
 
 // Disabled review includes every stored copy; active discovery keeps exact names.
-export function discoverHookTrustFiles(dir: string, includeDisabledCopies = false): {
+export function discoverHookTrustFiles(dir: string, includeDisabledCopies = false, configBaseDir = dir): {
   scripts: DiscoveredHook[];
   config: LoadedHookConfig;
   configs: LoadedHookConfig[];
   hooks: DiscoveredHook[];
 } {
   const scripts = discoverHooks(dir, includeDisabledCopies);
-  const config = loadHookConfig(defaultHooksConfigPath(dir));
+  const config = loadHookConfig(defaultHooksConfigPath(dir), configBaseDir);
   const configs = includeDisabledCopies && existsSync(dir)
     ? readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && disabledHookOriginalName(entry.name) === HOOKS_CONFIG_FILENAME)
-      .map((entry) => loadHookConfig(join(dir, entry.name)))
+      .map((entry) => loadHookConfig(join(dir, entry.name), configBaseDir))
     : [config];
   const synthetic = configs.flatMap((loaded) => {
     const hook = syntheticConfigHook(loaded);
@@ -72,6 +72,7 @@ export interface LoadedHookConfig {
 // Reads config and referenced scripts for hashing; never executes them. Missing config yields no entries.
 export function loadHookConfig(
   configPath: string = defaultHooksConfigPath(),
+  scriptBaseDir = dirname(configPath),
 ): LoadedHookConfig {
   if (!existsSync(configPath)) {
     return { path: configPath, exists: false, entries: [], warnings: [], errors: [], trustHash: null };
@@ -88,20 +89,21 @@ export function loadHookConfig(
   let parsedJson: unknown;
   try {
     parsedJson = JSON.parse(raw.toString("utf-8"));
-  } catch (err) {
+  } catch {
     // Malformed config yields an audited fatal error and no runnable entries; hashing its bytes detects later repairs.
-    log.warn("hook-config-trust: JSON parse failed %s: %s", configPath, (err as Error).message);
+    log.warn("hook-config-trust: JSON parse failed %s", configPath);
     return {
       path: configPath,
       exists: true,
       entries: [],
       warnings: [],
-      errors: [`hooks.json: not valid JSON — ${(err as Error).message}`],
+      errors: ["hooks.json: not valid JSON"],
       trustHash: hashBytesOnly(raw),
     };
   }
 
   const parsed = parseHookConfig(parsedJson);
+  bindHookConfigPaths(parsed.entries, scriptBaseDir);
 
   // Script edits re-quarantine the config; a missing-script token also detects the script appearing later.
   const hasher = createHash("sha256");
@@ -118,14 +120,23 @@ export function loadHookConfig(
     }
   }
 
+  const trustHash = hasher.digest("hex");
   return {
     path: configPath,
     exists: true,
-    entries: parsed.entries.map((entry) => ({ ...entry, configPath })),
+    entries: parsed.entries.map((entry) => ({ ...entry, configPath, reviewedHash: trustHash })),
     warnings: parsed.warnings,
     errors: parsed.errors,
-    trustHash: hasher.digest("hex"),
+    trustHash,
   };
+}
+
+export function bindHookConfigPaths(entries: HookConfigEntry[], baseDirectory: string): void {
+  for (const entry of entries) {
+    entry.command = entry.command.map((token) => looksLikeLocalScriptPath(token)
+      ? isAbsolute(expandLeadingTilde(token)) ? expandLeadingTilde(token) : pathResolve(baseDirectory, token)
+      : token);
+  }
 }
 
 // Normalize path separators before hashing so platform spelling changes do not re-quarantine the same script.
@@ -140,8 +151,8 @@ function hashBytesOnly(raw: Buffer): string {
 function collectScriptAnchors(entries: HookConfigEntry[]): string[] {
   const set = new Set<string>();
   for (const entry of entries) {
-    const anchor = resolveScriptAnchor(entry.command);
-    if (anchor) set.add(anchor);
+    if (entry.command.length === 0) continue;
+    for (const token of entry.command) if (looksLikeLocalScriptPath(token)) set.add(expandLeadingTilde(token));
   }
   return [...set].sort();
 }

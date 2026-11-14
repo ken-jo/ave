@@ -1,4 +1,4 @@
-// Only TOFU-trusted entries enter the registry; untrusted config contributes nothing. Hook allows never override upstream denies, and mutation is unsupported (docs/architecture/permission-policy-design.md; docs/architecture/hook-runtime-expansion-design.md).
+// Only reviewed entries enter the registry. Hook allows never override upstream denies (docs/architecture/permission-policy-design.md; docs/architecture/hook-runtime-expansion-design.md).
 import { HookMatcherError, type DiscoveredHook } from "./hook-discovery.js";
 import { lifecycleMatcherSubject } from "./hook-contract.js";
 import {
@@ -59,6 +59,10 @@ export interface PreparedPluginHookGenerationPublication {
 
 export class ScriptHookManager {
   private registry: HookRegistryEntry[] = [];
+  private sourceRegistries = new Map<string, HookRegistryEntry[]>();
+  private sourceRegistryRefresher: (() => void) | undefined;
+  private projectHookResolver: ((cwd: string) => Promise<HookRegistryEntry[]>) | undefined;
+  private hookPolicy = { allowManagedHooksOnly: false, disableAllHooks: false };
   private matcherGuards: readonly HookRegistryEntry[] = [];
   private pluginRegistries = new Map<string, readonly HookRegistryEntry[]>();
   private generation = 0;
@@ -73,6 +77,38 @@ export class ScriptHookManager {
 
   private executionOptions(options?: RunOneHookOptions): RunOneHookOptions {
     return { ...options, ...(this.commandAuthorizer ? { authorizeCommand: this.commandAuthorizer } : {}) };
+  }
+
+
+  setHookPolicy(policy: { allowManagedHooksOnly: boolean; disableAllHooks: boolean }): void {
+    if (this.hookPolicy.allowManagedHooksOnly === policy.allowManagedHooksOnly && this.hookPolicy.disableAllHooks === policy.disableAllHooks) return;
+    this.hookPolicy = { ...policy };
+    this.generation += 1;
+  }
+
+  setTrustedSourceRegistry(sourceId: string, shHooks: DiscoveredHook[], configEntries: HookConfigEntry[]): void {
+    this.sourceRegistries.set(sourceId, buildHookRegistry(shHooks, configEntries));
+    this.generation += 1;
+  }
+
+  setSourceRegistryRefresher(refresher: () => void): void {
+    this.sourceRegistryRefresher = refresher;
+  }
+
+  setProjectHookResolver(resolver: (cwd: string) => Promise<HookRegistryEntry[]>): void {
+    this.projectHookResolver = resolver;
+  }
+
+  private sourceAllowed(entry: HookRegistryEntry): boolean {
+    return entry.hookSource === "managed" || !this.hookPolicy.allowManagedHooksOnly && !this.hookPolicy.disableAllHooks;
+  }
+
+  private async registryFor(options?: RunOneHookOptions): Promise<HookRegistryEntry[]> {
+    const registry = this.snapshotRegistry();
+    if (this.projectHookResolver && options?.cwd && !this.hookPolicy.allowManagedHooksOnly && !this.hookPolicy.disableAllHooks) {
+      registry.push(...await this.projectHookResolver(options.cwd));
+    }
+    return registry;
   }
 
   setPluginGenerationAccess(access: PluginRuntimeGenerationAccess): void {
@@ -186,7 +222,8 @@ export class ScriptHookManager {
   }
 
   private snapshotRegistry(): HookRegistryEntry[] {
-    return [...this.registry, ...[...this.pluginRegistries.values()].flat()];
+    this.sourceRegistryRefresher?.();
+    return [...this.registry, ...[...this.sourceRegistries.values()].flat(), ...[...this.pluginRegistries.values()].flat()].filter((entry) => this.sourceAllowed(entry));
   }
 
   hooksOfType(type: ScriptHookType): HookRegistryEntry[] {
@@ -252,7 +289,7 @@ export class ScriptHookManager {
     try {
       // Subjects are bounded event values; Stop ignores matchers entirely.
       const entries = filterRegistryByEventAndSubject(
-        this.snapshotRegistry(),
+        await this.registryFor(options),
         event,
         lifecycleMatcherSubject(event, sessionId, payload),
       );
@@ -327,7 +364,7 @@ export class ScriptHookManager {
   ): Promise<HookDispatchResult> {
     if (!areExternalTurnHooksAllowed()) return externalHooksSuppressed();
     try {
-      const entries = this.snapshotRegistry().filter((entry) => entry.event === USER_PROMPT_SUBMIT_EVENT);
+      const entries = (await this.registryFor(options)).filter((entry) => entry.event === USER_PROMPT_SUBMIT_EVENT);
       if (entries.length === 0) {
         // No trusted hooks allows the prompt.
         return { decision: "allow", reason: "no matching UserPromptSubmit hooks", results: [] };
@@ -366,8 +403,8 @@ export class ScriptHookManager {
     options?: RunOneHookOptions,
   ): Promise<HookDispatchResult> {
     // Absent matchers run for every tool.
-    const registry = this.snapshotRegistry();
-    const invalid = [...this.matcherGuards, ...registry].find((entry) => entry.event === type && entry.matcherError);
+    const registry = await this.registryFor(options);
+    const invalid = [...this.matcherGuards.filter((entry) => this.sourceAllowed(entry)), ...registry].find((entry) => entry.event === type && entry.matcherError);
     if (invalid) return { decision: "deny", reason: invalid.matcherError!, results: [] };
     let entries: HookRegistryEntry[];
     try {
@@ -437,6 +474,8 @@ function toRunnable(entry: HookRegistryEntry): RunnableHook {
     id: entry.id,
     hookType: entry.event,
     command: entry.command,
+    ...(entry.validateTrust ? { validateTrust: entry.validateTrust } : {}),
+    hookSource: entry.owner ? "plugin" : entry.hookSource ?? "user",
     ...(entry.env ? { env: entry.env } : {}),
     ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
     // For a config command, the forensic path is argv[0] (or the script arg).
@@ -444,6 +483,7 @@ function toRunnable(entry: HookRegistryEntry): RunnableHook {
     timeoutMs: entry.timeoutMs,
     // Config command identity hashes verbatim argv when no local script hash exists.
     source: "config",
+    ...(entry.reviewedHash ?? entry.owner?.fingerprint ? { commandIdentity: entry.reviewedHash ?? entry.owner?.fingerprint } : {}),
     ...(entry.owner ? { pluginOwner: entry.owner } : {}),
     ...(entry.confinement ? { confinement: entry.confinement } : {}),
   };

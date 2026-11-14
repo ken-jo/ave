@@ -3,6 +3,7 @@ import { compileHookMatcher, HookMatcherError, type DiscoveredHook } from "./hoo
 import { hookEventSupportsMatcher } from "./hook-contract.js";
 import type { HookConfigEntry } from "./hook-config.js";
 import type { HookEvent } from "./script-hook-types.js";
+import type { HookSourceKind } from "./hook-source-policy.js";
 
 export type HookRegistryEntry = ShHookRegistryEntry | ConfigHookRegistryEntry;
 
@@ -27,6 +28,9 @@ interface BaseHookRegistryEntry {
   matcherError?: string;
   // Nonempty argv.
   command: string[];
+  hookSource?: HookSourceKind;
+  validateTrust?: () => boolean;
+  reviewedHash?: string;
   env?: Record<string, string>;
   // Exact plugin-owned trust identity; absent for user/global hooks.
   owner?: PluginHookOwner;
@@ -73,6 +77,9 @@ function fromDiscoveredHook(hook: DiscoveredHook): ShHookRegistryEntry {
     ...matcherFields(hook.hookType, hook.matcher, hook.path),
     ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
     command: [hook.path],
+    ...(hook.hookSource ? { hookSource: hook.hookSource } : {}),
+    ...(hook.validateTrust ? { validateTrust: hook.validateTrust } : {}),
+    reviewedHash: hook.sha256,
     source: "sh",
     discovered: hook,
   };
@@ -85,6 +92,9 @@ function fromConfigEntry(entry: HookConfigEntry): ConfigHookRegistryEntry {
     ...matcherFields(entry.event, entry.matcher, entry.configPath ?? `hooks.json:${entry.id}`, entry.matcherError),
     ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
     command: entry.command,
+    ...(entry.hookSource ? { hookSource: entry.hookSource } : {}),
+    ...(entry.validateTrust ? { validateTrust: entry.validateTrust } : {}),
+    ...(entry.reviewedHash ? { reviewedHash: entry.reviewedHash } : {}),
     ...(entry.env ? { env: entry.env } : {}),
     source: "config",
     timeoutMs: entry.timeoutMs,

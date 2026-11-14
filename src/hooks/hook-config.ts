@@ -6,6 +6,7 @@ import {
 import { isRecord } from "../shared/is-record.js";
 import { HOOK_EVENT_TYPES, hookEventSupportsMatcher } from "./hook-contract.js";
 import { hookMatcherError } from "./hook-discovery.js";
+import type { HookSourceKind } from "./hook-source-policy.js";
 
 export interface HookConfigEntry {
   // Stable identity for trust-review / audit — `<event>#<index>` within the config.
@@ -19,6 +20,9 @@ export interface HookConfigEntry {
   configPath?: string;
   // Nonempty argv; argv[0] is the program.
   command: string[];
+  hookSource?: HookSourceKind;
+  validateTrust?: () => boolean;
+  reviewedHash?: string;
   env?: Record<string, string>;
   // Clamped to DEFAULT_HOOK_TIMEOUT_MS.
   timeoutMs: number;

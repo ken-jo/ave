@@ -2,6 +2,8 @@
 import { existsSync } from "node:fs";
 import {
   buildAcceptedAtMap,
+  defaultDisabledDir,
+  defaultHooksDir,
   diffAgainstLockfile,
   disableHook,
   discoverHooks,
@@ -17,7 +19,9 @@ import {
   defaultHooksConfigPath,
   loadHookConfig,
   syntheticConfigHook,
+  discoverHookTrustFiles,
 } from "./hook-config-trust.js";
+import { disabledHookOriginalName } from "./hook-disable-state.js";
 import type { HookConfigEntry } from "./hook-config.js";
 import { createLogger } from "../lib/logger.js";
 
@@ -34,6 +38,7 @@ export interface TrustPromptDispatcher {
 }
 
 export interface RunHookTrustOptions {
+  sourceId?: string;
   hooksDir?: string;
   lockfilePath?: string;
   disabledDir?: string;
@@ -67,12 +72,16 @@ export async function runHookTrustWorkflow(
 
   const lockfile = readLockfile(options.lockfilePath);
   const acceptedAtMap = buildAcceptedAtMap(lockfile);
-  const diff = diffAgainstLockfile(discovered, lockfile);
+  const diff = diffAgainstLockfile(discovered, lockfile, options.sourceId);
 
   const newOrChanged = diff.filter(
     (d) => d.state === "new" || d.state === "changed",
   );
   const trusted = diff.filter((d) => d.state === "trusted").map((d) => d.hook);
+  const disabledNames = new Set(discoverHookTrustFiles(options.disabledDir ?? defaultDisabledDir(), true,
+    options.hooksDir ?? defaultHooksDir()).hooks.map((hook) => disabledHookOriginalName(hook.fileName)));
+  const retainedDefinitions = diff.filter((entry) => entry.state === "removed" && disabledNames.has(entry.hook.fileName))
+    .map((entry) => entry.hook);
 
   const configTrusted = (trustedSet: DiscoveredHook[]): HookConfigEntry[] =>
     trustedSet.some((h) => h.fileName === HOOKS_CONFIG_FILENAME)
@@ -81,9 +90,9 @@ export async function runHookTrustWorkflow(
 
   if (newOrChanged.length === 0) {
     // Refresh deleted entries out of the lockfile so removed hooks stop appearing in later diffs.
-    const removed = diff.filter((d) => d.state === "removed");
+    const removed = diff.filter((d) => d.state === "removed" && !disabledNames.has(d.hook.fileName));
     if (removed.length > 0 && lockfile) {
-      const next = await persistLockfile(trusted, options.lockfilePath, acceptedAtMap);
+      const next = await persistLockfile([...trusted, ...retainedDefinitions], options.lockfilePath, acceptedAtMap, options.sourceId);
       return {
         trustedHooks: trusted,
         disabledHooks: [],
@@ -147,7 +156,10 @@ export async function runHookTrustWorkflow(
   }
 
   const allTrusted = [...trusted, ...newlyTrusted];
-  const next = await persistLockfile(allTrusted, options.lockfilePath, acceptedAtMap);
+  const previousDefinitions = newOrChanged.flatMap((entry) => entry.state === "changed" && entry.previousSha256
+    ? [{ ...entry.hook, sha256: entry.previousSha256 }] : []);
+  const next = await persistLockfile([...allTrusted, ...retainedDefinitions, ...previousDefinitions.filter((entry) =>
+    !allTrusted.some((trustedHook) => trustedHook.fileName === entry.fileName))], options.lockfilePath, acceptedAtMap, options.sourceId);
   return {
     trustedHooks: allTrusted,
     disabledHooks: disabled,

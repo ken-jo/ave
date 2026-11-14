@@ -124,6 +124,7 @@ export const PERMISSIONS = {
   auditShow: "ave:permissions:audit-show",
   auditVerify: "ave:permissions:audit-verify",
   hookTrustList: "ave:permissions:hook-trust-list",
+  hookTrustReview: "ave:permissions:hook-trust-review",
   manifestViolation: "ave:permissions:manifest-violation",
   // Read-only: OS sandbox capability for the current platform; drives the
 

@@ -1,4 +1,5 @@
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
+import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
 import type { AppRelaunchResult } from "../shared/app-relaunch.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
@@ -707,7 +708,9 @@ export function buildInternalApiSurface() {
       ipcRenderer.invoke(PERMISSIONS.removeRule, { pattern, action, intent: ipcUserKeyboardIntent() }),
     recentlyDeniedList: async () => ipcRenderer.invoke(PERMISSIONS.recentlyDeniedList),
     /** Permission policy hook quarantine state for non-modal settings badge. */
-    hookTrustList: async () => ipcRenderer.invoke(PERMISSIONS.hookTrustList),
+    hookTrustList: async (): Promise<HookTrustListResult> => ipcRenderer.invoke(PERMISSIONS.hookTrustList),
+    hookTrustReview: async (request: HookTrustReviewRequest): Promise<HookTrustReviewResult> =>
+      ipcRenderer.invoke(PERMISSIONS.hookTrustReview, { ...request, intent: ipcUserKeyboardIntent() }),
     /** Permission policy; `/permission dir ...` slash dispatch via IPC. */
     dirDispatch: async (rawArgs: string) =>
       ipcRenderer.invoke(PERMISSIONS.dirDispatch, { rawArgs, intent: ipcUserKeyboardIntent() }),

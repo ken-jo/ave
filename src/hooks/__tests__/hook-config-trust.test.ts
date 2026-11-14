@@ -124,7 +124,7 @@ describe("hooks.json TOFU diff — quarantine by default", () => {
     });
     expect(result.trustedHooks.map((h) => h.fileName)).toContain(HOOKS_CONFIG_FILENAME);
     expect(result.trustedConfigEntries).toHaveLength(1);
-    expect(result.trustedConfigEntries[0].command).toEqual(["./policy.sh"]);
+    expect(result.trustedConfigEntries[0].command).toEqual([join(hooksDir, "policy.sh")]);
     expect(existsSync(configPath)).toBe(true);
   });
 
@@ -173,7 +173,7 @@ describe("hooks.json /permission hooks accept restores + loads", () => {
     expect(configRow?.state).toBe("trusted");
     expect(configRow?.source).toBe("config");
     expect(configRow?.entryCount).toBe(1);
-    expect(configRow?.entries?.[0]).toMatchObject({ event: "pre", command: "./policy.sh" });
+    expect(configRow?.entries?.[0]).toMatchObject({ event: "pre", command: join(hooksDir, "policy.sh") });
   });
 
   it("accept rejects an identity that is not the exact config literal (no traversal)", async () => {

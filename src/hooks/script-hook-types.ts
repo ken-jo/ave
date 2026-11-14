@@ -2,6 +2,7 @@
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { PluginHookOwner } from "./hook-registry.js";
 import type { TrustOriginWithUnknown } from "../shared/chat-origin.js";
+import type { HookSourceKind } from "./hook-source-policy.js";
 
 // String origins survive JSON and future additions without breaking older hooks.
 export type HookTrustOrigin = TrustOriginWithUnknown;
@@ -132,6 +133,7 @@ export interface ScriptHookStdout {
 }
 
 export interface ScriptHookInvocationResult {
+  hookSource?: HookSourceKind | "plugin";
   hookPath: string;
   // Lifecycle results retain their event name for audit; tool-use results retain pre/post/perm.
   hookType: HookEvent;

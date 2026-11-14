@@ -28,6 +28,7 @@ import {
 } from "./script-hook-types.js";
 import { defaultHooksDir, type DiscoveredHook } from "./hook-discovery.js";
 import type { PluginHookOwner } from "./hook-registry.js";
+import type { HookSourceKind } from "./hook-source-policy.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { hookEventName, hookJsonInput } from "./hook-contract.js";
@@ -75,6 +76,8 @@ export interface RunnableHook {
   hookType: HookEvent;
   // A lone .sh path uses the resolved interpreter; all other argv spawn directly without a shell.
   command: string[];
+  validateTrust?: () => boolean;
+  hookSource?: HookSourceKind | "plugin";
   env?: Record<string, string>;
   // Optional matcher — surfaced to the hook via `AVE_HOOK_MATCHER`.
   matcher?: string;
@@ -107,6 +110,8 @@ export function runnableFromDiscovered(hook: DiscoveredHook): RunnableHook {
     id: hook.fileName,
     hookType: hook.hookType,
     command: [hook.path],
+    ...(hook.validateTrust ? { validateTrust: hook.validateTrust } : {}),
+    hookSource: hook.hookSource ?? "user",
     ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
     hookPath: hook.path,
     source: "sh",
@@ -165,6 +170,7 @@ export async function runOneHookScript(
     hookPath: runnable.hookPath,
     hookType: runnable.hookType,
     source: runnable.source ?? "sh",
+    hookSource: runnable.hookSource ?? (runnable.pluginOwner ? "plugin" : "user"),
     commandIdentity: normalized.commandIdentity ?? hashCommandArgv(normalized.command),
     ...(runnable.pluginOwner ? { pluginOwner: runnable.pluginOwner } : {}),
   } as const;
@@ -296,6 +302,7 @@ export async function runOneHookScript(
     : { kind: "worker", role: "hook", pluginId: undefined, instanceId: sha256Hex(runnable.id) };
   const assertHookStillAdmitted = (): void => {
     abortSignal?.throwIfAborted();
+    if (runnable.validateTrust && !runnable.validateTrust()) throw new Error("Hook definition changed before execution");
     if (admittedPlan && !isHookShellPlanCurrent(admittedPlan)) {
       throw new Error("Hook shell execution policy changed before spawn");
     }
@@ -411,7 +418,7 @@ export async function runOneHookScript(
   }
   try {
     if (refreshError !== undefined) throw refreshError;
-    assertCommandAllowed?.();
+    assertHookStillAdmitted();
   } catch (error) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook command permission changed");
     wrappedEgress?.release();
