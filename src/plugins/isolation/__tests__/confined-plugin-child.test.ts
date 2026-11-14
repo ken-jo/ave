@@ -3083,7 +3083,7 @@ process.stdin.on("end", () => process.exit(0));
       const before = emptyRemovableRoot(dataDir);
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const result = await runOneHookScript(
-        { id: "swap", hookType: "pre", source: "config", hookPath: script, command: ["/bin/sh", script],
+        { id: "swap", hookType: "pre", source: "config", hookPath: script, configDir: generationRoot, command: ["/bin/sh", script],
           confinement: { kind: "bundled", pluginId: "swap-plugin", dataDir, generationRoot } },
         { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
           sessionId: "root-swap", trustOrigin: "user-keyboard" },
@@ -3552,7 +3552,7 @@ describe("the sandbox temp directories", () => {
           async (probe) => {
             const dataDir = mkdtempSync(join(fx.root, "temp-hook-data-"));
             const result = await runOneHookScript(
-              { id: "temp", hookType: "pre", source: "config", hookPath: probe,
+              { id: "temp", hookType: "pre", source: "config", hookPath: probe, configDir: dirname(probe),
                 command: ["/usr/bin/env", "ELECTRON_RUN_AS_NODE=1", process.execPath, probe],
                 confinement: { kind: "bundled", pluginId: "temp-hook", dataDir, generationRoot: dirname(probe) } },
               { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
@@ -3611,7 +3611,7 @@ describe("the sandbox temp directories", () => {
         const c = await runHomeProbe(fx, hookPrincipal, "home-c", [fileA], homeRoot, async (probe) => {
           const dataDir = mkdtempSync(join(fx.root, "home-hook-data-"));
           const result = await runOneHookScript(
-            { id: "home", hookType: "pre", source: "config", hookPath: probe,
+            { id: "home", hookType: "pre", source: "config", hookPath: probe, configDir: dirname(probe),
               command: ["/usr/bin/env", "ELECTRON_RUN_AS_NODE=1", process.execPath, probe],
               confinement: { kind: "bundled", pluginId: "home-c", dataDir, generationRoot: dirname(probe) } },
             { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
@@ -3662,7 +3662,7 @@ describe("the sandbox temp directories", () => {
       );
       await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
       const result = await runOneHookScript(
-        { id: "tmp", hookType: "pre", source: "config", hookPath: script, command: ["/bin/sh", script],
+        { id: "tmp", hookType: "pre", source: "config", hookPath: script, configDir: generationRoot, command: ["/bin/sh", script],
           confinement: { kind: "bundled", pluginId: "tmp-plugin", dataDir, generationRoot } },
         { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin", category: "read", input: {},
           sessionId: "hook-tmp", trustOrigin: "user-keyboard" },

@@ -1,6 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -8,6 +8,7 @@ import { createDynamicTool } from "../base.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { createHookCommandAuthorizer } from "../../hooks/hook-command-policy.js";
+import { bindHookConfigPaths } from "../../hooks/hook-config-trust.js";
 import { parseHookConfig } from "../../hooks/hook-config.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
@@ -34,7 +35,9 @@ function setup(event: string, errored = false, denied = false, targetAsks = fals
   const authorizeCommand = vi.fn(createHookCommandAuthorizer({ permissionManager: permissions,
     approvalGate: { requestAndWait } }));
   manager.setCommandAuthorizer(authorizeCommand);
-  manager.setTrustedRegistry([], parseHookConfig({ hooks: { [event]: [{ hooks: [{ type: "command", command: ["node", COMMAND, hookAction] }] }] } }).entries);
+  const parsed = parseHookConfig({ hooks: { [event]: [{ hooks: [{ type: "command", command: ["node", COMMAND, hookAction] }] }] } });
+  bindHookConfigPaths(parsed.entries, dirname(COMMAND));
+  manager.setTrustedRegistry([], parsed.entries);
   const targetRequestAndWait = vi.fn(async () => ({ requestId: "target", choice: "deny-once" as const }));
   const gate = { requestAndWait: targetRequestAndWait } as unknown as ApprovalGate;
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, gate, manager);

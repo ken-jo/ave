@@ -47,6 +47,7 @@ import { resolveOwnerPluginSandboxRoot } from "../plugins/plugin-storage-layout.
 import type { Tool } from "./base.js";
 import type { RuntimePlugin } from "../plugins/types.js";
 import type { HookRunner } from "../hooks/hook-runner.js";
+import { HookInputMutationRequest } from "../hooks/hook-influence.js";
 import type { HostShellExecutionPlan, HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
 import type { ExecutionGrant } from "../permissions/execution-router.js";
 import type {
@@ -968,12 +969,21 @@ export async function executeAuthorizedToolInvocation(
     if (!userAvailable) throw new Error(NO_APPROVER_MESSAGE);
     if (sessionId === undefined) throw new Error("Automated approval is missing its session identity");
     lateApprovalPolicyEpoch = services.permissionManager?.getPolicyEpoch();
-    const permHook = await runScriptHook(
-      services.scriptHookManager, "perm", toolUse.name, source, invocationCategory,
-      finalInput, sessionId, invocationPermissionContext, tool.mcpServerId, tool.pluginId,
-      undefined, undefined, tool.pluginGeneration !== undefined,
-      signal,
-    );
+    let permHook: Awaited<ReturnType<typeof runScriptHook>>;
+    try {
+      permHook = await runScriptHook(
+        services.scriptHookManager, "perm", toolUse.name, source, invocationCategory,
+        finalInput, sessionId, invocationPermissionContext, tool.mcpServerId, tool.pluginId,
+        undefined, undefined, tool.pluginGeneration !== undefined,
+        signal,
+      );
+    } catch (error) {
+      if (!(error instanceof HookInputMutationRequest)) throw error;
+      const reason = "Hook input mutation is not allowed after handler entry";
+      latePermissionHookChain = hookChainFromDispatch("perm", { decision: "deny", reason, results: [...error.hooks] });
+      permissionResult = { ...permissionResult, decision: "deny", reason };
+      throw new Error(reason);
+    }
     signal.throwIfAborted();
     latePermissionHookChain = hookChainFromDispatch("perm", permHook);
     assertLateApprovalPolicyCurrent();

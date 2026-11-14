@@ -98,7 +98,8 @@ export interface AgentPluginComponents {
     id: string; title: string; trigger: "schedule" | "shutdown"; schedule?: RoutineSchedule;
     execution: "llm-session" | "notification-only"; suggestedScope?: string[]; digest: string;
   }>;
-  hooks: Array<{ event: string; matcher?: string; command: string[]; env?: Record<string, string>; timeoutMs: number; digest: string }>;
+  hooks: Array<{ event: string; matcher?: string; command: string[]; env?: Record<string, string>; timeoutMs: number; digest: string;
+    handlerType?: "http"; http?: import("../../hooks/http-hook-runner.js").HttpHookDefinition }>;
 }
 
 /** Plugin authority fields are copied verbatim from the manifest schema. */

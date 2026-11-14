@@ -20,7 +20,7 @@ process.stdin.on("end", () => {
     case "invalid": process.stdout.write("invalid JSON"); break;
     case "slow": setInterval(() => {}, 1000); break;
     case "decision": process.stdout.write('{"decision":"block","reason":"Review required"}'); break;
-    case "large": process.stdout.write("x".repeat(32 * 1024)); break;
+    case "large": process.stdout.write("x".repeat(128 * 1024)); break;
     default: throw new Error("Unknown contract fixture mode");
   }
 });

@@ -590,7 +590,7 @@ describe("native invocation permission evidence", () => {
     hooks.setCommandAuthorizer(authorizeCommand);
     hooks.setTrustedRegistry([], parseHookConfig({ hooks: { PreToolUse: [{ hooks: [{
       type: "command", command: ["node", resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs"), "block"],
-    }] }] } }).entries);
+    }] }] } }).entries.map(entry => ({ ...entry, configDir: resolve(__dirname, "../../../test/fixtures/hooks") })));
     const path = join(project, "blocked.txt");
     const execute = vi.spyOn(writeTool, "execute");
     const [result] = await withCodeCheckpoint({ sessionId, messageId: "blocked-write" }, () => run(executor(hooks), "write_file", { path, content: "must not write" }));

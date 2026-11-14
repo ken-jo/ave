@@ -28,14 +28,17 @@ import {
 } from "./script-hook-types.js";
 import { defaultHooksDir, type DiscoveredHook } from "./hook-discovery.js";
 import type { PluginHookOwner } from "./hook-registry.js";
+import type { HookSourceKind } from "./hook-source-policy.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { hookEventName, hookJsonInput } from "./hook-contract.js";
 import { isRecord } from "../shared/is-record.js";
+import { MAX_HOOK_CONTEXT_CHARS } from "./script-hook-types.js";
+import { runHttpHook, type HttpHookDefinition, type HttpHookRuntime } from "./http-hook-runner.js";
 import type { HookCommandAuthorizer } from "./hook-command-policy.js";
 import { MAX_TIMER_DELAY_MS, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { resolveScriptAnchor } from "./hook-config-trust.js";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { realpathSync, statSync } from "node:fs";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { getHostShellExecutionPlan, isIssuedHostShellExecutionPlan, isWindowsShellConsentCurrent } from "../permissions/sandbox-capability.js";
@@ -62,11 +65,12 @@ const log = createLogger("hook-runner");
 export interface RunOneHookOptions {
   // Defaults to DEFAULT_HOOK_TIMEOUT_MS.
   timeoutMs?: number;
-  // Defaults to process.cwd().
+  // Originating project/workspace directory; command cwd is bound by the hook definition.
   cwd?: string;
   // Host-owned admission for a trusted user command; enrollment is not permission.
   authorizeCommand?: HookCommandAuthorizer;
   abortSignal?: AbortSignal;
+  httpHooks?: HttpHookRuntime;
 }
 
 // Legacy scripts and config argv share the same fail-closed runner, environment and timeout gates.
@@ -75,6 +79,12 @@ export interface RunnableHook {
   hookType: HookEvent;
   // A lone .sh path uses the resolved interpreter; all other argv spawn directly without a shell.
   command: string[];
+  configDir?: string;
+  fileDependencies?: readonly string[];
+  handlerType?: "http";
+  http?: HttpHookDefinition;
+  validateTrust?: () => boolean;
+  hookSource?: HookSourceKind | "plugin";
   env?: Record<string, string>;
   // Optional matcher — surfaced to the hook via `AVE_HOOK_MATCHER`.
   matcher?: string;
@@ -107,7 +117,11 @@ export function runnableFromDiscovered(hook: DiscoveredHook): RunnableHook {
     id: hook.fileName,
     hookType: hook.hookType,
     command: [hook.path],
+    configDir: dirname(resolve(hook.path)),
+    fileDependencies: [hook.path],
     ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
+    ...(hook.validateTrust ? { validateTrust: hook.validateTrust } : {}),
+    hookSource: hook.hookSource ?? "user",
     hookPath: hook.path,
     source: "sh",
     commandIdentity: hook.sha256,
@@ -120,7 +134,7 @@ function isLegacyShellScript(command: string[]): boolean {
 }
 
 // Inject only hook metadata; buildSafeChildEnv supplies the secret-stripped environment.
-function buildHookEnv(payload: ScriptHookStdin, matcher: string | undefined): Record<string, string> {
+function buildHookEnv(payload: ScriptHookStdin, matcher: string | undefined, projectDir: string, cwd: string): Record<string, string> {
   // `event` is the closed-set surface (lifecycle events carry it explicitly; tool-use shapes leave it undefined → fall back to `hookType`).
   const event = payload.event ?? payload.hookType;
   return {
@@ -132,6 +146,8 @@ function buildHookEnv(payload: ScriptHookStdin, matcher: string | undefined): Re
     ...(payload.toolName !== undefined ? { AVE_HOOK_TOOL_NAME: payload.toolName } : {}),
     AVE_HOOK_SESSION_ID: payload.sessionId,
     AVE_HOOK_TRUST_ORIGIN: payload.trustOrigin,
+    AVE_HOOK_PROJECT_DIR: projectDir,
+    PWD: cwd,
     // Tool-use origin metadata lets hooks restrict a specific server or plugin via env or stdin.
     ...("mcpServerId" in payload && payload.mcpServerId !== undefined ? { AVE_HOOK_MCP_SERVER_ID: payload.mcpServerId } : {}),
     ...("pluginId" in payload && payload.pluginId !== undefined ? { AVE_HOOK_PLUGIN_ID: payload.pluginId } : {}),
@@ -148,6 +164,7 @@ export async function runOneHookScript(
   // Seal the same expanded argv across asynchronous approval and actual spawn.
   const runnable = { ...normalized, command: normalized.command.map(expandLeadingTilde),
     timeoutMs: normalized.timeoutMs ?? options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS,
+    ...(normalized.fileDependencies ? { fileDependencies: Object.freeze([...normalized.fileDependencies]) } : {}),
     ...(normalized.env ? { env: { ...normalized.env } } : {}) };
   Object.freeze(runnable.command);
   if (runnable.env) Object.freeze(runnable.env);
@@ -155,7 +172,16 @@ export async function runOneHookScript(
   // Timeout precedence is per-hook budget, caller option, then default.
   const timeoutMs = runnable.timeoutMs ?? options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
   const confinement = runnable.confinement;
-  const cwd = confinement?.generationRoot ?? options.cwd ?? process.cwd();
+  const projectDir = resolve(options.cwd ?? process.cwd());
+  let cwd = projectDir;
+  let directoryError: string | undefined;
+  if (runnable.handlerType !== "http") {
+    try {
+      if (!runnable.configDir) throw new Error("Hook configuration directory is missing");
+      cwd = realpathSync(runnable.configDir);
+      if (!statSync(cwd).isDirectory()) throw new Error("Hook configuration directory is unavailable");
+    } catch { directoryError = "Hook configuration directory is missing or unavailable"; }
+  }
   const start = Date.now();
   const inherited = turnExtensionPolicyContext.getStore();
   const abortSignal = options.abortSignal ?? inherited?.abortSignal;
@@ -164,8 +190,11 @@ export async function runOneHookScript(
   const forensics = {
     hookPath: runnable.hookPath,
     hookType: runnable.hookType,
+    ...(runnable.matcher === undefined ? {} : { matcher: runnable.matcher }),
     source: runnable.source ?? "sh",
-    commandIdentity: normalized.commandIdentity ?? hashCommandArgv(normalized.command),
+    commandIdentity: normalized.commandIdentity ?? (normalized.handlerType === "http" ? sha256Hex(JSON.stringify(normalized.http)) : hashCommandArgv(normalized.command)),
+    handlerType: runnable.handlerType ?? "command",
+    hookSource: runnable.hookSource ?? (runnable.pluginOwner ? "plugin" : "user"),
     ...(runnable.pluginOwner ? { pluginOwner: runnable.pluginOwner } : {}),
   } as const;
 
@@ -179,6 +208,7 @@ export async function runOneHookScript(
     ...extra,
   });
   if (abortSignal?.aborted) return deny("Hook execution cancelled");
+  if (directoryError) return deny(directoryError);
 
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_DELAY_MS) {
     return deny("hook timeout must be a positive supported timer delay");
@@ -193,7 +223,22 @@ export async function runOneHookScript(
     return deny(`failed to serialise hook payload: ${(error as Error).message}`);
   }
 
-  const hookEnv = buildHookEnv(payload, runnable.matcher);
+  if (runnable.handlerType === "http") {
+    if (!runnable.http) return deny("HTTP hook definition is missing");
+    if (runnable.validateTrust && !runnable.validateTrust()) return deny("Hook definition changed before execution");
+    try {
+      const response = await runHttpHook(runnable.http, JSON.parse(stdinJson) as ScriptHookStdin, {
+        hookId: runnable.id, runtime: options.httpHooks, timeoutMs, signal: abortSignal, validateTrust: runnable.validateTrust,
+      });
+      return hookOutcome(forensics, deny, { code: 0, stdout: response.stdout, stderr: "", stdoutCapped: false,
+        timedOut: false, cancelled: abortSignal?.aborted === true, timeoutMs, hookId: runnable.id,
+        hookType: runnable.hookType, durationMs: Date.now() - start });
+    } catch {
+      return deny("HTTP hook request failed");
+    }
+  }
+
+  const hookEnv = buildHookEnv(payload, runnable.matcher, projectDir, cwd);
   let admittedPlan: HostShellExecutionPlan | undefined;
   let refreshCommandAllowed: (() => Promise<void>) | undefined;
   let assertCommandAllowed: (() => void) | undefined;
@@ -201,7 +246,7 @@ export async function runOneHookScript(
     try {
       const admission = await raceWithAbort(turnExtensionPolicyContext.run({
         ...inherited, allowExternalHooks: inherited?.allowExternalHooks !== false, abortSignal,
-      }, () => options.authorizeCommand!(runnable, payload, cwd)), abortSignal);
+      }, () => options.authorizeCommand!(runnable, payload, cwd, projectDir)), abortSignal);
       if (abortSignal?.aborted) return deny("Hook execution cancelled");
       if (admission.decision !== "allow") return deny(`hook command denied: ${admission.reason}`);
       admittedPlan = admission.plan;
@@ -284,18 +329,17 @@ export async function runOneHookScript(
   const sandboxEnabled = confinement
     ? isPluginWorkerConfinementActive()
     : (admittedPlan ?? getHostShellExecutionPlan()).mode === "asrt";
-  const scriptAnchor = resolveScriptAnchor(runnable.command);
-  const canonicalAnchor = scriptAnchor === null ? undefined : resolve(canonicalizePathForMatch(resolve(cwd, scriptAnchor)));
-  // Only an exact script inside the protected hook directory gets a read exception. An arbitrary command argument must never relax a secret floor.
-  const userScriptReads = canonicalAnchor !== undefined && isPathWithin(
-    caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(canonicalAnchor),
-  ) ? [canonicalAnchor] : [];
+  // Only host-recorded, reviewed file dependencies inside this hook directory can pierce its read floor.
+  const userScriptReads = (runnable.fileDependencies ?? [])
+    .map((file) => resolve(canonicalizePathForMatch(resolve(cwd, file))))
+    .filter((file) => isPathWithin(caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(file)));
   // A user hook has no plugin, so its egress gets no extension allowlist.
   const hookEgressOwner: WorkerEgressOwner = confinement
     ? { kind: "worker", role: "hook", pluginId: confinement.pluginId }
     : { kind: "worker", role: "hook", pluginId: undefined, instanceId: sha256Hex(runnable.id) };
   const assertHookStillAdmitted = (): void => {
     abortSignal?.throwIfAborted();
+    if (runnable.validateTrust && !runnable.validateTrust()) throw new Error("Hook definition changed before execution");
     if (admittedPlan && !isHookShellPlanCurrent(admittedPlan)) {
       throw new Error("Hook shell execution policy changed before spawn");
     }
@@ -314,10 +358,10 @@ export async function runOneHookScript(
         holderEnv: hookHostEnv,
         cwd,
         allowRead: confinement ? [confinement.generationRoot] : userScriptReads,
-        allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        allowWrite: confinement ? [confinement.dataDir] : [projectDir],
         ownedReadRoots: confinement ? [confinement.generationRoot] : [],
         egressOwner: hookEgressOwner,
-        workspaceRoots: confinement ? [] : [cwd],
+        workspaceRoots: confinement ? [] : [projectDir],
         assertStillValid: assertHookStillAdmitted,
         ...(abortSignal ? { signal: abortSignal } : {}),
       });
@@ -340,7 +384,7 @@ export async function runOneHookScript(
         baseEnv: spawnEnv,
         cwd,
         allowRead: confinement ? [confinement.generationRoot] : userScriptReads,
-        allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        allowWrite: confinement ? [confinement.dataDir] : [projectDir],
         egressOwner: hookEgressOwner,
         refreshStillValid: refreshCommandAllowed,
         // A host-classified user hook on its admitted srt-win plan keeps that route under a container extension backend.
@@ -365,7 +409,7 @@ export async function runOneHookScript(
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
         sandboxHome,
-        allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        allowWrite: confinement ? [confinement.dataDir] : [projectDir],
         ownPluginReads: confinement ? [confinement.generationRoot] : userScriptReads,
         tempPrincipal: confinement ? { kind: "plugin", id: confinement.pluginId }
           : { kind: "hook", id: sha256Hex(runnable.id) },
@@ -411,7 +455,7 @@ export async function runOneHookScript(
   }
   try {
     if (refreshError !== undefined) throw refreshError;
-    assertCommandAllowed?.();
+    assertHookStillAdmitted();
   } catch (error) {
     if (windowsSpawn) forceKillManagedChildProcess(windowsSpawn.child, "hook command permission changed");
     wrappedEgress?.release();
@@ -622,7 +666,9 @@ function hookOutcome(forensics: HookResultForensics, deny: HookDeny, run: Observ
       rawStdout: stdout, exitCode: code, timedOut: false, durationMs };
   }
   return { ...forensics, decision: parsed.action, reason: parsed.reason, rawStdout: stdout, exitCode: code,
-    timedOut: false, durationMs, ...(parsed.block ? { blockFeedback: parsed.reason } : {}) };
+    timedOut: false, durationMs, ...(parsed.block ? { blockFeedback: parsed.reason } : {}),
+    ...(parsed.additionalContext === undefined ? {} : { additionalContext: parsed.additionalContext }),
+    ...(parsed.updatedInput === undefined ? {} : { updatedInput: parsed.updatedInput }) };
 }
 
 /** A stable reason code, when the refusal has one, so the deny names it. A localized container refusal already ends
@@ -737,30 +783,32 @@ function shellEnvAssignments(env: Record<string, string>): string {
     .join(" ");
 }
 
-// Unsupported control fields reject stdout so mutation/context injection cannot silently succeed; no event retains the legacy parser contract.
+// Unknown controls fail closed; only tool admission events can replace input.
 export function parseHookStdout(stdout: string, event?: HookEvent): ScriptHookStdout | null {
   const trimmed = stdout.trim();
-  if (trimmed.length === 0) return event === undefined ? null : { action: "allow", reason: "hook completed" };
-  // Tolerate code-fence wrapping.
+  if (!trimmed) return event === undefined ? null : { action: "allow", reason: "hook completed" };
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
   const slice = trimmed.slice(start, end + 1);
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(slice);
-  } catch {
-    return null;
-  }
+  try { parsed = JSON.parse(slice); } catch { return null; }
   if (!isRecord(parsed)) return null;
+  const canMutate = event === "pre" || event === "perm";
+  const influences = (value: Record<string, unknown>): Pick<ScriptHookStdout, "additionalContext" | "updatedInput"> | null => {
+    if (value.additionalContext !== undefined && (event === undefined || typeof value.additionalContext !== "string")) return null;
+    if (value.updatedInput !== undefined && (!canMutate || !isRecord(value.updatedInput))) return null;
+    return { ...(typeof value.additionalContext === "string" ? { additionalContext: value.additionalContext.slice(0, MAX_HOOK_CONTEXT_CHARS) } : {}),
+      ...(isRecord(value.updatedInput) ? { updatedInput: value.updatedInput } : {}) };
+  };
   if (event === undefined || "action" in parsed) {
-    if (parsed.action !== "allow" && parsed.action !== "deny") return null;
+    if (parsed.action !== "allow" && parsed.action !== "deny" && !(canMutate && parsed.action === "modify")) return null;
     if (typeof parsed.reason !== "string") return null;
-    // Legacy output retains its bounded reason and does not accept mixed decisions.
-    if (["decision", "hookSpecificOutput", "continue", "stopReason", "updatedInput", "updatedPermissions",
-      "permissionDecision", "additionalContext", "suppressOutput", "systemMessage", "async", "asyncTimeout"]
-      .some((key) => key in parsed)) return null;
-    return { action: parsed.action, reason: parsed.reason.slice(0, 280) };
+    if (["decision", "hookSpecificOutput", "continue", "stopReason", "updatedPermissions", "permissionDecision",
+      "suppressOutput", "systemMessage", "async", "asyncTimeout"].some((key) => key in parsed)) return null;
+    const influence = influences(parsed);
+    if (!influence || parsed.action === "modify" && influence.updatedInput === undefined || parsed.action === "deny" && influence.updatedInput !== undefined) return null;
+    return { action: parsed.action === "deny" ? "deny" : "allow", reason: parsed.reason.slice(0, 280), ...influence };
   }
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/u.exec(trimmed);
   if ((fenced?.[1].trim() ?? trimmed) !== slice) return null;
@@ -772,37 +820,40 @@ export function parseHookStdout(stdout: string, event?: HookEvent): ScriptHookSt
   let reason = parsed.stopReason ?? parsed.reason ?? "hook completed";
   if (parsed.decision !== undefined) {
     if (parsed.decision !== "block" && parsed.decision !== "allow") return null;
-    if (parsed.decision === "block") {
-      blocked = true;
-      reason = parsed.reason ?? "hook blocked";
-    }
+    if (parsed.decision === "block") { blocked = true; reason = parsed.reason ?? "hook blocked"; }
   }
+  let influence: Pick<ScriptHookStdout, "additionalContext" | "updatedInput"> = {};
   if (parsed.hookSpecificOutput !== undefined) {
     const specific = parsed.hookSpecificOutput;
     if (!isRecord(specific) || specific.hookEventName !== hookEventName(event)) return null;
+    const extra = influences(specific);
+    if (!extra) return null;
+    influence = extra;
     if (event === "pre") {
-      if (Object.keys(specific).some((key) => !["hookEventName", "permissionDecision", "permissionDecisionReason"].includes(key))) return null;
-      if (specific.permissionDecision !== "allow" && specific.permissionDecision !== "deny") return null;
+      if (Object.keys(specific).some((key) => !["hookEventName", "permissionDecision", "permissionDecisionReason", "additionalContext", "updatedInput"].includes(key))) return null;
+      if (specific.permissionDecision !== undefined && specific.permissionDecision !== "allow" && specific.permissionDecision !== "deny") return null;
       if (specific.permissionDecisionReason !== undefined && typeof specific.permissionDecisionReason !== "string") return null;
-      if (specific.permissionDecision === "deny") {
-        blocked = true;
-        reason = specific.permissionDecisionReason ?? "hook denied tool use";
-      }
+      if (specific.permissionDecision === "deny") { blocked = true; reason = specific.permissionDecisionReason ?? "hook denied tool use"; }
+      if (specific.updatedInput !== undefined && specific.permissionDecision !== "allow") return null;
     } else if (event === "perm") {
-      if (Object.keys(specific).some((key) => !["hookEventName", "decision"].includes(key))) return null;
+      if (Object.keys(specific).some((key) => !["hookEventName", "decision", "additionalContext", "updatedInput"].includes(key))) return null;
       const decision = specific.decision;
-      if (!isRecord(decision) || (decision.behavior !== "allow" && decision.behavior !== "deny")) return null;
-      if (Object.keys(decision).some((key) => !["behavior", "message"].includes(key))) return null;
-      if (decision.message !== undefined && typeof decision.message !== "string") return null;
-      if (decision.behavior === "deny") {
-        blocked = true;
-        reason = decision.message ?? "hook denied permission request";
+      if (decision !== undefined) {
+        if (!isRecord(decision) || decision.behavior !== "allow" && decision.behavior !== "deny") return null;
+        if (Object.keys(decision).some((key) => !["behavior", "message", "updatedInput"].includes(key))) return null;
+        if (decision.message !== undefined && typeof decision.message !== "string") return null;
+        if (decision.behavior === "deny") { blocked = true; reason = decision.message ?? "hook denied permission request"; }
+        if (decision.updatedInput !== undefined) {
+          if (specific.updatedInput !== undefined || decision.behavior !== "allow" || !isRecord(decision.updatedInput)) return null;
+          influence.updatedInput = decision.updatedInput;
+        }
       }
-    } else return null;
+      if (influence.updatedInput !== undefined && (!isRecord(decision) || decision.behavior !== "allow")) return null;
+    } else if (Object.keys(specific).some((key) => !["hookEventName", "additionalContext"].includes(key))) return null;
   }
-  // `continue: false` stops outright, so only a bare block can ask a stop hook to continue the run.
+  if (blocked && influence.updatedInput !== undefined) return null;
   const block = parsed.decision === "block" && parsed.continue !== false;
-  return { action: blocked ? "deny" : "allow", reason: String(reason), ...(block ? { block: true as const } : {}) };
+  return { action: blocked ? "deny" : "allow", reason: String(reason), ...(block ? { block: true as const } : {}), ...influence };
 }
 
 // Preserve caller order and stop at the first denial; later hooks must not execute or override it.
@@ -814,11 +865,15 @@ export async function runHookChain(
   decision: "allow" | "deny";
   reason: string;
   results: ScriptHookInvocationResult[];
+  updatedInput?: Record<string, unknown>;
 }> {
   const results: ScriptHookInvocationResult[] = [];
+  let updatedInput: Record<string, unknown> | undefined;
   for (const hook of hooks) {
-    const r = await runOneHookScript(hook, payload, options);
+    const currentPayload = updatedInput && "input" in payload ? { ...payload, input: updatedInput } : payload;
+    const r = await runOneHookScript(hook, currentPayload, options);
     results.push(r);
+    if (r.updatedInput) updatedInput = r.updatedInput;
     if (r.decision === "deny") {
       const label = identityLabel(hook);
       return { decision: "deny", reason: `${label}: ${r.reason}`, results };
@@ -828,6 +883,7 @@ export async function runHookChain(
     decision: "allow",
     reason: hooks.length === 0 ? "no hooks" : `${hooks.length} hook(s) allowed`,
     results,
+    ...(updatedInput ? { updatedInput } : {}),
   };
 }
 

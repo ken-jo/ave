@@ -19,6 +19,7 @@ export type HookCommandAuthorizer = (
   hook: RunnableHook,
   payload: ScriptHookStdin,
   cwd: string,
+  projectDir?: string,
 ) => Promise<{ decision: "allow" | "deny"; reason: string; plan?: HostShellExecutionPlan; assertAllowed?: () => void; refreshAllowed?: () => Promise<void> }>;
 
 // Enrollment supplies executable identity; the shared pipeline supplies authority.
@@ -26,7 +27,7 @@ export function createHookCommandAuthorizer(deps: {
   permissionManager: Pick<PermissionManager, "ensureProjectRulesLoaded" | "checkDetailed" | "dispatchReviewer" | "resolveReviewedPermission" | "getPolicyEpoch" | "getMode">;
   approvalGate: Pick<ApprovalGate, "requestAndWait">;
 }): HookCommandAuthorizer {
-  return async (hook, payload, cwd) => {
+  return async (hook, payload, cwd, projectDir = cwd) => {
     const command = hook.command.map(expandLeadingTilde).map(shellQuote).join(" ");
     const turnPolicy = turnExtensionPolicyContext.getStore();
     const abortSignal = turnPolicy?.abortSignal;
@@ -38,10 +39,10 @@ export function createHookCommandAuthorizer(deps: {
     const cwdIdentity = captureShellWorkingDirectoryIdentity(cwd);
     if (!cwdIdentity) return { decision: "deny", reason: "Hook working directory is unavailable" };
     const plan = getHostShellExecutionPlan();
-    await deps.permissionManager.ensureProjectRulesLoaded(cwd);
+    await deps.permissionManager.ensureProjectRulesLoaded(projectDir);
     const context = {
       ruleSubject: { kind: "shell", dialect: "bash", command, cwd },
-      projectRulesCwd: cwd,
+      projectRulesCwd: projectDir,
       sessionId: payload.sessionId,
       headless: turnPolicy?.headless,
       ownerUnattended: turnPolicy?.ownerUnattended,
@@ -68,12 +69,12 @@ export function createHookCommandAuthorizer(deps: {
       policyMode: result.pipelineRequest?.mode ?? deps.permissionManager.getMode(),
       headless: result.pipelineRequest?.headless === true,
       source: "builtin", category: "shell", trustOrigin, executionCwd: cwd,
-      allowedDirectories: [cwd], pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
+      allowedDirectories: [projectDir], pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
     });
     if (result.reviewer) {
       const review = await deps.permissionManager.dispatchReviewer("bash", {
         invocationId: id, sessionId: payload.sessionId, source: "builtin", category: "shell", pathFields: [],
-        finalInput: args, executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [],
+        finalInput: args, executionCwd: cwd, allowedDirectories: [projectDir], sensitivePathsAdjacent: [],
         trustOrigin, permissionDecision: result, evaluationContext, hostShellExecutionPlan: plan,
       }, { hookId: hook.id, event: payload.hookType }, { lane: result.reviewer.route, abortSignal });
       result = deps.permissionManager.resolveReviewedPermission(result, review);

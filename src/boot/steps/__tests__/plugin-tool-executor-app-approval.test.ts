@@ -24,7 +24,8 @@ import type { BootContext } from "../../context.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
 vi.mock("../../conversation.js", () => ({ createHookRunner: () => new HookRunner() }));
-vi.mock("../hook-system-wiring.js", () => ({ wireHookSystem: async () => ({ manager: new ScriptHookManager() }) }));
+vi.mock("../hook-system-wiring.js", () => ({ wireHookSystem: async () => ({ manager: new ScriptHookManager(),
+  policy: { allowedHttpHookUrls: [], httpHookAllowedEnvVars: [] } }) }));
 vi.mock("../../../permissions/permission-settings-store.js", () => ({
   readPermissionSettings: () => ({ permissions: { additionalDirectories: [] } }),
 }));

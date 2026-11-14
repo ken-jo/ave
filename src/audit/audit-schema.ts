@@ -1,7 +1,8 @@
 /** Permission rows discriminate on decision in a dedicated channel; telemetry rows use type. See docs/architecture/permission-policy-design.md, Layer 7. */
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
-import type { HookTrustOrigin, ScriptHookType } from "../hooks/script-hook-types.js";
+import type { HookTrustOrigin, ScriptHookType, HookFailureReason } from "../hooks/script-hook-types.js";
+import type { HookSourceKind } from "../hooks/hook-source-policy.js";
 import type { HostShellExecutionPlanAuditProjection } from "../permissions/host-shell-execution-plan.js";
 import type { ExecutionPlanAuditProjection } from "../permissions/execution-router.js";
 import type {
@@ -31,14 +32,17 @@ export interface HookResult {
   /** Absent matcher means match all. */
   matcher?: string;
   /** Command handler type. */
-  handlerType?: "command";
+  handlerType?: "command" | "http";
+  additionalContextChars?: number;
+  inputModified?: true;
+  hookSource?: HookSourceKind | "plugin";
   /** Hash the resolved script or verbatim unanchored command to identify exactly what ran. */
   commandIdentity?: string;
   /** Distinguish script hooks from declarative commands; older rows omit this field. */
   source?: "sh" | "config";
   /** Observe records non-blocking denial signals; blocking events emit allow or deny. */
   decision?: "allow" | "deny" | "observe";
-  failureReason?: "timeout" | "nonzero-exit" | "spawn-error" | "bad-output";
+  failureReason?: HookFailureReason;
 }
 
 /** Snapshot routine scope as an untyped record so audit shape survives runtime schema changes. */

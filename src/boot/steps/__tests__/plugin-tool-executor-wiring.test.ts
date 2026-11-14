@@ -23,7 +23,8 @@ vi.mock("../../conversation.js", () => ({
 }));
 
 vi.mock("../hook-system-wiring.js", () => ({
-  wireHookSystem: vi.fn(async () => ({ manager: {} })),
+  wireHookSystem: vi.fn(async () => ({ manager: { setHttpHookRuntime: vi.fn() },
+    policy: { allowedHttpHookUrls: [], httpHookAllowedEnvVars: [] } })),
 }));
 
 vi.mock("../../../tools/executor.js", () => ({

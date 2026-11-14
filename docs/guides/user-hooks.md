@@ -1,10 +1,10 @@
 # User hooks
 
-Ave runs trusted command hooks through the existing `ScriptHookManager` and `runOneHookScript` pipeline. See the [runtime design](../architecture/hook-runtime-expansion-design.md) for trust, permission composition, and gated handler types.
+Ave runs reviewed command and HTTP hooks through one trust and dispatch pipeline. See the [runtime design](../architecture/hook-runtime-expansion-design.md) for source policy, permission composition and handler limits.
 
 ## Configuration
 
-Configure user hooks in `~/.config/ave/hooks/hooks.json`. Legacy `pre-*.sh`, `post-*.sh`, and `perm-*.sh` files remain in that directory. Application preferences remain in `ave-settings.json` under the application user-data directory. Hooks are not loaded from application preferences or a workspace settings file.
+Configure user hooks in `~/.config/ave/hooks/hooks.json`. Legacy `pre-*.sh`, `post-*.sh`, and `perm-*.sh` files remain in that directory. Application preferences remain in `ave-settings.json` under the application user-data directory. Hook source trust and administrator policy are separate from ordinary application preferences.
 
 ```json
 {
@@ -14,7 +14,7 @@ Configure user hooks in `~/.config/ave/hooks/hooks.json`. Legacy `pre-*.sh`, `po
       "matcher": "bash",
       "hooks": [{
         "type": "command",
-        "command": ["node", "~/.config/ave/hooks/check-command.cjs"],
+        "command": ["node", "check-command.cjs"],
         "timeoutMs": 5000
       }]
     }]
@@ -22,15 +22,58 @@ Configure user hooks in `~/.config/ave/hooks/hooks.json`. Legacy `pre-*.sh`, `po
 }
 ```
 
-Commands use argv. Ave explicitly expands a leading `~` in each argument; it does not expand variables, quoting, pipes, or substitutions. Use an array for paths or arguments containing spaces. A string command is split on whitespace. A command must reference a local script or executable that can be hashed for trust. Relative paths resolve from the hook process's working directory; absolute paths are preferable.
+Commands use argv. Ave explicitly expands a leading `~` in each argument; it does not expand variables, quoting, pipes, or substitutions. Use an array for paths or arguments containing spaces. A string command is split on whitespace. Every command runs from its bound configuration directory: the directory containing `hooks.json`, or the containing directory for a legacy script. Plugin commands use the physical configuration directory when present, otherwise the package directory hosting their virtual configuration. Use `AVE_HOOK_PROJECT_DIR` to find the original project/workspace directory; `PWD` is the command's actual cwd.
 
-New or changed scripts and configuration are quarantined at discovery. Review them with `/permission hooks list`, then enroll the reviewed file with `/permission hooks accept hooks.json` or `/permission hooks accept pre-check.sh`. Accepting `hooks.json` approves that configuration and its local script anchors: argv[0] when it is a file path, otherwise the first later path-like argument. Use one explicit script path before other file arguments. PATH-resolved interpreters are not content-pinned. Discovery runs at startup and when hook trust commands refresh the registry; hashes are not rechecked before every invocation. Enrollment requires local user input.
+The executable keeps its existing path binding and trust checks. A command still needs at least one existing regular-file trust anchor. For every argument after the executable that does not start with `-`, Ave resolves the value against that fixed cwd and follows symlinks. If it names an existing regular file, the file's canonical identity and contents enter the trust hash. Thus `policy.cjs`, `./policy.cjs`, scripts after an interpreter or environment launcher, preloads, multiple scripts and regular data files are covered without guessing the command's grammar. Missing files and non-regular targets remain ordinary string arguments; other resolution or read errors refuse trust and execution.
+
+Argument values otherwise stay unchanged. Options starting with `-` remain verbatim: `--output=/tmp/result.json` keeps its option semantics. The exact definition hash covers all arguments, including options and values that name no file. Changing any argument, an included file's contents or symlink target, or whether an operand names a regular file requires re-trust. The bound directory is part of command identity, so a package update that moves a command to another generation directory requires renewed consent even when file bytes are unchanged.
+
+New or changed scripts and configuration are quarantined and skipped until you trust their current hash. Open **Settings → Permissions → Review hook trust** to inspect source, hash and state, then choose **Trust this hash** or **Disable**. These controls apply to the displayed source, so identically named files from different sources remain distinct. The user-source CLI alternative is `/permission hooks list`, then `/permission hooks accept hooks.json` or `/permission hooks accept pre-check.sh`. Accepting `hooks.json` approves that exact configuration and its current referenced-file set. PATH-resolved interpreters are not content-pinned. A changed definition needs a new review; trust is not a blanket grant for future edits. Enrollment requires local user input and uses the existing lockfile and quarantine.
+
+Administrator-managed hooks are trusted by policy and cannot be disabled through user controls. Administrator `allowManagedHooksOnly` excludes user, system, project and plugin hook sources. A user-level disable-all affects non-managed hooks only. Project hooks need both a trusted project and a reviewed definition; user and system hooks remain independent of project trust. No hook signing is required.
+
+| Source | Location and review |
+| --- | --- |
+| User | `~/.config/ave/hooks/`; review the current script or `hooks.json` hash |
+| System | `hooks/` beside the administrator policy file; reviewed as a non-managed source |
+| Project | `<project>/.ave/hooks/`; trust the project in the review surface, then trust each listed definition |
+| Managed | The administrator policy file's `hooks` field; trusted by policy |
+| Plugin | The installed package's reviewed hook definition and fingerprint; package updates can require renewed consent |
+
+Sources run in order: managed, user, system, plugins in their existing activation order, then the current trusted project. Within a source, legacy scripts run by filename before declarative handlers in file order. Any denial stops the chain; a later source cannot undo it or grant target permission.
+
+The administrator policy is `/Library/Application Support/Ave/policy.json` on macOS, `/etc/ave/policy.json` on Linux, and `%ProgramData%\Ave\policy.json` on Windows. Only that protected source supplies managed hooks or HTTP exceptions. Ave loads this policy at startup; restart after changing its hook or network policy. Changed managed-policy bytes invalidate the previously loaded hooks until restart; policy is not reloaded live. For example:
+
+```json
+{
+  "allowManagedHooksOnly": true,
+  "allowedHttpHookUrls": ["https://hooks.example.test/check"],
+  "httpHookAllowedEnvVars": ["HOOK_TOKEN"],
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "bash",
+      "hooks": [{ "type": "http", "url": "https://hooks.example.test/check" }]
+    }]
+  }
+}
+```
+
+To temporarily disable non-managed hooks, set `"disableAllHooks": true` at the top level of the user `hooks.json`. It cannot suppress managed hooks. A malformed or unreadable administrator policy refuses non-managed execution and supplies no managed hooks or HTTP exceptions; fix the policy before relying on hook execution.
 
 Enrollment does not grant shell authority. Hook commands enter the central permission pipeline with their actual argv, cwd, sandbox plan and trusted turn context. Auto requests consume reviewer evidence before any human fallback; ordinary cards may offer their supported rule and scope choices. Forced floors remain one-shot. Headless requests that require a human deny with no-retry guidance. Policy, normalized effect and physical cwd identity are rechecked before spawn. Hooks never override target-tool permission or dispatch privileged chat commands. Authenticated, session-bound remote users run hooks through the same path as local users; see the [owner decision 2026-11-02](../architecture/permission-decision-tree.md).
 
-Launch assumes host-side hook files remain stable during admission and sandbox preparation. File identity is not pinned against concurrent replacement by another host process; discovery-time hashes and path checks do not provide that guarantee.
+After asynchronous approval and sandbox preparation, Ave synchronously resolves every non-option operand again and hashes the resulting file set immediately before spawning a command, including files that appeared or disappeared since review. A mismatch refuses execution. File-based non-managed sources use the existing quarantine for re-trust; plugin hooks require renewed package consent without moving retained package files. Managed definitions receive the same check but remain in place and refuse execution until policy is reloaded at restart. HTTP requests retain their current-definition check before sending. This is a final content check, not an immutable execution snapshot: another process with the same user's filesystem authority can still replace a file between that hash read and the OS spawn. Hooks are not copied to a relocated execution path or pinned against that narrow replacement race.
 
-When OS isolation is active on macOS or Linux, user hooks use the existing sandbox wrapper, sensitive-path floors, network policy, disposable HOME, and a separate hook temporary directory. Only the hook's cwd is added as a write scope. An exact canonical script beneath the protected hook configuration directory can be re-allowed for reading; anchors in other protected locations, including links escaping the hook directory, do not receive a read exception. The hooks configuration directory stays write-protected. A wrap failure refuses execution. User hooks follow the actual host shell execution plan and ordinary mode/human routing. Host execution consumes a one-use exact-action receipt: a policy/reviewer allow binds that exact action, while any supported authenticated human allow choice supplies the same native receipt. Remembering a rule does not make the spawn receipt reusable. The runner rechecks the admitted sandbox generation before spawning. Bundled plugin hooks retain their existing confined relay. With OS isolation disabled, shell permission checks still apply and no OS confinement is claimed.
+**Content-trust limits:** trusting a hook does not pin:
+
+- Files selected only through embedded interpreter flags, inferred extensions, environment variables or transitive imports, including sibling modules.
+- Executables resolved through `PATH`.
+- A same-user file replacement after the final pre-spawn hash.
+- Files loaded dynamically by inline `python -c` source; the definition hash covers the inline source itself.
+
+Keep hook scripts self-contained in the bound configuration directory. The referenced [Codex](https://developers.openai.com/codex/hooks) and [Claude Code](https://code.claude.com/docs/en/hooks#security-considerations) hosts pin the hook definition, not script contents, so Ave's additional referenced-file content checks are stricter by design. See the [residual risks](../architecture/hook-runtime-expansion-design.md#67-residual-risks) for the design boundary.
+
+When OS isolation is active on macOS or Linux, user hooks use the existing sandbox wrapper, sensitive-path floors, network policy, disposable HOME, and a separate hook temporary directory. The original project/workspace directory remains the write scope; binding execution to the configuration directory does not make it writable. An exact canonical reviewed file beneath the protected user-hook directory can be re-allowed for reading; files in other protected locations, including links escaping that directory, do not receive a read exception merely because they enter the trust hash. The hooks configuration directory stays write-protected. A wrap failure refuses execution. User hooks follow the actual host shell execution plan and ordinary mode/human routing. Host execution consumes a one-use exact-action receipt: a policy/reviewer allow binds that exact action, while any supported authenticated human allow choice supplies the same native receipt. Remembering a rule does not make the spawn receipt reusable. The runner rechecks the admitted sandbox generation before spawning. Bundled plugin hooks retain their existing confined relay and use the same referenced-file trust rule. With OS isolation disabled, shell permission checks still apply and no OS confinement is claimed.
 
 Matchers follow the [hooks reference](https://code.claude.com/docs/en/hooks#matcher-patterns) (accessed 2026-10-25). Omit the matcher, or use `""` or `"*"`, to match all. A pattern containing only letters, digits, `_`, `-`, spaces, `,` and `|` is a case-sensitive exact name or list of exact names: `Edit|Write` and `Edit, Write` match either name exactly. Any other pattern is a case-sensitive, unanchored JavaScript regular expression: `Edit.*` also matches `NotebookEdit`; `^Edit$` matches only `Edit`. Script `# ave-hook-matcher:` headers use the same syntax, including lists with spaces. Matchers compile once per registry build.
 
@@ -44,7 +87,7 @@ Pattern and subject limits are each 256 UTF-16 code units, covering long tool an
 
 ## Events
 
-Every invocation receives one newline-terminated JSON object on stdin. The public envelope is `{schema_version: 1, hook_event_name: string, session_id: string, cwd: string}`. `hook_event_name` is one of the exact event names below. `cwd` is the hook process's actual working directory, which defaults to the host process's cwd; it is not a promise of the conversation's workspace root. The discriminated TypeScript schema is [`HookJsonInput`](../../src/hooks/hook-contract.ts).
+Every command invocation receives one newline-terminated JSON object on stdin; HTTP handlers receive the same envelope in their request body. The public envelope is `{schema_version: 1, hook_event_name: string, session_id: string, cwd: string}`. `hook_event_name` is one of the exact event names below. For commands, `cwd` is the bound configuration directory where the process runs; the original project/workspace directory is in `AVE_HOOK_PROJECT_DIR`. HTTP handlers receive the dispatch cwd and have no local process directory. The discriminated TypeScript schema is [`HookJsonInput`](../../src/hooks/hook-contract.ts).
 
 Existing camelCase fields remain available alongside the public fields. All inputs retain `sessionId` and `trustOrigin`. Tool events retain `hookType` and `event` aliases `pre`, `post`, and `perm`; lifecycle events use their full event name. Tool events also retain `source`, `category`, and optional `mcpServerId` and `pluginId`.
 
@@ -71,7 +114,7 @@ Fields depend on the dispatch site; an unavailable optional field is omitted. Pr
 
 The [permission decision tree](../architecture/permission-decision-tree.md) owns ordering. In-process argument hooks finish rewriting before authorization. The user script `PreToolUse` hook runs in admission before the target tool's permission checks and approval card. A blocked target creates no target approval card. The hook command's own shell authority remains separately enforced.
 
-Script decisions are block-only: `allow` means no objection and cannot grant the target tool permission, bypass a card or change its input. Permission-request hooks can also block, never elevate a decision. Cancelling the turn interrupts pending hook admission and terminates only that hook’s managed process group; a late hook answer cannot start the tool.
+`allow` means no objection and cannot grant the target tool permission or bypass a card. Trusted or managed pre-tool and permission hooks can replace tool input; the replacement goes through complete preparation, classification and permission checks again. Earlier approval does not authorize changed arguments. Denial wins over mutation. Cancelling the turn interrupts pending hook admission and terminates only that hook’s managed process group; a late hook answer cannot start the tool.
 
 ## Results and failures
 
@@ -84,11 +127,11 @@ Script decisions are block-only: `allow` means no objection and cannot grant the
 | Malformed, unsupported, or oversized output | Explicit failure; blocking events fail closed |
 | Timeout or spawn/wrap/admission failure | Explicit failure; blocking events fail closed |
 
-`PreToolUse`, `PermissionRequest`, and `UserPromptSubmit` enforce denials. Tool hook denials, post-tool feedback, and `PostToolUseFailure` feedback reach the model through the tool result path. A refused prompt is reported to the user before the model is called. Observe-only lifecycle events report failures to the host log and preserve turn/session control flow; events other than `PostToolUseFailure`, `Stop`, and `SubagentStop` do not inject context. The hook chain stops at its first denial, including for observation events. Legacy files run first in filename order, followed by configured handlers in file order.
+`PreToolUse`, `PermissionRequest`, and `UserPromptSubmit` enforce denials. Tool hook denials, post-tool feedback, and `PostToolUseFailure` feedback reach the model through the tool result path. A refused prompt is reported to the user before the model is called. Observe-only lifecycle events report failures to the host log and preserve turn/session control flow; supported `additionalContext` is delivered separately as attributed context. The hook chain stops at its first denial, including for observation events. Legacy files run first in filename order, followed by configured handlers in file order.
 
 `Stop` and `SubagentStop` follow the [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) (accessed 2026-10-22) when a turn ends cleanly (`end_turn`). Exit `2` (its stderr) or `{ "decision": "block", "reason": "..." }` keeps the run going: the reason is added to the conversation as a host-generated input and the model takes another round. `stop_hook_active` is `true` while such a continuation is in progress; check it to avoid blocking forever. At most 8 consecutive continuations run per turn, matching the reference default; the next block ends the turn with a notice. `continue: false`, a legacy `action: "deny"`, and any failure end the run normally. A cancelled turn never continues. Top-level turns use `Stop`; sub-agent runs use `SubagentStop`. Other outcomes, such as errors, interruptions, and round caps, still dispatch `Stop` or `SubagentStop` observe-only.
 
-Handlers default to a five-second ceiling. `timeoutMs` is a positive integer in milliseconds, clamped to 5000 by configuration parsing; invalid configuration budgets warn and use the default. Execution expiry terminates the managed process/group and reports `hook timed out after <budget>ms`. Approval waiting uses the existing approval gate's separate deadline. Stdout and stderr each have a 16 KiB capture bound. Oversized stdout fails rather than accepting a truncated decision. Keep decisions and diagnostics concise.
+Handlers default to a five-second ceiling. `timeoutMs` is a positive integer in milliseconds, clamped to 5000 by configuration parsing; invalid configuration budgets warn and use the default. Execution expiry terminates the managed process/group and reports `hook timed out after <budget>ms`. Approval waiting uses the existing approval gate's separate deadline. Stdout and stderr each have a 64 KiB capture bound. Oversized stdout fails rather than accepting a truncated decision. Keep decisions and diagnostics concise.
 
 Supported exit-0 output forms:
 
@@ -96,7 +139,7 @@ Supported exit-0 output forms:
 { "action": "deny", "reason": "Run the focused check first" }
 ```
 
-The legacy `action` is `allow` or `deny`; its required reason retains the existing 280-character bound. The event-independent form is:
+The legacy decision `action` is `allow` or `deny`; its required reason retains the existing 280-character bound. Pre-tool and permission hooks also support the input replacement form below. The event-independent decision form is:
 
 ```json
 { "decision": "block", "reason": "Run the focused check first" }
@@ -116,7 +159,61 @@ The legacy `action` is `allow` or `deny`; its required reason retains the existi
 { "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": { "behavior": "deny", "message": "Outside the approved scope" } } }
 ```
 
-These event-specific decisions accept `allow` or `deny`; `allow` only means the hook does not object. A mismatched event, `ask`, permission updates, input mutation, or context-injection fields are rejected as unsupported output. Hook-specific decision objects on other events are unsupported. Legacy JSON wrapped in a code fence remains accepted.
+These event-specific decisions accept `allow` or `deny`; `allow` only means the hook does not object. A mismatched event, `ask`, permission updates or an unsupported field fails clearly. Legacy JSON wrapped in a code fence remains accepted.
+
+### Context and input replacement
+
+Return bounded context using the event's exact name:
+
+```json
+{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "additionalContext": "The destination contains generated files." } }
+```
+
+Context is truncated to 10,000 UTF-16 code units, DLP-redacted and wrapped in a `system-reminder` carrying the hook's event, hash identity and escaped path or ID. The wrapper labels its contents as hook-provided external context. Wrapper delimiters are escaped so returned text cannot forge another hook's attribution. Tool context appears with the tool result; lifecycle context produced during an active conversation turn is recorded as an attributed conversation entry. The model and user can see that a hook influenced the context. Hook text does not gain user-keyboard provenance or permission authority. Keep credentials out of returned context.
+
+All known events accept the context field, but automatic model/user delivery requires an active turn or tool invocation. This includes `SessionStart`, `UserPromptSubmit`, pre/post/permission hooks, and compaction/stop events fired during that turn. An out-of-turn `SessionEnd` is observation only: it cannot change an ended model request or inject context into the next session. Its parsed result remains available for audit.
+
+A trusted or managed `PreToolUse` or `PermissionRequest` hook can return a replacement input object:
+
+```json
+{ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": { "command": "git status --short" } } }
+```
+
+The legacy equivalent uses `{"action":"modify","reason":"Use the bounded status command","updatedInput":{"command":"git status --short"}}`. A permission hook places its replacement inside `hookSpecificOutput.decision` alongside `"behavior":"allow"`. This allow still grants no target authority. Mutation on other events is rejected. Ave rechecks the replacement through the entire permission decision, including path/effect classification, deny rules and required approval. An unchanged replacement is a no-op. At most three changed-input restarts are allowed; further mutation denies. Sealed resumptions, authorization-lifecycle paths and late permission hooks after target-handler entry deny a replacement instead of replaying effects or using earlier permission.
+
+Within a hook chain, later hooks receive the most recent replacement; the last successful replacement becomes the proposed input. After the chain completes, Ave starts a fresh invocation attempt, including its pre-tool chain. Write mutators so they return the same input once it has reached the intended form. A later hook denial stops the chain and discards the proposed mutation.
+
+### HTTP handlers
+
+An HTTP handler uses the same event payload as a command hook, encoded as a JSON POST body:
+
+```json
+{
+  "type": "http",
+  "url": "https://hooks.example.test/check",
+  "method": "POST",
+  "headers": { "Authorization": "Bearer ${HOOK_TOKEN}" },
+  "timeoutMs": 5000
+}
+```
+
+An administrator must configure `allowedHttpHookUrls` and, for the example header, `httpHookAllowedEnvVars: ["HOOK_TOKEN"]`. No configured URL/host allowlist means no HTTP execution. Only `http:` and `https:` targets are accepted. Allowlist entries are exact full URLs or bare exact hostnames with an optional port; a host does not include its subdomains. A bare host without a port permits either supported scheme and any port; use a full URL to constrain scheme, port, path and query together. Wildcards, URL credentials and methods other than POST are rejected. Header interpolation accepts `$VAR` and `${VAR}` only for listed, present variables. Do not put secret values directly in configuration.
+
+Requests use the host network permission chokepoint; redirects are refused. The serialized request is limited to 64 KiB, and responses use the hook runner's output limit. The deadline cannot exceed the existing hook/network ceiling and also covers response reading. Each request audit contains the URL origin, a SHA-256 `routeDigest` of pathname plus query, hook identity, method and outcome. Raw paths, queries, fragments, headers, bodies and environment values are excluded because a webhook route can contain credentials. Managed status does not waive these controls.
+
+Known configured/interpolated header values and their constituent environment values are scrubbed from returned strings before the response becomes a decision, diagnostic or model-visible context. Keep credentials out of endpoint responses as well as configuration.
+
+The endpoint returns the same decision JSON shown above in its response body; no special response content type is required.
+
+| HTTP response | Result |
+| --- | --- |
+| `2xx`, empty body or `{}` | Successful no-op |
+| `2xx`, supported JSON | Applies the event's decision, context or input replacement |
+| `2xx`, malformed, unsupported or oversized body | Failure; blocking events deny |
+| `3xx` | Failure without following the redirect; blocking events deny |
+| Other non-success status, timeout or network failure | Failure; blocking events deny |
+
+Observe-only events retain their existing control-flow behavior on HTTP failures. They cannot undo a completed tool effect.
 
 ## Example script
 
@@ -135,10 +232,12 @@ process.stdin.on("end", () => {
 });
 ```
 
-For example, stdin includes `{"schema_version":1,"hook_event_name":"PreToolUse","session_id":"session-example","cwd":"/workspace","tool_name":"bash","tool_input":{"command":"git push --force"}}` plus the legacy envelope. A normal command completes with exit 0 and no stdout.
+For example, with hooks stored in `/config/hooks` and `AVE_HOOK_PROJECT_DIR=/workspace`, stdin includes `{"schema_version":1,"hook_event_name":"PreToolUse","session_id":"session-example","cwd":"/config/hooks","tool_name":"bash","tool_input":{"command":"git push --force"}}` plus the legacy envelope. A normal command completes with exit 0 and no stdout.
 
-HTTP, model, input-mutation, and background hooks are outside the supported contract.
+Background execution and permission-update output are outside the supported contract.
+
+Prompt, agent and MCP-tool handler types are rejected. Their provider/result, independent child-session authority and exact server/tool invocation contracts are not yet defined; see the [specific deferral reasons](../architecture/hook-runtime-expansion-design.md#10-deferred-handler-types). This is separate from returning context or mutating input from a supported command or HTTP hook.
 
 ## Contract limits
 
-The supported events and inputs are listed above. Hooks run sequentially and stop at the first denial. Only trusted local argv commands are supported. Input mutation, permission updates, context injection and asynchronous handlers are rejected; the hook cannot widen authority. Matcher bounds, hash enrollment and fail-closed blocking failures protect admission. The [permission decision tree](../architecture/permission-decision-tree.md) owns approval ordering.
+The supported events and inputs are listed above. Hooks run sequentially and stop at the first denial. Only reviewed or managed handlers run; HTTP handlers also require administrator egress policy. Context and input replacement cannot widen authority. Permission updates and asynchronous handlers are rejected. Matcher bounds, exact hash enrollment and fail-closed blocking failures protect admission. The [permission decision tree](../architecture/permission-decision-tree.md) owns approval ordering.

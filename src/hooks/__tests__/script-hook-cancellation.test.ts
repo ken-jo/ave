@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PermissionTestResources } from "../../permissions/__tests__/test-resources.js";
 import { turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
@@ -18,6 +18,7 @@ const payload: ScriptHookStdin = {
 function waitingHook(pidPath: string): RunnableHook {
   return {
     id: "waiting-command", hookType: "pre", source: "config", hookPath: "node",
+    configDir: dirname(pidPath),
     command: ["node", "-e", "require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000);", pidPath],
   };
 }

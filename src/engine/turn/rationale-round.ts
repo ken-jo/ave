@@ -2,6 +2,7 @@ import type { LLMProvider, TokenUsage } from "../llm/types.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { runWithAbortableDeadline } from "../../shared/abortable-deadline.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { hookContextForControl } from "../../hooks/hook-influence.js";
 import {
   RATIONALE_RESPONSE_TOOL,
   toRationaleProviderEnvelope,
@@ -119,13 +120,15 @@ export async function runRationaleOnlyRound(
   const contractNow = input.now ?? Date.now();
   const roundContract = createRationaleOnlyRoundContract(input.control, contractNow);
   const providerEnvelope = toRationaleProviderEnvelope(input.control);
+  const hookContext = hookContextForControl(input.control);
 
   const streamOutcome = await runWithAbortableDeadline(
     (abortSignal) => collectRoundStream({
       provider: input.provider,
       model: input.model,
       systemPrompt: RATIONALE_ONLY_SYSTEM_INSTRUCTION,
-      messages: [{ role: "user", content: canonicalStringify({ ...providerEnvelope, sessionUserMessages: input.userRoleTexts ?? [] }) }],
+      messages: [{ role: "user", content: canonicalStringify({ ...providerEnvelope, sessionUserMessages: input.userRoleTexts ?? [],
+        ...(hookContext.length ? { hookContext } : {}) }) }],
       // Never admit schemas from the ordinary conversation round.
       toolSchemas: [...roundContract.schemas],
       llmSettings: input.llmSettings,

@@ -43,6 +43,12 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "file-reference-while-running": "fileEditDiff.referenceWhileRunning",
   // ── Trust / intent gate ──
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
+  "invalid-hook-review": "formatIpcError.invalidRequest",
+  "hook-review-unavailable": "permissionsTab.hookReviewFailed",
+  "hook-review-failed": "permissionsTab.hookReviewFailed",
+  "hook-review-stale": "permissionsTab.hookReviewStale",
+  "managed-hook-policy": "permissionsTab.hookReviewManaged",
+  "hook-project-untrusted": "permissionsTab.hookProjectUntrusted",
   "unauthorized": "formatIpcError.unauthorized",
   "event-target-forbidden": "formatIpcError.eventTargetForbidden",
   "process-entry-unconfined": "formatIpcError.processEntryUnconfined",

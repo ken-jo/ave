@@ -12,10 +12,18 @@ import { randomUUID } from "node:crypto";
 import type { HookCommandAuthorizer } from "../../hooks/hook-command-policy.js";
 import { collectHookMatcherDiagnostics } from "../../hooks/hook-matcher-diagnostics.js";
 import type { NotificationService } from "../../main/notification-service.js";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { defaultHooksDir, defaultLockfilePath } from "../../hooks/hook-discovery.js";
+import { getAdminPolicyPath } from "../../permissions/policy-store.js";
+import { loadHookRuntimePolicy, type HookRuntimePolicy } from "../../hooks/hook-source-policy.js";
+import { registerHookSourceController, type HookSourceLocation } from "../../hooks/hook-source-controller.js";
 
 const log = createLogger("hook-system-wiring");
 
 export interface WireHookSystemDeps {
+  policy?: HookRuntimePolicy;
+  systemHooksDir?: string;
   notificationService?: Pick<NotificationService, "fire">;
   authorizeCommand?: HookCommandAuthorizer;
   hooksDir?: string;
@@ -27,6 +35,7 @@ export interface WireHookSystemDeps {
 }
 
 export interface HookSystemBootResult {
+  policy: HookRuntimePolicy;
   manager: ScriptHookManager;
   trust: RunHookTrustResult;
 }
@@ -35,6 +44,7 @@ export interface HookSystemBootResult {
 export async function wireHookSystem(
   deps: WireHookSystemDeps = {},
 ): Promise<HookSystemBootResult> {
+  const policy = deps.policy ?? await loadHookRuntimePolicy();
   const diagnostics = collectHookMatcherDiagnostics(deps.hooksDir, deps.disabledDir);
   const trust = await runHookTrustWorkflow({
     hooksDir: deps.hooksDir,
@@ -48,7 +58,19 @@ export async function wireHookSystem(
   })));
   // Only trusted config contributes commands; the synthetic hooks.json trust unit is not a runnable script.
   const shHooks = trust.trustedHooks.filter((h) => h.fileName !== HOOKS_CONFIG_FILENAME);
-  manager.setTrustedRegistry(shHooks, trust.trustedConfigEntries);
+  manager.setTrustedSourceRegistry("managed", [], policy.managedHooks);
+  manager.setHookPolicy({ allowManagedHooksOnly: policy.allowManagedHooksOnly, disableAllHooks: false });
+  const userDir = deps.hooksDir ?? defaultHooksDir();
+  const sources: HookSourceLocation[] = [{ id: "user", kind: "user", hooksDir: userDir,
+    disabledDir: deps.disabledDir ?? join(userDir, ".disabled") }];
+  const systemDir = deps.systemHooksDir ?? join(dirname(getAdminPolicyPath()), "hooks");
+  if (existsSync(systemDir)) {
+    const systemDisabled = join(userDir, ".disabled", "system");
+    await runHookTrustWorkflow({ hooksDir: systemDir, disabledDir: systemDisabled,
+      lockfilePath: deps.lockfilePath ?? defaultLockfilePath(), sourceId: "system", promptDispatcher: deps.promptDispatcher });
+    sources.push({ id: "system", kind: "system", hooksDir: systemDir, disabledDir: systemDisabled });
+  }
+  registerHookSourceController(manager, policy, sources, deps.lockfilePath ?? defaultLockfilePath());
   manager.setMatcherGuards(diagnostics.guards);
   for (const notice of diagnostics.notices) {
     log.warn("%s", notice);
@@ -65,7 +87,7 @@ export async function wireHookSystem(
     trust.disabledHooks.length,
   );
   await emitHookQuarantineAudit(trust, deps.auditLogger);
-  return { manager, trust };
+  return { manager, trust, policy };
 }
 
 async function emitHookQuarantineAudit(

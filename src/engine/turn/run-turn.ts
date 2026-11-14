@@ -51,6 +51,7 @@ import { aggregateSubscriptionUsage } from "./subscription-usage-telemetry.js";
 import { TurnJournal, isHostExitAbort, registerRunningTurn } from "./turn-journal.js";
 import { HOST_EXIT_INTERRUPTION } from "../../memory/session-turn-journal.js";
 import type { MemoryCaptureTaintReason } from "../../memory/memory-capture-service.js";
+import { hookInfluenceContext } from "../../hooks/hook-influence.js";
 
 const log = createLogger("ave");
 
@@ -114,11 +115,11 @@ export async function runTurn(
     async (span) => {
       const toolSpans = new Map<string, Span>();
       try {
-        return await runTurnInSpan(self, input, callbacks, abortSignal, options, {
+        return await hookInfluenceContext.run({ context: [] }, () => runTurnInSpan(self, input, callbacks, abortSignal, options, {
           tracer,
           span,
           toolSpans,
-        });
+        }));
       } finally {
         for (const toolSpan of toolSpans.values()) {
           toolSpan.setAttribute("ave.tool.unfinished", true);
@@ -333,9 +334,11 @@ async function runTurnInSpan(
     if (promptGate.decision === "deny") {
       // Refused input is displayed but never accepted into history or query execution.
       self.currentAbortController = null;
-      const refusal = t("be_conversationLoop.userPromptBlocked", {
+      const refusalText = t("be_conversationLoop.userPromptBlocked", {
         reason: promptGate.reason,
       });
+      const hookContext = hookInfluenceContext.getStore()?.context ?? [];
+      const refusal = hookContext.length ? `${refusalText}\n\n${hookContext.join("\n\n")}` : refusalText;
       callbacks?.onTextDelta?.(refusal);
       callbacks?.onTurnComplete?.(refusal);
       log.warn(
@@ -554,6 +557,15 @@ async function runTurnInSpan(
       });
     }
     userTurnAppended = true;
+    const influence = hookInfluenceContext.getStore();
+    if (influence) {
+      influence.onContext = (text) => {
+        memoryCaptureTaint.add("staged-guidance");
+        const row = self.history.append({ role: "user", content: text, meta: { hostInjectionId: randomUUID() } });
+        callbacks?.onGuidanceInjected?.(text, { messageId: row.meta.messageId });
+      };
+      for (const text of influence.context) influence.onContext(text);
+    }
     self.tracer.step("HISTORY_APPEND", {
       role: "user",
       historySize: self.history.length,
@@ -619,14 +631,14 @@ async function runTurnInSpan(
               ...(subagentStop.agentType !== undefined ? { agentType: subagentStop.agentType } : {}),
               stopReason: "end_turn",
               stopHookActive,
-            }, effectiveSessionId);
+            }, effectiveSessionId, self.getSessionExecutionCwd());
           }
           return fireContinuableStop(self.deps, self.sessionId, "Stop", {
             stopReason: "end_turn",
             toolCount,
             durationMs: Math.max(0, Date.now() - turnStartedAt),
             stopHookActive,
-          }, effectiveSessionId);
+          }, effectiveSessionId, self.getSessionExecutionCwd());
         })
       : undefined;
     // Bind async context to the effective session ID so delegates read isolated session activations.

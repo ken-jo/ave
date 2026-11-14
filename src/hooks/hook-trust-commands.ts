@@ -24,8 +24,14 @@ import type { HookConfigEntry } from "./hook-config.js";
 import type { ScriptHookManager } from "./script-hook-manager.js";
 import { collectHookMatcherDiagnostics } from "./hook-matcher-diagnostics.js";
 import { clearHookDisableCause, disabledHookOriginalName, LEGACY_HOOK_DISABLE_NOTICE, readHookDisableCause, writeHookDisableCause } from "./hook-disable-state.js";
+import type { HookSourceKind } from "./hook-source-policy.js";
+import { createHookTrustValidator } from "./hook-trust-validator.js";
+import { createHash } from "node:crypto";
 
 export interface HookTrustCommandOptions {
+  sourceId?: string;
+  hookSource?: HookSourceKind;
+  expectedSha256?: string;
   hooksDir?: string;
   disabledDir?: string;
   lockfilePath?: string;
@@ -36,12 +42,16 @@ export interface HookTrustRow {
   fileName: string;
   hookType: DiscoveredHook["hookType"];
   sha256: string;
-  state: "trusted" | "new" | "changed" | "removed" | "disabled";
+  state: "trusted" | "new" | "changed" | "removed" | "disabled" | "managed";
+  sourceId?: string;
+  hookSource?: HookSourceKind;
+  hashState?: "new" | "changed" | "trusted";
+  projectTrusted?: boolean;
   previousSha256?: string;
   // Config trust rows expose command/event/matcher summaries; script rows omit them.
   source?: "sh" | "config";
   entryCount?: number;
-  entries?: Array<{ event: HookConfigEntry["event"]; matcher?: string; command: string }>;
+  entries?: Array<{ id?: string; event: HookConfigEntry["event"]; matcher?: string; command: string }>;
   // Load rejections shown by the existing hook list, including matcher reasons.
   errors?: string[];
 }
@@ -119,11 +129,21 @@ function withConfigSummary(row: HookTrustRow, entries: HookConfigEntry[], errors
     entryCount: runnable.length,
     ...(errors.length ? { errors } : {}),
     entries: runnable.map((e) => ({
+      id: e.id,
       event: e.event,
       ...(e.matcher !== undefined ? { matcher: e.matcher } : {}),
-      command: e.command.join(" "),
+      command: hookDefinitionSummary(e),
     })),
   };
+}
+
+export function hookDefinitionSummary(entry: HookConfigEntry): string {
+  if (!entry.http) return entry.command.join(" ");
+  try {
+    const target = new URL(entry.http.url);
+    const route = createHash("sha256").update(`${target.pathname}${target.search}`).digest("hex").slice(0, 12);
+    return `${entry.http.method} ${target.origin} (route ${route})`;
+  } catch { return "HTTP hook"; }
 }
 
 function configPath(opts: HookTrustCommandOptions): string {
@@ -139,10 +159,10 @@ function snapshot(opts: HookTrustCommandOptions): {
 } {
   ensureHooksDirectory(hooksDir(opts));
   const { hooks: active } = discoverHookTrustFiles(hooksDir(opts));
-  const { hooks: disabled } = discoverHookTrustFiles(disabledDir(opts), true);
+  const { hooks: disabled } = discoverHookTrustFiles(disabledDir(opts), true, hooksDir(opts));
   const lockfile = readLockfile(lockfilePath(opts));
 
-  const diff = diffAgainstLockfile(active, lockfile);
+  const diff = diffAgainstLockfile(active, lockfile, opts.sourceId);
   return { active, disabled, lockfile, diff };
 }
 
@@ -154,7 +174,12 @@ async function persistTrustedHooks(
   const byName = new Map<string, DiscoveredHook>();
   for (const hook of trustedHooks) byName.set(hook.fileName, hook);
   const trusted = [...byName.values()].sort((a, b) => a.fileName.localeCompare(b.fileName));
-  await persistLockfile(trusted, lockfilePath(opts), previousAcceptedAt);
+  const current = snapshot(opts);
+  const disabledNames = new Set(current.disabled.map((hook) => disabledHookOriginalName(hook.fileName)));
+  const retainedDefinitions = current.lockfile?.hooks.filter((entry) => entry.sourceId === opts.sourceId && disabledNames.has(entry.fileName)
+    && !byName.has(entry.fileName)).map((entry): DiscoveredHook => ({ fileName: entry.fileName, sha256: entry.sha256,
+    path: "", size: 0, hookType: "pre" })) ?? [];
+  await persistLockfile([...trusted, ...retainedDefinitions], lockfilePath(opts), previousAcceptedAt, opts.sourceId);
   // Rebuild the runtime registry: trusted `.sh` hooks + trusted `hooks.json` config entries (the latter only when the config trust unit is trusted).
   refreshManagerRegistry(trusted, opts);
   return trusted.map((hook) => rowFromHook(hook, "trusted"));
@@ -166,29 +191,38 @@ function refreshManagerRegistry(trusted: DiscoveredHook[], opts: HookTrustComman
   const shHooks = trusted.filter((h) => h.fileName !== HOOKS_CONFIG_FILENAME);
   const configTrusted = trusted.some((h) => h.fileName === HOOKS_CONFIG_FILENAME);
   const configEntries = configTrusted ? loadHookConfig(configPath(opts)).entries : [];
-  opts.manager.setTrustedRegistry(shHooks, configEntries);
+  const validator = (fileName: string, expectedSha256: string) => createHookTrustValidator({ hooksDir: hooksDir(opts),
+    disabledDir: disabledDir(opts),
+    fileName, expectedSha256, lockfilePath: lockfilePath(opts), sourceId: opts.sourceId });
+  const configHash = trusted.find((hook) => hook.fileName === HOOKS_CONFIG_FILENAME)?.sha256 ?? "";
+  opts.manager.setTrustedSourceRegistry(opts.sourceId ?? "user",
+    shHooks.map((hook) => ({ ...hook, hookSource: opts.hookSource ?? "user", validateTrust: validator(hook.fileName, hook.sha256) })),
+    configEntries.map((entry) => ({ ...entry, hookSource: opts.hookSource ?? "user", validateTrust: validator(HOOKS_CONFIG_FILENAME, configHash) })));
   opts.manager.setMatcherGuards(collectHookMatcherDiagnostics(hooksDir(opts), disabledDir(opts)).guards);
 }
 
 export function listHookTrustState(
   opts: HookTrustCommandOptions = {},
 ): Extract<HookTrustCommandResult, { verb: "list" }> {
-  const { disabled, diff } = snapshot(opts);
+  const { disabled, diff, lockfile } = snapshot(opts);
   const activeConfig = loadHookConfig(configPath(opts));
   return {
     ok: true,
     verb: "list",
-    active: diff.map((d) =>
+    active: diff.filter((entry) => entry.state !== "removed" || !disabled.some((hook) => disabledHookOriginalName(hook.fileName) === entry.hook.fileName)).map((d) =>
       d.hook.fileName === HOOKS_CONFIG_FILENAME
         ? withConfigSummary(rowFromDiff(d), activeConfig.entries, activeConfig.errors)
         : rowFromDiff(d),
     ),
     disabled: disabled.map((hook) => {
-      const config = disabledHookOriginalName(hook.fileName) === HOOKS_CONFIG_FILENAME ? loadHookConfig(hook.path) : undefined;
+      const config = disabledHookOriginalName(hook.fileName) === HOOKS_CONFIG_FILENAME ? loadHookConfig(hook.path, hooksDir(opts)) : undefined;
       const row = config
         ? withConfigSummary(rowFromHook(hook, "disabled"), config.entries, config.errors)
         : rowFromHook(hook, "disabled");
       if (readHookDisableCause(hook.path) === "legacy") row.errors = [...(row.errors ?? []), LEGACY_HOOK_DISABLE_NOTICE];
+      const previous = lockfile?.hooks.find((entry) => entry.sourceId === opts.sourceId && entry.fileName === disabledHookOriginalName(hook.fileName));
+      row.hashState = previous ? previous.sha256 === hook.sha256 ? "trusted" : "changed" : "new";
+      if (previous && previous.sha256 !== hook.sha256) row.previousSha256 = previous.sha256;
       return row;
     }),
   };
@@ -203,6 +237,12 @@ export async function acceptHookTrust(
 
   let state = snapshot(opts);
   let target = state.active.find((hook) => hook.fileName === fileName);
+  const reviewed = target ?? state.disabled.find((hook) => hook.fileName === fileName);
+  if (opts.expectedSha256 !== undefined && reviewed?.sha256 !== opts.expectedSha256) return { ok: false, error: "hook-review-stale" };
+  if (reviewed && disabledHookOriginalName(reviewed.fileName) === HOOKS_CONFIG_FILENAME
+    && loadHookConfig(reviewed.path, hooksDir(opts)).errors.length > 0) {
+    return { ok: false, error: "Hook configuration has errors; fix it before trusting" };
+  }
   if (!target) {
     const quarantined = state.disabled.find((hook) => hook.fileName === fileName);
     if (!quarantined) return { ok: false, error: `hook not found: ${fileName}` };
@@ -217,6 +257,10 @@ export async function acceptHookTrust(
     target = state.active.find((hook) => hook.fileName === originalName);
   }
   if (!target) return { ok: false, error: `hook not found after restore: ${fileName}` };
+  if (target.fileName === HOOKS_CONFIG_FILENAME && loadHookConfig(target.path, hooksDir(opts)).errors.length > 0) {
+    return { ok: false, error: "Hook configuration has errors; fix it before trusting" };
+  }
+  if (opts.expectedSha256 !== undefined && target.sha256 !== opts.expectedSha256) return { ok: false, error: "hook-review-stale" };
 
   const acceptedAt = buildAcceptedAtMap(state.lockfile);
   const alreadyTrusted = state.diff
@@ -244,6 +288,8 @@ export async function disableHookTrust(
 
   const state = snapshot(opts);
   const active = state.active.find((hook) => hook.fileName === fileName);
+  const reviewed = active ?? state.disabled.find((hook) => hook.fileName === fileName);
+  if (opts.expectedSha256 !== undefined && reviewed?.sha256 !== opts.expectedSha256) return { ok: false, error: "hook-review-stale" };
   const acceptedAt = buildAcceptedAtMap(state.lockfile);
   if (!active) {
     const quarantined = state.disabled.find((hook) => hook.fileName === fileName);

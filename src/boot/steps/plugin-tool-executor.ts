@@ -56,6 +56,16 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
   const hookSystem = await wireHookSystem({ auditLogger: bootAuditLogger, notificationService: ctx.notificationService,
     authorizeCommand: createHookCommandAuthorizer({ permissionManager, approvalGate }) });
   const scriptHookManager = hookSystem.manager;
+  scriptHookManager.setHttpHookRuntime({
+    transport: ctx.singleHopNetworkFetch,
+    allowedUrls: hookSystem.policy.allowedHttpHookUrls,
+    allowedEnvVars: hookSystem.policy.httpHookAllowedEnvVars,
+    auditTarget: (entry) => bootAuditLogger.log({
+      timestamp: new Date().toISOString(), sessionId: "hooks", type: "info",
+      input: JSON.stringify(entry), output: "HTTP hook request target reviewed",
+      toolCalls: [{ name: "hook_http_request", isError: entry.outcome === "denied", trust: "high" }],
+    }),
+  });
   const pluginOperationGrants = new PluginOperationGrantCoordinator();
   const pluginOperationIdentityProvider: PluginOperationIdentityProvider = (
     tool,

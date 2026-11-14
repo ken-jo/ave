@@ -690,6 +690,8 @@ through the same adapter and execute through the same `ToolExecutor` stages.
 
 ### 3.3 Hooks
 
+The baseline below predates the current [hook runtime contract](../architecture/hook-runtime-expansion-design.md#61-exact-hash-trust-and-managed-policy), which owns configuration-bound cwd and referenced-file trust. It does not describe the current user-hook sandbox path.
+
 A hook is code the host runs. Today's runner spawns every hook directly — argv without a
 shell, or a single `.sh` through the resolved interpreter
 (`src/hooks/script-hook-runner.ts:231-246`, `:258-270`) — in the caller's cwd or the
@@ -734,8 +736,8 @@ by both spawn sites) so that the two cannot drift; the hook runner gains a
 `confinement: { kind: "bundled", dataDir, generationRoot }` option, and a hook
 invocation without it is a user hook.
 
-**Exact spawn contract for a bundled hook**: `cwd` = the package's sealed generation
-root (`PLUGIN_ROOT`); environment = `buildSafeChildEnv` (`safe-env.ts:21-52`) plus
+**Exact spawn contract for a bundled hook**: `cwd` = the bound configuration directory
+under the current [hook runtime contract](../architecture/hook-runtime-expansion-design.md#61-exact-hash-trust-and-managed-policy); `PLUGIN_ROOT` remains the package's sealed generation root. Environment = `buildSafeChildEnv` (`safe-env.ts:21-52`) plus
 `AVE_HOOK_*` (`script-hook-runner.ts:154-176`) plus `PLUGIN_ROOT` and `PLUGIN_DATA`;
 stdin = the DLP-redacted envelope as today; timeout and output caps as today
 (`src/hooks/script-hook-types.ts:261`, `:264`).

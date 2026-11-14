@@ -1,7 +1,10 @@
 /** Hooks as extension container holders (design row 5): the user-hook shell-plan selector, bash-incompatible before admission, hook JSON in,
  * stdout/status out, admitted cwd/env and teardown. The holder adapter is mocked; its layout has its own tests. */
 import { PassThrough } from "node:stream";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/runtime.js";
 import type { RunnableHook } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
@@ -9,6 +12,7 @@ import { buildHostShellExecutionPlan, type HostShellExecutionPlan } from "../../
 import { mxcShellCapability, windowsProxyOnlyCapability, windowsSubstrateFor, type WindowsSandboxPlanInputs } from "../../boot/steps/windows-sandbox-plan.js";
 import { deferred } from "../../__tests__/support/deferred.js";
 import { __issueHostShellExecutionPlanForTest } from "../../permissions/sandbox-capability.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 const state = vi.hoisted(() => ({
   selected: true,
@@ -53,6 +57,12 @@ const { setProcessPlatform } = await import("../../__tests__/support/process-pla
 const REAL_PLATFORM = process.platform;
 const GEN = "C:\\ave\\plugins\\sample\\gen";
 const DATA = "C:\\ave\\plugins\\sample\\data";
+const fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "ave-hook-runner-mxc-")));
+const configDir = join(fixtureRoot, "hooks");
+const projectDir = join(fixtureRoot, "workspace");
+mkdirSync(configDir);
+mkdirSync(projectDir);
+afterAll(async () => { await cleanupTmpDir(fixtureRoot); });
 const PAYLOAD: ScriptHookStdin = {
   hookType: "pre", toolName: "fs_write", source: "builtin", category: "write", input: { path: "C:\\x" },
   sessionId: "sess-1", trustOrigin: "user-keyboard",
@@ -60,7 +70,7 @@ const PAYLOAD: ScriptHookStdin = {
 
 function pluginHook(command: string[] = [`${GEN}\\hook.exe`, "--check"]): RunnableHook {
   return {
-    id: "sample:pre", hookType: "pre", command, hookPath: command[0]!, source: "config", env: { HOOK_LEVEL: "strict" },
+    id: "sample:pre", hookType: "pre", command, configDir, hookPath: command[0]!, source: "config", env: { HOOK_LEVEL: "strict" },
     pluginOwner: { pluginId: "sample", pluginVersion: "1.0.0", activationId: "a", generationId: "gen", localId: "pre", fingerprint: "f" },
     confinement: { kind: "bundled", pluginId: "sample", dataDir: DATA, generationRoot: GEN },
   };
@@ -75,12 +85,12 @@ function shellPlan(substrate: "asrt" | "mxc"): HostShellExecutionPlan {
 }
 
 function userHook(command: string[]): RunnableHook {
-  return { id: "user:pre", hookType: "pre", command, hookPath: command[0]!, source: "config" };
+  return { id: "user:pre", hookType: "pre", command, configDir, hookPath: command[0]!, source: "config" };
 }
 
 function admitUnder(plan: HostShellExecutionPlan) {
   state.shellPlan = plan;
-  return { cwd: "D:\\work", authorizeCommand: async () => ({ decision: "allow" as const, reason: "ok", plan }) };
+  return { cwd: projectDir, authorizeCommand: async () => ({ decision: "allow" as const, reason: "ok", plan }) };
 }
 
 interface FakeRun { code?: number; stdout?: string; stderr?: string; hang?: boolean }
@@ -140,7 +150,7 @@ describe("plugin hook under a selected container backend", () => {
     const result = await runOneHookScript(pluginHook(), PAYLOAD);
     expect(result).toMatchObject({ decision: "allow", reason: "fine", exitCode: 0 });
     const spec = state.holderSpawn.mock.calls[0]![0] as Record<string, unknown>;
-    expect(spec).toMatchObject({ label: "hook:sample", command: `${GEN}\\hook.exe`, args: ["--check"], cwd: GEN,
+    expect(spec).toMatchObject({ label: "hook:sample", command: `${GEN}\\hook.exe`, args: ["--check"], cwd: configDir,
       allowRead: [GEN], allowWrite: [DATA], ownedReadRoots: [GEN], workspaceRoots: [],
       egressOwner: { kind: "worker", role: "hook", pluginId: "sample" } });
     expect(JSON.parse(fake.input())).toMatchObject({ tool_name: "fs_write" });
@@ -159,9 +169,9 @@ describe("plugin hook under a selected container backend", () => {
     await runOneHookScript(pluginHook(), PAYLOAD);
     const legacy = (state.legacySpawn.mock.calls[0]![0] as { baseEnv: Record<string, string> }).baseEnv;
     const forwarded = new Set<string>(FORWARD_ENV_KEYS.map((key) => key.toUpperCase()));
-    const hostOwned = Object.fromEntries(Object.entries(legacy).filter(([key]) => !forwarded.has(key.toUpperCase())));
+    const hostOwned = Object.fromEntries(Object.entries(legacy).filter(([key]) => key.toUpperCase() === "PWD" || !forwarded.has(key.toUpperCase())));
     expect(contained.holderEnv).toEqual(hostOwned);
-    expect(contained.holderEnv).toMatchObject({ HOOK_LEVEL: "strict", AVE_HOOK_TYPE: "pre", PLUGIN_ROOT: GEN, PLUGIN_DATA: DATA });
+    expect(contained.holderEnv).toMatchObject({ HOOK_LEVEL: "strict", AVE_HOOK_TYPE: "pre", PLUGIN_ROOT: GEN, PLUGIN_DATA: DATA, PWD: configDir });
     expect(contained.baseEnv).toEqual(legacy);
   });
 
@@ -252,7 +262,7 @@ describe("pinned 0.0.80 fallback", () => {
     const result = await runOneHookScript(pluginHook(), PAYLOAD);
     expect(result.reason).toBe("sandbox unavailable: legacy route reached");
     expect(state.startAllowed).toHaveBeenCalledWith();
-    expect(state.legacySpawn.mock.calls[0]![0]).toMatchObject({ label: "hook:sample", cwd: GEN, allowRead: [GEN], allowWrite: [DATA] });
+    expect(state.legacySpawn.mock.calls[0]![0]).toMatchObject({ label: "hook:sample", cwd: configDir, allowRead: [GEN], allowWrite: [DATA] });
     expect(state.holderSpawn).not.toHaveBeenCalled();
   });
 });
@@ -297,7 +307,7 @@ describe("user hook follows its admitted host-shell plan", () => {
       const generation = capability.getSandboxGeneration();
       state.holderSpawn.mockResolvedValue(fakeHolder({ stdout: '{"action":"allow","reason":"approved container hook"}' }).holder);
       const running = runOneHookScript(userHook(["powershell.exe", "-File", "C:\\hooks\\check.ps1"]), PAYLOAD, {
-        cwd: "D:\\work", authorizeCommand: async () => {
+        cwd: projectDir, authorizeCommand: async () => {
           entered.resolve();
           await approved.promise;
           return { decision: "allow", reason: "approved", plan };
@@ -340,13 +350,13 @@ describe("user hook follows its admitted host-shell plan", () => {
     expect((state.legacySpawn.mock.calls[0]![0] as { userHookShellPlan: unknown }).userHookShellPlan).toBe(state.shellPlan);
   });
 
-  it("runs contained on a container shell plan with cwd write as a workspace", async () => {
+  it("runs contained from its config directory with the original workspace write grant", async () => {
     state.holderSpawn.mockResolvedValue(fakeHolder({ stdout: '{"action":"deny","reason":"no"}' }).holder);
     const options = admitUnder(shellPlan("mxc"));
     const result = await runOneHookScript(userHook(["powershell.exe", "-File", "C:\\hooks\\check.ps1"]), PAYLOAD, options);
     expect(result).toMatchObject({ decision: "deny", reason: "no" });
-    expect(state.holderSpawn.mock.calls[0]![0]).toMatchObject({ label: "hook:user", command: "powershell.exe", cwd: "D:\\work",
-      allowWrite: ["D:\\work"], workspaceRoots: ["D:\\work"], ownedReadRoots: [],
+    expect(state.holderSpawn.mock.calls[0]![0]).toMatchObject({ label: "hook:user", command: "powershell.exe", cwd: configDir,
+      allowWrite: [projectDir], workspaceRoots: [projectDir], ownedReadRoots: [],
       egressOwner: { kind: "worker", role: "hook", pluginId: undefined } });
     expect(state.legacySpawn).not.toHaveBeenCalled();
   });

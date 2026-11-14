@@ -23,6 +23,7 @@ function lifecycleEntry(
     command,
     timeoutMs: 5000,
     source: "config",
+    configDir: FIXTURE_ROOT,
     ...over,
   };
 }
@@ -254,7 +255,7 @@ describe("#811 m2 — back-compat (no lifecycle config)", () => {
   it("a tool-use registry with no lifecycle entries dispatches nothing for lifecycle events", async () => {
     const m = new ScriptHookManager();
     m.setTrustedRegistry([], [
-      { id: "PreToolUse#0.0", event: "pre", command: ["./pre.sh"], timeoutMs: 5000, source: "config" },
+      { id: "PreToolUse#0.0", event: "pre", command: ["./pre.sh"], timeoutMs: 5000, source: "config", configDir: FIXTURE_ROOT },
     ]);
     const out = await m.runLifecycleEvent("Stop", "s1", "unknown", { stopReason: "end_turn" });
     expect(out.results).toEqual([]);

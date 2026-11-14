@@ -253,6 +253,44 @@ function memoryReview(current: Awaited<ReturnType<typeof subject>>, input: Recor
 }
 
 describe("executor automated approval pause", () => {
+  it("denies a late hook replacement without replaying an earlier completed hook effect", async () => {
+    const current = await subject();
+    const execute = vi.fn(async () => "wrote");
+    const registry = new ToolRegistry();
+    registry.register(makeWriteProbeTool(execute));
+    const hooks = new ScriptHookManager();
+    let completedEffects = 0;
+    const runPre = hooks.runPreToolUse.bind(hooks);
+    vi.spyOn(hooks, "runPreToolUse").mockImplementationOnce(async (...args) => {
+      completedEffects += 1;
+      return runPre(...args);
+    });
+    vi.spyOn(hooks, "runPermissionRequest").mockResolvedValueOnce({
+      decision: "allow", reason: "replace late input", results: [],
+      updatedInput: { path: join(current.root, "replacement.txt") },
+    });
+    const { gate, cards } = manualGate();
+    const held = heldHandlerFinalizers("late-hook-replacement", 1);
+    const executor = new ToolExecutor(registry, undefined, current.manager, undefined, gate, hooks, current.audit);
+    const pending = executor.executeAll([{ id: "late-hook-replacement", name: "write_probe", input: { path: join(current.root, "original.txt") } }], {
+      sessionId: SESSION_ID, executionCwd: current.root,
+      permissionContext: userPermissionContext({ additionalDirectories: [current.root] }),
+    });
+    await held.waits[0].reached;
+    await current.pause();
+    held.waits[0].release();
+    let settled = false;
+    void pending.then(() => { settled = true; });
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 5000 });
+    const [result] = await pending;
+    expect(result.is_error).toBe(true);
+    expect(result.content).toContain("Hook input mutation is not allowed after handler entry");
+    expect(completedEffects).toBe(1);
+    expect(hooks.runPreToolUse).toHaveBeenCalledOnce();
+    expect(cards).toHaveLength(0);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it("cancels a pending late native card without entering the handler", async () => {
     const f = await subject();
     const controller = new AbortController();
@@ -578,6 +616,7 @@ describe("executor automated approval pause", () => {
     expect(lifecycle.mock.calls.find(([event]) => event === "PermissionDenied")).toMatchObject([
       "PermissionDenied", SESSION_ID, "user-keyboard",
       { toolName: "write_probe", denyReason: { source: "tool-executor", reason: denyReason } },
+      { cwd: current.root },
     ]);
     const rows = readFileSync(current.audit.getPermissionAuditLogFile(), "utf8").trimEnd().split("\n").map((line) => JSON.parse(line));
     expect(rows).toContainEqual(expect.objectContaining({

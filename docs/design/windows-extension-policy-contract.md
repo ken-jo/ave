@@ -311,7 +311,7 @@ nesting and the lifetime registry stay row 2's.
   - A relative path, a script shim or a missing program is refused with
     `MxcExecutableNotAdmissibleError` (`executable-not-admissible`).
   - So is an executable inside an authorized workspace, the caller-named
-    workspace (a user hook's cwd), this holder's own writable roots or any live
+    workspace (the hook's original project directory, independent of its [bound execution cwd](../architecture/hook-runtime-expansion-design.md#61-exact-hash-trust-and-managed-policy)), this holder's own writable roots or any live
     holder's writable root, compared in lexical and canonical spelling.
   - System and user installs on PATH remain admissible. Their identity is
     pinned and rechecked by row 2. This is an admission refusal, not a readiness

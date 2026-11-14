@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { PluginHookTrustStore, type PreparedPluginHookProjection } from "../../hooks/plugin-hook-projection.js";
@@ -7,6 +8,7 @@ import { agentPluginComponentDigests } from "../../plugins/contribution-approval
 import { assertCarriedApprovalsHold, carryApprovals } from "../../plugins/plugin-contribution-trust.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { agentPluginDataDir } from "./agent-plugin-data.js";
+import { hashHookCommandFiles } from "../../hooks/hook-config-trust.js";
 import type { HookComponentConsent } from "../../shared/git-marketplace.js";
 import type { InstalledAgentPluginRuntime } from "./service.js";
 
@@ -106,21 +108,34 @@ export class AgentPluginHookRuntime {
   private async projections(item: InstalledAgentPluginRuntime, activationId: string): Promise<PreparedPluginHookProjection[]> {
     const dataDir = await this.dataDir(item.name);
     const pluginId = `agent-plugin/${item.name}`;
+    const configDir = realpathSync(item.dir);
     const digests = agentPluginComponentDigests(item.content.components, item.content.files).hooks;
     return item.content.components.hooks.map((hook, index) => {
       const envEntries = Object.entries(hook.env ?? {});
-      const resolved = resolveBundledArgv({ generationRoot: item.dir, dataDir,
+      const resolved = hook.handlerType === "http" ? { argv: [] } : resolveBundledArgv({ generationRoot: item.dir, dataDir,
         argv: [...hook.command, ...envEntries.map(([, value]) => value)],
         baseFingerprint: hook.digest, label: `hook ${item.name}#${index}`, policy: "hook" });
+      const command = [...resolved.argv.slice(0, hook.command.length)];
+      Object.freeze(command);
+      const checked = hook.handlerType === "http" ? undefined : hashHookCommandFiles(command, configDir);
+      if (checked && checked.errors.length > 0) throw new Error(`hook ${item.name}#${index} has unreadable command files`);
+      const fingerprint = checked ? createHash("sha256").update(hook.digest).update(checked.hash).digest("hex") : hook.digest;
+      const approvalDigest = digests[index];
+      if (approvalDigest === undefined) throw new Error(`hook ${item.name}#${index} has no approval digest`);
       return {
         owner: { pluginId, pluginVersion: item.version,
-          activationId, generationId: item.generationId, localId: String(index), fingerprint: hook.digest },
+          activationId, generationId: item.generationId, localId: String(index), fingerprint },
         entries: [{ id: String(index), event: hook.event as PreparedPluginHookProjection["entries"][number]["event"],
-          ...(hook.matcher ? { matcher: hook.matcher } : {}), command: [...resolved.argv.slice(0, hook.command.length)],
+          ...(hook.matcher ? { matcher: hook.matcher } : {}), command, configDir, reviewedHash: fingerprint,
+          ...(checked ? { fileDependencies: Object.freeze(checked.files), validateTrust: () => {
+            const current = hashHookCommandFiles(command, configDir);
+            return current.errors.length === 0 && current.hash === checked.hash;
+          } } : {}),
+          ...(hook.handlerType ? { handlerType: hook.handlerType, http: hook.http } : {}),
           ...(hook.env ? { env: Object.fromEntries(envEntries.map(([key], offset) => [key, resolved.argv[hook.command.length + offset]!])) } : {}),
           timeoutMs: hook.timeoutMs, source: "config" }],
         confinement: { kind: "bundled" as const, pluginId, dataDir, generationRoot: item.dir },
-        approvalDigest: digests[index]!,
+        approvalDigest: checked && approvalDigest !== null ? createHash("sha256").update(approvalDigest).update(fingerprint).digest("hex") : approvalDigest,
       };
     });
   }

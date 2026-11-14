@@ -103,6 +103,7 @@ import type {
 import type { PluginPerfStats } from "../../plugins/runtime/index.js";
 import type { PluginContributionTrustRow } from "../../plugins/plugin-bundle-lifecycle.js";
 import type { HookTrustRow } from "../../hooks/hook-trust-commands.js";
+import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../../shared/hook-trust-review.js";
 export type { PluginPerfStats, PluginContributionTrustRow, HookTrustRow };
 
 // Usage aggregates come from the engine/IPC owners; only the renderer-side
@@ -1417,11 +1418,8 @@ export type AvePermissionApi = {
   recentlyDeniedList: () => Promise<{ ok: true; entries: import("../../shared/recently-denied.js").RecentlyDeniedEntry[] } | { ok: false; error: string }>;
   recentlyDeniedRerun: (id: string) => Promise<import("../../shared/recently-denied.js").RecentlyDeniedRerunResult | { ok: false; error: string }>;
   onRecentlyDeniedChanged: (cb: (summary: { total: number }) => void) => () => void;
-  /** Permission policy issue #633 — list active + quarantined script hooks. */
-  hookTrustList: () => Promise<
-    | { ok: true; active: HookTrustRow[]; disabled: HookTrustRow[]; totalDisabled: number }
-    | { ok: false; error: string }
-  >;
+  hookTrustList: () => Promise<HookTrustListResult>;
+  hookTrustReview: (request: HookTrustReviewRequest) => Promise<HookTrustReviewResult>;
   /** Permission policy — `/permission dir ...` slash dispatch. */
   dirDispatch: (
     rawArgs: string,

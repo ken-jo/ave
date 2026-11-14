@@ -3,6 +3,7 @@ import { stopHookBlockFeedback } from "../../hooks/hook-contract.js";
 import type { ConversationLoopDeps } from "./types.js";
 import { createLogger } from "../../lib/logger.js";
 import { errorMessage } from "../../shared/error-message.js";
+import { recordHookContext, recordHookExecutionAudit } from "../../hooks/hook-influence.js";
 
 const log = createLogger("ave");
 
@@ -12,17 +13,21 @@ export async function fireLifecycleEvent(
   event: LifecycleHookEvent,
   payload: import("../../hooks/script-hook-types.js").LifecycleEventPayload = {},
   sessionIdOverride?: string,
+  cwd?: string,
 ): Promise<void> {
     const manager = deps.scriptHookManager;
     if (!manager) return;
     try {
-      await manager.runLifecycleEvent(
+      const result = await manager.runLifecycleEvent(
         event,
         sessionIdOverride ?? sessionId,
         // Session lifecycle hooks use unknown origin and cannot enroll or mutate trust.
         "unknown",
         payload,
+        { cwd },
       );
+      recordHookContext(result.results);
+      recordHookExecutionAudit(deps.auditLogger, sessionIdOverride ?? sessionId, result.results);
     } catch (err) {
       log.warn(
         `lifecycle event ${event} dispatch failed (non-blocking, ignored): ${errorMessage(err)}`,
@@ -37,13 +42,15 @@ export async function fireContinuableStop(
   event: "Stop" | "SubagentStop",
   payload: import("../../hooks/script-hook-types.js").LifecycleEventPayload,
   sessionIdOverride?: string,
+  cwd?: string,
 ): Promise<string | undefined> {
     const manager = deps.scriptHookManager;
     if (!manager) return undefined;
     try {
-      return stopHookBlockFeedback(
-        await manager.runLifecycleEvent(event, sessionIdOverride ?? sessionId, "unknown", payload),
-      );
+      const result = await manager.runLifecycleEvent(event, sessionIdOverride ?? sessionId, "unknown", payload, { cwd });
+      recordHookContext(result.results);
+      recordHookExecutionAudit(deps.auditLogger, sessionIdOverride ?? sessionId, result.results);
+      return stopHookBlockFeedback(result);
     } catch (err) {
       log.warn(`lifecycle event ${event} dispatch failed (non-blocking, ignored): ${errorMessage(err)}`);
       return undefined;
@@ -55,6 +62,7 @@ export async function fireUserPromptSubmit(
   sessionId: string,
   payload: import("../../hooks/script-hook-types.js").UserPromptSubmitPayload,
   sessionIdOverride?: string,
+  cwd?: string,
 ): Promise<{ decision: "allow" | "deny"; reason: string }> {
     const manager = deps.scriptHookManager;
     if (!manager) return { decision: "allow", reason: "no script hook manager" };
@@ -64,7 +72,10 @@ export async function fireUserPromptSubmit(
         // Preserve input origin in the payload; hook trust origin stays unknown without enrollment rights.
         "unknown",
         payload,
+        { cwd },
       );
+      recordHookContext(result.results);
+      recordHookExecutionAudit(deps.auditLogger, sessionIdOverride ?? sessionId, result.results);
       return { decision: result.decision, reason: result.reason };
     } catch (err) {
       // Blocking prompt hooks must deny on unexpected errors.

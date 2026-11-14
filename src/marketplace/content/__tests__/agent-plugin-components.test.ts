@@ -33,6 +33,15 @@ describe("agent-plugin component authority", () => {
     expect(changed.hooks[0]?.digest).not.toBe(hook.digest);
   });
 
+  it("validates HTTP handler fields and binds endpoint and headers to the component digest", () => {
+    const first = deriveAgentPluginComponents(withHook({ type: "http", url: "https://hooks.example.com/check", headers: { authorization: "$HOOK_TOKEN" } })).hooks[0];
+    expect(first).toMatchObject({ handlerType: "http", command: [], http: { method: "POST", headers: { authorization: "$HOOK_TOKEN" } } });
+    const changed = deriveAgentPluginComponents(withHook({ type: "http", url: "https://hooks.example.com/check", headers: { authorization: "$OTHER_TOKEN" } })).hooks[0];
+    expect(changed.digest).not.toBe(first.digest);
+    expect(() => deriveAgentPluginComponents(withHook({ type: "http", url: "https://hooks.example.com/check", command: ["node"] }))).toThrow("invalid HTTP handler field");
+    expect(() => deriveAgentPluginComponents(withHook({ type: "http", url: "https://hooks.example.com/check", method: "DELETE" }))).toThrow("require POST");
+  });
+
   it.each([
     [{ type: "command", command: "node ./server/hook.js" }, "PreToolUse", /argv command/],
     [{ type: "command", command: ["npx", "./server/hook.js"] }, "PreToolUse", /hook executable/],

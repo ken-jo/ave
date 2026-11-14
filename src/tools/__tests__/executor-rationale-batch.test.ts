@@ -1,4 +1,5 @@
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
+import { hookContextForControl, hookInfluenceContext } from "../../hooks/hook-influence.js";
 import { createRationaleHostRuntime } from "../../__tests__/support/rationale-host-runtime.js";
 import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { mkdtempSync } from "node:fs";
@@ -85,6 +86,31 @@ function rationaleOptions(runtime: RationaleHostRuntime) {
 }
 
 describe("ToolExecutor rationale conversation batches", () => {
+  it("retains hook context across the suspended control outcome and notifies its turn", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ave-rationale-hook-context-"));
+    try {
+      const registry = new ToolRegistry();
+      registerProbe(registry, { name: "influenced_write", category: "write", execute: vi.fn(async () => "must-not-run") });
+      const scripts = new ScriptHookManager();
+      vi.spyOn(scripts, "runPreToolUse").mockResolvedValue({ decision: "allow", reason: "reviewed", results: [{
+        hookPath: "reviewed-hook", hookType: "pre", decision: "allow", reason: "reviewed", rawStdout: "", timedOut: false,
+        durationMs: 1, source: "config", commandIdentity: "definition-hash", additionalContext: "Inspect the affected project before approving.",
+      }] });
+      const executor = new ToolExecutor(registry, undefined, reviewerPermissionManager(directory), undefined, rationaleApprovalGate(), scripts);
+      const { runtime } = createRationaleHostRuntime();
+      const onContext = vi.fn();
+      const scope = { context: [] as string[], onContext };
+      const outcome = await hookInfluenceContext.run(scope, () => executor.executeConversationBatch([
+        { id: "influenced-control", name: "influenced_write", input: { payload: "requested" } },
+      ], rationaleOptions(runtime)));
+      expect(outcome.outcome).toBe("rationale-required");
+      if (outcome.outcome !== "rationale-required") throw new Error("Expected suspended control");
+      expect(hookContextForControl(outcome.control.control)[0]).toContain('identity="definition-hash"');
+      expect(scope.context).toEqual(hookContextForControl(outcome.control.control));
+      expect(onContext).toHaveBeenCalledOnce();
+    } finally { await cleanupTmpDir(directory); }
+  });
+
   it("keeps the existing completed-result path when no anchored runtime is present", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ave-rationale-read-batch-"));
     try {

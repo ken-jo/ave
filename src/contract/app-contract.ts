@@ -870,6 +870,7 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   [PERMISSIONS.reviewerDispatch]: "required",
   [PERMISSIONS.judgeSet]: "required",
   [PERMISSIONS.recentlyDeniedRerun]: "required",
+  [PERMISSIONS.hookTrustReview]: "required",
   [PERMISSIONS.approvalSentenceSelect]: "required",
   [PERMISSIONS.userApprovalRecord]: "required",
   [PERMISSIONS.userApprovalRevoke]: "required",

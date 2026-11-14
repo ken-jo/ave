@@ -75,7 +75,8 @@ const script = join(generationRoot, "hook.cjs");
 const payload: ScriptHookStdin = { hookType: "pre", event: "pre", toolName: "read_file", source: "builtin",
   category: "read", input: {}, sessionId: "runner", trustOrigin: "user-keyboard" };
 const runnable = () => ({ id: "hook", hookType: "pre" as const, source: "config" as const,
-  hookPath: script, command: ["node", script], confinement: { kind: "bundled" as const, pluginId: "hook-plugin", dataDir, generationRoot } });
+  hookPath: script, command: ["node", script], configDir: generationRoot, fileDependencies: [script],
+  confinement: { kind: "bundled" as const, pluginId: "hook-plugin", dataDir, generationRoot } });
 
 // User hooks require the shell sandbox and full confinement capability; worker-only confinement does not apply.
 function activateShellSandbox(): void {
@@ -89,7 +90,7 @@ afterEach(() => { __resetSandboxRequestedAtBootForTest(); __resetActiveSandboxCa
 afterAll(async () => { await cleanupTmpDir(root); });
 
 describe("bundled hook runner", () => {
-  it("applies the active wrapper to a user hook with its cwd write scope", async () => {
+  it("applies the active wrapper from the config directory with the original workspace write scope", async () => {
     writeFileSync(script, "process.stdout.write(JSON.stringify({action:'allow',reason:'wrapped user hook'}))");
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     activateShellSandbox();
@@ -114,7 +115,8 @@ describe("bundled hook runner", () => {
     wrap.mockResolvedValueOnce({ argv: ["node", script], env: {} });
     const protectedAnchor = join(homedir(), ".ssh", "fixture-private.cjs");
     const result = await runOneHookScript({ id: "protected-anchor", hookType: "pre", source: "config",
-      hookPath: protectedAnchor, command: ["node", protectedAnchor] }, payload, { cwd: dataDir });
+      hookPath: protectedAnchor, command: ["node", protectedAnchor], configDir: generationRoot,
+      fileDependencies: [protectedAnchor] }, payload, { cwd: dataDir });
     expect(result.decision).toBe("allow");
     const options = wrap.mock.calls[0]![1] as { filesystem: { allowRead: string[]; denyRead: string[] } };
     expect(options.filesystem.allowRead).not.toContain(protectedAnchor);

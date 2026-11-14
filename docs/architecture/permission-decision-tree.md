@@ -18,6 +18,7 @@ flowchart TD
   T -->|"위조 출처·봉투 불일치"| DENY
   T -->|통과| H{"입장 검사 · 본인 계정 일치·인증·세션 연결 · 훅 · deny 규칙"}
   H -->|차단| DENY["거부"]
+  H -->|신뢰한 훅 입력 변경: 전체 결정 재시작, 최대 3회| T
   H -->|통과| F{"질문† 대상? 보호 경로 · 위험 삭제 · 탈출 · 다른 주체 턴 · 샌드박스 없는 셸(경계 미확인)"}
   F -->|예| ASKF["질문† (이번 한 번; 예외: sandbox-unavailable가 유일한 질문†이면 이 세션의 이후 셸·훅을 이 세션 동안도 허용 가능, 사람 없으면 거부)"]
   F -->|아니오| U{"사용자 소유 브라우저 · 호스트 터미널?"}
@@ -136,7 +137,7 @@ Notes that are part of the contract:
 - Headless means deny, and the model is told not to retry. There is no deferred queue; a "recently denied" list
   lets the user re-run a call.
 - An owner-away turn means the card waits. The default is unlimited; an optional auto-skip after N minutes denies.
-- The user script PreToolUse hook runs in the first stage and is block-only. Argument hooks may rewrite input.
+- Reviewed or managed PreToolUse and PermissionRequest hooks may replace input. A changed input restarts the entire invocation at envelope validation and admission, preserving every existing node's order. Three actual replacements are allowed; a further replacement denies. An identical replacement is a no-op. Sealed resumptions and host authentication lifecycles deny a replacement rather than reuse previous authority. A hook allow never grants permission. Hook-provided context is capped and attributed to its exact hook identity.
 - Credential stores owned by the host (encryption keys, credential DBs, cookie/token stores) stay admission-denied.
 - **Ave home sandbox read boundary (owner decision 2026-11-07):** the sandbox read deny covers the Ave home as one directory, not as
   a list of file rows. Every child is denied by default, including children added later. A confined process is re-opened only the

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -56,6 +56,24 @@ function generation(version: string, generationId: string, fingerprint = "a".rep
 }
 
 describe("plugin-owned Hook projections", () => {
+  it("preserves an HTTP definition and requires exact trust after its headers change", () => {
+    const make = (token: string) => {
+      const value = generation("1.0.0", "http-generation");
+      const contribution = value.contributions[0];
+      const content = JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "http", url: "https://hooks.example.com/check", headers: { authorization: token } }] }] } });
+      return { ...value, contributions: [{ ...contribution, fingerprint: createHash("sha256").update(content).digest("hex"),
+        files: [{ ...contribution.files[0], content }] }] };
+    };
+    const [approved] = preparePluginHookGeneration(make("fixture-first"), payloadRoot, join(payloadRoot, "data"));
+    const [changed] = preparePluginHookGeneration(make("fixture-second"), payloadRoot, join(payloadRoot, "data"));
+    const trust = new PluginHookTrustStore();
+    trust.approve(approved);
+    expect(trust.isApproved(changed)).toBe(false);
+    const manager = new ScriptHookManager();
+    manager.publishPluginGeneration([approved], trust);
+    expect(manager.hooksOfType("pre")[0]).toMatchObject({ handlerType: "http", http: { url: "https://hooks.example.com/check" }, command: [] });
+  });
+
   it("compiles plugin matchers at publication and reuses them during filtering", () => {
     const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     const trust = new PluginHookTrustStore();
@@ -186,6 +204,76 @@ describe("plugin-owned Hook projections", () => {
   it("anchors executable paths to the retained generation root", () => {
     const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     expect(projection.entries[0].command).toEqual(["node", realpathSync(join(payloadRoot, "hooks", "policy.mjs"))]);
+  });
+
+  it("binds the materialized config directory and reviews bare file operands there", () => {
+    const configDir = realpathSync(join(payloadRoot, "hooks"));
+    const operand = join(configDir, "bare-policy.cjs");
+    writeFileSync(operand, "module.exports = 'reviewed';");
+    const value = generation("1.0.0", "bare-files");
+    const contribution = value.contributions[0];
+    const content = JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "command",
+      command: ["node", "./hooks/policy.mjs", "bare-policy.cjs", "plain-argument"] }] }] } });
+    const withBareOperand = { ...value, contributions: [{ ...contribution,
+      files: [{ ...contribution.files[0], content }] }] };
+    const [reviewed] = preparePluginHookGeneration(withBareOperand, payloadRoot, join(payloadRoot, "data"));
+    const trust = new PluginHookTrustStore();
+    trust.approve(reviewed);
+    expect(reviewed.entries[0]).toMatchObject({ configDir, command: ["node",
+      realpathSync(join(configDir, "policy.mjs")), "bare-policy.cjs", "plain-argument"] });
+    expect(reviewed.entries[0].fileDependencies).toContain(realpathSync(operand));
+    expect(reviewed.entries[0].validateTrust?.()).toBe(true);
+
+    writeFileSync(operand, "module.exports = 'changed';");
+    expect(reviewed.entries[0].validateTrust?.()).toBe(false);
+    expect(trust.isApproved(reviewed)).toBe(false);
+    expect(trust.record(reviewed)).toBeUndefined();
+    expect(() => trust.approve(reviewed)).toThrow("Hook definition changed before approval");
+    const [changed] = preparePluginHookGeneration(withBareOperand, payloadRoot, join(payloadRoot, "data"));
+    expect(changed.owner.fingerprint).not.toBe(reviewed.owner.fingerprint);
+    expect(changed.approvalDigest).not.toBe(reviewed.approvalDigest);
+    expect(trust.isApproved(changed)).toBe(false);
+    writeFileSync(operand, "module.exports = 'reviewed';");
+    expect(reviewed.entries[0].validateTrust?.()).toBe(true);
+    expect(trust.isApproved(reviewed)).toBe(false);
+    expect(trust.record(reviewed)).toBeUndefined();
+  });
+
+  it("withdraws approval when command-file validation throws", () => {
+    const [base] = preparePluginHookGeneration(generation("1.0.0", "validator-error"), payloadRoot, join(payloadRoot, "data"));
+    let unreadable = false;
+    const projection = { ...base, entries: base.entries.map((entry) => ({ ...entry, validateTrust: () => {
+      if (unreadable) throw new Error("file cannot be read");
+      return true;
+    } })) };
+    const trust = new PluginHookTrustStore();
+    trust.approve(projection);
+    unreadable = true;
+    expect(trust.record(projection)).toBeUndefined();
+    unreadable = false;
+    expect(trust.isApproved(projection)).toBe(false);
+  });
+
+  it("fails closed when a stale approval cannot be removed from disk", () => {
+    const [base] = preparePluginHookGeneration(generation("1.0.0", "persist-error"), payloadRoot, join(payloadRoot, "data"));
+    let current = true;
+    const projection = { ...base, entries: base.entries.map((entry) => ({ ...entry, validateTrust: () => current })) };
+    const directory = join(payloadRoot, "persisted-hook-trust");
+    const displaced = `${directory}-retained`;
+    const trust = new PluginHookTrustStore(join(directory, "approvals.json"));
+    trust.approve(projection);
+    renameSync(directory, displaced);
+    writeFileSync(directory, "not a directory");
+    current = false;
+    try {
+      expect(() => trust.isApproved(projection)).toThrow();
+    } finally {
+      unlinkSync(directory);
+      renameSync(displaced, directory);
+    }
+    expect(trust.record(projection)).toBeUndefined();
+    current = true;
+    expect(trust.isApproved(projection)).toBe(false);
   });
 
   it("keeps a plugin's Hooks published while another plugin's generation was being prepared", () => {

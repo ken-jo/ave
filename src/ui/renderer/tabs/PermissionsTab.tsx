@@ -53,6 +53,7 @@ import { EgressDenialsList } from "../components/permissions/EgressDenialsList.j
 import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
 import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
 import { HomeContentReview } from "../components/permissions/HomeContentReview.js";
+import { HookTrustReview } from "../components/permissions/HookTrustReview.js";
 import { HiddenNoticesReset } from "../components/HiddenNoticesReset.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
@@ -505,6 +506,7 @@ export function PermissionsTab({
     warnings: string[];
   } | null>(null);
   const [quarantinedHooks, setQuarantinedHooks] = useState<HookTrustRow[]>([]);
+  const [hookTrustRows, setHookTrustRows] = useState<HookTrustRow[]>([]);
   const [auditOpen, setAuditOpen] = useState(false);
   const [userApprovals, setUserApprovals] = useState<Array<{
     key: string;
@@ -615,6 +617,7 @@ export function PermissionsTab({
       settle("hooks", () => window.ave.permission.hookTrustList(), (hookTrustRes) => {
         if (!hookTrustRes.ok) throw new Error(hookTrustRes.error ?? "hook trust list failed");
         setQuarantinedHooks(hookTrustRes.disabled);
+        setHookTrustRows([...hookTrustRes.active, ...hookTrustRes.disabled]);
       }),
       readDirectories(),
       settle("reviewer", () => window.ave.permission.reviewerDispatch("show"), (reviewerRes) => {
@@ -1592,6 +1595,8 @@ export function PermissionsTab({
             </div>
           </div>
         )}
+
+        {panelLoad.hooks === "ready" && <HookTrustReview rows={hookTrustRows} refresh={fetchAll} />}
 
         {/* ── 현재 권한 정책 요약 ── */}
         <SettingsSection

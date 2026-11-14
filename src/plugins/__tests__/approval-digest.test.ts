@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   approvalDigest,
+  agentPluginComponentDigests,
   changedPayloadFiles,
   extensionComponentDigests,
   extensionDeclarationPaths,
@@ -41,6 +42,20 @@ function digestOf(options: Parameters<typeof extension>[0] = {}): string | null 
 }
 
 describe("approvalDigest", () => {
+  it("binds remote hook approval to its exact definition without a local executable", () => {
+    const document = { name: "hook-package", version: "1.0.0", extensions: { "ai.agent-connector.ave": {
+      capabilities: [], requires: { minAppVersion: "0.13.0" }, hooks: [{ id: "policy", path: "hooks/policy.json" }],
+    } } };
+    const digest = (token: string) => extensionComponentDigests(document, [
+      file("plugin.json", JSON.stringify(document)),
+      file("hooks/policy.json", JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "http", url: "https://hooks.example.com/check", headers: { authorization: token } }] }] } })),
+    ])[0].approvalDigest;
+    expect(digest("fixture-first")).toMatch(/^[a-f0-9]{64}$/u);
+    expect(digest("fixture-first")).not.toBe(digest("fixture-second"));
+    const components = { mcpServers: {}, hooks: [{ command: [], handlerType: "http" as const, digest: "a".repeat(64) }] };
+    expect(agentPluginComponentDigests(components, []).hooks[0]).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
   it("changing the server, or a file it loads, changes the digest while the declaration stays byte-identical", () => {
     const base = digestOf();
     expect(base).toMatch(/^[a-f0-9]{64}$/u);

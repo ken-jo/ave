@@ -453,6 +453,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:permissions:home-trust-remove",
         "ave:permissions:home-trust-review",
         "ave:permissions:hook-trust-list",
+        "ave:permissions:hook-trust-review",
         "ave:permissions:judge-get",
         "ave:permissions:judge-set",
         "ave:permissions:recently-denied-list",

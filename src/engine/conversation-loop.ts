@@ -802,7 +802,7 @@ export class ConversationLoop {
     payload: import("../hooks/script-hook-types.js").LifecycleEventPayload = {},
     sessionIdOverride?: string,
   ): Promise<void> {
-    return fireLifecycleEvent(this.deps, this.sessionId, event, payload, sessionIdOverride);
+    return fireLifecycleEvent(this.deps, this.sessionId, event, payload, sessionIdOverride, this.getSessionExecutionCwd());
   }
 
   /** UserPromptSubmit is blocking and fails closed on denial or unexpected throws.
@@ -811,7 +811,7 @@ export class ConversationLoop {
     payload: import("../hooks/script-hook-types.js").UserPromptSubmitPayload,
     sessionIdOverride?: string,
   ): Promise<{ decision: "allow" | "deny"; reason: string }> {
-    return fireUserPromptSubmit(this.deps, this.sessionId, payload, sessionIdOverride);
+    return fireUserPromptSubmit(this.deps, this.sessionId, payload, sessionIdOverride, this.getSessionExecutionCwd());
   }
 
   /** Non-secret session metadata for the SessionStart lifecycle payload. */

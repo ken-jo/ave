@@ -2885,7 +2885,7 @@ Only a registered application window's exact main frame can answer its currently
 
 The host verifies native human consent once for the exact request. Rules and remembered approvals are not fresh human consent. Losing an owner never approves a card; owner-away waiting follows the setting above. A forced other-principal request requires that request’s human approval.
 
-Immediately before handler entry, a synchronous gate rechecks cancellation, required audit integrity, active-turn breaker state and plugin/remote authority. Returning from a card or renewed route admission re-enters that gate. Permission-request hooks remain block-only and cancellable. Execution retains its existing ceilings and current effect identity.
+Immediately before handler entry, a synchronous gate rechecks cancellation, required audit integrity, active-turn breaker state and plugin/remote authority. Returning from a card or renewed route admission re-enters that gate. Permission-request hooks remain cancellable and cannot grant authority. Reviewed or managed input replacements restart complete preparation and permission classification; sealed paths that cannot safely restart deny the replacement. The [hook runtime design](hook-runtime-expansion-design.md#65-input-mutation-and-permission-re-entry) owns the bounded re-entry contract. Execution retains its existing ceilings and current effect identity.
 
 ## Reviewer Failure
 

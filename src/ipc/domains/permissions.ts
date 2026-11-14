@@ -988,16 +988,51 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, PERMISSIONS.hookTrustList, e);
       return UNAUTHORIZED_FRAME;
     }
-    const { listHookTrustState } = await import(
-      "../../hooks/hook-trust-commands.js"
-    );
-    const state = listHookTrustState();
+    const state = deps.scriptHookManager
+      ? (await import("../../hooks/hook-source-controller.js")).listRuntimeHookTrustState(deps.scriptHookManager,
+        conversationLoop.getSessionProjectRoot?.() ?? undefined)
+      : (await import("../../hooks/hook-trust-commands.js")).listHookTrustState();
     return {
       ok: true,
       active: state.active,
       disabled: state.disabled,
       totalDisabled: state.disabled.length,
     };
+  });
+
+  ipcMain.handle(PERMISSIONS.hookTrustReview, async (event, payload: unknown) => {
+    if (!validateHostRendererSender(event) || !isNativeApprovalFrame(event)) {
+      auditUnauthorized(auditLogger, PERMISSIONS.hookTrustReview, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    if (typeof body.sourceId !== "string" || body.sourceId.length === 0 || body.sourceId.length > 512
+      || typeof body.fileName !== "string" || body.fileName.length === 0 || body.fileName.length > 255
+      || typeof body.expectedSha256 !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedSha256)
+      || (body.action !== "accept" && body.action !== "disable" && body.action !== "trust-project")) {
+      return { ok: false, error: "invalid-hook-review" };
+    }
+    if (!deps.scriptHookManager) return { ok: false, error: "hook-review-unavailable" };
+    const { reviewRuntimeHookTrust } = await import("../../hooks/hook-source-controller.js");
+    try {
+      const result = await reviewRuntimeHookTrust(deps.scriptHookManager, {
+        sourceId: body.sourceId, fileName: body.fileName,
+        expectedSha256: body.expectedSha256, action: body.action,
+      }, conversationLoop.getSessionProjectRoot?.() ?? undefined);
+      if (!result.ok) {
+        const error = result.error;
+        return { ok: false, error: error === "hook-review-stale" || error === "managed-hook-policy"
+          ? error : "hook-review-failed" };
+      }
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+        output: JSON.stringify({ action: "hook_trust_reviewed", sourceId: body.sourceId,
+          fileName: body.fileName, sha256: body.expectedSha256, decision: body.action }) });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "hook-review-failed" };
+    }
   });
 
   // Audit entries can contain DLP-redacted tool inputs and decision metadata; gated so foreign frames cannot harvest them.

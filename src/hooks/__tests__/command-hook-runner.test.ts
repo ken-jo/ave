@@ -18,6 +18,7 @@ function cmdHook(over: Partial<RunnableHook> & Pick<RunnableHook, "command">): R
     id: "config:PreToolUse#0.0",
     hookType: "pre",
     hookPath: over.command[0],
+    configDir: FIXTURE_ROOT,
     ...over,
   };
 }

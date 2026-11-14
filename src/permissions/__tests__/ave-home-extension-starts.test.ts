@@ -75,7 +75,7 @@ describe("private-home refusal at extension spawn boundaries", () => {
   });
 
   it("denies a hook requesting confinement before approval and runs it after approval", async () => {
-    const hook: RunnableHook = { id: "privacy", hookType: "pre", command: ["privacy-hook.exe"],
+    const hook: RunnableHook = { id: "privacy", hookType: "pre", configDir: path, command: ["privacy-hook.exe"],
       hookPath: join(path, "hook.exe"), confinement: { kind: "bundled", pluginId: "privacy", dataDir: path, generationRoot: path } };
     const payload = { hookType: "pre" as const, toolName: "fs_read", source: "builtin" as const,
       category: "read" as const, input: {}, sessionId: "privacy", trustOrigin: "user-keyboard" as const };

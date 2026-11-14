@@ -6,19 +6,23 @@ import {
   readdirSync,
   renameSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, extname, join, resolve as pathResolve } from "node:path";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { createLogger } from "../lib/logger.js";
+import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import type { ScriptHookType } from "./script-hook-types.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import type { HookSourceKind } from "./hook-source-policy.js";
 import { clearHookDisableCause, disabledHookOriginalName, readHookDisableCause, writeHookDisableCause, type HookDisableCause } from "./hook-disable-state.js";
 
 const log = createLogger("hook-discovery");
 
 export interface DiscoveredHook {
+  validateTrust?: () => boolean;
+  hookSource?: HookSourceKind;
+  sourceId?: string;
   path: string;
   fileName: string;
   hookType: ScriptHookType;
@@ -31,6 +35,7 @@ export interface DiscoveredHook {
 export type LockfileTrustState = "new" | "changed" | "trusted" | "removed";
 
 export interface LockfileEntry {
+  sourceId?: string;
   fileName: string;
   sha256: string;
   // ISO timestamp when first accepted by user.
@@ -38,6 +43,7 @@ export interface LockfileEntry {
 }
 
 export interface LockfileShape {
+  trustedProjects?: string[];
   // Bump when the persisted shape changes.
   schemaVersion: 1;
   updatedAt: string;
@@ -240,6 +246,8 @@ export function readLockfile(path: string = defaultLockfilePath()): LockfileShap
   if (!existsSync(path)) return null;
   try {
     const raw = readFileSync(path, "utf-8");
+    // The shared lock creates an empty target before the first enrollment write.
+    if (raw.length === 0) return null;
     const parsed = JSON.parse(raw) as LockfileShape;
     if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.hooks)) {
       log.warn("hook-discovery: lockfile schema mismatch at %s — treating as missing", path);
@@ -256,11 +264,12 @@ export function readLockfile(path: string = defaultLockfilePath()): LockfileShap
 export function diffAgainstLockfile(
   discovered: DiscoveredHook[],
   lockfile: LockfileShape | null,
+  sourceId?: string,
 ): HookDiff[] {
   const out: HookDiff[] = [];
   const known = new Map<string, LockfileEntry>();
   if (lockfile) {
-    for (const e of lockfile.hooks) known.set(e.fileName, e);
+    for (const e of lockfile.hooks) if (e.sourceId === sourceId) known.set(e.fileName, e);
   }
   for (const hook of discovered) {
     const prev = known.get(hook.fileName);
@@ -277,6 +286,7 @@ export function diffAgainstLockfile(
   const seen = new Set(discovered.map((d) => d.fileName));
   if (lockfile) {
     for (const e of lockfile.hooks) {
+      if (e.sourceId !== sourceId) continue;
       if (!seen.has(e.fileName)) {
         out.push({
           hook: {
@@ -300,23 +310,25 @@ export async function persistLockfile(
   acceptedHooks: DiscoveredHook[],
   lockfilePath: string = defaultLockfilePath(),
   previousAcceptedAt?: Map<string, string>,
+  sourceId?: string,
 ): Promise<LockfileShape> {
   const now = new Date().toISOString();
   const next: LockfileShape = {
     schemaVersion: 1,
     updatedAt: now,
     hooks: acceptedHooks.map((h) => ({
+      ...(sourceId === undefined ? {} : { sourceId }),
       fileName: h.fileName,
       sha256: h.sha256,
       acceptedAt: previousAcceptedAt?.get(h.fileName) ?? now,
     })),
   };
   await withFileLock(lockfilePath, async () => {
+    const current = readLockfile(lockfilePath);
+    if (current?.trustedProjects) next.trustedProjects = current.trustedProjects;
+    next.hooks.push(...(current?.hooks.filter((entry) => entry.sourceId !== sourceId) ?? []));
     mkdirSync(dirname(lockfilePath), { recursive: true, mode: 0o700 });
-    writeFileSync(lockfilePath, JSON.stringify(next, null, 2), {
-      encoding: "utf-8",
-      mode: 0o600,
-    });
+    writeUtf8FileAtomicSync(lockfilePath, JSON.stringify(next, null, 2), 0o600);
   });
   return next;
 }

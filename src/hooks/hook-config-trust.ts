@@ -1,11 +1,9 @@
 // Config bytes and referenced script hashes form one trust unit; edits re-quarantine it. Commands enter the registry only after explicit trust (docs/architecture/hook-runtime-expansion-design.md).
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { basename, join, resolve as pathResolve } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, sep, resolve as pathResolve } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
-  classifyCommand,
-  looksLikeLocalScriptPath,
   parseHookConfig,
   type HookConfigEntry,
 } from "./hook-config.js";
@@ -24,36 +22,24 @@ export function defaultHooksConfigPath(dir: string = defaultHooksDir()): string 
 }
 
 // Disabled review includes every stored copy; active discovery keeps exact names.
-export function discoverHookTrustFiles(dir: string, includeDisabledCopies = false): {
+export function discoverHookTrustFiles(dir: string, includeDisabledCopies = false, configBaseDir = dir): {
   scripts: DiscoveredHook[];
   config: LoadedHookConfig;
   configs: LoadedHookConfig[];
   hooks: DiscoveredHook[];
 } {
   const scripts = discoverHooks(dir, includeDisabledCopies);
-  const config = loadHookConfig(defaultHooksConfigPath(dir));
+  const config = loadHookConfig(defaultHooksConfigPath(dir), configBaseDir);
   const configs = includeDisabledCopies && existsSync(dir)
     ? readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && disabledHookOriginalName(entry.name) === HOOKS_CONFIG_FILENAME)
-      .map((entry) => loadHookConfig(join(dir, entry.name)))
+      .map((entry) => loadHookConfig(join(dir, entry.name), configBaseDir))
     : [config];
   const synthetic = configs.flatMap((loaded) => {
     const hook = syntheticConfigHook(loaded);
     return hook ? [{ ...hook, fileName: basename(loaded.path) }] : [];
   });
   return { scripts, config, configs, hooks: [...scripts, ...synthetic] };
-}
-
-// Trust anchors on argv[0] for local scripts or the first local-script argument for binaries; expand ~, and return null for rejected binary-only commands.
-export function resolveScriptAnchor(command: string[]): string | null {
-  const cls = classifyCommand(command);
-  if (cls === "binary-only") return null;
-  const token =
-    cls === "local-script"
-      ? command[0]
-      : command.slice(1).find(looksLikeLocalScriptPath);
-  if (token === undefined) return null;
-  return expandLeadingTilde(token);
 }
 
 export interface LoadedHookConfig {
@@ -72,6 +58,7 @@ export interface LoadedHookConfig {
 // Reads config and referenced scripts for hashing; never executes them. Missing config yields no entries.
 export function loadHookConfig(
   configPath: string = defaultHooksConfigPath(),
+  scriptBaseDir = dirname(configPath),
 ): LoadedHookConfig {
   if (!existsSync(configPath)) {
     return { path: configPath, exists: false, entries: [], warnings: [], errors: [], trustHash: null };
@@ -88,44 +75,111 @@ export function loadHookConfig(
   let parsedJson: unknown;
   try {
     parsedJson = JSON.parse(raw.toString("utf-8"));
-  } catch (err) {
+  } catch {
     // Malformed config yields an audited fatal error and no runnable entries; hashing its bytes detects later repairs.
-    log.warn("hook-config-trust: JSON parse failed %s: %s", configPath, (err as Error).message);
+    log.warn("hook-config-trust: JSON parse failed %s", configPath);
     return {
       path: configPath,
       exists: true,
       entries: [],
       warnings: [],
-      errors: [`hooks.json: not valid JSON — ${(err as Error).message}`],
+      errors: ["hooks.json: not valid JSON"],
       trustHash: hashBytesOnly(raw),
     };
   }
 
   const parsed = parseHookConfig(parsedJson);
-
-  // Script edits re-quarantine the config; a missing-script token also detects the script appearing later.
-  const hasher = createHash("sha256");
-  hasher.update(raw);
-  const anchors = collectScriptAnchors(parsed.entries);
-  for (const anchorPath of anchors) {
-    hasher.update("\0");
-    hasher.update(trustAnchorKey(anchorPath));
-    hasher.update("\0");
-    try {
-      hasher.update(readFileSync(anchorPath));
-    } catch {
-      hasher.update("<missing-script>");
-    }
+  try { bindHookConfigPaths(parsed.entries, scriptBaseDir); }
+  catch {
+    return { path: configPath, exists: true, entries: [], warnings: parsed.warnings,
+      errors: [...parsed.errors, "hooks.json: configuration directory cannot be resolved"], trustHash: hashBytesOnly(raw) };
   }
+  const { trustHash, errors: anchorErrors, fileDependencies } = hashHookConfigDefinition(raw, parsed.entries);
 
   return {
     path: configPath,
     exists: true,
-    entries: parsed.entries.map((entry) => ({ ...entry, configPath })),
+    // Refused anchors supply no runnable commands; invalid matchers retain their inert denial guards.
+    entries: (anchorErrors.length ? parsed.entries.filter((entry) => entry.matcherError) : parsed.entries)
+      .map((entry) => ({ ...entry, configPath, reviewedHash: trustHash, fileDependencies: fileDependencies.get(entry.id) })),
     warnings: parsed.warnings,
-    errors: parsed.errors,
-    trustHash: hasher.digest("hex"),
+    errors: [...parsed.errors, ...anchorErrors],
+    trustHash,
   };
+}
+
+export function hashHookCommandFiles(command: readonly string[], configDir: string): { hash: string; files: string[]; errors: string[] } {
+  const hasher = createHash("sha256");
+  hasher.update(JSON.stringify(command));
+  const errors: string[] = [];
+  const files = new Set<string>();
+  let cwd: string;
+  try {
+    cwd = realpathSync(configDir);
+    if (!statSync(cwd).isDirectory()) throw new Error("Not a directory");
+  } catch {
+    return { hash: hasher.digest("hex"), files: [], errors: ["configuration directory cannot be resolved"] };
+  }
+  hasher.update("\0cwd\0").update(trustAnchorKey(cwd));
+  for (const [index, raw] of command.entries()) {
+    if (raw.startsWith("-")) continue;
+    const token = expandLeadingTilde(raw);
+    const executable = index === 0;
+    // A bare executable is PATH-resolved; operands are always resolved against the bound cwd.
+    if (executable && !isAbsolute(token) && !token.includes("/") && !token.includes(sep)) continue;
+    const candidate = pathResolve(cwd, token);
+    try {
+      const target = realpathSync(candidate);
+      if (!statSync(target).isFile()) {
+        if (executable) errors.push("hook executable is not a regular file");
+        continue;
+      }
+      const bytes = readFileSync(target);
+      hasher.update(`\0file:${index}\0`).update(trustAnchorKey(candidate)).update("\0").update(trustAnchorKey(target)).update("\0").update(createHash("sha256").update(bytes).digest());
+      files.add(target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!executable && (code === "ENOENT" || code === "ENOTDIR")) continue;
+      errors.push(`file operand ${index} cannot be resolved or read`);
+      hasher.update(`\0unreadable:${index}\0`);
+    }
+  }
+  if (files.size === 0) errors.push("command has no regular-file trust anchor");
+  return { hash: hasher.digest("hex"), files: [...files], errors };
+}
+
+export function hashHookConfigDefinition(raw: Buffer, entries: readonly HookConfigEntry[]): {
+  trustHash: string; errors: string[]; fileDependencies: ReadonlyMap<string, readonly string[]>;
+} {
+  const hasher = createHash("sha256").update(raw);
+  const errors: string[] = [];
+  const fileDependencies = new Map<string, readonly string[]>();
+  for (const entry of entries) {
+    if (entry.handlerType === "http") continue;
+    if (!entry.configDir) {
+      errors.push(`hooks.json: ${entry.id} configuration directory is missing`);
+      continue;
+    }
+    const result = hashHookCommandFiles(entry.command, entry.configDir);
+    hasher.update("\0").update(entry.id).update("\0").update(result.hash);
+    errors.push(...result.errors.map((error) => `hooks.json: ${entry.id} ${error}`));
+    fileDependencies.set(entry.id, result.files);
+  }
+  return { trustHash: hasher.digest("hex"), errors, fileDependencies };
+}
+
+export function bindHookConfigPaths(entries: HookConfigEntry[], baseDirectory: string): void {
+  const configDir = realpathSync(baseDirectory);
+  if (!statSync(configDir).isDirectory()) throw new Error("Hook configuration directory is unavailable");
+  for (const entry of entries) {
+    entry.configDir = configDir;
+    const executable = entry.command[0];
+    if (executable === undefined) continue;
+    const expanded = expandLeadingTilde(executable);
+    if (isAbsolute(expanded) || expanded.includes("/") || expanded.includes(sep)) {
+      entry.command = [pathResolve(configDir, expanded), ...entry.command.slice(1)];
+    }
+  }
 }
 
 // Normalize path separators before hashing so platform spelling changes do not re-quarantine the same script.
@@ -135,15 +189,6 @@ export function trustAnchorKey(anchorPath: string): string {
 
 function hashBytesOnly(raw: Buffer): string {
   return sha256Hex(raw);
-}
-
-function collectScriptAnchors(entries: HookConfigEntry[]): string[] {
-  const set = new Set<string>();
-  for (const entry of entries) {
-    const anchor = resolveScriptAnchor(entry.command);
-    if (anchor) set.add(anchor);
-  }
-  return [...set].sort();
 }
 
 // The synthetic pre event anchors trust only; dispatch uses each config entry's event.

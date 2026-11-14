@@ -1,10 +1,11 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { compileHookMatcher, hookMatcherError } from "../hook-discovery.js";
 import * as hookDiscovery from "../hook-discovery.js";
 import { parseHookConfig } from "../hook-config.js";
+import { bindHookConfigPaths } from "../hook-config-trust.js";
 import { buildHookRegistry } from "../hook-registry.js";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import { collectHookMatcherDiagnostics } from "../hook-matcher-diagnostics.js";
@@ -41,6 +42,7 @@ describe("hook matcher safety", () => {
     for (const event of ["PreToolUse", "PermissionRequest"] as const) {
       const parsed = parseHookConfig({ hooks: { [event]: [{ matcher, hooks: [{ type: "command", command: ["node", COMMAND] }] }] } });
       const manager = new ScriptHookManager();
+      bindHookConfigPaths(parsed.entries, dirname(COMMAND));
       manager.setTrustedRegistry([], parsed.entries);
       const result = await (event === "PreToolUse" ? manager.runPreToolUse(PAYLOAD) : manager.runPermissionRequest(PAYLOAD));
       expect(result).toMatchObject({ decision: "deny", results: [] });
@@ -124,6 +126,7 @@ describe("hook matcher safety", () => {
   it.each(["PreToolUse", "PermissionRequest"] as const)("invalid %s config matcher denies every tool with its file and pattern", async (event) => {
     const manager = new ScriptHookManager();
     const parsed = parseHookConfig({ hooks: { [event]: [{ matcher: "*danger*", hooks: [{ type: "command", command: ["node", COMMAND, "echo"] }] }] } });
+    bindHookConfigPaths(parsed.entries, dirname(COMMAND));
     manager.setTrustedRegistry([], parsed.entries);
     for (const toolName of ["read_file", "mcp__server__tool"]) {
       const result = await (event === "PreToolUse" ? manager.runPreToolUse({ ...PAYLOAD, toolName }) : manager.runPermissionRequest({ ...PAYLOAD, toolName }));
@@ -181,6 +184,7 @@ describe("hook matcher safety", () => {
     expect(parsed.errors).toEqual([]);
     expect(parsed.warnings.join(" ")).toContain("ignored");
     const manager = new ScriptHookManager();
+    bindHookConfigPaths(parsed.entries, dirname(COMMAND));
     manager.setTrustedRegistry([], parsed.entries);
     const result = event === "Stop"
       ? await manager.runLifecycleEvent(event, "session-example", "user-keyboard")
@@ -191,7 +195,7 @@ describe("hook matcher safety", () => {
 
   it("direct registry entries also ignore prompt and Stop matchers without evaluating free text", async () => {
     const manager = new ScriptHookManager();
-    manager.setTrustedRegistry([], ["UserPromptSubmit", "Stop"].map((event) => ({ id: event, event: event as "Stop" | "UserPromptSubmit", source: "config" as const, matcher: "nomatch", command: ["node", COMMAND, "silent"], timeoutMs: 5000 })));
+    manager.setTrustedRegistry([], ["UserPromptSubmit", "Stop"].map((event) => ({ id: event, event: event as "Stop" | "UserPromptSubmit", source: "config" as const, configDir: dirname(COMMAND), matcher: "nomatch", command: ["node", COMMAND, "silent"], timeoutMs: 5000 })));
     expect((await manager.runUserPromptSubmit("session-example", "user-keyboard", { inputText: "a".repeat(100_000) })).results).toHaveLength(1);
     expect((await manager.runLifecycleEvent("Stop", "session-example", "user-keyboard")).results).toHaveLength(1);
   });
@@ -216,7 +220,7 @@ describe("hook matcher safety", () => {
 
   it.each(["pre", "perm"] as const)("oversized tool subjects fail closed for %s", async (event) => {
     const manager = new ScriptHookManager();
-    manager.setTrustedRegistry([], [{ id: "guard", event, matcher: "^write", source: "config", command: ["node", COMMAND], timeoutMs: 5000 }]);
+    manager.setTrustedRegistry([], [{ id: "guard", event, matcher: "^write", source: "config", configDir: dirname(COMMAND), command: ["node", COMMAND], timeoutMs: 5000 }]);
     const result = await (event === "pre" ? manager.runPreToolUse({ ...PAYLOAD, toolName: "a".repeat(257) }) : manager.runPermissionRequest({ ...PAYLOAD, toolName: "a".repeat(257) }));
     expect(result).toMatchObject({ decision: "deny", results: [] });
     expect(result.reason).toContain("hooks.json");
@@ -225,7 +229,7 @@ describe("hook matcher safety", () => {
 
   it.each(["post", "Notification"] as const)("oversized subjects refuse observation hook %s", async (event) => {
     const manager = new ScriptHookManager();
-    manager.setTrustedRegistry([], [{ id: "observe", event, matcher: "a.*", source: "config", command: ["node", COMMAND], timeoutMs: 5000 }]);
+    manager.setTrustedRegistry([], [{ id: "observe", event, matcher: "a.*", source: "config", configDir: dirname(COMMAND), command: ["node", COMMAND], timeoutMs: 5000 }]);
     const result = event === "post" ? await manager.runPostToolUse({ ...PAYLOAD, toolName: "a".repeat(257) }) : await manager.runLifecycleEvent("Notification", "example", "unknown", { notificationType: "a".repeat(257) });
     expect(result).toMatchObject({ decision: "allow", results: [] });
   });
@@ -234,7 +238,7 @@ describe("hook matcher safety", () => {
     const pattern = "(\\w+)+-".padEnd(256, "x");
     // Fail before evaluation on an implementation without the load-time guard.
     expect(hookMatcherError(pattern)).toBeDefined();
-    const registry = buildHookRegistry([], [{ id: "bounded", event: "pre", matcher: pattern, source: "config", command: ["node", COMMAND], timeoutMs: 5000 }]);
+    const registry = buildHookRegistry([], [{ id: "bounded", event: "pre", matcher: pattern, source: "config", configDir: dirname(COMMAND), command: ["node", COMMAND], timeoutMs: 5000 }]);
     expect(registry[0].matcherError).toBeDefined();
     expect(registry[0].matchesSubject("a".repeat(256))).toBe(false);
     for (const unsafe of ["(a|aa)+$", "a*a*a*", "(a+)+$", "a{999999}", "(a)\\1+"]) expect(hookMatcherError(unsafe), unsafe).toBeDefined();
@@ -245,6 +249,7 @@ describe("hook matcher safety", () => {
     expect(compileHookMatcher("mcp__.*__write.*")("mcp__" + "s".repeat(120) + "__write" + "t".repeat(124))).toBe(true);
     const manager = new ScriptHookManager();
     const parsed = parseHookConfig({ hooks: { PreToolUse: [{ matcher: "write_file", hooks: [{ type: "command", command: ["node", COMMAND, "echo"] }] }] } });
+    bindHookConfigPaths(parsed.entries, dirname(COMMAND));
     manager.setTrustedRegistry([], parsed.entries);
     expect(await manager.runPreToolUse(PAYLOAD)).toMatchObject({ decision: "allow", results: [] });
     expect((await manager.runPreToolUse({ ...PAYLOAD, toolName: "write_file" })).results).toHaveLength(1);
@@ -274,7 +279,7 @@ describe("hook matcher safety", () => {
     const error = new Error("unexpected construction failure");
     const constructor = vi.spyOn(globalThis, "RegExp").mockImplementation(function () { throw error; });
     try {
-      expect(() => buildHookRegistry([], [{ id: "config", event: "pre", matcher: "mcp__.*", source: "config", command: ["node", COMMAND], timeoutMs: 5000 }])).toThrow(error);
+      expect(() => buildHookRegistry([], [{ id: "config", event: "pre", matcher: "mcp__.*", source: "config", configDir: dirname(COMMAND), command: ["node", COMMAND], timeoutMs: 5000 }])).toThrow(error);
       expect(() => buildHookRegistry([{ path: "/home/alice/pre-guard.sh", fileName: "pre-guard.sh", hookType: "pre", matcher: "mcp__.*", sha256: "hash", size: 1 }], [])).toThrow(error);
       expect(() => hookMatcherError("mcp__.*")).toThrow(error);
     } finally {

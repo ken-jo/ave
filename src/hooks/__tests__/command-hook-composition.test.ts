@@ -19,6 +19,7 @@ function configEntry(over: Partial<HookConfigEntry> & Pick<HookConfigEntry, "id"
     event: "pre",
     timeoutMs: 5000,
     source: "config",
+    configDir: FIXTURE_ROOT,
     ...over,
   };
 }

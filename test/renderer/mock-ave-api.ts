@@ -1064,6 +1064,7 @@ export function makeMockAveNamespace(overrides: AveNamespaceOverrides = {}) {
         addRule: vi.fn(async () => ({ ok: true })),
         removeRule: vi.fn(async () => ({ ok: true })),
         hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
+        hookTrustReview: vi.fn(async () => ({ ok: true })),
         dirDispatch: vi.fn(async () => ({ ok: true, verb: "list", defaults: [], userAdditions: [], effective: [] })),
         judgeGet: mockJudgeGet(),
         reviewerDispatch: vi.fn(async () => ({
