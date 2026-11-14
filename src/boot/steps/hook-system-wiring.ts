@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { defaultHooksDir, defaultLockfilePath } from "../../hooks/hook-discovery.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
-import type { HookRuntimePolicy } from "../../hooks/hook-source-policy.js";
+import { loadHookRuntimePolicy, type HookRuntimePolicy } from "../../hooks/hook-source-policy.js";
 import { registerHookSourceController, type HookSourceLocation } from "../../hooks/hook-source-controller.js";
 
 const log = createLogger("hook-system-wiring");
@@ -44,8 +44,7 @@ export interface HookSystemBootResult {
 export async function wireHookSystem(
   deps: WireHookSystemDeps = {},
 ): Promise<HookSystemBootResult> {
-  const policy: HookRuntimePolicy = deps.policy ?? { allowManagedHooksOnly: false,
-    allowedHttpHookUrls: [], httpHookAllowedEnvVars: [], managedHooks: [] };
+  const policy = deps.policy ?? await loadHookRuntimePolicy();
   const diagnostics = collectHookMatcherDiagnostics(deps.hooksDir, deps.disabledDir);
   const trust = await runHookTrustWorkflow({
     hooksDir: deps.hooksDir,
@@ -59,6 +58,7 @@ export async function wireHookSystem(
   })));
   // Only trusted config contributes commands; the synthetic hooks.json trust unit is not a runnable script.
   const shHooks = trust.trustedHooks.filter((h) => h.fileName !== HOOKS_CONFIG_FILENAME);
+  manager.setTrustedSourceRegistry("managed", [], policy.managedHooks);
   manager.setHookPolicy({ allowManagedHooksOnly: policy.allowManagedHooksOnly, disableAllHooks: false });
   const userDir = deps.hooksDir ?? defaultHooksDir();
   const sources: HookSourceLocation[] = [{ id: "user", kind: "user", hooksDir: userDir,
