@@ -4,7 +4,6 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
-  looksLikeLocalScriptPath,
   parseHookConfig,
   type HookConfigEntry,
 } from "./hook-config.js";
@@ -43,15 +42,16 @@ export function discoverHookTrustFiles(dir: string, includeDisabledCopies = fals
   return { scripts, config, configs, hooks: [...scripts, ...synthetic] };
 }
 
-function scriptAnchorIndex(command: string[]): number {
-  return command.findIndex(looksLikeLocalScriptPath);
+// Materialized configs use explicit paths; symbolic package arguments are resolved by their own loader.
+function isScriptAnchor(token: string): boolean {
+  if (token.startsWith("-")) return false;
+  const path = expandLeadingTilde(token);
+  return isAbsolute(path) || path.startsWith("./") || path.startsWith("../");
 }
 
-// Trust anchors on argv[0] for local scripts or the first non-option local-script argument for binaries.
-export function resolveScriptAnchor(command: string[]): string | null {
-  const token = command[scriptAnchorIndex(command)];
-  if (token === undefined) return null;
-  return expandLeadingTilde(token);
+// Every explicit non-option path is an anchor, including interpreter and additional script operands.
+export function resolveScriptAnchors(command: readonly string[]): string[] {
+  return command.filter(isScriptAnchor).map(expandLeadingTilde);
 }
 
 export interface LoadedHookConfig {
@@ -102,11 +102,31 @@ export function loadHookConfig(
 
   const parsed = parseHookConfig(parsedJson);
   bindHookConfigPaths(parsed.entries, scriptBaseDir);
+  const { trustHash, errors: anchorErrors } = hashHookConfigDefinition(raw, parsed.entries);
 
-  // Script edits re-quarantine the config; a missing-script token also detects the script appearing later.
+  return {
+    path: configPath,
+    exists: true,
+    // Refused anchors supply no runnable commands; invalid matchers retain their inert denial guards.
+    entries: (anchorErrors.length ? parsed.entries.filter((entry) => entry.matcherError) : parsed.entries)
+      .map((entry) => ({ ...entry, configPath, reviewedHash: trustHash })),
+    warnings: parsed.warnings,
+    errors: [...parsed.errors, ...anchorErrors],
+    trustHash,
+  };
+}
+
+export function hashHookConfigDefinition(raw: Buffer, entries: readonly HookConfigEntry[]): { trustHash: string; errors: string[] } {
   const hasher = createHash("sha256");
   hasher.update(raw);
-  const anchors = collectScriptAnchors(parsed.entries);
+  const errors: string[] = [];
+  const anchors = [...new Set(entries.flatMap((entry) => {
+    const paths = resolveScriptAnchors(entry.command);
+    if (entry.handlerType !== "http" && paths.length === 0) {
+      errors.push(`hooks.json: ${entry.id} requires an absolute, ./ or ../ script anchor`);
+    }
+    return paths;
+  }))].sort();
   for (const anchorPath of anchors) {
     hasher.update("\0");
     hasher.update(trustAnchorKey(anchorPath));
@@ -114,27 +134,21 @@ export function loadHookConfig(
     try {
       hasher.update(readFileSync(anchorPath));
     } catch {
-      hasher.update("<missing-script>");
+      errors.push(`hooks.json: script anchor ${JSON.stringify(anchorPath)} cannot be resolved or read`);
+      hasher.update("<unreadable-script-anchor>");
     }
   }
 
-  const trustHash = hasher.digest("hex");
-  return {
-    path: configPath,
-    exists: true,
-    entries: parsed.entries.map((entry) => ({ ...entry, configPath, reviewedHash: trustHash })),
-    warnings: parsed.warnings,
-    errors: parsed.errors,
-    trustHash,
-  };
+  return { trustHash: hasher.digest("hex"), errors };
 }
 
 export function bindHookConfigPaths(entries: HookConfigEntry[], baseDirectory: string): void {
   for (const entry of entries) {
-    const index = scriptAnchorIndex(entry.command);
-    if (index < 0) continue;
-    const anchor = expandLeadingTilde(entry.command[index]);
-    entry.command[index] = isAbsolute(anchor) ? anchor : pathResolve(baseDirectory, anchor);
+    entry.command = entry.command.map((token) => {
+      if (!isScriptAnchor(token)) return token;
+      const anchor = expandLeadingTilde(token);
+      return isAbsolute(anchor) ? anchor : pathResolve(baseDirectory, anchor);
+    });
   }
 }
 
@@ -145,15 +159,6 @@ export function trustAnchorKey(anchorPath: string): string {
 
 function hashBytesOnly(raw: Buffer): string {
   return sha256Hex(raw);
-}
-
-function collectScriptAnchors(entries: HookConfigEntry[]): string[] {
-  const set = new Set<string>();
-  for (const entry of entries) {
-    const anchor = resolveScriptAnchor(entry.command);
-    if (anchor !== null) set.add(anchor);
-  }
-  return [...set].sort();
 }
 
 // The synthetic pre event anchors trust only; dispatch uses each config entry's event.

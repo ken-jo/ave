@@ -1,4 +1,4 @@
-import { discoverHookTrustFiles } from "./hook-config-trust.js";
+import { discoverHookTrustFiles, HOOKS_CONFIG_FILENAME } from "./hook-config-trust.js";
 import { readLockfile } from "./hook-discovery.js";
 
 /** Recheck the reviewed definition after approval waits and immediately before execution. */
@@ -11,7 +11,9 @@ export function createHookTrustValidator(options: {
       if (options.projectRoot && !lockfile?.trustedProjects?.includes(options.projectRoot)) return false;
       if (!lockfile?.hooks.some((entry) => entry.sourceId === options.sourceId
         && entry.fileName === options.fileName && entry.sha256 === options.expectedSha256)) return false;
-      return discoverHookTrustFiles(options.hooksDir).hooks.some((hook) =>
+      const discovered = discoverHookTrustFiles(options.hooksDir);
+      if (options.fileName === HOOKS_CONFIG_FILENAME && discovered.config.errors.length > 0) return false;
+      return discovered.hooks.some((hook) =>
         hook.fileName === options.fileName && hook.sha256 === options.expectedSha256);
     } catch { return false; }
   };

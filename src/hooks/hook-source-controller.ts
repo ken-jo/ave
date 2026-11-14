@@ -74,7 +74,7 @@ function trustedSource(source: HookSourceLocation, controller: SourceController)
   });
   return { shHooks: trusted.filter((hook) => hook.fileName !== HOOKS_CONFIG_FILENAME)
     .map((hook) => ({ ...hook, hookSource: source.kind, sourceId: source.id, validateTrust: validator(hook.fileName, hook.sha256) })),
-    configEntries: trusted.some((hook) => hook.fileName === HOOKS_CONFIG_FILENAME)
+    configEntries: discovered.config.errors.length === 0 && trusted.some((hook) => hook.fileName === HOOKS_CONFIG_FILENAME)
       ? discovered.config.entries.map((entry) => ({ ...entry, hookSource: source.kind,
         validateTrust: validator(HOOKS_CONFIG_FILENAME, discovered.config.trustHash ?? "") })) : [],
     signature: JSON.stringify(trusted.map((hook) => [hook.fileName, hook.sha256])),

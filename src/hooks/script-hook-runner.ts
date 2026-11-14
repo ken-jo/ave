@@ -37,7 +37,7 @@ import { MAX_HOOK_CONTEXT_CHARS } from "./script-hook-types.js";
 import { runHttpHook, type HttpHookDefinition, type HttpHookRuntime } from "./http-hook-runner.js";
 import type { HookCommandAuthorizer } from "./hook-command-policy.js";
 import { MAX_TIMER_DELAY_MS, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { resolveScriptAnchor } from "./hook-config-trust.js";
+import { resolveScriptAnchors } from "./hook-config-trust.js";
 import { resolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
@@ -312,9 +312,9 @@ export async function runOneHookScript(
   const sandboxEnabled = confinement
     ? isPluginWorkerConfinementActive()
     : (admittedPlan ?? getHostShellExecutionPlan()).mode === "asrt";
-  const scriptAnchor = resolveScriptAnchor(runnable.command);
-  const canonicalAnchor = scriptAnchor === null ? undefined : resolve(canonicalizePathForMatch(resolve(cwd, scriptAnchor)));
-  // Only an exact script inside the protected hook directory gets a read exception. An arbitrary command argument must never relax a secret floor.
+  const scriptAnchor = resolveScriptAnchors(runnable.command)[0];
+  const canonicalAnchor = scriptAnchor === undefined ? undefined : resolve(canonicalizePathForMatch(resolve(cwd, scriptAnchor)));
+  // Hashing additional operands does not grant them read access through protected floors.
   const userScriptReads = canonicalAnchor !== undefined && isPathWithin(
     caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(canonicalAnchor),
   ) ? [canonicalAnchor] : [];

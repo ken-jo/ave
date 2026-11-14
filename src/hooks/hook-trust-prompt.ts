@@ -77,7 +77,9 @@ export async function runHookTrustWorkflow(
   const newOrChanged = diff.filter(
     (d) => d.state === "new" || d.state === "changed",
   );
-  const trusted = diff.filter((d) => d.state === "trusted").map((d) => d.hook);
+  const configValid = loadedConfig.errors.length === 0;
+  const trusted = diff.filter((d) => d.state === "trusted"
+    && (d.hook.fileName !== HOOKS_CONFIG_FILENAME || configValid)).map((d) => d.hook);
   const disabledNames = new Set(discoverHookTrustFiles(options.disabledDir ?? defaultDisabledDir(), true,
     options.hooksDir ?? defaultHooksDir()).hooks.map((hook) => disabledHookOriginalName(hook.fileName)));
   const retainedDefinitions = diff.filter((entry) => entry.state === "removed" && disabledNames.has(entry.hook.fileName))
@@ -136,7 +138,7 @@ export async function runHookTrustWorkflow(
   const disabled: DiscoveredHook[] = [];
   for (const d of newOrChanged) {
     const decision = decisions.find((x) => x.fileName === d.hook.fileName);
-    if (decision?.trust) {
+    if (decision?.trust && (d.hook.fileName !== HOOKS_CONFIG_FILENAME || configValid)) {
       newlyTrusted.push(d.hook);
     } else {
       // Skip if the file already vanished between diff and decision.

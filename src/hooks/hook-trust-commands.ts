@@ -238,6 +238,10 @@ export async function acceptHookTrust(
   let target = state.active.find((hook) => hook.fileName === fileName);
   const reviewed = target ?? state.disabled.find((hook) => hook.fileName === fileName);
   if (opts.expectedSha256 !== undefined && reviewed?.sha256 !== opts.expectedSha256) return { ok: false, error: "hook-review-stale" };
+  if (reviewed && disabledHookOriginalName(reviewed.fileName) === HOOKS_CONFIG_FILENAME
+    && loadHookConfig(reviewed.path, hooksDir(opts)).errors.length > 0) {
+    return { ok: false, error: "Hook configuration has errors; fix it before trusting" };
+  }
   if (!target) {
     const quarantined = state.disabled.find((hook) => hook.fileName === fileName);
     if (!quarantined) return { ok: false, error: `hook not found: ${fileName}` };
@@ -252,6 +256,9 @@ export async function acceptHookTrust(
     target = state.active.find((hook) => hook.fileName === originalName);
   }
   if (!target) return { ok: false, error: `hook not found after restore: ${fileName}` };
+  if (target.fileName === HOOKS_CONFIG_FILENAME && loadHookConfig(target.path, hooksDir(opts)).errors.length > 0) {
+    return { ok: false, error: "Hook configuration has errors; fix it before trusting" };
+  }
   if (opts.expectedSha256 !== undefined && target.sha256 !== opts.expectedSha256) return { ok: false, error: "hook-review-stale" };
 
   const acceptedAt = buildAcceptedAtMap(state.lockfile);

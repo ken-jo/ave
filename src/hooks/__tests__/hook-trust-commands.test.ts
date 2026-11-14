@@ -30,6 +30,7 @@ afterEach(async () => {
 describe("hook trust slash command operations", () => {
   it.each([false, true])("lists invalid script and config matchers with reasons (quarantined=%s)", async (quarantined) => {
     writeExecutableHook(hooksDir, "pre-invalid.sh", "#!/bin/sh\n# ave-hook-matcher: *danger*\nexit 0\n");
+    writeExecutableHook(hooksDir, "guard.sh", "#!/bin/sh\nexit 0\n");
     writeFileSync(join(hooksDir, "hooks.json"), JSON.stringify({ hooks: {
       PreToolUse: [{ matcher: "*danger*", hooks: [{ type: "command", command: "./guard.sh" }] }],
     } }));

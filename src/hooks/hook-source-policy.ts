@@ -2,10 +2,8 @@ import { isAdminPolicyFileAbsent, readAdminPolicyFile } from "../lib/admin-polic
 import { getAdminPolicyPath } from "../permissions/policy-store.js";
 import { parsePolicyDocument } from "../shared/configuration-document.js";
 import { parseHookConfig, type HookConfigEntry } from "./hook-config.js";
-import { bindHookConfigPaths } from "./hook-config-trust.js";
+import { bindHookConfigPaths, hashHookConfigDefinition, loadHookConfig } from "./hook-config-trust.js";
 import { dirname } from "node:path";
-import { readFileSync } from "node:fs";
-import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { createLogger } from "../lib/logger.js";
 
 const log = createLogger("hook-source-policy");
@@ -43,14 +41,21 @@ export async function loadHookRuntimePolicy(adminPath = getAdminPolicyPath()): P
     return closed;
   }
   bindHookConfigPaths(parsed.entries, dirname(adminPath));
-  const policyHash = sha256Hex(bytes);
+  const { trustHash: policyHash, errors } = hashHookConfigDefinition(bytes, parsed.entries);
+  if (errors.length > 0) {
+    log.warn("Managed hook configuration has unreadable script anchors; hooks are disabled");
+    return closed;
+  }
   return {
     allowManagedHooksOnly: raw.allowManagedHooksOnly === undefined ? false : raw.allowManagedHooksOnly !== false,
     allowedHttpHookUrls: stringList(raw.allowedHttpHookUrls),
     httpHookAllowedEnvVars: stringList(raw.httpHookAllowedEnvVars).filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)),
     managedHooks: parsed.entries.map((entry) => ({ ...entry, hookSource: "managed", configPath: adminPath, reviewedHash: policyHash,
       validateTrust: () => {
-        try { return sha256Hex(readFileSync(adminPath)) === policyHash; }
+        try {
+          const current = loadHookConfig(adminPath);
+          return current.errors.length === 0 && current.trustHash === policyHash;
+        }
         catch { return false; }
       },
     })),

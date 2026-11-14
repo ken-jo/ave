@@ -120,12 +120,37 @@ describe("source-bound hook review", () => {
     writeFileSync(join(layout.hooksDir, "policy.sh"), "#!/bin/sh\nexit 1\n");
     expect(manager.hooksOfType("pre")).toHaveLength(0);
   });
+
+  it("revokes a reviewed invocation when a script after its absolute interpreter changes", async () => {
+    const layout = hookDirLayout(root);
+    mkdirSync(layout.hooksDir, { recursive: true });
+    const first = join(layout.hooksDir, "first.cjs");
+    const second = join(layout.hooksDir, "second.cjs");
+    writeFileSync(first, "first reviewed");
+    writeFileSync(second, "second reviewed");
+    const option = `--output=${join(root, "result.json")}`;
+    writeFileSync(join(layout.hooksDir, "hooks.json"), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{
+      type: "command", command: [process.execPath, "./first.cjs", "./second.cjs", option],
+    }] }] } }));
+    const { manager } = await wireHookSystem({ ...layout, policy: openPolicy() });
+    const row = listRuntimeHookTrustState(manager).disabled[0];
+    expect((await reviewRuntimeHookTrust(manager, { sourceId: "user", fileName: row.fileName,
+      expectedSha256: row.sha256, action: "accept" })).ok).toBe(true);
+    const admitted = manager.hooksOfType("pre")[0];
+    expect(admitted.command).toEqual([process.execPath, first, second, option]);
+    expect(admitted.validateTrust?.()).toBe(true);
+    writeFileSync(second, "second changed");
+    expect(admitted.validateTrust?.()).toBe(false);
+    expect(manager.hooksOfType("pre")).toEqual([]);
+    expect(listRuntimeHookTrustState(manager).disabled[0].hashState).toBe("changed");
+  });
 });
 
 describe("administrator hook authority", () => {
   it("binds a managed relative script to the administrator configuration directory", async () => {
     const adminDir = join(root, "admin");
     mkdirSync(adminDir);
+    writeFileSync(join(adminDir, "policy.sh"), "#!/bin/sh\nexit 0\n");
     writeFileSync(join(adminDir, "policy.json"), JSON.stringify({ version: 1,
       hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["./policy.sh"] }] }] } }));
     const policy = await loadHookRuntimePolicy(join(adminDir, "policy.json"));
@@ -134,8 +159,22 @@ describe("administrator hook authority", () => {
     writeFileSync(join(hostileCwd, "policy.sh"), "#!/bin/sh\nexit 99\n");
     expect(policy.managedHooks[0].command).toEqual([join(adminDir, "policy.sh")]);
     expect(policy.managedHooks[0].validateTrust?.()).toBe(true);
+    writeFileSync(join(adminDir, "policy.sh"), "#!/bin/sh\nexit 1\n");
+    expect(policy.managedHooks[0].validateTrust?.()).toBe(false);
+    writeFileSync(join(adminDir, "policy.sh"), "#!/bin/sh\nexit 0\n");
+    expect(policy.managedHooks[0].validateTrust?.()).toBe(true);
     writeFileSync(join(adminDir, "policy.json"), JSON.stringify({ version: 1 }));
     expect(policy.managedHooks[0].validateTrust?.()).toBe(false);
+  });
+
+  it("refuses an administrator definition with an unreadable later script anchor", async () => {
+    const adminDir = join(root, "admin");
+    mkdirSync(adminDir);
+    const adminPath = join(adminDir, "policy.json");
+    writeFileSync(adminPath, JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{
+      type: "command", command: [process.execPath, "./missing.cjs"],
+    }] }] } }));
+    expect(await loadHookRuntimePolicy(adminPath)).toMatchObject({ allowManagedHooksOnly: true, managedHooks: [] });
   });
 
   it("applies user disable-all to reviewed hooks while retaining managed execution", async () => {
