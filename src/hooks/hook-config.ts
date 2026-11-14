@@ -60,6 +60,7 @@ function normalizeCommand(raw: unknown): string[] | null {
 // Classify paths without I/O; scheme:// tokens must never masquerade as local hash anchors.
 export function looksLikeLocalScriptPath(token: string): boolean {
   if (token.length === 0) return false;
+  if (token.startsWith("-")) return false;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return false; /* Remote URLs cannot anchor trust. */
   if (token.includes("/") || token.includes("\\")) return true;
   if (token.startsWith("~")) return true;

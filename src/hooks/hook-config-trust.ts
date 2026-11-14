@@ -4,7 +4,6 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
-  classifyCommand,
   looksLikeLocalScriptPath,
   parseHookConfig,
   type HookConfigEntry,
@@ -44,14 +43,13 @@ export function discoverHookTrustFiles(dir: string, includeDisabledCopies = fals
   return { scripts, config, configs, hooks: [...scripts, ...synthetic] };
 }
 
-// Trust anchors on argv[0] for local scripts or the first local-script argument for binaries; expand ~, and return null for rejected binary-only commands.
+function scriptAnchorIndex(command: string[]): number {
+  return command.findIndex(looksLikeLocalScriptPath);
+}
+
+// Trust anchors on argv[0] for local scripts or the first non-option local-script argument for binaries.
 export function resolveScriptAnchor(command: string[]): string | null {
-  const cls = classifyCommand(command);
-  if (cls === "binary-only") return null;
-  const token =
-    cls === "local-script"
-      ? command[0]
-      : command.slice(1).find(looksLikeLocalScriptPath);
+  const token = command[scriptAnchorIndex(command)];
   if (token === undefined) return null;
   return expandLeadingTilde(token);
 }
@@ -133,9 +131,10 @@ export function loadHookConfig(
 
 export function bindHookConfigPaths(entries: HookConfigEntry[], baseDirectory: string): void {
   for (const entry of entries) {
-    entry.command = entry.command.map((token) => looksLikeLocalScriptPath(token)
-      ? isAbsolute(expandLeadingTilde(token)) ? expandLeadingTilde(token) : pathResolve(baseDirectory, token)
-      : token);
+    const index = scriptAnchorIndex(entry.command);
+    if (index < 0) continue;
+    const anchor = expandLeadingTilde(entry.command[index]);
+    entry.command[index] = isAbsolute(anchor) ? anchor : pathResolve(baseDirectory, anchor);
   }
 }
 
@@ -151,8 +150,8 @@ function hashBytesOnly(raw: Buffer): string {
 function collectScriptAnchors(entries: HookConfigEntry[]): string[] {
   const set = new Set<string>();
   for (const entry of entries) {
-    if (entry.command.length === 0) continue;
-    for (const token of entry.command) if (looksLikeLocalScriptPath(token)) set.add(expandLeadingTilde(token));
+    const anchor = resolveScriptAnchor(entry.command);
+    if (anchor !== null) set.add(anchor);
   }
   return [...set].sort();
 }

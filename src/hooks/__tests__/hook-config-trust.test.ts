@@ -103,6 +103,40 @@ describe("loadHookConfig — composite trust hash", () => {
     expect(resolveScriptAnchor(["python3", "./p.py"])).toMatch(/p\.py$/);
     expect(resolveScriptAnchor(["curl", "https://x"])).toBeNull();
   });
+
+  it.each([{ prefix: ["./policy.sh"] }, { prefix: ["sh", "./policy.sh"] }])("binds only the reviewed script anchor in $prefix and preserves ordinary argv", ({ prefix }) => {
+    writeScript("policy.sh", "#!/bin/sh\nexit 0\n");
+    const ordinary = [`--output=${join(tmpDir, "result.json")}`, "--relative=./reports/out.json", "data/input.json", "application/json", "https://example.com/check"];
+    writeJsonConfig(configPath, { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: [...prefix, ...ordinary] }] }] } });
+    const loaded = loadHookConfig(configPath);
+    expect(loaded.errors).toEqual([]);
+    expect(loaded.entries[0].command).toEqual([...prefix.slice(0, -1), join(hooksDir, "policy.sh"), ...ordinary]);
+  });
+
+  it("does not mistake an option value for the script anchor", () => {
+    writeScript("policy.sh", "#!/bin/sh\nexit 0\n");
+    const option = `--output=${join(tmpDir, "result.json")}`;
+    writeJsonConfig(configPath, { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["sh", option, "./policy.sh"] }] }] } });
+    const loaded = loadHookConfig(configPath);
+    expect(loaded.entries[0].command).toEqual(["sh", option, join(hooksDir, "policy.sh")]);
+    expect(resolveScriptAnchor(loaded.entries[0].command)).toBe(join(hooksDir, "policy.sh"));
+    expect(resolveScriptAnchor(["sh", option])).toBeNull();
+  });
+
+  it("requires re-trust when a non-path argument changes", async () => {
+    writeScript("policy.sh", "#!/bin/sh\nexit 0\n");
+    const config = (mode: string) => ({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["./policy.sh", `--mode=${mode}`] }] }] } });
+    writeJsonConfig(configPath, config("read"));
+    await runHookTrustWorkflow({ ...layout, promptDispatcher: {
+      prompt: async (diff) => diff.map(({ hook }) => ({ fileName: hook.fileName, trust: true })),
+    } });
+    const trustedHash = loadHookConfig(configPath).trustHash;
+    writeJsonConfig(configPath, config("write"));
+    expect(loadHookConfig(configPath).trustHash).not.toBe(trustedHash);
+    expect(listHookTrustState(layout).active).toContainEqual(expect.objectContaining({
+      fileName: HOOKS_CONFIG_FILENAME, state: "changed", previousSha256: trustedHash,
+    }));
+  });
 });
 
 describe("hooks.json TOFU diff — quarantine by default", () => {

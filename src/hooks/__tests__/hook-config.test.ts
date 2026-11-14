@@ -290,6 +290,8 @@ describe("command classification helpers", () => {
     expect(looksLikeLocalScriptPath("python3")).toBe(false);
     expect(looksLikeLocalScriptPath("curl")).toBe(false);
     expect(looksLikeLocalScriptPath("")).toBe(false);
+    expect(looksLikeLocalScriptPath("--output=/tmp/result.json")).toBe(false);
+    expect(looksLikeLocalScriptPath("--output=./result.json")).toBe(false);
   });
 
   it("classifyCommand labels the three cases", () => {
@@ -297,5 +299,6 @@ describe("command classification helpers", () => {
     expect(classifyCommand(["python3", "./p.py"])).toBe("script-arg");
     expect(classifyCommand(["curl", "https://x"])).toBe("binary-only");
     expect(classifyCommand(["node"])).toBe("binary-only");
+    expect(classifyCommand(["node", "--output=/tmp/result.json"])).toBe("binary-only");
   });
 });
