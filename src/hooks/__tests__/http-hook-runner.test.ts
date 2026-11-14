@@ -5,12 +5,14 @@ import { MAX_HOOK_STDOUT_BYTES } from "../script-hook-types.js";
 import { MAX_HTTP_HOOK_BODY_BYTES, parseHttpHookDefinition, runHttpHook, type HttpHookRuntime } from "../http-hook-runner.js";
 import { parseHookConfig } from "../hook-config.js";
 import { buildHookRegistry } from "../hook-registry.js";
+import { bindRemoteControllerToSession } from "../../shared/chat-origin.js";
+import { resolveTurnExtensionPolicy, turnExtensionPolicyContext } from "../../shared/turn-extension-policy.js";
 
 const TARGET = "https://hooks.example.com/check";
 const definition = { url: TARGET, method: "POST" as const };
 
 function harness(response: () => Promise<Response> = async () => new Response('{"action":"allow"}')) {
-  const send = vi.fn(response);
+  const send = vi.fn<typeof fetch>(async () => response());
   const auditTarget = vi.fn();
   const runtime: HttpHookRuntime = {
     transport: directHostFetchTransport(send as typeof fetch), allowedUrls: [TARGET], allowedEnvVars: [], auditTarget,
@@ -20,12 +22,100 @@ function harness(response: () => Promise<Response> = async () => new Response('{
   return { send, auditTarget, runtime, run };
 }
 
+function controller() {
+  const sessionId = "http-hook-session";
+  let current = true;
+  let ownerAvailable = true;
+  const refreshCurrent = vi.fn(async () => { current = ownerAvailable; return current; });
+  const authority = bindRemoteControllerToSession({
+    kind: "tailnet-controller", actorId: "tailnet:http-hook-controller",
+    pairedShare: { pairingId: "pair", pairingEpoch: 1, shareId: "share", shareEpoch: 1, scope: "scope" },
+    pairedShareGuard: { isCurrent: () => current, refreshCurrent },
+  }, sessionId);
+  return { sessionId, authority, refreshCurrent,
+    revokeIdentity: () => { ownerAvailable = false; }, revoke: () => { current = false; } };
+}
+
 beforeEach(() => {
   vi.spyOn(dns, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }] as never);
 });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("HTTP hook admission", () => {
+  it("refreshes controller identity after target audit and records revocation without sending", async () => {
+    const fixture = harness();
+    const remote = controller();
+    let probesAtAudit = 0;
+    fixture.auditTarget.mockImplementation(async (entry) => {
+      if (entry.outcome === "allowed") {
+        probesAtAudit = remote.refreshCurrent.mock.calls.length;
+        remote.revokeIdentity();
+      }
+    });
+    await expect(turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(remote.authority),
+      () => fixture.run({ sessionId: remote.sessionId }))).rejects.toThrow("controller authority");
+    expect(remote.refreshCurrent.mock.calls.length).toBeGreaterThan(probesAtAudit);
+    expect(fixture.send).not.toHaveBeenCalled();
+    expect(fixture.auditTarget).toHaveBeenLastCalledWith(expect.objectContaining({
+      outcome: "denied", failureReason: "controller-authority-revoked",
+    }));
+  });
+
+  it("refreshes controller identity after asynchronous destination checks", async () => {
+    const fixture = harness();
+    const remote = controller();
+    vi.mocked(dns.lookup).mockImplementation(async () => {
+      remote.revokeIdentity();
+      return [{ address: "93.184.216.34", family: 4 }] as never;
+    });
+    await expect(turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(remote.authority),
+      () => fixture.run({ sessionId: remote.sessionId }))).rejects.toThrow("controller authority");
+    expect(remote.refreshCurrent).toHaveBeenCalled();
+    expect(fixture.send).not.toHaveBeenCalled();
+    expect(fixture.auditTarget).toHaveBeenLastCalledWith(expect.objectContaining({ outcome: "denied" }));
+  });
+
+  it("rejects controller revocation during deferred transport handoff without sending", async () => {
+    const fixture = harness();
+    const remote = controller();
+    fixture.runtime.transport.sendWithHandoff = async (input, init, beforeSend) => {
+      await Promise.resolve();
+      remote.revoke();
+      beforeSend();
+      return fixture.send(input, init);
+    };
+    await expect(turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(remote.authority),
+      () => fixture.run({ sessionId: remote.sessionId }))).rejects.toThrow("controller authority");
+    expect(fixture.send).not.toHaveBeenCalled();
+    expect(fixture.auditTarget).toHaveBeenLastCalledWith(expect.objectContaining({
+      outcome: "denied", failureReason: "controller-authority-revoked",
+    }));
+  });
+
+  it("refuses a controller bound to another session", async () => {
+    const fixture = harness();
+    const remote = controller();
+    await expect(turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(remote.authority),
+      () => fixture.run({ sessionId: "another-session" }))).rejects.toThrow("controller authority");
+    expect(fixture.send).not.toHaveBeenCalled();
+  });
+
+  it("retains a current bound controller through fresh egress checks", async () => {
+    const fixture = harness();
+    const remote = controller();
+    let probesAtAudit = 0;
+    fixture.auditTarget.mockImplementation(async (entry) => {
+      if (entry.outcome === "allowed") probesAtAudit = remote.refreshCurrent.mock.calls.length;
+    });
+    fixture.send.mockImplementation(async () => {
+      expect(remote.refreshCurrent.mock.calls.length).toBeGreaterThan(probesAtAudit);
+      return new Response('{"action":"allow"}');
+    });
+    await expect(turnExtensionPolicyContext.run(resolveTurnExtensionPolicy(remote.authority),
+      () => fixture.run({ sessionId: remote.sessionId }))).resolves.toHaveProperty("stdout");
+    expect(fixture.send).toHaveBeenCalledOnce();
+  });
+
   it("requires an explicitly configured host transport and allowlist", async () => {
     await expect(runHttpHook(definition, {}, { hookId: "hook" })).rejects.toThrow("network policy is not configured");
     const fixture = harness();

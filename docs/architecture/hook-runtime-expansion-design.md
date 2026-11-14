@@ -104,6 +104,8 @@ HTTP execution requires every control below:
 
 These restrictions also apply to managed handlers. Trust and managed status do not grant network authority. Scrub configured/interpolated header values and their constituent environment values from returned strings before decision parsing, diagnostics or influence audit; response feedback cannot echo those credentials into logs or model context.
 
+HTTP hooks retain the originating turn's host-bound controller and session. They use the shared live controller/session refresh after asynchronous waits and the shared synchronous revocation check at transport handoff. A revoked or mismatched authority refuses egress and records a denied request with `failureReason: "controller-authority-revoked"`.
+
 ### 6.4 Context and model-visible audit
 
 A trusted or managed hook may return `additionalContext` on known events. Truncate text to 10,000 UTF-16 code units, escape wrapper delimiters and attach host-owned hook/event attribution. During an active turn or tool invocation, the model and user see that the text came from a hook. An out-of-turn event such as session end remains observation-only and does not queue context for a later session. Hook context is data, not a user-keyboard command or a new source of permission authority.

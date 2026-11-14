@@ -6,8 +6,11 @@ import { hasControlChars } from "../shared/display-safe-text.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { DEFAULT_HOOK_TIMEOUT_MS, MAX_HOOK_STDOUT_BYTES } from "./script-hook-types.js";
 import { HOOK_EVENT_TYPES } from "./hook-contract.js";
+import { isRemoteControllerBoundToSession, refreshRemoteControllerBoundToSession } from "../shared/chat-origin.js";
+import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 
 class HttpHookError extends Error {}
+class HttpHookAuthorityError extends HttpHookError {}
 
 export interface HttpHookDefinition {
   url: string;
@@ -27,6 +30,7 @@ export interface HttpHookRuntime {
     routeDigest: string;
     method: "POST";
     outcome: "allowed" | "denied";
+    failureReason?: "controller-authority-revoked";
   }): void | Promise<void>;
 }
 
@@ -142,7 +146,7 @@ function redactHeaderFeedback(stdout: string, secrets: readonly string[]): strin
   try { return JSON.stringify(visit(JSON.parse(stdout), [])); } catch { throw new HttpHookError("HTTP hook response is invalid"); }
 }
 
-async function readBoundedResponse(response: Response, signal: AbortSignal): Promise<string> {
+async function readBoundedResponse(response: Response, signal: AbortSignal, refreshAuthority: () => Promise<void>): Promise<string> {
   const declared = response.headers.get("content-length");
   if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > MAX_HOOK_STDOUT_BYTES)) {
     await response.body?.cancel();
@@ -158,6 +162,7 @@ async function readBoundedResponse(response: Response, signal: AbortSignal): Pro
     while (true) {
       signal.throwIfAborted();
       const next = await reader.read();
+      await refreshAuthority();
       signal.throwIfAborted();
       if (next.done) break;
       size += next.value.byteLength;
@@ -184,15 +189,29 @@ export async function runHttpHook(
   const requestedTimeoutMs = options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
   if (!Number.isSafeInteger(requestedTimeoutMs) || requestedTimeoutMs <= 0) throw new HttpHookError("HTTP hook timeout is invalid");
   const target = parseTarget(definition.url);
+  const authority = turnExtensionPolicyContext.getStore()?.remoteControllerAuthority;
+  const sessionId = isRecord(payload) && typeof payload.sessionId === "string" ? payload.sessionId : undefined;
   const assertTrust = (): void => {
     if (options.validateTrust && !options.validateTrust()) throw new HttpHookError("HTTP hook definition changed; review required");
   };
-  const audit = (outcome: "allowed" | "denied"): void | Promise<void> => runtime.auditTarget({
+  const audit = (outcome: "allowed" | "denied", failureReason?: "controller-authority-revoked"): void | Promise<void> => runtime.auditTarget({
     type: "hook_http_request", hookId: options.hookId, target: target.origin,
     routeDigest: sha256Hex(target.pathname + target.search), method: "POST", outcome,
+    ...(failureReason ? { failureReason } : {}),
   });
   const outcome = await runWithCeiling(async (signal) => {
+    const assertCurrent = (): void => {
+      signal.throwIfAborted();
+      assertTrust();
+      if (!isRemoteControllerBoundToSession(authority, sessionId)) throw new HttpHookAuthorityError("HTTP hook controller authority was revoked or is not bound to this session");
+    };
+    const refreshAuthority = async (): Promise<void> => {
+      if (!await refreshRemoteControllerBoundToSession(authority, sessionId)) throw new HttpHookAuthorityError("HTTP hook controller authority was revoked or is not bound to this session");
+      assertCurrent();
+    };
     try {
+      await refreshAuthority();
+      assertCurrent();
       parseHttpHookDefinition(definition);
       if (!allowlisted(target, runtime.allowedUrls)) throw new HttpHookError("HTTP hook target is not allowlisted");
       const { headers, secrets } = interpolatedHeaders(definition, runtime);
@@ -200,18 +219,21 @@ export async function runHttpHook(
       try { body = JSON.stringify(payload); if (typeof body !== "string") throw new Error(); } catch { throw new HttpHookError("HTTP hook payload is invalid"); }
       if (Buffer.byteLength(body, "utf8") > MAX_HTTP_HOOK_BODY_BYTES) throw new HttpHookError("HTTP hook request exceeds size limit");
       const decision = await evaluateHostFetch({ pluginId: "hook", rawUrl: target.href, method: "POST", allowedDomains: [target.hostname] });
-      signal.throwIfAborted();
-      assertTrust();
+      await refreshAuthority();
+      assertCurrent();
       if (!decision.ok) throw new HttpHookError("HTTP hook target failed network policy");
       await audit("allowed");
-      signal.throwIfAborted();
-      assertTrust();
+      await refreshAuthority();
+      assertCurrent();
       const response = await runHostFetchHops({
         pluginId: "hook", first: decision, transport: runtime.transport,
         allowedDomains: [target.hostname], allowPrivateNetworks: false,
         init: { headers, body, redirect: "manual", signal },
-        assertSendAllowed: () => { signal.throwIfAborted(); assertTrust(); },
+        authorizeHop: refreshAuthority,
+        assertSendAllowed: assertCurrent,
       });
+      await refreshAuthority();
+      assertCurrent();
       if (response.status >= 300 && response.status < 400) {
         await response.body?.cancel();
         throw new HttpHookError("HTTP hook redirects are refused");
@@ -220,9 +242,12 @@ export async function runHttpHook(
         await response.body?.cancel();
         throw new HttpHookError("HTTP hook request failed");
       }
-      return { stdout: redactHeaderFeedback(await readBoundedResponse(response, signal), secrets) };
+      const stdout = await readBoundedResponse(response, signal, refreshAuthority);
+      await refreshAuthority();
+      assertCurrent();
+      return { stdout: redactHeaderFeedback(stdout, secrets) };
     } catch (error) {
-      try { await audit("denied"); } catch { throw new HttpHookError("HTTP hook audit failed"); }
+      try { await audit("denied", error instanceof HttpHookAuthorityError ? "controller-authority-revoked" : undefined); } catch { throw new HttpHookError("HTTP hook audit failed"); }
       if (error instanceof HttpHookError) throw error;
       throw new HttpHookError("HTTP hook request failed");
     }
