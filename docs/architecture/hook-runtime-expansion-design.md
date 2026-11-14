@@ -134,6 +134,17 @@ The only permission-tree delta is a mutation restart edge to the existing input-
 
 Existing dispatch redaction and trusted-origin propagation remain in force. Nested inputs retain their caller-owned DLP responsibility unless explicitly changed at their boundary. Hook output never becomes local keyboard provenance and cannot invoke privileged slash commands. Remote users retain the existing authenticated/session-bound checks.
 
+### 6.7 Residual risks
+
+Content trust does not pin:
+
+- Files selected only through embedded interpreter flags, inferred extensions, environment variables or transitive imports, including sibling modules.
+- Executables resolved through `PATH`.
+- Same-user replacement of a file after the final pre-spawn hash.
+- Files loaded dynamically by inline `python -c` source. The definition hash covers the inline source itself.
+
+Hook authors should keep scripts self-contained in the bound configuration directory. The referenced [Codex](https://developers.openai.com/codex/hooks) and [Claude Code](https://code.claude.com/docs/en/hooks#security-considerations) hosts pin the hook definition, not script contents; Ave's additional referenced-file content checks are stricter by design.
+
 ## 7. Audit
 
 Keep existing audit rows readable. Record hook identity, source, event, handler type, matcher, trusted hash, decision, duration and failure reason when applicable. HTTP requests additionally record origin and route digest before egress, never a raw webhook route. Context and mutation records identify that a hook influenced model context or tool input. Do not log raw headers, environment values, request bodies or secret-bearing replacements.
