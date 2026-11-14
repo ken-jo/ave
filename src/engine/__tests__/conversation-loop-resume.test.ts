@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync, utimesSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { ConversationLoopDeps } from "../conversation-loop.js";
@@ -19,6 +19,12 @@ import {
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
 import { SessionRepository } from "../../memory/session-repository.js";
+import { loadHookRuntimePolicy, type HookRuntimePolicy } from "../../hooks/hook-source-policy.js";
+import { listHookTrustState } from "../../hooks/hook-trust-commands.js";
+import * as windowsPathFacts from "../../shared/windows-path-facts.js";
+import { resolveWindowsPathKindHelper } from "../../main/windows-path-kind-launcher.js";
+import { readWindowsAdminPolicy } from "../../shared/windows-admin-policy.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 const RESUME_SESSION_ID = "08001f8f-a6f5-4bb9-820d-df1e8366af93";
 const resumeMemory = (storedMessages: GenericMessage[] | null = null) =>
@@ -660,17 +666,42 @@ describe("ConversationLoop command routing", () => {
     expect(result.text).toBe(t("be_conversationLoop.cmdRememberNotSaved"));
   });
 
-  it("/permission hooks accept restores a boot-quarantined hook through the user-keyboard command path", async () => {
+  it.each([
+    { policyState: "open", activeHooks: 1 },
+    { policyState: "unavailable Windows snapshot", activeHooks: 0 },
+  ])("/permission hooks accept restores a boot-quarantined hook through the user-keyboard command path ($policyState)", async ({ policyState, activeHooks }) => {
     const tmpDir = mkdtempSync(join(tmpdir(), "permission-policy-loop-hooks-"));
     const hooksDir = join(tmpDir, "hooks");
     const disabledDir = join(hooksDir, ".disabled");
     const lockfilePath = join(hooksDir, ".lockfile.json");
     try {
+      let policy: HookRuntimePolicy = { allowManagedHooksOnly: false, allowedHttpHookUrls: [], httpHookAllowedEnvVars: [], managedHooks: [] };
+      if (policyState === "unavailable Windows snapshot") {
+        const platform = process.platform;
+        const policyPath = win32.join(process.env.ProgramData ?? "C:\\test-policy", "Ave", "policy.json");
+        // The unit fixture has no composed host resources. Exercise its native lookup without requiring a foreign kernel.
+        const snapshot = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(() => {
+          resolveWindowsPathKindHelper();
+          throw new Error("Unexpected native helper access");
+        });
+        try {
+          setProcessPlatform("win32");
+          await expect(readWindowsAdminPolicy(policyPath)).rejects.toMatchObject({
+            code: "untrusted-policy", cause: { message: "host-resources-unavailable" },
+          });
+          policy = await loadHookRuntimePolicy(policyPath);
+          expect(snapshot).toHaveBeenCalledWith([policyPath], { parent: true, content: true });
+          expect(policy.allowManagedHooksOnly).toBe(true);
+        } finally {
+          setProcessPlatform(platform);
+          snapshot.mockRestore();
+        }
+      }
       mkdirSync(hooksDir, { recursive: true });
       const hookPath = join(hooksDir, "pre-demo.sh");
       writeFileSync(hookPath, "#!/bin/sh\necho '{}'\n");
       chmodSync(hookPath, 0o700);
-      const boot = await wireHookSystem({ hooksDir, disabledDir, lockfilePath,
+      const boot = await wireHookSystem({ hooksDir, disabledDir, lockfilePath, policy,
       });
       expect(boot.manager.size()).toBe(0);
       expect(existsSync(join(disabledDir, "pre-demo.sh"))).toBe(true);
@@ -689,7 +720,10 @@ describe("ConversationLoop command routing", () => {
       );
 
       expect(result.text).toContain("Hook 신뢰 등록됨: pre-demo.sh");
-      expect(boot.manager.size()).toBe(1);
+      expect(listHookTrustState({ hooksDir, disabledDir, lockfilePath }).active).toContainEqual(expect.objectContaining({
+        fileName: "pre-demo.sh", state: "trusted",
+      }));
+      expect(boot.manager.size()).toBe(activeHooks);
       expect(existsSync(join(hooksDir, "pre-demo.sh"))).toBe(true);
     } finally {
       await cleanupTmpDir(tmpDir);
