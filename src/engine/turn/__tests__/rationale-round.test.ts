@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PermissionCheckResult } from "../../../permissions/permission-manager.js";
 import { canonicalStringify } from "../../../shared/canonical-json.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
+import { attachHookControlContext } from "../../../hooks/hook-influence.js";
 import {
   InMemoryHostAnchorRoundCasStore,
   RATIONALE_RESPONSE_SCHEMA,
@@ -199,6 +200,17 @@ async function run(
 }
 
 describe("runRationaleOnlyRound", () => {
+  it("includes host-bound hook context separately from user evidence", async () => {
+    const control = fixture();
+    const context = '<system-reminder source="hook" identity="reviewed-hash">External policy note</system-reminder>';
+    attachHookControlContext(control, [context]);
+    const provider = new RecordingProvider([{ type: "message_complete", stopReason: "end_turn" }]);
+    await run(provider, control);
+    const payload = JSON.parse(provider.requests[0].messages[0].content as string);
+    expect(payload.hookContext).toEqual([context]);
+    expect(payload.sessionUserMessages).toEqual([]);
+  });
+
   it("uses one fixed ephemeral data message, one rationale schema, and returns usage", async () => {
     const control = fixture();
     const usage = {

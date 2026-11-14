@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { withFileLock } from "../lib/with-file-lock.js";
@@ -168,7 +169,7 @@ export async function reviewRuntimeHookTrust(manager: ScriptHookManager, request
     await withFileLock(controller.lockfilePath, async () => {
       const lockfile = readLockfile(controller.lockfilePath) ?? { schemaVersion: 1 as const, updatedAt: new Date().toISOString(), hooks: [] };
       lockfile.trustedProjects = [...new Set([...(lockfile.trustedProjects ?? []), projectRoot])];
-      writeFileSync(controller.lockfilePath, JSON.stringify(lockfile, null, 2), { mode: 0o600 });
+      writeUtf8FileAtomicSync(controller.lockfilePath, JSON.stringify(lockfile, null, 2), 0o600);
     });
     return listRuntimeHookTrustState(manager, currentProjectRoot);
   }

@@ -6,12 +6,12 @@ import {
   readdirSync,
   renameSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, extname, join, resolve as pathResolve } from "node:path";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { createLogger } from "../lib/logger.js";
+import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import type { ScriptHookType } from "./script-hook-types.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import type { HookSourceKind } from "./hook-source-policy.js";
@@ -246,6 +246,8 @@ export function readLockfile(path: string = defaultLockfilePath()): LockfileShap
   if (!existsSync(path)) return null;
   try {
     const raw = readFileSync(path, "utf-8");
+    // The shared lock creates an empty target before the first enrollment write.
+    if (raw.length === 0) return null;
     const parsed = JSON.parse(raw) as LockfileShape;
     if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.hooks)) {
       log.warn("hook-discovery: lockfile schema mismatch at %s — treating as missing", path);
@@ -326,10 +328,7 @@ export async function persistLockfile(
     if (current?.trustedProjects) next.trustedProjects = current.trustedProjects;
     next.hooks.push(...(current?.hooks.filter((entry) => entry.sourceId !== sourceId) ?? []));
     mkdirSync(dirname(lockfilePath), { recursive: true, mode: 0o700 });
-    writeFileSync(lockfilePath, JSON.stringify(next, null, 2), {
-      encoding: "utf-8",
-      mode: 0o600,
-    });
+    writeUtf8FileAtomicSync(lockfilePath, JSON.stringify(next, null, 2), 0o600);
   });
   return next;
 }

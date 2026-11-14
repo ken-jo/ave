@@ -33,6 +33,7 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { hookEventName, hookJsonInput } from "./hook-contract.js";
 import { isRecord } from "../shared/is-record.js";
+import { MAX_HOOK_CONTEXT_CHARS } from "./script-hook-types.js";
 import { runHttpHook, type HttpHookDefinition, type HttpHookRuntime } from "./http-hook-runner.js";
 import type { HookCommandAuthorizer } from "./hook-command-policy.js";
 import { MAX_TIMER_DELAY_MS, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
@@ -650,7 +651,9 @@ function hookOutcome(forensics: HookResultForensics, deny: HookDeny, run: Observ
       rawStdout: stdout, exitCode: code, timedOut: false, durationMs };
   }
   return { ...forensics, decision: parsed.action, reason: parsed.reason, rawStdout: stdout, exitCode: code,
-    timedOut: false, durationMs, ...(parsed.block ? { blockFeedback: parsed.reason } : {}) };
+    timedOut: false, durationMs, ...(parsed.block ? { blockFeedback: parsed.reason } : {}),
+    ...(parsed.additionalContext === undefined ? {} : { additionalContext: parsed.additionalContext }),
+    ...(parsed.updatedInput === undefined ? {} : { updatedInput: parsed.updatedInput }) };
 }
 
 /** A stable reason code, when the refusal has one, so the deny names it. A localized container refusal already ends
@@ -765,30 +768,32 @@ function shellEnvAssignments(env: Record<string, string>): string {
     .join(" ");
 }
 
-// Unsupported control fields reject stdout so mutation/context injection cannot silently succeed; no event retains the legacy parser contract.
+// Unknown controls fail closed; only tool admission events can replace input.
 export function parseHookStdout(stdout: string, event?: HookEvent): ScriptHookStdout | null {
   const trimmed = stdout.trim();
-  if (trimmed.length === 0) return event === undefined ? null : { action: "allow", reason: "hook completed" };
-  // Tolerate code-fence wrapping.
+  if (!trimmed) return event === undefined ? null : { action: "allow", reason: "hook completed" };
   const start = trimmed.indexOf("{");
   const end = trimmed.lastIndexOf("}");
   if (start < 0 || end <= start) return null;
   const slice = trimmed.slice(start, end + 1);
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(slice);
-  } catch {
-    return null;
-  }
+  try { parsed = JSON.parse(slice); } catch { return null; }
   if (!isRecord(parsed)) return null;
+  const canMutate = event === "pre" || event === "perm";
+  const influences = (value: Record<string, unknown>): Pick<ScriptHookStdout, "additionalContext" | "updatedInput"> | null => {
+    if (value.additionalContext !== undefined && (event === undefined || typeof value.additionalContext !== "string")) return null;
+    if (value.updatedInput !== undefined && (!canMutate || !isRecord(value.updatedInput))) return null;
+    return { ...(typeof value.additionalContext === "string" ? { additionalContext: value.additionalContext.slice(0, MAX_HOOK_CONTEXT_CHARS) } : {}),
+      ...(isRecord(value.updatedInput) ? { updatedInput: value.updatedInput } : {}) };
+  };
   if (event === undefined || "action" in parsed) {
-    if (parsed.action !== "allow" && parsed.action !== "deny") return null;
+    if (parsed.action !== "allow" && parsed.action !== "deny" && !(canMutate && parsed.action === "modify")) return null;
     if (typeof parsed.reason !== "string") return null;
-    // Legacy output retains its bounded reason and does not accept mixed decisions.
-    if (["decision", "hookSpecificOutput", "continue", "stopReason", "updatedInput", "updatedPermissions",
-      "permissionDecision", "additionalContext", "suppressOutput", "systemMessage", "async", "asyncTimeout"]
-      .some((key) => key in parsed)) return null;
-    return { action: parsed.action, reason: parsed.reason.slice(0, 280) };
+    if (["decision", "hookSpecificOutput", "continue", "stopReason", "updatedPermissions", "permissionDecision",
+      "suppressOutput", "systemMessage", "async", "asyncTimeout"].some((key) => key in parsed)) return null;
+    const influence = influences(parsed);
+    if (!influence || parsed.action === "modify" && influence.updatedInput === undefined || parsed.action === "deny" && influence.updatedInput !== undefined) return null;
+    return { action: parsed.action === "deny" ? "deny" : "allow", reason: parsed.reason.slice(0, 280), ...influence };
   }
   const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/u.exec(trimmed);
   if ((fenced?.[1].trim() ?? trimmed) !== slice) return null;
@@ -800,37 +805,40 @@ export function parseHookStdout(stdout: string, event?: HookEvent): ScriptHookSt
   let reason = parsed.stopReason ?? parsed.reason ?? "hook completed";
   if (parsed.decision !== undefined) {
     if (parsed.decision !== "block" && parsed.decision !== "allow") return null;
-    if (parsed.decision === "block") {
-      blocked = true;
-      reason = parsed.reason ?? "hook blocked";
-    }
+    if (parsed.decision === "block") { blocked = true; reason = parsed.reason ?? "hook blocked"; }
   }
+  let influence: Pick<ScriptHookStdout, "additionalContext" | "updatedInput"> = {};
   if (parsed.hookSpecificOutput !== undefined) {
     const specific = parsed.hookSpecificOutput;
     if (!isRecord(specific) || specific.hookEventName !== hookEventName(event)) return null;
+    const extra = influences(specific);
+    if (!extra) return null;
+    influence = extra;
     if (event === "pre") {
-      if (Object.keys(specific).some((key) => !["hookEventName", "permissionDecision", "permissionDecisionReason"].includes(key))) return null;
-      if (specific.permissionDecision !== "allow" && specific.permissionDecision !== "deny") return null;
+      if (Object.keys(specific).some((key) => !["hookEventName", "permissionDecision", "permissionDecisionReason", "additionalContext", "updatedInput"].includes(key))) return null;
+      if (specific.permissionDecision !== undefined && specific.permissionDecision !== "allow" && specific.permissionDecision !== "deny") return null;
       if (specific.permissionDecisionReason !== undefined && typeof specific.permissionDecisionReason !== "string") return null;
-      if (specific.permissionDecision === "deny") {
-        blocked = true;
-        reason = specific.permissionDecisionReason ?? "hook denied tool use";
-      }
+      if (specific.permissionDecision === "deny") { blocked = true; reason = specific.permissionDecisionReason ?? "hook denied tool use"; }
+      if (specific.updatedInput !== undefined && specific.permissionDecision !== "allow") return null;
     } else if (event === "perm") {
-      if (Object.keys(specific).some((key) => !["hookEventName", "decision"].includes(key))) return null;
+      if (Object.keys(specific).some((key) => !["hookEventName", "decision", "additionalContext", "updatedInput"].includes(key))) return null;
       const decision = specific.decision;
-      if (!isRecord(decision) || (decision.behavior !== "allow" && decision.behavior !== "deny")) return null;
-      if (Object.keys(decision).some((key) => !["behavior", "message"].includes(key))) return null;
-      if (decision.message !== undefined && typeof decision.message !== "string") return null;
-      if (decision.behavior === "deny") {
-        blocked = true;
-        reason = decision.message ?? "hook denied permission request";
+      if (decision !== undefined) {
+        if (!isRecord(decision) || decision.behavior !== "allow" && decision.behavior !== "deny") return null;
+        if (Object.keys(decision).some((key) => !["behavior", "message", "updatedInput"].includes(key))) return null;
+        if (decision.message !== undefined && typeof decision.message !== "string") return null;
+        if (decision.behavior === "deny") { blocked = true; reason = decision.message ?? "hook denied permission request"; }
+        if (decision.updatedInput !== undefined) {
+          if (specific.updatedInput !== undefined || decision.behavior !== "allow" || !isRecord(decision.updatedInput)) return null;
+          influence.updatedInput = decision.updatedInput;
+        }
       }
-    } else return null;
+      if (influence.updatedInput !== undefined && (!isRecord(decision) || decision.behavior !== "allow")) return null;
+    } else if (Object.keys(specific).some((key) => !["hookEventName", "additionalContext"].includes(key))) return null;
   }
-  // `continue: false` stops outright, so only a bare block can ask a stop hook to continue the run.
+  if (blocked && influence.updatedInput !== undefined) return null;
   const block = parsed.decision === "block" && parsed.continue !== false;
-  return { action: blocked ? "deny" : "allow", reason: String(reason), ...(block ? { block: true as const } : {}) };
+  return { action: blocked ? "deny" : "allow", reason: String(reason), ...(block ? { block: true as const } : {}), ...influence };
 }
 
 // Preserve caller order and stop at the first denial; later hooks must not execute or override it.
@@ -842,11 +850,15 @@ export async function runHookChain(
   decision: "allow" | "deny";
   reason: string;
   results: ScriptHookInvocationResult[];
+  updatedInput?: Record<string, unknown>;
 }> {
   const results: ScriptHookInvocationResult[] = [];
+  let updatedInput: Record<string, unknown> | undefined;
   for (const hook of hooks) {
-    const r = await runOneHookScript(hook, payload, options);
+    const currentPayload = updatedInput && "input" in payload ? { ...payload, input: updatedInput } : payload;
+    const r = await runOneHookScript(hook, currentPayload, options);
     results.push(r);
+    if (r.updatedInput) updatedInput = r.updatedInput;
     if (r.decision === "deny") {
       const label = identityLabel(hook);
       return { decision: "deny", reason: `${label}: ${r.reason}`, results };
@@ -856,6 +868,7 @@ export async function runHookChain(
     decision: "allow",
     reason: hooks.length === 0 ? "no hooks" : `${hooks.length} hook(s) allowed`,
     results,
+    ...(updatedInput ? { updatedInput } : {}),
   };
 }
 

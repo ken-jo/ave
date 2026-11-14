@@ -4,7 +4,7 @@ import type { Tool } from "../base.js";
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult } from "../../permissions/permission-manager.js";
 import type { PermissionAuditEntryInput, HookResult, ToolExecutionAuditMetadata } from "../../audit/audit-schema.js";
-import type { HookTrustOrigin, ScriptHookInvocationResult, ScriptHookType } from "../../hooks/script-hook-types.js";
+import { hookInvocationFailureReason, type HookTrustOrigin, type ScriptHookType } from "../../hooks/script-hook-types.js";
 import type { HookDispatchResult } from "../../hooks/script-hook-manager.js";
 import type { ToolPermissionContext } from "../executor.js";
 import { resolveToolPathForPermission } from "../../shared/tool-path-resolution.js";
@@ -79,20 +79,6 @@ function permissionAuditBase(args: {
   };
 }
 
-// Only operational hook failures carry failureReason; a successful policy deny does not.
-function hookFailureReason(
-  r: ScriptHookInvocationResult,
-): HookResult["failureReason"] | undefined {
-  if (r.timedOut) return "timeout";
-  if (r.decision !== "deny") return undefined;
-  if (r.reason.startsWith("hook spawn error:")) return "spawn-error";
-  if (r.reason.startsWith("failed to serialise hook payload:")) return "spawn-error";
-  if (r.reason.startsWith("shell unavailable:")) return "spawn-error";
-  if (r.reason.startsWith("hook exited non-zero:")) return "nonzero-exit";
-  if (r.reason === "hook stdout not valid {action,reason} JSON") return "bad-output";
-  return undefined;
-}
-
 // Emit one forensic row per script, preserving source, command identity, and fail-closed cause; omit absent chains.
 export function hookChainFromDispatch(
   event: ScriptHookType,
@@ -100,19 +86,23 @@ export function hookChainFromDispatch(
 ): HookResult[] | undefined {
   if (!dispatch || dispatch.results.length === 0) return undefined;
   return dispatch.results.map((r): HookResult => {
-    const failureReason = hookFailureReason(r);
+    const failureReason = hookInvocationFailureReason(r);
     return {
       hookName: r.hookPath,
+      ...(r.additionalContext === undefined ? {} : { additionalContextChars: r.additionalContext.length }),
+      ...(r.updatedInput === undefined ? {} : { inputModified: true as const }),
       // Project tool-use event from pre/post/perm input; runtime hookType also includes lifecycle events.
       hookType: event,
+      ...(r.matcher === undefined ? {} : { matcher: r.matcher }),
       action: r.decision,
       reason: r.reason,
       durationMs: r.durationMs,
       // Populate event explicitly for readers of the closed audit surface.
       event,
-      handlerType: "command",
+      handlerType: r.handlerType ?? "command",
       commandIdentity: r.commandIdentity,
       source: r.source,
+      hookSource: r.hookSource ?? (r.pluginOwner ? "plugin" : "user"),
       decision: r.decision,
       ...(failureReason !== undefined ? { failureReason } : {}),
     };

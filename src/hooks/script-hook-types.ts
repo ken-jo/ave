@@ -1,4 +1,4 @@
-// Scripts live outside app home to protect trust; pre/post/perm prefixes are frozen. Stdin/stdout use JSON: silent exit 0 succeeds, exit 2 denies with stderr, and other exits/timeouts/parse failures deny; hook allows never upgrade upstream denies and modify is unsupported (docs/architecture/permission-policy-design.md).
+// Scripts live outside app home to protect trust; pre/post/perm prefixes are frozen. Stdin/stdout use JSON: silent exit 0 succeeds, exit 2 denies with stderr, and other exits/timeouts/parse failures deny; hook allows never upgrade upstream denies and reviewed input changes restart permission classification (docs/architecture/permission-policy-design.md).
 import type { ToolCategory, ToolSource } from "../tools/types.js";
 import type { PluginHookOwner } from "./hook-registry.js";
 import type { TrustOriginWithUnknown } from "../shared/chat-origin.js";
@@ -124,17 +124,20 @@ export interface LifecycleHookStdin extends LifecycleEventPayload, Partial<UserP
   trustOrigin: HookTrustOrigin;
 }
 
-// Normalized result of supported stdout decision forms. The public command protocol is documented in docs/guides/user-hooks.md; mutation is unsupported.
+// Normalized result of supported stdout decision forms. The public command protocol is documented in docs/guides/user-hooks.md; reviewed mutation is reclassified.
 export interface ScriptHookStdout {
   action: "allow" | "deny";
   reason: string;
   // Structured `decision: "block"` without `continue: false`; a deliberate block, not a failure.
   block?: true;
+  additionalContext?: string;
+  updatedInput?: Record<string, unknown>;
 }
 
 export interface ScriptHookInvocationResult {
-  handlerType?: "command" | "http";
+  matcher?: string;
   hookSource?: HookSourceKind | "plugin";
+  handlerType?: "command" | "http";
   hookPath: string;
   // Lifecycle results retain their event name for audit; tool-use results retain pre/post/perm.
   hookType: HookEvent;
@@ -154,9 +157,29 @@ export interface ScriptHookInvocationResult {
   commandIdentity: string;
   // Exact owner/version/generation/fingerprint for plugin-bundled Hooks.
   pluginOwner?: PluginHookOwner;
+  additionalContext?: string;
+  updatedInput?: Record<string, unknown>;
 }
 
 export const DEFAULT_HOOK_TIMEOUT_MS = 5_000;
 
 // Maximum captured stdout size — defence against runaway output.
-export const MAX_HOOK_STDOUT_BYTES = 16 * 1024;
+export const MAX_HOOK_STDOUT_BYTES = 64 * 1024;
+
+export const MAX_HOOK_CONTEXT_CHARS = 10_000;
+
+export type HookFailureReason = "timeout" | "nonzero-exit" | "spawn-error" | "bad-output" | "request-failed" | "trust-changed" | "cancelled" | "admission-denied";
+
+export function hookInvocationFailureReason(result: ScriptHookInvocationResult): HookFailureReason | undefined {
+  if (result.timedOut) return "timeout";
+  if (result.decision !== "deny") return undefined;
+  if (result.exitCode !== undefined && result.exitCode !== 0 && result.exitCode !== 2) return "nonzero-exit";
+  if (result.reason.startsWith("hook exited non-zero")) return "nonzero-exit";
+  if (result.reason.startsWith("hook stdout")) return "bad-output";
+  if (result.reason.includes("Hook definition changed")) return "trust-changed";
+  if (result.reason === "Hook execution cancelled") return "cancelled";
+  if (result.reason === "HTTP hook request failed") return "request-failed";
+  if (result.reason.startsWith("hook command denied") || result.reason.startsWith("hook command admission failed")) return "admission-denied";
+  if (result.reason.startsWith("hook spawn error:") || result.reason.startsWith("failed to serialise hook payload:") || result.reason.startsWith("shell unavailable:") || result.reason.startsWith("sandbox unavailable")) return "spawn-error";
+  return undefined;
+}

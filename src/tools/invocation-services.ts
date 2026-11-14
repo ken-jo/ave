@@ -1,5 +1,8 @@
 import { turnExtensionPolicyContext } from "../shared/turn-extension-policy.js";
 import { raceWithAbort } from "../shared/abortable-deadline.js";
+import { HookInputMutationRequest, recordHookContext } from "../hooks/hook-influence.js";
+import { canonicalStringify } from "../permissions/user-approval-store.js";
+import { currentToolExecutionCwd } from "./execution-context.js";
 import type { Tool } from "./base.js";
 import type { ToolRegistry } from "./registry.js";
 import type { ToolCategory, ToolSource } from "./types.js";
@@ -117,13 +120,18 @@ export async function runScriptHook(
     floor: context.floor ?? (context.otherPrincipal ? { code: "other-principal", reason: "This principal requires local approval for the action." } : inherited?.floor),
   }, async () => {
     controller.signal.throwIfAborted();
-    const options = { abortSignal: controller.signal };
+    const options = { abortSignal: controller.signal, cwd: currentToolExecutionCwd() ?? process.cwd() };
     if (hookType === "pre") return scriptHookManager.runPreToolUse(payload, options);
     if (hookType === "post") return scriptHookManager.runPostToolUse(payload, options);
     return scriptHookManager.runPermissionRequest(payload, options);
   });
   try {
-    return await raceWithAbort(operation, controller.signal);
+    const result = await raceWithAbort(operation, controller.signal);
+    recordHookContext(result.results);
+    if (result.decision === "allow" && result.updatedInput && canonicalStringify(result.updatedInput) !== canonicalStringify(input)) {
+      throw new HookInputMutationRequest(result.updatedInput, result.results);
+    }
+    return result;
   } catch (error) {
     if (controller.signal.aborted) return cancelled();
     throw error;

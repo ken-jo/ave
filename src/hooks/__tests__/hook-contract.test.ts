@@ -132,7 +132,7 @@ describe("structured hook decisions", () => {
   it.each([
     { hookSpecificOutput: { hookEventName: "PostToolUse", permissionDecision: "allow" } },
     { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "ask" } },
-    { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", updatedInput: {} } },
+    { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", updatedInput: {} } },
     { action: "allow", reason: "legacy", decision: "block" },
     { decision: "unknown" },
     { continue: "false" },
@@ -153,7 +153,7 @@ describe("structured hook decisions", () => {
       .toEqual({ action: "deny", reason: "policy" });
     expect(parseHookStdout('{"action":"deny","reason":"legacy"}', "Stop")).toEqual({ action: "deny", reason: "legacy" });
   });
-  it.each(["stopReason", "updatedPermissions", "permissionDecision", "additionalContext", "suppressOutput", "systemMessage", "async", "asyncTimeout"])("rejects legacy output mixed with unsupported %s control", (key) => {
+  it.each(["stopReason", "updatedPermissions", "permissionDecision", "suppressOutput", "systemMessage", "async", "asyncTimeout"])("rejects legacy output mixed with unsupported %s control", (key) => {
     expect(parseHookStdout(JSON.stringify({ action: "allow", reason: "legacy", [key]: "unsupported" }), "pre")).toBeNull();
   });
   it("reports output overflow and invalid timeout before treating a command as successful", async () => {

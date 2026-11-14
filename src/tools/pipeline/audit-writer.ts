@@ -11,6 +11,8 @@ import type {
   HookDispatchResult,
 } from "../../hooks/script-hook-manager.js";
 import type { HookTrustOrigin, LifecycleEventPayload } from "../../hooks/script-hook-types.js";
+import { recordHookContext, recordHookExecutionAudit } from "../../hooks/hook-influence.js";
+import { currentToolExecutionCwd } from "../execution-context.js";
 import { createLogger } from "../../lib/logger.js";
 import type { ToolPermissionContext } from "../executor.js";
 import {
@@ -59,7 +61,10 @@ export class AuditWriter {
         sessionId ?? "unknown",
         context.trustOrigin as HookTrustOrigin,
         payload,
+        { cwd: currentToolExecutionCwd() ?? process.cwd() },
       );
+      recordHookContext(result.results);
+      recordHookExecutionAudit(this.auditLogger, sessionId ?? "unknown", result.results);
       if (result.results.length > 0) {
         return { status: "executed", result };
       }

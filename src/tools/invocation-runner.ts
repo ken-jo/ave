@@ -11,6 +11,7 @@ import { dispatchReviewerForHeadless, dispatchReviewerForInteractiveAuto } from 
 import { criticalDeleteTargetFor } from "../permissions/sensitive-paths.js";
 import { hookChainFromDispatch } from "./pipeline/audit-entries.js";
 import { runScriptHook } from "./invocation-services.js";
+import { HookInputMutationRequest, attachHookControlContext, hookInfluenceContext } from "../hooks/hook-influence.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { checkpointMutationIdentity, isCodeCheckpointAvailable, withRequiredCodeCheckpoint } from "../memory/code-checkpoints.js";
@@ -85,7 +86,7 @@ import {
 } from "../permissions/permission-slash.js";
 import type { HookResult, ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
 import type { EffectLedger } from "../permissions/effect-ledger.js";
-import { currentToolExecutionCwd } from "./execution-context.js";
+import { currentToolExecutionCwd, runWithToolExecutionCwd } from "./execution-context.js";
 import { withShellSessionCwd } from "./shell-session-cwd.js";
 import {
   getHostShellExecutionPlan,
@@ -332,6 +333,75 @@ export interface RationaleResumeExecutionContext {
 }
 
 export async function runToolInvocation(
+  services: InvocationRunnerServices,
+  toolUse: ToolUseBlock,
+  groupId: string,
+  displayOrder: number,
+  opts: ExecuteOptions = {},
+  rationaleBatchContext?: RationaleBatchExecutionContext,
+  rationaleResumeContext?: RationaleResumeExecutionContext,
+): Promise<ToolResult | RationaleRequiredExecuteOneOutcome> {
+  const context: string[] = [];
+  const parentInfluence = hookInfluenceContext.getStore();
+  const appendContext = (content: string): string => context.length ? `${content}\n\n${context.join("\n\n")}` : content;
+  const callbacks = opts.callbacks && {
+    ...opts.callbacks,
+    onToolEnd: (...args: Parameters<NonNullable<typeof opts.callbacks.onToolEnd>>) => {
+      args[1] = appendContext(args[1]);
+      opts.callbacks?.onToolEnd?.(...args);
+    },
+  };
+  const startedAt = Date.now();
+  return runWithToolExecutionCwd(opts.executionCwd ?? currentToolExecutionCwd() ?? process.cwd(), () => hookInfluenceContext.run({ context }, async () => {
+    let current = toolUse;
+    for (let mutations = 0; ; mutations += 1) {
+      try {
+        const result = await runToolInvocationAttempt(services, current, groupId, displayOrder,
+          { ...opts, callbacks }, rationaleBatchContext, rationaleResumeContext);
+        if ("content" in result) return { ...result, content: appendContext(result.content) };
+        attachHookControlContext(result.control.control, context);
+        for (const text of context) {
+          if (parentInfluence && !parentInfluence.context.includes(text)) {
+            parentInfluence.context.push(text);
+            parentInfluence.onContext?.(text);
+          } else if (!parentInfluence) {
+            opts.callbacks?.onToolOutput?.(toolUse.name, text, { groupId, toolUseId: toolUse.id, displayOrder });
+          }
+        }
+        return result;
+      } catch (error) {
+        if (!(error instanceof HookInputMutationRequest)) throw error;
+        const denied = mutations >= 3 || rationaleResumeContext !== undefined || opts.pluginAuthLifecycle !== undefined;
+        const reason = denied ? "Hook input mutation could not safely restart permission classification" : "Hook input changed; restarting the full permission decision";
+        const hookChain = error.hooks.flatMap((result) => hookChainFromDispatch(result.hookType === "perm" ? "perm" : "pre", {
+          decision: result.decision, reason: result.reason, results: [result],
+        }) ?? []);
+        if (!denied) {
+          services.auditLogger.log({ timestamp: new Date().toISOString(), sessionId: opts.sessionId ?? "unknown", type: "info",
+            input: JSON.stringify({ type: "hook_input_reclassified", toolUseId: toolUse.id, hookChain }), output: reason,
+            toolCalls: [{ name: toolUse.name, isError: false, trust: "high" }] });
+        } else if (services.auditLogger.isPermissionAuditChainReady()) {
+          const common = { auditId: randomUUID(), ts: new Date().toISOString(), toolUseId: toolUse.id,
+            trustOrigin: opts.permissionContext?.trustOrigin ?? "unknown" as const, tool: toolUse.name,
+            source: services.toolRegistry.findByName(toolUse.name)?.source ?? "builtin" as const,
+            category: services.toolRegistry.findByName(toolUse.name)?.category ?? "meta" as const, hookChain };
+          await services.auditLogger.appendPermissionAuditEntry({ ...common, decision: "deny",
+            denyReasons: [{ reason, source: "hook-input-mutation" }] });
+        } else if (services.requirePermissionAuditChain) {
+          throw new Error("Hook mutation requires the permission audit chain");
+        }
+        if (denied) {
+          const result = { tool_use_id: toolUse.id, content: appendContext(reason), is_error: true, durationMs: Date.now() - startedAt };
+          opts.callbacks?.onToolEnd?.(toolUse.name, result.content, true, { groupId, toolUseId: toolUse.id, displayOrder }, undefined, result.durationMs);
+          return result;
+        }
+        current = { ...toolUse, input: structuredClone(error.input) };
+      }
+    }
+  }));
+}
+
+async function runToolInvocationAttempt(
   services: InvocationRunnerServices,
     toolUse: ToolUseBlock,
     groupId: string,

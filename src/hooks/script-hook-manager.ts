@@ -1,4 +1,4 @@
-// Only reviewed entries enter the registry. Hook allows never override upstream denies (docs/architecture/permission-policy-design.md; docs/architecture/hook-runtime-expansion-design.md).
+// Only reviewed or managed entries enter the registry. Hook allows never override upstream denies; input replacement restarts permission classification (docs/architecture/permission-policy-design.md; docs/architecture/hook-runtime-expansion-design.md).
 import { HookMatcherError, type DiscoveredHook } from "./hook-discovery.js";
 import { lifecycleMatcherSubject } from "./hook-contract.js";
 import {
@@ -50,6 +50,7 @@ export interface HookDispatchResult {
   decision: "allow" | "deny";
   reason: string;
   results: ScriptHookInvocationResult[];
+  updatedInput?: Record<string, unknown>;
 }
 
 export interface PreparedPluginHookGenerationPublication {
