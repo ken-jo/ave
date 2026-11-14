@@ -37,8 +37,8 @@ import { MAX_HOOK_CONTEXT_CHARS } from "./script-hook-types.js";
 import { runHttpHook, type HttpHookDefinition, type HttpHookRuntime } from "./http-hook-runner.js";
 import type { HookCommandAuthorizer } from "./hook-command-policy.js";
 import { MAX_TIMER_DELAY_MS, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { resolveScriptAnchors } from "./hook-config-trust.js";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { realpathSync, statSync } from "node:fs";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensitive-paths.js";
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { getHostShellExecutionPlan, isIssuedHostShellExecutionPlan, isWindowsShellConsentCurrent } from "../permissions/sandbox-capability.js";
@@ -65,7 +65,7 @@ const log = createLogger("hook-runner");
 export interface RunOneHookOptions {
   // Defaults to DEFAULT_HOOK_TIMEOUT_MS.
   timeoutMs?: number;
-  // Defaults to process.cwd().
+  // Originating project/workspace directory; command cwd is bound by the hook definition.
   cwd?: string;
   // Host-owned admission for a trusted user command; enrollment is not permission.
   authorizeCommand?: HookCommandAuthorizer;
@@ -79,6 +79,8 @@ export interface RunnableHook {
   hookType: HookEvent;
   // A lone .sh path uses the resolved interpreter; all other argv spawn directly without a shell.
   command: string[];
+  configDir?: string;
+  fileDependencies?: readonly string[];
   handlerType?: "http";
   http?: HttpHookDefinition;
   validateTrust?: () => boolean;
@@ -115,6 +117,8 @@ export function runnableFromDiscovered(hook: DiscoveredHook): RunnableHook {
     id: hook.fileName,
     hookType: hook.hookType,
     command: [hook.path],
+    configDir: dirname(resolve(hook.path)),
+    fileDependencies: [hook.path],
     ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
     ...(hook.validateTrust ? { validateTrust: hook.validateTrust } : {}),
     hookSource: hook.hookSource ?? "user",
@@ -130,7 +134,7 @@ function isLegacyShellScript(command: string[]): boolean {
 }
 
 // Inject only hook metadata; buildSafeChildEnv supplies the secret-stripped environment.
-function buildHookEnv(payload: ScriptHookStdin, matcher: string | undefined): Record<string, string> {
+function buildHookEnv(payload: ScriptHookStdin, matcher: string | undefined, projectDir: string, cwd: string): Record<string, string> {
   // `event` is the closed-set surface (lifecycle events carry it explicitly; tool-use shapes leave it undefined → fall back to `hookType`).
   const event = payload.event ?? payload.hookType;
   return {
@@ -142,6 +146,8 @@ function buildHookEnv(payload: ScriptHookStdin, matcher: string | undefined): Re
     ...(payload.toolName !== undefined ? { AVE_HOOK_TOOL_NAME: payload.toolName } : {}),
     AVE_HOOK_SESSION_ID: payload.sessionId,
     AVE_HOOK_TRUST_ORIGIN: payload.trustOrigin,
+    AVE_HOOK_PROJECT_DIR: projectDir,
+    PWD: cwd,
     // Tool-use origin metadata lets hooks restrict a specific server or plugin via env or stdin.
     ...("mcpServerId" in payload && payload.mcpServerId !== undefined ? { AVE_HOOK_MCP_SERVER_ID: payload.mcpServerId } : {}),
     ...("pluginId" in payload && payload.pluginId !== undefined ? { AVE_HOOK_PLUGIN_ID: payload.pluginId } : {}),
@@ -158,6 +164,7 @@ export async function runOneHookScript(
   // Seal the same expanded argv across asynchronous approval and actual spawn.
   const runnable = { ...normalized, command: normalized.command.map(expandLeadingTilde),
     timeoutMs: normalized.timeoutMs ?? options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS,
+    ...(normalized.fileDependencies ? { fileDependencies: Object.freeze([...normalized.fileDependencies]) } : {}),
     ...(normalized.env ? { env: { ...normalized.env } } : {}) };
   Object.freeze(runnable.command);
   if (runnable.env) Object.freeze(runnable.env);
@@ -165,7 +172,16 @@ export async function runOneHookScript(
   // Timeout precedence is per-hook budget, caller option, then default.
   const timeoutMs = runnable.timeoutMs ?? options.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS;
   const confinement = runnable.confinement;
-  const cwd = confinement?.generationRoot ?? options.cwd ?? process.cwd();
+  const projectDir = resolve(options.cwd ?? process.cwd());
+  let cwd = projectDir;
+  let directoryError: string | undefined;
+  if (runnable.handlerType !== "http") {
+    try {
+      if (!runnable.configDir) throw new Error("Hook configuration directory is missing");
+      cwd = realpathSync(runnable.configDir);
+      if (!statSync(cwd).isDirectory()) throw new Error("Hook configuration directory is unavailable");
+    } catch { directoryError = "Hook configuration directory is missing or unavailable"; }
+  }
   const start = Date.now();
   const inherited = turnExtensionPolicyContext.getStore();
   const abortSignal = options.abortSignal ?? inherited?.abortSignal;
@@ -192,6 +208,7 @@ export async function runOneHookScript(
     ...extra,
   });
   if (abortSignal?.aborted) return deny("Hook execution cancelled");
+  if (directoryError) return deny(directoryError);
 
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_DELAY_MS) {
     return deny("hook timeout must be a positive supported timer delay");
@@ -221,7 +238,7 @@ export async function runOneHookScript(
     }
   }
 
-  const hookEnv = buildHookEnv(payload, runnable.matcher);
+  const hookEnv = buildHookEnv(payload, runnable.matcher, projectDir, cwd);
   let admittedPlan: HostShellExecutionPlan | undefined;
   let refreshCommandAllowed: (() => Promise<void>) | undefined;
   let assertCommandAllowed: (() => void) | undefined;
@@ -229,7 +246,7 @@ export async function runOneHookScript(
     try {
       const admission = await raceWithAbort(turnExtensionPolicyContext.run({
         ...inherited, allowExternalHooks: inherited?.allowExternalHooks !== false, abortSignal,
-      }, () => options.authorizeCommand!(runnable, payload, cwd)), abortSignal);
+      }, () => options.authorizeCommand!(runnable, payload, cwd, projectDir)), abortSignal);
       if (abortSignal?.aborted) return deny("Hook execution cancelled");
       if (admission.decision !== "allow") return deny(`hook command denied: ${admission.reason}`);
       admittedPlan = admission.plan;
@@ -312,12 +329,10 @@ export async function runOneHookScript(
   const sandboxEnabled = confinement
     ? isPluginWorkerConfinementActive()
     : (admittedPlan ?? getHostShellExecutionPlan()).mode === "asrt";
-  const scriptAnchor = resolveScriptAnchors(runnable.command)[0];
-  const canonicalAnchor = scriptAnchor === undefined ? undefined : resolve(canonicalizePathForMatch(resolve(cwd, scriptAnchor)));
-  // Hashing additional operands does not grant them read access through protected floors.
-  const userScriptReads = canonicalAnchor !== undefined && isPathWithin(
-    caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(canonicalAnchor),
-  ) ? [canonicalAnchor] : [];
+  // Only host-recorded, reviewed file dependencies inside this hook directory can pierce its read floor.
+  const userScriptReads = (runnable.fileDependencies ?? [])
+    .map((file) => resolve(canonicalizePathForMatch(resolve(cwd, file))))
+    .filter((file) => isPathWithin(caseFoldForMatch(resolve(defaultHooksDir())), caseFoldForMatch(file)));
   // A user hook has no plugin, so its egress gets no extension allowlist.
   const hookEgressOwner: WorkerEgressOwner = confinement
     ? { kind: "worker", role: "hook", pluginId: confinement.pluginId }
@@ -343,10 +358,10 @@ export async function runOneHookScript(
         holderEnv: hookHostEnv,
         cwd,
         allowRead: confinement ? [confinement.generationRoot] : userScriptReads,
-        allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        allowWrite: confinement ? [confinement.dataDir] : [projectDir],
         ownedReadRoots: confinement ? [confinement.generationRoot] : [],
         egressOwner: hookEgressOwner,
-        workspaceRoots: confinement ? [] : [cwd],
+        workspaceRoots: confinement ? [] : [projectDir],
         assertStillValid: assertHookStillAdmitted,
         ...(abortSignal ? { signal: abortSignal } : {}),
       });
@@ -369,7 +384,7 @@ export async function runOneHookScript(
         baseEnv: spawnEnv,
         cwd,
         allowRead: confinement ? [confinement.generationRoot] : userScriptReads,
-        allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        allowWrite: confinement ? [confinement.dataDir] : [projectDir],
         egressOwner: hookEgressOwner,
         refreshStillValid: refreshCommandAllowed,
         // A host-classified user hook on its admitted srt-win plan keeps that route under a container extension backend.
@@ -394,7 +409,7 @@ export async function runOneHookScript(
     try {
       const wrapped = await wrapBundledCommand({ command: spawnCmd, args: spawnArgs,
         sandboxHome,
-        allowWrite: confinement ? [confinement.dataDir] : [cwd],
+        allowWrite: confinement ? [confinement.dataDir] : [projectDir],
         ownPluginReads: confinement ? [confinement.generationRoot] : userScriptReads,
         tempPrincipal: confinement ? { kind: "plugin", id: confinement.pluginId }
           : { kind: "hook", id: sha256Hex(runnable.id) },

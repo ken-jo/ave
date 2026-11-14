@@ -1,8 +1,9 @@
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { ConversationLoop } from "../conversation-loop.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { parseHookConfig } from "../../hooks/hook-config.js";
+import { bindHookConfigPaths } from "../../hooks/hook-config-trust.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 import { userKeyboardTurn } from "../../__tests__/support/user-keyboard-turn.js";
@@ -32,7 +33,9 @@ describe("hook context model and user delivery", () => {
 
   it("delivers bounded attributed prompt context in the next model request and visible history", async () => {
     const manager = new ScriptHookManager();
-    manager.setTrustedRegistry([], parseHookConfig({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: ["node", COMMAND, "context"] }] }] } }).entries);
+    const entries = parseHookConfig({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: ["node", COMMAND, "context"] }] }] } }).entries;
+    bindHookConfigPaths(entries, dirname(COMMAND));
+    manager.setTrustedRegistry([], entries);
     const requests: unknown[] = [];
     const provider: LLMProvider = { vendor: "openai", async *streamTurn(request) {
       requests.push(request);

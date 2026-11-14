@@ -1,7 +1,7 @@
 // Config bytes and referenced script hashes form one trust unit; edits re-quarantine it. Commands enter the registry only after explicit trust (docs/architecture/hook-runtime-expansion-design.md).
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve as pathResolve } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, sep, resolve as pathResolve } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
   parseHookConfig,
@@ -40,18 +40,6 @@ export function discoverHookTrustFiles(dir: string, includeDisabledCopies = fals
     return hook ? [{ ...hook, fileName: basename(loaded.path) }] : [];
   });
   return { scripts, config, configs, hooks: [...scripts, ...synthetic] };
-}
-
-// Materialized configs use explicit paths; symbolic package arguments are resolved by their own loader.
-function isScriptAnchor(token: string): boolean {
-  if (token.startsWith("-")) return false;
-  const path = expandLeadingTilde(token);
-  return isAbsolute(path) || path.startsWith("./") || path.startsWith("../");
-}
-
-// Every explicit non-option path is an anchor, including interpreter and additional script operands.
-export function resolveScriptAnchors(command: readonly string[]): string[] {
-  return command.filter(isScriptAnchor).map(expandLeadingTilde);
 }
 
 export interface LoadedHookConfig {
@@ -101,54 +89,96 @@ export function loadHookConfig(
   }
 
   const parsed = parseHookConfig(parsedJson);
-  bindHookConfigPaths(parsed.entries, scriptBaseDir);
-  const { trustHash, errors: anchorErrors } = hashHookConfigDefinition(raw, parsed.entries);
+  try { bindHookConfigPaths(parsed.entries, scriptBaseDir); }
+  catch {
+    return { path: configPath, exists: true, entries: [], warnings: parsed.warnings,
+      errors: [...parsed.errors, "hooks.json: configuration directory cannot be resolved"], trustHash: hashBytesOnly(raw) };
+  }
+  const { trustHash, errors: anchorErrors, fileDependencies } = hashHookConfigDefinition(raw, parsed.entries);
 
   return {
     path: configPath,
     exists: true,
     // Refused anchors supply no runnable commands; invalid matchers retain their inert denial guards.
     entries: (anchorErrors.length ? parsed.entries.filter((entry) => entry.matcherError) : parsed.entries)
-      .map((entry) => ({ ...entry, configPath, reviewedHash: trustHash })),
+      .map((entry) => ({ ...entry, configPath, reviewedHash: trustHash, fileDependencies: fileDependencies.get(entry.id) })),
     warnings: parsed.warnings,
     errors: [...parsed.errors, ...anchorErrors],
     trustHash,
   };
 }
 
-export function hashHookConfigDefinition(raw: Buffer, entries: readonly HookConfigEntry[]): { trustHash: string; errors: string[] } {
+export function hashHookCommandFiles(command: readonly string[], configDir: string): { hash: string; files: string[]; errors: string[] } {
   const hasher = createHash("sha256");
-  hasher.update(raw);
+  hasher.update(JSON.stringify(command));
   const errors: string[] = [];
-  const anchors = [...new Set(entries.flatMap((entry) => {
-    const paths = resolveScriptAnchors(entry.command);
-    if (entry.handlerType !== "http" && paths.length === 0) {
-      errors.push(`hooks.json: ${entry.id} requires an absolute, ./ or ../ script anchor`);
-    }
-    return paths;
-  }))].sort();
-  for (const anchorPath of anchors) {
-    hasher.update("\0");
-    hasher.update(trustAnchorKey(anchorPath));
-    hasher.update("\0");
+  const files = new Set<string>();
+  let cwd: string;
+  try {
+    cwd = realpathSync(configDir);
+    if (!statSync(cwd).isDirectory()) throw new Error("Not a directory");
+  } catch {
+    return { hash: hasher.digest("hex"), files: [], errors: ["configuration directory cannot be resolved"] };
+  }
+  hasher.update("\0cwd\0").update(trustAnchorKey(cwd));
+  for (const [index, raw] of command.entries()) {
+    if (raw.startsWith("-")) continue;
+    const token = expandLeadingTilde(raw);
+    const executable = index === 0;
+    // A bare executable is PATH-resolved; operands are always resolved against the bound cwd.
+    if (executable && !isAbsolute(token) && !token.includes("/") && !token.includes(sep)) continue;
+    const candidate = pathResolve(cwd, token);
     try {
-      hasher.update(readFileSync(anchorPath));
-    } catch {
-      errors.push(`hooks.json: script anchor ${JSON.stringify(anchorPath)} cannot be resolved or read`);
-      hasher.update("<unreadable-script-anchor>");
+      const target = realpathSync(candidate);
+      if (!statSync(target).isFile()) {
+        if (executable) errors.push("hook executable is not a regular file");
+        continue;
+      }
+      const bytes = readFileSync(target);
+      hasher.update(`\0file:${index}\0`).update(trustAnchorKey(candidate)).update("\0").update(trustAnchorKey(target)).update("\0").update(createHash("sha256").update(bytes).digest());
+      files.add(target);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!executable && (code === "ENOENT" || code === "ENOTDIR")) continue;
+      errors.push(`file operand ${index} cannot be resolved or read`);
+      hasher.update(`\0unreadable:${index}\0`);
     }
   }
+  if (files.size === 0) errors.push("command has no regular-file trust anchor");
+  return { hash: hasher.digest("hex"), files: [...files], errors };
+}
 
-  return { trustHash: hasher.digest("hex"), errors };
+export function hashHookConfigDefinition(raw: Buffer, entries: readonly HookConfigEntry[]): {
+  trustHash: string; errors: string[]; fileDependencies: ReadonlyMap<string, readonly string[]>;
+} {
+  const hasher = createHash("sha256").update(raw);
+  const errors: string[] = [];
+  const fileDependencies = new Map<string, readonly string[]>();
+  for (const entry of entries) {
+    if (entry.handlerType === "http") continue;
+    if (!entry.configDir) {
+      errors.push(`hooks.json: ${entry.id} configuration directory is missing`);
+      continue;
+    }
+    const result = hashHookCommandFiles(entry.command, entry.configDir);
+    hasher.update("\0").update(entry.id).update("\0").update(result.hash);
+    errors.push(...result.errors.map((error) => `hooks.json: ${entry.id} ${error}`));
+    fileDependencies.set(entry.id, result.files);
+  }
+  return { trustHash: hasher.digest("hex"), errors, fileDependencies };
 }
 
 export function bindHookConfigPaths(entries: HookConfigEntry[], baseDirectory: string): void {
+  const configDir = realpathSync(baseDirectory);
+  if (!statSync(configDir).isDirectory()) throw new Error("Hook configuration directory is unavailable");
   for (const entry of entries) {
-    entry.command = entry.command.map((token) => {
-      if (!isScriptAnchor(token)) return token;
-      const anchor = expandLeadingTilde(token);
-      return isAbsolute(anchor) ? anchor : pathResolve(baseDirectory, anchor);
-    });
+    entry.configDir = configDir;
+    const executable = entry.command[0];
+    if (executable === undefined) continue;
+    const expanded = expandLeadingTilde(executable);
+    if (isAbsolute(expanded) || expanded.includes("/") || expanded.includes(sep)) {
+      entry.command = [pathResolve(configDir, expanded), ...entry.command.slice(1)];
+    }
   }
 }
 

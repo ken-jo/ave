@@ -98,7 +98,7 @@ connection.on('close', () => process.stdout.write(JSON.stringify({ action: 'allo
       try {
         await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true });
         const result = await runOneHookScript({ id: "hook", hookType: "pre", source: "config",
-          hookPath: script,
+          hookPath: script, configDir: generationRoot, fileDependencies: [script],
           command: ["node", script, secret, outside, join(dataDir, "state.json"), String(address.port), ...neighbours.map((dir) => join(dir, "s"))],
           confinement: { kind: "bundled", pluginId: "smoke-plugin", dataDir, generationRoot } }, payload, { timeoutMs: 4000 });
         expect(result.decision, result.reason).toBe("allow");
@@ -108,7 +108,7 @@ connection.on('close', () => process.stdout.write(JSON.stringify({ action: 'allo
         for (const outcome of reported.neighbourReads) expect(["EPERM", "EACCES", "ENOENT"]).toContain(outcome);
         expect(readFileSync(join(dataDir, "state.json"), "utf8")).toBe("allowed");
 
-        // A user hook is read from its protected configuration directory, with only that exact script re-allowed and its working directory writable.
+        // Only the reviewed script is readable in its protected configuration directory; the original workspace remains writable.
         const userHooks = join(fakeHome, ".config", "ave", "hooks");
         const workspace = join(root, "workspace");
         mkdirSync(userHooks, { recursive: true });
@@ -124,7 +124,7 @@ connection.on('close', () => process.stdout.write(JSON.stringify({ action: 'allo
         setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
           reason: "ASRT active for shells", confines: sandboxConfinementForPlatform(process.platform, "full") });
         const userResult = await runOneHookScript({ id: "user-probe", hookType: "pre", source: "config",
-          hookPath: userScript,
+          hookPath: userScript, configDir: userHooks, fileDependencies: [userScript],
           command: ["node", userScript, secret, outside, join(workspace, "state.json"), String(address.port),
             ...neighbours.map((dir) => join(dir, "s")), siblingScript, escapedScript],
         }, payload, { cwd: workspace, timeoutMs: 4000 });

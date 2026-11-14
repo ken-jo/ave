@@ -29,6 +29,8 @@ interface BaseHookRegistryEntry {
   matcherError?: string;
   // Nonempty argv.
   command: string[];
+  configDir?: string;
+  fileDependencies?: readonly string[];
   handlerType?: "http";
   http?: HttpHookDefinition;
   hookSource?: HookSourceKind;
@@ -95,6 +97,8 @@ function fromConfigEntry(entry: HookConfigEntry): ConfigHookRegistryEntry {
     ...matcherFields(entry.event, entry.matcher, entry.configPath ?? `hooks.json:${entry.id}`, entry.matcherError),
     ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
     command: entry.command,
+    ...(entry.configDir ? { configDir: entry.configDir } : {}),
+    ...(entry.fileDependencies ? { fileDependencies: entry.fileDependencies } : {}),
     ...(entry.handlerType ? { handlerType: entry.handlerType, http: entry.http } : {}),
     ...(entry.hookSource ? { hookSource: entry.hookSource } : {}),
     ...(entry.validateTrust ? { validateTrust: entry.validateTrust } : {}),

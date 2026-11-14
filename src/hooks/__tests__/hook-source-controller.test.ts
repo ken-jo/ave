@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -137,7 +137,7 @@ describe("source-bound hook review", () => {
     expect((await reviewRuntimeHookTrust(manager, { sourceId: "user", fileName: row.fileName,
       expectedSha256: row.sha256, action: "accept" })).ok).toBe(true);
     const admitted = manager.hooksOfType("pre")[0];
-    expect(admitted.command).toEqual([process.execPath, first, second, option]);
+    expect(admitted.command).toEqual([process.execPath, "./first.cjs", "./second.cjs", option]);
     expect(admitted.validateTrust?.()).toBe(true);
     writeFileSync(second, "second changed");
     expect(admitted.validateTrust?.()).toBe(false);
@@ -167,12 +167,13 @@ describe("administrator hook authority", () => {
     expect(policy.managedHooks[0].validateTrust?.()).toBe(false);
   });
 
-  it("refuses an administrator definition with an unreadable later script anchor", async () => {
+  it("refuses an administrator definition with an unreadable file operand", async () => {
     const adminDir = join(root, "admin");
     mkdirSync(adminDir);
     const adminPath = join(adminDir, "policy.json");
+    symlinkSync("loop.cjs", join(adminDir, "loop.cjs"));
     writeFileSync(adminPath, JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{
-      type: "command", command: [process.execPath, "./missing.cjs"],
+      type: "command", command: [process.execPath, "./loop.cjs"],
     }] }] } }));
     expect(await loadHookRuntimePolicy(adminPath)).toMatchObject({ allowManagedHooksOnly: true, managedHooks: [] });
   });

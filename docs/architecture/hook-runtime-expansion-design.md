@@ -11,7 +11,7 @@ The existing runtime provides command hooks, legacy `pre-*.sh` / `post-*.sh` / `
 | Responsibility | Owning code |
 | --- | --- |
 | Script discovery, hash diff and lockfile | `src/hooks/hook-discovery.ts` |
-| Config bytes and referenced-script hash | `src/hooks/hook-config-trust.ts` |
+| Config bytes and referenced-file hash | `src/hooks/hook-config-trust.ts` |
 | Quarantine, review and explicit enrollment | `src/hooks/hook-trust-prompt.ts`, `src/hooks/hook-trust-commands.ts` |
 | Configuration and normalized registry | `src/hooks/hook-config.ts`, `src/hooks/hook-registry.ts` |
 | Dispatch, output validation and cancellation | `src/hooks/script-hook-manager.ts`, `src/hooks/script-hook-runner.ts`, `src/hooks/hook-contract.ts` |
@@ -58,7 +58,7 @@ Legacy files and declarative handlers share one registry. Keep the configuration
 
 ### 4.2 Declarative handlers
 
-The public schema remains event groups containing matchers and handlers. `command` uses argv, optional `timeoutMs` and the existing local-script trust anchor. `http` uses a URL, restricted method, optional header templates and a bounded timeout. Unsupported types fail clearly; they never degrade into a command or an ungoverned network request.
+The public schema remains event groups containing matchers and handlers. `command` uses argv, optional `timeoutMs`, a bound configuration directory and the existing executable trust anchor. `http` uses a URL, restricted method, optional header templates and a bounded timeout. Unsupported types fail clearly; they never degrade into a command or an ungoverned network request.
 
 Unknown events never activate. Matchers use the existing bounded parser and the event-specific subjects documented in the [public contract](../guides/user-hooks.md#configuration); this expansion does not change matcher semantics.
 
@@ -76,11 +76,15 @@ Hook commands independently pass shell admission, approval and sandbox preparati
 
 ### 6.1 Exact hash trust and managed policy
 
-Discovery hashes the exact current definition and every explicit script anchor. After the existing leading-`~` expansion, each non-option argv token that is absolute or begins with `./` or `../` is an anchor. Every such operand binds to the config directory and contributes its file contents to the hash, including an absolute executable, scripts after an interpreter or environment launcher, and multiple scripts. The rule treats all such paths as anchors without inferring the executable's argument grammar. An unresolved or unreadable anchor is a configuration error: the definition cannot be trusted or run. Managed definitions use the same anchor checks and content revalidation.
+Owner decision 2026-11-14: command resolution is deterministic rather than inferred from an executable's argument grammar. Every command runs with its cwd fixed to its bound configuration directory. Legacy scripts bind to their containing directory. Plugin commands use the physical configuration directory when present, otherwise the package directory hosting their virtual configuration. A missing or invalid bound directory refuses execution. The original project/workspace directory remains available through `AVE_HOOK_PROJECT_DIR` and remains the basis for project permission rules.
 
-Tokens starting with `-` remain verbatim even when they contain a path, so `--output=/tmp/result.json` retains its option semantics. Other non-path operands such as `data/input.json` remain unchanged. The raw definition hash covers every argument; changing an option or ordinary operand still requires re-trust. The existing `.lockfile.json` records accepted hashes; `.disabled/` and disable-cause records retain quarantine and explicit-disable state. A definition or anchor change invalidates prior review. New, changed, trusted, disabled and removed states remain distinguishable.
+Discovery hashes the exact current definition. After the existing leading-`~` expansion, `argv[0]` retains its executable-anchor binding and content checks; bare PATH-resolved executables are not content-pinned. A command still requires at least one regular-file trust anchor. For every remaining argv token that does not start with `-`, resolve it against the fixed cwd, then resolve symlinks. If it names an existing regular file, its canonical identity and contents contribute to the trust hash. This includes bare script names, scripts after interpreters or environment launchers, preloads and multiple scripts; regular data files receive the same treatment. A missing or non-regular target remains an ordinary string argument. Other resolution or read errors are configuration errors and refuse trust and execution. This same file-set rule applies to managed and plugin definitions. The bound directory is part of command identity, so a package update that moves a command to another generation directory requires renewed consent even when file bytes are unchanged.
 
-Explicit enrollment accepts the exact reviewed hash. A stale review cannot trust newly changed content. User actions cannot enroll hooks through model output, plugin-origin text or another privileged command path. After asynchronous approval, the runtime synchronously rechecks the current hash immediately before command spawn or HTTP send and refuses a mismatch. This does not pin an immutable file object: a same-principal process can still replace a file between the final content read and OS spawn. The runtime retains the reviewed execution path rather than relocating a snapshot.
+Argument values remain unchanged apart from existing tilde expansion and executable binding. Tokens starting with `-` remain verbatim even when they contain a path, so `--output=/tmp/result.json` retains its option semantics. The raw definition hash covers every argument, including options and operands that name no file. Changing an argument, an included file's contents or symlink target, or which operands name regular files invalidates prior review. The existing `.lockfile.json` records accepted hashes; `.disabled/` and disable-cause records retain quarantine and explicit-disable state. New, changed, trusted, disabled and removed states remain distinguishable.
+
+Explicit enrollment accepts the exact reviewed hash. A stale review cannot trust newly changed content. User actions cannot enroll hooks through model output, plugin-origin text or another privileged command path. After asynchronous approval and sandbox preparation, the runtime synchronously resolves every non-option operand again and hashes the resulting file set immediately before command spawn; it does not only re-read previously discovered files. A mismatch refuses execution. File-based non-managed sources use the existing quarantine for re-trust; plugins invalidate package consent without moving retained generation files. Managed definitions use the same revalidation but are refused in place rather than moved out of administrator policy; restarting reloads that policy. HTTP send retains its current-definition check. This does not pin immutable file objects: a same-principal process can still replace a file between the final content read and OS spawn. The runtime retains the reviewed execution path rather than relocating a snapshot.
+
+Binding cwd does not grant directory access. Only host-recorded reviewed file dependencies under the user-hook directory receive the existing read exception; other protected read floors and all write floors remain. Sandbox write scopes retain the original project/workspace directory, not the hook configuration directory. The existing permission node order is unchanged.
 
 Project trust is a separate prerequisite from definition trust: accepting one hook does not grant project-wide trust, and trusting a project does not silently accept its hooks. User/system hooks do not inherit the project's status.
 
@@ -88,7 +92,7 @@ Only the administrator policy source can set `allowManagedHooksOnly` or supply m
 
 ### 6.2 Timeouts and environment
 
-Use existing timeout-policy constants and cancellation primitives. A configured timeout can lower its ceiling, not raise it. Cancellation reaches underlying processes or network operations; a late result cannot start an effect. Command environment filtering and existing sandbox behavior remain authoritative.
+Use existing timeout-policy constants and cancellation primitives. A configured timeout can lower its ceiling, not raise it. Cancellation reaches underlying processes or network operations; a late result cannot start an effect. Command environment filtering and existing sandbox behavior remain authoritative. `PWD` and the command input envelope's `cwd` identify the bound execution directory; `AVE_HOOK_PROJECT_DIR` identifies the original project/workspace directory.
 
 Secrets from environment variables or header interpolation must not enter diagnostics, trust summaries, audit fields or model-visible context. HTTP header templates expose only explicitly allowed variable names, never an unrestricted process environment.
 
@@ -140,7 +144,7 @@ Trust review, administrator policy, HTTP execution and context/mutation are sepa
 
 ## 9. Validation
 
-Cover new/changed/trusted/managed/disabled states, stale-review rejection, project gating and source independence; managed-only override and user disable-all; HTTP wildcard/target/method/redirect/body/response/timeout/env cases; context cap/framing/attribution; mutation reclassification, deny rules, changed paths, stale approval and restart limits.
+Cover new/changed/trusted/managed/disabled states, stale-review rejection, project gating and source independence; managed-only override and user disable-all; deterministic cwd and file hashing for bare scripts, environment launchers, absolute interpreters, preloads, multiple scripts, symlink retargeting, edits before spawn and unchanged options; HTTP wildcard/target/method/redirect/body/response/timeout/env cases; context cap/framing/attribution; mutation reclassification, deny rules, changed paths, stale approval and restart limits.
 
 Run focused unit/integration tests, typecheck, unused-code and lint checks. IPC/preload/settings changes also require i18n, packaging-discipline and script lock suites. The trust review flow requires the background UI E2E and screenshot/trace evidence. Validation gaps remain explicit in the PR.
 

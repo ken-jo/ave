@@ -68,7 +68,7 @@ function trustedSource(source: HookSourceLocation, controller: SourceController)
   }
   const trusted = diff.filter((entry) => entry.state === "trusted").map((entry) => entry.hook);
   const validator = (fileName: string, expectedSha256: string) => createHookTrustValidator({
-    hooksDir: source.hooksDir, fileName, expectedSha256, lockfilePath: controller.lockfilePath,
+    hooksDir: source.hooksDir, disabledDir: source.disabledDir, fileName, expectedSha256, lockfilePath: controller.lockfilePath,
     ...(source.id === "user" ? {} : { sourceId: source.id }),
     ...(source.projectRoot ? { projectRoot: source.projectRoot } : {}),
   });

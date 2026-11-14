@@ -15,6 +15,7 @@ function lifecycleRunnable(command: string[]): RunnableHook {
     id: "config:Stop#0.0",
     hookType: "Stop",
     hookPath: command[0],
+    configDir: FIXTURE_ROOT,
     command,
     source: "config",
   };

@@ -89,11 +89,11 @@ async function fixture() {
     if (options.hooksEnabled) {
       manifest.hooks = [{ id: "policy", path: "hooks/policy.json" }];
       await mkdir(join(pluginRoot, "hooks"), { recursive: true });
-      await writeFile(join(pluginRoot, "hooks/policy.mjs"), "process.stdout.write(JSON.stringify({ action: 'allow' }));", "utf8");
+      // A request definition has no cwd identity, so unchanged bytes can carry approval across generation directories.
       await writeFile(join(pluginRoot, "hooks/policy.json"), JSON.stringify({ hooks: { PreToolUse: [{
-        matcher: "*", hooks: [{ type: "command", command: ["node", "./hooks/policy.mjs"] }],
+        matcher: "*", hooks: [{ type: "http", url: "https://hooks.example.com/policy" }],
       }] } }), "utf8");
-      payloadFiles.push("hooks/policy.json", "hooks/policy.mjs");
+      payloadFiles.push("hooks/policy.json");
     }
     await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
     const receiptRaw = JSON.stringify({

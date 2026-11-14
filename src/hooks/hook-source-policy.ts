@@ -40,8 +40,9 @@ export async function loadHookRuntimePolicy(adminPath = getAdminPolicyPath()): P
     log.warn("Managed hook configuration is invalid; non-managed hooks are disabled");
     return closed;
   }
-  bindHookConfigPaths(parsed.entries, dirname(adminPath));
-  const { trustHash: policyHash, errors } = hashHookConfigDefinition(bytes, parsed.entries);
+  try { bindHookConfigPaths(parsed.entries, dirname(adminPath)); }
+  catch { return closed; }
+  const { trustHash: policyHash, errors, fileDependencies } = hashHookConfigDefinition(bytes, parsed.entries);
   if (errors.length > 0) {
     log.warn("Managed hook configuration has unreadable script anchors; hooks are disabled");
     return closed;
@@ -51,6 +52,7 @@ export async function loadHookRuntimePolicy(adminPath = getAdminPolicyPath()): P
     allowedHttpHookUrls: stringList(raw.allowedHttpHookUrls),
     httpHookAllowedEnvVars: stringList(raw.httpHookAllowedEnvVars).filter((name) => /^[A-Za-z_][A-Za-z0-9_]*$/u.test(name)),
     managedHooks: parsed.entries.map((entry) => ({ ...entry, hookSource: "managed", configPath: adminPath, reviewedHash: policyHash,
+      fileDependencies: fileDependencies.get(entry.id),
       validateTrust: () => {
         try {
           const current = loadHookConfig(adminPath);

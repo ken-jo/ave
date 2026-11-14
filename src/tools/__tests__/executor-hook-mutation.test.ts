@@ -1,6 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -8,6 +8,7 @@ import { createDynamicTool } from "../base.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { ScriptHookManager } from "../../hooks/script-hook-manager.js";
 import { parseHookConfig } from "../../hooks/hook-config.js";
+import { bindHookConfigPaths } from "../../hooks/hook-config-trust.js";
 import { buildHookRegistry } from "../../hooks/hook-registry.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
@@ -29,7 +30,9 @@ function setup(event: "PreToolUse" | "PermissionRequest", mode = "mutate") {
   const permissions = new PermissionManager(join(root, "permissions.json"));
   if (event === "PermissionRequest") permissions.setRules([{ pattern: "mutation_probe", action: "ask" }]);
   const manager = new ScriptHookManager();
-  manager.setTrustedRegistry([], parseHookConfig({ hooks: { [event]: [{ hooks: [{ type: "command", command: ["node", COMMAND, mode] }] }] } }).entries);
+  const entries = parseHookConfig({ hooks: { [event]: [{ hooks: [{ type: "command", command: ["node", COMMAND, mode] }] }] } }).entries;
+  bindHookConfigPaths(entries, dirname(COMMAND));
+  manager.setTrustedRegistry([], entries);
   const requestAndWait = vi.fn(async (_request: { args?: Record<string, unknown> }) => ({ requestId: "target", choice: "deny-once" as const }));
   const executor = new ToolExecutor(registry, undefined, permissions, undefined, { requestAndWait } as unknown as ApprovalGate, manager);
   const pre = vi.spyOn(manager, "runPreToolUse");
@@ -43,7 +46,9 @@ describe("hook replacement permission reentry", () => {
   it("resolves project hooks using the host session root throughout pre and permission stages", async () => {
     const probe = setup("PermissionRequest");
     probe.manager.setTrustedRegistry([], []);
-    const projectEntries = buildHookRegistry([], parseHookConfig({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["node", COMMAND, "context"] }] }] } }).entries);
+    const entries = parseHookConfig({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["node", COMMAND, "context"] }] }] } }).entries;
+    bindHookConfigPaths(entries, dirname(COMMAND));
+    const projectEntries = buildHookRegistry([], entries);
     const resolveProject = vi.fn(async (_cwd: string) => projectEntries);
     probe.manager.setProjectHookResolver(resolveProject);
     const [result] = await probe.run();

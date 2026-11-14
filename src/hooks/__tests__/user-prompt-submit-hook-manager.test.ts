@@ -22,6 +22,7 @@ function upsEntry(command: string[], over: Partial<HookConfigEntry> = {}): HookC
     command,
     timeoutMs: 5000,
     source: "config",
+    configDir: FIXTURE_ROOT,
     ...over,
   };
 }

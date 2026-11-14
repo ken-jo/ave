@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import { parseHookConfig } from "../hook-config.js";
@@ -7,13 +7,14 @@ import { attributedHookContext } from "../hook-influence.js";
 import { MAX_HOOK_CONTEXT_CHARS } from "../script-hook-types.js";
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/influence-command.cjs");
+const CONFIG_DIR = dirname(COMMAND);
 const PAYLOAD = { toolName: "influence_probe", source: "builtin" as const, category: "read" as const,
   input: {}, sessionId: "influence-session", trustOrigin: "user-keyboard" as const };
 
 describe("reviewed hook influence", () => {
   it("revalidates the exact definition after asynchronous command admission", async () => {
     let current = true;
-    const result = await runOneHookScript({ id: "reviewed-command", hookType: "pre", command: ["node", COMMAND, "context"], hookPath: COMMAND,
+    const result = await runOneHookScript({ id: "reviewed-command", hookType: "pre", command: ["node", COMMAND, "context"], hookPath: COMMAND, configDir: CONFIG_DIR,
       validateTrust: () => current }, { ...PAYLOAD, hookType: "pre" }, {
       authorizeCommand: async () => { await Promise.resolve(); current = false; return { decision: "allow", reason: "approved" }; },
     });
@@ -37,7 +38,7 @@ describe("reviewed hook influence", () => {
   it("caps context before escaping and attributes the exact hook identity", async () => {
     const manager = new ScriptHookManager();
     const entries = parseHookConfig({ hooks: { PreToolUse: [{ matcher: "influence_probe", hooks: [{ type: "command", command: ["node", COMMAND, "context"] }] }] } }).entries;
-    manager.setTrustedRegistry([], entries);
+    manager.setTrustedRegistry([], entries.map((entry) => ({ ...entry, configDir: CONFIG_DIR })));
     const result = await manager.runPreToolUse(PAYLOAD);
     expect(result.decision).toBe("allow");
     expect(result.results[0].additionalContext).toHaveLength(MAX_HOOK_CONTEXT_CHARS);
@@ -54,7 +55,7 @@ describe("reviewed hook influence", () => {
     manager.setTrustedRegistry([], parseHookConfig({ hooks: { PreToolUse: [{ hooks: [
       { type: "command", command: ["node", COMMAND, "mutate"] },
       { type: "command", command: ["node", COMMAND, "loop"] },
-    ] }] } }).entries);
+    ] }] } }).entries.map((entry) => ({ ...entry, configDir: CONFIG_DIR })));
     expect(await manager.runPreToolUse(PAYLOAD)).toMatchObject({ decision: "allow", updatedInput: { count: 1 } });
   });
 });

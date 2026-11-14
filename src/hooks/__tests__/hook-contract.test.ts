@@ -1,12 +1,15 @@
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import { parseHookConfig } from "../hook-config.js";
+import { bindHookConfigPaths } from "../hook-config-trust.js";
 import { hookJsonInput, stopHookBlockFeedback, type HookEventName } from "../hook-contract.js";
 import { parseHookStdout, runOneHookScript } from "../script-hook-runner.js";
 import type { HookEvent, LifecycleEventPayload, ScriptHookStdin } from "../script-hook-types.js";
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs");
+const CONFIG_DIR = realpathSync(dirname(COMMAND));
 const TOOL_INPUT = { path: "/workspace/result.txt" };
 const TOOL_PAYLOAD = { toolName: "write_file", source: "builtin" as const, category: "write" as const,
   input: TOOL_INPUT, sessionId: "contract-session", trustOrigin: "user-keyboard" as const };
@@ -34,6 +37,7 @@ async function dispatch(entry: typeof EVENT_CASES[number], mode: string, denied 
   const parsed = parseHookConfig({ hooks: { [entry.name]: [{ hooks: [{ type: "command", command: [mode === "spawn-failure" ? "ave-nonexistent-hook-program" : "node", COMMAND, mode], timeoutMs: mode === "slow" ? 100 : 5000 }] }] } });
   expect(parsed.errors).toEqual([]);
   expect(parsed.warnings).toEqual([]);
+  bindHookConfigPaths(parsed.entries, CONFIG_DIR);
   manager.setTrustedRegistry([], parsed.entries);
   switch (entry.event) {
     case "pre": return manager.runPreToolUse(TOOL_PAYLOAD);
@@ -65,7 +69,7 @@ describe("user hook event contract", () => {
     const input = JSON.parse(result.results[0].rawStdout).received;
     expect(input).toMatchObject({ schema_version: 1, hook_event_name: entry.name,
       session_id: "contract-session", sessionId: "contract-session", trustOrigin: "user-keyboard",
-      hookType: entry.event, event: entry.event, cwd: process.cwd(), ...entry.expected });
+      hookType: entry.event, event: entry.event, cwd: CONFIG_DIR, ...entry.expected });
     if (entry.event !== "pre" && entry.event !== "post" && entry.event !== "perm") {
       expect(input).not.toHaveProperty("tool_input");
     }
@@ -106,7 +110,9 @@ describe("user hook event contract", () => {
 
   it("redacts post-tool output before either wire spelling reaches a script", async () => {
     const manager = new ScriptHookManager();
-    manager.setTrustedRegistry([], parseHookConfig({ hooks: { PostToolUse: [{ hooks: [{ type: "command", command: ["node", COMMAND, "echo"] }] }] } }).entries);
+    const entries = parseHookConfig({ hooks: { PostToolUse: [{ hooks: [{ type: "command", command: ["node", COMMAND, "echo"] }] }] } }).entries;
+    bindHookConfigPaths(entries, CONFIG_DIR);
+    manager.setTrustedRegistry([], entries);
     const result = await manager.runPostToolUse({ ...TOOL_PAYLOAD, toolOutput: "contact 415-555-1234" });
     const received = JSON.parse(result.results[0].rawStdout).received;
     expect(received.toolOutput).not.toContain("415-555-1234");
@@ -158,7 +164,7 @@ describe("structured hook decisions", () => {
   });
   it("reports output overflow and invalid timeout before treating a command as successful", async () => {
     const payload: ScriptHookStdin = { ...TOOL_PAYLOAD, hookType: "pre" };
-    const hook = { id: "large", hookType: "pre" as const, hookPath: COMMAND, command: ["node", COMMAND, "large"] };
+    const hook = { id: "large", hookType: "pre" as const, hookPath: COMMAND, configDir: CONFIG_DIR, command: ["node", COMMAND, "large"] };
     expect(await runOneHookScript(hook, payload)).toMatchObject({ decision: "deny", reason: "hook stdout exceeded capture limit" });
     for (const timeoutMs of [0, -1, NaN, Infinity, 2 ** 31]) {
       expect(await runOneHookScript(hook, payload, { timeoutMs })).toMatchObject({ decision: "deny", reason: expect.stringContaining("timeout must be") });

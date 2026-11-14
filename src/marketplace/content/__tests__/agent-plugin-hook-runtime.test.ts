@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
@@ -72,6 +72,43 @@ describe("installed hook activation", () => {
     expect(manager.size()).toBe(1);
     await runtime.deactivate(update.name);
     expect(manager.size()).toBe(0);
+  });
+
+  it("reviews bare file operands from the virtual config root and refuses changed-file approval carry", async () => {
+    const manager = new ScriptHookManager();
+    const runtime = new AgentPluginHookRuntime(manager, { trust: new PluginHookTrustStore(), dataDirForPackage: async () => dataDir });
+    const operand = join(generationRoot, "bare-policy.cjs");
+    writeFileSync(operand, "module.exports = 'reviewed';");
+    const first = item("1.0.0", "7".repeat(64), "8".repeat(64), hookFile(HOOK_SOURCE));
+    first.content.components.hooks[0].command.push("bare-policy.cjs", "plain-argument");
+    await runtime.activate(first, [{ kind: "hook", index: 0, digest: "8".repeat(64) }]);
+    const reviewed = manager.hooksOfType("pre")[0];
+    if (!reviewed) throw new Error("approved hook was not published");
+    expect(reviewed.configDir).toBe(realpathSync(generationRoot));
+    expect(reviewed.fileDependencies).toContain(realpathSync(operand));
+    expect(reviewed.command.slice(-2)).toEqual(["bare-policy.cjs", "plain-argument"]);
+    expect(reviewed.validateTrust?.()).toBe(true);
+    const approval = (await runtime.approvals(first.name))[0];
+    if (!approval) throw new Error("reviewed hook approval was not recorded");
+
+    writeFileSync(operand, "module.exports = 'changed';");
+    expect(reviewed.validateTrust?.()).toBe(false);
+    const denied = await manager.runPreToolUse({ toolName: "read_file", source: "builtin", category: "read",
+      input: {}, sessionId: "changed-hook", trustOrigin: "user-keyboard" });
+    expect(denied.decision).toBe("deny");
+    expect(denied.reason).toContain("changed before execution");
+    expect((await runtime.approvals(first.name))[0]).toMatchObject({ approved: false, recordDigest: null });
+    writeFileSync(operand, "module.exports = 'reviewed';");
+    expect(reviewed.validateTrust?.()).toBe(false);
+    expect((await runtime.approvals(first.name))[0]).toMatchObject({ approved: false, recordDigest: null });
+    writeFileSync(operand, "module.exports = 'changed';");
+    await runtime.activate({ ...first, version: "1.0.1", generationId: "9".repeat(64) });
+    expect(manager.size()).toBe(0);
+    const changed = (await runtime.approvals(first.name))[0];
+    if (!changed) throw new Error("changed hook approval was not prepared");
+    expect(changed.approvalDigest).not.toBe(approval.approvalDigest);
+    expect(changed.approved).toBe(false);
+    await runtime.deactivate(first.name);
   });
 
   it("carries a hook's approval to an update with unchanged bytes, not to one whose hook changed, and retires the old one after it drains", async () => {

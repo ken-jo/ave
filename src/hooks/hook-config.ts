@@ -19,6 +19,8 @@ export interface HookConfigEntry {
   // Invalid entries remain inert denial guards for blocking tool events.
   matcherError?: string;
   configPath?: string;
+  configDir?: string;
+  fileDependencies?: readonly string[];
   // Nonempty argv; argv[0] is the program.
   command: string[];
   handlerType?: "http";
@@ -55,26 +57,6 @@ function normalizeCommand(raw: unknown): string[] | null {
     return null;
   }
   return argv.length > 0 ? argv : null;
-}
-
-// Classify paths without I/O; scheme:// tokens must never masquerade as local hash anchors.
-export function looksLikeLocalScriptPath(token: string): boolean {
-  if (token.length === 0) return false;
-  if (token.startsWith("-")) return false;
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) return false; /* Remote URLs cannot anchor trust. */
-  if (token.includes("/") || token.includes("\\")) return true;
-  if (token.startsWith("~")) return true;
-  if (token.startsWith(".")) return true;
-  return false;
-}
-
-// Trust anchors on the local script in argv[0] or a later argument; binary-only commands are unanchorable and rejected.
-export type CommandClass = "local-script" | "script-arg" | "binary-only";
-
-export function classifyCommand(argv: string[]): CommandClass {
-  if (looksLikeLocalScriptPath(argv[0])) return "local-script";
-  if (argv.slice(1).some(looksLikeLocalScriptPath)) return "script-arg";
-  return "binary-only";
 }
 
 // No I/O or throws; malformed config warns and yields no entries so broken config cannot silently activate hooks.
@@ -177,16 +159,6 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
         if (!command) {
           errors.push(
             `hooks.json: ${id} handler.command must be a non-empty string or string[] — rejected`,
-          );
-          return;
-        }
-
-        // Binary-only commands lack a stable trust anchor and must be rejected.
-        if (!http && classifyCommand(command) === "binary-only") {
-          errors.push(
-            `hooks.json: ${id} command "${command.join(
-              " ",
-            )}" is a PATH-binary with no local script argument — rejected (no stable hash anchor for the trust lockfile; design §6.1)`,
           );
           return;
         }

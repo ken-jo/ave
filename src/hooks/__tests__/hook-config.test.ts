@@ -1,10 +1,6 @@
 // Config parsing rejects unsafe handlers and matchers, recognizes only closed-set events, and clamps timeouts (docs/architecture/hook-runtime-expansion-design.md).
 import { describe, expect, it } from "vitest";
-import {
-  classifyCommand,
-  looksLikeLocalScriptPath,
-  parseHookConfig,
-} from "../hook-config.js";
+import { parseHookConfig } from "../hook-config.js";
 import { DEFAULT_HOOK_TIMEOUT_MS } from "../script-hook-types.js";
 
 describe("parseHookConfig — empty / missing", () => {
@@ -177,8 +173,8 @@ describe("parseHookConfig — lifecycle event keys recognized (#811 m2)", () => 
   });
 });
 
-describe("parseHookConfig — binary-only command rejected (decision c)", () => {
-  it("rejects a PATH-binary with no local script argument", () => {
+describe("parseHookConfig — handler validation", () => {
+  it("defers file-anchor eligibility to config loading", () => {
     const r = parseHookConfig({
       hooks: {
         PreToolUse: [
@@ -186,9 +182,9 @@ describe("parseHookConfig — binary-only command rejected (decision c)", () => 
         ],
       },
     });
-    expect(r.entries).toHaveLength(0);
-    expect(r.errors).toHaveLength(1);
-    expect(r.errors[0]).toContain("PATH-binary");
+    expect(r.entries).toHaveLength(1);
+    expect(r.entries[0].command).toEqual(["curl", "https://evil.example/x"]);
+    expect(r.errors).toEqual([]);
   });
 
   it("accepts a PATH-binary that references a local script argument", () => {
@@ -280,25 +276,11 @@ describe("parseHookConfig — timeoutMs clamp (decision d)", () => {
   });
 });
 
-describe("command classification helpers", () => {
-  it("looksLikeLocalScriptPath distinguishes paths from bare binaries", () => {
-    expect(looksLikeLocalScriptPath("./a.sh")).toBe(true);
-    expect(looksLikeLocalScriptPath("../x/y.py")).toBe(true);
-    expect(looksLikeLocalScriptPath("/abs/path.sh")).toBe(true);
-    expect(looksLikeLocalScriptPath("~/.config/ave/hooks/p.py")).toBe(true);
-    expect(looksLikeLocalScriptPath("dir/file")).toBe(true);
-    expect(looksLikeLocalScriptPath("python3")).toBe(false);
-    expect(looksLikeLocalScriptPath("curl")).toBe(false);
-    expect(looksLikeLocalScriptPath("")).toBe(false);
-    expect(looksLikeLocalScriptPath("--output=/tmp/result.json")).toBe(false);
-    expect(looksLikeLocalScriptPath("--output=./result.json")).toBe(false);
-  });
-
-  it("classifyCommand labels the three cases", () => {
-    expect(classifyCommand(["./a.sh"])).toBe("local-script");
-    expect(classifyCommand(["python3", "./p.py"])).toBe("script-arg");
-    expect(classifyCommand(["curl", "https://x"])).toBe("binary-only");
-    expect(classifyCommand(["node"])).toBe("binary-only");
-    expect(classifyCommand(["node", "--output=/tmp/result.json"])).toBe("binary-only");
+describe("parseHookConfig — argument text", () => {
+  it("preserves bare file operands, plain strings, and slash-containing options", () => {
+    const command = ["node", "policy.cjs", "data/input.json", "application/json", "--output=/tmp/result.json", "--relative=./result.json"];
+    const parsed = parseHookConfig({ hooks: { PreToolUse: [{ hooks: [{ type: "command", command }] }] } });
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.entries[0].command).toEqual(command);
   });
 });

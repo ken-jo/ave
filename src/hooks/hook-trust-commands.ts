@@ -192,6 +192,7 @@ function refreshManagerRegistry(trusted: DiscoveredHook[], opts: HookTrustComman
   const configTrusted = trusted.some((h) => h.fileName === HOOKS_CONFIG_FILENAME);
   const configEntries = configTrusted ? loadHookConfig(configPath(opts)).entries : [];
   const validator = (fileName: string, expectedSha256: string) => createHookTrustValidator({ hooksDir: hooksDir(opts),
+    disabledDir: disabledDir(opts),
     fileName, expectedSha256, lockfilePath: lockfilePath(opts), sourceId: opts.sourceId });
   const configHash = trusted.find((hook) => hook.fileName === HOOKS_CONFIG_FILENAME)?.sha256 ?? "";
   opts.manager.setTrustedSourceRegistry(opts.sourceId ?? "user",

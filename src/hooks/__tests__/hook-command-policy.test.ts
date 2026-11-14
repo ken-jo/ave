@@ -77,7 +77,7 @@ vi.mock("../../permissions/host-shell-execution-permit.js", async (original) => 
 });
 
 const COMMAND = resolve(__dirname, "../../../test/fixtures/hooks/contract-command.cjs");
-const hook = { id: "config:PreToolUse#0.0", hookType: "pre" as const, hookPath: COMMAND, command: ["node", COMMAND, "echo"] };
+const hook = { id: "config:PreToolUse#0.0", hookType: "pre" as const, hookPath: COMMAND, configDir: process.cwd(), command: ["node", COMMAND, "echo"] };
 const payload: ScriptHookStdin = { hookType: "pre", toolName: "read_file", source: "builtin", category: "read",
   input: {}, sessionId: "hook-policy-session", trustOrigin: "user-keyboard" };
 const roots: string[] = [];
@@ -130,6 +130,18 @@ describe("hook command permission admission", () => {
     expect(result.decision).toBe("deny");
     expect(result.rawStdout).toBe("");
     expect(result.reason).toContain("hook command denied");
+    expect(p.requestAndWait).not.toHaveBeenCalled();
+  });
+
+  it("uses the original project deny rules when execution is bound to another directory", async () => {
+    const p = policy("allow-once");
+    const projectDir = join(p.root, "project");
+    const configDir = join(p.root, "config");
+    mkdirSync(projectDir);
+    mkdirSync(configDir);
+    await p.permissionManager.addRulePersist({ pattern: "Bash(node *)", action: "deny" }, { kind: "project", projectCwd: projectDir });
+    const result = await p.authorizeCommand({ ...hook, configDir }, payload, configDir, projectDir);
+    expect(result.decision).toBe("deny");
     expect(p.requestAndWait).not.toHaveBeenCalled();
   });
 
@@ -220,7 +232,7 @@ describe("hook command permission admission", () => {
     const manager = new ScriptHookManager();
     const admission = vi.fn(async () => ({ decision: "deny" as const, reason: "host rule" }));
     manager.setCommandAuthorizer(admission);
-    manager.setTrustedRegistry([], [{ id: hook.id, event: "pre", source: "config", command: hook.command, timeoutMs: 5000 }]);
+    manager.setTrustedRegistry([], [{ id: hook.id, event: "pre", source: "config", configDir: hook.configDir, command: hook.command, timeoutMs: 5000 }]);
     const result = await manager.runPreToolUse(payload, { authorizeCommand: async () => ({ decision: "allow", reason: "caller" }) });
     expect(result.decision).toBe("deny");
     expect(admission).toHaveBeenCalledOnce();

