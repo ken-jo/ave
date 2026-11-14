@@ -56,6 +56,24 @@ function generation(version: string, generationId: string, fingerprint = "a".rep
 }
 
 describe("plugin-owned Hook projections", () => {
+  it("preserves an HTTP definition and requires exact trust after its headers change", () => {
+    const make = (token: string) => {
+      const value = generation("1.0.0", "http-generation");
+      const contribution = value.contributions[0];
+      const content = JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: "http", url: "https://hooks.example.com/check", headers: { authorization: token } }] }] } });
+      return { ...value, contributions: [{ ...contribution, fingerprint: createHash("sha256").update(content).digest("hex"),
+        files: [{ ...contribution.files[0], content }] }] };
+    };
+    const [approved] = preparePluginHookGeneration(make("fixture-first"), payloadRoot, join(payloadRoot, "data"));
+    const [changed] = preparePluginHookGeneration(make("fixture-second"), payloadRoot, join(payloadRoot, "data"));
+    const trust = new PluginHookTrustStore();
+    trust.approve(approved);
+    expect(trust.isApproved(changed)).toBe(false);
+    const manager = new ScriptHookManager();
+    manager.publishPluginGeneration([approved], trust);
+    expect(manager.hooksOfType("pre")[0]).toMatchObject({ handlerType: "http", http: { url: "https://hooks.example.com/check" }, command: [] });
+  });
+
   it("compiles plugin matchers at publication and reuses them during filtering", () => {
     const [projection] = preparePluginHookGeneration(generation("1.0.0", "g1"), payloadRoot, join(payloadRoot, "data"));
     const trust = new PluginHookTrustStore();

@@ -26,6 +26,7 @@ import { collectHookMatcherDiagnostics } from "./hook-matcher-diagnostics.js";
 import { clearHookDisableCause, disabledHookOriginalName, LEGACY_HOOK_DISABLE_NOTICE, readHookDisableCause, writeHookDisableCause } from "./hook-disable-state.js";
 import type { HookSourceKind } from "./hook-source-policy.js";
 import { createHookTrustValidator } from "./hook-trust-validator.js";
+import { createHash } from "node:crypto";
 
 export interface HookTrustCommandOptions {
   sourceId?: string;
@@ -137,7 +138,12 @@ function withConfigSummary(row: HookTrustRow, entries: HookConfigEntry[], errors
 }
 
 export function hookDefinitionSummary(entry: HookConfigEntry): string {
-  return entry.command.join(" ");
+  if (!entry.http) return entry.command.join(" ");
+  try {
+    const target = new URL(entry.http.url);
+    const route = createHash("sha256").update(`${target.pathname}${target.search}`).digest("hex").slice(0, 12);
+    return `${entry.http.method} ${target.origin} (route ${route})`;
+  } catch { return "HTTP hook"; }
 }
 
 function configPath(opts: HookTrustCommandOptions): string {

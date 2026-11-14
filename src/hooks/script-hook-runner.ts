@@ -33,6 +33,7 @@ import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { hookEventName, hookJsonInput } from "./hook-contract.js";
 import { isRecord } from "../shared/is-record.js";
+import { runHttpHook, type HttpHookDefinition, type HttpHookRuntime } from "./http-hook-runner.js";
 import type { HookCommandAuthorizer } from "./hook-command-policy.js";
 import { MAX_TIMER_DELAY_MS, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { resolveScriptAnchor } from "./hook-config-trust.js";
@@ -68,6 +69,7 @@ export interface RunOneHookOptions {
   // Host-owned admission for a trusted user command; enrollment is not permission.
   authorizeCommand?: HookCommandAuthorizer;
   abortSignal?: AbortSignal;
+  httpHooks?: HttpHookRuntime;
 }
 
 // Legacy scripts and config argv share the same fail-closed runner, environment and timeout gates.
@@ -76,6 +78,8 @@ export interface RunnableHook {
   hookType: HookEvent;
   // A lone .sh path uses the resolved interpreter; all other argv spawn directly without a shell.
   command: string[];
+  handlerType?: "http";
+  http?: HttpHookDefinition;
   validateTrust?: () => boolean;
   hookSource?: HookSourceKind | "plugin";
   env?: Record<string, string>;
@@ -110,9 +114,9 @@ export function runnableFromDiscovered(hook: DiscoveredHook): RunnableHook {
     id: hook.fileName,
     hookType: hook.hookType,
     command: [hook.path],
+    ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
     ...(hook.validateTrust ? { validateTrust: hook.validateTrust } : {}),
     hookSource: hook.hookSource ?? "user",
-    ...(hook.matcher !== undefined ? { matcher: hook.matcher } : {}),
     hookPath: hook.path,
     source: "sh",
     commandIdentity: hook.sha256,
@@ -169,9 +173,11 @@ export async function runOneHookScript(
   const forensics = {
     hookPath: runnable.hookPath,
     hookType: runnable.hookType,
+    ...(runnable.matcher === undefined ? {} : { matcher: runnable.matcher }),
     source: runnable.source ?? "sh",
+    commandIdentity: normalized.commandIdentity ?? (normalized.handlerType === "http" ? sha256Hex(JSON.stringify(normalized.http)) : hashCommandArgv(normalized.command)),
+    handlerType: runnable.handlerType ?? "command",
     hookSource: runnable.hookSource ?? (runnable.pluginOwner ? "plugin" : "user"),
-    commandIdentity: normalized.commandIdentity ?? hashCommandArgv(normalized.command),
     ...(runnable.pluginOwner ? { pluginOwner: runnable.pluginOwner } : {}),
   } as const;
 
@@ -197,6 +203,21 @@ export async function runOneHookScript(
     stdinJson = JSON.stringify(hookJsonInput(payload, cwd)) + "\n";
   } catch (error) {
     return deny(`failed to serialise hook payload: ${(error as Error).message}`);
+  }
+
+  if (runnable.handlerType === "http") {
+    if (!runnable.http) return deny("HTTP hook definition is missing");
+    if (runnable.validateTrust && !runnable.validateTrust()) return deny("Hook definition changed before execution");
+    try {
+      const response = await runHttpHook(runnable.http, JSON.parse(stdinJson) as ScriptHookStdin, {
+        hookId: runnable.id, runtime: options.httpHooks, timeoutMs, signal: abortSignal, validateTrust: runnable.validateTrust,
+      });
+      return hookOutcome(forensics, deny, { code: 0, stdout: response.stdout, stderr: "", stdoutCapped: false,
+        timedOut: false, cancelled: abortSignal?.aborted === true, timeoutMs, hookId: runnable.id,
+        hookType: runnable.hookType, durationMs: Date.now() - start });
+    } catch {
+      return deny("HTTP hook request failed");
+    }
   }
 
   const hookEnv = buildHookEnv(payload, runnable.matcher);

@@ -74,6 +74,11 @@ export function preparePluginHookGeneration(
     const anchoredEntries: HookConfigEntry[] = [];
     const commandFingerprints: string[] = [];
     for (const entry of parsed.entries) {
+      if (entry.handlerType === "http") {
+        commandFingerprints.push(createHash("sha256").update(contribution.fingerprint).update(JSON.stringify(entry.http)).digest("hex"));
+        anchoredEntries.push(Object.freeze({ ...entry }));
+        continue;
+      }
       const envEntries = Object.entries(entry.env ?? {});
       const resolved = resolveBundledArgv({
         generationRoot: payloadRoot,

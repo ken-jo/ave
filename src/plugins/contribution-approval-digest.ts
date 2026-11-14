@@ -285,16 +285,16 @@ export function extensionComponentDigests(manifestDocument: unknown, files: read
       result.push({ ...entry, approvalDigest: null });
       continue;
     }
-    const argvs = parsed.entries.map((hook) => [...hook.command, ...Object.values(hook.env ?? {})]);
+    const argvs = parsed.entries.filter((hook) => hook.handlerType !== "http").map((hook) => [...hook.command, ...Object.values(hook.env ?? {})]);
     // A hook's package paths are read from the package root (`resolveBundledArgv`), not its file's directory.
-    result.push({ ...entry, approvalDigest: approvalDigest({ declaration: fingerprint, baseDir: "", transport: "stdio", argvs }, files) });
+    result.push({ ...entry, approvalDigest: approvalDigest({ declaration: fingerprint, baseDir: "", transport: argvs.length === 0 && parsed.entries.length > 0 ? "http" : "stdio", argvs }, files) });
   }
   return result;
 }
 
 export interface AgentPluginComponentInputs {
   mcpServers: Readonly<Record<string, { transport: "stdio"; command: string; args?: string[]; digest: string } | { transport: "http"; digest: string }>>;
-  hooks: ReadonlyArray<{ command: string[]; env?: Record<string, string>; digest: string }>;
+  hooks: ReadonlyArray<{ command: string[]; env?: Record<string, string>; digest: string; handlerType?: "http" }>;
 }
 
 /** Agent component paths resolve from the package root, keyed by server name or hook index. */
@@ -309,7 +309,7 @@ export function agentPluginComponentDigests(components: AgentPluginComponentInpu
       : approvalDigest({ declaration: server.digest, baseDir: "", transport: "stdio", argvs: [[server.command, ...(server.args ?? [])]] }, files);
   }
   const hooks = components.hooks.map((hook) =>
-    approvalDigest({ declaration: hook.digest, baseDir: "", transport: "stdio", argvs: [[...hook.command, ...Object.values(hook.env ?? {})]] }, files));
+    approvalDigest({ declaration: hook.digest, baseDir: "", transport: hook.handlerType === "http" ? "http" : "stdio", argvs: hook.handlerType === "http" ? [] : [[...hook.command, ...Object.values(hook.env ?? {})]] }, files));
   return { mcpServers, hooks };
 }
 

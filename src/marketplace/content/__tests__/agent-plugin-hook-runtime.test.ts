@@ -1,7 +1,9 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
+import { promises as dns } from "node:dns";
+import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { PluginHookTrustStore } from "../../../hooks/plugin-hook-projection.js";
@@ -28,6 +30,28 @@ function item(version: string, generationId: string, digest: string, files: Inst
 }
 
 describe("installed hook activation", () => {
+  it("runs an approved HTTP contribution through the host policy and retains its activation lease", async () => {
+    const lookup = vi.spyOn(dns, "lookup").mockResolvedValue([{ address: "93.184.216.34", family: 4 }] as never);
+    try {
+      const manager = new ScriptHookManager();
+      const send = vi.fn(async () => new Response('{"action":"allow","reason":"http ran"}'));
+      manager.setHttpHookRuntime({ transport: directHostFetchTransport(send as typeof fetch),
+        allowedUrls: ["https://hooks.example.com/check"], allowedEnvVars: [], auditTarget: vi.fn() });
+      const runtime = new AgentPluginHookRuntime(manager, { trust: new PluginHookTrustStore(), dataDirForPackage: async () => dataDir });
+      const installed = item("1.0.0", "c".repeat(64), "d".repeat(64));
+      installed.content.components.hooks = [{ event: "pre", command: [], handlerType: "http",
+        http: { url: "https://hooks.example.com/check", method: "POST" }, timeoutMs: 1500, digest: "d".repeat(64) }];
+      await runtime.sync([installed]);
+      expect(manager.size()).toBe(0);
+      await runtime.activate(installed, [{ kind: "hook", index: 0, digest: "d".repeat(64) }]);
+      const result = await manager.runPreToolUse({ toolName: "read_file", source: "builtin", category: "read", input: {}, sessionId: "hook", trustOrigin: "user-keyboard" });
+      expect(result.decision).toBe("allow");
+      expect(send).toHaveBeenCalledOnce();
+      expect(runtime.hasCallsInFlight(installed.name)).toBe(false);
+      await runtime.deactivate(installed.name);
+    } finally { lookup.mockRestore(); }
+  });
+
   it("requires an exact reviewed digest and asks again after a generation change", async () => {
     const manager = new ScriptHookManager();
     const trust = new PluginHookTrustStore();

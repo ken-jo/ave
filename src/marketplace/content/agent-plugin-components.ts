@@ -190,7 +190,11 @@ function hookComponents(bytes: Buffer, files: ReadonlyMap<string, Buffer>, execu
       }
       for (const handler of item.hooks) {
         const entry = record(handler, path);
-        if (Object.keys(entry).some((key) => !["type", "command", "env", "timeoutMs"].includes(key))
+        if (entry.type === "http") {
+          if (Object.keys(entry).some((key) => !["type", "url", "method", "headers", "timeoutMs"].includes(key))) {
+            fail(path, `${event} has an invalid HTTP handler field`);
+          }
+        } else if (Object.keys(entry).some((key) => !["type", "command", "env", "timeoutMs"].includes(key))
           || !Array.isArray(entry.command) || !entry.command.every((part: unknown) => typeof part === "string")) {
           fail(path, `${event} requires argv command handlers`);
         }
@@ -200,6 +204,14 @@ function hookComponents(bytes: Buffer, files: ReadonlyMap<string, Buffer>, execu
   const parsed = parseHookConfig(document, { bundled: true });
   if (parsed.errors.length || parsed.warnings.length) fail(path, [...parsed.errors, ...parsed.warnings].join("; "));
   return parsed.entries.map((entry) => {
+    if (entry.handlerType === "http") {
+      return {
+        event: entry.event, ...(entry.matcher ? { matcher: entry.matcher } : {}),
+        command: [], handlerType: "http" as const, http: entry.http,
+        timeoutMs: entry.timeoutMs,
+        digest: mcpDigest({ event: entry.event, matcher: entry.matcher ?? null, http: entry.http, timeoutMs: entry.timeoutMs }, files, executable),
+      };
+    }
     try { validateSymbolicHookArgv([...entry.command, ...Object.values(entry.env ?? {})], `${path} ${entry.id}`); }
     catch (error) { fail(path, (error as Error).message); }
     for (const token of [...entry.command, ...Object.values(entry.env ?? {})]) {

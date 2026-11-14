@@ -34,6 +34,7 @@ import type { PluginHookTrustStore, PreparedPluginHookProjection } from "./plugi
 import type { PluginRuntimeGenerationAccess } from "../plugins/plugin-host-generation.js";
 import { errorMessage } from "../shared/error-message.js";
 import type { HookCommandAuthorizer } from "./hook-command-policy.js";
+import type { HttpHookRuntime } from "./http-hook-runner.js";
 
 const log = createLogger("script-hook-manager");
 
@@ -63,6 +64,7 @@ export class ScriptHookManager {
   private sourceRegistryRefresher: (() => void) | undefined;
   private projectHookResolver: ((cwd: string) => Promise<HookRegistryEntry[]>) | undefined;
   private hookPolicy = { allowManagedHooksOnly: false, disableAllHooks: false };
+  private httpHooks: HttpHookRuntime | undefined;
   private matcherGuards: readonly HookRegistryEntry[] = [];
   private pluginRegistries = new Map<string, readonly HookRegistryEntry[]>();
   private generation = 0;
@@ -76,9 +78,13 @@ export class ScriptHookManager {
   }
 
   private executionOptions(options?: RunOneHookOptions): RunOneHookOptions {
-    return { ...options, ...(this.commandAuthorizer ? { authorizeCommand: this.commandAuthorizer } : {}) };
+    return { ...options, ...(this.httpHooks ? { httpHooks: this.httpHooks } : {}), ...(this.commandAuthorizer ? { authorizeCommand: this.commandAuthorizer } : {}) };
   }
 
+  setHttpHookRuntime(runtime: HttpHookRuntime): void {
+    this.httpHooks = runtime;
+    this.generation += 1;
+  }
 
   setHookPolicy(policy: { allowManagedHooksOnly: boolean; disableAllHooks: boolean }): void {
     if (this.hookPolicy.allowManagedHooksOnly === policy.allowManagedHooksOnly && this.hookPolicy.disableAllHooks === policy.disableAllHooks) return;
@@ -474,12 +480,14 @@ function toRunnable(entry: HookRegistryEntry): RunnableHook {
     id: entry.id,
     hookType: entry.event,
     command: entry.command,
+    ...(entry.handlerType ? { handlerType: entry.handlerType } : {}),
+    ...(entry.http ? { http: entry.http } : {}),
     ...(entry.validateTrust ? { validateTrust: entry.validateTrust } : {}),
     hookSource: entry.owner ? "plugin" : entry.hookSource ?? "user",
     ...(entry.env ? { env: entry.env } : {}),
     ...(entry.matcher !== undefined ? { matcher: entry.matcher } : {}),
     // For a config command, the forensic path is argv[0] (or the script arg).
-    hookPath: entry.command[0],
+    hookPath: entry.handlerType === "http" ? entry.id : entry.command[0],
     timeoutMs: entry.timeoutMs,
     // Config command identity hashes verbatim argv when no local script hash exists.
     source: "config",

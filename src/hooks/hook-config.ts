@@ -6,6 +6,7 @@ import {
 import { isRecord } from "../shared/is-record.js";
 import { HOOK_EVENT_TYPES, hookEventSupportsMatcher } from "./hook-contract.js";
 import { hookMatcherError } from "./hook-discovery.js";
+import { parseHttpHookDefinition, type HttpHookDefinition } from "./http-hook-runner.js";
 import type { HookSourceKind } from "./hook-source-policy.js";
 
 export interface HookConfigEntry {
@@ -20,6 +21,8 @@ export interface HookConfigEntry {
   configPath?: string;
   // Nonempty argv; argv[0] is the program.
   command: string[];
+  handlerType?: "http";
+  http?: HttpHookDefinition;
   hookSource?: HookSourceKind;
   validateTrust?: () => boolean;
   reviewedHash?: string;
@@ -153,7 +156,7 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
           errors.push(`hooks.json: ${id} handler is not an object — rejected`);
           return;
         }
-        if (handler.type !== "command") {
+        if (handler.type !== "command" && handler.type !== "http") {
           errors.push(
             `hooks.json: ${id} handler.type must be "command" (got ${JSON.stringify(
               handler.type,
@@ -162,7 +165,14 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
           return;
         }
 
-        const command = normalizeCommand(handler.command);
+        let http: HttpHookDefinition | undefined;
+        if (handler.type === "http") {
+          try { http = parseHttpHookDefinition(handler); } catch (error) {
+            errors.push(`hooks.json: ${id} ${(error as Error).message} — rejected`);
+            return;
+          }
+        }
+        const command = http ? [] : normalizeCommand(handler.command);
         if (!command) {
           errors.push(
             `hooks.json: ${id} handler.command must be a non-empty string or string[] — rejected`,
@@ -171,7 +181,7 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
         }
 
         // Binary-only commands lack a stable trust anchor and must be rejected.
-        if (classifyCommand(command) === "binary-only") {
+        if (!http && classifyCommand(command) === "binary-only") {
           errors.push(
             `hooks.json: ${id} command "${command.join(
               " ",
@@ -213,6 +223,7 @@ export function parseHookConfig(raw: unknown, options: { bundled?: boolean } = {
           ...(matcher !== undefined ? { matcher } : {}),
           ...(matcherError !== undefined ? { matcherError } : {}),
           command,
+          ...(http ? { handlerType: "http" as const, http } : {}),
           ...(env ? { env } : {}),
           timeoutMs,
           source: "config",

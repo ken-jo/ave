@@ -133,6 +133,7 @@ export interface ScriptHookStdout {
 }
 
 export interface ScriptHookInvocationResult {
+  handlerType?: "command" | "http";
   hookSource?: HookSourceKind | "plugin";
   hookPath: string;
   // Lifecycle results retain their event name for audit; tool-use results retain pre/post/perm.

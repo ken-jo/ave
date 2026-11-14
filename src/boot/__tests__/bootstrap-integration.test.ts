@@ -268,7 +268,8 @@ vi.mock("../steps/reviewer-wiring.js", () => ({
 
 vi.mock("../steps/hook-system-wiring.js", () => ({
   wireHookSystem: vi.fn(async () => ({
-    manager: { setPluginGenerationAccess: vi.fn() },
+    manager: { setPluginGenerationAccess: vi.fn(), setHttpHookRuntime: vi.fn() },
+    policy: { allowedHttpHookUrls: [], httpHookAllowedEnvVars: [] },
   })),
 }));
 

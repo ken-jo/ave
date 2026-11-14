@@ -208,10 +208,10 @@ describe("parseHookConfig — binary-only command rejected (decision c)", () => 
     expect(r.entries[0].command).toEqual(["python3", "~/.config/ave/hooks/p.py"]);
   });
 
-  it("rejects a non-command handler type", () => {
+  it("rejects an unsupported handler type", () => {
     const r = parseHookConfig({
       hooks: {
-        PreToolUse: [{ hooks: [{ type: "http", url: "https://x" }] }],
+        PreToolUse: [{ hooks: [{ type: "prompt", prompt: "Check the call" }] }],
       },
     });
     expect(r.entries).toHaveLength(0);
