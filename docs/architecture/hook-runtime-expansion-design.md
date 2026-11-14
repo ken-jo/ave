@@ -1,247 +1,153 @@
-# Hook Runtime Expansion — Design
+# Hook runtime expansion design
 
-> Status: **milestone-1 + milestone-2 IMPLEMENTED on `dev`** (2026-06-06) · Issue: #811 (previous tracker)
-> DONE + cluster-reviewed: command hooks (declarative `hooks.json` via TOFU trust),
-> the `^mcp_.*$` tool matcher, per-request MCP identity in hook stdin, and ALL §5
-> lifecycle events — 6 non-blocking observe-only (PostToolUseFailure, PermissionDenied,
-> SessionStart, Stop, PreCompact, PostCompact) + 1 blocking fail-closed
-> (UserPromptSubmit). GATED milestones remain design-only, tracked as issues:
-> HTTP hooks (§6.3 → #1235); context-altering MCP/prompt/agent hooks + input
-> mutation (§6.4/§6.5 → #1236) — each needs its security control (host allowlist /
-> hook signing) FIRST.
+Owner decision 2026-11-14: **exact-definition hash trust and administrator-only managed policy**. Hook signing is not required. This decision supersedes the earlier signing prerequisite in this document and covers issues #29, #33 and #34.
 
-Ave's external hook runtime is intentionally narrow: three shell-script events with a
-hash-locked, quarantine-by-default trust model. This document designs how to **expand
-compatibility** (generic command hooks, more lifecycle events, eventually HTTP / MCP /
-prompt / agent hooks) **without weakening that trust posture**. Every expansion is gated
-behind a phase that adds the security control it depends on first.
+The [product vision](../vision/README.md) owns positioning. The [user hook contract](../guides/user-hooks.md) owns configuration, public event names, JSON input/output and operational limits. The [permission decision tree](permission-decision-tree.md) owns authorization order; hook expansion must preserve it.
 
-The [user hook contract](../guides/user-hooks.md) owns the current public event names, per-event JSON input, accepted decision output, configuration location, and failure behavior. Internal `pre`/`post`/`perm` aliases remain stable. The tables below retain the original expansion rationale; the public contract includes the shipped session-end, notification, and subagent events.
+## 1. Baseline and sources of truth
 
----
+The existing runtime provides command hooks, legacy `pre-*.sh` / `post-*.sh` / `perm-*.sh`, declarative `hooks.json`, lifecycle events, a hash lockfile, quarantine, explicit trust enrollment and deny-precedence composition. This expansion reuses those mechanisms rather than introducing a second trust database.
 
-## 1. Current state (verified against code)
+| Responsibility | Owning code |
+| --- | --- |
+| Script discovery, hash diff and lockfile | `src/hooks/hook-discovery.ts` |
+| Config bytes and referenced-script hash | `src/hooks/hook-config-trust.ts` |
+| Quarantine, review and explicit enrollment | `src/hooks/hook-trust-prompt.ts`, `src/hooks/hook-trust-commands.ts` |
+| Configuration and normalized registry | `src/hooks/hook-config.ts`, `src/hooks/hook-registry.ts` |
+| Dispatch, output validation and cancellation | `src/hooks/script-hook-manager.ts`, `src/hooks/script-hook-runner.ts`, `src/hooks/hook-contract.ts` |
+| Target admission and permission decisions | `src/tools/`, [permission policy](permission-policy-design.md) |
 
-### 1.1 The three hook events
+The internal `post-turn-hook-chain` persists session state and remains separate from configurable hooks. Hook failures must not interrupt its persistence responsibilities.
 
-| Event | File pattern | Fire point (`file:line`) | Blocking semantics |
-|---|---|---|---|
-| `PreToolUse` | `pre-*.sh` | `src/tools/invocation-execution.ts:147` (step 4, after Layer-3 permission resolves, before execute) | **deny → tool blocked** |
-| `PostToolUse` | `post-*.sh` | `src/tools/invocation-execution.ts:498` (step 7, after execute; receives `toolOutput` + `isError`) | **informational only** (tool already ran) |
-| `PermissionRequest` | `perm-*.sh` | `src/tools/invocation-authorization.ts:427/465/814/931` (ask-path gates, before `approvalGate.requestAndWait()`) | **deny → ask+execute blocked** |
+## 2. Reference behavior and owner decision
 
-Discovery: `src/hooks/hook-discovery.ts` resolves `~/.config/ave/hooks/`, globs `pre-|post-|perm-` prefix + `.sh` suffix (`hookTypeFromName`, line 115), skips dotfiles and `.disabled/`, returns a sorted `DiscoveredHook[]` of `{ fileName, path, hookType, sha256, size }`.
+References were read on 2026-11-14. They establish the following precedents; Ave's contract below determines its own behavior.
 
-### 1.2 Trust / quarantine (the part we must preserve)
+| Reference | Relevant documented behavior |
+| --- | --- |
+| [Codex hooks](https://developers.openai.com/codex/hooks) | Review binds to the current definition hash; changed or new hooks wait for trust. `/hooks` exposes source, review and disable controls. Managed hooks are policy-trusted; `allow_managed_hooks_only` excludes other sources. Project hooks require a trusted project layer; user/system hooks remain independent. `additionalContextLimit` bounds model context. |
+| [Claude Code hooks](https://code.claude.com/docs/en/hooks) | Interactive settings hooks wait for workspace trust; headless/SDK settings hooks treat the folder as trusted. `allowManagedHooksOnly` and managed precedence protect administrator hooks from user `disableAllHooks`. `allowedHttpHookUrls` and `httpHookAllowedEnvVars` constrain HTTP hooks. Context strings have a 10,000-character cap and system-reminder framing. Pre-tool and permission hooks support `updatedInput`. |
+| [VS Code agent hooks](https://code.visualstudio.com/docs/agent-customization/hooks) | Its Local harness requires trusted workspaces and `chat.useHooks` for agent-scoped hooks. The current page distinguishes the shared runtime, which does not use that Local setting. |
 
-- **Hash lockfile** `~/.config/ave/hooks/.lockfile.json` (`LockfileShape`, `src/hooks/hook-discovery.ts:68`): `{ schemaVersion, updatedAt, hooks: { fileName, sha256, acceptedAt }[] }`. States: `new` / `changed` / `trusted` / `removed` via `diffAgainstLockfile` (line 202).
-- **Quarantine by default**: at boot `runHookTrustWorkflow` (`src/hooks/hook-trust-prompt.ts:81`) moves every `new`/`changed` hook to `.disabled/` (`disableHook`, `src/hooks/hook-discovery.ts:285`). **No renderer prompt in production** — strict-deny.
-- **TOFU enrollment**: `/permission hooks accept <name>` (`src/hooks/hook-trust-commands.ts:138`) restores from `.disabled/` and records the current sha256. Per CLAUDE.md §Permission Policy this dispatches only for `trustOrigin === "user-keyboard"`.
-- **Quarantine audit**: `emitHookQuarantineAudit` (`src/boot/steps/hook-system-wiring.ts:80`) → `kind: "hook.quarantined"` + `appendPermissionAuditEntry`.
+These references do not specify cryptographic hook signing as the trust requirement. The owner's selected controls are explicit review of exact hashes and an administrator-controlled managed-only policy. Ave does not add a signature format, key distribution or signing store.
 
-### 1.3 Execution model
+## 3. Goals and non-goals
 
-- **Runner**: `src/hooks/script-hook-runner.ts:runOneHookScript`. Input = newline-terminated JSON on **stdin**, adding the public `HookJsonInput` envelope to the legacy payload. Exit-0 output accepts the legacy `{action, reason}` or the documented structured decision forms; empty stdout is a successful no-op.
-- **Timeout**: `DEFAULT_HOOK_TIMEOUT_MS = 5_000` (`src/hooks/script-hook-types.ts`) — **separate** from `TOOL_TIMEOUT_POLICY`'s 120 s global ceiling. Enforced via `SIGKILL` of the detached process group.
-- **Env allowlist**: `buildSafeChildEnv` (`src/tools/safe-env.ts`) forwards only a generic non-secret allowlist (`FORWARD_ENV_KEYS`: `PATH`, `HOME`, `USER`, `USERNAME`, `LANG`, `LC_*`, `TZ`, …) plus the three injected `AVE_HOOK_TYPE` / `AVE_HOOK_TOOL_NAME` / `AVE_HOOK_TRUST_ORIGIN` vars. Everything else — `AVE_*`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_*`, `AWS_*`, `GITHUB_TOKEN`, future provider secrets — is stripped.
-- **Fail-closed**: non-zero exit, timeout, spawn error, or malformed stdout → **deny**.
-- **Command admission**: trusted user commands pass the existing shell permission manager and approval gate. On macOS/Linux an active OS sandbox wraps them with sensitive-path floors and the hook cwd write scope; wrapper failure never falls back to unconfined execution. Windows user commands retain the shell policy's exact host-approval limitation. Plugin-bundled hooks retain their existing confinement policy.
-- **Composition**: deny precedence — a hook may downgrade an upstream `allow` to `deny`, never upgrade `deny` to `allow`. **No `modify`/`updatedInput` action exists in v1** (deferred pending signing).
-- **DLP**: `input` strings are DLP-redacted at the caller (`src/hooks/script-hook-manager.ts`) before dispatch.
+Goals:
 
-### 1.4 What `src/hooks/post-turn-hook-chain.ts` is (and is NOT)
+- Preserve legacy command hooks, lifecycle event names, deny precedence, DLP and command sandbox admission.
+- Review every non-managed definition against its current hash. New and changed definitions are quarantined and skipped until explicitly trusted.
+- Show source, current hash, trust state and trust/disable controls in the review surface.
+- Load project hooks only for a trusted project; user and system sources are independent.
+- Enforce administrator `allowManagedHooksOnly`; user settings cannot disable managed hooks.
+- Add HTTP handlers only with explicit egress policy, bounded payloads, cancellation and safe target audit.
+- Attribute bounded additional context and reclassify every mutated input through the complete permission decision.
 
-`PostTurnHookChain` is an **internal, hardcoded** pipeline (checkpoint → saveSession → extractMemory → title → audit → idle-poke) that runs after `queryLoop` resolves. It is **not** a user-script hook surface. The new `Stop` / `PostCompact` lifecycle events (below) are conceptually adjacent but are a **distinct, user-facing** surface — the design keeps them separate and never lets a user hook block the internal persistence chain.
+Non-goals:
 
-### 1.5 Audit shape today
+- Cryptographic signing or a second trust store.
+- Hook permission grants, bypassing target approval, or reordering existing permission nodes.
+- Replacing internal persistence hooks or exposing secrets in logs, audit or model context.
+- Treating a handler type as supported before its invocation, cancellation and audit contracts exist; [§10](#10-deferred-handler-types) records the remaining handler decisions.
 
-`src/audit/audit-schema.ts:HookResult = { hookName, hookType: "pre"|"post"|"perm", action, reason, durationMs }`, carried in `AuditAllow/Ask/Deny.hookChain[]`. This shape is **too narrow** for the expansion (no event surface beyond the 3, no handler type, no command identity, no matcher) — §7 extends it.
+## 4. Registry and configuration
 
----
+### 4.1 Normalization
 
-## 2. Capability ladder (condensed)
+Legacy files and declarative handlers share one registry. Keep the configuration source separate from handler type and runtime activation identity. A config-controlled label cannot grant managed status. Plugin definitions retain their exact reviewed version/fingerprint and generation leases.
 
-Ave today accepts `.sh` handlers only, on no events beyond tool-use, guarded by
-a hash lockfile, quarantine, strict-deny, fail-closed defaults, and an env
-allowlist. The surrounding ecosystem spans a capability ladder:
+### 4.2 Declarative handlers
 
-| Rung | Handler types | Events beyond tool-use | Security controls it demands |
-|---|---|---|---|
-| **Ave (today)** | `.sh` only | none | hash lockfile, quarantine, strict-deny, fail-closed, env allowlist |
-| generic command | config-declared `type: "command"` | config-driven | reviewable config, managed hook policy |
-| in-process plugin | JS/TS plugin hooks | plugin lifecycle | plugin trust + load policy |
-| out-of-process | HTTP, MCP-tool, prompt, agent | session/prompt/stop/compact lifecycle | managed-only mode, URL/env allowlists, timeouts |
-| delegated | none of its own | — | inherited from the integrated agent |
+The public schema remains event groups containing matchers and handlers. `command` uses argv, optional `timeoutMs` and the existing local-script trust anchor. `http` uses a URL, restricted method, optional header templates and a bounded timeout. Unsupported types fail clearly; they never degrade into a command or an ungoverned network request.
 
-**Takeaway**: the highest-value, lowest-risk increment is **generic `command` hooks + a richer lifecycle event surface** — same process model we already have, more declarative and more events. HTTP / MCP / prompt / agent hooks move execution or context off-process and so carry exfiltration and context-manipulation risk; they must wait for the controls in §6.3–§6.4.
+Unknown events never activate. Matchers use the existing bounded parser and the event-specific subjects documented in the [public contract](../guides/user-hooks.md#configuration); this expansion does not change matcher semantics.
 
----
+### 4.3 Ordering and compatibility
 
-## 3. Goals / non-goals
+Sources run in this order: managed, user, system, plugin registries in their existing activation order, then the current trusted project's hooks. Within each source, legacy files keep filename order and declarative handlers keep file order. Denial wins and stops the chain. An allow is only a hook's lack of objection, never target-tool authority. Source composition cannot alter permission-stage ordering.
 
-**Goals**
-- Backward-compatible: existing `pre-*.sh` / `post-*.sh` / `perm-*.sh` keep working unchanged as the v1 compatibility layer.
-- A single internal **hook registry** that can represent both legacy `.sh` files and new generic command hooks.
-- Generic `command` hooks (Python / Node / shell / binary) with explicit `event` + `matcher` + `timeoutMs`.
-- A broader, well-defined **lifecycle event surface** mapped to concrete fire points.
-- Preserve strict trust: hash-trust, quarantine-by-default, fail-closed, env allowlist, user-keyboard-only enrollment, trust-review visibility.
+## 5. Event placement
 
-**Non-goals (this phase)**
-- Input mutation (`updatedInput` / `modify`) — deferred until hook signing or managed policy exists (§6.5).
-- HTTP / MCP-tool / prompt / agent hooks — later gated milestones, behind new controls.
-- Replacing the internal `post-turn-hook-chain`.
+The [public event table](../guides/user-hooks.md#events) owns event input and failure semantics. `PreToolUse` remains in admission before target permission checks. `PermissionRequest` remains on the existing ask paths before a card. `PostToolUse` cannot undo completed effects. Observe-only lifecycle events retain their control-flow semantics; stop continuation retains its existing bound.
 
----
-
-## 4. Hook registry + config schema
-
-### 4.1 Unified internal registry
-
-Introduce an internal `HookRegistry` that merges two sources into one normalized list:
-
-1. **Legacy** `.sh` files (discovered exactly as today) → synthesized registry entries with `handler.type = "command"`, `handler.command = <abs .sh path>`, `event` derived from the `pre-|post-|perm-` prefix, `matcher = "*"`.
-2. **Declarative** entries from `~/.config/ave/hooks/hooks.json` (new).
-
-Normalization means every downstream consumer (trust diff, runner, audit, trust-review UI) sees one entry shape regardless of origin.
-
-### 4.2 Declarative config (`hooks.json`)
-
-```jsonc
-{
-  "version": 1,
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "^mcp_.*$",                  // regex over toolName; "*" = all
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.config/ave/hooks/pre_tool_policy.py",
-            "timeoutMs": 5000                       // clamped to the hook ceiling, §6.2
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-- `event` keys are the closed set in §5. Unknown events → entry ignored + warn-audited (fail-closed, never silently active).
-- `matcher` shares the legacy script matcher: exact names separated by `|` or `,` when the pattern contains only letters, digits, `_`, `-`, spaces and those separators; otherwise an unanchored JavaScript regular expression. Empty/`*` matches all. Regexes compile once per registry build and run as written without a complexity bound. Invalid regexes refuse loading and appear with their reason in `/permission hooks list`. Tool events match `toolName`, compaction events match `trigger` (`manual`/`auto`), subagent events match agent type, SessionEnd matches its reason, and UserPromptSubmit matches input text. SessionStart, Notification and Stop retain session-ID matching. See the [public contract](../guides/user-hooks.md) for migration examples and compatibility differences.
-- Each `handler` declares `type` (initially only `"command"`), `command` (argv string), and optional `timeoutMs`.
-- **Trust identity** of a `command` handler = the sha256 of the resolved local script/executable when the command resolves to a local file (see §6.1); plus the verbatim `command` string. Both are shown in the trust-review UI and recorded in the lockfile.
-
-### 4.3 Backward compatibility
-
-- If `hooks.json` is absent, behavior is byte-identical to today.
-- A legacy `.sh` and a declarative entry can coexist; ordering is: legacy `.sh` (alphabetical) then declarative (file order), with deny-precedence composition unchanged.
-
----
-
-## 5. Lifecycle event surface
-
-Each proposed event below has a **verified existing fire point**. `Blocking` states whether a `deny` can stop the flow (and therefore whether the event is fail-closed).
-
-| Event | Fire point (`file:line`) | Subject for `matcher` | Blocking | Context payload (additions to base) |
-|---|---|---|---|---|
-| `PreToolUse` *(existing)* | `src/tools/invocation-execution.ts:147` | `toolName` | **yes** | `input`, `source`, `category` |
-| `PostToolUse` *(existing)* | `src/tools/invocation-execution.ts:498` | `toolName` | no | `toolOutput`, `isError` |
-| `PermissionRequest` *(existing)* | `src/tools/invocation-authorization.ts:427/465/814/931` | `toolName` | **yes** | `input`, permission verdict |
-| `PostToolUseFailure` | `src/tools/invocation-execution.ts:520` (execute returned `isError`) | `toolName` | no | `errorMessage`, `durationMs` |
-| `PermissionDenied` | `src/tools/pipeline/audit-writer.ts:191` (all denied terminal audits) | `toolName` | no (observe) | `denyReason { source, reason? }` |
-| `UserPromptSubmit` | `src/engine/turn/run-turn.ts:183` (after classify/route, before `queryLoop`) | input text | **yes** (deny → turn refused) | `inputText`*, `inputOrigin`, `route`, `classification` |
-| `SessionStart` | `src/engine/turn/run-turn.ts:169` (`runTurn` entry) | sessionId | no | `sessionMeta` (routine scope / persona) |
-| `Stop` | `src/engine/turn/run-turn.ts:430` (`runTurn` finally, before post-turn chain) | sessionId | no | `stopReason`, `toolCount`, `durationMs` |
-| `PreCompact` | `src/engine/turn/compaction.ts:81/442` (manual/automatic paths) | trigger (`manual`/`auto`) | no | `reason` (`auto-compact`/`manual`), `trigger`, `tokenEstimate` |
-| `PostCompact` | `src/engine/turn/compaction.ts:118/488` (manual/automatic paths) | trigger (`manual`/`auto`) | no | `trigger`, `messagesBefore/After`, `tokensBefore/After` |
-
-\* `UserPromptSubmit` `inputText` and any tool `input` are **DLP-redacted** before dispatch (§6.6). `UserPromptSubmit` is the only **new** blocking event; it must inherit the same fail-closed semantics as `PreToolUse`.
-
-**Design rules for new events**
-- Blocking events (`UserPromptSubmit`) are fail-closed: timeout/error/malformed → deny.
-- Non-blocking events never affect control flow; their `deny` is recorded as a policy signal in audit only (mirrors `PostToolUse`).
-- Lifecycle events fire **after** trust resolution; quarantined hooks never fire.
-- No event passes secrets in env or payload; the env allowlist (§6.2) is unchanged.
-
----
+Hook commands independently pass shell admission, approval and sandbox preparation. Trusting a definition is not approval of every effect it may perform.
 
 ## 6. Security model
 
-### 6.1 Trust for `command` handlers
-- When `command`'s argv[0]/script path resolves to a **local file**, its sha256 is the trust identity (same lockfile mechanism as `.sh`). A changed script → `changed` → re-quarantined.
-- When it resolves to a **PATH binary** (e.g. `python3`), trust is keyed on the **verbatim command string** plus the sha256 of any local script argument it references. A pure-binary command with no local script (e.g. `curl ...`) is treated as **higher-risk** and is **not permitted in the command-hooks milestone** (it has no stable local hash to anchor trust) — such commands wait for managed/signed policy.
-- All new/changed hooks (legacy or declarative) are quarantined by default; enrollment is user-keyboard-only via `/permission hooks accept <name>`.
+### 6.1 Exact hash trust and managed policy
 
-### 6.2 Timeouts & environment
-- Per-handler `timeoutMs` is clamped to the hook ceiling `DEFAULT_HOOK_TIMEOUT_MS` (the one SOT; `hook-config.ts` decision (d)). Hooks remain on their **own** budget, independent of `TOOL_TIMEOUT_POLICY`. Document both ceilings so they don't drift.
-- Env allowlist is unchanged and extended only with event-specific non-secret vars (`AVE_HOOK_EVENT`, `AVE_HOOK_MATCHER`). Secrets never pass through.
+For every non-managed source, discovery hashes the current definition and its supported referenced script anchors. Local path argv tokens resolve against the config directory and bind to absolute paths for hashing and execution; an invocation cwd cannot substitute another script. The existing `.lockfile.json` records accepted hashes; `.disabled/` and disable-cause records retain quarantine and explicit-disable state. A definition or anchor change invalidates prior review. New, changed, trusted, disabled and removed states remain distinguishable.
 
-### 6.3 HTTP hooks (gated milestone)
-- Not allowed until a URL/host allowlist + method + body-size + timeout + redirect policy exists. HTTP hooks are an **exfiltration surface**; the design requires an explicit allowlist (no wildcard hosts) and audit of every request target before they ship.
+Explicit enrollment accepts the exact reviewed hash. A stale review cannot trust newly changed content. User actions cannot enroll hooks through model output, plugin-origin text or another privileged command path. After asynchronous approval, the runtime synchronously rechecks the current hash immediately before command spawn or HTTP send and refuses a mismatch. This does not pin an immutable file object: a same-principal process can still replace a file between the final content read and OS spawn. The runtime retains the reviewed execution path rather than relocating a snapshot.
 
-### 6.4 MCP-tool / prompt / agent hooks (gated milestone)
-- These can **alter model context or decisions**, so they ship only after (a) signed or managed-only hook policy and (b) **model-visible audit** (the model/user can see that a hook influenced context). Until then they are out of scope.
+Project trust is a separate prerequisite from definition trust: accepting one hook does not grant project-wide trust, and trusting a project does not silently accept its hooks. User/system hooks do not inherit the project's status.
 
-### 6.5 No input mutation until signing
-- v1 keeps `action ∈ { allow, deny }`. `updatedInput`/`modify` is withheld until hook signing or managed policy — a mutating hook is a far larger trust delegation than a deny-only gate.
+Only the administrator policy source can set `allowManagedHooksOnly` or supply managed hooks. With that policy enabled, user, system, project and plugin hooks are excluded. Managed hooks are trusted by policy and expose no user disable control. A user-level disable-all affects non-managed hooks only. An absent administrator policy leaves ordinary reviewed hooks available with no HTTP exceptions. An unreadable or malformed administrator policy excludes non-managed hooks and supplies no runnable managed hooks or network exceptions.
 
-### 6.6 DLP & trustOrigin
-- Every payload string that could carry user/secret data (`input`, `toolOutput`, `inputText`) is DLP-redacted at the caller before dispatch, exactly as today.
-- `trustOrigin` is propagated into every event payload; non-user-origin inputs can never enroll or mutate hooks.
+### 6.2 Timeouts and environment
 
----
+Use existing timeout-policy constants and cancellation primitives. A configured timeout can lower its ceiling, not raise it. Cancellation reaches underlying processes or network operations; a late result cannot start an effect. Command environment filtering and existing sandbox behavior remain authoritative.
 
-## 7. Audit schema extension
+Secrets from environment variables or header interpolation must not enter diagnostics, trust summaries, audit fields or model-visible context. HTTP header templates expose only explicitly allowed variable names, never an unrestricted process environment.
 
-Replace the narrow `HookResult` with a forward-compatible record (old rows remain readable — new fields optional):
+### 6.3 HTTP hooks
 
-```ts
-interface HookExecutionAudit {
-  hookName: string;
-  event: HookEvent;              // closed set from §5 (was: hookType pre|post|perm)
-  matcher: string;               // the configured matcher
-  handlerType: "command";        // "http" | "mcp" | "prompt" | "agent" in later phases
-  commandIdentity: string;       // resolved script sha256, or hash(command string)
-  decision: "allow" | "deny" | "observe";   // "observe" for non-blocking events
-  reason: string;
-  durationMs: number;
-  failureReason?: "timeout" | "nonzero-exit" | "spawn-error" | "bad-output";
-}
-```
+HTTP execution requires every control below:
 
-Audit must capture, per the acceptance criteria: **event, matcher, handler type, command identity, decision, duration, and failure reason**. `hookType: pre|post|perm` is retained as a derived alias for back-compat readers.
+1. Administrator `allowedHttpHookUrls`: exact full URLs or bare exact hostnames with an optional port. An absent or empty list permits no requests. Bare hosts do not include subdomains. Reject wildcards, URL credentials and unsupported schemes; match parsed targets rather than substring text.
+2. POST only, a 64 KiB UTF-8 request-body cap and the runner's response/output cap. Validate serialized bytes before egress; reject an oversized response before parsing a truncated decision.
+3. The existing timeout ceiling with cancellation through the request's abort controller.
+4. Redirect refusal. A redirect is never followed under authority granted to its original target.
+5. Administrator `httpHookAllowedEnvVars` restricts `$VAR` and `${VAR}` header interpolation. Missing or disallowed variables and invalid header/control-character values refuse the request.
+6. A `hook_http_request` audit record for every attempted request target before egress, containing hook identity, URL origin, `routeDigest`, method and outcome. `routeDigest` is the SHA-256 of pathname plus query; raw paths can contain webhook credentials and must not be logged. Exclude raw path/query/fragment, header values, body content and environment values.
+7. Egress through the host network chokepoint. There is no direct-fetch fallback when its transport or policy is unavailable.
 
----
+These restrictions also apply to managed handlers. Trust and managed status do not grant network authority. Scrub configured/interpolated header values and their constituent environment values from returned strings before decision parsing, diagnostics or influence audit; response feedback cannot echo those credentials into logs or model context.
 
-## 8. Rollout milestones
+### 6.4 Context and model-visible audit
 
-Each milestone is gated on the security control it depends on; names are
-behavior-based, not sequence numbers.
+A trusted or managed hook may return `additionalContext` on known events. Truncate text to 10,000 UTF-16 code units, escape wrapper delimiters and attach host-owned hook/event attribution. During an active turn or tool invocation, the model and user see that the text came from a hook. An out-of-turn event such as session end remains observation-only and does not queue context for a later session. Hook context is data, not a user-keyboard command or a new source of permission authority.
 
-| Milestone | Delivers | Gate (must exist first) |
-|---|---|---|
-| **Command hooks** | `hooks.json` + unified registry + generic `command` hooks for the existing 3 events; trust-review UI shows command/source/event/matcher/timeout; audit extension (§7) | none (builds on current trust model) |
-| **Lifecycle events** | `SessionStart`, `UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact`, `PostToolUseFailure`, `PermissionDenied` at the §5 fire points | command-hooks registry + audit |
-| **HTTP hooks** | HTTP handler type | URL/host allowlist + method/body/timeout/redirect policy (§6.3) |
-| **Remote & context hooks** | MCP-tool / prompt / agent handler types | signed/managed policy + model-visible audit (§6.4) |
+Context delivery must reach the next relevant model request; retaining a value only in an internal result object is insufficient. Audit the producing hook, event, bounded length and influence, without copying secrets into logs. Preserve existing DLP handling before dispatch and before delivery where appropriate.
 
-### Acceptance criteria → design mapping (command-hooks milestone)
-- *Documented command-hook schema* → §4.2.
-- *`.sh` backward compatibility* → §4.1 (legacy synthesized into the registry), §4.3.
-- *Run Python/Node/shell/binary* → §4.2 `command` argv; §6.1 trust constraint for binary-only commands.
-- *New/changed hooks visible in trust review, cannot silently run* → §6.1 quarantine-by-default + trust-review fields.
-- *Audit records event/matcher/handler/command identity/decision/duration/failure* → §7.
-- *Unit tests: discovery, trust diff, command execution, timeout, invalid output, deny precedence, `.sh` back-compat* → test plan §9.
+Prompt, agent and MCP-tool handler types require the same exact hash trust, source policy and attributed context audit. Those controls alone do not define provider selection, child-session authority or MCP call identity. Their supported/deferred status must name the missing runtime contracts rather than revive signing as a prerequisite.
 
-## 9. Test plan (command-hooks milestone)
-- **Discovery/normalization**: `.sh` + `hooks.json` merge into one registry; unknown event ignored+warned; invalid matcher regexes reject loading. Compile once per registry build; the user-authored regex runs as written, without a complexity bound.
-- **Trust diff**: new/changed `command` script quarantined; `/permission hooks accept` restores; binary-only command rejected up front.
-- **Execution**: command runs Python/Node/shell; stdin payload shape; stdout `allow`/`deny`; non-zero exit / timeout / malformed → deny; env allowlist enforced (secret vars absent).
-- **Composition**: deny precedence across legacy + declarative; cannot upgrade deny→allow.
-- **Back-compat**: with no `hooks.json`, behavior byte-identical to today.
+### 6.5 Input mutation and permission re-entry
 
-## 10. Open decisions
-1. **`hooks.json` trust unit**: per-file (whole config) vs per-entry hashing. Per-entry is finer-grained for trust review but more lockfile churn. *Recommendation: hash the whole `hooks.json` as one trust unit (mirrors a single `.sh` file) plus the sha256 of each referenced local script.*
-2. **`UserPromptSubmit` blocking**: should a deny refuse the turn outright, or strip/annotate the prompt? *Recommendation: deny = refuse turn (fail-closed); annotation requires the deferred `modify` capability.*
-3. **Hook ceiling vs tool ceiling**: keep the 5 s hook budget, or a separate raised ceiling for command hooks that shell out to interpreters? *Recommendation: keep 5 s default; add an explicit per-handler `timeoutMs` clamped to `DEFAULT_HOOK_TIMEOUT_MS`, the documented ceiling SOT.*
-4. **Managed policy**: do enterprise deployments get a managed `hooks.json` (admin-pushed, non-removable) analogous to admin-policy plugins? Likely yes in a later phase; out of scope here.
+`updatedInput` and legacy `action: "modify"` are limited to `PreToolUse` and `PermissionRequest` from trusted or managed definitions. The replacement is a validated input object; a denial takes precedence over a mutation. An invalid replacement fails closed.
+
+A changed input re-enters complete invocation preparation and authorization: validate the envelope, derive actual tool/path/effect facts, apply admission and deny rules, forced floors, remembered/rule decisions, classification, mode/reviewer and human approval in their existing order. Discard the earlier input's approval and classification. Approval of a harmless original input cannot authorize a dangerous replacement.
+
+Allow at most three changed-input restarts so hooks cannot mutate forever; further mutation denies. Do not rerun completed effects or replay a sealed resumption or authorization-lifecycle operation that cannot safely re-enter. A late permission hook after target-handler entry also denies a replacement because earlier handler effects cannot safely replay. Such paths deny rather than borrowing earlier authority. An unchanged replacement does not create a restart loop.
+
+The only permission-tree delta is a mutation restart edge to the existing input-validation/admission entry. Context annotation adds no authorization node. The [decision-tree document](permission-decision-tree.md) contains the exact graph change; the PR must reproduce its Mermaid diff. Any need to reorder existing nodes requires a new owner decision.
+
+### 6.6 DLP and input provenance
+
+Existing dispatch redaction and trusted-origin propagation remain in force. Nested inputs retain their caller-owned DLP responsibility unless explicitly changed at their boundary. Hook output never becomes local keyboard provenance and cannot invoke privileged slash commands. Remote users retain the existing authenticated/session-bound checks.
+
+## 7. Audit
+
+Keep existing audit rows readable. Record hook identity, source, event, handler type, matcher, trusted hash, decision, duration and failure reason when applicable. HTTP requests additionally record origin and route digest before egress, never a raw webhook route. Context and mutation records identify that a hook influenced model context or tool input. Do not log raw headers, environment values, request bodies or secret-bearing replacements.
+
+## 8. Delivery boundaries
+
+Trust review, administrator policy, HTTP execution and context/mutation are separate changes within one topic PR. Shared schemas, producers, validators, consumers, fixtures and tests move together. No plugin-specific host branch is permitted. Public documentation describes shipped behavior and names any unsupported handler precisely.
+
+## 9. Validation
+
+Cover new/changed/trusted/managed/disabled states, stale-review rejection, project gating and source independence; managed-only override and user disable-all; HTTP wildcard/target/method/redirect/body/response/timeout/env cases; context cap/framing/attribution; mutation reclassification, deny rules, changed paths, stale approval and restart limits.
+
+Run focused unit/integration tests, typecheck, unused-code and lint checks. IPC/preload/settings changes also require i18n, packaging-discipline and script lock suites. The trust review flow requires the background UI E2E and screenshot/trace evidence. Validation gaps remain explicit in the PR.
+
+## 10. Deferred handler types
+
+The parser accepts `command` and `http`. It rejects the types below explicitly. The earlier design named them as possible capabilities but defined no invocation schema; hash trust and managed policy resolve their trust prerequisite, not their execution contract.
+
+| Type | Missing contract required before implementation |
+| --- | --- |
+| `prompt` | Provider/model selection, prompt template and validated result schema, inference budget and cancellation. A context output field alone does not define a model invocation. |
+| `agent` | Child-session identity and provenance, independent permission context, tool/round budget, cancellation and recursive-hook suppression. Reusing the current turn would mix authority and permit hook recursion. |
+| MCP-tool | Exact reviewed server/tool binding, argument/result schema, normal executor admission and approval context, request cancellation and recursion handling. A network hook cannot stand in for an authorized MCP tool call. |
+
+Each future type must use the same reviewed hash or managed source policy, attributed influence audit and unchanged permission order. No signature prerequisite remains.
