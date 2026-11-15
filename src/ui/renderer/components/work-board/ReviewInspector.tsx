@@ -26,17 +26,9 @@ export function ReviewInspector({ item, api, onChanged, onClose, onOpenDetail }:
     setBusy(true);
     setError(null);
     try {
-      // A changed run must be read again before the user completes its result.
-      const latest = await api.getWorkBoardItem(item.id);
-      if (!("status" in latest) || latest.status !== "found" || latest.item.runId !== item.runId
-        || latest.item.output !== item.output || latest.item.updated_at !== item.updated_at
-        || workBoardReviewKind(latest.item) !== "result") {
-        setError(t("workBoard.reviewChanged"));
-        return;
-      }
-      const result = await api.completeWorkBoardItem(item.id);
+      const result = await api.completeWorkBoardItem(item.id, item.mutationRevision);
       if ("status" in result && result.status === "completed") onChanged();
-      else setError(t("workBoard.errorSaveFailed"));
+      else setError(t("reason" in result && result.reason === "work-item-changed" ? "workBoard.reviewChanged" : "workBoard.errorSaveFailed"));
     } catch {
       setError(t("workBoard.errorSaveFailed"));
     } finally {

@@ -27,21 +27,14 @@ export function BoardMoveDialog({ item, target, api, onClose, onChanged }: {
     setBusy(true);
     setError(null);
     try {
-      const latest = await api.getWorkBoardItem(item.id);
-      if (!("status" in latest) || latest.status !== "found" || latest.item.updated_at !== item.updated_at
-        || latest.item.runId !== item.runId || latest.item.runStatus !== item.runStatus
-        || workBoardStage(latest.item) !== source || workBoardMoveRefusal(latest.item, destination)) {
-        setError(t("workBoard.reviewChanged"));
-        return;
-      }
-      const result = destination === "review" ? await api.reopenWorkBoardItem(item.id)
-        : destination === "completed" ? await api.completeWorkBoardItem(item.id)
-        : item.status === "completed" && destination === "in_progress" ? await api.reopenWorkBoardItem(item.id)
-        : await api.transitionWorkBoardItem(item.id, destination);
+      const result = destination === "review" ? await api.reopenWorkBoardItem(item.id, item.mutationRevision)
+        : destination === "completed" ? await api.completeWorkBoardItem(item.id, item.mutationRevision)
+        : item.status === "completed" && destination === "in_progress" ? await api.reopenWorkBoardItem(item.id, item.mutationRevision)
+        : await api.transitionWorkBoardItem(item.id, destination, item.mutationRevision);
       if ("status" in result && ["transitioned", "completed", "reopened"].includes(result.status)) {
         onChanged();
         onClose();
-      } else setError(t("workBoard.moveFailed"));
+      } else setError(t("reason" in result && result.reason === "work-item-changed" ? "workBoard.reviewChanged" : "workBoard.moveFailed"));
     } catch { setError(t("workBoard.moveFailed")); }
     finally { setBusy(false); }
   };

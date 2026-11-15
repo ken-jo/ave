@@ -6,6 +6,7 @@ import { configureHostResources } from "../../../main/host-resources.js";
 import { WORK_BOARD } from "../../../shared/ipc-channels.js";
 import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
+import { WorkBoardStore } from "../../../main/work-board-store.js";
 import type { WorkItemResolved } from "../../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME } from "../../gated.js";
@@ -212,5 +213,27 @@ describe("work-board project authorization", () => {
       reason: "project root is not authorized",
     });
     expect(store.create).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("conditional board mutations", () => {
+  it("passes the shown revision through the authorized handler to the real store", async () => {
+    const store = new WorkBoardStore(join(root, "board.json"));
+    const created = await store.create({ title: "Export notes", projectRoot: workspace });
+    if (created.status !== "created") throw new Error("Create failed");
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    await store.beginRun(created.itemId, "new-run", new Date().toISOString());
+    await expect(registeredHandler(WORK_BOARD.complete)({}, created.itemId, created.item.mutationRevision)).resolves.toMatchObject({ status: "invalid", reason: "work-item-changed" });
+    await expect(registeredHandler(WORK_BOARD.transition)({}, created.itemId, "completed", created.item.mutationRevision)).resolves.toMatchObject({ status: "invalid", reason: "work-item-changed" });
+  });
+  it("refuses absent or malformed revisions at the renderer boundary", async () => {
+    const store = new WorkBoardStore(join(root, "board.json"));
+    const created = await store.create({ title: "Export notes", projectRoot: workspace });
+    if (created.status !== "created") throw new Error("Create failed");
+    registerWorkBoardHandlers({ workBoardStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => null, getAppWindows: () => [] } as unknown as IpcDeps);
+    for (const revision of [undefined, "unknown", 3]) {
+      await expect(registeredHandler(WORK_BOARD.complete)({}, created.itemId, revision)).resolves.toMatchObject({ status: "invalid", reason: "work-item-changed" });
+    }
   });
 });

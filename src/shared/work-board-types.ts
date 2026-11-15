@@ -111,6 +111,8 @@ export type WorkPlanDecideIpcResult =
   | { ok: false; reason: WorkPlanDecideRefusal | "user-gesture-required" | "invalid-input" };
 
 export interface WorkItemResolved extends WorkItem {
+  /** Host-issued snapshot revision for conditional lifecycle mutations; never persisted. */
+  mutationRevision?: string;
   status_resolved: WorkItemStatusResolved;
   /** Present with a pending plan approval: the item changed after the plan was made, so approve is refused (plan_stale). Judged in main. */
   planStale?: boolean;

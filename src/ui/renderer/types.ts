@@ -999,18 +999,21 @@ export type AvePreloadApi = {
   transitionWorkBoardItem: (
     id: number,
     to: import("../../shared/work-board-types.js").WorkItemStatusStored,
+    expectedRevision?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemTransitionResult
     | { ok: false; error: string }
   >;
   completeWorkBoardItem: (
     id: number,
+    expectedRevision?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemCompleteResult
     | { ok: false; error: string }
   >;
   reopenWorkBoardItem: (
     id: number,
+    expectedRevision?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemReopenResult
     | { ok: false; error: string }

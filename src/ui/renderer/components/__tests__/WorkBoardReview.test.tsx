@@ -7,7 +7,7 @@ import { WorkBoardPanel } from "../WorkBoardPanel.js";
 import type { AveApi } from "../../types.js";
 import type { WorkItemResolved } from "../../../../shared/work-board-types.js";
 
-const result: WorkItemResolved = { id: 2, title: "Export journal", status: "in_progress", status_resolved: "overdue", priority: "high", runStatus: "completed", output: "Export finished with 3 files", runId: "run-2", created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-02T00:00:00Z" };
+const result: WorkItemResolved = { id: 2, title: "Export journal", status: "in_progress", status_resolved: "overdue", mutationRevision: "a".repeat(64), priority: "high", runStatus: "completed", output: "Export finished with 3 files", runId: "run-2", created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-02T00:00:00Z" };
 function apiFor(items: WorkItemResolved[]) {
   const noop = () => () => {};
   return {
@@ -38,16 +38,16 @@ describe("work board review", () => {
     render(withApprovalSurface(<WorkBoardPanel api={api} />));
     fireEvent.click(await screen.findByTestId("work-board-card"));
     fireEvent.click(await screen.findByTestId("work-board-review-complete"));
-    await waitFor(() => expect(api.completeWorkBoardItem).toHaveBeenCalledWith(result.id));
+    await waitFor(() => expect(api.completeWorkBoardItem).toHaveBeenCalledWith(result.id, result.mutationRevision));
   });
   it("refuses a result that changed after selection", async () => {
     const api = apiFor([result]);
-    vi.mocked(api.getWorkBoardItem).mockResolvedValue({ status: "found", itemId: result.id, item: { ...result, output: "Changed" } });
+    vi.mocked(api.completeWorkBoardItem).mockResolvedValue({ status: "invalid", itemId: result.id, reason: "work-item-changed" });
     render(withApprovalSurface(<WorkBoardPanel api={api} />));
     fireEvent.click(await screen.findByTestId("work-board-card"));
     fireEvent.click(await screen.findByTestId("work-board-review-complete"));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("검토"));
-    expect(api.completeWorkBoardItem).not.toHaveBeenCalled();
+    expect(api.completeWorkBoardItem).toHaveBeenCalledWith(result.id, result.mutationRevision);
   });
   it("retains the result and shows a failed save", async () => {
     const api = apiFor([result]);

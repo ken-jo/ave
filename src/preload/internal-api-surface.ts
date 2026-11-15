@@ -976,18 +976,18 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").WorkItemUpdateResult
       | { ok: false; error: string }
     >,
-  transitionWorkBoardItem: async (id: number, to: import("../shared/work-board-types.js").WorkItemStatusStored) =>
-    ipcRenderer.invoke(WORK_BOARD.transition, id, to) as Promise<
+  transitionWorkBoardItem: async (id: number, to: import("../shared/work-board-types.js").WorkItemStatusStored, expectedRevision?: string) =>
+    ipcRenderer.invoke(WORK_BOARD.transition, id, to, expectedRevision) as Promise<
       | import("../shared/work-board-types.js").WorkItemTransitionResult
       | { ok: false; error: string }
     >,
-  completeWorkBoardItem: async (id: number) =>
-    ipcRenderer.invoke(WORK_BOARD.complete, id) as Promise<
+  completeWorkBoardItem: async (id: number, expectedRevision?: string) =>
+    ipcRenderer.invoke(WORK_BOARD.complete, id, expectedRevision) as Promise<
       | import("../shared/work-board-types.js").WorkItemCompleteResult
       | { ok: false; error: string }
     >,
-  reopenWorkBoardItem: async (id: number) =>
-    ipcRenderer.invoke(WORK_BOARD.reopen, id) as Promise<
+  reopenWorkBoardItem: async (id: number, expectedRevision?: string) =>
+    ipcRenderer.invoke(WORK_BOARD.reopen, id, expectedRevision) as Promise<
       | import("../shared/work-board-types.js").WorkItemReopenResult
       | { ok: false; error: string }
     >,

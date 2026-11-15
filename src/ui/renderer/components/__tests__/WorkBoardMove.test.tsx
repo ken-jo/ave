@@ -7,7 +7,7 @@ import { WorkBoardPanel } from "../WorkBoardPanel.js";
 import type { AveApi } from "../../types.js";
 import type { WorkItemResolved } from "../../../../shared/work-board-types.js";
 
-const item: WorkItemResolved = { id: 1, title: "Export notes", status: "planned", status_resolved: "planned", priority: "medium", created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-01T00:00:00Z" };
+const item: WorkItemResolved = { id: 1, title: "Export notes", status: "planned", status_resolved: "planned", mutationRevision: "a".repeat(64), priority: "medium", created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-01T00:00:00Z" };
 function apiFor(current = item) {
   const noop = () => () => {};
   return {
@@ -33,7 +33,7 @@ describe("work board moves", () => {
     await openMove(api, "in_progress");
     expect(api.transitionWorkBoardItem).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("work-board-move-confirm"));
-    await waitFor(() => expect(api.transitionWorkBoardItem).toHaveBeenCalledWith(item.id, "in_progress"));
+    await waitFor(() => expect(api.transitionWorkBoardItem).toHaveBeenCalledWith(item.id, "in_progress", item.mutationRevision));
   });
   it("rejects arbitrary Review destinations visibly without mutating", async () => {
     const api = apiFor();
@@ -52,11 +52,11 @@ describe("work board moves", () => {
   });
   it("refuses stale destinations after a run starts elsewhere", async () => {
     const api = apiFor();
-    vi.mocked(api.getWorkBoardItem).mockResolvedValue({ status: "found", itemId: item.id, item: { ...item, runStatus: "executing" } });
+    vi.mocked(api.transitionWorkBoardItem).mockResolvedValue({ status: "invalid", itemId: item.id, reason: "work-item-changed" });
     await openMove(api, "in_progress");
     fireEvent.click(screen.getByTestId("work-board-move-confirm"));
     await screen.findByRole("alert");
-    expect(api.transitionWorkBoardItem).not.toHaveBeenCalled();
+    expect(api.transitionWorkBoardItem).toHaveBeenCalledWith(item.id, "in_progress", item.mutationRevision);
   });
   it("does not move when the preview is cancelled", async () => {
     const api = apiFor();

@@ -1123,3 +1123,19 @@ describe("preload — per-tile chat push filtering", () => {
     expect(handler).toHaveBeenCalledWith(mine);
   });
 });
+
+
+describe("conditional work board preload bridge", () => {
+  it("forwards the displayed revision on every lifecycle mutation", async () => {
+    vi.resetModules();
+    const api = await loadAveApi() as unknown as AveApi;
+    mockInvoke.mockClear();
+    const revision = "a".repeat(64);
+    await api.transitionWorkBoardItem(7, "in_progress", revision);
+    await api.completeWorkBoardItem(7, revision);
+    await api.reopenWorkBoardItem(7, revision);
+    expect(mockInvoke).toHaveBeenCalledWith("ave:work-board:transition", 7, "in_progress", revision);
+    expect(mockInvoke).toHaveBeenCalledWith("ave:work-board:complete", 7, revision);
+    expect(mockInvoke).toHaveBeenCalledWith("ave:work-board:reopen", 7, revision);
+  });
+});

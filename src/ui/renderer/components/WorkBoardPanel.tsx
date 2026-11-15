@@ -1205,9 +1205,9 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
     try {
       const result =
         op === "complete"
-          ? await api.completeWorkBoardItem(item.id)
+          ? await api.completeWorkBoardItem(item.id, item.mutationRevision)
           : op === "reopen"
-            ? await api.reopenWorkBoardItem(item.id)
+            ? await api.reopenWorkBoardItem(item.id, item.mutationRevision)
             : await api.removeWorkBoardItem(item.id);
       const ok =
         "status" in result &&
@@ -1650,26 +1650,26 @@ export function WorkBoardPanel({
 
   const handleTransition = useCallback(
     async (id: number, to: WorkItemStatusStored) => {
-      await api.transitionWorkBoardItem(id, to);
+      await api.transitionWorkBoardItem(id, to, items.find((item) => item.id === id)?.mutationRevision);
       await refresh();
     },
-    [api, refresh],
+    [api, items, refresh],
   );
 
   const handleComplete = useCallback(
     async (id: number) => {
-      await api.completeWorkBoardItem(id);
+      await api.completeWorkBoardItem(id, items.find((item) => item.id === id)?.mutationRevision);
       await refresh();
     },
-    [api, refresh],
+    [api, items, refresh],
   );
 
   const handleReopen = useCallback(
     async (id: number) => {
-      await api.reopenWorkBoardItem(id);
+      await api.reopenWorkBoardItem(id, items.find((item) => item.id === id)?.mutationRevision);
       await refresh();
     },
-    [api, refresh],
+    [api, items, refresh],
   );
 
   // Bucket by stored status. `overdue` is a projection over planned/in_progress so those items stay in their lifecycle
