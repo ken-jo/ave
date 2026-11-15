@@ -38,7 +38,7 @@ describe("work board moves", () => {
   it("rejects arbitrary Review destinations visibly without mutating", async () => {
     const api = apiFor();
     await openMove(api);
-    expect(screen.queryByRole("option", { name: "검토", exact: true })).toBeNull();
+    expect(screen.queryByRole("option", { name: /^검토$/ })).toBeNull();
     expect(screen.getByTestId("work-board-unavailable-lanes")).toHaveTextContent("수동으로 지정할 수 없습니다");
     expect(screen.getByTestId("work-board-move-confirm")).toBeDisabled();
     expect(api.transitionWorkBoardItem).not.toHaveBeenCalled();
