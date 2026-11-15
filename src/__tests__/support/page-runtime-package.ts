@@ -1,7 +1,8 @@
+import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { asarCliPath, writeFixtureFile } from "../../../test/scripts/gate-script-runner.js";
 
 /** pdf.js entries the packaged reader needs, as `@electron/asar` lists them. */
@@ -33,6 +34,9 @@ export function writeCanvasRuntimePackage(nodeModules: string, platform: string,
 
 /** Writes an app.asar holding the pdf.js entries plus the page renderer notices beside it. */
 export function writePageRuntimeResources(resources: string): void {
+  const { BUNDLED_RENDERER_NOTICES } = createRequire(import.meta.url)("../../../scripts/lib/bundled-renderer-notices.cjs") as { BUNDLED_RENDERER_NOTICES: readonly { noticeFile: string }[] };
+  mkdirSync(join(resources, "licenses", "renderer"), { recursive: true });
+  for (const { noticeFile: notice } of BUNDLED_RENDERER_NOTICES) copyFileSync(resolve("resources/licenses/renderer", notice), join(resources, "licenses", "renderer", notice));
   const input = mkdtempSync(join(tmpdir(), "pdf-runtime-asar-"));
   try {
     for (const entry of PDF_RUNTIME_FIXTURE_ENTRIES) writeFixtureFile(input, entry.slice(1), "pdf runtime fixture");

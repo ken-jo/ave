@@ -13,6 +13,7 @@ import { upstreamSrtWinReceiptFixtures } from "../../src/__tests__/support/srt-w
 
 const SRT_WIN_BUILD_RECEIPTS = upstreamSrtWinReceiptFixtures();
 const require = createRequire(import.meta.url);
+const { BUNDLED_RENDERER_NOTICES } = require("../../scripts/lib/bundled-renderer-notices.cjs") as { BUNDLED_RENDERER_NOTICES: readonly { packageName: string; noticeFile: string }[] };
 const { readUpstreamSrtWinInput } = require("../../scripts/lib/srt-win-integrity.cjs") as {
   readUpstreamSrtWinInput: (path: string, arch: string) => Buffer;
 };
@@ -208,6 +209,12 @@ describe("packaged graphics runtime", () => {
     await expect(afterPack(context)).rejects.toThrow("page renderer license notice missing");
     writePageRuntimeResources(resources);
     await expect(afterPack(context)).resolves.toBeUndefined();
+  });
+
+  it.each(BUNDLED_RENDERER_NOTICES)("refuses a packaged app missing the bundled $packageName notice", async ({ noticeFile }) => {
+    const { context, resources } = await createPackage("darwin");
+    rmSync(join(resources, "licenses", "renderer", noticeFile));
+    await expect(afterPack(context)).rejects.toThrow("Bundled renderer notice missing");
   });
 
   it("rejects empty files and directories in place of runtime libraries", async () => {

@@ -335,6 +335,10 @@
     ],
     "extraResources": [
       {
+        "from": "resources/licenses/renderer",
+        "to": "licenses/renderer"
+      },
+      {
         "from": "resources/licenses/appearance",
         "to": "licenses/appearance"
       },

@@ -1,3 +1,4 @@
+const { assertBundledRendererNotices } = require("./lib/bundled-renderer-notices.cjs");
 const { createHash } = require("node:crypto");
 const { existsSync, readFileSync, readdirSync, rmSync, statSync } = require("node:fs");
 const { constants: fsConstants, accessSync, chmodSync } = require("node:fs");
@@ -299,6 +300,7 @@ function assertBetterSqlite3Binary(context) {
 }
 
 module.exports = async function afterPack(context) {
+  assertBundledRendererNotices(electronResourcesDir(context));
   assertBundledUvResource(context);
   assertSandboxVendorBinaries(context);
   assertNodePtyBinary(context);
