@@ -489,6 +489,7 @@ export function createWorkBoardEngine(
       return { status: "not_found" };
     }
     const item = got.item;
+    if (item.status === "completed") return { status: "error", reason: "work-item-completed" };
 
     if (inFlight.has(itemId) || ACTIVE_RUN_STATUSES.has(item.runStatus ?? "idle")) {
       return {
@@ -558,7 +559,12 @@ export function createWorkBoardEngine(
 
     try {
       // Archive prior runs before resetting latest fields so denied reruns cannot display stale success.
-      await store.beginRun(itemId, runId, startedAt);
+      const started = await store.beginRun(itemId, runId, startedAt);
+      if (started.status !== "updated") {
+        const reason = started.status === "invalid" ? started.reason : "work item not found";
+        emit({ itemId, phase: "error", message: reason });
+        return { status: "error", reason };
+      }
       return await planPhase({
         itemId,
         item,

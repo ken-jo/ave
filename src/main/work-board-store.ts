@@ -26,6 +26,7 @@ import {
 import { appendActivity } from "../work-board/activity-log.js";
 import { projectRootEquals } from "../shared/project-identity.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
+import { workBoardMoveRefusal } from "../shared/work-board-lifecycle.js";
 import { ChangeSignal } from "../lib/change-signal.js";
 
 const log = createLogger("ave");
@@ -331,11 +332,16 @@ function cloneItem(it: WorkItem): WorkItem {
   return { ...it };
 }
 
+function mutationRevision(item: WorkItem): string {
+  return sha256(JSON.stringify(item));
+}
+
 // A pending plan also carries whether the item changed since the plan was made; main judges it once, here, for every reader.
 function decorate(item: WorkItem, nowMs: number): WorkItemResolved {
   const approval = item.planApproval;
   return {
     ...item,
+    mutationRevision: mutationRevision(item),
     status_resolved: resolveWorkItemStatus(item, nowMs),
     ...(approval?.status === "pending" ? { planStale: approval.itemDigest !== itemDigestOf(item) } : {}),
   };
@@ -580,6 +586,7 @@ export class WorkBoardStore {
     id: number,
     to: WorkItemStatusStored,
     activityKind: "transitioned" | "completed" | "reopened" = "transitioned",
+    expectedRevision?: string,
   ): Promise<WorkItemTransitionResult> {
     if (!isStatus(to)) {
       return { status: "invalid", itemId: id, reason: `invalid target status: ${String(to)}` };
@@ -594,7 +601,19 @@ export class WorkBoardStore {
       }
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
-      const from = board.items[idx].status;
+      const current = board.items[idx];
+      if (expectedRevision !== undefined && expectedRevision !== mutationRevision(current)) {
+        this.cache = board;
+        return { status: "invalid" as const, itemId: id, reason: "work-item-changed" };
+      }
+      // Reopening a settled result has the derived Review destination.
+      const target = current.status === "completed" && current.runStatus === "completed" && current.output?.trim() && to === "in_progress" ? "review" : to;
+      const refusal = workBoardMoveRefusal(current, target);
+      if (refusal) {
+        this.cache = board;
+        return { status: "invalid" as const, itemId: id, reason: refusal };
+      }
+      const from = current.status;
       const updated: WorkItem = { ...board.items[idx], status: to, updated_at: iso };
       if (to === "completed") updated.completed_at = iso;
       else delete updated.completed_at;
@@ -619,8 +638,8 @@ export class WorkBoardStore {
   }
 
   // Transition to `completed`, mapping the envelope to a complete result.
-  async complete(id: number): Promise<WorkItemCompleteResult> {
-    const result = await this.transition(id, "completed", "completed");
+  async complete(id: number, expectedRevision?: string): Promise<WorkItemCompleteResult> {
+    const result = await this.transition(id, "completed", "completed", expectedRevision);
     if (result.status === "transitioned") {
       return { status: "completed", itemId: result.itemId, item: result.item };
     }
@@ -628,8 +647,8 @@ export class WorkBoardStore {
   }
 
   // Transition back to `in_progress`, mapping the envelope to a reopen result.
-  async reopen(id: number): Promise<WorkItemReopenResult> {
-    const result = await this.transition(id, "in_progress", "reopened");
+  async reopen(id: number, expectedRevision?: string): Promise<WorkItemReopenResult> {
+    const result = await this.transition(id, "in_progress", "reopened", expectedRevision);
     if (result.status === "transitioned") {
       return { status: "reopened", itemId: result.itemId, item: result.item };
     }
@@ -684,6 +703,10 @@ export class WorkBoardStore {
         return { status: "not_found" as const, itemId: id };
       }
       const prior = board.items[idx];
+      if (prior.status === "completed") {
+        this.cache = board;
+        return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };
+      }
       const history = [
         ...(prior.runHistory ?? []),
         { runId, startedAt, status: "planning" as WorkItemRunStatus },

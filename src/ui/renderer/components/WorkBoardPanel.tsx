@@ -1,7 +1,14 @@
+import { useDraggable, useDroppable } from "@dnd-kit/core";
+import { BoardDragSurface, useBoardMove, useBoardDropTarget } from "./work-board/BoardDragSurface.js";
+import { BoardStageTab } from "./work-board/BoardStageTab.js";
+import { BoardMoveDialog } from "./work-board/BoardMoveDialog.js";
+import type { WorkBoardStage } from "../../../shared/work-board-lifecycle.js";
+import { ReviewInspector } from "./work-board/ReviewInspector.js";
+import { workBoardStage } from "../../../shared/work-board-lifecycle.js";
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, CircleStop, ListTree, PanelRight, Play, Plus, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
+import { AlertTriangle, GripVertical, CheckCircle2, CircleStop, ListTree, PanelRight, Play, Plus, RefreshCw, ShieldAlert, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { t } from "../../../i18n/runtime.js";
 import { WorkingLoader } from "./AgentStatusGlyph.js";
@@ -91,10 +98,10 @@ export interface WorkBoardPanelProps {
 const NARROW_PANEL_WIDTH = 900;
 /** The open step panel's column beside the board: its 300px width plus its 12px gap. */
 const STEPS_COLUMN_WIDTH = 312;
-/** The narrowest board body that still holds three readable lanes beside the open step panel (the spec draws ~650px at a 958px pane). */
-const BOARD_BODY_MIN_WIDTH = 600;
+/** The narrowest board body that still holds four readable lanes beside the open step panel (the spec draws ~650px at a 958px pane). */
+const BOARD_BODY_MIN_WIDTH = 800;
 
-/** The one layout verdict: narrow when the panel is under 900px, or when the board body left beside an open step panel is under 600px.
+/** The one layout verdict: narrow when the panel is under 900px, or when the board body left beside an open step panel is under 800px.
  * The body is measured as the panel minus the steps column, not from the body itself, so docking the panel below (which widens the body)
  * cannot flip the verdict back. */
 function boardIsNarrow(panelWidth: number, stepsOpen: boolean): boolean {
@@ -417,6 +424,10 @@ interface WorkItemCardProps {
 
 function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
   const { onStart, onComplete, onReopen, onRun, onOpenDetail, onShowSteps } = actions;
+  const onMove = useBoardMove();
+  const dragLocked = isRunInFlight(run) || item.runStatus === "planning" || item.runStatus === "executing" || item.runStatus === "awaiting_approval";
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: item.id, data: { title: item.title }, disabled: dragLocked });
+  const stage = workBoardStage(item);
   const overdue = item.status_resolved === "overdue";
   const isCompleted = item.status === "completed";
   const live = run !== undefined && isRunInFlight(run) ? run : undefined;
@@ -466,21 +477,27 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
     )
   );
   return (
-    <button
-      type="button"
+    <article
+      ref={setNodeRef}
+      style={{ opacity: isDragging ? 0.4 : undefined }}
       className={`w-full rounded-lg border bg-background p-3 text-left shadow-sm transition-[border-color,box-shadow] hover:border-border hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
         overdue ? "border-destructive/(--opacity-half) bg-destructive/(--opacity-faint)" : "border-border/(--opacity-strong)"
       }`}
       data-testid="work-board-card"
       onClick={() => onOpenDetail(item.id)}
+      onKeyDown={(event) => { if (event.target === event.currentTarget && event.key === "Enter") onOpenDetail(item.id); }}
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <PriorityChip priority={item.priority} />
-            <span className={`min-w-0 line-clamp-1 text-sm font-semibold leading-snug ${isCompleted ? "text-muted-foreground line-through" : "text-foreground"}`}>
+            <button type="button" ref={setActivatorNodeRef} {...attributes} {...listeners} aria-label={t("workBoard.dragCard", { title: item.title })}
+              disabled={dragLocked} onClick={(event) => event.stopPropagation()} className="cursor-grab rounded p-1 text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default" data-testid="work-board-drag-handle">
+              <GripVertical className="h-3 w-3" />
+            </button>
+            <button type="button" onClick={(event) => { event.stopPropagation(); onOpenDetail(item.id); }} className={`min-w-0 line-clamp-1 text-left text-sm font-semibold leading-snug ${isCompleted ? "text-muted-foreground line-through" : "text-foreground"}`}>
               {item.title}
-            </span>
+            </button>
           </div>
           {live ? (
             // A running card keeps its footprint. The chip takes the due line's row, and one line of narration takes the
@@ -536,6 +553,9 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
       {/* Inline lifecycle actions. stopPropagation so the card's open-detail
           click does not also fire when the user only wanted to transition. */}
       <div className="mt-2.5 flex flex-wrap justify-end gap-1">
+        <Button size="sm" variant="ghost" className="h-6 px-2 text-dense" onClick={(event) => { event.stopPropagation(); onMove(item.id); }} data-testid="work-board-move">
+          {t("workBoard.moveTitle")}
+        </Button>
         {live && (
           <Button
             size="sm"
@@ -568,7 +588,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
             {run?.phase === "cancelled" || run?.phase === "error" ? t("workBoard.liveRerun") : t("workBoard.runButton")}
           </Button>
         )}
-        {item.status === "planned" && (
+        {item.status === "planned" && stage !== "review" && !live && (
           <Button
             size="sm"
             variant="ghost"
@@ -582,7 +602,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
             {t("workBoard.startButton")}
           </Button>
         )}
-        {(item.status === "planned" || item.status === "in_progress") && (
+        {stage !== "review" && !live && (item.status === "planned" || item.status === "in_progress") && (
           <Button
             size="sm"
             variant="ghost"
@@ -611,7 +631,7 @@ function WorkItemCard({ item, run, actions }: WorkItemCardProps) {
           </Button>
         )}
       </div>
-    </button>
+    </article>
   );
 }
 
@@ -623,6 +643,7 @@ interface BoardColumnProps {
   loading: boolean;
   actions: CardActions;
   testId: string;
+  stage: WorkBoardStage;
   /** The narrow board shows one column at a time, its cards two abreast and without the column's own heading (the tab carries it). */
   narrow?: boolean;
   /** Schedule cards placed among the work items by time (a work item by its due time), and how many schedule entries they stand for. */
@@ -653,15 +674,18 @@ function BoardColumn({
   loading,
   actions,
   testId,
+  stage,
   narrow = false,
   schedule,
 }: BoardColumnProps) {
+  const { disabled, refusal } = useBoardDropTarget(stage);
+  const { setNodeRef, isOver } = useDroppable({ id: stage, data: { stage }, disabled });
   const hasSchedule = schedule !== undefined && schedule.cards.length > 0;
   // The list takes whatever height the section is given and scrolls. Its floor belongs to the grid that sizes the
   // section (see WorkBoardPanel), not to the list: a min-height on the inner list left the section free to shrink to its
   // header while the list was clipped below it.
   return (
-    <section className="flex min-h-0 flex-col gap-2 overflow-hidden rounded-lg border bg-muted/(--opacity-light) shadow-sm" data-testid={testId}>
+    <section ref={setNodeRef} data-board-stage={stage} data-drop-enabled={!disabled} title={refusal ? t(`workBoard.${refusal}`) : undefined} data-drop-target={!disabled && isOver || undefined} className={`flex min-h-0 flex-col gap-2 overflow-hidden rounded-lg border bg-muted/(--opacity-light) shadow-sm ${!disabled && isOver ? "ring-2 ring-ring" : ""}`} data-testid={testId}>
       <div className={`items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2 ${narrow ? "hidden" : "flex"}`}>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{heading}</h3>
         <span
@@ -1071,6 +1095,17 @@ function RunHistorySection({
   );
 }
 
+function workItemMutationMessage(reason: unknown): string {
+  switch (reason) {
+    case "work-item-changed": return t("workBoard.itemChangedReload");
+    case "moveRunActive": return t("workBoard.moveRunActive");
+    case "movePlanDecision": return t("workBoard.movePlanDecision");
+    case "moveReviewDerived": return t("workBoard.moveReviewDerived");
+    case "moveResultDecision": return t("workBoard.moveResultDecision");
+    default: return t("workBoard.errorMutationRefused");
+  }
+}
+
 function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChanged, onRun }: DetailDialogProps) {
   const [item, setItem] = useState<WorkItemResolved | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -1083,13 +1118,13 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
   const [priority, setPriority] = useState<WorkItemPriority>(DEFAULT_PRIORITY);
 
   const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState("");
+  const [actionError, setActionError] = useState<{ message: string; stale?: boolean } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setItem(null);
     setLoadError("");
-    setActionError("");
+    setActionError(null);
     void (async () => {
       try {
         const result = await api.getWorkBoardItem(itemId);
@@ -1104,12 +1139,11 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
           setNoDeadline(!it.due_at);
           setPriority(it.priority);
         } else {
-          const reason = "error" in result ? result.error : undefined;
-          setLoadError(reason ?? t("workBoard.errorLoadFailed"));
+          setLoadError(t("workBoard.errorLoadFailed"));
         }
-      } catch (err) {
+      } catch {
         if (cancelled) return;
-        setLoadError(errorMessage(err) || t("workBoard.errorLoadFailed"));
+        setLoadError(t("workBoard.errorLoadFailed"));
       }
     })();
     return () => {
@@ -1139,14 +1173,18 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
 
   // A mutation either lands (close, let the board reload) or explains itself in the dialog; the host's refusal reads the
   // same for every operation.
-  const settleMutation = (ok: boolean, result: object) => {
+  const settleMutation = (operation: "save" | "complete" | "reopen" | "delete", ok: boolean, result: object) => {
     if (ok) {
       onChanged();
       onClose();
       return;
     }
-    const reason = "reason" in result ? result.reason : "error" in result ? result.error : undefined;
-    setActionError(typeof reason === "string" ? reason : t("workBoard.errorSaveFailed"));
+    const reason = "reason" in result ? result.reason : "error" in result ? result.error : "status" in result ? result.status : undefined;
+    console.warn("[ave] work-board mutation refused", {
+      operation, itemId,
+      reason: typeof reason === "string" && /^[a-zA-Z0-9_-]+$/.test(reason) ? reason : undefined,
+    });
+    setActionError({ message: workItemMutationMessage(reason), stale: reason === "work-item-changed" });
   };
 
   const handleSave = async () => {
@@ -1164,12 +1202,17 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
     if (priority !== item.priority) patch.priority = priority;
 
     setBusy(true);
-    setActionError("");
+    setActionError(null);
     try {
       const result = await api.updateWorkBoardItem(item.id, patch);
-      settleMutation("status" in result && result.status === "updated", result);
-    } catch (err) {
-      setActionError(errorMessage(err) || t("workBoard.errorSaveFailed"));
+      settleMutation("save", "status" in result && result.status === "updated", result);
+    } catch (error) {
+      console.error("[ave] work-board mutation failed", {
+        operation: "save", itemId: item.id,
+        name: error instanceof Error ? error.name : undefined,
+        message: errorMessage(error),
+      });
+      setActionError({ message: t("workBoard.errorMutationRefused") });
     } finally {
       setBusy(false);
     }
@@ -1178,20 +1221,25 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
   const runLifecycle = async (op: "complete" | "reopen" | "delete") => {
     if (!item) return;
     setBusy(true);
-    setActionError("");
+    setActionError(null);
     try {
       const result =
         op === "complete"
-          ? await api.completeWorkBoardItem(item.id)
+          ? await api.completeWorkBoardItem(item.id, item.mutationRevision)
           : op === "reopen"
-            ? await api.reopenWorkBoardItem(item.id)
+            ? await api.reopenWorkBoardItem(item.id, item.mutationRevision)
             : await api.removeWorkBoardItem(item.id);
       const ok =
         "status" in result &&
         (result.status === "completed" || result.status === "reopened" || result.status === "deleted");
-      settleMutation(ok, result);
-    } catch (err) {
-      setActionError(errorMessage(err) || t("workBoard.errorSaveFailed"));
+      settleMutation(op, ok, result);
+    } catch (error) {
+      console.error("[ave] work-board mutation failed", {
+        operation: op, itemId: item.id,
+        name: error instanceof Error ? error.name : undefined,
+        message: errorMessage(error),
+      });
+      setActionError({ message: t("workBoard.errorMutationRefused") });
     } finally {
       setBusy(false);
     }
@@ -1210,7 +1258,10 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
         </DialogHeader>
 
         {loadError ? (
-          <p className="text-sm text-destructive" data-testid="work-board-detail-load-error">{loadError}</p>
+          <div className="space-y-2">
+            <p role="alert" className="text-sm text-destructive" data-testid="work-board-detail-load-error">{loadError}</p>
+            <Button size="sm" variant="outline" onClick={() => setReloadKey((k) => k + 1)}>{t("workBoard.reloadItem")}</Button>
+          </div>
         ) : !item ? (
           <div className="py-8 text-center text-sm text-muted-foreground" data-testid="work-board-detail-loading">
             {t("workBoard.loadingLabel")}
@@ -1272,7 +1323,16 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
                 {t("workBoard.metaUpdated", { date: isoToLocalDate(item.updated_at) })}
               </span>
             </div>
-            {actionError && <p className="text-sm text-destructive" data-testid="work-board-detail-error">{actionError}</p>}
+            {actionError && (
+              <div className="space-y-2">
+                <p role="alert" className="text-sm text-destructive" data-testid="work-board-detail-error">{actionError.message}</p>
+                {actionError.stale && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => setReloadKey((k) => k + 1)} data-testid="work-board-detail-reload">
+                    {t("workBoard.reloadItem")}
+                  </Button>
+                )}
+              </div>
+            )}
             <RunOutputPanel item={item} run={run} />
             <PlanDecisionPanel api={api} item={item} onDecided={() => { setReloadKey((k) => k + 1); onChanged(); }} />
             <RunHistorySection
@@ -1577,6 +1637,8 @@ export function WorkBoardPanel({
   }, [approvalFocusKey, approvalShowAll, narrow]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [moveRequest, setMoveRequest] = useState<{ itemId: number; target?: WorkBoardStage } | null>(null);
+  const [reviewId, setReviewId] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   // True while the open detail was reached from a conversation row: that arrival is about the run, so the latest transcript
   // opens with it.
@@ -1625,33 +1687,34 @@ export function WorkBoardPanel({
 
   const handleTransition = useCallback(
     async (id: number, to: WorkItemStatusStored) => {
-      await api.transitionWorkBoardItem(id, to);
+      await api.transitionWorkBoardItem(id, to, items.find((item) => item.id === id)?.mutationRevision);
       await refresh();
     },
-    [api, refresh],
+    [api, items, refresh],
   );
 
   const handleComplete = useCallback(
     async (id: number) => {
-      await api.completeWorkBoardItem(id);
+      await api.completeWorkBoardItem(id, items.find((item) => item.id === id)?.mutationRevision);
       await refresh();
     },
-    [api, refresh],
+    [api, items, refresh],
   );
 
   const handleReopen = useCallback(
     async (id: number) => {
-      await api.reopenWorkBoardItem(id);
+      await api.reopenWorkBoardItem(id, items.find((item) => item.id === id)?.mutationRevision);
       await refresh();
     },
-    [api, refresh],
+    [api, items, refresh],
   );
 
   // Bucket by stored status. `overdue` is a projection over planned/in_progress so those items stay in their lifecycle
   // column with an overdue badge.
-  const planned = useMemo(() => items.filter((i) => i.status === "planned"), [items]);
-  const inProgress = useMemo(() => items.filter((i) => i.status === "in_progress"), [items]);
-  const completed = useMemo(() => items.filter((i) => i.status === "completed"), [items]);
+  const planned = useMemo(() => items.filter((i) => workBoardStage(i) === "planned"), [items]);
+  const inProgress = useMemo(() => items.filter((i) => workBoardStage(i) === "in_progress"), [items]);
+  const review = useMemo(() => items.filter((i) => workBoardStage(i) === "review"), [items]);
+  const completed = useMemo(() => items.filter((i) => workBoardStage(i) === "completed"), [items]);
 
   // Agent-orchestration run state + launcher. Subscribes to the four host run channels in a single effect (cleanup inside
   // the hook).
@@ -1747,6 +1810,11 @@ export function WorkBoardPanel({
     return unsub;
   }, [api, refresh]);
 
+  useEffect(() => {
+    if (typeof api.onWorkApprovalsChanged !== "function") return undefined;
+    return api.onWorkApprovalsChanged(() => { void refresh(); });
+  }, [api, refresh]);
+
   // 확인 필요 actions. Proposals go through their own accept/dismiss channels; an accepted proposal becomes an ordinary item, and
   // "추가하고 계획" hands its id to the host's plan → approve → execute run (the plugin supplied nothing executable).
   const approvalActions = useMemo<WorkApprovalActions>(() => ({
@@ -1779,7 +1847,11 @@ export function WorkBoardPanel({
   const onComplete = useCallback((id: number) => void handleComplete(id), [handleComplete]);
   const onReopen = useCallback((id: number) => void handleReopen(id), [handleReopen]);
   const onRun = useCallback((id: number) => runItem(id), [runItem]);
-  const onOpenDetail = useCallback((id: number) => setDetailId(id), []);
+  const onOpenDetail = useCallback((id: number) => {
+    const item = items.find((entry) => entry.id === id);
+    if (item && workBoardStage(item) === "review") setReviewId(id);
+    else setDetailId(id);
+  }, [items]);
   const onOpenRecord = useCallback((id: number) => {
     setDetailId(id);
     setDetailOpensLatestRun(true);
@@ -1797,7 +1869,7 @@ export function WorkBoardPanel({
   }), [onStart, onComplete, onReopen, onRun, onOpenDetail, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
 
   // Below the narrow panel width the overview's columns become status tabs and the step panel docks below the board.
-  const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "completed">("in-progress");
+  const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "review" | "completed">("in-progress");
   // The board's share of a narrow pane; the docked panel takes the rest and needs room for its run list, log and composer.
   const [dockPercent, setDockPercent] = useState(40);
 
@@ -1864,6 +1936,7 @@ export function WorkBoardPanel({
   ) => (
     <BoardColumn
       heading={heading}
+      stage={testId.endsWith("in-progress") ? "in_progress" : testId.slice("work-board-column-".length) as WorkBoardStage}
       items={columnItems}
       runState={runState}
       emptyLabel={emptyLabel}
@@ -1928,24 +2001,16 @@ export function WorkBoardPanel({
         {([
           ["planned", t("workBoard.columnPlanned"), planned.length],
           ["in-progress", t("workBoard.columnInProgress"), inProgress.length],
+          ["review", t("workBoard.columnReview"), review.length],
           ["completed", t("workBoard.columnCompleted"), completed.length],
-        ] as const).map(([key, label, count]) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={statusTab === key}
-            className={`rounded-md px-2.5 py-1 text-xs ${statusTab === key ? "bg-muted font-semibold text-foreground" : "text-muted-foreground hover:bg-muted/(--opacity-half)"}`}
-            onClick={() => setStatusTab(key)}
-            data-testid={`work-board-tab-${key}`}
-          >
-            {label} <span className="tabular-nums">{count}</span>
-          </button>
+        ] as const).map(([key, , count]) => (
+          <BoardStageTab key={key} stage={key === "in-progress" ? "in_progress" : key} selected={statusTab === key} count={count} onSelect={() => setStatusTab(key)} />
         ))}
       </div>
       <div role="tabpanel" className="flex min-h-0 flex-1 flex-col">
         {statusTab === "planned" && renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned", plannedSchedule, true)}
         {statusTab === "in-progress" && renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress", runningSchedule, true)}
+        {statusTab === "review" && renderColumn(t("workBoard.columnReview"), review, t("workBoard.emptyReview"), "work-board-column-review", undefined, true)}
         {statusTab === "completed" && renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed", weekSchedule, true)}
       </div>
     </div>
@@ -1954,19 +2019,27 @@ export function WorkBoardPanel({
     // take the room, the scroller overflows and scrolls instead. The floor must be explicit: with min-h-0 the grid absorbed the whole
     // deficit and squashed the columns to their headers, and with no min-height the grid's content minimum grows it to every card so
     // the columns never scroll internally. The breakpoint is the board's own width (container query), not the window's: a split tile
-    // or a narrow window holds three columns only when the board itself is wide enough. Stacked below it, each column gets its own
+    // or a narrow window holds four columns only when the board itself is wide enough. Stacked below it, each column gets its own
     // fixed row.
     <div
-      className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-3"
+      className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-4"
       data-testid="work-board-columns"
     >
       {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned", plannedSchedule)}
       {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress", runningSchedule)}
+      {renderColumn(t("workBoard.columnReview"), review, t("workBoard.emptyReview"), "work-board-column-review")}
       {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed", weekSchedule)}
     </div>
   );
 
+  const selectedReview = review.find((item) => item.id === reviewId);
+  const moveItem = items.find((item) => item.id === moveRequest?.itemId);
   const boardBody = (
+    <BoardDragSurface items={items} onMove={(itemId, target) => {
+      const item = items.find((entry) => entry.id === itemId);
+      if (item && target === workBoardStage(item)) return;
+      setMoveRequest({ itemId, target });
+    }}>
     <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <div className="flex flex-col gap-3 pb-4 sm:flex-row sm:items-start sm:justify-between">
         <p className="min-w-0 text-sm text-muted-foreground">{t("workBoard.panelDescription")}</p>
@@ -2037,6 +2110,10 @@ export function WorkBoardPanel({
         {(!narrow || narrowTab === "overview") && (
           <>
             {columns}
+            {selectedReview && (
+              <ReviewInspector key={reviewId} item={selectedReview} api={api}
+                onChanged={() => { void refresh(); }} onClose={() => setReviewId(null)} onOpenDetail={setDetailId} />
+            )}
             <div className="border-t pt-4">
               <ReportsSection api={api} project={project} />
             </div>
@@ -2044,10 +2121,12 @@ export function WorkBoardPanel({
         )}
       </div>
     </div>
+    </BoardDragSurface>
   );
 
   return (
     <>
+      {moveRequest && moveItem && <BoardMoveDialog key={`${moveItem.id}:${moveRequest.target ?? "menu"}`} item={moveItem} target={moveRequest.target} api={api} onClose={() => setMoveRequest(null)} onChanged={() => { void refresh(); }} />}
       <div
         ref={setPanelNode}
         className={`relative mx-auto flex min-h-0 min-w-0 flex-1 w-full overflow-hidden ${stepsOpen ? "" : "max-w-6xl"} ${narrow ? "flex-col" : "flex-row"}`}

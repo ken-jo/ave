@@ -169,7 +169,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     return result;
   });
 
-  ipcMain.handle(WORK_BOARD.transition, async (e, id: number, to: WorkItemStatusStored) => {
+  ipcMain.handle(WORK_BOARD.transition, async (e, id: number, to: WorkItemStatusStored, expectedRevision?: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.transition, e);
       return UNAUTHORIZED_FRAME;
@@ -177,12 +177,15 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!workBoardStore) return NO_STORE;
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return existing;
-    const result = await workBoardStore.transition(id, to);
+    if (typeof expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
+      return { status: "invalid", itemId: id, reason: "work-item-changed" };
+    }
+    const result = await workBoardStore.transition(id, to, "transitioned", expectedRevision);
     if (result.status === "transitioned") broadcastItemChanged(result.itemId, "transitioned");
     return result;
   });
 
-  ipcMain.handle(WORK_BOARD.complete, async (e, id: number) => {
+  ipcMain.handle(WORK_BOARD.complete, async (e, id: number, expectedRevision?: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.complete, e);
       return UNAUTHORIZED_FRAME;
@@ -190,12 +193,15 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!workBoardStore) return NO_STORE;
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return existing;
-    const result = await workBoardStore.complete(id);
+    if (typeof expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
+      return { status: "invalid", itemId: id, reason: "work-item-changed" };
+    }
+    const result = await workBoardStore.complete(id, expectedRevision);
     if (result.status === "completed") broadcastItemChanged(result.itemId, "completed");
     return result;
   });
 
-  ipcMain.handle(WORK_BOARD.reopen, async (e, id: number) => {
+  ipcMain.handle(WORK_BOARD.reopen, async (e, id: number, expectedRevision?: string) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.reopen, e);
       return UNAUTHORIZED_FRAME;
@@ -203,7 +209,10 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     if (!workBoardStore) return NO_STORE;
     const existing = await loadAuthorizedItem(id);
     if (existing.status !== "found") return existing;
-    const result = await workBoardStore.reopen(id);
+    if (typeof expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(expectedRevision)) {
+      return { status: "invalid", itemId: id, reason: "work-item-changed" };
+    }
+    const result = await workBoardStore.reopen(id, expectedRevision);
     if (result.status === "reopened") broadcastItemChanged(result.itemId, "reopened");
     return result;
   });

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Packaged apps need compiled assets and runtime dependencies, without development source or maps.
 
+import { assertBundledRendererNotices } from "./lib/bundled-renderer-notices.cjs";
 import * as asar from "@electron/asar";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
@@ -417,6 +418,8 @@ if (actualUvBinarySha256 !== uvMeta.binarySha256) {
     uvCompressedBin,
   ]);
 }
+
+assertBundledRendererNotices(resourcesDir);
 
 const uvLicense = resolve(resourcesDir, "licenses", "uv", "LICENSE-MIT");
 if (!existsSync(uvLicense)) fail(`uv license notice missing: ${uvLicense}`);
