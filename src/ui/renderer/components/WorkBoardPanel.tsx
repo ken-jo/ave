@@ -1173,13 +1173,17 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
 
   // A mutation either lands (close, let the board reload) or explains itself in the dialog; the host's refusal reads the
   // same for every operation.
-  const settleMutation = (ok: boolean, result: object) => {
+  const settleMutation = (operation: "save" | "complete" | "reopen" | "delete", ok: boolean, result: object) => {
     if (ok) {
       onChanged();
       onClose();
       return;
     }
-    const reason = "reason" in result ? result.reason : "error" in result ? result.error : undefined;
+    const reason = "reason" in result ? result.reason : "error" in result ? result.error : "status" in result ? result.status : undefined;
+    console.warn("[ave] work-board mutation refused", {
+      operation, itemId,
+      reason: typeof reason === "string" && /^[a-zA-Z0-9_-]+$/.test(reason) ? reason : undefined,
+    });
     setActionError({ message: workItemMutationMessage(reason), stale: reason === "work-item-changed" });
   };
 
@@ -1201,8 +1205,13 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
     setActionError(null);
     try {
       const result = await api.updateWorkBoardItem(item.id, patch);
-      settleMutation("status" in result && result.status === "updated", result);
-    } catch {
+      settleMutation("save", "status" in result && result.status === "updated", result);
+    } catch (error) {
+      console.error("[ave] work-board mutation failed", {
+        operation: "save", itemId: item.id,
+        name: error instanceof Error ? error.name : undefined,
+        message: errorMessage(error),
+      });
       setActionError({ message: t("workBoard.errorMutationRefused") });
     } finally {
       setBusy(false);
@@ -1223,8 +1232,13 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
       const ok =
         "status" in result &&
         (result.status === "completed" || result.status === "reopened" || result.status === "deleted");
-      settleMutation(ok, result);
-    } catch {
+      settleMutation(op, ok, result);
+    } catch (error) {
+      console.error("[ave] work-board mutation failed", {
+        operation: op, itemId: item.id,
+        name: error instanceof Error ? error.name : undefined,
+        message: errorMessage(error),
+      });
       setActionError({ message: t("workBoard.errorMutationRefused") });
     } finally {
       setBusy(false);

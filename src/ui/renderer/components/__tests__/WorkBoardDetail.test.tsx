@@ -24,6 +24,8 @@ function apiFor(item = ITEM): AveApi {
     getWorkBoardItem: vi.fn(async () => ({ status: "found", itemId: item.id, item: { ...item } })),
     completeWorkBoardItem: vi.fn(async () => ({ status: "completed", itemId: item.id, item })),
     reopenWorkBoardItem: vi.fn(async () => ({ status: "reopened", itemId: item.id, item })),
+    removeWorkBoardItem: vi.fn(async () => ({ status: "deleted", itemId: item.id })),
+    updateWorkBoardItem: vi.fn(async () => ({ status: "updated", itemId: item.id, item })),
     onWorkBoardItemChanged: unsubscribe, onWorkBoardRunProgress: unsubscribe, onWorkBoardRunStarted: unsubscribe,
     onWorkBoardRunFinished: unsubscribe, onWorkBoardRunFailed: unsubscribe,
   } as unknown as AveApi;
@@ -37,11 +39,14 @@ async function openDetails(api: AveApi) {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   setLocale(originalLocale);
 });
 
 describe.each(SUPPORTED_LOCALES)("%s work item detail refusals", (locale) => {
   beforeEach(async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
     await loadLocaleMessages(locale);
     setLocale(locale);
   });
@@ -53,9 +58,12 @@ describe.each(SUPPORTED_LOCALES)("%s work item detail refusals", (locale) => {
     ["moveResultDecision", "workBoard.moveResultDecision"],
     ["unknown-host-refusal", "workBoard.errorMutationRefused"],
     ["__proto__", "workBoard.errorMutationRefused"],
-  ])("localizes %s from the host in the actual detail dialog", async (reason, key) => {
+  ])("localizes and records %s from the host in the actual detail dialog", async (reason, key) => {
     const api = apiFor();
-    vi.mocked(api.completeWorkBoardItem).mockResolvedValue({ status: "invalid", itemId: ITEM.id, reason });
+    vi.mocked(api.completeWorkBoardItem).mockResolvedValue(Object.assign(
+      { status: "invalid" as const, itemId: ITEM.id, reason },
+      { item: ITEM, userText: "Private user text" },
+    ));
     await openDetails(api);
     fireEvent.click(screen.getByTestId("work-board-detail-toggle"));
     const alert = await screen.findByRole("alert");
@@ -64,6 +72,10 @@ describe.each(SUPPORTED_LOCALES)("%s work item detail refusals", (locale) => {
     expect(alert).not.toHaveTextContent(reason);
     expect(screen.getByTestId("work-board-detail-dialog")).toBeVisible();
     expect(api.completeWorkBoardItem).toHaveBeenCalledWith(ITEM.id, ITEM.mutationRevision);
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith("[ave] work-board mutation refused", {
+      operation: "complete", itemId: ITEM.id, reason,
+    });
+    expect(console.error).not.toHaveBeenCalled();
   });
 
   it("reloads a stale snapshot and retries completion with the new revision", async () => {
@@ -117,15 +129,41 @@ describe.each(SUPPORTED_LOCALES)("%s work item detail refusals", (locale) => {
     await openDetails(api);
     fireEvent.click(screen.getByTestId("work-board-detail-toggle"));
     expect(await screen.findByRole("alert")).toHaveTextContent(t("workBoard.errorMutationRefused"));
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith("[ave] work-board mutation refused", {
+      operation: "complete", itemId: ITEM.id, reason: "not_found",
+    });
   });
 
-  it("reports exceptions visibly without exposing an internal message", async () => {
-    const api = apiFor();
-    vi.mocked(api.completeWorkBoardItem).mockRejectedValue(new Error("internal-host-error"));
+  it.each(["complete", "reopen", "delete"] as const)("reports and records %s exceptions with only diagnostic fields", async (operation) => {
+    const api = apiFor(operation === "reopen" ? { ...ITEM, status: "completed", status_resolved: "completed" } : ITEM);
+    const method = operation === "complete" ? "completeWorkBoardItem" : operation === "reopen" ? "reopenWorkBoardItem" : "removeWorkBoardItem";
+    const error = Object.assign(new TypeError("internal-host-error"), { item: ITEM, userText: "Private user text" });
+    vi.mocked(api[method]).mockRejectedValue(error);
     await openDetails(api);
-    fireEvent.click(screen.getByTestId("work-board-detail-toggle"));
+    fireEvent.click(screen.getByTestId(operation === "delete" ? "work-board-detail-delete" : "work-board-detail-toggle"));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe(t("workBoard.errorMutationRefused"));
     expect(alert).not.toHaveTextContent("internal-host-error");
+    expect(console.error).toHaveBeenCalledExactlyOnceWith("[ave] work-board mutation failed", {
+      operation, itemId: ITEM.id, name: "TypeError", message: "internal-host-error",
+    });
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("reports and records save exceptions without recording the edited fields", async () => {
+    const api = apiFor();
+    const error = Object.assign(new Error("save-host-error"), { item: ITEM, userText: "Private user text" });
+    vi.mocked(api.updateWorkBoardItem).mockRejectedValue(error);
+    await openDetails(api);
+    fireEvent.change(screen.getByTestId("work-board-detail-title"), { target: { value: "Private edited title" } });
+    fireEvent.change(screen.getByTestId("work-board-detail-detail"), { target: { value: "Private edited description" } });
+    fireEvent.click(screen.getByTestId("work-board-detail-save"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(t("workBoard.errorMutationRefused"));
+    expect(alert).not.toHaveTextContent("save-host-error");
+    expect(console.error).toHaveBeenCalledExactlyOnceWith("[ave] work-board mutation failed", {
+      operation: "save", itemId: ITEM.id, name: "Error", message: "save-host-error",
+    });
+    expect(console.warn).not.toHaveBeenCalled();
   });
 });
