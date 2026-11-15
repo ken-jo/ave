@@ -1,5 +1,5 @@
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { BoardDragSurface, useBoardMove } from "./work-board/BoardDragSurface.js";
+import { BoardDragSurface, useBoardMove, useBoardDropTarget } from "./work-board/BoardDragSurface.js";
 import { BoardStageTab } from "./work-board/BoardStageTab.js";
 import { BoardMoveDialog } from "./work-board/BoardMoveDialog.js";
 import type { WorkBoardStage } from "../../../shared/work-board-lifecycle.js";
@@ -678,13 +678,14 @@ function BoardColumn({
   narrow = false,
   schedule,
 }: BoardColumnProps) {
-  const { setNodeRef, isOver } = useDroppable({ id: stage, data: { stage } });
+  const { disabled, refusal } = useBoardDropTarget(stage);
+  const { setNodeRef, isOver } = useDroppable({ id: stage, data: { stage }, disabled });
   const hasSchedule = schedule !== undefined && schedule.cards.length > 0;
   // The list takes whatever height the section is given and scrolls. Its floor belongs to the grid that sizes the
   // section (see WorkBoardPanel), not to the list: a min-height on the inner list left the section free to shrink to its
   // header while the list was clipped below it.
   return (
-    <section ref={setNodeRef} data-drop-target={isOver || undefined} className={`flex min-h-0 flex-col gap-2 overflow-hidden rounded-lg border bg-muted/(--opacity-light) shadow-sm ${isOver ? "ring-2 ring-ring" : ""}`} data-testid={testId}>
+    <section ref={setNodeRef} data-board-stage={stage} data-drop-enabled={!disabled} title={refusal ? t(`workBoard.${refusal}`) : undefined} data-drop-target={!disabled && isOver || undefined} className={`flex min-h-0 flex-col gap-2 overflow-hidden rounded-lg border bg-muted/(--opacity-light) shadow-sm ${!disabled && isOver ? "ring-2 ring-ring" : ""}`} data-testid={testId}>
       <div className={`items-center justify-between rounded-t-lg border-b bg-muted/(--opacity-medium) px-3 py-2 ${narrow ? "hidden" : "flex"}`}>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{heading}</h3>
         <span
@@ -1998,7 +1999,7 @@ export function WorkBoardPanel({
   const selectedReview = review.find((item) => item.id === reviewId);
   const moveItem = items.find((item) => item.id === moveRequest?.itemId);
   const boardBody = (
-    <BoardDragSurface onMove={(itemId, target) => {
+    <BoardDragSurface items={items} onMove={(itemId, target) => {
       const item = items.find((entry) => entry.id === itemId);
       if (item && target === workBoardStage(item)) return;
       setMoveRequest({ itemId, target });

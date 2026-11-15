@@ -21,6 +21,11 @@ export function BoardMoveDialog({ item, target, api, onClose, onChanged }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const source = workBoardStage(item);
+  const allowed = WORK_BOARD_STAGES.filter((stage) => stage !== source && workBoardMoveRefusal(item, stage) === null);
+  const unavailable = WORK_BOARD_STAGES.flatMap((stage) => {
+    const reason = workBoardMoveRefusal(item, stage);
+    return reason && stage !== source ? [{ stage, reason }] : [];
+  });
   const refusal = destination ? workBoardMoveRefusal(item, destination) : null;
   const move = async () => {
     if (!destination || refusal || destination === source || busy) return;
@@ -48,9 +53,12 @@ export function BoardMoveDialog({ item, target, api, onClose, onChanged }: {
           <select className="w-full rounded border bg-background p-2" aria-label={t("workBoard.moveDestination")} value={destination}
             disabled={busy} onChange={(event) => { setDestination(event.target.value as WorkBoardStage); setError(null); }}>
             <option value="" disabled>{t("workBoard.moveChoose")}</option>
-            {WORK_BOARD_STAGES.map((stage) => <option key={stage} value={stage} disabled={stage === source}>{t(BOARD_STAGE_LABELS[stage])}</option>)}
+            {allowed.map((stage) => <option key={stage} value={stage}>{t(BOARD_STAGE_LABELS[stage])}</option>)}
           </select>
         </label>
+        <ul className="space-y-1 text-sm text-muted-foreground" data-testid="work-board-unavailable-lanes">
+          {unavailable.map(({ stage, reason }) => <li key={stage}>{t(BOARD_STAGE_LABELS[stage])}: {t(`workBoard.${reason}`)}</li>)}
+        </ul>
         {source === "review" && destination === "completed" && item.output && <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded border p-2 text-sm">{item.output}</pre>}
         {refusal && <p role="alert" className="text-sm text-warning">{t(`workBoard.${refusal}`)}</p>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

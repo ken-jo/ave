@@ -21,10 +21,10 @@ function apiFor(current = item) {
     onWorkBoardRunFinished: noop, onWorkBoardRunFailed: noop,
   } as unknown as AveApi;
 }
-async function openMove(api: AveApi, destination: string) {
+async function openMove(api: AveApi, destination?: string) {
   render(withApprovalSurface(<WorkBoardPanel api={api} />));
   fireEvent.click(await screen.findByTestId("work-board-move"));
-  fireEvent.change(screen.getByRole("combobox"), { target: { value: destination } });
+  if (destination) fireEvent.change(screen.getByRole("combobox"), { target: { value: destination } });
 }
 afterEach(cleanup);
 describe("work board moves", () => {
@@ -37,8 +37,9 @@ describe("work board moves", () => {
   });
   it("rejects arbitrary Review destinations visibly without mutating", async () => {
     const api = apiFor();
-    await openMove(api, "review");
-    expect(screen.getByRole("alert")).toBeTruthy();
+    await openMove(api);
+    expect(screen.queryByRole("option", { name: "검토", exact: true })).toBeNull();
+    expect(screen.getByTestId("work-board-unavailable-lanes")).toHaveTextContent("수동으로 지정할 수 없습니다");
     expect(screen.getByTestId("work-board-move-confirm")).toBeDisabled();
     expect(api.transitionWorkBoardItem).not.toHaveBeenCalled();
   });
@@ -58,6 +59,15 @@ describe("work board moves", () => {
     await screen.findByRole("alert");
     expect(api.transitionWorkBoardItem).toHaveBeenCalledWith(item.id, "in_progress", item.mutationRevision);
   });
+  it("offers a completed result only its valid derived review destination", async () => {
+    await openMove(apiFor({ ...item, status: "completed", runStatus: "completed", output: "Saved output" }));
+    expect(screen.getAllByRole("option").map((option) => (option as HTMLOptionElement).value)).toEqual(["", "review"]);
+  });
+  it("offers no free lifecycle targets for a pending plan", async () => {
+    await openMove(apiFor({ ...item, runStatus: "awaiting_approval" }));
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    expect(screen.getByTestId("work-board-unavailable-lanes")).toHaveTextContent("계획을 승인");
+  });
   it("does not move when the preview is cancelled", async () => {
     const api = apiFor();
     await openMove(api, "in_progress");
@@ -66,9 +76,10 @@ describe("work board moves", () => {
     expect(api.transitionWorkBoardItem).not.toHaveBeenCalled();
   });
   it("disables dragging a live run and explains a menu refusal", async () => {
-    await openMove(apiFor({ ...item, runStatus: "executing" }), "completed");
+    await openMove(apiFor({ ...item, runStatus: "executing" }));
     expect(screen.getByTestId("work-board-drag-handle")).toBeDisabled();
-    expect(screen.getByRole("alert")).toBeTruthy();
+    expect(screen.getByTestId("work-board-unavailable-lanes")).toHaveTextContent("실행을 중지");
+    expect(screen.getAllByRole("option")).toHaveLength(1);
     expect(screen.getByTestId("work-board-move-confirm")).toBeDisabled();
   });
 });
