@@ -1,3 +1,4 @@
+import { workBoardStage } from "../../../shared/work-board-lifecycle.js";
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -1649,9 +1650,10 @@ export function WorkBoardPanel({
 
   // Bucket by stored status. `overdue` is a projection over planned/in_progress so those items stay in their lifecycle
   // column with an overdue badge.
-  const planned = useMemo(() => items.filter((i) => i.status === "planned"), [items]);
-  const inProgress = useMemo(() => items.filter((i) => i.status === "in_progress"), [items]);
-  const completed = useMemo(() => items.filter((i) => i.status === "completed"), [items]);
+  const planned = useMemo(() => items.filter((i) => workBoardStage(i) === "planned"), [items]);
+  const inProgress = useMemo(() => items.filter((i) => workBoardStage(i) === "in_progress"), [items]);
+  const review = useMemo(() => items.filter((i) => workBoardStage(i) === "review"), [items]);
+  const completed = useMemo(() => items.filter((i) => workBoardStage(i) === "completed"), [items]);
 
   // Agent-orchestration run state + launcher. Subscribes to the four host run channels in a single effect (cleanup inside
   // the hook).
@@ -1797,7 +1799,7 @@ export function WorkBoardPanel({
   }), [onStart, onComplete, onReopen, onRun, onOpenDetail, showSteps, stepsOpen, stepsItemId, toolApprovals, approvalSurface]);
 
   // Below the narrow panel width the overview's columns become status tabs and the step panel docks below the board.
-  const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "completed">("in-progress");
+  const [statusTab, setStatusTab] = useState<"planned" | "in-progress" | "review" | "completed">("in-progress");
   // The board's share of a narrow pane; the docked panel takes the rest and needs room for its run list, log and composer.
   const [dockPercent, setDockPercent] = useState(40);
 
@@ -1928,6 +1930,7 @@ export function WorkBoardPanel({
         {([
           ["planned", t("workBoard.columnPlanned"), planned.length],
           ["in-progress", t("workBoard.columnInProgress"), inProgress.length],
+          ["review", t("workBoard.columnReview"), review.length],
           ["completed", t("workBoard.columnCompleted"), completed.length],
         ] as const).map(([key, label, count]) => (
           <button
@@ -1946,6 +1949,7 @@ export function WorkBoardPanel({
       <div role="tabpanel" className="flex min-h-0 flex-1 flex-col">
         {statusTab === "planned" && renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned", plannedSchedule, true)}
         {statusTab === "in-progress" && renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress", runningSchedule, true)}
+        {statusTab === "review" && renderColumn(t("workBoard.columnReview"), review, t("workBoard.emptyReview"), "work-board-column-review", undefined, true)}
         {statusTab === "completed" && renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed", weekSchedule, true)}
       </div>
     </div>
@@ -1957,11 +1961,12 @@ export function WorkBoardPanel({
     // or a narrow window holds three columns only when the board itself is wide enough. Stacked below it, each column gets its own
     // fixed row.
     <div
-      className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-3"
+      className="grid flex-1 auto-rows-[20rem] gap-3 @2xl:min-h-[20rem] @2xl:auto-rows-auto @2xl:grid-cols-4"
       data-testid="work-board-columns"
     >
       {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned", plannedSchedule)}
       {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress", runningSchedule)}
+      {renderColumn(t("workBoard.columnReview"), review, t("workBoard.emptyReview"), "work-board-column-review")}
       {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed", weekSchedule)}
     </div>
   );
