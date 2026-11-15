@@ -1095,6 +1095,17 @@ function RunHistorySection({
   );
 }
 
+function workItemMutationMessage(reason: unknown): string {
+  switch (reason) {
+    case "work-item-changed": return t("workBoard.itemChangedReload");
+    case "moveRunActive": return t("workBoard.moveRunActive");
+    case "movePlanDecision": return t("workBoard.movePlanDecision");
+    case "moveReviewDerived": return t("workBoard.moveReviewDerived");
+    case "moveResultDecision": return t("workBoard.moveResultDecision");
+    default: return t("workBoard.errorMutationRefused");
+  }
+}
+
 function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChanged, onRun }: DetailDialogProps) {
   const [item, setItem] = useState<WorkItemResolved | null>(null);
   const [loadError, setLoadError] = useState("");
@@ -1107,13 +1118,13 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
   const [priority, setPriority] = useState<WorkItemPriority>(DEFAULT_PRIORITY);
 
   const [busy, setBusy] = useState(false);
-  const [actionError, setActionError] = useState("");
+  const [actionError, setActionError] = useState<{ message: string; stale?: boolean } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setItem(null);
     setLoadError("");
-    setActionError("");
+    setActionError(null);
     void (async () => {
       try {
         const result = await api.getWorkBoardItem(itemId);
@@ -1128,12 +1139,11 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
           setNoDeadline(!it.due_at);
           setPriority(it.priority);
         } else {
-          const reason = "error" in result ? result.error : undefined;
-          setLoadError(reason ?? t("workBoard.errorLoadFailed"));
+          setLoadError(t("workBoard.errorLoadFailed"));
         }
-      } catch (err) {
+      } catch {
         if (cancelled) return;
-        setLoadError(errorMessage(err) || t("workBoard.errorLoadFailed"));
+        setLoadError(t("workBoard.errorLoadFailed"));
       }
     })();
     return () => {
@@ -1170,7 +1180,7 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
       return;
     }
     const reason = "reason" in result ? result.reason : "error" in result ? result.error : undefined;
-    setActionError(typeof reason === "string" ? reason : t("workBoard.errorSaveFailed"));
+    setActionError({ message: workItemMutationMessage(reason), stale: reason === "work-item-changed" });
   };
 
   const handleSave = async () => {
@@ -1188,12 +1198,12 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
     if (priority !== item.priority) patch.priority = priority;
 
     setBusy(true);
-    setActionError("");
+    setActionError(null);
     try {
       const result = await api.updateWorkBoardItem(item.id, patch);
       settleMutation("status" in result && result.status === "updated", result);
-    } catch (err) {
-      setActionError(errorMessage(err) || t("workBoard.errorSaveFailed"));
+    } catch {
+      setActionError({ message: t("workBoard.errorMutationRefused") });
     } finally {
       setBusy(false);
     }
@@ -1202,7 +1212,7 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
   const runLifecycle = async (op: "complete" | "reopen" | "delete") => {
     if (!item) return;
     setBusy(true);
-    setActionError("");
+    setActionError(null);
     try {
       const result =
         op === "complete"
@@ -1214,8 +1224,8 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
         "status" in result &&
         (result.status === "completed" || result.status === "reopened" || result.status === "deleted");
       settleMutation(ok, result);
-    } catch (err) {
-      setActionError(errorMessage(err) || t("workBoard.errorSaveFailed"));
+    } catch {
+      setActionError({ message: t("workBoard.errorMutationRefused") });
     } finally {
       setBusy(false);
     }
@@ -1234,7 +1244,10 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
         </DialogHeader>
 
         {loadError ? (
-          <p className="text-sm text-destructive" data-testid="work-board-detail-load-error">{loadError}</p>
+          <div className="space-y-2">
+            <p role="alert" className="text-sm text-destructive" data-testid="work-board-detail-load-error">{loadError}</p>
+            <Button size="sm" variant="outline" onClick={() => setReloadKey((k) => k + 1)}>{t("workBoard.reloadItem")}</Button>
+          </div>
         ) : !item ? (
           <div className="py-8 text-center text-sm text-muted-foreground" data-testid="work-board-detail-loading">
             {t("workBoard.loadingLabel")}
@@ -1296,7 +1309,16 @@ function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChan
                 {t("workBoard.metaUpdated", { date: isoToLocalDate(item.updated_at) })}
               </span>
             </div>
-            {actionError && <p className="text-sm text-destructive" data-testid="work-board-detail-error">{actionError}</p>}
+            {actionError && (
+              <div className="space-y-2">
+                <p role="alert" className="text-sm text-destructive" data-testid="work-board-detail-error">{actionError.message}</p>
+                {actionError.stale && (
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => setReloadKey((k) => k + 1)} data-testid="work-board-detail-reload">
+                    {t("workBoard.reloadItem")}
+                  </Button>
+                )}
+              </div>
+            )}
             <RunOutputPanel item={item} run={run} />
             <PlanDecisionPanel api={api} item={item} onDecided={() => { setReloadKey((k) => k + 1); onChanged(); }} />
             <RunHistorySection

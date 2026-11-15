@@ -91,3 +91,49 @@ for (const width of [1243, 900]) {
     await app.context().tracing.stop({ path: testInfo.outputPath(`lifecycle-${width}.zip`) });
   });
 }
+
+for (const locale of ["en", "ko"] as const) {
+  test(`reloads a stale detail snapshot before completing in ${locale}`, async ({ browserName }, testInfo) => {
+    expect(browserName).toBe("chromium");
+    context = await launchSeededElectron({
+      settings: buildE2eBaseSettings(true, locale),
+      historyRows: [{ role: "user", content: "Review project work" }, { role: "assistant", content: "Ready." }],
+      prepareHome: (home) => {
+        mkdirSync(join(home, "work-board"), { recursive: true });
+        const now = new Date().toISOString();
+        writeFileSync(join(home, "work-board", "board.json"), JSON.stringify({ version: 1, nextId: 2, items: [
+          { id: 1, title: "Export notes", status: "planned", priority: "medium", created_at: now, updated_at: now },
+        ] }));
+      },
+    });
+    const { page, app } = context;
+    await setWindowSize(app, 1243, 900);
+    await page.getByTestId("main-toolbar").first().waitFor({ timeout: 60_000 });
+    await page.getByTestId("toolbar-work-board").click();
+    const panel = page.getByTestId("work-board-panel");
+    await expect(panel).toBeVisible();
+    if (await panel.getAttribute("data-layout") === "narrow") await page.getByTestId("work-board-tab-planned").click();
+    await page.getByTestId("work-board-card").getByRole("button", { name: "Export notes", exact: true }).click();
+    const title = page.getByTestId("work-board-detail-title");
+    await expect(title).toHaveValue("Export notes");
+    await app.context().tracing.start({ screenshots: true, snapshots: true });
+    await title.fill("Unsaved title");
+    const changed = await page.evaluate(() => window.aveApi.updateWorkBoardItem(1, { title: "Edited elsewhere" }));
+    expect("status" in changed && changed.status).toBe("updated");
+    await page.getByTestId("work-board-detail-toggle").click();
+    const alert = page.getByTestId("work-board-detail-error");
+    await expect(alert).toHaveText(locale === "en"
+      ? "This item changed. Reload it to see the latest details before trying again. Reloading discards unsaved edits."
+      : "작업이 변경되었습니다. 항목을 다시 불러와 최신 내용을 확인한 뒤 다시 시도하세요. 저장하지 않은 편집 내용은 사라집니다.");
+    await expect(title).toHaveValue("Unsaved title");
+    expect(JSON.parse(readFileSync(join(context.aveHome, "work-board", "board.json"), "utf8")).items[0].status).toBe("planned");
+    await page.screenshot({ path: testInfo.outputPath(`stale-detail-${locale}.png`) });
+    await page.getByRole("button", { name: locale === "en" ? "Reload item" : "항목 다시 불러오기", exact: true }).click();
+    await expect(title).toHaveValue("Edited elsewhere");
+    await expect(alert).toHaveCount(0);
+    await page.getByTestId("work-board-detail-toggle").click();
+    await expect(page.getByTestId("work-board-detail-dialog")).toHaveCount(0);
+    expect(JSON.parse(readFileSync(join(context.aveHome, "work-board", "board.json"), "utf8")).items[0]).toMatchObject({ title: "Edited elsewhere", status: "completed" });
+    await app.context().tracing.stop({ path: testInfo.outputPath(`stale-detail-${locale}.zip`) });
+  });
+}
