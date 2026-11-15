@@ -1,3 +1,4 @@
+import { ReviewInspector } from "./work-board/ReviewInspector.js";
 import { workBoardStage } from "../../../shared/work-board-lifecycle.js";
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
@@ -1578,6 +1579,7 @@ export function WorkBoardPanel({
   }, [approvalFocusKey, approvalShowAll, narrow]);
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [reviewId, setReviewId] = useState<number | null>(null);
   const [detailId, setDetailId] = useState<number | null>(null);
   // True while the open detail was reached from a conversation row: that arrival is about the run, so the latest transcript
   // opens with it.
@@ -1749,6 +1751,11 @@ export function WorkBoardPanel({
     return unsub;
   }, [api, refresh]);
 
+  useEffect(() => {
+    if (typeof api.onWorkApprovalsChanged !== "function") return undefined;
+    return api.onWorkApprovalsChanged(() => { void refresh(); });
+  }, [api, refresh]);
+
   // 확인 필요 actions. Proposals go through their own accept/dismiss channels; an accepted proposal becomes an ordinary item, and
   // "추가하고 계획" hands its id to the host's plan → approve → execute run (the plugin supplied nothing executable).
   const approvalActions = useMemo<WorkApprovalActions>(() => ({
@@ -1781,7 +1788,11 @@ export function WorkBoardPanel({
   const onComplete = useCallback((id: number) => void handleComplete(id), [handleComplete]);
   const onReopen = useCallback((id: number) => void handleReopen(id), [handleReopen]);
   const onRun = useCallback((id: number) => runItem(id), [runItem]);
-  const onOpenDetail = useCallback((id: number) => setDetailId(id), []);
+  const onOpenDetail = useCallback((id: number) => {
+    const item = items.find((entry) => entry.id === id);
+    if (item && workBoardStage(item) === "review") setReviewId(id);
+    else setDetailId(id);
+  }, [items]);
   const onOpenRecord = useCallback((id: number) => {
     setDetailId(id);
     setDetailOpensLatestRun(true);
@@ -2042,6 +2053,10 @@ export function WorkBoardPanel({
         {(!narrow || narrowTab === "overview") && (
           <>
             {columns}
+            {review.find((item) => item.id === reviewId) && (
+              <ReviewInspector key={reviewId} item={review.find((item) => item.id === reviewId)!} api={api}
+                onChanged={() => { void refresh(); }} onClose={() => setReviewId(null)} onOpenDetail={setDetailId} />
+            )}
             <div className="border-t pt-4">
               <ReportsSection api={api} project={project} />
             </div>
