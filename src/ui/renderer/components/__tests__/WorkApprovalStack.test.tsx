@@ -281,9 +281,15 @@ describe("Work Board — narrow width", () => {
     fireEvent.click(screen.getByTestId("work-board-tab-overview"));
     // The overview shows one status lane at a time below 900px (livestep case 14); 진행 중 first.
     expect(screen.getByTestId("work-board-status-tabs")).toBeTruthy();
+    expect(within(screen.getByTestId("work-board-status-tabs")).getAllByRole("tab").map((tab) => tab.getAttribute("data-testid"))).toEqual([
+      "work-board-tab-planned", "work-board-tab-in-progress", "work-board-tab-review", "work-board-tab-completed",
+    ]);
     expect(screen.getByTestId("work-board-column-in-progress")).toBeTruthy();
     fireEvent.click(screen.getByTestId("work-board-tab-planned"));
     expect(screen.getByTestId("work-board-column-planned")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("work-board-tab-review"));
+    expect(screen.getByTestId("work-board-column-review")).toBeTruthy();
+    expect(screen.queryByTestId("work-board-column-planned")).toBeNull();
     expect((screen.getByTestId("work-board-approvals-region") as HTMLElement).hidden).toBe(true);
   });
 
@@ -392,7 +398,7 @@ describe("Work Board — count and columns beside the 확인 필요 stack", () =
   });
 
   // jsdom does no layout, so this pins the classes that decide it; the heights themselves were measured in the running app.
-  it("gives the columns a floor and lets them fill, instead of absorbing the stack's height", async () => {
+  it("gives all four lifecycle columns a floor and lets them fill beside the approval stack", async () => {
     const { api } = stubApi();
     render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
 
@@ -404,9 +410,11 @@ describe("Work Board — count and columns beside the 확인 필요 stack", () =
     expect(grid.some((c) => c.startsWith("sm:"))).toBe(false);
     // min-h-0 here let the grid take the whole deficit and squash the columns to their headers.
     expect(grid).not.toContain("min-h-0");
-    expect(grid).toEqual(expect.arrayContaining(["flex-1", "auto-rows-[20rem]", "@2xl:min-h-[20rem]", "@2xl:grid-cols-3"]));
+    expect(grid).toEqual(expect.arrayContaining(["flex-1", "auto-rows-[20rem]", "@2xl:min-h-[20rem]", "@2xl:grid-cols-4"]));
 
-    for (const id of ["work-board-column-planned", "work-board-column-in-progress", "work-board-column-completed"]) {
+    const laneIds = ["work-board-column-planned", "work-board-column-in-progress", "work-board-column-review", "work-board-column-completed"];
+    expect(Array.from(columns.children).map((column) => column.getAttribute("data-testid"))).toEqual(laneIds);
+    for (const id of laneIds) {
       const column = screen.getByTestId(id);
       expect(column.parentElement).toBe(screen.getByTestId("work-board-columns"));
       // The list scrolls inside the height the grid gives it; a floor of its own would be clipped by the section.
