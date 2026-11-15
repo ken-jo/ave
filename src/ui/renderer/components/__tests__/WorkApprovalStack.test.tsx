@@ -49,8 +49,9 @@ function routine(overrides: Partial<RoutineAttentionApprovalView> = {}): Routine
 }
 
 function stubApi(items: WorkApprovalView[] = [proposal()], overrides: Partial<AveApi> = {}) {
-  let changed: (() => void) | null = null;
+  const changed = new Set<() => void>();
   const list = vi.fn(async () => ({ ok: true as const, items, total: items.length }));
+  const listBoard = vi.fn(async () => ({ status: "ok" as const, items: [] }));
   const accept = vi.fn(async () => ({
     status: "accepted" as const,
     itemId: 7,
@@ -68,9 +69,9 @@ function stubApi(items: WorkApprovalView[] = [proposal()], overrides: Partial<Av
   const run = vi.fn(async (_itemId: number) => ({ status: "completed" as const }));
   const noop = () => () => {};
   const api = {
-    listWorkBoard: async () => ({ status: "ok" as const, items: [] }),
+    listWorkBoard: listBoard,
     listWorkApprovals: list,
-    onWorkApprovalsChanged: (handler: () => void) => { changed = handler; return () => { changed = null; }; },
+    onWorkApprovalsChanged: (handler: () => void) => { changed.add(handler); return () => { changed.delete(handler); }; },
     acceptWorkProposal: accept,
     dismissWorkProposal: dismiss,
     runWorkBoardItem: run,
@@ -81,7 +82,7 @@ function stubApi(items: WorkApprovalView[] = [proposal()], overrides: Partial<Av
     onWorkBoardRunFailed: noop,
     ...overrides,
   } as unknown as AveApi;
-  return { api, list, accept, dismiss, run, fireChanged: () => changed?.() };
+  return { api, list, listBoard, accept, dismiss, run, fireChanged: () => { for (const handler of changed) handler(); } };
 }
 
 describe("Work Board — 확인 필요 stack", () => {
@@ -193,12 +194,21 @@ describe("Work Board — 확인 필요 stack", () => {
   });
 
   it("re-lists when main says a source changed", async () => {
-    const { api, list, fireChanged } = stubApi();
-    render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
+    const items = [proposal()];
+    const { api, list, listBoard, fireChanged } = stubApi(items);
+    const { unmount } = render(withApprovalSurface(<WorkBoardPanel api={api} project={PROJECT} />));
     await screen.findByTestId("work-approval-head");
     const before = list.mock.calls.length;
+    const boardBefore = listBoard.mock.calls.length;
+    items[0] = proposal({ title: "Updated work proposal" });
     await act(async () => fireChanged());
     await waitFor(() => expect(list.mock.calls.length).toBe(before + 1));
+    expect(listBoard).toHaveBeenCalledTimes(boardBefore + 1);
+    expect(screen.getByTestId("work-approval-title").textContent).toBe("Updated work proposal");
+    unmount();
+    await act(async () => fireChanged());
+    expect(list).toHaveBeenCalledTimes(before + 1);
+    expect(listBoard).toHaveBeenCalledTimes(boardBefore + 1);
   });
 
   it("offers kind filters only for a long list", async () => {
