@@ -13,7 +13,7 @@ import { upstreamSrtWinReceiptFixtures } from "../../src/__tests__/support/srt-w
 
 const SRT_WIN_BUILD_RECEIPTS = upstreamSrtWinReceiptFixtures();
 const require = createRequire(import.meta.url);
-const { BUNDLED_RENDERER_NOTICES } = require("../../scripts/lib/bundled-renderer-notices.cjs") as { BUNDLED_RENDERER_NOTICES: readonly { packageName: string; noticeFile: string }[] };
+const BUNDLED_RENDERER_NOTICES = require("../../scripts/lib/bundled-renderer-notices.json") as readonly { packageName: string; noticeFile: string }[];
 const { readUpstreamSrtWinInput } = require("../../scripts/lib/srt-win-integrity.cjs") as {
   readUpstreamSrtWinInput: (path: string, arch: string) => Buffer;
 };

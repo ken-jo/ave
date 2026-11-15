@@ -5,8 +5,8 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const require = createRequire(import.meta.url);
-const { BUNDLED_RENDERER_NOTICES, assertBundledRendererNotices } = require("../../scripts/lib/bundled-renderer-notices.cjs") as {
-  BUNDLED_RENDERER_NOTICES: readonly { packageName: string; noticeFile: string; sha256: string }[];
+const BUNDLED_RENDERER_NOTICES = require("../../scripts/lib/bundled-renderer-notices.json") as readonly { packageName: string; noticeFile: string; sha256: string }[];
+const { assertBundledRendererNotices } = require("../../scripts/lib/bundled-renderer-notices.cjs") as {
   assertBundledRendererNotices: (resources: string) => void;
 };
 const roots: string[] = [];
