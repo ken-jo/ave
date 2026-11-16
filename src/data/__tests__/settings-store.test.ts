@@ -3336,9 +3336,25 @@ describe("SettingsService telemetry normalization", () => {
     await cleanupTmpDir(userDataPath);
   });
 
+  it("notifies live report consumers after the telemetry write is durable", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    const changed = vi.fn(() => expect(service.get("telemetry")).toMatchObject({ level: "off", crashReportingEnabled: false }));
+    service.onChanged("telemetry", changed);
+    await service.patch({ telemetry: { level: "off" } });
+    expect(changed).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a legacy crash opt-out until the new level is explicitly confirmed", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ telemetry: { enabled: true, crashReportingEnabled: false } });
+    expect(service.get("telemetry")).toMatchObject({ level: "all", crashReportingEnabled: false });
+    await service.patch({ telemetry: { level: "all", telemetryPromptAnswered: true } });
+    expect(service.get("telemetry")).toMatchObject({ level: "all", crashReportingEnabled: true });
+  });
+
   it("defaults to everything off and no destination", () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(s.get("telemetry")).toEqual({ enabled: false, crashReportingEnabled: false });
+    expect(s.get("telemetry")).toEqual({ level: "off", enabled: false, crashReportingEnabled: false });
   });
 
   it("patches one field without disturbing the rest of the block", async () => {
@@ -3346,6 +3362,7 @@ describe("SettingsService telemetry normalization", () => {
     await s.patch({ telemetry: { endpoint: "https://metrics.corp.example/v1" } });
     await s.patch({ telemetry: { enabled: true } });
     expect(s.get("telemetry")).toEqual({
+      level: "all",
       enabled: true,
       crashReportingEnabled: false,
       endpoint: "https://metrics.corp.example/v1",
@@ -3362,12 +3379,13 @@ describe("SettingsService telemetry normalization", () => {
 
   it("drops a non-boolean switch and a non-string address, keeping the stored value", async () => {
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await s.patch({ telemetry: { enabled: true, sentryDsn: "https://k@sentry.example/1" } });
-    await s.patch({ telemetry: { enabled: "yes" as never, sentryDsn: 42 as never } });
+    await s.patch({ telemetry: { enabled: true, crashReportEndpoint: "https://reports.example/crash" } });
+    await s.patch({ telemetry: { enabled: "yes" as never, crashReportEndpoint: 42 as never } });
     expect(s.get("telemetry")).toEqual({
+      level: "all",
       enabled: true,
       crashReportingEnabled: false,
-      sentryDsn: "https://k@sentry.example/1",
+      crashReportEndpoint: "https://reports.example/crash",
     });
   });
 
@@ -3379,16 +3397,17 @@ describe("SettingsService telemetry normalization", () => {
           enabled: "true",
           crashReportingEnabled: true,
           endpoint: { url: "https://nope.example" },
-          sentryDsn: "  https://k@sentry.example/1  ",
+          crashReportEndpoint: "  https://reports.example/crash  ",
         },
       }),
       "utf-8",
     );
     const s = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(s.get("telemetry")).toEqual({
+      level: "crash",
       enabled: false,
       crashReportingEnabled: true,
-      sentryDsn: "https://k@sentry.example/1",
+      crashReportEndpoint: "https://reports.example/crash",
     });
   });
 });

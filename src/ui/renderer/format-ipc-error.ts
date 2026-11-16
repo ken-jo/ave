@@ -42,6 +42,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "file-reference-too-large": "fileEditDiff.referenceTooLarge",
   "file-reference-while-running": "fileEditDiff.referenceWhileRunning",
   // ── Trust / intent gate ──
+  "invalid-telemetry-level": "auditTab.telemetryInvalidLevel",
+  "invalid-telemetry-endpoint": "auditTab.telemetryInvalidEndpoint",
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
   "invalid-hook-review": "formatIpcError.invalidRequest",
   "hook-review-unavailable": "permissionsTab.hookReviewFailed",

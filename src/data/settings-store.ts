@@ -1,3 +1,4 @@
+import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags, type TelemetryLevel } from "../shared/telemetry-policy.js";
 import { isZoomLevel } from "../shared/app-zoom.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
@@ -656,11 +657,12 @@ export interface UpdateSettings {
   skippedVersion?: string;
 }
 
-/** Anonymous opt-in telemetry defaults off. Sending requires both a recorded consent choice and enabled=true. */
+/** Reporting defaults off; the normalized level controls crash, error and usage consent. */
 export interface TelemetrySettings {
+  /** Always present in normalized settings; optional at the legacy migration boundary. */
+  level?: TelemetryLevel;
   enabled: boolean;
   endpoint?: string;
-  sentryDsn?: string;
   crashReportEndpoint?: string;
   crashReportingEnabled?: boolean;
   /** True once the user records a telemetry choice in settings. */
@@ -984,6 +986,7 @@ export class SettingsService {
   }
 
   private async patchSettings(partial: Parameters<SettingsService["patch"]>[0]): Promise<AppSettings> {
+    if (partial.telemetry?.level !== undefined && !isTelemetryLevel(partial.telemetry.level)) throw new Error("Invalid telemetry level");
     const terminalFontPatch = partial.appearance?.terminalFont;
     if (terminalFontPatch && Object.prototype.hasOwnProperty.call(terminalFontPatch, "family") && !isValidFontFamilyOverride(terminalFontPatch.family)) {
       throw new Error("Invalid terminal font family");
@@ -1109,6 +1112,12 @@ export class SettingsService {
       );
       for (const key of TELEMETRY_TEXT_KEYS) {
         acceptTelemetryText(nextTelemetry, key, partial.telemetry[key], PATCHED_FIELD);
+      }
+      if (partial.telemetry.level !== undefined) {
+        nextTelemetry.level = partial.telemetry.level;
+        Object.assign(nextTelemetry, telemetryLevelFlags(partial.telemetry.level));
+      } else if (partial.telemetry.enabled !== undefined || partial.telemetry.crashReportingEnabled !== undefined) {
+        nextTelemetry.level = telemetryLevel({ enabled: nextTelemetry.enabled, crashReportingEnabled: nextTelemetry.crashReportingEnabled });
       }
       this.settings.telemetry = nextTelemetry;
     }
@@ -1312,7 +1321,7 @@ export class SettingsService {
       };
     }
     await this.commitPresetKeyInvalidation(previousSettings, providerPresetSecretInvalidationIds);
-    for (const key of ["permissions", "appearance", "shortcuts"] as const) {
+    for (const key of ["permissions", "appearance", "shortcuts", "telemetry"] as const) {
       if (!partial[key]) continue;
       for (const listener of this.changeListeners.get(key) ?? []) {
         try { listener(); } catch (error) { log.warn({ error }, "settings change listener failed"); }

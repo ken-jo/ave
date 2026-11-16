@@ -1,89 +1,65 @@
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import { TelemetrySection } from "../TelemetrySection.js";
 import { installMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 
-const BASE_SETTINGS = {
-  ...MOCK_DEFAULT_SETTINGS,
-  telemetry: { enabled: false, crashReportingEnabled: false },
-};
+const BASE_SETTINGS = { ...MOCK_DEFAULT_SETTINGS, telemetry: { level: "off", enabled: false, crashReportingEnabled: false } };
 
 describe("TelemetrySection", () => {
-  it("turns telemetry back off after a consent answer that turned it on", async () => {
-    const api = installMockAveApi({
-      settings: {
-        ...BASE_SETTINGS,
-        telemetry: { enabled: true, telemetryPromptAnswered: true },
-      },
-    });
+  it.each([
+    ["off", false, false], ["crash", false, true], ["error", true, true], ["all", true, true],
+  ] as const)("records a coherent %s consent level", async (level, enabled, crashReportingEnabled) => {
+    const initial = level === "off" ? "all" : "off";
+    const api = installMockAveApi({ settings: { ...BASE_SETTINGS, telemetry: { ...BASE_SETTINGS.telemetry, level: initial } } });
     const { findByTestId } = render(<TelemetrySection />);
-    const toggle = await findByTestId("telemetry-enabled");
-    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("true"));
-    fireEvent.click(toggle);
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalledWith({
-        telemetry: { enabled: false, telemetryPromptAnswered: true },
-      });
-    });
+    const select = await findByTestId("telemetry-level") as HTMLSelectElement;
+    await waitFor(() => expect(select.value).toBe(initial));
+    fireEvent.change(select, { target: { value: level } });
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ telemetry: { level, enabled, crashReportingEnabled, telemetryPromptAnswered: true } }));
   });
-
-  it("marks the consent prompt answered when the switch is the answer", async () => {
-    const api = installMockAveApi({ settings: BASE_SETTINGS });
+  it("discloses preserved crash opt-out and asks for explicit confirmation", async () => {
+    const api = installMockAveApi({ settings: { ...BASE_SETTINGS, telemetry: { enabled: true, level: "all", crashReportingEnabled: false } } });
     const { findByTestId } = render(<TelemetrySection />);
-    const toggle = await findByTestId("telemetry-enabled");
-    await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
-    fireEvent.click(toggle);
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalledWith({
-        telemetry: { enabled: true, telemetryPromptAnswered: true },
-      });
-    });
+    const notice = await findByTestId("telemetry-legacy-consent");
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    fireEvent.click(within(notice).getByRole("button"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ telemetry: { level: "all", enabled: true, crashReportingEnabled: true, telemetryPromptAnswered: true } }));
   });
-
-  it("loads the stored endpoint and persists an edited one on save", async () => {
-    const api = installMockAveApi({
-      settings: {
-        ...BASE_SETTINGS,
-        telemetry: { enabled: true, endpoint: "https://old.example.com/v1" },
-      },
-    });
-    const { findByTestId } = render(<TelemetrySection />);
-    const input = (await findByTestId("telemetry-endpoint")) as HTMLInputElement;
-    await waitFor(() => expect(input.value).toBe("https://old.example.com/v1"));
-    fireEvent.change(input, { target: { value: "  https://new.example.com/v1  " } });
+  it("loads the stored endpoint and saves only authorized HTTPS destinations", async () => {
+    const api = installMockAveApi({ settings: { ...BASE_SETTINGS, telemetry: { ...BASE_SETTINGS.telemetry, endpoint: "https://reports.example/old" } }, telemetryAllowedHosts: ["reports.example"] });
+    const { findByTestId, getByRole } = render(<TelemetrySection />);
+    const input = await findByTestId("telemetry-endpoint") as HTMLInputElement;
+    await waitFor(() => expect(input.disabled).toBe(false));
+    fireEvent.change(input, { target: { value: "http://reports.example/unsafe" } });
     fireEvent.click(await findByTestId("telemetry-endpoint-save"));
-    await waitFor(() => {
-      expect(api.updateSettings).toHaveBeenCalledWith({
-        telemetry: { endpoint: "https://new.example.com/v1" },
-      });
-    });
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    expect(getByRole("alert")).toBeTruthy();
+    expect(input.value).toBe("http://reports.example/unsafe");
+    fireEvent.change(input, { target: { value: " https://reports.example/new " } });
+    fireEvent.click(await findByTestId("telemetry-endpoint-save"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ telemetry: { endpoint: "https://reports.example/new" } }));
   });
-
-  it("shows the allowed hosts the endpoint is bounded by", async () => {
-    installMockAveApi({ settings: BASE_SETTINGS, telemetryAllowedHosts: ["metrics.corp.example", "localhost"] });
-    const { findByTestId } = render(<TelemetrySection />);
-    const hosts = await findByTestId("telemetry-allowed-hosts");
-    await waitFor(() => {
-      expect(hosts.textContent).toContain("metrics.corp.example, localhost");
-    });
+  it("keeps the previous consent visible and reports a rejected save", async () => {
+    const api = installMockAveApi({ settings: BASE_SETTINGS });
+    api.updateSettings.mockResolvedValueOnce({ ok: false, error: "invalid-input" });
+    const { findByTestId, findByRole } = render(<TelemetrySection />);
+    const select = await findByTestId("telemetry-level") as HTMLSelectElement;
+    await waitFor(() => expect(select.disabled).toBe(false));
+    fireEvent.change(select, { target: { value: "all" } });
+    await findByRole("alert");
+    expect(select.value).toBe("off");
   });
-
-  it("locks the Sentry DSN and says why when the environment supplies it", async () => {
-    installMockAveApi({ settings: BASE_SETTINGS, envForcedSettings: ["telemetry.sentryDsn"] });
-    const { findByTestId } = render(<TelemetrySection />);
-    const input = (await findByTestId("telemetry-sentry-dsn")) as HTMLInputElement;
-    await waitFor(() => expect(input.disabled).toBe(true));
-    const notice = await findByTestId("telemetry-sentry-dsn-forced");
-    expect(notice.textContent).toContain("AVE_SENTRY_DSN");
+  it("shows the enforced host list and removes the inactive integration field", async () => {
+    installMockAveApi({ settings: BASE_SETTINGS, telemetryAllowedHosts: ["metrics.example"] });
+    const { findByTestId, queryByTestId } = render(<TelemetrySection />);
+    await waitFor(async () => expect((await findByTestId("telemetry-allowed-hosts")).textContent).toContain("metrics.example"));
+    expect(queryByTestId("telemetry-sentry-dsn")).toBeNull();
   });
-
-  it("keeps the crash-report endpoint unreachable while crash reporting is off", async () => {
-    installMockAveApi({ settings: BASE_SETTINGS });
+  it("allows configuring the crash destination before granting reporting consent", async () => {
+    installMockAveApi({ settings: BASE_SETTINGS, telemetryAllowedHosts: ["metrics.example"] });
     const { findByTestId } = render(<TelemetrySection />);
-    const input = (await findByTestId("telemetry-crash-endpoint")) as HTMLInputElement;
-    await waitFor(() => expect(input.disabled).toBe(true));
-    fireEvent.click(await findByTestId("telemetry-crash-reporting"));
+    const input = await findByTestId("telemetry-crash-endpoint") as HTMLInputElement;
     await waitFor(() => expect(input.disabled).toBe(false));
   });
 });

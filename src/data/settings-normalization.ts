@@ -1,3 +1,4 @@
+import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags } from "../shared/telemetry-policy.js";
 import { LlmProviderSettingsError } from "../shared/custom-provider.js";
 import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode } from "../shared/accessibility-signals.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
@@ -988,10 +989,20 @@ export function normalizeTelemetry(input: unknown): TelemetrySettings {
   for (const key of TELEMETRY_TEXT_KEYS) {
     acceptTelemetryText(result, key, input[key], STORED_FIELD);
   }
+  if (input.level === undefined) {
+    result.level = telemetryLevel({ enabled: result.enabled, crashReportingEnabled: result.crashReportingEnabled });
+  } else if (isTelemetryLevel(input.level)) {
+    result.level = input.level;
+    if (input.crashReportingEnabled !== false || result.level === "off") Object.assign(result, telemetryLevelFlags(result.level));
+  } else {
+    log.warn("telemetry.level invalid, disabling reporting");
+    result.level = "off";
+    Object.assign(result, telemetryLevelFlags("off"));
+  }
   return result;
 }
 
-export const TELEMETRY_TEXT_KEYS = ["endpoint", "sentryDsn", "crashReportEndpoint"] as const;
+export const TELEMETRY_TEXT_KEYS = ["endpoint", "crashReportEndpoint"] as const;
 
 /** Require real booleans; truthy strings must not enable document moves on update. */
 export function normalizeHomeDocs(input: unknown): HomeDocsSettings {
@@ -1001,7 +1012,7 @@ export function normalizeHomeDocs(input: unknown): HomeDocsSettings {
   return result;
 }
 
-/** Clearing an endpoint deletes its key; warn by field name only because URLs and DSNs may contain secrets. */
+/** Clearing an endpoint deletes its key; warnings name the field without exposing address contents. */
 export function acceptTelemetryText(
   target: TelemetrySettings,
   key: (typeof TELEMETRY_TEXT_KEYS)[number],

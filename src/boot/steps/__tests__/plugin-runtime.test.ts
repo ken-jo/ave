@@ -136,7 +136,7 @@ import {
   initPluginRuntime,
   sanitizePluginPendingPrompt,
 } from "../plugin-runtime.js";
-import { emitEvent } from "../../types.js";
+import { emitEvent, onEvent } from "../../types.js";
 import { setAppShutdownStarted } from "../../../main/app-state.js";
 import { createHash } from "node:crypto";
 import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../../lib/confined-process-phase.js";
@@ -422,6 +422,20 @@ describe("initPluginRuntime HostApi factory", () => {
     );
     return { api, networkFetch, bootAuditLogger };
   }
+
+  it("publishes a bounded failure category without the private diagnostic message", async () => {
+    await buildHostFetchApi();
+    runtimeTestState.runtime.getPluginManifest.mockReturnValueOnce({ id: "sample", version: "1.2.3" } as never);
+    const events: unknown[] = [];
+    const unsubscribe = onEvent("plugin.lifecycle.failed", (data) => events.push(data));
+    try {
+      const audit = runtimeTestState.capturedRuntimeOptions?.auditLog as (level: string, message: string, data: unknown) => void;
+      audit("error", "plugin_load_crashed", { pluginId: "sample", reason: "private@example.test /private/secret" });
+      expect(events).toEqual([{ pluginId: "sample", version: "1.2.3", errorClass: "PluginRuntimeError" }]);
+      expect(JSON.stringify(events)).not.toContain("private@example.test");
+      expect(JSON.stringify(events)).not.toContain("/private/secret");
+    } finally { unsubscribe(); }
+  });
 
   it("hostFetch denies non-allowlisted hosts and emits hostname-only audit detail", async () => {
     const { api, networkFetch, bootAuditLogger } = await buildHostFetchApi();

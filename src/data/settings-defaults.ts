@@ -87,6 +87,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     autoCheckEnabled: true,
   },
   telemetry: {
+    level: "off",
     enabled: false,
     crashReportingEnabled: false,
   },

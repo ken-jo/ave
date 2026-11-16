@@ -10,7 +10,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { aveHome } from "../../shared/ave-home.js";
 import { registerBootPluginShutdown, registerShutdownHook } from "../../main/app-shutdown.js";
-import { onEvent as onHostEvent } from "../types.js";
+import { emitEvent, onEvent as onHostEvent } from "../types.js";
 import { AuditLogger } from "../../audit/audit-logger.js";
 import { PluginRuntime } from "../../plugins/runtime.js";
 import { resolvePluginChildEntryPath } from "../../permissions/confined-child.js";
@@ -248,6 +248,10 @@ export async function initPluginRuntime(
     message: string,
     data?: unknown,
   ): void => {
+    if (level === "error" && message === "plugin_load_crashed" && data && typeof data === "object" && "pluginId" in data && typeof data.pluginId === "string") {
+      const manifest = pluginRuntime?.getPluginManifest(data.pluginId);
+      if (manifest) emitEvent("plugin.lifecycle.failed", { pluginId: manifest.id, version: manifest.version, errorClass: "PluginRuntimeError" });
+    }
     try {
       bootAuditLogger.log({
         timestamp: new Date().toISOString(),

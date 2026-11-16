@@ -1,3 +1,4 @@
+import { DEFAULT_SETTINGS } from "../../src/data/settings-defaults.js";
 import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import type { TurnReviewResult } from "../../src/shared/turn-change-review.js";
 import type { AveApi } from "../../src/ui/renderer/types.js";
@@ -166,6 +167,8 @@ export const MOCK_DEFAULT_SETTINGS = {
   // Z onboarding chain; mark the seed user as already past onboarding so the first-boot probe dispatches `probe-skip` and the chain advances straight to
   // `done`. Without this, the chain stays at the new default initial stage ("showcase") and masks the ChatView empty-state branch that several tests rely on.
   features: { idlePreferenceRefresh: false, onboardingCompleted: true },
+  // Every stored snapshot carries the telemetry consent block; its level is read wherever the diagnostics section mounts.
+  telemetry: DEFAULT_SETTINGS.telemetry,
 };
 
 function seedSettings(override: unknown): unknown {

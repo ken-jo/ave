@@ -67,11 +67,6 @@ export const ENV_BACKED_SETTINGS: readonly EnvBackedSetting[] = Object.freeze([
     envVar: "AVE_CORP_CA_CN",
     forcedValue: forcesTextWhenNonEmpty,
   },
-  {
-    settingsPath: "telemetry.sentryDsn",
-    envVar: "AVE_SENTRY_DSN",
-    forcedValue: forcesTextWhenNonEmpty,
-  },
   // Report the raw price-correction blob as forced even if parsing yields no entries; parsing owns whole-list precedence.
   {
     settingsPath: "llm.pricingOverrides",

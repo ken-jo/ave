@@ -18,6 +18,7 @@
  *     timer ticks + explicit flush() calls can't duplicate-submit a batch.
  */
 import { randomUUID } from "node:crypto";
+import { telemetryLevel } from "../shared/telemetry-policy.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { TelemetrySettings } from "../data/settings-store.js";
@@ -140,6 +141,7 @@ export class PluginTelemetryClient {
    * or a long network call overlapping the next scheduled tick).
    */
   private flushInFlight: Promise<void> | null = null;
+  private inFlight: AbortController | undefined;
 
   constructor(private readonly deps: PluginTelemetryClientDeps) {
     this.deviceUuid = loadOrCreateDeviceUuid(deps.deviceUuidPath);
@@ -162,7 +164,8 @@ export class PluginTelemetryClient {
   private consentedEndpoint(): string | null | undefined {
     const s = this.deps.settings();
     if (!s.telemetryPromptAnswered) return null;
-    if (s.enabled !== true) return null;
+    const level = telemetryLevel(s);
+    if (level !== "error" && level !== "all") return null;
     return this.deps.endpoint();
   }
 
@@ -176,7 +179,7 @@ export class PluginTelemetryClient {
     opts: { slug: string; version: string; errorClass?: string },
   ): void {
     const endpoint = this.consentedEndpoint();
-    if (endpoint === null || endpoint === "") return;
+    if (endpoint === null || endpoint === "" || !this.eventAllowed(name)) return;
     const event: PluginTelemetryEvent = {
       v: 1,
       name,
@@ -191,6 +194,17 @@ export class PluginTelemetryClient {
     }
     this.queue.push(event);
     if (this.queue.length > MAX_HELD_EVENTS) this.queue.splice(0, this.queue.length - MAX_HELD_EVENTS);
+  }
+
+  private eventAllowed(name: PluginTelemetryEventName): boolean {
+    const level = telemetryLevel(this.deps.settings());
+    return level === "all" || (level === "error" && name === "plugin_error");
+  }
+
+  settingsChanged(): void {
+    const retained = this.queue.filter((event) => this.eventAllowed(event.name));
+    this.queue.splice(0, this.queue.length, ...retained);
+    this.inFlight?.abort();
   }
 
   start(): void {
@@ -223,11 +237,19 @@ export class PluginTelemetryClient {
       return;
     }
     if (endpoint === undefined || this.queue.length === 0) return;
+    const retained = this.queue.filter((event) => this.eventAllowed(event.name));
+    this.queue.splice(0, this.queue.length, ...retained);
+    if (this.queue.length === 0) return;
     const batch = this.queue.slice(0);
     const batchLen = batch.length;
+    const controller = new AbortController();
+    this.inFlight = controller;
     try {
       const res = await this.fetchImpl(endpoint, {
+        signal: controller.signal,
         method: "POST",
+        // The endpoint was checked against the allow-list; a redirect would carry the batch to a host that was never checked.
+        redirect: "error",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ events: batch }),
       });
@@ -235,9 +257,11 @@ export class PluginTelemetryClient {
         log.warn(`flush non-ok HTTP ${res.status}; re-queued ${batchLen} event(s)`);
         return;
       }
-      this.queue.splice(0, batchLen);
+      if (!controller.signal.aborted) this.queue.splice(0, batchLen);
     } catch (err) {
-      log.warn("flush failed (re-queued): %s", (err as Error).message);
+      if (!controller.signal.aborted) log.warn("flush failed (re-queued): %s", (err as Error).message);
+    } finally {
+      if (this.inFlight === controller) this.inFlight = undefined;
     }
   }
 

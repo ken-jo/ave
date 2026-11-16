@@ -1,5 +1,6 @@
+import { telemetryPatchError } from "../../shared/telemetry-policy.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
-import { dialog, ipcMain } from "electron";
+import { app, dialog, ipcMain } from "electron";
 import { validateExternalUrl } from "../../shared/external-url.js";
 import type { OpenOAuthLogin } from "../../main/oauth-login.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
@@ -603,6 +604,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   ipcMain.handle(CHANNELS.settings.update, async (e, partial) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.update, e); return UNAUTHORIZED_FRAME; }
+    if (partial?.telemetry !== undefined) {
+      const error = telemetryPatchError(partial.telemetry, { isPackaged: app.isPackaged, allowlistEnv: process.env.AVE_TELEMETRY_ALLOWLIST });
+      if (error) return { ok: false, error };
+    }
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "a2aRemote")) {
       return { ok: false, error: "a2a-remote-settings-main-owned" };
     }
@@ -1218,7 +1223,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   // Read-only. The allowlist bounds `telemetry.endpoint`, which the renderer can already write; so it is shown, never set: a
   // control the same party could widen is not a bound. Host names only, which is exactly what the endpoint field needs the user to know.
-  ipcMain.handle(CHANNELS.telemetry.allowedHosts, () => telemetryAllowedHosts());
+  ipcMain.handle(CHANNELS.telemetry.allowedHosts, (event) => {
+    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.telemetry.allowedHosts, event); return UNAUTHORIZED_FRAME; }
+    return telemetryAllowedHosts(process.env, app.isPackaged);
+  });
 
   return stopStatusChangedListener;
 }
