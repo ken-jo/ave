@@ -77,14 +77,19 @@ test("native size limits do not imply work-area clamping", async ({ app, mainWin
 
 test("renderer mismatch is distinct from native mismatch", async ({ app, mainWindow }, testInfo) => {
   await setWindowSize(app, 900, 720, mainWindow);
+  const initial = await readWindowGeometry(app, mainWindow);
+  // An exactly divisible UI size isolates zoom mismatch from fractional viewport rounding.
+  const requested = { width: 900 + initial.content.width - initial.ui.width, height: 720 + initial.content.height - initial.ui.height };
+  await setWindowSize(app, requested.width, requested.height, mainWindow);
   try {
     await withPageWindow(app, mainWindow, (window) => window.webContents.setZoomFactor(1.25));
     expect(await withPageWindow(app, mainWindow, (window) => window.webContents.getZoomFactor())).toBe(1.25);
     const geometry = await readWindowGeometry(app, mainWindow);
+    expect([geometry.ui.width, geometry.ui.height]).toEqual([900, 720]);
     await expect.poll(() => mainWindow.evaluate(() => [innerWidth, innerHeight]))
-      .toEqual([Math.floor(geometry.ui.width / geometry.zoom), Math.floor(geometry.ui.height / geometry.zoom)]);
+      .toEqual([geometry.ui.width / geometry.zoom, geometry.ui.height / geometry.zoom]);
     const zoomedViewport = await mainWindow.evaluate(() => [innerWidth, innerHeight]);
-    const failure: unknown = await setWindowSize(app, 900, 720, mainWindow).catch((error: unknown) => error);
+    const failure: unknown = await setWindowSize(app, requested.width, requested.height, mainWindow).catch((error: unknown) => error);
     writeFileSync(testInfo.outputPath("renderer-mismatch-diagnostics.json"), JSON.stringify({
       zoomFactor: await withPageWindow(app, mainWindow, (window) => window.webContents.getZoomFactor()),
       zoomedViewport, content: await withPageWindow(app, mainWindow, (window) => window.getContentSize()),
@@ -94,7 +99,7 @@ test("renderer mismatch is distinct from native mismatch", async ({ app, mainWin
     expect((failure as Error).message).toContain("renderer mismatch");
     expect((failure as Error).message).not.toContain("native mismatch");
     expect((failure as Error).message).not.toContain("clamped by work area");
-    expect((failure as Error).message).toContain("actual content 900x720");
+    expect((failure as Error).message).toContain(`actual content ${requested.width}x${requested.height}`);
     expect((failure as Error).cause).toBeDefined();
   } finally {
     await withPageWindow(app, mainWindow, (window) => window.webContents.setZoomFactor(1));
