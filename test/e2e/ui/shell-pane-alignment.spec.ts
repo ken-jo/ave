@@ -141,6 +141,58 @@ test("docked and overlay work cards share the inter-card gap", async () => {
   }
 });
 
+test("native resize edges stay outside the titlebar drag rectangle", async () => {
+  const context = await launchSeededElectron({ historyRows: [], settings: buildLlmSettings() });
+  try {
+    for (const [width, height] of [[950, 734], [1440, 900]]) {
+      await setWindowSize(context.app, width, height);
+      const regions = await context.page.evaluate(() => {
+        const band = document.querySelector('[data-testid^="custom-titlebar"]');
+        const drag = document.querySelector('[data-testid="titlebar-drag-region"]');
+        if (!band || !drag) throw new Error("Expected titlebar regions");
+        const bounds = drag.getBoundingClientRect();
+        // Regions compose in document order; later no-drag boxes exclude earlier drag boxes.
+        // Include pointer-transparent boxes, which still participate in native drag-region collection.
+        const regions = [...document.querySelectorAll("*")].flatMap(element => {
+          const style = getComputedStyle(element);
+          const mode = style.getPropertyValue("-webkit-app-region");
+          const rect = element.getBoundingClientRect();
+          return style.visibility === "visible" && rect.width > 0 && rect.height > 0 && (mode === "drag" || mode === "no-drag")
+            ? [{ mode, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }] : [];
+        });
+        const canDrag = (x: number, y: number) => regions.reduce((active, region) =>
+          x >= region.left && x < region.right && y >= region.top && y < region.bottom ? region.mode === "drag" : active, false);
+        const spacer = document.querySelector('[data-testid="main-toolbar-drag-band"]')?.getBoundingClientRect();
+        const button = band.querySelector("button")?.getBoundingClientRect();
+        if (!spacer || !button) throw new Error("Expected titlebar spacer and control");
+        return {
+          band: getComputedStyle(band).getPropertyValue("-webkit-app-region"),
+          drag: getComputedStyle(drag).getPropertyValue("-webkit-app-region"),
+          inset: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--chrome-gap-tight")),
+          bounds: { left: bounds.left, top: bounds.top, right: bounds.right },
+          interiorDrags: canDrag(spacer.left + spacer.width / 2, spacer.top + spacer.height / 2),
+          controlDrags: canDrag(button.left + button.width / 2, button.top + button.height / 2),
+          nativeEdgeDrags: [[1, 1], [innerWidth / 2, 1], [innerWidth - 1, 1], [1, 18], [innerWidth - 1, 18]]
+            .map(([x, y]) => canDrag(x, y)),
+          edges: [[1, 1], [innerWidth / 2, 1], [innerWidth - 1, 1], [1, 18], [innerWidth - 1, 18],
+            [1, innerHeight / 2], [innerWidth - 1, innerHeight / 2], [innerWidth / 2, innerHeight - 1]]
+            .map(([x, y]) => document.elementsFromPoint(x, y).map(element => getComputedStyle(element).getPropertyValue("-webkit-app-region"))),
+        };
+      });
+      expect(regions.band).toBe("none");
+      expect(regions.drag).toBe("drag");
+      expect(regions.bounds).toEqual({ left: regions.inset, top: regions.inset, right: width - regions.inset });
+      expect(regions.edges.every(stack => !stack.includes("drag"))).toBe(true);
+      expect(regions.interiorDrags).toBe(true);
+      expect(regions.controlDrags).toBe(false);
+      expect(regions.nativeEdgeDrags).toEqual([false, false, false, false, false]);
+      await test.info().attach(`resize-regions-${width}.json`, { body: JSON.stringify(regions, null, 2), contentType: "application/json" });
+    }
+  } finally {
+    await teardownSeededElectron(context, { terminate: true });
+  }
+});
+
 test("pane cards follow a changed shared card-top token", async () => {
   const testInfo = test.info();
   const context = await launchSeededElectron({ historyRows: [], settings: buildLlmSettings() });
