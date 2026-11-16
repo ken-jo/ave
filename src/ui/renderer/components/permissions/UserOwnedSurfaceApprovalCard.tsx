@@ -6,6 +6,14 @@ import { canonicalStringify } from "../../../../shared/canonical-json.js";
 import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
 import type { ApprovalChoice, ApprovalRequest } from "../../types.js";
 
+/** The pipeline's reasons for a user-owned-surface card that are fixed sentences: shown in the user's language by code. Any other reason (a rule's own text, an exfiltration
+ * finding) is the host's and is shown as sent. */
+const SURFACE_REASON_KEYS: Readonly<Record<string, string>> = {
+  "user-owned-surface-ask": "toolApprovalDialog.surfaceReasonAsk",
+  "user-owned-surface-human-required": "toolApprovalDialog.surfaceReasonHumanRequired",
+  "user-owned-surface-review": "toolApprovalDialog.surfaceReasonReview",
+};
+
 /** The host-terminal command as the card shows it above its choices. */
 export interface HostTerminalCommandFacts {
   /** The exact command text the approval types. */
@@ -35,6 +43,9 @@ export function UserOwnedSurfaceApprovalCard({ request, conversationLabel, inter
   const realShellWarning = request.userOwnedSurface === "host-terminal" ? t("toolApprovalDialog.hostTerminalWarning") : null;
   const selectedDescription = selection === "allow" ? t("toolApprovalDialog.surfaceAllowDescription")
     : selection === "auto" ? t("toolApprovalDialog.surfaceAutoDescription") : t("toolApprovalDialog.surfaceAskDescription");
+  const reasonKey = request.reasonCode === undefined ? undefined : SURFACE_REASON_KEYS[request.reasonCode];
+  // A relayed request keeps the principal the host put in front of its reason.
+  const reason = reasonKey === undefined ? request.reason : [request.approvalReasonPrefix, t(reasonKey)].filter(Boolean).join(" ");
   const answer = (allow: boolean) => {
     if (disabled || answered.current) return;
     answered.current = true;
@@ -67,7 +78,7 @@ export function UserOwnedSurfaceApprovalCard({ request, conversationLabel, inter
       <details className="min-h-0 shrink overflow-hidden rounded border open:flex open:flex-col" data-testid="user-owned-surface-review-details">
         <summary className="shrink-0 cursor-pointer px-2 py-1 text-xs font-medium" title={t("toolApprovalDialog.reviewDetailsHint")}>{t("toolApprovalDialog.reviewDetails")}</summary>
         <div className="min-h-0 max-h-32 space-y-2 overflow-y-auto border-t p-2 text-xs" data-testid="user-owned-surface-details-content">
-          <p>{request.reason}</p>
+          <p data-testid="user-owned-surface-reason">{reason}</p>
           {targetDescription && <p className="break-words" data-testid="user-owned-surface-target">{targetDescription}</p>}
           {notes.filter((note) => note !== realShellWarning && note !== command?.lookalikeNote).map((note) => <p key={note} className="text-muted-foreground" data-testid="user-owned-surface-note">{note}</p>)}
           <p className="font-medium">{t("toolApprovalDialog.showFullInput")}</p>

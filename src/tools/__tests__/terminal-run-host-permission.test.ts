@@ -185,6 +185,8 @@ describe("terminal_run host permission", () => {
     expect(denied.request).toMatchObject({
       toolName: "terminal_run",
       userOwnedSurface: "host-terminal",
+      // The card localizes this fixed reason by its code.
+      reasonCode: "user-owned-surface-ask",
       durableApprovalRecordAllowed: false,
       hostTerminal: { tabId: HOST, sessionId: "pane", shell: "zsh", physicalCwd: canonicalizePathForMatch(dir), command: "printf ready" },
       approvalMemory: { kind: "key", scope: { kind: "terminal-command", lane: "manual", tabId: HOST, sessionId: "pane", turnId: "turn-1", controlGeneration: 1 } },
@@ -264,6 +266,8 @@ for (const surfaceChoice of ["allow", "auto", "ask"] as const) {
     expect(actual.decision.forceModal).toBeUndefined();
     expect(actual.requestAndWait).toHaveBeenCalledTimes(1);
     expect(actual.request).toMatchObject({ userOwnedSurface: "host-terminal", userOwnedSurfaceReviewFallback: true });
+    // The ordinary card draws the guardrail with its finding: it is not sent the decision's code.
+    expect(actual.request).not.toHaveProperty("reasonCode");
     expect(actual.request?.forceExplicit).toBeUndefined();
     expect(actual.review).not.toHaveBeenCalled();
     expect(actual.surfaceChoice).toBe(surfaceChoice);

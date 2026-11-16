@@ -904,12 +904,19 @@ describe("browser tools", () => {
   it("uses a native normal fallback card when current Auto review cannot confirm the action", async () => {
     const logical = vi.fn(async () => ({ consistent: false, reason: "The requested action is outside the current step." }));
     const { run, cards, page, userTab } = harness({ surfaceChoice: "auto", logicalReview: logical });
-    const tab = userTab("https://a.example/");
-    expect((await run(BROWSER_TOOL.snapshot, { tabId: tab.handle })).isError).toBe(false);
-    expect(logical).toHaveBeenCalledTimes(1);
-    expect(cards).toHaveLength(2);
-    expect(cards[1]).toMatchObject({ userOwnedSurface: "browser", userOwnedSurfaceReviewFallback: true, allowedChoices: ["allow-once", "deny-once"], exactRecordAllowed: false });
-    expect(page.calls).toHaveLength(1);
+    const asked = vi.spyOn(ApprovalGate.prototype, "requestAndWait");
+    try {
+      const tab = userTab("https://a.example/");
+      expect((await run(BROWSER_TOOL.snapshot, { tabId: tab.handle })).isError).toBe(false);
+      expect(logical).toHaveBeenCalledTimes(1);
+      expect(cards).toHaveLength(2);
+      expect(cards[1]).toMatchObject({ userOwnedSurface: "browser", userOwnedSurfaceReviewFallback: true, allowedChoices: ["allow-once", "deny-once"], exactRecordAllowed: false });
+      // The surface card shows its own sentence for the code that asked; the fallback the ordinary card draws is asked without it.
+      expect(asked.mock.calls.map(([request]) => request.reasonCode)).toEqual(["user-owned-surface-ask", undefined]);
+      expect(page.calls).toHaveLength(1);
+    } finally {
+      asked.mockRestore();
+    }
   });
 
   it.each([BROWSER_TOOL.wait, BROWSER_TOOL.tabs])("covers user-owned observation and tab selection for %s", async name => {

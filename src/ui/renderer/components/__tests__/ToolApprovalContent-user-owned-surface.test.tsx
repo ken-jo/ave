@@ -6,6 +6,8 @@ import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import type { UserOwnedSurface } from "../../../../shared/permissions-events.js";
 import { t } from "../../../../i18n/runtime.js";
+import { en } from "../../../../i18n/messages/en.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 import { ToolApprovalContent } from "../ToolApprovalContent.js";
 import { useApproval } from "../../hooks/use-approval.js";
 
@@ -182,5 +184,34 @@ describe("shared user-owned surface approval card", () => {
   it("a browser card draws no command block", () => {
     renderApproval(request("browser"), vi.fn());
     expect(screen.queryByTestId("user-owned-surface-command-block")).toBeNull();
+  });
+
+  it("shows the pipeline's fixed reasons in the user's language by code, and the host's own text for any other", () => {
+    const reasonOf = (overrides: Partial<ApprovalRequest>) => {
+      const shown = renderApproval(request("host-terminal", overrides), vi.fn());
+      fireEvent.click(screen.getByText(t("toolApprovalDialog.reviewDetails")));
+      const text = screen.getByTestId("user-owned-surface-reason").textContent;
+      shown.unmount();
+      return text;
+    };
+    const english = "Choose how to approve actions on this user-owned surface.";
+    expect(reasonOf({ reason: english, reasonCode: "user-owned-surface-ask" })).toBe(t("toolApprovalDialog.surfaceReasonAsk"));
+    expect(reasonOf({ reason: "The action needs human confirmation.", reasonCode: "user-owned-surface-human-required" })).toBe(t("toolApprovalDialog.surfaceReasonHumanRequired"));
+    // A rule's text and an unknown or absent code are shown exactly as the host sent them.
+    expect(reasonOf({ reason: "Ask before git push", reasonCode: "rule-ask" })).toBe("Ask before git push");
+    expect(reasonOf({ reason: english })).toBe(english);
+    // The principal a relayed request names stays in front of the localized sentence.
+    expect(reasonOf({ reason: `[remote] ${english}`, approvalReasonPrefix: "[remote]", reasonCode: "user-owned-surface-ask" })).toBe(`[remote] ${t("toolApprovalDialog.surfaceReasonAsk")}`);
+    for (const key of ["toolApprovalDialog.surfaceReasonAsk", "toolApprovalDialog.surfaceReasonHumanRequired", "toolApprovalDialog.surfaceReasonReview"] as const) {
+      expect(ko[key]).toMatch(/[가-힣]/);
+      expect(ko[key]).not.toBe(en[key]);
+    }
+  });
+
+  it("quotes the terminal's tab name so the Korean sentence does not read as a doubled word", () => {
+    for (const key of ["toolApprovalDialog.hostTerminalTarget", "toolApprovalDialog.hostTerminalWhere"] as const) {
+      expect(ko[key]).toContain("내 터미널 '{terminal}' ({shell})");
+      expect(en[key]).toContain('your own terminal "{terminal}" ({shell})');
+    }
   });
 });
