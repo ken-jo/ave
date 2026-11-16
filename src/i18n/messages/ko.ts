@@ -6518,4 +6518,11 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionsTab.ruleWildcardWarning": "이 허용 규칙은 여러 도구나 작업에 적용되며 앞으로 추가되는 도구에도 적용될 수 있습니다. 일치하는 작업이 일반 승인 없이 실행될 수 있습니다. 이 광범위한 허용 규칙을 추가할까요?",
   "permissionsTab.ruleWarningConfirm": "광범위 허용 규칙 추가",
   "permissionsTab.ruleWarningCancel": "취소",
+  "usageDashboard.invalidDateRange": "시작일이 종료일보다 늦지 않도록 선택하세요.",
+  "usageDashboard.retry": "다시 시도",
+  "usageDashboard.exportError": "사용량을 내보내지 못했습니다. 다시 시도하세요.",
+  "auditTab.invalidDateRange": "시작일은 종료일보다 늦을 수 없습니다.",
+  "auditTab.bundleDateRange": "내보낼 기간: {from} ~ {to}",
+  "auditTab.bundleAllDates": "전체 기간",
+  "auditTab.statsFailed": "감사 통계를 불러오지 못했습니다.",
 };

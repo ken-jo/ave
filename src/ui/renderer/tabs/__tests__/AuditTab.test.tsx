@@ -87,3 +87,44 @@ describe("AuditTab row timestamps", () => {
     expect(cell.textContent).not.toContain("2026-06-15T16:30");
   });
 });
+
+describe("AuditTab submitted filters", () => {
+  it("pages using the submitted filter rather than unsaved edits", async () => {
+    const { search } = installAuditApi();
+    search.mockResolvedValue({ entries: [], total: 120 });
+    const view = render(<AuditTab />);
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+    const original = search.mock.calls[0][0] as { dateFrom: string };
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.change(view.getByTestId("audit-date-from"), { target: { value: "2020-01-01" } });
+    fireEvent.click(await view.findByRole("button", { name: "›" }));
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(2));
+    expect(search.mock.calls[1][0]).toMatchObject({ dateFrom: original.dateFrom, offset: 50 });
+  });
+
+  it("refuses a reversed date range before IPC and gives a localized error", async () => {
+    const { search } = installAuditApi();
+    const view = render(<AuditTab />);
+    await waitFor(() => expect(search).toHaveBeenCalledTimes(1));
+    const { fireEvent } = await import("@testing-library/react");
+    fireEvent.change(view.getByTestId("audit-date-from"), { target: { value: "2027-01-01" } });
+    fireEvent.change(view.getByTestId("audit-date-to"), { target: { value: "2026-01-01" } });
+    const { t } = await import("../../../../i18n/runtime.js");
+    fireEvent.click(view.getByRole("button", { name: t("auditTab.searchButton") }));
+    expect(await view.findByRole("alert")).toHaveTextContent(t("auditTab.invalidDateRange"));
+    expect(search).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears old results when the submitted search fails", async () => {
+    const { search } = installAuditApi([{ timestamp: new Date().toISOString(), sessionId: "test", type: "turn", input: "previous data" }]);
+    const view = render(<AuditTab />);
+    await view.findByText("previous data");
+    search.mockRejectedValueOnce(new Error("raw internal error"));
+    const { fireEvent } = await import("@testing-library/react");
+    const { t } = await import("../../../../i18n/runtime.js");
+    fireEvent.click(view.getByRole("button", { name: t("auditTab.searchButton") }));
+    expect(await view.findByRole("alert")).toHaveTextContent(t("auditTab.searchFailed"));
+    expect(view.queryByText("previous data")).toBeNull();
+    expect(view.queryByText("raw internal error")).toBeNull();
+  });
+});

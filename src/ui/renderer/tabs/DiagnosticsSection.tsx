@@ -1,6 +1,6 @@
 /** Diagnostics exports and log tails are redacted; map host error codes to localized messages. */
 import { EmptyState } from "../../../components/ui/empty-state.js";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
 import { SettingsSection } from "../components/PageShell.js";
@@ -61,6 +61,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   const [logLevel, setLogLevel] = useState<string>("all");
   const [logLines, setLogLines] = useState<string[]>([]);
   const [logErr, setLogErr] = useState<string | null>(null);
+  const logRequestId = useRef(0);
 
   const [crashes, setCrashes] = useState<CrashDumpMeta[]>([]);
   const [crashErr, setCrashErr] = useState<string | null>(null);
@@ -89,6 +90,10 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   );
 
   const handleExport = useCallback(async () => {
+    if (defaultDateFrom && defaultDateTo && defaultDateFrom > defaultDateTo) {
+      setExportErr(t("auditTab.invalidDateRange"));
+      return;
+    }
     setExporting(true);
     setExportMsg(null);
     setExportErr(null);
@@ -113,18 +118,27 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   }, [defaultDateFrom, defaultDateTo, includeCrashDumps, mapError, t]);
 
   const refreshLogs = useCallback(async () => {
+    const id = ++logRequestId.current;
     setLogErr(null);
+    setLogLines([]);
     try {
       const res = await api().logs.tail({ lines: 200, level: logLevel });
+      if (id !== logRequestId.current) return;
       if (res.ok) setLogLines(res.lines);
       else setLogErr(mapError(res.error));
     } catch {
-      setLogErr(t("auditTab.errLogsTailFailed"));
+      if (id === logRequestId.current) setLogErr(t("auditTab.errLogsTailFailed"));
     }
   }, [logLevel, mapError, t]);
 
+  useEffect(() => {
+    void refreshLogs();
+    return () => { logRequestId.current++; };
+  }, [refreshLogs]);
+
   const refreshCrashes = useCallback(async () => {
     setCrashErr(null);
+    setCrashes([]);
     try {
       const res = await api().diagnostics.crashList();
       if (res.ok) setCrashes(res.dumps);
@@ -135,7 +149,6 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
   }, [mapError, t]);
 
   useEffect(() => {
-    void refreshLogs();
     void refreshCrashes();
     // Seed the checkbox from the persisted setting so it reflects the true SOT the export handler reads, not a hardcoded
     // default.
@@ -157,6 +170,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
       {/* ── Bundle export ── */}
       <SettingsSection data-settings-section="audit-bundle" title={t("auditTab.bundleSectionTitle")}>
         <p className="text-dense text-muted-foreground">{t("auditTab.bundleSectionDesc")}</p>
+        <p data-testid="diagnostics-export-range" className="text-dense text-muted-foreground">{t("auditTab.bundleDateRange", { from: defaultDateFrom || t("auditTab.bundleAllDates"), to: defaultDateTo || t("auditTab.bundleAllDates") })}</p>
         <label className="flex items-center gap-2 text-xs">
           <input
             type="checkbox"

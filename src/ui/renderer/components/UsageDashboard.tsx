@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Card, CardContent, CardHeader, CardTitle } from "../../../components/ui/card.js";
 import { Input } from "../../../components/ui/input.js";
@@ -108,33 +108,48 @@ export function UsageDashboard({
   const [customFrom, setCustomFrom] = useState<string>(daysAgoKey(29));
   const [customTo, setCustomTo] = useState<string>(todayKey());
   const [exporting, setExporting] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const requestId = useRef(0);
 
   const load = useCallback(() => {
-    let active = true;
-    setLoading(true);
+    const id = ++requestId.current;
+    setSummary(null);
+    setLoadError(null);
+    setExportError(null);
     const range = preset === "custom"
       ? { dateFrom: customFrom, dateTo: customTo }
       : presetToDates(preset);
-    api.getUsageRange(range)
-      .then((s) => { if (active) { setSummary(s); setLoading(false); } })
-      .catch(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [api, preset, customFrom, customTo]);
+    if (!range.dateFrom || !range.dateTo || range.dateFrom > range.dateTo) {
+      setLoading(false);
+      setLoadError(t("usageDashboard.invalidDateRange"));
+      return;
+    }
+    setLoading(true);
+    void api.getUsageRange(range)
+      .then((next) => { if (id === requestId.current) setSummary(next); })
+      .catch(() => { if (id === requestId.current) setLoadError(t("usageDashboard.loadError")); })
+      .finally(() => { if (id === requestId.current) setLoading(false); });
+  }, [api, preset, customFrom, customTo, t]);
 
   useEffect(() => {
-    const cleanup = load();
-    return cleanup;
+    load();
+    return () => { requestId.current++; };
   }, [load]);
 
   const handleExportCsv = useCallback(async () => {
     if (!summary) return;
     setExporting(true);
+    setExportError(null);
     try {
-      await api.exportUsageCsv(buildCsvRows(summary));
+      const result = await api.exportUsageCsv(buildCsvRows(summary));
+      if (!result.ok && !result.canceled) setExportError(t("usageDashboard.exportError"));
+    } catch {
+      setExportError(t("usageDashboard.exportError"));
     } finally {
       setExporting(false);
     }
-  }, [api, summary]);
+  }, [api, summary, t]);
 
   const header = (
     <SettingsPageHeader
@@ -147,11 +162,38 @@ export function UsageDashboard({
   // regardless of the usage-summary fetch state, since they own their own loading via useWorkspaceStats.
   const workspaceStats = <WorkspaceStatsSection api={api} onNavigate={onNavigate} />;
 
+  const periodPicker = (
+    <>
+      {/* The period picker heads the usage report, so it is where a link to
+          the report lands. */}
+      <Card data-settings-section="usage-summary" tabIndex={-1}>
+        <CardHeader className="pb-1 pt-3 px-3 flex-row items-center justify-between">
+          <CardTitle className="text-xs text-muted-foreground">{t("usageDashboard.periodSelect")}</CardTitle>
+          <div className="flex gap-1 flex-wrap">
+            {(["7d", "30d", "90d", "all", "custom"] as Preset[]).map((p) => (
+              <Button key={p} size="sm" variant={preset === p ? "default" : "outline"} onClick={() => setPreset(p)} className="h-6 px-2 text-dense">
+                {p === "all" ? t("usageDashboard.presetAll") : p === "custom" ? t("usageDashboard.presetCustom") : p}
+              </Button>
+            ))}
+          </div>
+        </CardHeader>
+        {preset === "custom" && (
+          <CardContent className="px-3 pb-3 flex gap-2 items-center">
+            <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateFrom")} />
+            <span className="text-xs text-muted-foreground">~</span>
+            <Input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateTo")} />
+          </CardContent>
+        )}
+      </Card>
+    </>
+  );
+
   if (loading) {
     return (
       <div className="space-y-5">
         {header}
         {workspaceStats}
+        {periodPicker}
         <div className="py-6 text-center text-sm text-muted-foreground">{t("usageDashboard.loading")}</div>
       </div>
     );
@@ -161,7 +203,9 @@ export function UsageDashboard({
       <div className="space-y-5">
         {header}
         {workspaceStats}
-        <div className="py-6 text-center text-sm text-muted-foreground">{t("usageDashboard.loadError")}</div>
+        {periodPicker}
+        <div role="alert" className="py-6 text-center text-sm text-destructive">{loadError ?? t("usageDashboard.loadError")}</div>
+        <Button variant="outline" onClick={load}>{t("usageDashboard.retry")}</Button>
       </div>
     );
   }
@@ -181,28 +225,8 @@ export function UsageDashboard({
     <div className="space-y-5" data-testid="usage-dashboard">
       {header}
       {workspaceStats}
-      {/* The period picker heads the usage report, so it is where a link to
-          the report lands. */}
-      <Card data-settings-section="usage-summary" tabIndex={-1}>
-        <CardHeader className="pb-1 pt-3 px-3 flex-row items-center justify-between">
-          <CardTitle className="text-xs text-muted-foreground">{t("usageDashboard.periodSelect")}</CardTitle>
-          <div className="flex gap-1 flex-wrap">
-            {(["7d", "30d", "90d", "all", "custom"] as Preset[]).map((p) => (
-              <Button key={p} size="sm" variant={preset === p ? "default" : "outline"} onClick={() => setPreset(p)} className="h-6 px-2 text-dense">
-                {p === "all" ? t("usageDashboard.presetAll") : p === "custom" ? t("usageDashboard.presetCustom") : p}
-              </Button>
-            ))}
-          </div>
-        </CardHeader>
-        {preset === "custom" && (
-          <CardContent className="px-3 pb-3 flex gap-2 items-center">
-            <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateFrom")} />
-            <span className="text-xs text-muted-foreground">~</span>
-            <Input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} className="h-7 w-auto px-2 py-1 text-xs" aria-label={t("usageDashboard.dateTo")} />
-            <Button size="sm" onClick={load} className="h-6 px-2 text-dense">{t("usageDashboard.search")}</Button>
-          </CardContent>
-        )}
-      </Card>
+      {periodPicker}
+      {exportError && <p role="alert" className="text-sm text-destructive">{exportError}</p>}
 
       <div className="grid grid-cols-3 gap-2">
         {([

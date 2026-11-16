@@ -6516,6 +6516,13 @@ export const en = {
   "permissionsTab.ruleWildcardWarning": "This allow rule matches multiple tools or actions and can also match future tools. Matching actions may run without routine approval. Add this broad allow rule?",
   "permissionsTab.ruleWarningConfirm": "Add broad allow rule",
   "permissionsTab.ruleWarningCancel": "Cancel",
+  "usageDashboard.invalidDateRange": "Choose a start date on or before the end date.",
+  "usageDashboard.retry": "Retry",
+  "usageDashboard.exportError": "Could not export usage. Try again.",
+  "auditTab.invalidDateRange": "The start date must be on or before the end date.",
+  "auditTab.bundleDateRange": "Export range: {from} to {to}",
+  "auditTab.bundleAllDates": "All dates",
+  "auditTab.statsFailed": "Could not load audit statistics.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

@@ -51,9 +51,9 @@ export function registerUsageHandlers(deps: IpcDeps): void {
     ];
     const lines = [
       headers.join(","),
-      ...rows.map((r) => headers.map((h) => JSON.stringify(r[h] ?? "")).join(",")),
+      ...rows.map((r) => headers.map((h) => typeof r[h] === "number" ? String(r[h]) : `"${String(r[h] ?? "").replaceAll('"', '""')}"`).join(",")),
     ];
-    writeFileSync(result.filePath, lines.join("\n"), "utf-8");
+    writeFileSync(result.filePath, lines.join("\r\n"), "utf-8");
     return { ok: true, filePath: result.filePath };
   });
 }

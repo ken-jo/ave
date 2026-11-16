@@ -1,5 +1,5 @@
 import { EmptyState } from "../../../components/ui/empty-state.js";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState, useRef } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -12,7 +12,6 @@ import { formatMediumDateTime } from "../../../shared/format-time.js";
 import { localDateKey, shiftLocalDateKey } from "../../../shared/local-date.js";
 import { DiagnosticsSection } from "./DiagnosticsSection.js";
 import { TelemetrySection } from "./TelemetrySection.js";
-import { errorMessage } from "../../../shared/error-message.js";
 import { shortSessionId } from "../../../shared/session-lookup.js";
 
 interface AuditStats {
@@ -61,61 +60,76 @@ export function AuditTab() {
   const [typeFilter, setTypeFilter] = useState("");
   const [textSearch, setTextSearch] = useState("");
   const [page, setPage] = useState(0);
+  const [submittedFilter, setSubmittedFilter] = useState(() => ({ dateFrom, dateTo, type: "", textSearch: "" }));
+  const searchRequestId = useRef(0);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<AuditSearchResult>({ entries: [], total: 0 });
   const [stats, setStats] = useState<AuditStats | null>(null);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const statsRequestId = useRef(0);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   const fetchStats = useCallback(async () => {
+    const id = ++statsRequestId.current;
+    setStats(null);
+    setStatsError(null);
     try {
       const s = await (window as unknown as { aveApi: { audit: { getStats: (d: number) => Promise<AuditStats> } } }).aveApi.audit.getStats(7);
-      setStats(s);
+      if (id === statsRequestId.current) setStats(s);
     } catch {
-      // stats are best-effort
+      if (id === statsRequestId.current) setStatsError(t("auditTab.statsFailed"));
     }
-  }, []);
+  }, [t]);
 
-  const runSearch = useCallback(async (currentPage: number) => {
+  const runSearch = useCallback(async (currentPage: number, filter: typeof submittedFilter) => {
+    const id = ++searchRequestId.current;
     setLoading(true);
     setError(null);
+    setResult({ entries: [], total: 0 });
     try {
       const res = await (window as unknown as { aveApi: { audit: { search: (f: unknown) => Promise<AuditSearchResult> } } }).aveApi.audit.search({
-        dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined,
-        type: typeFilter || undefined,
-        textSearch: textSearch || undefined,
+        dateFrom: filter.dateFrom || undefined,
+        dateTo: filter.dateTo || undefined,
+        type: filter.type || undefined,
+        textSearch: filter.textSearch || undefined,
         limit: PAGE_SIZE,
         offset: currentPage * PAGE_SIZE,
       });
-      setResult(res);
-    } catch (e) {
-      setError(errorMessage(e) || t("auditTab.searchFailed"));
+      if (id === searchRequestId.current) setResult(res);
+    } catch {
+      if (id === searchRequestId.current) setError(t("auditTab.searchFailed"));
     } finally {
-      setLoading(false);
+      if (id === searchRequestId.current) setLoading(false);
     }
-  }, [dateFrom, dateTo, typeFilter, textSearch]);
+  }, [t]);
 
   useEffect(() => {
     void fetchStats();
-    void runSearch(0);
-    setPage(0);
-    setExpandedIdx(null);
+    void runSearch(0, submittedFilter);
+    return () => { searchRequestId.current++; statsRequestId.current++; };
+  // The initial submitted filter is the mount snapshot; edits apply on Search.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSearch = () => {
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      setError(t("auditTab.invalidDateRange"));
+      return;
+    }
+    const filter = { dateFrom, dateTo, type: typeFilter, textSearch };
+    setSubmittedFilter(filter);
     setPage(0);
     setExpandedIdx(null);
-    void runSearch(0);
+    void runSearch(0, filter);
     void fetchStats();
   };
 
   const handlePage = (next: number) => {
     setPage(next);
     setExpandedIdx(null);
-    void runSearch(next);
+    void runSearch(next, submittedFilter);
   };
 
   const totalPages = Math.ceil(result.total / PAGE_SIZE);
@@ -139,6 +153,7 @@ export function AuditTab() {
         />
 
         {/* ── Stats Bar ── */}
+        {statsError && <p role="alert" className="text-sm text-destructive">{statsError}</p>}
         {stats && (
           <SettingsSection data-settings-section="audit-stats" title={t("auditTab.statsTitle")}>
             <div className="flex flex-wrap gap-3">
@@ -239,7 +254,7 @@ export function AuditTab() {
               <div className="flex items-center gap-1 text-dense">
                 <button
                   className="rounded px-1 hover:bg-muted disabled:opacity-40"
-                  disabled={page === 0}
+                  disabled={loading || page === 0}
                   onClick={() => handlePage(page - 1)}
                 >
                   ‹
@@ -247,7 +262,7 @@ export function AuditTab() {
                 <span>{page + 1} / {totalPages}</span>
                 <button
                   className="rounded px-1 hover:bg-muted disabled:opacity-40"
-                  disabled={page >= totalPages - 1}
+                  disabled={loading || page >= totalPages - 1}
                   onClick={() => handlePage(page + 1)}
                 >
                   ›
@@ -257,7 +272,7 @@ export function AuditTab() {
           }
         >
           {error && (
-            <div className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-xs text-destructive">
+            <div role="alert" className="rounded-md border border-destructive/(--opacity-medium) bg-destructive/(--opacity-subtle) px-3 py-2 text-xs text-destructive">
               {error}
             </div>
           )}
@@ -330,7 +345,7 @@ export function AuditTab() {
         </SettingsSection>
 
         {/* ── Diagnostics: bundle export + log tail + crash list ── */}
-        <DiagnosticsSection defaultDateFrom={dateFrom} defaultDateTo={dateTo} />
+        <DiagnosticsSection defaultDateFrom={submittedFilter.dateFrom} defaultDateTo={submittedFilter.dateTo} />
 
         {/* ── Telemetry: what leaves this machine, and where it goes ── */}
         <TelemetrySection />

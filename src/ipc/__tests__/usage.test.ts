@@ -246,7 +246,7 @@ describe("ave:usage:export-csv", () => {
 
       expect(result).toEqual({ ok: true, filePath });
       const csv = readFileSync(filePath, "utf-8");
-      expect(csv.split("\n")[0]).toBe("date,vendor,model,inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens,totalTokens,cost,unknownCostTurns");
+      expect(csv.split("\r\n")[0]).toBe("date,vendor,model,inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens,totalTokens,cost,unknownCostTurns");
       expect(csv).toContain('"gpt-4o"');
       expect(csv).toContain(",20,5,");
       expect(csv).toContain(",1");
@@ -254,4 +254,19 @@ describe("ave:usage:export-csv", () => {
       await cleanupTmpDir(root);
     }
   });
+  it("escapes quotes, commas and line breaks as CSV fields", async () => {
+    const { dialog } = await import("electron");
+    const root = mkdtempSync(join(tmpdir(), "ave-usage-csv-"));
+    try {
+      const filePath = join(root, "usage.csv");
+      vi.mocked(dialog.showSaveDialog).mockResolvedValueOnce({ canceled: false, filePath });
+      await invoke("ave:usage:export-csv", hostFrameEvent(), [{ model: 'a,"quoted"\nmodel' }]);
+      const csv = readFileSync(filePath, "utf-8");
+      expect(csv).toContain('"a,""quoted""\nmodel"');
+      expect(csv).not.toContain('\\"quoted');
+    } finally {
+      await cleanupTmpDir(root);
+    }
+  });
+
 });
