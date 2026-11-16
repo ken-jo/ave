@@ -6510,4 +6510,5 @@ export const ko: Record<MessageCatalogKey, string> = {
   "workGroup.stepCount": "{count}단계",
   "workGroup.completed": "작업 완료",
   "workGroup.completedWithDuration": "작업 완료 {duration}",
+  "startupTab.shortcutOverlap": "앱에서도 사용 중: {labels}. 활성화하면 전역 단축키가 우선 적용됩니다.",
 };

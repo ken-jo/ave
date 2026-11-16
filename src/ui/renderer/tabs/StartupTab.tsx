@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { Switch } from "../../../components/ui/switch.js";
@@ -14,7 +14,7 @@ import { SettingsTextField } from "../components/SettingsTextField.js";
 import { getApi } from "../api-client.js";
 import { DEFAULT_CORP_CA_COMMON_NAME } from "../../../shared/corp-ca-common-name.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
-import { acceleratorFromEvent, fixedShortcutOwner, nativeAcceleratorIdentity, normalizeAccelerator } from "../../../shared/shortcuts.js";
+import { acceleratorFromEvent, globalShortcutBindingRefusal, globalShortcutOverlaps, normalizeAccelerator, shortcutDefinition, type ShortcutSettings } from "../../../shared/shortcuts.js";
 import { rendererShortcutPlatform, setShortcutCaptureActive } from "../hooks/use-shortcuts.js";
 import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
@@ -73,6 +73,7 @@ export function StartupTab() {
   // flipping a switch in this same section cannot wipe a name the user is
   // halfway through typing.
   const [corpCaCommonName, setCorpCaCommonName] = useState(DEFAULT_CORP_CA_COMMON_NAME);
+  const [shortcutSettings, setShortcutSettings] = useState<ShortcutSettings>({ toggleWindow: null, enabled: false, bindings: {} });
   const [capturing, setCapturing] = useState(false);
   const [captureError, setCaptureError] = useState<string | null>(null);
   // App shortcuts stay quiet while a key is being recorded, or recording ⌘⇧T would also reopen a closed surface.
@@ -81,8 +82,13 @@ export function StartupTab() {
     return () => setShortcutCaptureActive(false);
   }, [capturing]);
   const captureInputRef = useRef<HTMLDivElement | null>(null);
+  // Commit recorder focus before a later traversal key can leave it.
+  useLayoutEffect(() => {
+    if (capturing) captureInputRef.current?.focus();
+  }, [capturing]);
 
   const applySnapshot = useCallback((s: AppSettings) => {
+    setShortcutSettings(s.shortcuts);
     setEnabled(s.shortcuts?.enabled ?? false);
     setToggleWindow(s.shortcuts?.toggleWindow ?? null);
     setLaunchAtStartup(s.system?.launchAtStartup ?? false);
@@ -219,6 +225,12 @@ export function StartupTab() {
   const handleKeyCapture = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>) => {
       if (!capturing) return;
+      // Tab leaves the recorder using the browser's normal focus traversal.
+      if (e.key === "Tab" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        setCaptureError(null);
+        setCapturing(false);
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       // Escape cancels capture without changing the binding.
@@ -230,18 +242,26 @@ export function StartupTab() {
       const recorded = acceleratorFromEvent(e, rendererShortcutPlatform());
       if (recorded.kind !== "accelerator") return; // modifier-only or unbindable press — keep waiting for a key.
       const normalized = normalizeAccelerator(recorded.accelerator);
-      if (normalized === null || nativeAcceleratorIdentity(normalized, rendererShortcutPlatform()) === null) return;
-      const owner = fixedShortcutOwner(normalized, rendererShortcutPlatform());
-      if (owner !== null) {
-        setCaptureError(t("startupTab.shortcutReserved", { label: t(owner.labelKey) }));
+      if (normalized === null) return;
+      const platform = rendererShortcutPlatform();
+      const refusal = globalShortcutBindingRefusal(normalized, platform);
+      if (refusal !== null) {
+        setCaptureError(refusal.reason === "fixed-key"
+          ? t("startupTab.shortcutReserved", { label: t(shortcutDefinition(refusal.ownerId).labelKey) })
+          : refusal.reason === "needs-modifier" ? t("shortcutsTab.notice.needsModifier")
+            : refusal.reason === "os-reserved" ? t("shortcutsTab.notice.osReserved")
+              : t("shortcutsTab.notice.unsupported"));
         return;
       }
-      setCaptureError(null);
+      const overlaps = globalShortcutOverlaps(normalized, shortcutSettings, platform);
+      setCaptureError(overlaps.length > 0
+        ? t("startupTab.shortcutOverlap", { labels: overlaps.map((row) => t(row.definition.labelKey)).join(", ") })
+        : null);
       setToggleWindow(normalized);
       setCapturing(false);
       persistShortcuts({ toggleWindow: normalized });
     },
-    [capturing, persistShortcuts, t],
+    [capturing, persistShortcuts, shortcutSettings, t],
   );
 
   const handleClearAccelerator = useCallback(() => {
@@ -254,8 +274,6 @@ export function StartupTab() {
   const startCapture = useCallback(() => {
     setCaptureError(null);
     setCapturing(true);
-    // Focus the capture box so keydown lands here.
-    requestAnimationFrame(() => captureInputRef.current?.focus());
   }, []);
 
   return (

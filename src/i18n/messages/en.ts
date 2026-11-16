@@ -6508,6 +6508,7 @@ export const en = {
   "workGroup.stepCount": "{count} steps",
   "workGroup.completed": "Work complete",
   "workGroup.completedWithDuration": "Work complete {duration}",
+  "startupTab.shortcutOverlap": "Also used in the app by: {labels}. When enabled, this global shortcut takes precedence.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

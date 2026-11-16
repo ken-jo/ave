@@ -9,6 +9,8 @@ import {
   nativeAcceleratorIdentity,
   conflictingShortcutIds,
   formatAccelerator,
+  globalShortcutBindingRefusal,
+  globalShortcutOverlaps,
   fixedShortcutOwner,
   isShortcutId,
   loadShortcutBindings,
@@ -512,5 +514,20 @@ describe("token identity", () => {
         expect(reports).toEqual(dropped);
       }
     }
+  });
+});
+
+
+describe("system-wide shortcut safety", () => {
+  it.each(["darwin", "other"] as const)("rejects unmodified keys and reserves system chords on %s", (platform) => {
+    for (const key of ["J", "Space", "Backspace", "Tab", "Shift+Tab", "F1"]) {
+      expect(globalShortcutBindingRefusal(key, platform)).toEqual({ reason: "needs-modifier" });
+      expect(normalizeShortcuts({ toggleWindow: key }, NO_SHORTCUT_OVERRIDES, platform, () => {}).toggleWindow).toBeNull();
+    }
+    const reserved = platform === "darwin" ? "CommandOrControl+Space" : "Alt+Tab";
+    expect(globalShortcutBindingRefusal(reserved, platform)).toEqual({ reason: "os-reserved" });
+    expect(globalShortcutBindingRefusal("Alt+Shift+F1", platform)).toBeNull();
+    expect(globalShortcutOverlaps("CommandOrControl+K", NO_SHORTCUT_OVERRIDES, platform).map((row) => row.id)).toContain("app.commandPalette");
+    expect(globalShortcutOverlaps("Alt+Shift+F1", NO_SHORTCUT_OVERRIDES, platform)).toEqual([]);
   });
 });
