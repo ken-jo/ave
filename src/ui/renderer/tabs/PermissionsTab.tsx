@@ -8,7 +8,7 @@ import { SandboxStatusBadge } from "../components/SandboxStatusBadge.js";
 import { SandboxRestartDialog } from "../components/SandboxRestartDialog.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
-import { Checkbox } from "../../../components/ui/checkbox.js";
+import { Switch } from "../../../components/ui/switch.js";
 import { Input } from "../../../components/ui/input.js";
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
@@ -54,7 +54,6 @@ import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js"
 import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
 import { HomeContentReview } from "../components/permissions/HomeContentReview.js";
 import { HookTrustReview } from "../components/permissions/HookTrustReview.js";
-import { HiddenNoticesReset } from "../components/HiddenNoticesReset.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { WorkBoardApprovalSettingsContent } from "./WorkBoardApprovalSettingsContent.js";
@@ -1168,7 +1167,7 @@ export function PermissionsTab({
           {settingsNotice ?? (
             <>
           <div className="flex items-start gap-3">
-            <Checkbox
+            <Switch
               checked={sandboxEnabled}
               data-testid="os-sandbox-toggle"
               aria-label={t("permissionsTab.osSandboxCheckboxAriaLabel")}
@@ -1195,7 +1194,7 @@ export function PermissionsTab({
           />
           {sandboxCapability?.platform === "win32" ? (
             <div className="mt-3 flex items-start gap-3" data-testid="windows-shell-local-network-setting">
-              <Checkbox
+              <Switch
                 checked={windowsShellLocalNetworkAccess}
                 data-testid="windows-shell-local-network-toggle"
                 aria-label={t("permissionsTab.windowsShellLocalNetworkLabel")}
@@ -1216,7 +1215,7 @@ export function PermissionsTab({
             </div>
           ) : null}
           <div className="mt-3 flex items-start gap-3">
-            <Checkbox
+            <Switch
               checked={workerConfinementEffective}
               data-testid="worker-confinement-toggle"
               aria-label={t("permissionsTab.workerConfinementCheckboxAriaLabel")}
@@ -1717,11 +1716,11 @@ export function PermissionsTab({
           {panelLoadNotice("approval-dialog", ["policy", "settings"]) ?? (
           <>
           <div className="flex items-center gap-3">
-            <Checkbox
+            <Switch
               checked={requireExplicit}
               aria-label={t("permissionsTab.approvalDialogCheckboxAriaLabel")}
               disabled={policyManaged || policyBusy}
-              className="size-5"
+              className="shrink-0"
               onCheckedChange={() => void handleExplicitToggle()}
             />
             <span className="text-sm">{requireExplicit ? t("permissionsTab.policyEnabled") : t("permissionsTab.policyDisabled")}</span>
@@ -1744,7 +1743,6 @@ export function PermissionsTab({
               onBlur={(event) => void handleOwnerAwayAutoSkip(event.currentTarget.value === "" ? Number.NaN : Number(event.currentTarget.value))}
             />
           </div>
-          <HiddenNoticesReset />
           {policyManaged && (
             <p className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-dense text-warning">
               {policyAdminReason

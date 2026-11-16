@@ -43,31 +43,28 @@ function renderChatTab(overrides: Partial<Parameters<typeof ChatTab>[0]> = {}) {
 }
 
 describe("ChatTab processing detail", () => {
-  it("exposes the three localized levels as an accessible discrete slider", () => {
+  it("exposes three localized choices with a checked radio", () => {
     renderChatTab({ processingDisplayLevel: "reasoning" });
-
-    const slider = screen.getByRole("slider", { name: "처리 과정 표시 수준" });
-    expect(slider.getAttribute("aria-valuemin")).toBe("0");
-    expect(slider.getAttribute("aria-valuemax")).toBe("2");
-    expect(slider.getAttribute("aria-valuenow")).toBe("1");
-    expect(slider.getAttribute("aria-valuetext")).toBe("중간");
-    expect(screen.getByRole("button", { name: "간략히" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "중간" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "자세히" })).toBeTruthy();
+    const group = screen.getByRole("radiogroup", { name: "처리 과정 표시 수준" });
+    expect(group).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "간략히" }).getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("radio", { name: "중간" }).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByRole("radio", { name: "자세히" }).getAttribute("aria-checked")).toBe("false");
     expect(screen.getByTestId("processing-display-hint").textContent).toContain("도구 호출과 모델이 제공한 생각");
   });
 
-  it("saves label clicks immediately and disables the control before settings load", () => {
+  it("saves a selected choice immediately", () => {
     const { setProcessingDisplayLevel, onImmediateChange } = renderChatTab();
-    fireEvent.click(screen.getByRole("button", { name: "간략히" }));
+    fireEvent.click(screen.getByRole("radio", { name: "간략히" }));
     expect(setProcessingDisplayLevel).toHaveBeenCalledWith("tools");
     expect(onImmediateChange).toHaveBeenCalledOnce();
   });
 
-  it("disables the slider and labels until settings finish loading", () => {
+  it("disables every choice until settings finish loading", () => {
     renderChatTab({ settingsLoaded: false });
-    expect(screen.getByRole("slider", { name: "처리 과정 표시 수준" }).getAttribute("data-disabled")).toBe("");
-    expect((screen.getByRole("button", { name: "간략히" }) as HTMLButtonElement).disabled).toBe(true);
+    for (const radio of screen.getAllByRole("radio").filter((node) => ["간략히", "중간", "자세히"].includes(node.getAttribute("aria-label") ?? ""))) {
+      expect((radio as HTMLButtonElement).disabled).toBe(true);
+    }
   });
 });
 

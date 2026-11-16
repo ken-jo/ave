@@ -2,7 +2,7 @@ import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import type { AveApi, PluginPerfStats } from "../types.js";
-import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
+import { SettingsSection } from "../components/PageShell.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatClockTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -75,11 +75,6 @@ export function PluginPerfTab({ api }: { api: AveApi }) {
 
   return (
     <div className="space-y-6">
-      <SettingsPageHeader
-        title={t("pluginPerfTab.pageTitle")}
-        description={t("pluginPerfTab.pageDescription")}
-      />
-
       <SettingsSection
         data-settings-section="plugin-config-performance"
         title={t("pluginPerfTab.sectionTitle")}

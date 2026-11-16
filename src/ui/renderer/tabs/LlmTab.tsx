@@ -3200,47 +3200,6 @@ export function LlmTab(props: LlmTabProps) {
         description={t("llmTab.pageDescription")}
       />
 
-      <SettingsSection title={t("compactionSettings.title")} id="llm-compaction" data-settings-section="llm-compaction">
-        <div className="space-y-2">
-          <Label htmlFor="compaction-model">{t("compactionSettings.model")}</Label>
-          <SystemSubagentModelSelect
-            id="compaction-model"
-            descriptionId="compaction-model-description"
-            snapshot={compactionSnapshot}
-            value={compactionModel ?? undefined}
-            unavailableSelection={compactionUnavailableSelection}
-            unsetLabel={t("compactionSettings.currentModel")}
-            placeholder={t("compactionSettings.currentModel")}
-            unavailableLabel={t("permissionJudge.modelUnavailableFacts")}
-            disabled={!settingsLoaded || !compactionSnapshot || compactionSaving}
-            onChange={(model) => {
-              const selection = { model: model ?? null };
-              compactionModelDirtyRef.current = JSON.stringify(selection) !== savedCompactionModel;
-              setCompactionModel(model ?? null);
-              setCompactionUnavailableSelection(undefined);
-            }}
-          />
-          <p id="compaction-model-description" className="text-xs text-muted-foreground">
-            {t("compactionSettings.description")}
-          </p>
-          {(compactionUnavailableSelection || (compactionModel && compactionSnapshot && !compactionSnapshot.modelOptions.some(
-            (option) => sameSystemSubagentModel(option, compactionModel),
-          ))) && <p role="alert" data-testid="compaction-model-unavailable" className="text-xs text-destructive">{t("compactionSettings.selectedUnavailable")}</p>}
-          {compactionOptionsFailed && <p role="alert" className="text-xs text-destructive">{t("permissionJudge.readFailed")}</p>}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            data-testid="compaction-model-save"
-            disabled={!settingsLoaded || !compactionSnapshot || compactionSaving || !compactionModelDirtyRef.current}
-            onClick={() => { void handleCompactionModelSave(); }}
-          >
-            {t(compactionSaving ? "llmTab.saving" : "llmTab.save")}
-          </Button>
-          {compactionSaveFailed && <p role="alert" className="text-xs text-destructive">{t("compactionSettings.saveFailed")}</p>}
-        </div>
-      </SettingsSection>
-
       {/* Provider configuration — API keys and endpoint settings are edited
           directly here. */}
       <SettingsSection
@@ -3344,6 +3303,47 @@ export function LlmTab(props: LlmTabProps) {
       </SettingsSection>
 
       {/* Section B — Extended Thinking / Reasoning */}
+      <SettingsSection title={t("compactionSettings.title")} id="llm-compaction" data-settings-section="llm-compaction">
+        <div className="space-y-2">
+          <Label htmlFor="compaction-model">{t("compactionSettings.model")}</Label>
+          <SystemSubagentModelSelect
+            id="compaction-model"
+            descriptionId="compaction-model-description"
+            snapshot={compactionSnapshot}
+            value={compactionModel ?? undefined}
+            unavailableSelection={compactionUnavailableSelection}
+            unsetLabel={t("compactionSettings.currentModel")}
+            placeholder={t("compactionSettings.currentModel")}
+            unavailableLabel={t("permissionJudge.modelUnavailableFacts")}
+            disabled={!settingsLoaded || !compactionSnapshot || compactionSaving}
+            onChange={(model) => {
+              const selection = { model: model ?? null };
+              compactionModelDirtyRef.current = JSON.stringify(selection) !== savedCompactionModel;
+              setCompactionModel(model ?? null);
+              setCompactionUnavailableSelection(undefined);
+            }}
+          />
+          <p id="compaction-model-description" className="text-xs text-muted-foreground">
+            {t("compactionSettings.description")}
+          </p>
+          {(compactionUnavailableSelection || (compactionModel && compactionSnapshot && !compactionSnapshot.modelOptions.some(
+            (option) => sameSystemSubagentModel(option, compactionModel),
+          ))) && <p role="alert" data-testid="compaction-model-unavailable" className="text-xs text-destructive">{t("compactionSettings.selectedUnavailable")}</p>}
+          {compactionOptionsFailed && <p role="alert" className="text-xs text-destructive">{t("permissionJudge.readFailed")}</p>}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="compaction-model-save"
+            disabled={!settingsLoaded || !compactionSnapshot || compactionSaving || !compactionModelDirtyRef.current}
+            onClick={() => { void handleCompactionModelSave(); }}
+          >
+            {t(compactionSaving ? "llmTab.saving" : "llmTab.save")}
+          </Button>
+          {compactionSaveFailed && <p role="alert" className="text-xs text-destructive">{t("compactionSettings.saveFailed")}</p>}
+        </div>
+      </SettingsSection>
+
       <SettingsSection
         data-settings-section="llm-thinking"
         title={t("llmTab.thinkingTitle")}

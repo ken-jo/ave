@@ -133,7 +133,7 @@ export function SettingsPageHeader({ title, description }: SettingsPageHeaderPro
       <div className="flex min-w-0 items-center gap-2">
         <h2
           tabIndex={-1}
-          className="min-w-0 truncate rounded-sm text-xl font-semibold leading-9 tracking-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="min-w-0 break-words rounded-sm text-xl font-semibold leading-9 tracking-normal outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid={TEST_IDS.settingsPageTitle}
         >
           {title}

@@ -36,8 +36,6 @@ import { isReinstallFixableFailureKind } from "../../../shared/plugin-install-fa
 import { errorMessage } from "../../../shared/error-message.js";
 
 import { useAlertKinds } from "../hooks/use-alert-kinds.js";
-import { PluginAlertsSection } from "./PluginAlertsSection.js";
-import { ALERT_HOST_PLUGIN_ID } from "../../../shared/alerts-types.js";
 
 type KV = { key: string; value: string };
 type BannerType = "error" | "success" | "warning";
@@ -1316,7 +1314,6 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                     </div>
                   </>
                 )}
-                {alertsApi?.alerts && <PluginAlertsSection pluginId={selectedPlugin.id} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} />}
               </>
             ) : (
               <p className="text-xs text-muted-foreground">{t("pluginConfigTab.selectPluginHint")}</p>
@@ -1325,7 +1322,6 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
         </div>
       )}
       {alerts.failed && <div role="alert" className="text-xs text-destructive">{t("alerts.loadFailed")} <Button size="sm" variant="outline" onClick={() => void alerts.refresh()}>{t("alerts.retry")}</Button></div>}
-      {alertsApi?.alerts && alerts.loaded && <PluginAlertsSection pluginId={ALERT_HOST_PLUGIN_ID} rows={alerts.rows} api={alertsApi.alerts} osEnabled={alerts.osEnabled} refresh={alerts.refresh} />}
       {/* Performance section — the former standalone plugin-perf tab was
           merged here ("성능만 병합"); it renders as a section below the
           config content and pulls its own perf stats via the api. */}

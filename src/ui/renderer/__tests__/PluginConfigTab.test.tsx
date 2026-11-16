@@ -1565,8 +1565,9 @@ it("opens a requested plugin under the existing anchor and updates its unseen ba
     alerts: { listKinds: async () => [{ ...row, choice: { ...row.choice } }], onKindsChanged: (callback: () => void) => { changed = callback; return () => {}; } },
   });
   render(<PluginConfigTab initialPluginId="meeting" />);
-  const section = await screen.findByTestId("plugin-alerts:meeting");
+  const section = await screen.findByTestId("plugin-config:enabled-toggle:meeting");
   expect(section.closest("[data-settings-section]")).toHaveAttribute("data-settings-section", "plugin-config-installed");
+  expect(screen.queryByTestId("plugin-alerts:meeting")).not.toBeInTheDocument();
   expect(screen.getByTestId("alert-unseen:meeting")).toHaveTextContent("1");
   expect(screen.queryByTestId("alert-unseen:other")).toBeNull();
   row.choice.seenByUser = true;

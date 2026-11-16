@@ -1,13 +1,10 @@
 import { useCallback } from "react";
-import { DocumentSettingsContent } from "./DocumentSettingsContent.js";
 import { PrivacyTab } from "./PrivacyTab.js";
-import { AccessibilitySignalsSettings } from "./AccessibilitySignalsSettings.js";
 import { Badge } from "../../../components/ui/badge.js";
-import { Checkbox } from "../../../components/ui/checkbox.js";
+import { Switch } from "../../../components/ui/switch.js";
 import { Input } from "../../../components/ui/input.js";
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
-import { Slider } from "../../../components/ui/slider.js";
 import {
   SUBAGENT_MAX_ROUNDS_DEFAULT,
   SUBAGENT_MAX_ROUNDS_MIN,
@@ -76,7 +73,6 @@ export function ChatTab({
   onImmediateChange,
 }: ChatTabProps) {
   const { t } = useTranslation();
-  const processingDisplayIndex = PROCESSING_DISPLAY_LEVELS.indexOf(processingDisplayLevel);
   // Memoize the wrapped onToggle so PrivacyTab receives a stable identity across re-renders — if PrivacyTab ever memoizes
   // via React.memo / props comparison, an inline arrow would defeat it.
   const handlePiiRedactToggle = useCallback(() => {
@@ -97,11 +93,11 @@ export function ChatTab({
         description={t("chatTab.conversationOptimizationDescription")}
       >
         <div className="flex items-center gap-3 rounded-md border px-3 py-3">
-          <Checkbox
+          <Switch
             aria-label={t("chatTab.autoCompactLabel")}
             checked={autoCompact}
             disabled={!settingsLoaded}
-            className="size-5"
+            className="shrink-0"
             onCheckedChange={(checked) => {
               setAutoCompact(checked === true);
               onImmediateChange?.();
@@ -113,10 +109,6 @@ export function ChatTab({
           </div>
         </div>
       </SettingsSection>
-
-      <DocumentSettingsContent />
-
-      <AccessibilitySignalsSettings />
 
       <SettingsSection
         data-settings-section="chat-stream-smoothing"
@@ -148,39 +140,19 @@ export function ChatTab({
         description={t("chatTab.processingDisplayDescription")}
       >
         <div className="space-y-3 rounded-md border px-3 py-3">
-          <Slider
-            min={0}
-            max={2}
-            step={1}
-            value={[processingDisplayIndex]}
-            disabled={!settingsLoaded}
-            data-testid="processing-display-slider"
+          <RadioGroup value={processingDisplayLevel} disabled={!settingsLoaded}
             aria-label={t("chatTab.processingDisplayAriaLabel")}
-            aria-valuetext={t(PROCESSING_DISPLAY_LABEL_KEYS[processingDisplayLevel])}
-            onValueChange={([value]) => {
-              const next = PROCESSING_DISPLAY_LEVELS[value ?? 0];
-              if (!next) return;
-              setProcessingDisplayLevel(next);
+            className="flex flex-wrap gap-4"
+            onValueChange={(value) => {
+              if (!PROCESSING_DISPLAY_LEVELS.includes(value as ProcessingDisplayLevel)) return;
+              setProcessingDisplayLevel(value as ProcessingDisplayLevel);
               onImmediateChange?.();
-            }}
-          />
-          <div className="grid grid-cols-3 gap-2 text-dense text-muted-foreground">
-            {PROCESSING_DISPLAY_LEVELS.map((level) => (
-              <button
-                key={level}
-                type="button"
-                disabled={!settingsLoaded}
-                aria-pressed={processingDisplayLevel === level}
-                className="rounded px-1 py-1 text-center hover:text-foreground disabled:pointer-events-none"
-                onClick={() => {
-                  setProcessingDisplayLevel(level);
-                  onImmediateChange?.();
-                }}
-              >
-                {t(PROCESSING_DISPLAY_LABEL_KEYS[level])}
-              </button>
-            ))}
-          </div>
+            }}>
+            {PROCESSING_DISPLAY_LEVELS.map((level) => <Label key={level} className="flex items-center gap-2">
+              <RadioGroupItem value={level} aria-label={t(PROCESSING_DISPLAY_LABEL_KEYS[level])} />
+              {t(PROCESSING_DISPLAY_LABEL_KEYS[level])}
+            </Label>)}
+          </RadioGroup>
           <p className="text-dense text-muted-foreground" data-testid="processing-display-hint">
             {t(PROCESSING_DISPLAY_HINT_KEYS[processingDisplayLevel])}
           </p>
@@ -198,12 +170,12 @@ export function ChatTab({
         }
       >
         <div className="flex items-center gap-3 rounded-md border px-3 py-3">
-          <Checkbox
+          <Switch
             checked={idlePreferenceRefresh ?? false}
             disabled={!settingsLoaded}
             aria-label={t("chatTab.idleRefreshLabel")}
             data-testid="idle-preference-refresh-toggle"
-            className="size-5"
+            className="shrink-0"
             onCheckedChange={(checked) => {
               setIdlePreferenceRefresh?.(checked === true);
             }}
@@ -216,12 +188,12 @@ export function ChatTab({
           </div>
         </div>
         <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3">
-          <Checkbox
+          <Switch
             checked={idleMemoryConsolidation ?? false}
             disabled={!settingsLoaded}
             aria-label={t("chatTab.idleMemoryConsolidationLabel")}
             data-testid="idle-memory-consolidation-toggle"
-            className="size-5"
+            className="shrink-0"
             onCheckedChange={(checked) => {
               setIdleMemoryConsolidation?.(checked === true);
             }}
@@ -234,12 +206,12 @@ export function ChatTab({
           </div>
         </div>
         <div className="mt-3 flex items-center gap-3 rounded-md border px-3 py-3">
-          <Checkbox
+          <Switch
             checked={subAgentAutonomousWake ?? false}
             disabled={!settingsLoaded}
             aria-label={t("chatTab.subAgentWakeLabel")}
             data-testid="subagent-autonomous-wake-toggle"
-            className="size-5"
+            className="shrink-0"
             onCheckedChange={(checked) => {
               setSubAgentAutonomousWake?.(checked === true);
             }}

@@ -1,4 +1,4 @@
-import { test, expect } from './fixtures';
+import { test, expect } from './fixtures.js';
 import path from 'node:path';
 import fs from 'node:fs';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
@@ -13,7 +13,7 @@ test('immediate-apply toggle persists privacy redaction without explicit Save', 
 }) => {
   const settingsPath = path.join(userDataDir, 'ave-settings.json');
   const settingsPage = await openInlineSettings(app, mainWindow, 'chat');
-  const redactToggle = settingsPage.getByRole('checkbox', {
+  const redactToggle = settingsPage.getByRole('switch', {
     name: t('privacyTab.piiRedactToggleLabel'),
   });
 
@@ -44,7 +44,7 @@ test('immediate-apply toggle persists privacy redaction without explicit Save', 
 
   const reopenedSettingsPage = await openInlineSettings(app, mainWindow, 'chat');
   await expect(
-    reopenedSettingsPage.getByRole('checkbox', {
+    reopenedSettingsPage.getByRole('switch', {
       name: t('privacyTab.piiRedactToggleLabel'),
     }),
   ).toHaveAttribute('aria-checked', 'true');
@@ -58,7 +58,7 @@ test('inline close flushes a pending immediate-apply setting', async ({
   t,
 }) => {
   const settingsPage = await openInlineSettings(app, mainWindow, 'chat');
-  const redactToggle = settingsPage.getByRole('checkbox', {
+  const redactToggle = settingsPage.getByRole('switch', {
     name: t('privacyTab.piiRedactToggleLabel'),
   });
 
@@ -74,7 +74,7 @@ test('inline close flushes a pending immediate-apply setting', async ({
 
   const reopenedSettingsPage = await openInlineSettings(app, mainWindow, 'chat');
   await expect(
-    reopenedSettingsPage.getByRole('checkbox', {
+    reopenedSettingsPage.getByRole('switch', {
       name: t('privacyTab.piiRedactToggleLabel'),
     }),
   ).toHaveAttribute('aria-checked', nextState);
@@ -83,7 +83,7 @@ test('inline close flushes a pending immediate-apply setting', async ({
 
 test('Chat settings preserve a model changed while the settings pane is open', async ({ app, mainWindow, t }) => {
   const settingsPage = await openInlineSettings(app, mainWindow, 'chat');
-  const redactToggle = settingsPage.getByRole('checkbox', { name: t('privacyTab.piiRedactToggleLabel') });
+  const redactToggle = settingsPage.getByRole('switch', { name: t('privacyTab.piiRedactToggleLabel') });
   await expect(redactToggle).toBeVisible();
   const expected = await settingsPage.evaluate(async () => {
     const api = window.aveApi;

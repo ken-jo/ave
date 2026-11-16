@@ -4,6 +4,7 @@ import { Button } from "../../components/ui/button.js";
 import { Tabs, VerticalTabsList, TabsTrigger, TabsContent } from "../../components/ui/tabs.js";
 import {
   Brain,
+  Bell,
   Palette,
   MessageSquare,
   Globe,
@@ -34,6 +35,7 @@ import { RemoteSurfacesTab } from "./tabs/RemoteSurfacesTab.js";
 import { UsageDashboard } from "./components/UsageDashboard.js";
 import { LlmTab } from "./tabs/LlmTab.js";
 import { AppearanceTab } from "./tabs/AppearanceTab.js";
+import { NotificationsTab } from "./tabs/NotificationsTab.js";
 import { ChatTab } from "./tabs/ChatTab.js";
 import { WebTab } from "./tabs/WebTab.js";
 import { McpTab } from "./tabs/McpTab.js";
@@ -73,6 +75,7 @@ const SETTINGS_NAV: { group: string; items: SettingsNavItem[] }[] = [
     items: [
       { value: "appearance", icon: Palette, labelKey: SETTINGS_TAB_LABEL_KEYS["appearance"] },
       { value: "chat", icon: MessageSquare, labelKey: SETTINGS_TAB_LABEL_KEYS["chat"] },
+      { value: "notifications", icon: Bell, labelKey: SETTINGS_TAB_LABEL_KEYS.notifications },
       { value: "web", icon: Globe, labelKey: SETTINGS_TAB_LABEL_KEYS["web"] },
       { value: "startup", icon: Rocket, labelKey: SETTINGS_TAB_LABEL_KEYS["startup"] },
       { value: "shortcuts", icon: Keyboard, labelKey: SETTINGS_TAB_LABEL_KEYS.shortcuts },
@@ -318,7 +321,7 @@ export function SettingsContent({
 
   // Override primitive active/alignment styles for vertical rows; keep scaled labels on one clipped line.
   const sideTriggerCls =
-    "flex w-full items-center justify-start gap-2.5 overflow-hidden whitespace-nowrap rounded-md px-3 py-2 text-sm font-medium " +
+    "flex w-full items-center justify-start gap-2.5 whitespace-normal rounded-md px-3 py-2 text-sm font-medium " +
     "text-muted-foreground hover:bg-accent/(--opacity-strong) hover:text-foreground " +
     "data-[state=active]:bg-accent data-[state=active]:text-accent-foreground " +
     "data-[state=active]:shadow-none";
@@ -368,7 +371,7 @@ export function SettingsContent({
         data-testid={isNarrow ? "settings-mobile-list" : undefined}
         className={cn(
           "flex h-full flex-col",
-          isNarrow ? "w-full" : "w-48 shrink-0 border-r",
+          isNarrow ? "w-full" : "w-60 shrink-0 border-r",
           isNarrow && mobileDepth === "detail" && "hidden",
         )}
       >
@@ -624,6 +627,8 @@ export function SettingsContent({
             />
             {/* ChatTab is fully immediate-apply — no deferred-save bar needed. */}
           </TabsContent>
+
+          <TabsContent value="notifications" className={tabContentCls}><NotificationsTab api={api} /></TabsContent>
 
           <TabsContent value="web" className={tabContentCls}>
             <WebTab

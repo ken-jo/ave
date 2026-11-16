@@ -1,3 +1,4 @@
+import { DocumentSettingsContent } from "./DocumentSettingsContent.js";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
@@ -205,6 +206,7 @@ export function AboutTab({ api }: AboutTabProps) {
           </div>
         </dl>
       </SettingsSection>
+      <DocumentSettingsContent />
     </div>
   );
 }
