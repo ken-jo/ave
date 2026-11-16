@@ -133,10 +133,13 @@ function TruncationNotices({ document }: { document: PreviewTableDocument }) {
  * same sheet as a fresh baseline. A view without a session never observes, so
  * the flag does not touch it.
  */
-export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe, reloadToken }: {
+export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe, reloadToken, onReveal, revealLabel }: {
   path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean; observe: boolean;
   /** A value that changes when the file changed on disk; each change reloads the document as the reload button does. */
   reloadToken?: string;
+  /** Show the file in the file manager, for a caller that can; `revealLabel` names that file manager. */
+  onReveal?: () => void;
+  revealLabel?: string;
 }) {
   const { t } = useTranslation();
   const [sheetIndex, setSheetIndex] = useState(0);
@@ -314,7 +317,8 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
   const header = <PreviewDocumentHeader path={state.phase === "ok" ? state.path : path} workspaceRoot={workspaceRoot}
     canOpenExternal={Boolean(canOpenExternal) || (state.phase === "ok" && previewSupportsExternalOpen(state.path))}
     onOpenError={(code) => setOpenFailed(defaultAppOpenErrorKey(code))}
-    onReload={() => { setSheetFallback(false); setRevision((previous) => previous + 1); }} refreshing={refreshing} />;
+    onReload={() => { setSheetFallback(false); setRevision((previous) => previous + 1); }} refreshing={refreshing}
+    onReveal={onReveal} revealLabel={revealLabel} />;
   if (state.phase === "error") return <div className="space-y-2">{header}
     <PreviewDocumentLiveStrip error={openFailed ? t(openFailed) : undefined} />
     <div className="text-dense text-destructive" data-testid="chat-side-panel-file-error">

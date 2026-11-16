@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, Copy, ExternalLink, File, FileCode, FileImage, FileText, Presentation, RefreshCw, Sheet } from "lucide-react";
+import { Check, Copy, ExternalLink, File, FileCode, FileImage, FileText, FolderOpen, Presentation, RefreshCw, Sheet } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Loader } from "../../../components/ui/loader.js";
 import { cn } from "../../../lib/utils.js";
@@ -50,13 +50,16 @@ function documentIcon(path: string) {
 
 /** Shared single-line chrome for passive file and document viewers. */
 export function PreviewDocumentHeader({ path, workspaceRoot, copyValue = path, copyContent = false,
-  canOpenExternal = true, onReload, onOpenError, refreshing = false }: {
+  canOpenExternal = true, onReload, onOpenError, onReveal, revealLabel, refreshing = false }: {
   path: string;
   workspaceRoot?: string;
   copyValue?: string;
   copyContent?: boolean;
   canOpenExternal?: boolean;
   onReload?: () => void;
+  /** Show the file in the file manager; offered where the caller can (the folder view). `revealLabel` names that file manager. */
+  onReveal?: () => void;
+  revealLabel?: string;
   /** A refused or failed open, with main's code. */
   onOpenError?: (code: string | undefined) => void;
   refreshing?: boolean;
@@ -82,6 +85,8 @@ export function PreviewDocumentHeader({ path, workspaceRoot, copyValue = path, c
         {canOpenExternal && canOpenInDefaultApp(path) ? <Button type="button" size="icon-xs" variant="ghost"
           aria-label={t("chatPreviewRail.openDefaultApp")} title={t("chatPreviewRail.openDefaultApp")}
           onClick={() => void handleOpenExternal()}><ExternalLink aria-hidden="true" className="h-3.5 w-3.5" /></Button> : null}
+        {onReveal && revealLabel ? <Button type="button" size="icon-xs" variant="ghost" aria-label={revealLabel} title={revealLabel}
+          onClick={onReveal} data-testid="document-preview-reveal"><FolderOpen aria-hidden="true" className="h-3.5 w-3.5" /></Button> : null}
         <Button type="button" size="icon-xs" variant="ghost" aria-label={copyLabel} title={copyLabel} onClick={() => copy(copyValue)}>
           {copied ? <Check aria-hidden="true" className="h-3.5 w-3.5" /> : <Copy aria-hidden="true" className="h-3.5 w-3.5" />}
         </Button>

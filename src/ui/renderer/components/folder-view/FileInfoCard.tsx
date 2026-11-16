@@ -32,7 +32,8 @@ export function FileInfoCard({ projectRoot, entry, reason }: { projectRoot: stri
   return (
     <PassiveFileInfoCard name={entry.name} kindLabel={t(FOLDER_KIND_LABEL_KEYS[kind])}
       icon={<Icon aria-hidden="true" className="h-7 w-7" />} reason={reason} size={entry.size}
-      modified={modified ?? t("folderView.infoUnknown")} created={created ?? t("folderView.infoUnknown")} location={location}>
+      modified={modified ?? t("folderView.infoUnknown")} created={created ?? t("folderView.infoUnknown")} location={location}
+      defaultAppAvailable={openable}>
         {openable ? (
           <>
             <Button type="button" className="mt-4 w-full" autoFocus data-testid="folder-open-external"

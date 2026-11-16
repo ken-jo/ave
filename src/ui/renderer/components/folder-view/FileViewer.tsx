@@ -1,7 +1,7 @@
 /** The folder view's file viewer. It routes like the side-panel preview (table, page, then the text registry), shows images
  * with fit and zoom, and gives anything it cannot show to the info card. */
 import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, ChevronLeft, Copy, ExternalLink, Link2, MessageSquarePlus, Minus, Plus, Scan } from "lucide-react";
+import { Check, Copy, ExternalLink, FolderOpen, Link2, MessageSquarePlus, Minus, Plus, Scan } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -13,7 +13,8 @@ import { PageDocumentPreview } from "../../preview/PageDocumentPreview.js";
 import { previewFormatLabel } from "../../preview/preview-document-chrome.js";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
 import { FileInfoCard, formatFolderTimestamp, type FileInfoReason } from "./FileInfoCard.js";
-import { folderEntryIcon } from "./FolderColumn.js";
+import { revealKey } from "./FolderColumn.js";
+import { ViewerHeader, type ViewerAction } from "./ViewerHeader.js";
 import { FOLDER_KIND_LABEL_KEYS, folderFileKind, type FolderEntry } from "./folder-columns.js";
 import { useOpenInDefaultApp } from "./use-open-in-default-app.js";
 import { canOpenInDefaultApp } from "../../../../shared/preview-external-open.js";
@@ -86,32 +87,13 @@ function ImageViewer({ src, alt }: { src: string; alt: string }) {
   );
 }
 
-function ViewerHeader({ entry, subtitle, actions, back }: {
-  entry: FolderEntry; subtitle: string; actions?: ReactNode; back?: FileViewerProps["back"];
-}) {
-  const Icon = folderEntryIcon(entry);
-  return (
-    <div className="flex min-w-0 shrink-0 items-center gap-2 border-b px-3 py-2" data-testid="folder-viewer-header">
-      {back ? (
-        <Button type="button" size="sm" variant="outline" onClick={back.onBack} data-testid="folder-viewer-back" className="shrink-0">
-          <ChevronLeft aria-hidden="true" className="h-3.5 w-3.5" />{back.label}
-        </Button>
-      ) : null}
-      <Icon aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-body-sm font-semibold" title={entry.name}>{entry.name}</div>
-        <div className="truncate text-dense text-muted-foreground" data-testid="folder-viewer-subtitle">{subtitle}</div>
-      </div>
-      {actions ? <div className="flex shrink-0 items-center gap-1">{actions}</div> : null}
-    </div>
-  );
-}
-
 export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function FileViewer({ projectRoot, entry, back, onAttachText }, ref) {
   const { t, locale } = useTranslation();
-  const { copied, copy } = useCopyFlash();
+  const contentCopy = useCopyFlash();
+  const pathCopy = useCopyFlash();
   const open = useOpenInDefaultApp(projectRoot);
   const [attachNote, setAttachNote] = useState<string | null>(null);
+  const [revealFailed, setRevealFailed] = useState(false);
   const [markdownSource, setMarkdownSource] = useState(false);
   const kind = folderFileKind(entry.name);
   const route = useMemo(() => resolveFilePreviewRoute(entry.path), [entry.path]);
@@ -147,6 +129,22 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   // Table and page documents re-read through their own reload when the listing reports a new size or modified time.
   const documentReloadToken = `${entry.size}:${entry.mtimeMs}`;
 
+  const reveal = (): void => {
+    setRevealFailed(false);
+    void window.ave.workspace.reveal(entry.path).then((result) => setRevealFailed(!result.ok), () => setRevealFailed(true));
+  };
+  // Every header carries the two ways out that need no viewer: show the file in the file manager, and copy its path. A link
+  // outside the project is not handed to the file manager, which would open where it points.
+  const exits: ViewerAction[] = [
+    ...(entry.type === "link" && entry.outside ? [] : [{ id: "reveal", label: t(revealKey()), icon: FolderOpen, onSelect: reveal }]),
+    { id: "copy-path", label: t(pathCopy.copied ? "folderView.copied" : "folderView.copyPath"), icon: pathCopy.copied ? Check : Link2,
+      onSelect: () => pathCopy.copy(entry.path) },
+  ];
+  const alert = open.error ? t(open.error) : revealFailed ? t("folderView.revealFailed") : attachNote;
+  const alertStrip = alert ? (
+    <div role="alert" className="shrink-0 border-b px-3 py-1 text-dense text-destructive" data-testid="folder-viewer-alert">{alert}</div>
+  ) : null;
+
   const shell = (children: ReactNode) => (
     <div ref={ref} tabIndex={-1} role="region" aria-label={entry.name} data-testid="folder-viewer" data-path={entry.path}
       className="flex h-full min-h-0 min-w-0 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
@@ -156,7 +154,8 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
 
   if (entry.type === "link") {
     return shell(<>
-      <ViewerHeader entry={entry} subtitle={t("folderView.linkSubtitle")} back={back} />
+      <ViewerHeader entry={entry} subtitle={t("folderView.linkSubtitle")} actions={exits} back={back} />
+      {alertStrip}
       <div className="flex flex-1 items-start justify-center p-6">
         <div role="note" className="flex max-w-sm gap-2 rounded-lg border px-3 py-2 text-xs leading-5" data-testid="folder-link-note">
           <Link2 aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -168,17 +167,22 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
 
   if (route.kind === "table" || route.kind === "page") {
     const Document = route.kind === "table" ? TableDocumentPreview : PageDocumentPreview;
+    // The document draws its own header (name, copy path, reload, default app); the reveal action joins it there. The
+    // narrow layout adds this viewer's header for the way back.
     return shell(<>
-      {back ? <ViewerHeader entry={entry} subtitle={previewFormatLabel(entry.path)} back={back} /> : null}
+      {back ? <ViewerHeader entry={entry} subtitle={previewFormatLabel(entry.path)} actions={exits} back={back} /> : null}
+      {alertStrip}
       <div className="flex min-h-0 flex-1 flex-col overflow-auto px-3 py-2">
-        <Document key={entry.path} path={entry.path} workspaceRoot={projectRoot} observe reloadToken={documentReloadToken} />
+        <Document key={entry.path} path={entry.path} workspaceRoot={projectRoot} observe reloadToken={documentReloadToken}
+          onReveal={reveal} revealLabel={t(revealKey())} />
       </div>
     </>);
   }
 
   if (state.phase === "info") {
     return shell(<>
-      <ViewerHeader entry={entry} subtitle={`${t(FOLDER_KIND_LABEL_KEYS[kind])} · ${formatBytes(entry.size)}`} back={back} />
+      <ViewerHeader entry={entry} subtitle={`${t(FOLDER_KIND_LABEL_KEYS[kind])} · ${formatBytes(entry.size)}`} actions={exits} back={back} />
+      {alertStrip}
       <FileInfoCard projectRoot={projectRoot} entry={entry} reason={state.reason} />
     </>);
   }
@@ -189,42 +193,33 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   subtitleParts.push(formatBytes(entry.size));
   if (modified) subtitleParts.push(modified);
   const isMarkdown = state.phase === "text" && resolvePreviewRenderer({ text: "", path: entry.path }).kind === "markdown";
-  const actions = (
-    <>
-      {isMarkdown ? (
-        <div role="group" aria-label={t("folderView.markdownMode")} className="flex rounded-md border p-0.5">
-          {([false, true] as const).map((source) => (
-            <button key={String(source)} type="button" aria-pressed={markdownSource === source} data-testid={`folder-markdown-${source ? "source" : "view"}`}
-              onClick={() => setMarkdownSource(source)}
-              className={cn("rounded px-2 py-0.5 text-dense", markdownSource === source ? "bg-muted font-medium" : "text-muted-foreground")}>
-              {t(source ? "folderView.markdownSource" : "folderView.markdownView")}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      {state.phase === "text" ? (
-        <Button type="button" size="icon-xs" variant="ghost" aria-label={t(copied ? "folderView.copied" : "folderView.copyContent")}
-          title={t(copied ? "folderView.copied" : "folderView.copyContent")} onClick={() => copy(state.content)} data-testid="folder-copy-content">
-          {copied ? <Check aria-hidden="true" className="h-3.5 w-3.5" /> : <Copy aria-hidden="true" className="h-3.5 w-3.5" />}
-        </Button>
-      ) : null}
-      {onAttachText ? (
-        <Button type="button" size="icon-xs" variant="ghost" aria-label={t("folderView.addToContext")} title={t("folderView.addToContext")}
-          data-testid="folder-add-context"
-          onClick={() => {
-            const result = onAttachText(`\`${entry.path}\``);
-            setAttachNote(result === true ? null : t(result === false ? "folderView.addToContextFull" : "folderView.addToContextNoComposer"));
-          }}>
-          <MessageSquarePlus aria-hidden="true" className="h-3.5 w-3.5" />
-        </Button>
-      ) : null}
-      {canOpenInDefaultApp(entry.path) ? (
-        <Button type="button" size="sm" variant="outline" disabled={open.pending} onClick={() => void open.run(entry.path)} data-testid="folder-open-external">
-          <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />{t("folderView.openExternal")}
-        </Button>
-      ) : null}
-    </>
-  );
+  const actions: ViewerAction[] = [];
+  if (state.phase === "text") {
+    actions.push({ id: "copy-content", label: t(contentCopy.copied ? "folderView.copied" : "folderView.copyContent"),
+      icon: contentCopy.copied ? Check : Copy, onSelect: () => contentCopy.copy(state.content) });
+  }
+  if (onAttachText) {
+    actions.push({ id: "add-context", label: t("folderView.addToContext"), icon: MessageSquarePlus, onSelect: () => {
+      const result = onAttachText(`\`${entry.path}\``);
+      setAttachNote(result === true ? null : t(result === false ? "folderView.addToContextFull" : "folderView.addToContextNoComposer"));
+    } });
+  }
+  actions.push(...exits);
+  if (canOpenInDefaultApp(entry.path)) {
+    actions.push({ id: "open-external", label: t("folderView.openExternal"), icon: ExternalLink, disabled: open.pending,
+      onSelect: () => void open.run(entry.path), labelled: true });
+  }
+  const markdownSwitch = isMarkdown ? (
+    <div role="group" aria-label={t("folderView.markdownMode")} className="flex rounded-md border p-0.5">
+      {([false, true] as const).map((source) => (
+        <button key={String(source)} type="button" aria-pressed={markdownSource === source} data-testid={`folder-markdown-${source ? "source" : "view"}`}
+          onClick={() => setMarkdownSource(source)}
+          className={cn("rounded px-2 py-0.5 text-dense", markdownSource === source ? "bg-muted font-medium" : "text-muted-foreground")}>
+          {t(source ? "folderView.markdownSource" : "folderView.markdownView")}
+        </button>
+      ))}
+    </div>
+  ) : null;
   const body = state.phase === "loading" ? (
     <div className="p-4 text-xs text-muted-foreground" data-testid="folder-viewer-loading">{t("folderView.loading")}</div>
   ) : state.phase === "error" ? (
@@ -244,12 +239,8 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
     </div>
   );
   return shell(<>
-    <ViewerHeader entry={entry} subtitle={subtitleParts.join(" · ")} actions={actions} back={back} />
-    {open.error || attachNote ? (
-      <div role="alert" className="shrink-0 border-b px-3 py-1 text-dense text-destructive" data-testid="folder-viewer-alert">
-        {open.error ? t(open.error) : attachNote}
-      </div>
-    ) : null}
+    <ViewerHeader entry={entry} subtitle={subtitleParts.join(" · ")} actions={actions} wideLead={markdownSwitch} back={back} />
+    {alertStrip}
     {body}
   </>);
 });

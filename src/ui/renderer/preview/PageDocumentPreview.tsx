@@ -32,10 +32,13 @@ function sameTextContainer(left: PageElementAddress, right: PageElementAddress):
  * binding but stays mounted on its page; observing again re-reads that page as a fresh baseline. A view without a
  * session never observes, so the flag does not touch it.
  */
-export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe, reloadToken }: {
+export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe, reloadToken, onReveal, revealLabel }: {
   path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean; observe: boolean;
   /** A value that changes when the file changed on disk; each change reads the document again, keeping the page on screen. */
   reloadToken?: string;
+  /** Show the file in the file manager, for a caller that can; `revealLabel` names that file manager. */
+  onReveal?: () => void;
+  revealLabel?: string;
 }) {
   const { t } = useTranslation();
   const [index, setIndex] = useState(0);
@@ -196,7 +199,7 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
     <PreviewDocumentHeader path={state.phase === "ok" ? state.path : path} workspaceRoot={workspaceRoot}
       canOpenExternal={Boolean(canOpenExternal) || (state.phase === "ok" && previewSupportsExternalOpen(state.path))}
       onOpenError={(code) => setOpenFailed(defaultAppOpenErrorKey(code))} onReload={() => setRetryGeneration((current) => current + 1)}
-      refreshing={state.phase === "loading"} />
+      refreshing={state.phase === "loading"} onReveal={onReveal} revealLabel={revealLabel} />
     <PreviewDocumentLiveStrip status={state.phase === "ok" ? state.status : undefined} summary={summary} ts={latest?.ts}
       error={openFailed ? t(openFailed) : undefined} />
     {state.phase === "loading" ? <div role="status">{t("chatPreviewRail.filePreviewLoading")}</div>

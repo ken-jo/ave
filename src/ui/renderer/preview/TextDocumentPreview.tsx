@@ -8,7 +8,7 @@ import { defaultAppOpenErrorKey, resolveIpcErrorKey } from "../format-ipc-error.
 import { FileInfoCard } from "./FileInfoCard.js";
 import { PreviewContent, resolvePreviewRenderer } from "./preview-renderers.js";
 import { PreviewDocumentFooter, PreviewDocumentHeader, PreviewDocumentLiveStrip, pathParts, previewFormatLabel, workspaceRelativePath } from "./preview-document-chrome.js";
-import { previewSupportsExternalOpen } from "../../../shared/preview-external-open.js";
+import { canOpenInDefaultApp, previewSupportsExternalOpen } from "../../../shared/preview-external-open.js";
 
 type ReadError = NonNullable<Awaited<ReturnType<typeof window.ave.preview.readFile>>["error"]>;
 interface ObservedLine { line: number; before: string; after: string; seq: number; ts: number }
@@ -169,7 +169,8 @@ export function TextDocumentPreview({ target, sessionId, observe }: {
       : state.phase === "loading" ? <div className="text-xs text-muted-foreground" data-testid="chat-side-panel-file-loading">{t("chatPreviewRail.filePreviewLoading")}</div>
       : state.phase === "error" && !selected && (state.code === "binary-file" || state.code === "too-large")
         ? <FileInfoCard name={pathParts(target.path).name} kindLabel={previewFormatLabel(target.path)}
-          location={workspaceRelativePath(target.path, target.workspaceRoot)} reason={state.code} />
+          location={workspaceRelativePath(target.path, target.workspaceRoot)} reason={state.code}
+          defaultAppAvailable={canOpenInDefaultApp(target.path)} />
       : state.phase === "error" ? <div className="text-dense text-destructive" data-testid="chat-side-panel-file-error">{t(readErrorKey(state.code))}</div>
       : state.image ? <img src={state.image.dataUrl} alt={target.title} referrerPolicy="no-referrer" className="max-h-(--preview-block-max-height) max-w-full rounded-md object-contain" data-testid="file-preview-image" />
       : sourceVisible ? <pre className="max-h-(--preview-block-max-height) overflow-auto border-t py-2 font-mono text-xs"
