@@ -7,7 +7,7 @@ export interface ShortcutSettings {
   /** A null accelerator registers nothing even when enabled. */
   toggleWindow: string | null;
   enabled: boolean;
-  /** The user's rebinds of registry rows: only rows that differ from their platform default are stored. */
+  /** The user's rebinds; an empty string explicitly unbinds an action. Only differences from the platform default are stored. */
   bindings: ShortcutBindings;
 }
 
@@ -535,7 +535,7 @@ export function resolveShortcut(id: ShortcutId, input: ShortcutResolutionInput, 
   if (id === "system.toggleWindow") return input.enabled ? input.toggleWindow : null;
   if (entry.readOnly === undefined) {
     const override = input.bindings[id];
-    if (override !== undefined) return override;
+    if (override !== undefined) return override === "" ? null : override;
   }
   return entry.defaults[platform];
 }
@@ -680,6 +680,10 @@ export function loadShortcutBindings(input: unknown, platform: ShortcutPlatform)
       dropped.push({ id, value, reason: "malformed" });
       continue;
     }
+    if (value === "" && isRebindableShortcut(id)) {
+      bindings[id] = value;
+      continue;
+    }
     const refusal = shortcutBindingRefusal(id, value, platform, NO_SHORTCUT_OVERRIDES);
     if (refusal !== null) {
       dropped.push({ id, value, reason: refusal.reason });
@@ -711,7 +715,7 @@ export class ShortcutBindingsPatchError extends Error {
 }
 
 /** The bindings after `patch`: an accelerator rebinds its row and `null` resets it; a rebind to the default is stored as
- * no override. Throws ShortcutBindingsPatchError on anything the settings page would have refused, since a refusal
+ * no override; an empty string explicitly unbinds the action. Throws ShortcutBindingsPatchError on anything the settings page would have refused, since a refusal
  * here means a caller broke the contract. */
 export function applyShortcutBindingsPatch(
   current: ShortcutSettings,
@@ -729,6 +733,10 @@ export function applyShortcutBindingsPatch(
       continue;
     }
     if (typeof value !== "string") throw new ShortcutBindingsPatchError(`shortcuts.bindings.${id} must be an accelerator or null.`);
+    if (value === "" && isRebindableShortcut(id)) {
+      next[id] = value;
+      continue;
+    }
     const refusal = shortcutBindingRefusal(id, value, platform, { ...current, bindings: next });
     if (refusal !== null) throw new ShortcutBindingsPatchError(`shortcuts.bindings.${id} refused (${refusal.reason}): ${value}`);
     if (value === defaultAccelerator(id, platform)) delete next[id];

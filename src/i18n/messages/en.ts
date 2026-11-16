@@ -6532,6 +6532,12 @@ export const en = {
   "webTab.apiKeyStaticTitle": "Search API key",
   "webTab.apiKeyNotRequired": "The selected search provider does not need an API key.",
   "webTab.missingKeyFallback": "No API key saved: DuckDuckGo is used until you save a key.",
+  "shortcutsTab.usedBy": "Used by: {labels}. Replace removes their bindings.",
+  "shortcutsTab.replace": "Replace",
+  "shortcutsTab.resetAll": "Reset all shortcuts",
+  "shortcutsTab.unbind": "Unbind",
+  "shortcutsTab.unbindAria": "Unbind {label}",
+  "shortcutsTab.saveFailed": "Could not save keyboard shortcuts.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

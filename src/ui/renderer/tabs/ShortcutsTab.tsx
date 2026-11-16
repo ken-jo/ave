@@ -56,6 +56,8 @@ export function ShortcutsTab() {
   const [filter, setFilter] = useState<ShortcutFilter>("all");
   const [recordingId, setRecordingId] = useState<ShortcutId | null>(null);
   const [notice, setNotice] = useState<{ id: ShortcutId; notice: CaptureNotice } | null>(null);
+  const [replacement, setReplacement] = useState<{ id: ShortcutId; accelerator: string; conflicts: ResolvedShortcut[] } | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   const rows = useMemo(() => resolveShortcuts(settings, platform), [settings, platform]);
@@ -79,15 +81,22 @@ export function ShortcutsTab() {
     .map((scope) => ({ scope, rows: shown.filter((row) => row.definition.scope === scope) }))
     .filter((group) => group.rows.length > 0);
 
-  const persist = useCallback(async (id: ShortcutId, accelerator: string) => {
-    const result = await getApi().updateSettings({ shortcuts: { bindings: { [id]: accelerator } } });
-    if (isIpcErrorResult(result)) {
-      setNotice({ id, notice: { kind: "failed", message: formatIpcError(result.error, result.message) } });
-      return;
+  const persistBindings = useCallback(async (bindings: Record<string, string | null>, id?: ShortcutId) => {
+    try {
+      const result = await getApi().updateSettings({ shortcuts: { bindings } });
+      if (isIpcErrorResult(result)) throw new Error(formatIpcError(result.error, result.message));
+      setNotice(null);
+      setPageError(null);
+      setReplacement(null);
+      notifySaved();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("shortcutsTab.saveFailed");
+      if (id !== undefined) setNotice({ id, notice: { kind: "failed", message } });
+      else setPageError(message);
     }
-    setNotice(null);
-    notifySaved();
-  }, [notifySaved]);
+  }, [notifySaved, t]);
+
+  const persist = useCallback((id: ShortcutId, accelerator: string) => persistBindings({ [id]: accelerator }, id), [persistBindings]);
 
   // While recording, the next chord is the new binding: a capture-phase listener takes it before anything else, and the
   // shortcut matcher goes quiet so app commands registered earlier on the same phase do not run either.
@@ -113,7 +122,16 @@ export function ShortcutsTab() {
         setNotice({ id: recordingId, notice: { kind: "refused", refusal } });
         return;
       }
+      const candidateRows = resolveShortcuts({ ...settings, bindings: { ...settings.bindings, [recordingId]: recorded.accelerator } }, platform);
+      const candidate = candidateRows.find((row) => row.id === recordingId);
+      if (candidate === undefined) throw new Error("Shortcut recording target is unavailable.");
+      const overlapping = candidateRows.filter((row) => row.id !== recordingId && row.rebindable
+        && conflictingShortcutIds([candidate, row], platform).has(recordingId));
       setRecordingId(null);
+      if (overlapping.length > 0) {
+        setReplacement({ id: recordingId, accelerator: recorded.accelerator, conflicts: overlapping });
+        return;
+      }
       void persist(recordingId, recorded.accelerator);
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -164,6 +182,23 @@ export function ShortcutsTab() {
   return (
     <div className="min-w-0 space-y-6">
       <SettingsPageHeader title={t("shortcutsTab.title")} description={t("shortcutsTab.description")} />
+      {replacement !== null ? (
+        <div className="space-y-2 rounded-md border border-warning p-3" role="alert" data-testid="shortcuts:replacement">
+          <p className="text-sm">{t("shortcutsTab.usedBy", { labels: replacement.conflicts.map((row) => t(row.definition.labelKey)).join(", ") })}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => {
+              const bindings: Record<string, string | null> = Object.fromEntries(replacement.conflicts.map((row) => [row.id, ""]));
+              bindings[replacement.id] = replacement.accelerator;
+              void persistBindings(bindings, replacement.id);
+            }} data-testid="shortcuts:replace">{t("shortcutsTab.replace")}</Button>
+            <Button size="sm" variant="outline" onClick={() => setReplacement(null)} data-testid="shortcuts:cancel-replace">{t("common.cancel")}</Button>
+          </div>
+        </div>
+      ) : null}
+      {pageError !== null ? <p role="alert" className="text-sm text-destructive">{pageError}</p> : null}
+      <Button variant="outline" size="sm" disabled={counts.modified === 0} onClick={() => {
+        void persistBindings(Object.fromEntries(rows.filter((row) => row.modified).map((row) => [row.id, null])));
+      }} data-testid="shortcuts:reset-all">{t("shortcutsTab.resetAll")}</Button>
       <SettingsSection data-settings-section="shortcuts-list" title={t("shortcutsTab.listTitle")} description={t("shortcutsTab.listDescription")}>
         <div className="space-y-3">
           <Input
@@ -257,6 +292,10 @@ export function ShortcutsTab() {
                           >
                             {recording ? <span className="px-1 text-xs text-foreground">{t("shortcutsTab.recording")}</span> : keys}
                           </button>
+                          <Button type="button" variant="ghost" size="sm" disabled={row.accelerator === null}
+                            onClick={() => { void persist(row.id, ""); }}
+                            aria-label={t("shortcutsTab.unbindAria", { label })}
+                            data-testid={`shortcuts:unbind-${row.id}`}>{t("shortcutsTab.unbind")}</Button>
                           <Button
                             type="button"
                             variant="ghost"

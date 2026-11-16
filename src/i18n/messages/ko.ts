@@ -6534,4 +6534,10 @@ export const ko: Record<MessageCatalogKey, string> = {
   "webTab.apiKeyStaticTitle": "검색 API 키",
   "webTab.apiKeyNotRequired": "선택한 검색 제공업체는 API 키가 필요하지 않습니다.",
   "webTab.missingKeyFallback": "저장된 API 키가 없어 DuckDuckGo를 사용합니다. 키를 저장하면 선택한 검색 엔진을 사용합니다.",
+  "shortcutsTab.usedBy": "사용 중: {labels}. 바꾸면 해당 단축키가 해제됩니다.",
+  "shortcutsTab.replace": "바꾸기",
+  "shortcutsTab.resetAll": "단축키 모두 초기화",
+  "shortcutsTab.unbind": "해제",
+  "shortcutsTab.unbindAria": "{label} 단축키 해제",
+  "shortcutsTab.saveFailed": "키보드 단축키를 저장하지 못했습니다.",
 };

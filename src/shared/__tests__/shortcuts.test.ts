@@ -531,3 +531,22 @@ describe("system-wide shortcut safety", () => {
     expect(globalShortcutOverlaps("Alt+Shift+F1", NO_SHORTCUT_OVERRIDES, platform)).toEqual([]);
   });
 });
+
+
+describe("explicitly unbound shortcuts", () => {
+  it("persists and reloads unbinding independently of reset", () => {
+    const bindings = applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "app.search": "" }, "other");
+    expect(bindings).toEqual({ "app.search": "" });
+    expect(loadShortcutBindings(bindings, "other").bindings).toEqual(bindings);
+    expect(resolveShortcut("app.search", { ...NO_SHORTCUT_OVERRIDES, bindings }, "other")).toBeNull();
+    expect(applyShortcutBindingsPatch({ ...NO_SHORTCUT_OVERRIDES, bindings }, { "app.search": null }, "other")).toEqual({});
+    expect(() => applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "edit.copy": "" }, "other")).toThrow();
+  });
+
+  it("replaces a taken chord atomically by unbinding its prior owner", () => {
+    const bindings = applyShortcutBindingsPatch(NO_SHORTCUT_OVERRIDES, { "app.commandPalette": "CommandOrControl+F", "app.search": "" }, "other");
+    expect(resolveShortcut("app.commandPalette", { ...NO_SHORTCUT_OVERRIDES, bindings }, "other")).toBe("CommandOrControl+F");
+    expect(resolveShortcut("app.search", { ...NO_SHORTCUT_OVERRIDES, bindings }, "other")).toBeNull();
+    expect(conflictingShortcutIds(resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, bindings }, "other"), "other").size).toBe(0);
+  });
+});
