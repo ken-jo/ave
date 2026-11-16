@@ -6146,6 +6146,7 @@ export const en = {
   "viewPathNav.ariaLabel": "Current location",
 
   // webSurface
+  "webSurface.attachBlocked": "This address can't be opened here.",
   "webSurface.mountedElsewhere": "This page is open in another panel.",
 
   // webTab

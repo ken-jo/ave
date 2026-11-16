@@ -365,6 +365,7 @@ describe("preload contextBridge world shape lock", () => {
             "clearHistory",
             "find",
             "getState",
+            "onAttachBlocked",
             "onChanged",
             "preview",
             "setBookmark",

@@ -56,6 +56,13 @@ export interface BrowserWorkspaceApi {
   preview(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<BrowserPreview>>;
   capture(request: BrowserCaptureRequest): Promise<BrowserWorkspaceResult<BrowserCapture>>;
   onChanged(handler: (state: BrowserWorkspaceState) => void): () => void;
+  /** Main refused a page guest before it attached; `src` is the address the refused element carried. */
+  onAttachBlocked(handler: (blocked: BrowserAttachBlocked) => void): () => void;
+}
+export interface BrowserAttachBlocked { readonly src: string }
+export function parseBrowserAttachBlocked(value: unknown): BrowserAttachBlocked | null {
+  return isRecord(value) && keys(value, ["src"]) && typeof value.src === "string" && value.src.length <= BROWSER_WORKSPACE_LIMITS.urlLength
+    ? { src: value.src } : null;
 }
 export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;

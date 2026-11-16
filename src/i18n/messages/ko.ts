@@ -6148,6 +6148,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "viewPathNav.ariaLabel": "현재 위치",
 
   // webSurface
+  "webSurface.attachBlocked": "이 주소는 여기서 열 수 없습니다.",
   "webSurface.mountedElsewhere": "이 페이지는 다른 패널에 열려 있습니다.",
 
   // webTab

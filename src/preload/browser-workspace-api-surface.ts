@@ -2,6 +2,7 @@ import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
   BROWSER_WORKSPACE_ERRORS,
+  parseBrowserAttachBlocked,
   parseBrowserWorkspacePreview,
   parseBrowserWorkspaceCapture,
   parseBrowserWorkspaceState,
@@ -60,6 +61,15 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
       };
       ipcRenderer.on(CHANNELS.browserWorkspace.changed, listener);
       return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.changed, listener);
+    },
+    onAttachBlocked: (handler) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const parsed = parseBrowserAttachBlocked(payload);
+        if (!parsed) throw new Error("invalid-browser-attach-blocked");
+        handler(parsed);
+      };
+      ipcRenderer.on(CHANNELS.browserWorkspace.attachBlocked, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.attachBlocked, listener);
     },
   };
 }

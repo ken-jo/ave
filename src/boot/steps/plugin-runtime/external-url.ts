@@ -26,6 +26,9 @@ export async function routeExternalUrl(input: {
     if (validated.error === "malformed-url") {
       throw new Error(`[plugin:${pluginId}] openExternalUrl: invalid URL`);
     }
+    if (validated.error === "invalid-host") {
+      throw new Error(`[plugin:${pluginId}] openExternalUrl: the URL has no valid host name`);
+    }
     if (validated.error === "embedded-credentials") {
       throw new Error(
         `[plugin:${pluginId}] openExternalUrl: URLs with embedded credentials are not allowed`,

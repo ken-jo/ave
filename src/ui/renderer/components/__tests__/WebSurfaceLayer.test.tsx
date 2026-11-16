@@ -66,6 +66,16 @@ function Harness({ where }: { where: "side" | "pane" | "none" }) {
 const bindTab = vi.fn(async (_request: { tabId: string; webContentsId: number; requestId?: string }) => ({ ok: true as const }));
 const layerApi = { browserTabs: { bindTab, getSessionBindings: async () => ({ revision: 0, bindings: [], nativeBrowserTabIds: [] }), onSessionBindingsChanged: () => () => {}, onNativeSurfaceChanged: () => () => {} } } as unknown as AveApi;
 
+function refusalApi(): { api: AveApi; block(src: string): void } {
+  let handler: (event: { src: string }) => void = () => {};
+  const api = { ...layerApi, browserWorkspace: { onAttachBlocked: (next: typeof handler) => { handler = next; return () => {}; } } } as unknown as AveApi;
+  return { api, block: (src) => handler({ src }) };
+}
+
+function RefusalPage({ api, url }: { api: AveApi; url: string }) {
+  return <><WebSurfaceSlot tabId="browser:1" url={url} location="side-panel" /><WebSurfaceLayer api={api} /></>;
+}
+
 describe("WebSurfaceLayer", () => {
   it("lays out a never-shown background guest invisibly and reveals that same guest mid-action", async () => {
     publishLiveWebTabs(source, new Set(["browser:1"]));
@@ -476,5 +486,35 @@ describe("WebSurfaceLayer", () => {
     stubBox(screen.getByTestId("bar"), { left: 774, top: 49, width: 8, height: 694 });
     act(() => { placeWebSurfaces(); });
     expect(frame("browser:1").style.clipPath).toBe('path(evenodd, "M0 0H448V615H0ZM0 0H8V615H0Z")');
+  });
+
+  it("drops a guest main refused before it attached and mounts a fresh one for the next address", async () => {
+    const refusal = refusalApi();
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    const view = await render(<RefusalPage api={refusal.api} url="https://refused.example/" />);
+    const refused = guests()[0];
+    expect(refused?.getAttribute("src")).toBe("https://refused.example/");
+
+    await act(async () => { refusal.block("https://refused.example/"); });
+    expect(guests()).toHaveLength(0);
+    expect(screen.getByTestId("web-surface-attach-blocked").textContent).toContain("https://refused.example/");
+
+    view.rerender(<RefusalPage api={refusal.api} url="https://example.com/next" />);
+    await act(async () => {});
+    expect(screen.queryByTestId("web-surface-attach-blocked")).toBeNull();
+    expect(guests()).toHaveLength(1);
+    expect(guests()[0]).not.toBe(refused);
+    expect(guests()[0]?.getAttribute("src")).toBe("https://example.com/next");
+  });
+
+  it("keeps a guest that already attached when a refusal names its address", async () => {
+    const refusal = refusalApi();
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    await render(<RefusalPage api={refusal.api} url="https://example.com/" />);
+    const guest = guests()[0];
+    await act(async () => { guest?.dispatchEvent(new Event("did-attach")); });
+    await act(async () => { refusal.block("https://example.com/"); });
+    expect(guests()).toEqual([guest]);
+    expect(screen.queryByTestId("web-surface-attach-blocked")).toBeNull();
   });
 });

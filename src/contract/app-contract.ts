@@ -772,6 +772,7 @@ export const CHANNELS = {
     preview: "ave:browser-workspace:preview",
     capture: "ave:browser-workspace:capture",
     changed: "ave:browser-workspace:changed",
+    attachBlocked: "ave:browser-workspace:attach-blocked", // event main→renderer  a page guest was refused before it attached
   },
   // ── Active workspace surface (a hint for agent tools) ─────────────────────
   // INTERNAL. The renderer reports which browser/terminal tab the user is

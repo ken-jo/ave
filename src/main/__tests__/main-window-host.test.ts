@@ -12,6 +12,7 @@ const native = await vi.hoisted(async () => {
     styleId = 0;
     readonly insertCSS = vi.fn(async (_css: string): Promise<string> => `style-${++this.styleId}`);
     readonly removeInsertedCSS = vi.fn(async (_key: string) => {});
+    readonly send = vi.fn((_channel: string, _payload: unknown) => {});
     isDestroyed() { return this.destroyed; }
   }
   class View {
@@ -46,7 +47,8 @@ const native = await vi.hoisted(async () => {
   }
   return { Window, View, ContentsView };
 });
-vi.mock("../webview-attach.js", () => ({ configureMainWindowWebviewAttach: vi.fn(() => ({ owner: null, result: "refused" })) }));
+const attachVerdict = vi.hoisted(() => ({ current: { owner: null, result: "refused" } as { owner: string | null; result: string } }));
+vi.mock("../webview-attach.js", () => ({ configureMainWindowWebviewAttach: vi.fn(() => attachVerdict.current) }));
 vi.mock("electron", () => ({ BaseWindow: native.Window, WebContentsView: native.ContentsView }));
 
 import { attachMainWindowPage, closeMainWindowDocuments, closeMainWindowUi, createMainWindowHost, mainWindowFromNativeWindow, mainWindowUiOrigin, refreshMainWindowUiLayout } from "../main-window-host.js";
@@ -176,5 +178,20 @@ describe("main window composition", () => {
     expect(view.webContents).toBeUndefined();
     expect(contents.close).toHaveBeenCalledWith();
     expect(() => closeMainWindowUi(window)).toThrow("Main window UI view unavailable");
+  });
+  it("tells the app document which page guest it refused, and nothing for guests it does not own", () => {
+    const window = create(), contents = ui(window).webContents;
+    const attach = (src: string) => contents.emit("will-attach-webview", { preventDefault: vi.fn() }, {}, { src, partition: "persist:ave-side-browser" });
+    attachVerdict.current = { owner: "side-browser", result: "blocked" };
+    attach("https://hello%20world/");
+    expect(contents.send).toHaveBeenCalledWith("ave:browser-workspace:attach-blocked", { src: "https://hello%20world/" });
+    contents.send.mockClear();
+    attachVerdict.current = { owner: "side-browser", result: "accepted" };
+    attach("https://example.com/");
+    attachVerdict.current = { owner: null, result: "refused" };
+    attach("https://example.com/");
+    attachVerdict.current = { owner: "mcp-app", result: "blocked" };
+    attach("ave-mcp://x/");
+    expect(contents.send).not.toHaveBeenCalled();
   });
 });
