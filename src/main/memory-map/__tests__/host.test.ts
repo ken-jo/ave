@@ -29,10 +29,20 @@ describe('memory graph publication', () => {
     const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
     const result = await host.build(() => f.catalog);
     expect(await host.get(() => f.catalog)).toEqual(result);
+    const restarted = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
+    expect(await restarted.get(() => f.catalog)).toEqual(result);
     expect(await readFile(join(f.root, 'snapshot.json'), 'utf8')).not.toContain('Private body');
     f.catalog.records = [];
     expect(await host.get(() => f.catalog)).toBeNull();
     expect(JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).cache).toEqual({});
+  });
+  it('refuses persisted identities outside the current authorized catalog', async () => {
+    const f = await fixture(); const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
+    const snapshot = await host.build(() => f.catalog);
+    snapshot.points[0]!.memoryId = 'outside';
+    await f.namespace.writeJson('snapshot.json', { snapshot, cache: {} });
+    const restarted = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: f.runWorker });
+    await expect(restarted.get(() => f.catalog)).rejects.toThrow('identity is invalid');
   });
   it('drops a stale question when a newer query completes first', async () => {
     const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });

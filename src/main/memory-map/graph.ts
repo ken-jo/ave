@@ -19,8 +19,12 @@ export function semanticLinks(records: MemoryMapRecord[], vectors: number[][], b
   if (vectors.length !== records.length) throw new Error('Memory and vector counts differ');
   const top: { index: number; score: number }[][] = records.map(() => []);
   const admit = (from: number, index: number, score: number) => {
-    const row = top[from]!; row.push({ index, score });
-    row.sort((a, b) => b.score - a.score || records[a.index]!.memoryId.localeCompare(records[b.index]!.memoryId));
+    const row = top[from]!;
+    const compare = (candidate: { index: number; score: number }) => candidate.score - score || records[index]!.memoryId.localeCompare(records[candidate.index]!.memoryId);
+    if (row.length === 12 && compare(row[11]!) >= 0) return;
+    let position = row.findIndex(candidate => compare(candidate) < 0);
+    if (position === -1) position = row.length;
+    row.splice(position, 0, { index, score });
     if (row.length > 12) row.pop();
   };
   for (let a = 0; a < records.length; a++) for (let b = a + 1; b < records.length; b++) {

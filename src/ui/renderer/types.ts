@@ -1,3 +1,4 @@
+import type { MemoryMapApi } from '../../shared/memory-map.js';
 import type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 export type { NotificationToastPayload, NotificationClickPayload } from "../../shared/notification-types.js";
 import type { WindowControlsPlacement } from "../../shared/shell-geometry.js";
@@ -791,6 +792,7 @@ export type AvePreloadApi = {
   starredList: () => Promise<Array<{ id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string }>>;
   starredAdd: (entry: { sessionId?: string; messageIndex: number; role: string; text: string }) => Promise<{ ok: boolean; entry?: { id: string; sessionId: string; messageIndex: number; role: string; text: string; starredAt: string } }>;
   starredRemove: (opts: { id?: string; sessionId?: string; messageIndex?: number }) => Promise<{ ok: boolean }>;
+  memoryMap: MemoryMapApi;
   memoryGetDetail: (id: string, opts?: ProjectQueryOptions) => Promise<MemoryDetailResult>;
   memoryGetSummaries: (opts?: ProjectQueryOptions) => Promise<MemorySummariesResult>;
 

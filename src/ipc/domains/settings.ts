@@ -89,9 +89,9 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
     : null;
 }
 
-/** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; every other stored field crosses as-is.
+/** The settings shape the renderer sees. Authoritative remote route lineage (`a2aRemote`) is main-only and never projected to the renderer. The upstream proxy (`upstreamProxy`) crosses only through its own permissions channels; the validated local model location stays in main. Every other stored field crosses as-is.
  * `activeChatModel` is the one derived field. A vendor block always names a model, so the stored settings cannot say whether chat has a model at all; only main, which holds the secret store, can. Every renderer surface that names the active model reads it from here. */
-export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy"> & {
+export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy" | "memoryEmbedding"> & {
   readonly activeChatModel: ActiveChatModel;
 };
 
@@ -100,7 +100,7 @@ export async function rendererSettingsSnapshot(
   snapshot: AppSettings = settingsService.getAll(),
 ): Promise<RendererSettingsSnapshot> {
   // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
-  const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, ...projected } = structuredClone(snapshot);
+  const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, memoryEmbedding: _embeddingConfig, ...projected } = structuredClone(snapshot);
   return { ...projected, activeChatModel: await resolveMainActiveChatModel(settingsService) };
 }
 
@@ -605,6 +605,9 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.update, e); return UNAUTHORIZED_FRAME; }
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "a2aRemote")) {
       return { ok: false, error: "a2a-remote-settings-main-owned" };
+    }
+    if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "memoryEmbedding")) {
+      return { ok: false, error: "invalid-input" };
     }
     // Where the sandbox egress proxy sends allowed connections: written only through the
     // permissions upstreamProxySet channel, which validates it and keeps credentials in the secret store.

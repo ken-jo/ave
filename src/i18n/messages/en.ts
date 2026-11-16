@@ -1,5 +1,18 @@
 /** English message catalog, grouped by namespace. */
 export const en = {
+  "memoryMap.error.invalid-input": "Invalid memory map request.",
+  "memoryMap.error.project-not-allowed": "This memory scope is unavailable.",
+  "memoryMap.error.model-unconfigured": "Set up a local embedding model first.",
+  "memoryMap.error.model-integrity-failed": "Model files do not match the pinned version.",
+  "memoryMap.error.graph-unavailable": "Build the memory map first.",
+  "memoryMap.error.graph-stale": "Memories changed. Rebuild the map.",
+  "memoryMap.error.graph-build-failed": "The memory map could not be built.",
+  "memoryMap.error.request-stale": "This request was replaced.",
+  "memoryMap.error.provider-unavailable": "Provider embeddings are not available yet.",
+  "memoryMap.error.model-download-failed": "The local model could not be downloaded.",
+  "memoryMap.error.model-folder-invalid": "Choose a folder containing the local model.",
+  "memoryMap.error.model-cancelled": "Model setup was cancelled.",
+  "memoryMap.error.unauthorized-frame": "This view cannot access the memory map.",
 
   "notificationCenter.title": "Notifications",
   "notificationCenter.label": "Notifications: {approvals} need review, {unread} unread notices",

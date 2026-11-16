@@ -180,6 +180,17 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.chat.controlShellTask, ["main", "11111111-1111-4111-8111-111111111111", "background"]],
   ["chat", CHANNELS.memory.detailGet, ["11111111-1111-4111-8111-111111111111", {}]],
   ["chat", CHANNELS.memory.summariesGet, [{}]],
+  ["chat", CHANNELS.memoryMap.get, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.build, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.cancel, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.facets, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.retrieve, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.modelStatus, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.modelDownload, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.modelCancel, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.modelUseExisting, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.settingsGet, [{ invalid: true }]],
+  ["chat", CHANNELS.memoryMap.settingsSet, [{ invalid: true }]],
   // Secret writes and the external-link opener.
   ["settings", CHANNELS.settings.update, [{}]],
   ["settings", CHANNELS.settings.setApiKey, ["anthropic", "k"]],
@@ -492,5 +503,11 @@ describe("the model catalog channel", () => {
       Object.assign(slot, saved);
     }
     expect(await invoke(CHANNELS.llm.getModelCatalog, hostFrameEvent(), [])).toMatchObject({ ok: true });
+  });
+});
+
+describe('memory embedding config ownership', () => {
+  it('rejects a model location through the general settings channel', async () => {
+    expect(await invoke(CHANNELS.settings.update, registeredHostEvent(), [{ memoryEmbedding: { localModelPath: '/example/model' } }])).toEqual({ ok: false, error: 'invalid-input' });
   });
 });

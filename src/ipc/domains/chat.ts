@@ -1,3 +1,4 @@
+import { registerMemoryMapHandlers } from './memory-map.js';
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
 import { getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import type { TurnReviewResult } from "../../shared/turn-change-review.js";
@@ -1802,6 +1803,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     branchContinuations.set(group, continuation);
     return { ...branched, branchContinuation: continuation.id };
   });
+  registerMemoryMapHandlers(deps, parseMemoryProjectOptions);
   const memoryConversationStores = () => {
     const runner = deps.getSubAgentRunner?.();
     const subagent = runner ? {

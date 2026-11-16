@@ -1,3 +1,4 @@
+import { normalizeMemoryEmbeddingConfig, type MemoryEmbeddingConfig } from '../shared/memory-embedding-config.js';
 import { isZoomLevel } from "../shared/app-zoom.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
@@ -507,6 +508,7 @@ export interface DiagnosticsSettings {
 }
 
 export interface AppSettings {
+  memoryEmbedding?: MemoryEmbeddingConfig;
   llm: LLMSettings;
   chat: ChatSettings;
   /** Host-owned P4-5 routing configuration. Secrets remain in SettingsService secret storage. */
@@ -936,7 +938,7 @@ export class SettingsService {
     partial: Partial<Omit<
       AppSettings,
       | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
-      | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance"
+      | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance" | "memoryEmbedding"
     >> & {
       appearance?: Partial<Omit<AppearanceSettings, "terminalFont">> & { terminalFont?: Partial<AppearanceSettings["terminalFont"]> };
       marketplace?: Partial<MarketplaceSettings>;
@@ -1729,6 +1731,7 @@ export class SettingsService {
       if (appliedMigrations.length !== migrationsBeforeMarketDefaults) migrationWriteBack = true;
 
       const result: AppSettings = {
+        memoryEmbedding: normalizeMemoryEmbeddingConfig(parsed.memoryEmbedding),
         llm,
         chat: normalizeChat(parsed.chat),
         a2aRemote: normalizeA2ARemote(parsed.a2aRemote),

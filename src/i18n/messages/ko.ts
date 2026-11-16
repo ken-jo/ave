@@ -2,6 +2,19 @@
 import type { MessageCatalogKey } from "./en.js";
 
 export const ko: Record<MessageCatalogKey, string> = {
+  "memoryMap.error.invalid-input": "메모리 지도 요청이 올바르지 않습니다.",
+  "memoryMap.error.project-not-allowed": "이 메모리 범위에 접근할 수 없습니다.",
+  "memoryMap.error.model-unconfigured": "먼저 로컬 임베딩 모델을 설정하세요.",
+  "memoryMap.error.model-integrity-failed": "모델 파일이 고정된 버전과 일치하지 않습니다.",
+  "memoryMap.error.graph-unavailable": "먼저 메모리 지도를 만드세요.",
+  "memoryMap.error.graph-stale": "메모리가 변경되었습니다. 지도를 다시 만드세요.",
+  "memoryMap.error.graph-build-failed": "메모리 지도를 만들 수 없습니다.",
+  "memoryMap.error.request-stale": "새 요청으로 대체되었습니다.",
+  "memoryMap.error.provider-unavailable": "제공자 임베딩은 아직 사용할 수 없습니다.",
+  "memoryMap.error.model-download-failed": "로컬 모델을 다운로드할 수 없습니다.",
+  "memoryMap.error.model-folder-invalid": "로컬 모델이 있는 폴더를 선택하세요.",
+  "memoryMap.error.model-cancelled": "모델 설정을 취소했습니다.",
+  "memoryMap.error.unauthorized-frame": "이 화면에서는 메모리 지도에 접근할 수 없습니다.",
 
   "notificationCenter.title": "알림 센터",
   "notificationCenter.label": "알림: 확인 필요 {approvals}개, 읽지 않은 알림 {unread}개",

@@ -3,9 +3,9 @@
     "packageName": "onnxruntime-node",
     "version": "1.31.1",
     "packageRoot": "node_modules/onnxruntime-node",
-    "source": "dist/backend.js",
+    "source": "https://github.com/microsoft/onnxruntime/blob/v1.31.1/LICENSE",
     "noticeFile": "onnxruntime-node-dist-backend-js",
-    "sha256": "d25deed12d803f6c973597348627b1939e2d19bbc28fda83c93ea0cde44702da"
+    "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
   },
   {
     "packageName": "adm-zip",
@@ -139,9 +139,9 @@
     "packageName": "onnxruntime-common",
     "version": "1.31.1",
     "packageRoot": "node_modules/onnxruntime-common",
-    "source": "dist/cjs/backend-impl.js",
+    "source": "https://github.com/microsoft/onnxruntime/blob/v1.31.1/LICENSE",
     "noticeFile": "onnxruntime-common-dist-cjs-backend-impl-js",
-    "sha256": "d25deed12d803f6c973597348627b1939e2d19bbc28fda83c93ea0cde44702da"
+    "sha256": "2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c"
   },
   {
     "packageName": "@huggingface/tokenizers",
@@ -206,5 +206,13 @@
     "source": "LICENSE",
     "noticeFile": "ml-array-min-LICENSE",
     "sha256": "b7c250e3df983b26576d03a86baeb2ce7432ce5bd4666553686a2ac33cade9e9"
+  },
+  {
+    "packageName": "onnxruntime-node",
+    "version": "1.31.1",
+    "packageRoot": "node_modules/onnxruntime-node",
+    "source": "https://github.com/microsoft/onnxruntime/blob/v1.31.1/ThirdPartyNotices.txt",
+    "noticeFile": "onnxruntime-THIRD-PARTY-NOTICES",
+    "sha256": "143764b952fdb1a7c69ce653bfba74a7744d6a8a573bfb73e235fba356c83de3"
   }
 ]

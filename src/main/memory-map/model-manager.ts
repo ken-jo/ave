@@ -129,7 +129,9 @@ export class LocalModelManager {
           await verifyModelFolder(final, this.files, signal);
         }
         signal.throwIfAborted();
-        await this.options.savePath(await realpath(final));
+        const validated = await realpath(final);
+        signal.throwIfAborted();
+        await this.options.savePath(validated);
       } finally { await rm(staging, { recursive: true, force: true }); }
     });
   }

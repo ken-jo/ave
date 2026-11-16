@@ -38,7 +38,7 @@ export interface RetrievalAnswer {
 }
 export interface MemoryMapProgress { jobId: string; phase: 'embedding' | 'neighbours' | 'projection'; completed: number; total: number; memoryId?: string }
 export interface MemoryEmbeddingSettings { source: 'local' | 'provider'; namespace: EmbeddingNamespace; providerAvailable: boolean }
-export type MemoryMapError = 'invalid-input' | 'project-not-allowed' | 'model-unconfigured' | 'model-integrity-failed' | 'graph-unavailable' | 'graph-stale' | 'graph-build-failed' | 'request-stale' | 'provider-unavailable' | 'model-download-failed' | 'model-folder-invalid' | 'model-cancelled';
+export type MemoryMapError = 'unauthorized-frame' | 'invalid-input' | 'project-not-allowed' | 'model-unconfigured' | 'model-integrity-failed' | 'graph-unavailable' | 'graph-stale' | 'graph-build-failed' | 'request-stale' | 'provider-unavailable' | 'model-download-failed' | 'model-folder-invalid' | 'model-cancelled';
 export type MemoryMapResult<T> = { ok: true; value: T } | { ok: false; error: MemoryMapError };
 export interface MemoryMapScope { projectRoot?: string; projectName?: string; includeUnscoped?: boolean }
 export interface MemoryMapApi {

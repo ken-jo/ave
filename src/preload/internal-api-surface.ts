@@ -1,3 +1,4 @@
+import { memoryMapApiSurface } from './memory-map-api-surface.js';
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
@@ -412,6 +413,7 @@ export function buildInternalApiSurface() {
 
   // Plugin-owned OAuth removed host-owned provider auth IPC bridges.
 
+  memoryMap: memoryMapApiSurface,
   memoryGetDetail: async (id: string, opts?: MemoryProjectOptions): Promise<MemoryDetailResult> =>
     opts === undefined ? ipcRenderer.invoke(CHANNELS.memory.detailGet, id) : ipcRenderer.invoke(CHANNELS.memory.detailGet, id, opts),
   memoryGetSummaries: async (opts?: MemoryProjectOptions): Promise<MemorySummariesResult> =>
