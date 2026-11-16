@@ -96,7 +96,6 @@ it("never removes a run whose record is not settled, whatever its row showed and
   const restarted = new WorkBoardStore(boardPath);
   await begin(restarted, other, "other-1");
   await restarted.pruneSettledRuns();
-  await restarted.removeTemplateRuns("template-1");
   expect(await runIds()).toEqual(["gone-unsettled", "other-1"]);
 });
 
@@ -178,26 +177,6 @@ it("keeps a run record whose row write never happened until it is settled", asyn
   expect(await restarted.runs.update("run-orphan", run => ({ ...run, settled: { status: "error", at: over.at } }))).toMatchObject({ status: "stored" });
   await restarted.pruneSettledRuns();
   expect(await runIds()).toEqual(["run-retry"]);
-});
-
-it("removes a template's settled runs and keeps the ones that are not over", async () => {
-  const first = new WorkBoardStore(boardPath);
-  const waiting = await templateItem(first);
-  await begin(first, waiting, "waiting-1");
-
-  const store = new WorkBoardStore(boardPath);
-  const done = await templateItem(store);
-  const live = await templateItem(store);
-  const elsewhere = await templateItem(store, "template-2");
-  await settled(store, done, "done-1");
-  await settled(store, done, "done-2");
-  await begin(store, live, "live-1");
-  await settled(store, elsewhere, "elsewhere-1", "template-2");
-
-  await store.removeTemplateRuns("template-1");
-  expect(await runIds()).toEqual(["waiting-1", "live-1", "elsewhere-1"]);
-  expect(await store.getRun(done)).toEqual({ status: "not-found" });
-  expect((await store.get(done) as { item: object }).item).not.toHaveProperty("templateRunError");
 });
 
 it("refuses a run write that would pass the read limit, so deleting a row still makes room", async () => {

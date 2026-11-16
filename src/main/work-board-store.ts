@@ -451,15 +451,6 @@ export class WorkBoardStore {
     });
   }
 
-  /** A removed template takes its settled runs with it, listed by a row or not. A run that is not over stays. */
-  async removeTemplateRuns(templateId: string): Promise<void> {
-    await this.ensureLoaded();
-    return withInProcessFileQueue(this.filePath, async () => {
-      const unlisted = this.unlisted(await readFileOrEmpty(this.filePath));
-      await this.pruneRuns((run) => unlisted(run) || (run.settled !== undefined && run.pin.templateId === templateId));
-    });
-  }
-
   async load(): Promise<void> {
     this.cache = await readFileOrEmpty(this.filePath);
     this.loaded = true;
