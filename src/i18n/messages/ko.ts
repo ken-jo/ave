@@ -1491,7 +1491,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "chatTab.subAgentWakeLabel": "서브에이전트 메시지로 부모 자동 깨우기",
   "chatTab.subAgentMaxRoundsLabel": "서브에이전트 라운드 예산",
   "chatTab.subAgentMaxRoundsHint": "서브에이전트가 결과를 넘기기 전까지 실행하는 도구 라운드 수. 너무 낮으면 작업이 중간에 멈춥니다.",
-  "chatTab.subAgentWakeHint": "유휴 부모가 백그라운드 서브에이전트 메시지를 받으면 프롬프트 게이트를 거쳐 새 턴을 시작합니다. 기본값은 꺼짐입니다.",
+  "chatTab.subAgentWakeHint": "유휴 부모가 백그라운드 서브에이전트 메시지를 받으면 프롬프트 게이트를 거쳐 새 턴을 시작합니다.",
   "chatTab.privacyTitle": "프라이버시",
   "chatTab.privacyDescription": "채팅 전송 전 개인정보 보호 동작을 설정합니다.",
 
@@ -4322,7 +4322,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "privacyTab.statsLoadFailed": "통계 로드 실패",
   "privacyTab.piiRedactTitle": "PII 리댁트",
   "privacyTab.piiRedactDescription": "모델에 보내기 전에 개인정보를 가립니다. 자격 증명은 이 설정과 관계없이 항상 제거합니다.",
-  "privacyTab.piiRedactToggleLabel": "PII 리댁트 활성화 (기본 OFF)",
+  "privacyTab.piiRedactToggleLabel": "PII 리댁트 활성화",
   "privacyTab.piiRedactToggleDescription": "이메일, 전화번호, 주민등록번호, 카드번호를 전송 전과 도구 출력·감사 기록에서 `[REDACTED:*]`로 바꿉니다.",
   "privacyTab.dlpStatsTitle": "DLP 탐지 통계",
   "privacyTab.last7Days": "최근 7일",

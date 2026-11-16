@@ -72,11 +72,12 @@ describe("ChatTab processing detail", () => {
 });
 
 describe("ChatTab autonomous sub-agent wake", () => {
-  it("renders default-off guidance and persists only an explicit opt-in", () => {
+  it("describes autonomous wake without asserting a default and persists the choice", () => {
     const { setSubAgentAutonomousWake } = renderChatTab();
     const toggle = screen.getByTestId("subagent-autonomous-wake-toggle");
 
     expect(toggle.getAttribute("data-state")).toBe("unchecked");
+    expect(screen.getByText(/유휴 부모가 백그라운드 서브에이전트 메시지를 받으면/).textContent).not.toContain("기본값");
     expect(screen.getByText("서브에이전트 메시지로 부모 자동 깨우기")).toBeTruthy();
     expect(screen.getByText(/유휴 부모가 백그라운드 서브에이전트 메시지를 받으면/)).toBeTruthy();
 

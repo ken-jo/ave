@@ -1489,7 +1489,7 @@ export const en = {
   "chatTab.subAgentWakeLabel": "Autonomously wake parent for sub-agent messages",
   "chatTab.subAgentMaxRoundsLabel": "Sub-agent round budget",
   "chatTab.subAgentMaxRoundsHint": "Tool rounds a sub-agent runs before handing back. Too low stops work midway.",
-  "chatTab.subAgentWakeHint": "When an idle parent receives a queued background sub-agent message, start a new turn through the prompt gate. Default is OFF.",
+  "chatTab.subAgentWakeHint": "When an idle parent receives a queued background sub-agent message, start a new turn through the prompt gate.",
   "chatTab.privacyTitle": "Privacy",
   "chatTab.privacyDescription": "Configure privacy behavior before chat messages are sent.",
 
@@ -4320,7 +4320,7 @@ export const en = {
   "privacyTab.statsLoadFailed": "Failed to load statistics",
   "privacyTab.piiRedactTitle": "PII Redaction",
   "privacyTab.piiRedactDescription": "Masks personal information before it is sent to the model. Credentials are always removed.",
-  "privacyTab.piiRedactToggleLabel": "Enable PII Redaction (default OFF)",
+  "privacyTab.piiRedactToggleLabel": "Enable PII Redaction",
   "privacyTab.piiRedactToggleDescription": "Replaces emails, phone, national ID and card numbers with `[REDACTED:*]` before sending, and in tool output and audit entries.",
   "privacyTab.dlpStatsTitle": "DLP Detection Statistics",
   "privacyTab.last7Days": "Last 7 days",
