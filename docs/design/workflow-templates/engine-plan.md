@@ -12,6 +12,12 @@ Revision 2 (2026-11-16) applies the owner's answers:
 - The Review lane is derived from `stageRuns`; `awaiting_approval` never appears without a `planApproval`.
 - WT-8 is no longer blocked: it is the schedule attachment plus the interim limit that only all-read-only templates may be scheduled. PR-E (WT-15..WT-18) lifts the limit.
 
+Revision 3 (2026-11-16) aligns the plan with the WT-2 types that shipped at `bf73b8a6e` (branch `wt/2-store-b`). Where the SSOT spelled out a shape, the code kept it and the plan now follows the code: §13 lists the shipped shapes and names. Lead rulings applied in the same revision:
+
+- Two hashes. `resultHash` binds a stage gate to the stage output. `outputHash` binds a requested-output approval (§10). At `bf73b8a6e` the stage-run gate field is still named `outputHash`; a follow-up WT-2 lane renames it to `resultHash`, and this plan uses `resultHash` for gates everywhere.
+- Tools an envelope declares are generation or fetch tools with a data-sent flag. A publishing tool is never allowed in an envelope.
+- Where microsoft/vscode (Code - OSS, MIT) already implements something an item needs, the item ports it with attribution (§15).
+
 Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `waiting`, gate = `awaiting_gate`, stopped = `cancelled`.
 
 ## 0. Findings that change the build
@@ -72,7 +78,7 @@ Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `wait
 | `src/work-board/workflow/run-authority.ts` | new | `authoriseRunSource`: the single run-authority function, with the D1 and OD-1 members (§2.4). |
 | `src/work-board/workflow/workflow-errors.ts` | new | `WorkflowInvariantError` with a `code`. |
 | `src/core/work-board-engine.ts` | changed | Branch in `runItem`; add `decideStageGate`, `decideStageJoin`, `retryStage`, `continueRun`; `steerRun` / `cancelRun` take the template path. |
-| `src/main/work-board-store.ts` | changed | Stage-aware reconcile; stage mutators if WT-2 does not ship them (§13). |
+| `src/main/work-board-store.ts` | changed | Stage-aware reconcile only. `beginRun(…, pin?)` and `updateStageRun` shipped with WT-2 (§13). |
 | `src/shared/work-board-types.ts` | changed | Event fields, refusal and result types. |
 | `src/shared/work-board-lifecycle.ts` | changed | `isAwaitingStageReview(item)`: true when any `stageRuns[]` is `awaiting_gate` or any join is `conflict`. The Review lane uses it (`:10, 21, 29-30`). |
 | `src/ipc/domains/work-board.ts`, `src/shared/ipc-channels.ts`, `src/preload/internal-api-surface.ts` | changed | `ave:work-board:decide-stage`, `decide-join`, `retry-stage`; `stageId` on steer. |
@@ -82,13 +88,17 @@ Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `wait
 
 ### 2.2 Types and functions
 
+`RunPin`, `RunAuthoritySource`, `RunWorkspace`, `LaneBlockCode`, `JoinConflict`, `StageJoin`, `RequestedOutput`, `OutputExecution` and `TemplateRunStart` shipped in `src/shared/workflow-template-types.ts`; the engine imports them. They are repeated below only where the text needs them.
+
 ```ts
-// stage-run-engine.ts
-interface RunPin { templateId: string; version: number; graphHash: string }
-/** Who asked for the run. WT-3 ships both members. WT-9 adds a member for a remote Create and run. */
+// shipped (shared/workflow-template-types.ts)
+type RunPin = TemplateVersionPin;                    // { templateId: string; version: number; graphHash: string }
+/** Who asked for the run. Both members shipped. WT-9 adds a member for a remote Create and run. */
 type RunAuthoritySource =
   | { kind: "local-create-and-run"; pin: RunPin }                                    // IPC handler, after hasUserKeyboardIntent, from the tuple the user saw
   | { kind: "schedule-attachment"; attachmentId: string; pin: RunPin; firedAt: string };   // WT-8 fire handler, from the stored attachment
+
+// stage-run-engine.ts
 type RunAuthorityVerdict =
   | { ok: true; source: RunAuthoritySource["kind"]; lane: RunLane }
   | { ok: false; code: "source-not-authorised" | "pin-mismatch" | "not-current-version" | "template-archived" | "version-missing"
@@ -97,11 +107,16 @@ type RunLane = "attended" | "unattended";            // decided by the source ki
 /** The ONE host function that says which sources may create a run's stage children. Called at start and before every spawn. */
 type AuthoriseRunSource = (a: {
   source: RunAuthoritySource; runPin: RunPin;
-  template: WorkflowTemplate | null;                  // current version number and archived flag
-  stored: TemplateVersion | null;                     // the pinned version as stored
-  attachment: ScheduleAttachment | null;              // looked up by the host for a schedule source
-  unattendedAllowed: (v: TemplateVersion) => boolean; // WT-8: isAllReadOnlyVersion; PR-E swaps the predicate
+  template: WorkflowTemplate | null;                  // currentVersion and archivedAt; null when get() threw template-not-found
+  stored: TemplateVersion | null;                     // resolveVersion(runPin); null when it threw unknown-version
+  storedHashMatches: boolean;                         // false when resolveVersion threw graph-hash-mismatch
+  attachment: ScheduleAttachment | null;              // getAttachment(attachmentId); a record with detachedAt set is refused attachment-detached
+  unattendedAllowed: (v: TemplateVersion) => boolean; // WT-8: isAllReadOnlyVersion (a TemplateVersion is a TemplateGraph); PR-E swaps the predicate
 }) => RunAuthorityVerdict;
+
+/** The shipped store, narrowed. Both methods throw WorkflowTemplateError; neither returns null. */
+type TemplateReader = Pick<WorkflowTemplateStore, "get" | "resolveVersion">;
+type AttachmentReader = Pick<WorkflowTemplateStore, "getAttachment" | "listByTemplate" | "listByRoutine">;
 
 interface StageRunEngineDeps {
   store: WorkBoardStore;
@@ -113,7 +128,7 @@ interface StageRunEngineDeps {
   workspace: StageWorkspaceProvider;                // WT-3 default: unavailableWorkspaceProvider; WT-4 wires the real one
   authoriseRunSource: AuthoriseRunSource;           // run-authority.ts
   lane?: LaneHooks;                                 // WT-15/16/18; absent = an unattended stage is refused `lane-unavailable` unless all-read-only
-  outputs?: RequestedOutputHooks;                   // WT-17; absent = a stage that declares outputs is refused `outputs-unavailable`
+  outputs?: RequestedOutputHooks;                   // WT-17; absent = a stage that declares a requested-output kind (§10) is refused `outputs-unavailable`
   runScope?: RunScopeHooks;                         // WT-5; absent = no-op
   passConditions: PassConditionRegistry;            // WT-7 registers one more kind
 }
@@ -128,8 +143,11 @@ interface StageRunEngine {
   stop(itemId: number): WorkBoardCancelResult;
   liveStageSessions(itemId: number): ReadonlyMap<string, string>;   // stageId → childSessionId
 }
-interface StageGateDecideInput { runId: string; stageId: string; attempt: number; outputHash: string; decision: WorkPlanDecision; note?: string }
-type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "attempt_mismatch" | "output_mismatch" | "attempts_exhausted"
+interface StageGateDecideInput { runId: string; stageId: string; attempt: number;
+  resultHash: string;                               // binds the decision to the stage output
+  outputHash?: string;                              // required when the stage run carries requested outputs; binds their approval (§10)
+  decision: WorkPlanDecision; note?: string }
+type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
   | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch";
 interface RunScopeHooks { sessionLinked(runKey: string, sessionId: string): void; sessionEnded(sessionId: string): void; runEnded(runKey: string): void }
 const runKeyOf = (itemId: number, runId: string) => `work-board:${itemId}#${runId}`;
@@ -139,8 +157,9 @@ interface LaneHooks {            // signatures fixed here so WT-15, WT-16 and WT
   sessionEnded(sessionId: string): void;
   onDenied(listener: (e: { sessionId: string; code: string }) => void): () => void;   // WT-15 emits, WT-18 counts
 }
-type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
-function outputHashOf(output: string, requestedOutputs: readonly RequestedOutput[]): string;   // sha256 of the canonical pair; WT-3 always passes [] until WT-17
+type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";   // shipped
+// shipped (shared/workflow-template-output.ts): sha256 over canonical JSON of { output, requestedOutputs }. Used for the requested-output approval only (§10).
+function outputHashOf(output: string, requestedOutputs: readonly RequestedOutput[]): string;
 
 // stage-machine.ts
 type RunEvent =
@@ -157,7 +176,7 @@ type RunEffect =
   | { type: "settle"; runStatus: "completed" | "denied" | "error" | "cancelled" } | { type: "release_workspace"; stageIds: string[] };
 
 // stage-workspace.ts
-interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
+interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }   // shipped
 interface StageWorkspace { root: string; kind: "git" | "folder"; baseCommit?: string }
 interface StageWorkspaceProvider {
   open(run: RunRef, projectRoot: string | undefined): Promise<{ ok: true; workspace: RunWorkspace } | { ok: false; code: WorkspaceRefusal }>;   // once, at start
@@ -178,7 +197,7 @@ Event handling: one promise chain per item. Each event does: read the item → c
 | Stage status | Event | Next | Notes |
 | --- | --- | --- | --- |
 | `waiting` | all `inputs` and incoming edges `passed` and integrated; a slot is free | `running` (attempt 1) | Slot cap: `MAX_PARALLEL_STAGES = 3`. `prepare` runs first; a refusal fails the stage before any spawn. |
-| `running` | child `ok`, human gate | `awaiting_gate` (`gate.pending`, `output`, `outputHash`) | One store write, as `setPlanAwaitingApproval` does. |
+| `running` | child `ok`, human gate | `awaiting_gate` (`gate.pending`, `output`, `resultHash`) | One store write, as `setPlanAwaitingApproval` does. |
 | `running` | child `ok`, automatic gate passes / fails | `passed` / `failed` | Evidence stored. Unevaluable = fails. |
 | `running` | child `ok:false` (not a requested stop) | `failed` | Siblings keep running; downstream stays `waiting`. |
 | `running` | interrupted after `stop_requested` | `cancelled` | |
@@ -208,7 +227,7 @@ Two sources can start a run. Both bind to an exact `(templateId, version, graphH
 | `local-create-and-run` | The `ave:work-board:run` handler, only after a consumed keyboard gesture, from the tuple the user saw | The tuple must be the template's **current** confirmed version. An older or archived one refuses (`not-current-version`, `template-archived`). | attended |
 | `schedule-attachment` | WT-8's fire handler, from the stored attachment record; never from a tool call or a renderer payload | The tuple must equal the attachment's. The template's current version is not consulted, so confirming v2 does not move the schedule. A detached or missing attachment refuses. `unattendedAllowed(stored)` must hold. | unattended |
 
-In both cases the stored version must exist and its stored hash must equal the tuple's hash and the hash recomputed now (`version-missing`, `graph-mismatch`). A refusal writes nothing. On `ok`, `start()` passes the tuple to `beginRun` as the run pin and stores the whole source object as `runStartedBy`. `Run again` is a new `Create and run` with a new tuple.
+In both cases the stored version must exist and its stored hash must equal the tuple's hash and the hash recomputed now (`version-missing`, `graph-mismatch`). The shipped store does this in one call: `resolveVersion(pin)` throws `template-not-found` or `unknown-version` (mapped to `version-missing`) and `graph-hash-mismatch` (mapped to `graph-mismatch`), and every store read recomputes `graphHashOf(version)` for every stored version, so a file whose bytes no longer match its hash fails to load. A store error with any other code settles the run `error`. `get(id)` supplies `currentVersion` and `archivedAt`; a template with `archivedAt` set is archived. A refusal writes nothing. On `ok`, `start()` calls `beginRun(id, runId, startedAt, { ...pin, source, stageRuns })` (the shipped `TemplateRunStart`), which stores the tuple as the run pin and the whole source object as `runStartedBy`. `Run again` is a new `Create and run` with a new tuple.
 
 The function is called again before every spawn with the stored source, so a run whose source it no longer accepts (a detached attachment, a predicate that no longer holds) spawns nothing. The lane is a property of the stored source. A scheduled run stays unattended for its whole life, whoever is at the desk; an attended run never enters the lane.
 
@@ -219,14 +238,14 @@ The function is called again before every spawn with the stored source, so a run
 | `run-not-authorised` | `authoriseRunSource` returns `ok` for the run's stored source and pin. Nothing in a renderer or model payload can carry a source. |
 | `workspace-missing` | `prepare` returned this stage's workspace and it lies under the run's `runRoot`. |
 | `lane-blocked` | For an unattended run: `lane.admit` returned `ok` for this stage, or the version is all-read-only (WT-8 interim). |
-| `version-missing` | `templates.getVersion(templateId, runTemplateVersion)` exists. |
-| `graph-mismatch` | Its stored `graphHash` equals `runTemplateGraphHash`, and equals `graphHashOf(stages, edges)` recomputed now. |
+| `version-missing` | `templates.resolveVersion({ templateId, version: runTemplateVersion, graphHash: runTemplateGraphHash })` does not throw `template-not-found` or `unknown-version`. |
+| `graph-mismatch` | It does not throw `graph-hash-mismatch`: the stored `graphHash` equals `runTemplateGraphHash`, and the store read recomputed `graphHashOf(version)` (whole graph, template `setupCommands` included). |
 | `stage-not-in-version` | `stageId` is a stage of that version. |
 | `stage-not-ready` | The reducer emitted this spawn for this attempt. |
 | `attempt-out-of-range` | `1 ≤ attempt ≤ 3`. |
 | `run-stopped` | No stop is pending. |
 
-Checked at start and again at every spawn, so confirming v2 or archiving the template never moves a run, and a missing version fails the run instead of running another graph. The child is spawned with `projectRoot` = its stage workspace, `originSessionId = work-board:<id>`, the host-minted `unattendedStage: { runKey, stageId }` for an unattended run (a new host-only spawn input, like `hostInputTaint`), `toolScope` = `exactToolScope(read-tier names)` or `PARENT_ALL_TOOL_SCOPE`, the stage profile's model, and the 20-round budget for read stages. Nothing here touches permission evaluation: each tool call enters `CHILD → H` as today.
+Checked at start and again at every spawn, so confirming v2 or archiving the template never moves a run, and a missing version fails the run instead of running another graph. The child is spawned with `projectRoot` = its stage workspace, `originSessionId = work-board:<id>`, the host-minted `unattendedStage: { runKey, stageId }` for an unattended run (a new host-only spawn input, like `hostInputTaint`), `toolScope` = `exactToolScope(read-tier names)` or `PARENT_ALL_TOOL_SCOPE`, the model of the stage's profile (`TemplateStage.agentName`, when set), and the 20-round budget for read stages. Nothing here touches permission evaluation: each tool call enters `CHILD → H` as today.
 
 ### 2.5 Input passing (D7)
 
@@ -245,7 +264,7 @@ const STAGE_INPUT_MAX_CHARS = 16_000; const STAGE_INPUTS_TOTAL_MAX_CHARS = 48_00
 
 ### 2.6 Gates, retry, Stop
 
-- Human gate: `outputHash = outputHashOf(output, requestedOutputs)` by the host (§2.2), so a gate always binds the requested outputs it shows (WT-17). `decideStageGate` checks, inside the board lock, run, stage, attempt, pending status, stored hash = recomputed hash = sent hash, then the pin (§2.4). The IPC handler is a copy of decide-plan's (`ipc/domains/work-board.ts:316`): validated sender, consumed keyboard intent, owner frame, note bound and redaction, audit event `work-approval:stage-decided` with origin `local-desktop`.
+- Human gate: the host computes `resultHash` over the stored stage output when the stage enters `awaiting_gate` and stores it on the stage run. Assumed form: sha256 of the output text, as `planHashOf` does for a plan; the WT-2 rename lane owns the field and the helper, and its name is not fixed here (R16). `decideStageGate` checks, inside the board lock, run, stage, attempt, pending status, stored `resultHash` = recomputed = sent (`result_mismatch`), then the pin (§2.4). When the stage run carries requested outputs, the same decision must also carry `outputHash` = `outputHashOf(output, requestedOutputs)` recomputed now (`output_mismatch`), so the gate also binds the requested outputs it shows (§10); with none, `outputHash` is not sent and not checked. The IPC handler is a copy of decide-plan's (`ipc/domains/work-board.ts:316`): validated sender, consumed keyboard intent, owner frame, note bound and redaction, audit event `work-approval:stage-decided` with origin `local-desktop`.
 - Automatic gate: `PassConditionRegistry.evaluate(kind, facts)` where `facts = { result: SubAgentSpawnResult, stage }`. `stage_ok` = `result.ok && !result.incomplete`. `check_exit_zero` reads the stage's own recorded shell step for exactly that command; if the host cannot prove exit zero it fails (Q8). The host runs no command.
 - A stage whose child ends `ok:false` never reaches its gate.
 - Stop: mark, interrupt every live child (`interruptRun`), cancel pending gates, settle `cancelled` when the last child has unwound; with no live child it settles at once (this is how a run parked across a restart is stopped). Finished outputs stay.
@@ -258,7 +277,7 @@ const STAGE_INPUT_MAX_CHARS = 16_000; const STAGE_INPUTS_TOTAL_MAX_CHARS = 48_00
 | Stored | After boot |
 | --- | --- |
 | stage `running` | `failed`, `failure: "interrupted"` (attempt kept; Retry uses the next) |
-| stage `awaiting_gate` with `output` and matching `outputHash` | kept |
+| stage `awaiting_gate` with `output` and matching `resultHash` | kept |
 | stage `awaiting_gate`, hash or output missing | `failed`, `failure: "interrupted"` |
 | join `integrating` | `conflict` with `reason: "interrupted"` (decidable: retry merge / reject) |
 | stage `waiting` whose inputs all passed | kept `waiting`; nothing starts at boot |
@@ -271,7 +290,7 @@ Nothing spawns at boot. The run continues only on a user decision (gate, join, R
 
 1. No spawn outside `spawnStageChild`; every §2.4 code.
 2. At most one live child per `(run, stageId)`; `duplicate-stage-child`.
-3. A decision that does not match run + stage + attempt + output hash is refused and changes nothing.
+3. A decision that does not match run + stage + attempt + `resultHash` (and `outputHash` when the stage run has requested outputs) is refused and changes nothing.
 4. An event whose `runId` is not the item's current run is dropped and logged; it never writes.
 5. Total fenced input above the bound is truncated with a host marker, never passed whole; an input that still contains a fence close after sanitising throws.
 6. A template run never writes `planApproval`; the shipped run never writes `stageRuns`.
@@ -304,7 +323,7 @@ Nothing spawns at boot. The run continues only on a user decision (gate, join, R
 | | `a stage whose tool ask has no approval surface fails and its gate never opens` | no-surface behaviour |
 | `work-board/workflow/__tests__/run-authority.test.ts` | one table over both source kinds and every refusal code; `an unknown source kind is refused` | single authority function |
 | | `accepts a gate decision while a sibling stage is running` | F6 |
-| | `refuses a gate decision with another attempt or output hash` | binding |
+| | `refuses a gate decision with another attempt or result hash` | binding |
 | | `steer reaches the named stage's child only` | steer |
 | `main/__tests__/work-board-stage-reconcile.test.ts` | `keeps a pending stage gate across restart and fails running stages as interrupted` | F5 |
 | `engine/__tests__/subagent-runner.test.ts` (added cases) | `hostInputTaint sets the child's first-turn origin`, `reports endTrustOrigin` | F4 |
@@ -315,7 +334,7 @@ Commit: `feat(work-board): stage scheduler for template runs`.
 
 ## 3. WT-4 — per-stage workspaces and join collection (W1, W2)
 
-Files: new `src/work-board/workflow/stage-workspaces.ts` (the provider), `workspace-layout.ts` (paths and slugs, pure), `workspace-seed.ts` (bounded no-follow copy), `host-git.ts` (hardened git calls); new `src/permissions/stage-workspace-binding.ts`; changed `permissions/ave-home-read-boundary.ts`, `permissions/asrt-sandbox.ts`, the consumers of the protected-control path fact (see §3.5; `protectedControlEntryFor` itself is not changed), `shared/ave-home.ts` if the new child must be listed (R2); one line in `workflow-engine-extensions.ts`; en/ko for the conflict gate. The join state machine, `decideStageJoin`, the provider call sites, the boot sweep call, the `workspace` fields and their store and board-file validation already exist from WT-3.
+Files: new `src/work-board/workflow/stage-workspaces.ts` (the provider), `workspace-layout.ts` (paths and slugs, pure), `workspace-seed.ts` (bounded no-follow copy), `host-git.ts` (hardened git calls); new `src/permissions/stage-workspace-binding.ts`; changed `permissions/ave-home-read-boundary.ts`, `permissions/asrt-sandbox.ts`, the consumers of the protected-control path fact (see §3.5; `protectedControlEntryFor` itself is not changed), `shared/ave-home.ts` if the new child must be listed (R2); one line in `workflow-engine-extensions.ts`; en/ko for the conflict gate. The join state machine, `decideStageJoin`, the provider call sites and the boot sweep call already exist from WT-3; the `workspace` and `stageJoins` fields and their board-file validation shipped with WT-2 (`work-board/template-run-fields.ts`).
 
 ### 3.1 Layout
 
@@ -366,7 +385,7 @@ Seeding and collection (`workspace-seed.ts`) share one copier: it never follows 
 
 ### 3.4 Setup commands (W2)
 
-`TemplateStage.setupCommands` are host text in the stage's instructions ("run these first, in order"). The stage child runs them through its ordinary shell tool, so each one asks like any other tool call, and in the unattended lane each must be inside the envelope. The host never executes one.
+Setup commands belong to the template, not to a stage: `TemplateGraph.setupCommands` (so also `TemplateVersion.setupCommands`), optional, at most 256 commands of at most 8192 characters, kept in order and byte for byte, and inside `graphHash`. Every stage starts in a fresh workspace, so every stage gets them as host text in its instructions ("run these first, in order"). This matches the shipped confirm check, which requires each stage that has an envelope to cover every setup command with one of its `commands` prefixes (`setup-outside-commands`). The stage child runs them through its ordinary shell tool, so each one asks like any other tool call, and in the unattended lane each must be inside the envelope. A read-scope stage has no shell. The shipped confirm check does not refuse a template that has setup commands and a read-scope stage (it only requires coverage where a stage has an envelope); such a stage is told nothing about setup (R17). The host never executes one.
 
 ### 3.5 The Ave-home boundary (F9, lead ruling T2)
 
@@ -451,7 +470,7 @@ Commit: `feat(permissions): per-stage approval lanes, run-scoped grant, per-sess
 
 ## 5. WT-6 — sub-agents at depth 1 (D2)
 
-Assumes `TemplateStage.allowSubAgents?: boolean`, part of the graph hash (§13).
+Uses the shipped `TemplateStage.allowSubAgents: boolean`, part of the graph hash (§13). The stored canonical field is always present and is `false` unless the draft set it.
 
 | File | Change |
 | --- | --- |
@@ -469,7 +488,7 @@ Commit: `feat(work-board): per-stage sub-agent opt-in at depth 1`.
 
 ## 6. WT-7 — model-judged pass conditions (D9)
 
-Assumes pass kind `{ kind: "model_verdict" }` in WT-2's `StageGate` (§13). File: new `src/work-board/workflow/stage-verdict.ts`, registered in `stage-gates.ts`.
+Uses the shipped pass kind `{ kind: "model_verdict" }` of `StageGate` (§13). File: new `src/work-board/workflow/stage-verdict.ts`, registered in `stage-gates.ts`.
 
 ```ts
 function evaluateModelVerdict(output: string): { passed: boolean; evidence: string; judgedBy: "model" };
@@ -491,28 +510,39 @@ Commit: `feat(work-board): model-judged stage pass condition`.
 | File | Change |
 | --- | --- |
 | `shared/routines-types.ts` | `RoutineExecution` gains `"template-run"` (`:11`); `RoutineRecord.attachmentId?: string`. |
-| `main/routines-store.ts` | `isRoutineExecution` (`:74`) admits the new kind; `add` (`:416`) and `edit` (`:707`) refuse it unless called through the attach path with a host proof object. |
+| `main/routines-store.ts` | `isRoutineExecution` (`:74`) admits the new kind; `add` (`:416`) and `edit` (`:707`) refuse it unless called through the attach path with a `HostDecisionProof` that passes `assertHostDecisionProof` (`main/workflow-template-decision.ts`, shipped). |
 | `tools/routine-schedule.ts` | `:139, 262`: the tool refuses `template-run` for create and edit, whatever approval it holds. |
 | `main/routines-scheduler.ts` | A third handler set in `dispatch` (`:183`). |
 | `boot/steps/routines-wiring.ts` | The handler: load the attachment, call `mayFire` (WT-18; until then "no unsettled run of this attachment"), create the item, call `StageRunEngine.start` with the schedule source and `approvalSurface: null`, record the outcome with `recordRunOutcome` (`routines-store.ts:665`). |
-| new `src/ipc/domains/workflow-schedule.ts` | `ave:workflow:attach-schedule`, `detach-schedule`: a work-approval boundary copied from decide-plan (validated sender, consumed keyboard gesture, owner frame, audit `work-approval:schedule-attached` with origin). WT-9 adds the remote path. |
+| `src/ipc/workflow-template-handlers.ts` (shipped with WT-2; WT-8 changes it) | The channels exist: `ave:work-board:template-attach-schedule` and `ave:work-board:template-detach-schedule`. Each validates the sender, requires a keyboard gesture from the owner frame, checks project access through the template's scope, mints the proof with `mintHostDecisionProof("local-desktop")`, calls `attachSchedule` / `detachSchedule`, and writes the audit events `template_schedule_attached` / `template_schedule_detached` with the proof's `auditId`. No new IPC file. WT-8 adds two things to the attach handler: the current-version check and the routine creation of §7.2. WT-9 adds the remote path; until then the store refuses a proof whose origin is not `local-desktop`. |
 | `permissions/permission-manager.ts` | The interim rule of §7.4 for sessions spawned with `unattendedStage`. |
 
 ### 7.2 Attach and fire
 
 ```ts
-interface AttachScheduleInput { templateId: string; version: number; graphHash: string; trigger: RoutineRecord["trigger"]; projectRoot?: string }
-type AttachRefusal = "not-current-version" | "graph-mismatch" | "version-missing" | "not-read-only" | "template-archived";
-function isAllReadOnlyVersion(v: TemplateVersion): boolean;
-// every stage: toolScope "read", no setupCommands, no allowSubAgents, envelope absent or with empty network, declaredTools and outputs
+// shipped store input and writer (shared/workflow-template-types.ts, main/workflow-template-store.ts)
+interface ScheduleAttachmentInput { templateId: string; version: number; graphHash: string; scheduleId: string }   // scheduleId is the routine id
+attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof): Promise<ScheduleAttachment>;
+detachSchedule(id: string, proof: HostDecisionProof): Promise<boolean>;
+// store refusals (WorkflowTemplateErrorCode): "template-not-found" | "template-archived" | "unknown-version" | "graph-hash-mismatch" | "schedule-requires-read-only"
+// WT-8 adds one handler refusal: "not-current-version"
+
+// shipped (work-board/template-graph.ts)
+function isAllReadOnlyVersion(graph: TemplateGraph): boolean;
+// no template setupCommands; every stage: toolScope "read", allowSubAgents false, no requestedOutputs; envelope absent, or with
+// writePaths, commands, network, outputs, mcpReadOnlyTools, mcpGenerationTools and pluginGenerationTools all empty
 ```
 
-- Attach binds to the tuple the user saw, which must be the current version at that moment. It creates the attachment record and its routine together; neither exists without the other.
+- Attach binds to the tuple the user saw, which must be the current version at that moment. The shipped store does not check "current"; WT-8's handler does, before it calls the store.
+- The shipped attach takes the id of a routine that already exists. WT-8's handler keeps "neither exists without the other" by creating the `template-run` routine first (same proof), then calling `attachSchedule` with its id, and removing the routine again if the attach is refused. The two stores are not one transaction; a crash between the two writes leaves a `template-run` routine with no active attachment, and its fire refuses `attachment-missing` (R18).
+- The attachment record has no project field. A scheduled run's project is the pinned template's scope: `{ kind: "project", projectRoot }` gives the project root; `{ kind: "all" }` runs with no project (folder kind, §3.3).
+- An envelope on a read-only stage qualifies only if it says `writePaths: []` and `outputs: []` explicitly, because the defaults are `["**"]` and `["branch"]`.
+- One active attachment per `scheduleId`. Attaching the same routine again sets `detachedAt` on the prior record and adds a new one with a new `id`; detached records keep their pins. A run started from the earlier record refuses `attachment-detached` at its next spawn (§2.4).
 - A fire creates a new board item for that run (R7) and starts it. The source is built from the stored attachment only.
 - `isAllReadOnlyVersion` is checked at attach, at fire and before every spawn (through `unattendedAllowed`, §2.4).
 - A fire whose start is refused creates no item and no child; the refusal code is recorded as the routine's failure.
 - Detach, and removing the routine, never stop a run that already started; Stop does.
-- Confirming a new version changes no attachment. The editor's "schedules still on v1" list reads `AttachmentReader.listByTemplate`.
+- Confirming a new version changes no attachment. The editor's "schedules still on v1" list reads `listByTemplate`, which also returns detached records; the list shows only those with no `detachedAt`.
 
 ### 7.3 Parked gates
 
@@ -526,7 +556,7 @@ A session spawned with `unattendedStage` has only read-tier tools (the version i
 
 Invariants: no tool call and no renderer payload can create, edit or move an attachment; a fire never decides a gate; a fire never starts a version other than its attachment's; no stage child of a scheduled run ever raises a card.
 
-Tests: `main/__tests__/routines-template-run.test.ts`: `the routine tool cannot create or edit a template-run routine`, `the store refuses the kind without the attach proof`, `a fire starts the attachment's version while a newer one is current`, `a fire is skipped while the attachment's last run is unsettled`, `a refused start records a failure and creates no item`. `ipc/domains/__tests__/workflow-schedule.test.ts`: `attach refuses without a keyboard gesture, from a non-owner frame, for a non-current version, and for a version with an all-tools stage`. `permissions/__tests__/unattended-interim.test.ts`: `a scheduled stage session in Allow mode is denied a secret-file read and never asks`. `core/__tests__/work-board-stage-run.test.ts` (added): `a scheduled run parks at its human gate and a local approve continues it`.
+Tests: `main/__tests__/routines-template-run.test.ts`: `the routine tool cannot create or edit a template-run routine`, `the store refuses the kind without the attach proof`, `a fire starts the attachment's version while a newer one is current`, `a fire is skipped while the attachment's last run is unsettled`, `a refused start records a failure and creates no item`. The shipped handler tests already cover the gesture, the owner frame and the read-only refusal; WT-8 adds cases beside them: `attach refuses a version that is not current`, `attach creates the routine and the attachment together and removes the routine when the store refuses`. `permissions/__tests__/unattended-interim.test.ts`: `a scheduled stage session in Allow mode is denied a secret-file read and never asks`. `core/__tests__/work-board-stage-run.test.ts` (added): `a scheduled run parks at its human gate and a local approve continues it`.
 
 Commit: `feat(routines): schedule attachment starts a read-only template run`.
 
@@ -560,11 +590,11 @@ The lane is keyed on the registry entry, which exists only for a session the eng
 | 3 | an ask rule matches | deny `rule-ask` |
 | 4 | exfiltration signal | deny, before the envelope |
 | 5 | user-owned surface, agent browser, secret read, a shell that is not sandboxed or is escalated, a manual rerun | deny `forbidden-unattended` |
-| 6 | tool not in `envelope.tools` / `declaredTools`; a path outside the workspace and `readRoots` (read) or outside `writePaths` (write); a write with no checkpoint; a network target not in `envelope.network`; a shell command outside `envelope.commands` | deny `outside-envelope` |
+| 6 | a builtin not in `envelope.tools`; an MCP tool in neither `mcpReadOnlyTools` nor `mcpGenerationTools`; a plugin tool not in `pluginGenerationTools`; a declared tool whose name or registry effect is a publishing action (publish, upload, post, send, push, merge, purchase, deploy), whatever the envelope says; a path outside the workspace and `readRoots` (read) or outside `writePaths` (write); a write with no checkpoint; a network target not in `envelope.network`; a shell command outside `envelope.commands` | deny `outside-envelope` |
 | 7 | read inside; write inside; sandboxed shell with no unproven or destructive signal; a sandboxed connection to an envelope host | allow (`sandbox-auto` for the shell) |
-| 8 | sandboxed shell with an unproven or destructive signal; a declared tool | reviewer: low or medium and breaker closed → allow; anything else → deny `reviewer-denied` |
+| 8 | sandboxed shell with an unproven or destructive signal; a declared tool (`mcpReadOnlyTools`, `mcpGenerationTools`, `pluginGenerationTools`). For a generation tool the reviewer is given its declared `effect` and `dataSent`. | reviewer: low or medium and breaker closed → allow; anything else → deny `reviewer-denied` |
 
-`permission-manager.ts` attaches `unattended` from the registry and, for such a request, does not look up allow rules, remembered grants, floor-session grants or run grants, and does not read the mode. Deny rules still apply. Step 8 uses the pipeline's existing review-required intermediate; for a lane session the manager never turns it into a card: with no reviewer evidence the final result is deny. Every deny is reported through `onDenied`. The envelope's forbidden contents are refused again here even though WT-2 refuses them at confirmation.
+`permission-manager.ts` attaches `unattended` from the registry and, for such a request, does not look up allow rules, remembered grants, floor-session grants or run grants, and does not read the mode. Deny rules still apply. Step 8 uses the pipeline's existing review-required intermediate; for a lane session the manager never turns it into a card: with no reviewer evidence the final result is deny. Every deny is reported through `onDenied`. The envelope's forbidden contents are refused again here even though WT-2 refuses them at confirmation. WT-2's check is on the declaration only (names and the declared `effect`); this lane owns the run-time side: resolving each declared name in the tool registry, classifying its real effect, and denying a tool whose real effect is not what was declared (a "generate" tool that publishes, a `dataSent: false` tool that sends stage data out).
 
 Invariants: no lane decision is `ask` or `ask-forced`; the mode never changes a lane outcome; the reviewer never allows what step 6 denies; a session without a registry entry is decided exactly as today.
 
@@ -595,13 +625,13 @@ function proveUnattendedIsolation(a: { workspaceRoot: string; envelope: StageEnv
 | Shell | Only a plan with `sandboxed === true` (`host-shell-execution-plan.ts:38`). The host route, escalation and the unsandboxed retry are refused in the plan builder as well as in the lane. |
 | Reads | Narrowed as in the profile. Per platform; Windows is not designed here (R12). |
 | Network | The proxy list for the session is the profile's `egress`; released at stage end like `releaseEgressSessions` (`egress-runtime.ts:55`). Persistent egress grants are not consulted. The egress builtins stay removed. |
-| Tools | `tool-scope.ts:119-121, 136`: for a lane session, MCP and plugin tools are those in `envelope.declaredTools` and no others. Their results are external content and carry taint. |
+| Tools | `tool-scope.ts:119-121, 136`: for a lane session, MCP tools are those in `envelope.mcpReadOnlyTools` and `envelope.mcpGenerationTools`, plugin tools are those in `envelope.pluginGenerationTools`, and no others. A generation entry is `{ name, effect: "generate" \| "fetch", dataSent }`; a publishing tool is never in scope, declared or not. Their results are external content and carry taint. Whether a `dataSent: true` tool may run in a stage that has already read tainted or sensitive content is not decided (R19). |
 | Loaders | Hook commands, skills and MCP servers found in the stage workspace do not load. |
-| Lifting the interim limit | The last commit of this item swaps WT-8's `unattendedAllowed` predicate from `isAllReadOnlyVersion` to "every stage has an envelope". |
+| Lifting the interim limit | The last commit of this item swaps WT-8's `unattendedAllowed` predicate from `isAllReadOnlyVersion` to "every stage has an envelope". The shipped store enforces the same limit in two more places, which the same commit must change: `attachSchedule` and the template-file validation both refuse `schedule-requires-read-only` (`main/workflow-template-store.ts`). Left as they are, the store would refuse to attach, and then to load, any template file that holds a non-read-only attachment. |
 
 Invariants: an unproven precondition never degrades to a weaker route; the profile's roots are never wider than the envelope plus the fixed toolchain roots; a lane session's egress list is never merged with another session's.
 
-Tests (`permissions/__tests__/unattended-isolation.test.ts`): `builds the profile from the envelope and nothing else`, `each unproven reason blocks admission and spawns nothing`, `a host-route plan is refused for a lane session`, `an undeclared MCP tool is absent from the schema and a declared one is present`, `the egress list is released at stage end`, `a private address is refused even when listed`. Real-sandbox checks (a home file is unreadable, an unlisted host is unreachable, no agent socket) are per-OS and belong to WT-13 with hostile fixtures.
+Tests (`permissions/__tests__/unattended-isolation.test.ts`): `builds the profile from the envelope and nothing else`, `each unproven reason blocks admission and spawns nothing`, `a host-route plan is refused for a lane session`, `an undeclared MCP tool is absent from the schema and a declared one is present`, `a declared generation tool whose registry effect is publishing is absent from the schema`, `the egress list is released at stage end`, `a private address is refused even when listed`. Real-sandbox checks (a home file is unreadable, an unlisted host is unreachable, no agent socket) are per-OS and belong to WT-13 with hostile fixtures.
 
 Commit: `feat(permissions): unattended isolation profile`.
 
@@ -610,11 +640,18 @@ Commit: `feat(permissions): unattended isolation profile`.
 Files: new `src/work-board/workflow/requested-outputs.ts`, new `src/tools/stage-request-output.ts`; changed `stage-run-engine.ts` (the `RequestedOutputHooks` call sites exist from WT-3), `ipc/domains/work-board.ts` (`retry-output`); en/ko.
 
 ```ts
-interface RequestedOutput { id: string; decl: OutputKindDecl;            // must equal one entry of the pinned envelope's outputs
-  args: string;                                                           // canonical JSON, ≤ 32 KiB
-  files?: { path: string; sha256: string; size: number }[];               // workspace-relative, hashed by the host at request time
+// shipped (shared/workflow-template-types.ts), validated on the board by work-board/template-run-fields.ts
+type RequestedOutputKind = "publish" | "upload" | "post" | "send" | "push" | "merge" | "purchase";
+type OutputKindDecl = { kind: "git-push"; remote: string; branch: "run" } | { kind: "tool"; tool: string };
+interface OutputFile { path: string; sha256: string; size: number }
+interface RequestedOutput { id: string; decl: OutputKindDecl;            // the exact target; its kind class must be declared (see below)
+  args: string;                                                           // a canonical JSON string, ≤ 32 KiB UTF-8; hashed as these exact bytes
+  files?: OutputFile[];                                                   // workspace-relative, hashed by the host at request time; ≤ 5 000 files, ≤ 512 MiB
   summary: string }                                                       // ≤ 400 chars, shown as untrusted text
-interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
+interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }   // detail ≤ 8192 chars
+
+// WT-17
+function requestedKindOf(decl: OutputKindDecl): RequestedOutputKind | undefined;   // the only mapping from a target to its declared kind class
 interface RequestedOutputHooks {
   accept(a: { stage: TemplateStage; workspaceRoot: string; raw: unknown }): { ok: true; output: RequestedOutput } | { ok: false; code: OutputRefusal };
   execute(a: { run: RunRef; stageId: string; output: RequestedOutput; approvalSurface: WebContents | null }): Promise<OutputExecution>;
@@ -623,16 +660,34 @@ type OutputRefusal = "kind-not-declared" | "too-many" | "args-too-large" | "file
 const MAX_REQUESTED_OUTPUTS = 10;
 ```
 
+Four different things carry the word "outputs". They are kept apart:
+
+| Name | Where | Meaning |
+| --- | --- | --- |
+| `TemplateStage.outputs?: string[]` | graph | Folder-kind collection globs (§3.3). Nothing to do with this item. |
+| `StageEnvelope.outputs: ("branch" \| RequestedOutputKind)[]` | graph, default `["branch"]` | What the stage may produce unattended. `"branch"` is the stage's result on the run branch or in the run output folder (§3); it is not a requested output and needs no approval of its own. Every other entry is a kind class the stage may request. |
+| `TemplateStage.requestedOutputs?: RequestedOutputKind[]` | graph | The kind classes a stage with no envelope may request. |
+| `WorkItemStageRun.requestedOutputs?: RequestedOutput[]` | board | What the stage actually requested in this attempt, with exact targets. At most 10. |
+
+Declared kinds and target binding:
+
+- "A stage that declares outputs" means: its envelope's `outputs` holds a kind other than `"branch"`, or, with no envelope, its `requestedOutputs` is not empty. The allowed kinds of a stage are the envelope's non-`"branch"` entries when it has an envelope, else `stage.requestedOutputs`. How the two graph lists relate when both are present is not settled; this reading takes the envelope (R20).
+- The envelope names kind classes, not targets, so a request cannot be compared with an envelope entry by equality. `accept` maps the target with `requestedKindOf` and refuses `kind-not-declared` unless the result is an allowed kind of the pinned stage. `{ kind: "git-push" }` maps to `"push"`. `{ kind: "tool"; tool }` maps through a host-owned table from tool name to kind class in `requested-outputs.ts`; a tool with no row maps to nothing and is refused. The content of that table is not designed here (R20).
+- The exact target (remote, tool, arguments, files) is therefore not inside `graphHash`. It is bound at the gate: the whole `RequestedOutput` list is inside `outputHash`, the gate shows each target in full, and nothing executes without an approve that carries that hash. Whether the target must also be confirmed with the version is a question for the lead (R20).
+
+Behaviour:
+
 - `stage_request_output` is a builtin given only to a stage child whose pinned stage declares outputs. It records data and executes nothing, so it is read-tier and never asks.
-- The outputs are part of the stage run and of `outputHash` (§2.2). The gate shows each one in full: kind, target, arguments, files.
-- A stage that declares outputs must have a human gate. WT-2 refuses the version otherwise; the engine refuses again (`needs-human-gate`).
+- The requested outputs are part of the stage run. `outputHash = outputHashOf(output, requestedOutputs)` (shipped, §2.2) binds their approval: it changes when the output text, any request, or the order of the list changes; `args` enters as its exact stored bytes. The stage gate itself is bound by `resultHash` (§2.6). One decision at the gate carries both hashes when the stage run has requested outputs, so approving the gate is the requested-output approval. The gate shows each one in full: kind, target, arguments, files.
+- `outputHash` is recomputed by the host from the stored stage run whenever it is checked. Where it is stored after the WT-2 rename of the gate field, if anywhere, is not fixed here (R16).
+- A stage that declares outputs must have a human gate. WT-2 refuses the version at confirm for a non-`"branch"` envelope kind (`outputs-need-human-gate`); it does not check `stage.requestedOutputs`, so the engine's own refusal (`needs-human-gate`) is the only check for a stage with no envelope.
 - On approve, the stage is `passed` and the host executes each output as a new host call through the ordinary tree, with the deciding window as the approver, so each can still ask. It is not a replay: no tool call was parked. Files are hashed again first; a mismatch is `failed` and nothing is sent.
-- An execution that fails or is denied does not change the stage. `retry-output` reruns one output under the same approved hash.
+- An execution that fails or is denied does not change the stage. `retry-output` reruns one output under the same approved `outputHash`.
 - The lane session never executes an output. In an attended run a stage may still call an outward tool directly through cards; requested outputs are optional there (R13).
 
-Invariants: nothing executes before an approve whose hash matches; executed arguments are byte-equal to the hashed ones; a kind not in the pinned envelope is refused at request and again at execution; an output is executed at most once per approval unless the user retries it.
+Invariants: nothing executes before an approve whose `outputHash` matches; executed arguments are byte-equal to the hashed ones; a target whose kind class is not an allowed kind of the pinned stage is refused at request and again at execution; an output is executed at most once per approval unless the user retries it.
 
-Tests (`work-board/workflow/__tests__/requested-outputs.test.ts`): `records an output and executes nothing`, `refuses a kind the envelope does not declare`, `the gate hash changes when an output changes`, `approve executes each output once through the permission check`, `a file changed after the request is not sent`, `a rejected gate executes nothing`, `a failed output leaves the stage passed and can be retried under the same hash`; `core/__tests__/work-board-stage-outputs.test.ts`: `a scheduled run ends at the gate with outputs pending and nothing sent`.
+Tests (`work-board/workflow/__tests__/requested-outputs.test.ts`): `records an output and executes nothing`, `refuses a target whose kind class the stage does not declare`, `refuses a tool target with no kind mapping`, `outputHash changes when an output changes and resultHash does not`, `an approve with the right resultHash and a stale outputHash is refused`, `approve executes each output once through the permission check`, `a file changed after the request is not sent`, `a rejected gate executes nothing`, `a failed output leaves the stage passed and can be retried under the same hash`; `core/__tests__/work-board-stage-outputs.test.ts`: `a scheduled run ends at the gate with outputs pending and nothing sent`.
 
 Commit: `feat(work-board): requested outputs executed after the human gate`.
 
@@ -641,8 +696,9 @@ Commit: `feat(work-board): requested outputs executed after the human gate`.
 Files: new `src/work-board/workflow/run-budget.ts` (pure), new `src/work-board/workflow/schedule-breaker.ts` (pure); changed `stage-run-engine.ts` (timer and counters behind `LaneHooks.onDenied`), `boot/steps/routines-wiring.ts` (`mayFire` in WT-8's handler), `main/routines-store.ts` (breaker state on the routine record).
 
 ```ts
-interface StageUsage { rounds: number; startedAt: number; costUsd?: number; denials: number }
+interface StageUsage { rounds: number; startedAt: number; costUsd?: number; denials: number }   // stored as WorkItemStageRun.usage, where startedAt is an ISO string
 type BudgetVerdict = { ok: true } | { ok: false; code: "rounds" | "minutes" | "cost" | "denials" };
+// budget is the shipped { rounds: number; minutes: number; costUsd: number }: all three required, costUsd finite and ≥ 0
 function checkStageBudget(usage: StageUsage, budget: StageEnvelope["budget"], now: number): BudgetVerdict;
 const MAX_LANE_DENIALS_PER_STAGE = 3;
 interface ScheduleBreakerState { consecutiveBad: number; pausedAt?: string }
@@ -654,7 +710,7 @@ function mayFire(a: { unsettledRun: boolean; paused: boolean }): { fire: true } 
 | --- | --- |
 | Rounds | `maxRounds` on the spawn (`subagent-runner.ts:197`) = `budget.rounds`. |
 | Minutes | An engine timer per stage; on expiry `interruptRun` and the stage is `failed`, `failure: "budget"`. |
-| Cost | Only if a per-child cost source exists (F13, R11). |
+| Cost | `budget.costUsd` is always declared (required in the envelope). It is enforced only when `usage.costUsd` is known, which needs a per-child cost source that does not exist yet (F13, R11). Until then the declared limit is shown but not enforced, and the confirm screen must say so. |
 | Denials | The third lane denial in a stage ends it `failed` and the run waits with the denied calls listed (tool name and reason code only). |
 | One run at a time | A fire is skipped while the attachment's last run is unsettled, a run that only waits at a gate included. |
 | Pause | After two consecutive `failed` or `parked-on-denials` runs the routine is paused (`routines-store.ts:775`) until the owner resumes it. A run that waits at a human gate is not "bad". |
@@ -676,107 +732,155 @@ PR-B, in build order: WT-3 → (WT-4, WT-5, WT-7 together) → (WT-6, WT-8 toget
 | WT-5 | B | WT-3 | WT-4, WT-7 | `permissions/run-grants.ts`, the permission files of §4, `use-board-approvals.ts` | `permission-manager.ts`; one line in `workflow-engine-extensions.ts`; en/ko |
 | WT-7 | B | WT-3 | WT-4, WT-5 | `stage-verdict.ts`, its tests, `work-board-stage-verdict-run.test.ts` | one line in `stage-gates.ts`; en/ko |
 | WT-6 | B | WT-3, WT-4, WT-5 | WT-8 | — | `subagent-runner.ts`, `tools/agent-spawn.ts`, `stage-run-engine.ts` |
-| WT-8 | B | WT-3, WT-4, WT-5 | WT-6 | `ipc/domains/workflow-schedule.ts`, the routine files of §7.1, its tests | `permission-manager.ts` (after WT-5); `ipc-channels.ts`, preload; en/ko |
+| WT-8 | B | WT-3, WT-4, WT-5 | WT-6 | the routine files of §7.1, its tests | `ipc/workflow-template-handlers.ts` (the attach handler; channels and preload already exist); `permission-manager.ts` (after WT-5); en/ko |
 | WT-15 | E | PR-B | WT-16, WT-17 | `unattended-lane.ts`, `unattended-lane-registry.ts`, their tests | `decision-pipeline.ts`, `permission-manager.ts`; one line in `workflow-engine-extensions.ts` |
-| WT-16 | E | PR-B | WT-15, WT-17 | `unattended-isolation.ts`, its tests | `asrt-sandbox.ts`, `egress-runtime.ts`, `tool-scope.ts`, `host-shell-execution-plan.ts`, the shell environment builder, the loaders; one line in `workflow-engine-extensions.ts`; last commit edits WT-8's predicate after WT-15 merged |
+| WT-16 | E | PR-B | WT-15, WT-17 | `unattended-isolation.ts`, its tests | `asrt-sandbox.ts`, `egress-runtime.ts`, `tool-scope.ts`, `host-shell-execution-plan.ts`, the shell environment builder, the loaders; one line in `workflow-engine-extensions.ts`; last commit edits WT-8's predicate and the two read-only checks in `main/workflow-template-store.ts` after WT-15 merged |
 | WT-17 | E | PR-B | WT-15, WT-16 | `requested-outputs.ts`, `tools/stage-request-output.ts`, their tests | `stage-run-engine.ts` (hook bodies only), `ipc/domains/work-board.ts`, tool registration; en/ko |
 | WT-18 | E | WT-15 (denial events), WT-8 | WT-16, WT-17 | `run-budget.ts`, `schedule-breaker.ts`, their tests | `stage-run-engine.ts` (timer), `routines-wiring.ts`, `routines-store.ts` |
 
 One owner per hot permission file within a wave: `permission-manager.ts` is WT-5's (WT-4 adds one guarded call at the floor site in the same wave), then WT-8's, then WT-15's; `asrt-sandbox.ts` is WT-4's, then WT-16's; `decision-pipeline.ts` and `tool-scope.ts` have one editor each. `stage-run-engine.ts` in PR-E: WT-17 edits the output hook bodies, WT-18 the budget timer; different functions, but the two lanes should agree the order before merging.
 
-The parallel claims hold only because WT-3 pre-lands every seam the later lanes need: the provider interface with `open` / `prepare` / `seal` / `integrate` / `release` / `sweep` and their call sites; the `workspace`, `blocked`, `requestedOutputs`, `outputExecutions` and `usage` fields with store and board-file validation; `outputHashOf`; the gate registry's `promptSuffix`; `RunScopeHooks`, `LaneHooks` and `RequestedOutputHooks` with the signatures of §2.2 and §10; the host-minted `unattendedStage` spawn input; both authority members. If WT-3 ships without one, the lane that needs it adds it and is no longer parallel-safe on that file. No two lanes add cases to the same test file, except WT-8's one added case in `work-board-stage-run.test.ts`, which lands after WT-3.
+The parallel claims hold only because every seam the later lanes need lands before them. Shipped with WT-2 (`bf73b8a6e`): the `workspace`, `blocked`, `requestedOutputs`, `outputExecutions`, `usage`, `runStartedBy`, `runWorkspace` and `stageJoins` fields with board-file validation; `outputHashOf`; `beginRun(…, pin?)` and `updateStageRun`; both authority source members as data. WT-3 pre-lands the rest: the provider interface with `open` / `prepare` / `seal` / `integrate` / `release` / `sweep` and their call sites; the gate registry's `promptSuffix`; `RunScopeHooks`, `LaneHooks` and `RequestedOutputHooks` with the signatures of §2.2 and §10; the host-minted `unattendedStage` spawn input; the authority function; the `resultHash` and `outputHash` checks in `decideStageGate`. If WT-3 ships without one, the lane that needs it adds it and is no longer parallel-safe on that file. No two lanes add cases to the same test file, except WT-8's one added case in `work-board-stage-run.test.ts`, which lands after WT-3.
 
-## 13. Types WT-2 must ship (PR-A)
+## 13. Types WT-2 shipped (PR-A, `bf73b8a6e`)
 
-Names of existing WT-2 types follow notes-r6 (a). Everything in the first block is inside `graphHash`; a field added to the hash after PR-A would invalidate confirmed versions.
+This section records what shipped; it is no longer a request. Files: `src/shared/workflow-template-types.ts` (data shapes), `src/shared/workflow-template-output.ts` (`outputHashOf`, canonical JSON), `src/work-board/template-graph.ts` (intake, `graphHashOf`, `validateStageForConfirm`, `isAllReadOnlyVersion`), `src/work-board/template-run-fields.ts` (board-field validation), `src/main/workflow-template-store.ts` (store), `src/main/workflow-template-decision.ts` (decision proof), `src/ipc/workflow-template-handlers.ts` (IPC). Where the SSOT spelled out a shape the code kept it, so confirmed hashes stay valid. Everything in the first block is inside `graphHash`; a field added to the hash later would invalidate confirmed versions.
 
 ```ts
-// ---- inside graphHash ----
+// ---- inside graphHash (shared/workflow-template-types.ts) ----
+interface TemplateGraph { stages: TemplateStage[]; edges: TemplateEdge[];
+  setupCommands?: string[] }                // W2; template-level; ≤ 256, each ≤ 8192 chars; ordered, byte-preserved; omitted when absent
 interface TemplateStage {
-  // … notes-r6 (a) fields: id, name, goal, toolScope, agent, gate, inputs (upstream stage ids) …
-  id: string;                               // additionally bounded: ^[a-z0-9][a-z0-9-]{0,31}$ (it is a folder name)
-  allowSubAgents?: boolean;                 // D2
-  inputFiles?: StageInputDecl[];            // W1 folder kind; default: every upstream stage's collected files
-  outputs?: string[];                       // W1 folder kind: globs relative to the stage workspace; default ["**"]; ≤ 32 entries
-  setupCommands?: string[];                 // W2; ≤ 8, each ≤ 400 chars
+  id: string;                               // ^[a-z0-9][a-z0-9-]{0,31}$ (it is a folder name); refusal "bad-stage-id"
+  name: string; goal: string;               // ≤ 40, ≤ 400 chars
+  kind?: "plan";                            // set by the host for a single read-scope root with a human gate
+  inputs: string[];                         // upstream stage ids; each must be an ancestor in the graph
+  toolScope: "read" | "all";
+  agentName?: string;                       // the stage profile; ≤ 128 chars
+  allowSubAgents: boolean;                  // D2; always stored; false unless set
+  gate: StageGate;
   envelope?: StageEnvelope;                 // OD-2; absent = the stage cannot run unattended unless the version is all read-only
+  requestedOutputs?: RequestedOutputKind[]; // §10
+  inputFiles?: StageInputDecl[];            // W1 folder kind; ≤ 64; default: every upstream stage's collected files
+  outputs?: string[];                       // W1 folder kind: globs relative to the stage workspace; default ["**"]; ≤ 32 entries
 }
-type StageInputDecl = { from: "project"; paths: string[] } | { from: "stage"; stageId: string };   // paths: project-relative globs, ≤ 64
-type PassCondition = /* existing kinds */ | { kind: "model_verdict" };                              // D9
+type StageInputDecl = { from: "project"; paths: string[] } | { from: "stage"; stageId: string };   // paths: project-relative globs, ≤ 64; stageId: an ancestor
+type StageGate = { type: "human" } | { type: "auto";
+  pass: { kind: "stage_ok" } | { kind: "check_exit_zero"; command: string } | { kind: "model_verdict" } };   // D9
 
+type RequestedOutputKind = "publish" | "upload" | "post" | "send" | "push" | "merge" | "purchase";
+interface StageGenerationTool { name: string; effect: "generate" | "fetch"; dataSent: boolean }   // dataSent is required: does the tool send stage data out
 interface StageEnvelope {
   tools: string[];                          // exact builtin names; never broader than toolScope
   writePaths: string[];                     // globs relative to the stage workspace; default ["**"]
   readRoots: string[];                      // absolute read-only roots outside the workspace; default []
   network: { host: string; port?: number }[];          // default []
-  commands: string[];                       // command prefixes; a ceiling, not a boundary; setupCommands must be covered
-  declaredTools: { tool: string; readOnly: boolean; sendsInputsTo?: string }[];   // "server.tool"; local generation or fetching only; default []
-  outputs: OutputKindDecl[];                // what the stage may request for its human gate; default []
-  budget: { rounds: number; minutes: number; costUsd?: number };
+  commands: string[];                       // command prefixes; a ceiling, not a boundary; must cover every template setupCommand
+  mcpReadOnlyTools: string[];               // "server.tool" names that declare readOnlyHint; default []
+  mcpGenerationTools: StageGenerationTool[];      // default []; never on a read-scope stage
+  pluginGenerationTools: StageGenerationTool[];   // default []; never on a read-scope stage
+  outputs: ("branch" | RequestedOutputKind)[];    // default ["branch"]; §10
+  budget: { rounds: number; minutes: number; costUsd: number };   // all required; rounds a positive integer, minutes > 0, costUsd ≥ 0
 }
-type OutputKindDecl = { kind: "git-push"; remote: string; branch: "run" } | { kind: "tool"; tool: string };   // an outward tool is declared here, never in declaredTools
-
-// ---- not in graphHash: stored records ----
-interface ScheduleAttachment {
-  id: string; routineId: string;
-  templateId: string; version: number; graphHash: string;       // the pin; references the hash, is not part of it
-  projectRoot?: string;
-  attachedAt: string; origin: "local-desktop" | "tailnet-surface";
-  detachedAt?: string;
-}
-interface AttachmentReader {
-  get(id: string): Promise<ScheduleAttachment | null>;
-  listByTemplate(templateId: string): Promise<ScheduleAttachment[]>;
-  listByRoutine(routineId: string): Promise<ScheduleAttachment[]>;
-}
-/** Minted only by a main-process decision handler after its sender, gesture and owner-frame checks; never built from a payload. */
-interface HostDecisionProof { readonly origin: "local-desktop" | "tailnet-surface"; readonly auditId: string; readonly decidedAt: string }
-interface AttachmentWriter {            // callable only from the attach / detach IPC handlers
-  attach(input: Omit<ScheduleAttachment, "id" | "attachedAt" | "detachedAt">, proof: HostDecisionProof): Promise<ScheduleAttachment>;
-  detach(id: string, proof: HostDecisionProof): Promise<boolean>;
-}
-
-// ---- functions ----
-interface TemplateReader {
-  getTemplate(id: string): Promise<WorkflowTemplate | null>;    // must expose currentVersion: number and archived: boolean
-  getVersion(templateId: string, version: number): Promise<TemplateVersion | null>;   // immutable
-}
-function graphHashOf(stages: readonly TemplateStage[], edges: readonly TemplateEdge[]): string;
-function validateStageForConfirm(stage: TemplateStage): EnvelopeRefusal[];
-type EnvelopeRefusal = "tools-broader-than-scope" | "host-shell" | "floor-target" | "secret-path" | "user-owned-surface"
-  | "outward-tool-declared" | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
-function isAllReadOnlyVersion(v: TemplateVersion): boolean;     // or WT-8 ships it; see §7.2
 ```
 
-Board fields (`board.json`, engine-written, each optional). WT-2 ships them or WT-3 does; they are listed so both lanes use one shape:
+There is no `declaredTools` and no `sendsInputsTo`. A tool an envelope declares is a read-only MCP tool, or a generation or fetch tool with its data-sent flag. A publishing tool is never allowed: intake refuses any name in `tools`, `mcpReadOnlyTools` or a generation list, and any generation `effect`, that reads as publish, upload, post, send, push, merge, purchase or deploy (`forbidden-envelope-tool`, reported at confirm as `outward-tool-declared`). An outward action is reachable only as a requested output (§10).
+
+```ts
+// ---- not in graphHash: stored records (shared/workflow-template-types.ts) ----
+interface WorkflowTemplate { id: string; name: string; scope: TemplateScope; description?: string;
+  currentVersion: number; createdAt: string; updatedAt: string;
+  archivedAt?: string }                                         // archived = archivedAt is set; there is no boolean
+type TemplateScope = { kind: "all" } | { kind: "project"; projectRoot: string };
+interface TemplateVersionPin { templateId: string; version: number; graphHash: string }
+interface TemplateVersion extends TemplateGraph, TemplateVersionPin { confirmedAt: string; confirmation: TemplateConfirmation; basedOn?: number }
+interface WorkflowTemplateRecord { template: WorkflowTemplate; versions: TemplateVersion[]; scheduleAttachments?: ScheduleAttachment[]; draft?: WorkflowTemplateDraft }
+
+interface ScheduleAttachmentInput extends TemplateVersionPin { scheduleId: string }   // scheduleId is the routine id
+interface ScheduleAttachment extends ScheduleAttachmentInput {
+  id: string;                                                   // stable UUID, new for every approval
+  who: string; at: string;                                      // at = the proof's decidedAt
+  origin: "local-desktop" | "tailnet-surface";
+  detachedAt?: string;                                          // history is kept; one active record per scheduleId
+}                                                               // no projectRoot: the template's scope holds project authorisation
+
+// ---- main only (main/workflow-template-decision.ts) ----
+/** Opaque: a private symbol brand plus WeakSet membership. An object with the same public fields is refused. */
+interface HostDecisionProof { readonly origin: "local-desktop" | "tailnet-surface"; readonly auditId: string; readonly decidedAt: string }
+function mintHostDecisionProof(origin): HostDecisionProof;      // called only by the IPC decision handlers, after sender, gesture, owner-frame and project checks
+function assertHostDecisionProof(proof: HostDecisionProof): void;   // today also refuses any origin but "local-desktop"
+
+// ---- store (main/workflow-template-store.ts); every method throws WorkflowTemplateError with a code ----
+class WorkflowTemplateStore {
+  get(id: string): Promise<WorkflowTemplateRecord>;             // throws "template-not-found"
+  resolveVersion(pin: TemplateVersionPin): Promise<TemplateVersion>;   // throws "template-not-found" | "unknown-version" | "graph-hash-mismatch"
+  confirm(id, input: { expectedGraphHash: string }, actor: { who: string; origin }): Promise<TemplateVersion>;   // "envelope-refused" carries refusals
+  attachSchedule(input: ScheduleAttachmentInput, proof: HostDecisionProof): Promise<ScheduleAttachment>;
+  detachSchedule(id: string, proof: HostDecisionProof): Promise<boolean>;
+  getAttachment(id: string): Promise<ScheduleAttachment | null>;
+  listByTemplate(templateId: string): Promise<ScheduleAttachment[]>;   // includes detached records
+  listByRoutine(scheduleId: string): Promise<ScheduleAttachment[]>;    // includes detached records
+  archive(id: string): Promise<void>;
+}
+
+// ---- functions (work-board/template-graph.ts, shared/workflow-template-output.ts) ----
+function graphHashOf(graph: unknown): string;                   // sha256 of the canonical whole graph: stages, edges, setupCommands
+function validateStageForConfirm(stage: TemplateStage, template: TemplateGraph): EnvelopeRefusal[];   // declaration checks only
+type EnvelopeRefusal = "tools-broader-than-scope" | "host-shell" | "floor-target" | "secret-path" | "user-owned-surface"
+  | "outward-tool-declared" | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
+function isAllReadOnlyVersion(graph: TemplateGraph): boolean;   // §7.2
+function outputHashOf(output: string, requestedOutputs: readonly RequestedOutput[]): string;   // §10
+```
+
+How the engine uses these names (the adapter the WT-2 report asked for is this mapping, not new store code):
+
+| Engine need | Shipped call | Mapping |
+| --- | --- | --- |
+| Template's current version and archive state | `get(id)` → `.template.currentVersion`, `.template.archivedAt` | A thrown `template-not-found` is `version-missing`. |
+| The pinned version, verified | `resolveVersion(pin)` | `unknown-version` → `version-missing`; `graph-hash-mismatch` → `graph-mismatch`. |
+| Attachment by id | `getAttachment(id)` | `null` → `attachment-missing`; `detachedAt` set → `attachment-detached`. |
+| Schedules of a template, of a routine | `listByTemplate`, `listByRoutine` | Filter on `detachedAt` for the active ones. |
+| Attach, detach | `attachSchedule`, `detachSchedule` | Only from the IPC handlers, with a minted proof. |
+
+Confirmation keeps its `actor` parameter and takes no proof; the attachment writer is the boundary that takes one. Static confirmation is not run-time qualification: `validateStageForConfirm` checks declarations against a conservative known-read set and the existing floor and secret classifiers. Tool-registry resolution, real effect classification, the isolation proof and run-time target checks belong to WT-15 and WT-16 (§8, §9).
+
+Board fields (`board.json`, engine-written, each optional), shipped in `shared/work-board-types.ts` and validated by `assertTemplateRunFields`. A present malformed field raises `invalid-template-run`; older rows without them still read:
 
 ```ts
 WorkItem.templateId?: string
 WorkItem.runTemplateVersion?: number; WorkItem.runTemplateGraphHash?: string
-WorkItem.runStartedBy?: RunAuthoritySource                       // the whole accepted source (§2.2)
-WorkItem.runWorkspace?: RunWorkspace                             // §2.2; replaces the earlier runIsolation
-WorkItem.stageRuns?: WorkItemStageRun[]
-WorkItem.stageJoins?: { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }[]
+WorkItem.runStartedBy?: RunAuthoritySource                       // the whole accepted source (§2.2); its pin must equal the three item pin fields
+WorkItem.runWorkspace?: RunWorkspace                             // §2.2
+WorkItem.stageRuns?: WorkItemStageRun[]                          // ≤ 12
+WorkItem.stageJoins?: StageJoin[]                                // ≤ 12; { joinId; stageIds; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?; decidedAt? }
 WorkItemRunHistoryEntry.templateVersion?, .templateGraphHash?, .stageRuns? (summary)
 
-WorkItemStageRun (beyond notes-r6 (a)):
+WorkItemStageRun:
+  stageId; attempt (1..3); status: "waiting" | "running" | "awaiting_gate" | "passed" | "failed" | "cancelled" | "rejected"
   failure?: "error" | "gate" | "interrupted" | "denied-tool" | "workspace-lost" | "workspace-revoked" | "budget" | "seed"
   taint?: "file-content" | "agent-message"
-  gate.judgedBy?: "host" | "model"
-  workspace?: { root: string; kind: "git" | "folder"; baseCommit?: string; sealCommit?: string; manifest?: { path: string; size: number; sha256: string }[] }
+  workspace?: { root: string; kind: "git" | "folder"; baseCommit?: string; sealCommit?: string; manifest?: OutputFile[] }
   blocked?: { code: LaneBlockCode; at: string }
-  requestedOutputs?: RequestedOutput[]; outputExecutions?: OutputExecution[]
+  requestedOutputs?: RequestedOutput[]; outputExecutions?: OutputExecution[]      // ≤ 10 each
   usage?: { rounds: number; startedAt: string; denials: number; costUsd?: number }
+  childSessionId?; startedAt?; endedAt?
+  output?: string                                                // ≤ 48 000 characters; the engine truncates before storing
+  resultHash?: string                                            // the gate binding; named outputHash at bf73b8a6e, renamed by the WT-2 follow-up lane
+  gate?: { type: "human"; status: "pending" | "approved" | "changes_requested" | "rejected"; note?; decidedAt?; revision: number; judgedBy?: "host" | "model" }
+       | { type: "auto"; passed: boolean; evidence: string; evaluatedAt: string; judgedBy?: "host" | "model" }
 
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted";
   files: { path: string; stageIds: string[] }[];                 // ≤ 50, relative paths
-  excerpt?: string }                                             // bounded, shown as untrusted text
+  excerpt?: string }                                             // ≤ 8192 chars, shown as untrusted text
 
-store.beginRun(id, runId, startedAt, pin?: { templateId: string; version: number; graphHash: string; source: RunAuthoritySource; stageRuns: WorkItemStageRun[] })
+interface TemplateRunStart extends RunPin { source: RunAuthoritySource; stageRuns: WorkItemStageRun[] }
+store.beginRun(id, runId, startedAt, pin?: TemplateRunStart)             // a template item with no pin is refused "template-run-unavailable"
 store.updateStageRun(id, runId, mutate: (item) => WorkItem | null)      // one locked read-check-write; refuses on another runId
 ```
 
-`beginRun` takes the pin it is given and never reads "current version" itself: for an attended run the caller already checked that the tuple is current, and for a scheduled run the pin is the attachment's. A bound on `stageRuns[].output` is still needed from WT-2 (48 000 characters assumed; the rest stays in the transcript file).
+`beginRun` takes the pin it is given and never reads "current version" itself: for an attended run the caller already checked that the tuple is current, and for a scheduled run the pin is the attachment's. The run-history summary (`WorkItemStageRunSummary`) picks the gate hash field too, so the rename covers it.
+
+Compatibility noted by WT-2: attachment records written by an earlier development snapshot without `id`, or failing the read-only rule, fail closed; no migration exists.
 
 ## 14. Open questions
 
@@ -812,8 +916,39 @@ Two of them still need a code check by the implementing lane before they are rel
 | R8 | Interim WT-8 rule: scheduled read-only stage sessions are forced to the default mode with withheld session authority, so the Allow mode cannot allow a secret-file read with nobody present (F11). Whether the existing withhold path covers a board child was not verified. | As described in §7.4; the interim test must be red first. |
 | R9 | A requested-output gate approved over the Tailnet has no desktop window to approve the execution's own tool cards. | Execution waits as `pending` until a local window continues it, unless WT-9 supplies a surface. |
 | R10 | Approve all requested outputs of a stage together, or a subset? | All together; the hash covers the list. |
-| R11 | Cost budgets have no verified per-child cost source (F13). | `costUsd` optional; rounds and minutes always enforced. |
+| R11 | Cost budgets have no verified per-child cost source (F13). | The envelope's `budget.costUsd` is required (shipped); the stage run's `usage.costUsd` is optional. Rounds and minutes are always enforced; cost is not enforced until a source exists, and a run is not refused for that. |
 | R12 | Windows unattended isolation: read narrowing against the ACL cost, and the local-network requirement of the container route against the lane's refusal of local destinations. Not designed. | Windows reports `platform-not-qualified` for stages with an envelope until its own design lands; all-read-only templates still run. |
 | R13 | Do requested outputs and budgets apply to attended runs? | Outputs are optional there; budgets are unattended only. |
 | R14 | Seed and collection bounds (5 000 files, 512 MiB). | As stated. |
 | R15 | A filter driver the repository needs for checkout is not run, so such a repository cannot use git workspaces. Fall back to the folder kind, or refuse? | Refuses `git-unavailable`; no silent fallback. |
+| R16 | Two hashes (lead ruling). The ruling fixes the names and what each binds. It does not fix what `resultHash` is computed over, the helper's name, or whether `outputHash` is stored on the stage run after the rename. | `resultHash` = sha256 of the stored stage output, computed and stored by the host at `awaiting_gate`; `outputHash` is recomputed with `outputHashOf` whenever it is checked and is not assumed to be stored. One gate decision carries both when the stage run has requested outputs. The WT-2 rename lane confirms or corrects this. |
+| R17 | Template-level setup commands and read-scope stages: a read-scope stage cannot run a command, and confirm does not refuse the combination. | Every all-tools stage is told to run them; a read-scope stage is told nothing. An all-read-only version has no setup commands by definition. |
+| R18 | Attach writes two stores (the routine, then the attachment). They are not one transaction. | Routine first, attachment second, routine removed on refusal; an orphan routine's fire refuses `attachment-missing`. |
+| R19 | A generation or fetch tool with `dataSent: true` sends stage data to a third party with nobody present. May it run after the stage read tainted or secret-adjacent content? | It goes to the reviewer with its flag (§8 step 8), and the exfiltration signal still denies first (step 4). No extra rule. |
+| R20 | Requested-output binding. The envelope and `stage.requestedOutputs` name kind classes; the board `RequestedOutput.decl` names an exact target. Open: the tool-name → kind table; how the two graph lists relate when both are present; whether a target must be confirmed with the version, not only approved at the gate. | §10: `git-push` maps to `push`; a tool with no table row is refused; the envelope list wins when present; the target is bound by `outputHash` at the gate. WT-17 does not start until the lead answers. |
+
+## 15. Porting from microsoft/vscode (owner rule, 2026-11-16)
+
+Where microsoft/vscode (Code - OSS, MIT) already implements something an item needs, the item ports that code instead of writing it again. Conditions:
+
+- Source is the MIT-licensed `microsoft/vscode` repository only. Nothing from the proprietary Visual Studio Code distribution, from proprietary Microsoft extensions, or from the Marketplace or its client terms. No Microsoft or Visual Studio Code trademarks, names or icons.
+- Every ported file carries a header naming the upstream repository, path, commit and the MIT licence, and saying what was changed.
+- `THIRD-PARTY-NOTICES.md` gains a section for the port (project, licence text, commit). The implementing lane adds it in the same change as the first ported file. This design change does not edit it.
+- A port is a starting point: it still meets this plan's invariants and the repository's own boundaries. A port that needs a host capability the plan forbids (for example a host-run command) is not taken.
+
+Candidates per item. No upstream path below has been verified; every one is "to be located" by the implementing lane, which records the path and commit in the file header. A lane that finds nothing suitable says so in its report and builds as planned.
+
+| Item | What it needs | Upstream candidate | Path |
+| --- | --- | --- | --- |
+| WT-3 | Stage result review: accept, reject, request changes on a produced result | The chat-editing keep / undo model (per-change accept and discard state) | to be located |
+| WT-4 | Join conflict gate: show the conflicting files and both sides; git worktree handling | The chat-editing diff model and the merge-conflict presentation; the built-in git extension's worktree and merge handling | to be located |
+| WT-5 | Per-stage approval lanes on the board | Approval and confirmation patterns of the chat tool-call flow | to be located |
+| WT-6 | Sub-agent cards labelled under their stage | none identified | — |
+| WT-7 | Model verdict parsing | none identified | — |
+| WT-8 | Attach-schedule flow: pick a template version and a trigger | Quick-input (pick list and multi-step input) | to be located |
+| WT-15 | Command and tool classification inside the envelope | Terminal command approval patterns (allow and deny lists, sub-command analysis) | to be located |
+| WT-16 | Isolation profile | none identified; the sandbox is this repository's own | — |
+| WT-17 | Requested-output gate: show each output with its files and diffs before approval | The chat-editing diff model; quick-input for the retry choice | to be located |
+| WT-18 | Budgets and breakers | none identified | — |
+
+Items outside this plan (the editor and board UI, WT-9 to WT-14) follow the same rule in their own plans; quick-input and the chat-editing review surface are the likely candidates there as well.
