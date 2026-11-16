@@ -190,3 +190,15 @@ it("removes a template's settled runs and keeps the ones still executing or awai
   expect(await store.getRun(done)).toEqual({ status: "not-found" });
   expect((await store.get(done) as { item: object }).item).not.toHaveProperty("templateRunError");
 });
+
+it("keeps the run of a row deleted while its run was active, whichever process started it", async () => {
+  const first = new WorkBoardStore(boardPath);
+  const id = await templateItem(first);
+  await begin(first, id, "run-1");
+
+  const restarted = new WorkBoardStore(boardPath);
+  expect(await restarted.remove(id)).toMatchObject({ status: "deleted" });
+  expect(await runIds()).toEqual(["run-1"]);
+  await restarted.releaseRun("run-1");
+  expect(await runIds()).toEqual([]);
+});

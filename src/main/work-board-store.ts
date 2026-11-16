@@ -404,7 +404,8 @@ export class WorkBoardStore {
   private readonly now: () => number;
   /** Template-run state, keyed by runId, in the covered run file beside `board.json`. */
   readonly runs: WorkflowRunStore;
-  // Template runs this process started and has not seen end. Empty after a restart, when no run is still executing.
+  // Template runs that may still be executing: started here and not seen to end, or active on a row when it was deleted. Empty after a
+  // restart, when no run is still executing.
   private readonly liveRuns = new Set<string>();
 
   /**
@@ -464,8 +465,8 @@ export class WorkBoardStore {
     return withInProcessFileQueue(this.filePath, async () => {
       const board = await readFileOrEmpty(this.filePath);
       const unlisted = this.unlisted(board);
-      const open = new Set(board.items.filter((item) => item.runStatus !== undefined && ACTIVE_RUN_STATUSES.has(item.runStatus)).map((item) => item.runId));
-      await this.pruneRuns((run) => unlisted(run) || (run.pin.templateId === templateId && !this.liveRuns.has(run.runId) && !open.has(run.runId)));
+      const awaited = new Set(board.items.filter((item) => item.runStatus !== undefined && ACTIVE_RUN_STATUSES.has(item.runStatus)).map((item) => item.runId));
+      await this.pruneRuns((run) => unlisted(run) || (run.pin.templateId === templateId && !this.liveRuns.has(run.runId) && !awaited.has(run.runId)));
     });
   }
 
@@ -1070,7 +1071,10 @@ export class WorkBoardStore {
       }
       board.items = board.items.filter((i) => i.id !== id);
       await this.commit(board);
-      if (item.templateId !== undefined) await this.pruneRuns(this.unlisted(board));
+      if (item.templateId !== undefined) {
+        if (item.runId !== undefined && item.runStatus !== undefined && ACTIVE_RUN_STATUSES.has(item.runStatus)) this.liveRuns.add(item.runId);
+        await this.pruneRuns(this.unlisted(board));
+      }
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,
