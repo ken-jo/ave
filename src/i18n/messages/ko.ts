@@ -2,6 +2,20 @@
 import type { MessageCatalogKey } from "./en.js";
 
 export const ko: Record<MessageCatalogKey, string> = {
+  "memoryEmbeddings.title": "메모리 임베딩",
+  "memoryEmbeddings.localDefault": "로컬 모델 · 기본 소스",
+  "memoryEmbeddings.providerSlot": "제공자 선택 — 추후 지원",
+  "memoryEmbeddings.loading": "모델 확인 중…",
+  "memoryEmbeddings.unconfigured": "모델이 설정되지 않았습니다",
+  "memoryEmbeddings.downloading": "모델 다운로드 중",
+  "memoryEmbeddings.ready": "모델 준비됨 · 리비전",
+  "memoryEmbeddings.failed": "모델 설정 실패",
+  "memoryEmbeddings.bytes": "{received} / {total} 바이트",
+  "memoryEmbeddings.downloadNotice": "약 135 MB. 설정을 위해 모델 호스트에 한 번 연결합니다. 로컬 추론은 이 기기에서 실행됩니다.",
+  "memoryEmbeddings.cancel": "다운로드 취소",
+  "memoryEmbeddings.retry": "다운로드 재시도",
+  "memoryEmbeddings.download": "로컬 모델 다운로드",
+  "memoryEmbeddings.existing": "기존 모델 사용",
   "memoryMap.error.invalid-input": "메모리 지도 요청이 올바르지 않습니다.",
   "memoryMap.error.project-not-allowed": "이 메모리 범위에 접근할 수 없습니다.",
   "memoryMap.error.model-unconfigured": "먼저 로컬 임베딩 모델을 설정하세요.",

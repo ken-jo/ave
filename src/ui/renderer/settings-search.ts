@@ -69,6 +69,7 @@ const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {"tab":"mcp","section":"mcp-servers","title":"mcpTab.pageTitle","labels":[]},
   {"tab":"marketplace","section":"marketplace-inventory","title":"gitMarketplace.title","labels":[]},
   // Every shortcut's label, so searching settings for a command finds the page that rebinds it.
+  { tab: "chat", section: "memory-embeddings", title: "memoryEmbeddings.title", labels: ["memoryEmbeddings.download", "memoryEmbeddings.existing"] },
   { tab: "shortcuts", section: "shortcuts-list", title: "shortcutsTab.listTitle", labels: SHORTCUTS.map((entry) => entry.labelKey) },
 ];
 
