@@ -7,7 +7,7 @@ import type { BrowserPreview, BrowserWorkspaceApi, BrowserWorkspaceResult, Brows
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
 
 vi.mock("../../../../i18n/react.js", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-const STATE: BrowserWorkspaceState = { revision: 1, bookmarks: [{ url: "https://saved.example/", title: "Saved site", at: 1 }], history: [], sitePermissions: [], downloads: [], tabs: [{ tabId: "browser:one", documentGeneration: 4, url: "https://site.example/", title: "Current site", zoomFactor: 1 }], storageStatus: "ready", capabilities: { fullscreen: false } };
+const STATE: BrowserWorkspaceState = { revision: 1, bookmarks: [{ url: "https://saved.example/", title: "Saved site", at: 1 }], history: [], sitePermissions: [], downloads: [], tabs: [{ tabId: "browser:one", documentGeneration: 4, url: "https://site.example/", title: "Current site", zoomFactor: 1 }], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
 function setup() {
   let stateChanged!: (state: BrowserWorkspaceState) => void;
   let controlChanged!: (state: BrowserTabControlState) => void;

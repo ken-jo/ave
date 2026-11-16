@@ -11,6 +11,8 @@ import { readFileSync } from "node:fs";
 import { FAVICON_SCHEMES, faviconSource } from "../../preview/favicon-source.js";
 import { WebSurfaceLayer, WebSurfaceSlot, placeWebSurfaces } from "../WebSurfaceLayer.js";
 import { EdgeResizeBar } from "../EdgeResizeBar.js";
+import { __setBrowserPageStatusForTest } from "../../preview/browser-page-status.js";
+import type { BrowserWorkspaceState } from "../../../../shared/browser-workspace.js";
 import {
   setNativeBrowserTabIds,
   setHiddenWebSurfaceObserved,
@@ -35,6 +37,7 @@ const source = Symbol("test-store");
 beforeEach(() => setNativeBrowserTabIds([]));
 
 afterEach(async () => {
+  act(() => __setBrowserPageStatusForTest(null));
   withdrawLiveWebTabs(source);
   await act(async () => { await Promise.resolve(); });
 });
@@ -68,7 +71,10 @@ const layerApi = { browserTabs: { bindTab, getSessionBindings: async () => ({ re
 
 function refusalApi(): { api: AveApi; block(src: string): void } {
   let handler: (event: { src: string }) => void = () => {};
-  const api = { ...layerApi, browserWorkspace: { onAttachBlocked: (next: typeof handler) => { handler = next; return () => {}; } } } as unknown as AveApi;
+  const api = { ...layerApi, browserWorkspace: {
+    onAttachBlocked: (next: typeof handler) => { handler = next; return () => {}; },
+    onChanged: () => () => {}, getState: async () => ({ ok: false, error: "operation-failed" }),
+  } } as unknown as AveApi;
   return { api, block: (src) => handler({ src }) };
 }
 
@@ -516,5 +522,46 @@ describe("WebSurfaceLayer", () => {
     await act(async () => { refusal.block("https://example.com/"); });
     expect(guests()).toEqual([guest]);
     expect(screen.queryByTestId("web-surface-attach-blocked")).toBeNull();
+  });
+
+  it("replaces a page that failed to load with the host's error page, parks its guest, and retries as the user", async () => {
+    const stop = vi.fn(async () => ({ ok: true as const }));
+    const retryLoad = vi.fn(async () => ({ ok: true as const, value: null }));
+    const openExternalUrl = vi.fn(async () => ({ ok: true }));
+    const client = { openExternalUrl, browserTabs: { stop }, browserWorkspace: { retryLoad } } as unknown as AveApi;
+    const failed: BrowserWorkspaceState = {
+      revision: 5, bookmarks: [], history: [], sitePermissions: [], downloads: [], storageStatus: "ready", capabilities: { fullscreen: false },
+      tabs: [{ tabId: "browser:1", documentGeneration: 3, url: "https://example.com/", title: "", zoomFactor: 1 }],
+      pages: [{ tabId: "browser:1", loadError: { reason: "connection", code: -102, detail: "ERR_CONNECTION_REFUSED", url: "https://example.com/" } }],
+    };
+    publishLiveWebTabs(source, new Set(["browser:1"]));
+    await render(<Harness where="side" />);
+    Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1200 });
+    Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 800 });
+    stubBox(screen.getByTestId("web-surface-slot"), { left: 10, top: 20, width: 640, height: 480 });
+    act(() => { placeWebSurfaces(); });
+    expect(frame("browser:1").style.visibility).toBe("visible");
+    const guest = guests()[0];
+
+    act(() => __setBrowserPageStatusForTest(failed, client));
+    act(() => { placeWebSurfaces(); });
+    const view = screen.getByTestId("browser-load-error");
+    expect(view).toHaveAttribute("data-reason", "connection");
+    expect(view.textContent).toContain("ERR_CONNECTION_REFUSED");
+    expect(screen.getByTestId("browser-load-error-url").textContent).toBe("https://example.com/");
+    expect(frame("browser:1").style.visibility).toBe("hidden");
+    expect(guests()[0]).toBe(guest);
+
+    await act(async () => { screen.getByTestId("browser-load-error-retry").click(); });
+    expect(stop).toHaveBeenCalledWith("browser:1");
+    expect(retryLoad).toHaveBeenCalledWith({ tabId: "browser:1", documentGeneration: 3 });
+    screen.getByTestId("browser-load-error-open-external").click();
+    expect(openExternalUrl).toHaveBeenCalledWith("https://example.com/");
+
+    act(() => __setBrowserPageStatusForTest({ ...failed, revision: 6, pages: [{ tabId: "browser:1", loadError: null }] }, client));
+    act(() => { placeWebSurfaces(); });
+    expect(screen.queryByTestId("browser-load-error")).toBeNull();
+    expect(frame("browser:1").style.visibility).toBe("visible");
+    expect(guests()[0]).toBe(guest);
   });
 });

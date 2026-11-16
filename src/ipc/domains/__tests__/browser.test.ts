@@ -5,7 +5,7 @@ import { hostFrameEvent, isolatedAppFrameEvent } from "../../../__tests__/test-h
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("../../../main/browser/browser-workspace-desktop.js", () => ({
-  getBrowserWorkspaceService: () => ({ onChanged: vi.fn() }),
+  getBrowserWorkspaceService: () => ({ onChanged: vi.fn(), tabsChanged: vi.fn() }),
   refreshBrowserPopupControl: vi.fn(),
   disposeBrowserWorkspaceService: vi.fn(),
 }));

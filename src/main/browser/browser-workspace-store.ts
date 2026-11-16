@@ -40,7 +40,7 @@ export class BrowserWorkspaceStore {
       try { parsed = JSON.parse(raw); } catch { this.status = "corrupt"; return; }
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) { this.status = "corrupt"; return; }
       const record = parsed as Record<string, unknown>;
-      if (record.version !== 1 || Object.keys(record).length !== 4 || !parseBrowserWorkspaceState({ revision: 0, bookmarks: record.bookmarks, history: record.history, sitePermissions: record.sitePermissions, downloads: [], tabs: [], storageStatus: "ready", capabilities: { fullscreen: false } })) { this.status = "corrupt"; return; }
+      if (record.version !== 1 || Object.keys(record).length !== 4 || !parseBrowserWorkspaceState({ revision: 0, bookmarks: record.bookmarks, history: record.history, sitePermissions: record.sitePermissions, downloads: [], tabs: [], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } })) { this.status = "corrupt"; return; }
       this.value = record as unknown as PersistedWorkspace;
     })();
   }

@@ -41,4 +41,5 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   register("zoom", (windowId, request) => service.zoom(windowId, request));
   register("preview", (windowId, request) => service.preview(windowId, request));
   register("capture", (windowId, request) => service.capture(windowId, request));
+  register("retryLoad", (windowId, request) => service.retryLoad(windowId, request));
 }

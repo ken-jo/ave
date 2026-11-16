@@ -54,13 +54,14 @@ describe("chat columns", () => {
       return hosts;
     });
     const tabs = hosts.map((host, index) => ({ tabId: host.dataset.tabId!, documentGeneration: 1, url: `https://${index === 0 ? "one" : "two"}.example/`, title: `Page ${index + 1}`, zoomFactor: 1 }));
-    let workspaceState: BrowserWorkspaceState = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs, storageStatus: "ready", capabilities: { fullscreen: false } };
+    let workspaceState: BrowserWorkspaceState = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs, pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
     const workspaceListeners = new Set<(state: BrowserWorkspaceState) => void>();
     browserTabs.getState.mockResolvedValue({ revision: 1, tabs: tabs.map((tab) => ({ ...tab, rendererTabId: tab.tabId,
       owner: { sessionId: MOCK_DEFAULT_SESSION_ID }, lease: null, generation: 1, kind: "embedded", openerTabId: null, mode: "human-paused" })) });
     Object.assign(view.api, { browserWorkspace: {
       getState: vi.fn(async () => ({ ok: true, value: workspaceState })),
       onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { workspaceListeners.add(handler); return () => { workspaceListeners.delete(handler); }; }), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })),
+      onAttachBlocked: vi.fn(() => () => {}),
     } as unknown as BrowserWorkspaceApi });
     fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.paneThumbnailToggle))!);
     const column = view.container.querySelector<HTMLElement>('[data-testid="chat-thumbnail-column"]')!;

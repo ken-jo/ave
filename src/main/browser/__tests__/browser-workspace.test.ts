@@ -20,12 +20,13 @@ async function setup() {
   let factor = 1;
   let live = true;
   const events = new EventEmitter();
+  const loadURL = vi.fn(async (_url: string) => {}); const reload = vi.fn();
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
-  const guest = Object.assign(events, { id: 7, session: {}, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage }) as unknown as WebContents;
+  const guest = Object.assign(events, { id: 7, session: {}, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload }) as unknown as WebContents;
   const onError = vi.fn(); const promptPermission = vi.fn(async () => true);
   const service = new BrowserWorkspaceService({ store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, loadURL, reload, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 
@@ -89,5 +90,65 @@ describe("browser workspace service", () => {
     expect(events.listenerCount("did-start-navigation")).toBe(0);
     const replacement = Object.assign(new EventEmitter(), { id: 7, isDestroyed: () => false }) as unknown as WebContents;
     expect(() => service.observeGuest(2, replacement)).not.toThrow();
+  });
+  it("reports a main-frame load failure for the tab until the user navigates away from it", async () => {
+    const { service, guest, events } = await setup();
+    service.observeGuest(1, guest);
+    expect((await service.getState(1)).pages).toEqual([{ tabId: "browser:one", loadError: null }]);
+    events.emit("did-fail-load", {}, -102, "ERR_CONNECTION_REFUSED", "http://127.0.0.1:1/", true);
+    expect((await service.getState(1)).pages[0]?.loadError).toEqual({ reason: "connection", code: -102, detail: "ERR_CONNECTION_REFUSED", url: "http://127.0.0.1:1/" });
+    // The browser's own error document commits after the failure; it is not a navigation away.
+    events.emit("did-start-navigation", {}, "chrome-error://chromewebdata/", false, true);
+    expect((await service.getState(1)).pages[0]?.loadError?.reason).toBe("connection");
+    events.emit("did-start-navigation", {}, "https://site.example/next", false, true);
+    expect((await service.getState(1)).pages[0]?.loadError).toBeNull();
+  });
+  it("ignores an aborted load and a frame that is not the page's own", async () => {
+    const { service, guest, events } = await setup();
+    service.observeGuest(1, guest);
+    events.emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://site.example/", true);
+    events.emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://frame.invalid/", false);
+    expect((await service.getState(1)).pages[0]?.loadError).toBeNull();
+  });
+  it("loads the failed address again on retry, and reloads a crashed page", async () => {
+    const { service, guest, events, loadURL, reload, onError } = await setup();
+    service.observeGuest(1, guest);
+    expect(() => service.retryLoad(1, TARGET)).toThrow("operation-failed");
+    events.emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://missing.invalid/page", true);
+    loadURL.mockRejectedValueOnce(new Error("ERR_NAME_NOT_RESOLVED"));
+    expect(service.retryLoad(1, TARGET)).toBeNull();
+    expect(loadURL).toHaveBeenCalledWith("https://missing.invalid/page");
+    await Promise.resolve(); await Promise.resolve();
+    expect(onError).toHaveBeenCalledOnce();
+    events.emit("render-process-gone", {}, { reason: "crashed" });
+    expect((await service.getState(1)).pages[0]?.loadError).toMatchObject({ reason: "crashed", detail: "crashed", url: "https://site.example/" });
+    service.retryLoad(1, TARGET);
+    expect(reload).toHaveBeenCalledOnce();
+    events.emit("render-process-gone", {}, { reason: "clean-exit" });
+    expect(() => service.retryLoad(2, TARGET)).toThrow("no-such-tab");
+  });
+  it("publishes a failure that happened before the guest was bound to its tab, once the tab is listed", async () => {
+    const { service, guest, events, setLive } = await setup();
+    setLive(false);
+    service.observeGuest(1, guest);
+    const published: (readonly unknown[])[] = [];
+    service.onChanged((_windowId, state) => published.push(state.pages));
+    expect((await service.getState(1)).pages).toEqual([]);
+    events.emit("did-fail-load", {}, -102, "ERR_CONNECTION_REFUSED", "http://127.0.0.1:9/", true);
+    await vi.waitFor(() => expect(published.length).toBeGreaterThan(0));
+    expect(published.at(-1)).toEqual([]);
+    const before = published.length;
+    service.tabsChanged(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(published).toHaveLength(before);
+
+    setLive(true);
+    service.tabsChanged(1);
+    await vi.waitFor(() => expect(published.at(-1)).toEqual([{ tabId: "browser:one", loadError: expect.objectContaining({ reason: "connection" }) }]));
+    const settled = published.length;
+    service.tabsChanged(1);
+    service.tabsChanged(2);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(published).toHaveLength(settled);
   });
 });

@@ -1,0 +1,71 @@
+/**
+ * What main knows about each browser tab's page (a failed load, and later its other host-drawn states), held once per
+ * window. Main sends whole revisioned snapshots; the newest one replaces the previous, nothing is merged.
+ */
+import { useSyncExternalStore } from "react";
+import type { BrowserPageStatus, BrowserWorkspaceState, BrowserWorkspaceTarget } from "../../../shared/browser-workspace.js";
+import type { AveApi } from "../types.js";
+import { navigateBrowserTabAsUser } from "./agent-browser-bridge.js";
+
+let api: AveApi | null = null;
+let state: BrowserWorkspaceState | null = null;
+const listeners = new Set<() => void>();
+
+function accept(next: BrowserWorkspaceState): void {
+  if (state && next.revision < state.revision) return;
+  state = next;
+  for (const listener of [...listeners]) listener();
+}
+
+/** Mounted once by the window's web-surface layer. */
+export function connectBrowserPageStatus(next: AveApi): () => void {
+  const workspace = next.browserWorkspace;
+  if (!workspace) return () => {};
+  api = next;
+  let alive = true;
+  const off = workspace.onChanged((value) => { if (alive) accept(value); });
+  void workspace.getState().then((result) => { if (alive && result.ok) accept(result.value); });
+  return () => {
+    alive = false;
+    off();
+    if (api === next) { api = null; state = null; }
+  };
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+
+function browserPageStatus(tabId: string): BrowserPageStatus | null {
+  return state?.pages.find((page) => page.tabId === tabId) ?? null;
+}
+
+/** The tab's current document as main last described it; requests name it so main can refuse a stale one. */
+function browserPageTarget(tabId: string): BrowserWorkspaceTarget | null {
+  const tab = state?.tabs.find((candidate) => candidate.tabId === tabId);
+  return tab ? { tabId: tab.tabId, documentGeneration: tab.documentGeneration } : null;
+}
+
+export function useBrowserPageStatus(tabId: string): BrowserPageStatus | null {
+  return useSyncExternalStore(subscribe, () => browserPageStatus(tabId));
+}
+
+/** The user asks for the failed page again: their action, so the tab is first taken back from the agent. */
+export function retryBrowserPageLoad(tabId: string): void {
+  const connected = api;
+  const target = browserPageTarget(tabId);
+  if (!connected?.browserWorkspace || !target) return;
+  const workspace = connected.browserWorkspace;
+  void navigateBrowserTabAsUser(connected, tabId, () => { void workspace.retryLoad(target); });
+}
+
+export function openBrowserPageInSystemBrowser(url: string): void {
+  void api?.openExternalUrl(url);
+}
+
+export function __setBrowserPageStatusForTest(next: BrowserWorkspaceState | null, client: AveApi | null = null): void {
+  state = next;
+  api = client;
+  for (const listener of [...listeners]) listener();
+}

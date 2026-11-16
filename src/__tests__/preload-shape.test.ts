@@ -368,6 +368,7 @@ describe("preload contextBridge world shape lock", () => {
             "onAttachBlocked",
             "onChanged",
             "preview",
+            "retryLoad",
             "setBookmark",
             "setSitePermission",
             "stopFind",

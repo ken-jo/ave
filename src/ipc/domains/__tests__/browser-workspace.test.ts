@@ -23,7 +23,7 @@ const EVENT = { sender: {} };
 describe("private browser workspace IPC", () => {
   it("rejects every invoke from an unauthorized frame before service access", async () => {
     const service = setup(); authorize.mockReturnValue(false);
-    expect(handlers.size).toBe(9);
+    expect(handlers.size).toBe(10);
     for (const handler of handlers.values()) expect(await handler(EVENT)).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(service.getState).not.toHaveBeenCalled(); expect(service.preview).not.toHaveBeenCalled();
     expect(service.capture).not.toHaveBeenCalled();

@@ -771,6 +771,7 @@ export const CHANNELS = {
     zoom: "ave:browser-workspace:zoom",
     preview: "ave:browser-workspace:preview",
     capture: "ave:browser-workspace:capture",
+    retryLoad: "ave:browser-workspace:retry-load",
     changed: "ave:browser-workspace:changed",
     attachBlocked: "ave:browser-workspace:attach-blocked", // event main→renderer  a page guest was refused before it attached
   },

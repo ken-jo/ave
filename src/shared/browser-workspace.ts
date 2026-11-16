@@ -19,10 +19,25 @@ export interface BrowserDownload {
 export interface BrowserWorkspaceTab {
   readonly tabId: string; readonly documentGeneration: number; readonly url: string; readonly title: string; readonly zoomFactor: number;
 }
+const BROWSER_LOAD_FAILURE_REASONS = ["dns", "connection", "offline", "certificate", "secure-connection", "blocked", "redirects", "crashed", "failed"] as const;
+/** Why a tab's main frame is not showing a page: host-classified, with the network stack's own code kept as detail. */
+export interface BrowserLoadError {
+  readonly reason: typeof BROWSER_LOAD_FAILURE_REASONS[number];
+  readonly code: number;
+  /** The network stack's name for the failure, or the process exit reason. Diagnostic text, never page content. */
+  readonly detail: string;
+  /** The address that failed; empty when the failed navigation named none the browser may open. */
+  readonly url: string;
+}
+/** What the host knows about one tab's page beyond its address. One entry per listed tab. */
+export interface BrowserPageStatus {
+  readonly tabId: string;
+  readonly loadError: BrowserLoadError | null;
+}
 export interface BrowserWorkspaceState {
   readonly revision: number; readonly bookmarks: readonly BrowserLibraryEntry[]; readonly history: readonly BrowserLibraryEntry[];
   readonly sitePermissions: readonly BrowserSiteRule[]; readonly downloads: readonly BrowserDownload[];
-  readonly tabs: readonly BrowserWorkspaceTab[]; readonly storageStatus: "ready" | "corrupt";
+  readonly tabs: readonly BrowserWorkspaceTab[]; readonly pages: readonly BrowserPageStatus[]; readonly storageStatus: "ready" | "corrupt";
   readonly capabilities: { readonly fullscreen: boolean };
 }
 export interface BrowserWorkspaceTarget { readonly tabId: string; readonly documentGeneration: number }
@@ -55,6 +70,8 @@ export interface BrowserWorkspaceApi {
   zoom(request: BrowserZoomRequest): Promise<BrowserWorkspaceResult<{ readonly factor: number }>>;
   preview(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<BrowserPreview>>;
   capture(request: BrowserCaptureRequest): Promise<BrowserWorkspaceResult<BrowserCapture>>;
+  /** Load again the address whose load failed in this tab, or restart its crashed page. */
+  retryLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
   onChanged(handler: (state: BrowserWorkspaceState) => void): () => void;
   /** Main refused a page guest before it attached; `src` is the address the refused element carried. */
   onAttachBlocked(handler: (blocked: BrowserAttachBlocked) => void): () => void;
@@ -67,7 +84,7 @@ export function parseBrowserAttachBlocked(value: unknown): BrowserAttachBlocked 
 export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
-  capture: BrowserCaptureRequest;
+  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
 export const BROWSER_SITE_DECISIONS: readonly BrowserSiteDecision[] = ["ask", "allow", "block"];
@@ -119,7 +136,7 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
 /** Persisted collections and host snapshots share this record validator. */
 export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceState | null {
   const record = value;
-  if (!isRecord(record) || !keys(record, ["revision", "bookmarks", "history", "sitePermissions", "downloads", "tabs", "storageStatus", "capabilities"]) || !Number.isSafeInteger(record.revision) || Number(record.revision) < 0 || typeof record.storageStatus !== "string" || !["ready", "corrupt"].includes(record.storageStatus)) return null;
+  if (!isRecord(record) || !keys(record, ["revision", "bookmarks", "history", "sitePermissions", "downloads", "tabs", "pages", "storageStatus", "capabilities"]) || !Number.isSafeInteger(record.revision) || Number(record.revision) < 0 || typeof record.storageStatus !== "string" || !["ready", "corrupt"].includes(record.storageStatus)) return null;
   const capabilities = record.capabilities;
   if (!isRecord(capabilities) || !keys(capabilities, ["fullscreen"]) || typeof capabilities.fullscreen !== "boolean") return null;
   const library = (items: unknown, limit: number): boolean => Array.isArray(items) && items.length <= limit && items.every((item) => {
@@ -135,12 +152,18 @@ export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceStat
     const tab = item;
     return isRecord(tab) && keys(tab, ["tabId", "documentGeneration", "url", "title", "zoomFactor"]) && target(tab) && (tab.url === "about:blank" || browserWorkspaceUrl(tab.url) === tab.url) && typeof tab.title === "string" && tab.title.length <= BROWSER_WORKSPACE_LIMITS.titleLength && typeof tab.zoomFactor === "number" && Number.isFinite(tab.zoomFactor) && tab.zoomFactor > 0;
   })) return null;
+  if (!Array.isArray(record.pages) || record.pages.length > record.tabs.length || !record.pages.every((item) => {
+    const page = item;
+    return isRecord(page) && keys(page, ["tabId", "loadError"]) && typeof page.tabId === "string"
+      && (record.tabs as readonly Record<string, unknown>[]).some((tab) => tab.tabId === page.tabId)
+      && (page.loadError === null || validLoadError(page.loadError));
+  })) return null;
   if (!Array.isArray(record.downloads) || record.downloads.length > BROWSER_WORKSPACE_LIMITS.downloads || !record.downloads.every((item) => {
     const download = item;
     return isRecord(download) && keys(download, ["id", "name", "receivedBytes", "totalBytes", "state", "at"]) && typeof download.id === "string" && download.id.length > 0 && download.id.length <= 200 && typeof download.name === "string" && download.name.length <= 300 && typeof download.state === "string" && ["progressing", "completed", "cancelled", "interrupted"].includes(download.state) && [download.receivedBytes, download.totalBytes, download.at].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0);
   })) return null;
   const unique = (items: readonly unknown[], identity: (entry: Record<string, unknown>) => string) => new Set(items.map((entry) => identity(entry as Record<string, unknown>))).size === items.length;
-  if (!unique(record.bookmarks as unknown[], (entry) => String(entry.url)) || !unique(record.history as unknown[], (entry) => String(entry.url)) || !unique(record.sitePermissions, (entry) => `${entry.origin}:${entry.permission}`) || !unique(record.tabs, (entry) => String(entry.tabId)) || !unique(record.downloads, (entry) => String(entry.id))) return null;
+  if (!unique(record.bookmarks as unknown[], (entry) => String(entry.url)) || !unique(record.history as unknown[], (entry) => String(entry.url)) || !unique(record.sitePermissions, (entry) => `${entry.origin}:${entry.permission}`) || !unique(record.tabs, (entry) => String(entry.tabId)) || !unique(record.pages, (entry) => String(entry.tabId)) || !unique(record.downloads, (entry) => String(entry.id))) return null;
   return record as unknown as BrowserWorkspaceState;
 }
 
@@ -166,6 +189,12 @@ export function parseBrowserWorkspaceCapture(value: unknown): BrowserCapture | n
     || typeof value.scale !== "number" || !Number.isFinite(value.scale) || value.scale <= 0 || value.scale > 1
     || typeof value.truncated !== "boolean") return null;
   return value as unknown as BrowserCapture;
+}
+function validLoadError(value: unknown): boolean {
+  return isRecord(value) && keys(value, ["reason", "code", "detail", "url"])
+    && (BROWSER_LOAD_FAILURE_REASONS as readonly unknown[]).includes(value.reason)
+    && Number.isSafeInteger(value.code) && typeof value.detail === "string" && value.detail.length <= 100
+    && (value.url === "" || browserWorkspaceUrl(value.url) === value.url);
 }
 function validPreviewImage(record: Record<string, unknown>): boolean {
   if (typeof record.dataUrl !== "string" || record.dataUrl.length > Math.ceil(BROWSER_WORKSPACE_LIMITS.previewBytes * 4 / 3) + 23 || !/^data:image\/jpeg;base64,[A-Za-z0-9+/]+={0,2}$/.test(record.dataUrl)) return false;

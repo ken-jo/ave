@@ -115,6 +115,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
     },
     sendControl: (windowId, state) => {
       refreshBrowserPopupControl(windowId, state);
+      getBrowserWorkspaceService().tabsChanged(windowId);
       const win = getMainWindows().find((candidate) => candidate.id === windowId);
       sendToWindow(win, CHANNELS.browser.control, state, log);
     },
