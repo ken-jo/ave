@@ -32,6 +32,14 @@ describe("stage prompt", () => {
     expect(buildStagePrompt({ item, stage, inputs: [input("a", "x"), input("b", "y", { taint: "file-content" })] }).taint).toBe("file-content");
   });
 
+  it("a revision carries the taint of the output it revises", () => {
+    const stage = stageOf("a");
+    const revision = { priorOutput: "old result", note: "shorter" };
+    expect(buildStagePrompt({ item, stage, inputs: [], revision }).taint).toBeUndefined();
+    expect(buildStagePrompt({ item, stage, inputs: [], revision: { ...revision, taint: "file-content" } }).taint).toBe("file-content");
+    expect(buildStagePrompt({ item, stage, inputs: [], revision: { ...revision, taint: "agent-message" } }).taint).toBe("file-content");
+  });
+
   it("bounds each input and the total", () => {
     const stage = stageOf("z");
     const big = "x".repeat(STAGE_INPUT_MAX_CHARS + 500);

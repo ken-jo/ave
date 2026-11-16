@@ -19,7 +19,8 @@ const PASSED_BY: Record<StageInput["gate"], string> = {
  * fenced data, bounded per input and in total. Setup commands are host text for an all-tools stage and never reach a read-scope one. */
 export function buildStagePrompt(a: {
   item: WorkItem; stage: TemplateStage; inputs: StageInput[];
-  revision?: { priorOutput: string; note: string };
+  /** `taint`: what the attempt that produced `priorOutput` ended with. */
+  revision?: { priorOutput: string; note: string; taint?: "file-content" | "agent-message" };
   setupCommands?: readonly string[];
   gateSuffix?: string;
 }): { instructions: string; taint?: StageTaint; truncated: string[] } {
@@ -67,6 +68,7 @@ export function buildStagePrompt(a: {
   }
   if (a.gateSuffix) lines.push(``, a.gateSuffix);
   lines.push(``, `Report this stage's RESULT as your final message.`);
-  const taint = a.inputs.some(input => input.taint === "file-content") ? "file-content" as const : undefined;
+  // The quoted earlier result is an input like any other: what its attempt read carries into this one.
+  const taint = a.inputs.some(input => input.taint === "file-content") || a.revision?.taint !== undefined ? "file-content" as const : undefined;
   return { instructions: lines.join("\n"), ...(taint ? { taint } : {}), truncated };
 }
