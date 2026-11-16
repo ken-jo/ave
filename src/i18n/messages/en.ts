@@ -4328,9 +4328,10 @@ export const en = {
   "providerSettingsError.detail": "The settings file contains an invalid field.\n\nFile: {path}\nField: {field}\n\nCorrect this field and restart Ave. The file has not been changed.",
 
   // ptyTerminal
-  "ptyTerminal.hostChipApproval": "Host · conversation permissions",
-  "ptyTerminal.hostChipNoAgentInput": "Host · no agent input",
-  "ptyTerminal.hostChipAgentless": "Host · no agent access",
+  "ptyTerminal.hostChip": "Host",
+  "ptyTerminal.hostChipApproval": "conversation permissions",
+  "ptyTerminal.hostChipNoAgentInput": "no agent input",
+  "ptyTerminal.hostChipAgentless": "no agent access",
   "ptyTerminal.integrationUnsupportedShell": "Shell integration is unavailable for this interpreter. Your shell remains usable.",
   "ptyTerminal.integrationMissingHome": "Shell integration requires a home directory. Your shell remains usable.",
   "ptyTerminal.integrationCustomLaunch": "Shell integration is unavailable with custom launch arguments. Your shell remains usable.",

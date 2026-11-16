@@ -4330,9 +4330,10 @@ export const ko: Record<MessageCatalogKey, string> = {
   "providerSettingsError.detail": "설정 파일에 올바르지 않은 필드가 있습니다.\n\n파일: {path}\n필드: {field}\n\n이 필드를 수정한 뒤 Ave를 다시 시작하세요. 파일은 변경되지 않았습니다.",
 
   // ptyTerminal
-  "ptyTerminal.hostChipApproval": "호스트 · 대화별 사용 권한",
-  "ptyTerminal.hostChipNoAgentInput": "호스트 · 에이전트 입력 없음",
-  "ptyTerminal.hostChipAgentless": "호스트 · 에이전트 접근 없음",
+  "ptyTerminal.hostChip": "호스트",
+  "ptyTerminal.hostChipApproval": "대화별 사용 권한",
+  "ptyTerminal.hostChipNoAgentInput": "에이전트 입력 없음",
+  "ptyTerminal.hostChipAgentless": "에이전트 접근 없음",
   "ptyTerminal.integrationUnsupportedShell": "이 인터프리터는 셸 통합을 지원하지 않습니다. 셸은 계속 사용할 수 있습니다.",
   "ptyTerminal.integrationMissingHome": "홈 디렉터리가 없어 셸 통합을 사용할 수 없습니다. 셸은 계속 사용할 수 있습니다.",
   "ptyTerminal.integrationCustomLaunch": "사용자 지정 실행 인수로 셸 통합을 사용할 수 없습니다. 셸은 계속 사용할 수 있습니다.",

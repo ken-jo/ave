@@ -153,7 +153,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   const workspaceTyping = purpose === "workspace" && (control === null || control.agentInput === "supported");
   // The header chip names that exposure in a word; its tooltip carries the full statement, what stays private, and why a shell takes no input.
   const access: TerminalPaneAccess = {
-    chip: t(purpose !== "workspace" ? "ptyTerminal.hostChipAgentless" : workspaceTyping ? "ptyTerminal.hostChipApproval" : "ptyTerminal.hostChipNoAgentInput"),
+    chip: t("ptyTerminal.hostChip"),
+    detail: t(purpose !== "workspace" ? "ptyTerminal.hostChipAgentless" : workspaceTyping ? "ptyTerminal.hostChipApproval" : "ptyTerminal.hostChipNoAgentInput"),
     about: [
       t(purpose !== "workspace" ? "ptyTerminal.hostBadge" : workspaceTyping ? "ptyTerminal.hostBadgeWorkspace" : "ptyTerminal.hostBadgeNoAgentInput"),
       t(workspaceTyping ? "ptyTerminal.workspaceEnvironment" : "ptyTerminal.manualEnvironment"),

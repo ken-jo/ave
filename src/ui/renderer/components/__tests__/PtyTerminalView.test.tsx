@@ -409,7 +409,11 @@ describe("PtyTerminalView environment and session boundaries", () => {
     // One row of chrome, as a pane header: the chip carries the identity, its tooltip the explanation.
     const header = screen.getByTestId("terminal-pane-header");
     const chip = within(header).getByTestId("terminal-pane-host-chip");
-    expect(chip.textContent).toBe(t("ptyTerminal.hostChipAgentless"));
+    // The name never shrinks; the detail is a separate part that a narrow header gives up first, before the pane's title.
+    expect(chip.firstElementChild).toHaveTextContent(t("ptyTerminal.hostChip"));
+    expect(chip.firstElementChild!.className).toContain("shrink-0");
+    expect(within(chip).getByTestId("terminal-pane-host-chip-detail")).toHaveTextContent(`· ${t("ptyTerminal.hostChipAgentless")}`);
+    expect(chip.textContent).toBe(`${t("ptyTerminal.hostChip")} · ${t("ptyTerminal.hostChipAgentless")}`);
     expect(chip.getAttribute("title")).toContain(t("ptyTerminal.hostBadge"));
     expect(chip.getAttribute("title")).toContain(t("ptyTerminal.manualEnvironment"));
     await waitFor(() => expect(within(header).getByTestId("terminal-blocks-toggle")).toBeTruthy());
@@ -435,7 +439,7 @@ describe("PtyTerminalView host control strip", () => {
     await waitFor(() => expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:21" }), "get"));
     expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ lane: "manual", purpose: "workspace" }));
     // The header chip names the exposure; its tooltip carries the full statement.
-    expect(screen.getByTestId("terminal-pane-host-chip").textContent).toBe(t("ptyTerminal.hostChipApproval"));
+    expect(screen.getByTestId("terminal-pane-host-chip").textContent).toBe(`${t("ptyTerminal.hostChip")} · ${t("ptyTerminal.hostChipApproval")}`);
     expect(screen.getByTestId("terminal-pane-host-chip").getAttribute("title")).toContain(t("ptyTerminal.hostBadgeWorkspace"));
     expect(screen.getByTestId("terminal-pane-host-chip").getAttribute("title")).toContain(t("ptyTerminal.workspaceEnvironment"));
     const session = terminalSessionFixture("terminal:21", "manual");
@@ -462,7 +466,7 @@ describe("PtyTerminalView host control strip", () => {
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:22" tabLabel="Terminal 22" />);
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ purpose: "side-panel" })));
     const chip = screen.getByTestId("terminal-pane-host-chip");
-    expect(chip.textContent).toBe(t("ptyTerminal.hostChipAgentless"));
+    expect(chip.textContent).toBe(`${t("ptyTerminal.hostChip")} · ${t("ptyTerminal.hostChipAgentless")}`);
     expect(chip.getAttribute("title")).toContain(t("ptyTerminal.hostBadge"));
     expect(chip.getAttribute("title")).toContain(t("ptyTerminal.manualEnvironment"));
     await waitFor(() => expect(terminal.control).toHaveBeenCalled());
@@ -479,7 +483,7 @@ describe("PtyTerminalView host control strip", () => {
     terminal.control.mockImplementation(async (): Promise<TerminalControlResult> => ({ ok: true, control: { mode: "available", generation: 0, agentInput } }));
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId="terminal:23" tabLabel="Terminal 23" />);
     // One header row: the chip says it in a word, its tooltip says why; no extra row over the output.
-    await waitFor(() => expect(screen.getByTestId("terminal-pane-host-chip").textContent).toBe(t("ptyTerminal.hostChipNoAgentInput")));
+    await waitFor(() => expect(screen.getByTestId("terminal-pane-host-chip").textContent).toBe(`${t("ptyTerminal.hostChip")} · ${t("ptyTerminal.hostChipNoAgentInput")}`));
     const about = screen.getByTestId("terminal-pane-host-chip").getAttribute("title");
     expect(about).toContain(t(noteKey));
     expect(about).toContain(t("ptyTerminal.hostBadgeNoAgentInput"));
