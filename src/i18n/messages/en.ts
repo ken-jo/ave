@@ -1747,10 +1747,13 @@ export const en = {
   // dockedApprovalCard
   "dockedApprovalCard.headline": "'{toolName}' is trying to read outside the allowed directories",
   "dockedApprovalCard.headlineWrite": "'{toolName}' is trying to write outside the allowed directories",
-  "dockedApprovalCard.targetParent": "{path}  (the whole parent folder)",
-  "dockedApprovalCard.denySummary": "Access will be denied",
+  "dockedApprovalCard.ifDenied": "If denied: the tool gets no access to this path.",
+  "dockedApprovalCard.ifFolderAllowed": "If you allow this folder: {path}",
+  "dockedApprovalCard.ifAllowedOnce": "If you allow once: {path}",
 
   // documentEngine
+  "dockedApprovalCard.targetParent": "{path}  (the whole parent folder)",
+  "dockedApprovalCard.denySummary": "Access will be denied",
   "documentEngine.title": "Install document engine",
   "documentEngine.optional": "(optional)",
   "documentEngine.description": "Render document pages and recalculate spreadsheet formulas in the read-only preview. Existing viewers remain available without this download.",

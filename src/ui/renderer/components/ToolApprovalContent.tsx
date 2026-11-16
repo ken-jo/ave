@@ -1093,13 +1093,14 @@ export function ToolApprovalContent({
                       className="mt-0.5 break-all font-mono text-dense"
                       data-testid="approval-decision-target"
                     >
+                      {/* Each line states a consequence of a choice the person has not made yet, never a verdict. */}
                       {decisionIndex === 0
-                        ? tHook("dockedApprovalCard.denySummary")
+                        ? tHook("dockedApprovalCard.ifDenied")
                         : decisionIndex === 1 && selectedFolderScope
-                          ? tHook("dockedApprovalCard.targetParent", {
+                          ? tHook("dockedApprovalCard.ifFolderAllowed", {
                               path: revealHiddenCharacters(selectedFolderScope.path ?? "", { lineBreaks: true }),
                             })
-                          : shownCandidatePath}
+                          : tHook("dockedApprovalCard.ifAllowedOnce", { path: shownCandidatePath })}
                     </p>
                   ) : null}
                   {/* The host's own reason for asking stays on the card whatever the purpose or reviewer text says. */}
@@ -1203,14 +1204,17 @@ export function ToolApprovalContent({
                     <ReviewRow label={tHook("toolApprovalDialog.allowOnce")}>
                       <code className="break-all font-mono" data-testid="approval-path-grant-candidate">{shownCandidatePath}</code>
                     </ReviewRow>
-                    {outOfDirSuggestedParent ? (
+                    {/* A folder grant the host does not offer for this request gets no row and no hint. */}
+                    {outOfDirSuggestedParent && (outOfDirScopes?.session || outOfDirScopes?.always) ? (
                       <>
                         <ReviewRow label={tHook(FOLDER_ALLOW_LABEL_KEY)}>
                           <code className="break-all font-mono" data-testid="approval-path-grant-parent">{shownSuggestedParent}</code>
                         </ReviewRow>
-                        <p className="border-t px-3 py-2 text-xs text-muted-foreground" data-testid="approval-folder-project-hint">
-                          {tHook("toolApprovalDialog.folderAddsProject")}
-                        </p>
+                        {outOfDirScopes.always ? (
+                          <p className="border-t px-3 py-2 text-xs text-muted-foreground" data-testid="approval-folder-project-hint">
+                            {tHook("toolApprovalDialog.folderAddsProject")}
+                          </p>
+                        ) : null}
                       </>
                     ) : null}
                     {decisionIndex === 1 && (outOfDir?.adjacencyWarnings.length ?? 0) > 0 ? (

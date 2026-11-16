@@ -1749,10 +1749,13 @@ export const ko: Record<MessageCatalogKey, string> = {
   // dockedApprovalCard
   "dockedApprovalCard.headline": "'{toolName}' 이(가) 허용된 디렉터리 밖을 읽으려 합니다",
   "dockedApprovalCard.headlineWrite": "'{toolName}' 이(가) 허용된 디렉터리 밖에 쓰기를 하려 합니다",
-  "dockedApprovalCard.targetParent": "{path}  (상위 폴더 전체)",
-  "dockedApprovalCard.denySummary": "접근을 거부합니다",
+  "dockedApprovalCard.ifDenied": "거부하면: 도구가 이 경로에 접근하지 못합니다.",
+  "dockedApprovalCard.ifFolderAllowed": "이 폴더를 허용하면: {path}",
+  "dockedApprovalCard.ifAllowedOnce": "한 번만 허용하면: {path}",
 
   // documentEngine
+  "dockedApprovalCard.targetParent": "{path}  (상위 폴더 전체)",
+  "dockedApprovalCard.denySummary": "접근을 거부합니다",
   "documentEngine.title": "문서 엔진 설치",
   "documentEngine.optional": "(선택 사항)",
   "documentEngine.description": "읽기 전용 미리보기에서 문서 페이지를 렌더링하고 수식을 다시 계산합니다. 설치하지 않아도 기존 뷰어를 사용할 수 있습니다.",

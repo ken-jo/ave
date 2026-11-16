@@ -64,6 +64,8 @@ describe("approval card paths with hidden characters", () => {
   it("spells the candidate and the parent folder on an outside-project card", () => {
     renderApproval(writeRequest({
       kind: "out-of-allowed-dir",
+      // The parent folder is shown only when the host offers a folder grant.
+      allowedChoices: undefined,
       target: undefined,
       args: {},
       outOfAllowedDir: {
