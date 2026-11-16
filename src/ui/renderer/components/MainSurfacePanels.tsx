@@ -157,6 +157,11 @@ type FrameProps = Omit<ComponentProps<typeof PaneFrame>, "title" | "icon" | "chi
 type SurfacePanelTab = "chat" | "changes";
 const PANEL_TAB_CLASS = "flex h-8 min-w-0 items-center gap-1 rounded-md px-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary";
 
+/** The composer group of the chat docked to a surface pane; a terminal block attached from that pane can go to it. */
+export function surfacePaneChatGroup(paneId: string): string {
+  return `pane:${paneId}`;
+}
+
 /**
  * A surface pane's work panel: the same docked column and raised card a conversation's work panel uses, pushing the
  * page or terminal aside when the tile has room and floating over it when it does not. It holds the side chat bound to
@@ -227,7 +232,8 @@ function SurfaceWorkPanel({
               api={api}
               boundSurface={surface}
               runtime={runtime}
-              chatGroupId={`pane:${paneId}`}
+              chatGroupId={surfacePaneChatGroup(paneId)}
+              composerVisible={open && shownTab === "chat"}
               onSessionsChanged={onSessionsChanged}
             />
           </div>

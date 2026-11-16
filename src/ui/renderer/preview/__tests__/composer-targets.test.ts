@@ -69,4 +69,29 @@ describe("attachToComposer", () => {
     composer("a", "conversation", { full: true });
     expect(attachToComposer("x", { fromGroup: "a" })).toBe(false);
   });
+
+  it("sends a pane terminal's block to its own open chat before any other conversation", () => {
+    // Only the terminal's own chat is on screen, and its composer has never been focused.
+    const ownChat = composer("pane:terminal-pane", "side-chat");
+    expect(attachToComposer("block", { focusedGroupId: "terminal-pane", ownChatGroup: "pane:terminal-pane" })).toBe(true);
+    expect(ownChat.attach).toHaveBeenCalledWith("block");
+
+    // It comes before another group's conversation, but the composer the user last typed in still wins.
+    const elsewhere = composer("other", "conversation");
+    attachToComposer("block 2", { focusedGroupId: "terminal-pane", ownChatGroup: "pane:terminal-pane" });
+    expect(ownChat.attach).toHaveBeenLastCalledWith("block 2");
+    expect(elsewhere.attach).not.toHaveBeenCalled();
+    elsewhere.use();
+    attachToComposer("block 3", { focusedGroupId: "terminal-pane", ownChatGroup: "pane:terminal-pane" });
+    expect(elsewhere.attach).toHaveBeenCalledWith("block 3");
+  });
+
+  it("skips an own chat the user cannot see, and another pane's chat", () => {
+    const ownChat = composer("pane:terminal-pane", "side-chat", { available: false });
+    const otherPaneChat = composer("pane:other-pane", "side-chat");
+    expect(attachToComposer("block", { focusedGroupId: "terminal-pane", ownChatGroup: "pane:terminal-pane" })).toBe("no-composer");
+    expect(ownChat.attach).not.toHaveBeenCalled();
+    expect(otherPaneChat.attach).not.toHaveBeenCalled();
+    expect(attachToComposer("block", { focusedGroupId: "terminal-pane" })).toBe("no-composer");
+  });
 });

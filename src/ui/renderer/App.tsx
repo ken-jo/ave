@@ -38,7 +38,7 @@ import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { PaneChatNavigationProvider, type PaneChatNavigation } from "./context/PaneChatNavigationContext.js";
 import { prunePaneChats } from "./hooks/use-side-chat.js";
 import { subscribeMainLayoutChange } from "./preview/main-layout-restore.js";
-import { SurfacePane } from "./components/MainSurfacePanels.js";
+import { SurfacePane, surfacePaneChatGroup } from "./components/MainSurfacePanels.js";
 import type { SideChatOpenRequest, SideChatRuntime } from "./components/SideChatView.js";
 import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, isToolMainSurface, useMainSurfaces, type ToolMainSurface } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
@@ -2271,8 +2271,8 @@ export function App() {
           onChatOpenChange={(open) => setPaneChatOpen(surface.tabId, open)}
           onSessionsChanged={refreshSessions}
           onNavigate={mainSurfaces.setUrl}
-          // Main-terminal blocks attach to the last composer the user typed in.
-          onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
+          // Main-terminal blocks attach to the last composer the user typed in, else to this pane's own open chat.
+          onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId, ownChatGroup: surfacePaneChatGroup(paneId) })}
           // A link the user modifier-clicks in the terminal opens as a new page beside it when the canvas has room, else in its place.
           onOpenLink={(url) => {
             const page = mainSurfaces.create("browser", { url, projectRoot: surface.projectRoot });
