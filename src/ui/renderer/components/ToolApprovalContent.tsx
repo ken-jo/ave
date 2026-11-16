@@ -54,6 +54,7 @@ import {
   type ElicitationEnumValue,
   type ElicitationFieldKind as ElicitationSchemaFieldKind,
 } from "../../../shared/mcp-elicitation-schema.js";
+import { hasHiddenCharacters, revealHiddenCharacters } from "../../../shared/display-safe-text.js";
 import { isRecord } from "../../../shared/is-record.js";
 import { approvalActionSummary } from "../../../shared/approval-action-summary.js";
 import { approvalAction } from "./permissions/approval-action.js";
@@ -937,7 +938,14 @@ export function ToolApprovalContent({
   const requiresHostConsent = request.executionPlan?.mode === "plain"
     && request.executionPlan.requiresExplicitUserApproval;
   const argsTruncated = !requiresHostConsent && argsStr.length > 500 && !expanded;
-  const argsDisplay = argsTruncated ? argsStr.slice(0, 500) + "\n…" : argsStr;
+  // JSON escapes C0 controls only; bidi overrides and other invisibles would still reorder the shown input.
+  const argsDisplay = revealHiddenCharacters(argsTruncated ? argsStr.slice(0, 500) + "\n…" : argsStr, { lineBreaks: false });
+  const shownCandidatePath = revealHiddenCharacters(outOfDirCandidatePath, { lineBreaks: true });
+  const shownSuggestedParent = outOfDirSuggestedParent === null ? null : revealHiddenCharacters(outOfDirSuggestedParent, { lineBreaks: true });
+  const requestArgs = isRecord(request.args) ? request.args : {};
+  const pathHasHiddenCharacters = [
+    request.target?.filePath, outOfDirCandidatePath, outOfDirSuggestedParent, selectedFolderScope?.path, requestArgs.path, requestArgs.filePath,
+  ].some(path => typeof path === "string" && hasHiddenCharacters(path));
   const action = approvalAction(request, tHook);
   const source = request.source ?? "unknown";
   const sourceBadge = request.source ? SOURCE_BADGE[request.source] ?? request.source : tHook("toolApprovalDialog.unknown");
@@ -965,11 +973,12 @@ export function ToolApprovalContent({
       : !isBoilerplateApprovalReason(specificHostReason)
         ? specificHostReason
         : categoryImpact;
-  const highRiskReason = (userProvidedPurpose || reviewedImpact || categoryImpact).slice(0, 220);
-  const impactSummary = (showsHighRiskReason
+  // Reviewer and model text can quote a path; an invisible character in it must not reorder the sentence.
+  const highRiskReason = revealHiddenCharacters((userProvidedPurpose || reviewedImpact || categoryImpact).slice(0, 220), { lineBreaks: false });
+  const impactSummary = revealHiddenCharacters((showsHighRiskReason
     ? highRiskReason
     : (request.approvalPurpose?.text.trim() || reviewedImpact || categoryImpact)
-  ).slice(0, 220);
+  ).slice(0, 220), { lineBreaks: false });
 
   return (
     <div
@@ -1058,9 +1067,18 @@ export function ToolApprovalContent({
                         ? tHook("dockedApprovalCard.denySummary")
                         : decisionIndex === 1 && selectedFolderScope
                           ? tHook("dockedApprovalCard.targetParent", {
-                              path: selectedFolderScope.path ?? "",
+                              path: revealHiddenCharacters(selectedFolderScope.path ?? "", { lineBreaks: true }),
                             })
-                          : outOfDirCandidatePath}
+                          : shownCandidatePath}
+                    </p>
+                  ) : null}
+                  {pathHasHiddenCharacters ? (
+                    <p
+                      className="mt-1 break-words text-tiny font-semibold text-destructive"
+                      data-testid="approval-hidden-characters-warning"
+                      role="alert"
+                    >
+                      {tHook("toolApprovalDialog.hiddenCharactersWarning")}
                     </p>
                   ) : null}
                   {sandboxSummary ? (
@@ -1132,12 +1150,12 @@ export function ToolApprovalContent({
                       {reviewTitleForCategory(category)}
                     </h4>
                     <ReviewRow label={tHook("toolApprovalDialog.allowOnce")}>
-                      <code className="break-all font-mono">{outOfDirCandidatePath}</code>
+                      <code className="break-all font-mono" data-testid="approval-path-grant-candidate">{shownCandidatePath}</code>
                     </ReviewRow>
                     {outOfDirSuggestedParent ? (
                       <>
                         <ReviewRow label={tHook(FOLDER_ALLOW_LABEL_KEY)}>
-                          <code className="break-all font-mono">{outOfDirSuggestedParent}</code>
+                          <code className="break-all font-mono" data-testid="approval-path-grant-parent">{shownSuggestedParent}</code>
                         </ReviewRow>
                         <p className="border-t px-3 py-2 text-xs text-muted-foreground" data-testid="approval-folder-project-hint">
                           {tHook("toolApprovalDialog.folderAddsProject")}
@@ -1534,6 +1552,13 @@ function approvalSandboxSummary(request: ApprovalRequest): ReviewBasisRow | null
   };
 }
 
+/** A host-resolved file path is one line; other summaries may be multi-line but never carry invisible characters. */
+function targetRowText(filePath: string | undefined, summary: string): string {
+  return filePath === undefined
+    ? revealHiddenCharacters(summary, { lineBreaks: false })
+    : revealHiddenCharacters(filePath, { lineBreaks: true });
+}
+
 function approvalReviewRows(
   request: ApprovalRequest,
   category: ToolCategory,
@@ -1571,12 +1596,12 @@ function approvalReviewRows(
 
   if (category === "read") {
     rows.push(
-      { label: t("toolApprovalDialog.rowTarget"), value: request.target?.filePath ?? pickSummary(parsed, ["path", "paths", "target", "targets", "file", "directory", "resource", "query", "url", "uri"], inputSummary), monospace: true, testId: "tool-approval-input" },
+      { label: t("toolApprovalDialog.rowTarget"), value: targetRowText(request.target?.filePath, pickSummary(parsed, ["path", "paths", "target", "targets", "file", "directory", "resource", "query", "url", "uri"], inputSummary)), monospace: true, testId: "tool-approval-input" },
       { label: t("toolApprovalDialog.rowSensitivity"), value: sensitivityLabel(parsed) },
     );
   } else if (category === "write") {
     rows.push(
-      { label: t("toolApprovalDialog.rowTarget"), value: request.target?.filePath ?? pickSummary(parsed, ["path", "paths", "target", "targets", "file", "configKey", "taskId", "routineId", "id"], inputSummary), monospace: true, testId: "tool-approval-input" },
+      { label: t("toolApprovalDialog.rowTarget"), value: targetRowText(request.target?.filePath, pickSummary(parsed, ["path", "paths", "target", "targets", "file", "configKey", "taskId", "routineId", "id"], inputSummary)), monospace: true, testId: "tool-approval-input" },
       ...kept(
         optRow(t("toolApprovalDialog.rowChange"), ["operation", "action", "mode", "patch", "content", "body", "text"], { monospace: true }),
         parsed?.connectToThisChat === true
@@ -1614,7 +1639,8 @@ function approvalReviewRows(
   rows.push(
     { label: t("toolApprovalDialog.rowVerdict"), value: reviewer },
   );
-  return rows;
+  // Every row is model, reviewer or tool-input text: none may carry a character the reader cannot see.
+  return rows.map(row => ({ ...row, value: revealHiddenCharacters(row.value, { lineBreaks: false }) }));
 }
 
 /** Compact `source:tool` identity for the Tool/Source tile; `builtin:bash`, `mcp:<tool>`, or `<pluginId>:<tool>` for a plugin (agent-action) call. One short token

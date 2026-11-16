@@ -1,5 +1,6 @@
 import type { MessageCatalogKey } from "../../../../i18n/messages/en.js";
 import type { TranslateFn } from "../../../../i18n/translate.js";
+import { revealHiddenCharacters } from "../../../../shared/display-safe-text.js";
 import { isRecord } from "../../../../shared/is-record.js";
 import { parsePatchEnvelope, patchOperationPaths } from "../../../../shared/patch-envelope.js";
 import type { ApprovalRequest } from "../../types.js";
@@ -88,6 +89,11 @@ function displayValue(value: unknown): string | undefined {
   return undefined;
 }
 
+/** A path is one line: a line break or an invisible character in it is spelled out, never rendered. */
+function pathText(path: string): string {
+  return revealHiddenCharacters(path, { lineBreaks: true });
+}
+
 export function builtinApprovalAction(request: ApprovalRequest, t: TranslateFn): { title: string; primary: string } {
   const args = isRecord(request.args) ? request.args : {};
   const descriptor: BuiltinAction | undefined = Object.hasOwn(BUILTIN_APPROVAL_ACTIONS, request.toolName)
@@ -95,7 +101,7 @@ export function builtinApprovalAction(request: ApprovalRequest, t: TranslateFn):
   if (!descriptor) {
     const subject = ["effect", "methodPath", "target", "action", "url", "path", "name", "id", "title"]
       .map(field => displayValue(args[field])).filter(Boolean).join(" · ");
-    return { title: t("toolApprovalDialog.builtinActionTitle"), primary: subject || request.toolName };
+    return { title: t("toolApprovalDialog.builtinActionTitle"), primary: revealHiddenCharacters(subject || request.toolName, { lineBreaks: false }) };
   }
   const fallback = t(descriptor.context);
   const scope = request.approvalMemory?.kind === "key" ? request.approvalMemory.scope : undefined;
@@ -103,12 +109,12 @@ export function builtinApprovalAction(request: ApprovalRequest, t: TranslateFn):
   let primary = descriptor.fields.map(field => displayValue(args[field])).filter(Boolean).join(" · ") || fallback;
   if (descriptor.kind === "path") {
     const path = request.target?.filePath ?? request.outOfAllowedDir?.candidatePath;
-    if (path) primary = [path, ...descriptor.fields.filter(field => field !== "path" && field !== "filePath").map(field => displayValue(args[field]))].filter(Boolean).join(" · ");
+    if (path) primary = [pathText(path), ...descriptor.fields.filter(field => field !== "path" && field !== "filePath").map(field => displayValue(args[field]))].filter(Boolean).join(" · ");
   }
   if (descriptor.kind === "transfer") {
     const source = scope?.kind === "transfer" ? scope.sourcePath : displayValue(args[descriptor.fields[0] ?? ""]) ?? t("toolApprovalDialog.unknown");
     const destination = scope?.kind === "transfer" ? scope.destinationPath : displayValue(args[descriptor.fields[1] ?? ""]) ?? t("toolApprovalDialog.unknown");
-    primary = t("toolApprovalDialog.copyActionPrimary", { source, destination });
+    primary = t("toolApprovalDialog.copyActionPrimary", { source: pathText(source), destination: pathText(destination) });
   }
   if (descriptor.kind === "spawn") {
     const subject = displayValue(args.title);
@@ -124,7 +130,8 @@ export function builtinApprovalAction(request: ApprovalRequest, t: TranslateFn):
   }
   if (descriptor.kind === "patch") {
     const patch = typeof args.patch === "string" ? parsePatchEnvelope(args.patch) : undefined;
-    primary = patch?.ok ? patchOperationPaths(patch.operations).join(" · ") : request.target?.filePath ?? fallback;
+    primary = patch?.ok ? patchOperationPaths(patch.operations).map(pathText).join(" · ") : request.target?.filePath ? pathText(request.target.filePath) : fallback;
   }
-  return { title, primary };
+  // Every other value keeps its line breaks (a command is multi-line) but never an invisible or reordering character.
+  return { title: revealHiddenCharacters(title, { lineBreaks: false }), primary: revealHiddenCharacters(primary, { lineBreaks: false }) };
 }

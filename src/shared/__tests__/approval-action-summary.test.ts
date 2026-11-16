@@ -32,4 +32,12 @@ describe("approvalActionSummary", () => {
     expect([...action]).toHaveLength(30);
     expect(action).toMatch(locale === "ko" ? /^허용 범위 밖의 x+… 읽기$/ : /^Read x+… outside scope$/);
   });
+
+  it("spells a bidi override in the file name so the summary reads in stored order", () => {
+    setLocale("en");
+    const summary = approvalActionSummary({
+      toolName: "write_file", toolCategory: "write", args: {}, target: { filePath: `/workspace/safe${String.fromCodePoint(0x202e)}gnp.exe` },
+    }, t);
+    expect(summary).toBe("Write safe\u27e8U+202E\u27e9gnp.exe file");
+  });
 });
