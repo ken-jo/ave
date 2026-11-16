@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from "react";
 import type { BrowserPageStatus, BrowserPromptAnswer, BrowserWorkspaceState, BrowserWorkspaceTarget } from "../../../shared/browser-workspace.js";
 import type { AveApi } from "../types.js";
-import { navigateBrowserTabAsUser } from "./agent-browser-bridge.js";
+import { navigateBrowserTabAsUser, openLinkTabInHost } from "./agent-browser-bridge.js";
 
 let api: AveApi | null = null;
 let state: BrowserWorkspaceState | null = null;
@@ -24,10 +24,16 @@ export function connectBrowserPageStatus(next: AveApi): () => void {
   api = next;
   let alive = true;
   const off = workspace.onChanged((value) => { if (alive) accept(value); });
+  // A page asked for a link in a new tab. A page that is not a tab in a strip (a web pane) shows the link in itself, so
+  // the link still opens somewhere with an address row.
+  const offOpenTab = workspace.onOpenTab((request) => {
+    if (alive && !openLinkTabInHost(request.url, request.openerTabId, request.active)) loadBrowserPageUrl(request.openerTabId, request.url);
+  });
   void workspace.getState().then((result) => { if (alive && result.ok) accept(result.value); });
   return () => {
     alive = false;
     off();
+    offOpenTab();
     if (api === next) { api = null; state = null; }
   };
 }

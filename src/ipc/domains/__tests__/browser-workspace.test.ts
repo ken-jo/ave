@@ -2,18 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserWorkspaceService } from "../../../main/browser/browser-workspace.js";
 import type { IpcDeps } from "../../types.js";
 
+const openTab: { handler?: (windowId: number, request: unknown) => void } = {};
 const { handlers, authorize, mainWindow, send, changed } = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>(), authorize: vi.fn(() => true), mainWindow: vi.fn(() => ({ id: 1, isDestroyed: () => false })), send: vi.fn(), changed: { handler: null as null | ((windowId: number, state: unknown) => void) },
 }));
 vi.mock("electron", () => ({ ipcMain: { handle: (channel: string, callback: (event: unknown, payload?: unknown) => Promise<unknown>) => handlers.set(channel, callback) } }));
-vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "capture", "retryLoad", "stopLoad", "load", "answerPrompt", "userNavigation", "changed"].map((key) => [key, `workspace:${key}`])) } }));
+vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "capture", "retryLoad", "stopLoad", "load", "answerPrompt", "userNavigation", "changed", "openTab"].map((key) => [key, `workspace:${key}`])) } }));
 vi.mock("../../gated.js", () => ({ validateHostRendererSender: authorize, auditUnauthorized: vi.fn() }));
 vi.mock("../../../main/app-state.js", () => ({ mainWindowForContents: mainWindow, getMainWindows: () => [{ id: 1 }, { id: 2 }] }));
 vi.mock("../../safe-send.js", () => ({ sendToWindow: send }));
 import { registerBrowserWorkspaceHandlers } from "../browser-workspace.js";
 
 function setup() {
-  const service = { onChanged: vi.fn((handler: (windowId: number, state: unknown) => void) => { changed.handler = handler; }), getState: vi.fn(async () => ({ revision: 1 })), setBookmark: vi.fn(), clearHistory: vi.fn(), setSitePermission: vi.fn(), find: vi.fn(), stopFind: vi.fn(), zoom: vi.fn(), preview: vi.fn(), capture: vi.fn() };
+  const service = { onChanged: vi.fn((handler: (windowId: number, state: unknown) => void) => { changed.handler = handler; }), onOpenTab: vi.fn((handler: (windowId: number, request: unknown) => void) => { openTab.handler = handler; }), getState: vi.fn(async () => ({ revision: 1 })), setBookmark: vi.fn(), clearHistory: vi.fn(), setSitePermission: vi.fn(), find: vi.fn(), stopFind: vi.fn(), zoom: vi.fn(), preview: vi.fn(), capture: vi.fn() };
   registerBrowserWorkspaceHandlers({ auditLogger: {} } as IpcDeps, service as unknown as BrowserWorkspaceService);
   return service;
 }
@@ -44,6 +45,14 @@ describe("private browser workspace IPC", () => {
     const state = { revision: 3 };
     changed.handler!(2, state);
     expect(send).toHaveBeenCalledWith({ id: 2 }, "workspace:changed", state, expect.anything());
+  });
+  it("sends a page's request for a link tab only to the window that owns the asking tab", () => {
+    setup();
+    send.mockClear();
+    const request = { openerTabId: "browser:one", url: "https://other.example/", active: true };
+    openTab.handler?.(2, request);
+    expect(send).toHaveBeenCalledWith({ id: 2 }, "workspace:openTab", request, expect.anything());
+    expect(send).toHaveBeenCalledOnce();
   });
   it("binds captures to the sender window and refuses injected scope and malformed rectangles", async () => {
     const service = setup();

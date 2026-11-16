@@ -16,8 +16,18 @@ export interface BrowserTabHost {
   openAgentTab?: (url: string, requestId: string, active: boolean, owner: string) => void;
   /** Load an agent page into this host's existing empty browser tab; false when the tab is not an empty browser page. */
   loadAgentTab?: (tabId: string, url: string, requestId: string) => boolean;
+  /** Open a user's browser tab at `url` beside `openerTabId`. Absent for a host whose pages are not tabs in a strip. */
+  openLinkTab?: (url: string, openerTabId: string, active: boolean) => void;
   selectTab: (tabId: string) => void;
   closeTab: (tabId: string) => void;
+}
+
+/** Opens a link beside the tab that asked for it. False when no host holds that tab as a tab in a strip. */
+export function openLinkTabInHost(url: string, openerTabId: string, active: boolean): boolean {
+  const host = hosts.find((candidate) => candidate.hasTab(openerTabId));
+  if (!host?.openLinkTab) return false;
+  host.openLinkTab(url, openerTabId, active);
+  return true;
 }
 
 const hosts: BrowserTabHost[] = [];

@@ -7,7 +7,7 @@ import { BrowserPagePrompts } from "./browser-page-prompts.js";
 
 /** The runtime's request to show a page dialog: (details, respond). */
 const RUN_DIALOG = "-run-dialog";
-import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -58,6 +58,7 @@ export class BrowserWorkspaceService {
   private readonly downloads = new Map<number, BrowserDownload[]>();
   private readonly downloadDisposers = new Map<number, Set<() => void>>();
   private readonly listeners = new Set<(windowId: number, state: BrowserWorkspaceState) => void>();
+  private readonly openTabListeners = new Set<(windowId: number, request: BrowserOpenTab) => void>();
   private readonly windows = new Set<number>();
   private readonly publishedTabs = new Map<number, string>();
   /** Page-started navigations whose unload asked to stay, by guest: their request waits unsent for the user's answer. */
@@ -82,6 +83,19 @@ export class BrowserWorkspaceService {
       const entry = this.guests.get(guestId);
       return entry && !entry.guest.isDestroyed() ? { guestId, windowId: entry.windowId, documentGeneration: entry.generation, url: entry.guest.getURL() } : null;
     } });
+  }
+  onOpenTab(handler: (windowId: number, request: BrowserOpenTab) => void): () => void { this.openTabListeners.add(handler); return () => this.openTabListeners.delete(handler); }
+  /**
+   * A page asked for a link in a new tab. The tab opens in the panel beside the tab that asked, with the same address
+   * row and controls as any other tab, instead of a bare window. False when the asking guest is not a listed tab or the
+   * address is not a web page: the caller then decides as it did before.
+   */
+  openLinkTab(windowId: number, guestId: number, url: string, active: boolean): boolean {
+    const openerTabId = this.tabIdForGuest(windowId, guestId);
+    const target = browserWorkspaceUrl(url);
+    if (openerTabId === null || target === null || this.openTabListeners.size === 0) return false;
+    for (const listener of this.openTabListeners) listener(windowId, { openerTabId, url: target, active });
+    return true;
   }
   onChanged(handler: (windowId: number, state: BrowserWorkspaceState) => void): () => void { this.listeners.add(handler); return () => this.listeners.delete(handler); }
   private async changed(): Promise<void> {
@@ -412,6 +426,6 @@ export class BrowserWorkspaceService {
     this.downloadDisposers.delete(windowId);
     for (const entry of this.guests.values()) if (entry.windowId === windowId) entry.dispose();
   }
-  dispose(): void { for (const windowId of [...this.windows]) this.disposeWindow(windowId); for (const entry of this.guests.values()) entry.dispose(); this.listeners.clear(); }
+  dispose(): void { for (const windowId of [...this.windows]) this.disposeWindow(windowId); for (const entry of this.guests.values()) entry.dispose(); this.listeners.clear(); this.openTabListeners.clear(); }
 }
 export function createBrowserWorkspaceService(deps: BrowserWorkspaceServiceDeps): BrowserWorkspaceService { return new BrowserWorkspaceService(deps); }

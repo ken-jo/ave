@@ -568,6 +568,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
     openAgentTab: (url, requestId, active, owner) => {
       browserTabHostRef.current.workspaceTabs.openAgentBrowserTab(url, requestId, active, owner);
     },
+    openLinkTab: (url, openerTabId, active) => browserTabHostRef.current.workspaceTabs.openBrowserTabAt(url, openerTabId, active),
     selectTab: (tabId) => {
       browserTabHostRef.current.workspaceTabs.setActiveTabId(tabId);
     },

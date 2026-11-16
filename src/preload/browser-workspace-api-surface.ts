@@ -3,6 +3,7 @@ import { CHANNELS } from "../contract/app-contract.js";
 import {
   BROWSER_WORKSPACE_ERRORS,
   parseBrowserAttachBlocked,
+  parseBrowserOpenTab,
   parseBrowserWorkspacePreview,
   parseBrowserWorkspaceCapture,
   parseBrowserWorkspaceState,
@@ -66,6 +67,15 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
       };
       ipcRenderer.on(CHANNELS.browserWorkspace.changed, listener);
       return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.changed, listener);
+    },
+    onOpenTab: (handler) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const parsed = parseBrowserOpenTab(payload);
+        if (!parsed) throw new Error("invalid-browser-open-tab");
+        handler(parsed);
+      };
+      ipcRenderer.on(CHANNELS.browserWorkspace.openTab, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.openTab, listener);
     },
     onAttachBlocked: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {

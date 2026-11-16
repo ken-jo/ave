@@ -203,7 +203,11 @@ describe("native popup desktop controls", () => {
     const titleEvent = { preventDefault: vi.fn() };
     popup.emit("page-title-updated", titleEvent, "Unsafe\n\u202eTitle", true);
     expect(titleEvent.preventDefault).toHaveBeenCalledOnce();
-    expect(popup.setTitle).toHaveBeenLastCalledWith("Ave · browserWorkspace.mode.human · UnsafeTitle");
+    // The origin main computed comes before anything the page chose, and follows the page when it navigates.
+    expect(popup.setTitle).toHaveBeenLastCalledWith("https://site.example · Ave · browserWorkspace.mode.human · UnsafeTitle");
+    popup.webContents.url = "https://elsewhere.example/sign-in";
+    popup.webContents.emit("did-navigate");
+    expect(popup.setTitle).toHaveBeenLastCalledWith("https://elsewhere.example · Ave · browserWorkspace.mode.human · UnsafeTitle");
     const tab = browserTabRegistry.liveTab(handle)!;
     browserTabRegistry.acquireControl(tab, { sessionId: "parent" });
     popup.webContents.emit("context-menu", { preventDefault: vi.fn() }, { x: 3, y: 4 });

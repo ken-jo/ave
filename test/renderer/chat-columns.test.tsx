@@ -62,6 +62,7 @@ describe("chat columns", () => {
       getState: vi.fn(async () => ({ ok: true, value: workspaceState })),
       onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { workspaceListeners.add(handler); return () => { workspaceListeners.delete(handler); }; }), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })),
       onAttachBlocked: vi.fn(() => () => {}),
+      onOpenTab: vi.fn(() => () => {}),
     } as unknown as BrowserWorkspaceApi });
     fireEvent.click(view.container.querySelector(testIdSelector(TEST_IDS.paneThumbnailToggle))!);
     const column = view.container.querySelector<HTMLElement>('[data-testid="chat-thumbnail-column"]')!;

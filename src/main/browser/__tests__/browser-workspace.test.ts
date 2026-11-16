@@ -604,4 +604,19 @@ describe("browser workspace service", () => {
     events.removeAllListeners("-run-dialog");
     expect(() => service.observeGuest(1, guest)).toThrow("page-dialog-handler-missing");
   });
+  it("opens a link that asks for a new tab beside the tab that asked, and declines for anything that is not a listed tab's web link", async () => {
+    const { service, guest, setLive } = await setup();
+    service.observeGuest(1, guest);
+    expect(service.openLinkTab(1, 7, "https://other.example/page", true)).toBe(false);
+    const opened = vi.fn();
+    service.onOpenTab(opened);
+    expect(service.openLinkTab(1, 7, "https://other.example/page", false)).toBe(true);
+    expect(opened).toHaveBeenCalledWith(1, { openerTabId: "browser:one", url: "https://other.example/page", active: false });
+    for (const [windowId, guestId, url] of [[2, 7, "https://other.example/"], [1, 8, "https://other.example/"], [1, 7, "javascript:alert(1)"], [1, 7, "about:blank"]] as const) {
+      expect(service.openLinkTab(windowId, guestId, url, true)).toBe(false);
+    }
+    setLive(false);
+    expect(service.openLinkTab(1, 7, "https://other.example/", true)).toBe(false);
+    expect(opened).toHaveBeenCalledOnce();
+  });
 });

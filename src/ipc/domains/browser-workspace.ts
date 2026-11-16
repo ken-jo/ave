@@ -15,6 +15,9 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   service.onChanged((windowId, state) => {
     sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.changed, state, log);
   });
+  service.onOpenTab((windowId, request) => {
+    sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.openTab, request, log);
+  });
   function register<K extends keyof BrowserWorkspaceRequests>(operation: K, execute: (windowId: number, request: BrowserWorkspaceRequests[K]) => unknown | Promise<unknown>): void {
     const channel = CHANNELS.browserWorkspace[operation];
     ipcMain.handle(channel, async (event: IpcMainInvokeEvent, payload: unknown): Promise<BrowserWorkspaceResult<unknown>> => {

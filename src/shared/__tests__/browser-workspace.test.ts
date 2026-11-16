@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState } from "../browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserOpenTab, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState } from "../browser-workspace.js";
 
 const TARGET = { tabId: "browser:one", documentGeneration: 4 };
 const STATE = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
@@ -142,5 +142,12 @@ describe("browser workspace wire validation", () => {
     const answer = (value: object) => ({ tabId: "browser:one", promptId: "prompt-1", answer: { kind: "dialog", accept: true, block: false, ...value } });
     expect(parseBrowserWorkspaceRequest("answerPrompt", answer({}))).toEqual(answer({}));
     for (const bad of [{ value: "typed" }, { accept: "yes" }, { block: 1 }]) expect(parseBrowserWorkspaceRequest("answerPrompt", answer(bad))).toBeNull();
+  });
+  it("accepts a request to open a link tab only for a web address and a named opener", () => {
+    const request = { openerTabId: "browser:one", url: "https://other.example/page", active: true };
+    expect(parseBrowserOpenTab(request)).toEqual(request);
+    for (const bad of [{ ...request, url: "javascript:alert(1)" }, { ...request, url: "https://user:pw@other.example/" }, { ...request, openerTabId: "" }, { ...request, active: 1 }, { ...request, features: "popup" }]) {
+      expect(parseBrowserOpenTab(bad)).toBeNull();
+    }
   });
 });

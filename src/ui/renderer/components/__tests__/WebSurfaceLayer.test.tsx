@@ -73,6 +73,7 @@ function refusalApi(): { api: AveApi; block(src: string): void } {
   let handler: (event: { src: string }) => void = () => {};
   const api = { ...layerApi, browserWorkspace: {
     onAttachBlocked: (next: typeof handler) => { handler = next; return () => {}; },
+    onOpenTab: () => () => {},
     onChanged: () => () => {}, getState: async () => ({ ok: false, error: "operation-failed" }),
   } } as unknown as AveApi;
   return { api, block: (src) => handler({ src }) };

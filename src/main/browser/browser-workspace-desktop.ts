@@ -2,6 +2,7 @@ import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-present
 import { dialog, Menu, session, shell, type BrowserWindow, type DownloadItem, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
+import { browserWorkspaceUrl } from "../../shared/browser-workspace.js";
 import type { BrowserTabControlState } from "../../shared/browser-surface.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
 import { getMainWindows } from "../app-state.js";
@@ -173,7 +174,9 @@ export function refreshBrowserPopupControl(windowId: number, state: BrowserTabCo
     if (popup.owner.isDestroyed() || popup.owner.id !== windowId || popup.window.isDestroyed()) continue;
     const tab = state.tabs.find((candidate) => candidate.tabId === handle && candidate.kind === "popup");
     if (!tab) continue;
-    popup.window.setTitle(`Ave · ${t(`browserWorkspace.mode.${tab.mode}`)} · ${popup.title}`);
+    // The page chooses its title, so the origin main computed from the page's address comes first.
+    const url = browserWorkspaceUrl(tab.url);
+    popup.window.setTitle(`${url === null ? "Ave" : `${new URL(url).origin} · Ave`} · ${t(`browserWorkspace.mode.${tab.mode}`)} · ${popup.title}`);
   }
 }
 
@@ -211,7 +214,9 @@ export function registerBrowserWorkspacePopup(openerGuestId: number, child: Brow
     }]);
     menu.popup({ window: child, x: params.x, y: params.y });
   };
+  const navigated = () => refreshBrowserPopupControl(owner.id, browserTabRegistry.controlState(owner.id));
   const dispose = () => {
+    contents.removeListener("did-navigate", navigated);
     child.removeListener("page-title-updated", titleChanged);
     contents.removeListener("context-menu", contextMenu);
     child.removeListener("closed", dispose);
@@ -219,6 +224,7 @@ export function registerBrowserWorkspacePopup(openerGuestId: number, child: Brow
   };
   popups.set(handle, { window: child, owner, title: nativeTitle(contents.getTitle()), dispose });
   child.on("page-title-updated", titleChanged);
+  contents.on("did-navigate", navigated);
   contents.on("context-menu", contextMenu);
   child.once("closed", dispose);
   refreshBrowserPopupControl(owner.id, browserTabRegistry.controlState(owner.id));

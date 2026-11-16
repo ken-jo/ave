@@ -133,8 +133,17 @@ export interface BrowserWorkspaceApi {
   onChanged(handler: (state: BrowserWorkspaceState) => void): () => void;
   /** Main refused a page guest before it attached; `src` is the address the refused element carried. */
   onAttachBlocked(handler: (blocked: BrowserAttachBlocked) => void): () => void;
+  onOpenTab(handler: (request: BrowserOpenTab) => void): () => void;
 }
 export interface BrowserAttachBlocked { readonly src: string }
+/** A page asked for a link in a new tab: the tab opens beside the tab that asked. `active` is false for a background tab. */
+export interface BrowserOpenTab { readonly openerTabId: string; readonly url: string; readonly active: boolean }
+export function parseBrowserOpenTab(value: unknown): BrowserOpenTab | null {
+  if (!isRecord(value) || !keys(value, ["openerTabId", "url", "active"]) || typeof value.active !== "boolean") return null;
+  if (typeof value.openerTabId !== "string" || value.openerTabId.length === 0 || value.openerTabId.length > 512) return null;
+  if (typeof value.url !== "string" || browserWorkspaceUrl(value.url) !== value.url) return null;
+  return { openerTabId: value.openerTabId, url: value.url, active: value.active };
+}
 export function parseBrowserAttachBlocked(value: unknown): BrowserAttachBlocked | null {
   return isRecord(value) && keys(value, ["src"]) && typeof value.src === "string" && value.src.length <= BROWSER_WORKSPACE_LIMITS.urlLength
     ? { src: value.src } : null;

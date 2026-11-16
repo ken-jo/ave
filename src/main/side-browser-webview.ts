@@ -173,10 +173,15 @@ function sideBrowserPopupOptions(owner: MainWindow): BrowserWindowConstructorOpt
 export function attachSideBrowserWebview(contents: WebContents, owner: MainWindow): void {
   markAsLinkOwned(contents);
   observeBrowserWorkspaceGuest(contents, owner);
-  contents.setWindowOpenHandler(({ url, postBody }) => {
+  contents.setWindowOpenHandler(({ url, postBody, disposition }) => {
     if (handleAgentBrowserPopup(contents, url, postBody !== undefined)) return { action: "deny" };
     if (!isSideBrowserPopupUrlAllowed(url)) return { action: "deny" };
     if (owner.isDestroyed()) return { action: "deny" };
+    // A link that asks for a new tab opens as a tab in the panel, with an address row and the panel's controls. Only a
+    // page that asks for a window of its own (a sign-in popup with a size) still gets one; so does a form submission,
+    // whose body a new tab could not carry.
+    if ((disposition === "foreground-tab" || disposition === "background-tab") && postBody === undefined
+      && getBrowserWorkspaceService().openLinkTab(owner.id, contents.id, url, disposition === "foreground-tab")) return { action: "deny" };
     return { action: "allow", overrideBrowserWindowOptions: sideBrowserPopupOptions(owner) };
   });
   contents.on("did-create-window", (child) => {
