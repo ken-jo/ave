@@ -44,7 +44,7 @@ import {
   type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import { resolveRouteModelRetirement } from "../shared/context-budget.js";
-import { isAppearanceMode, isDarkSchemeId, isGlassTint, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, type AppearanceSettings } from "../shared/appearance-settings.js";
+import { isAppearanceMode, isDarkSchemeId, isGlassTint, isLightSchemeId, isTerminalFontSize, isTerminalLineHeight, mergeTerminalBehavior, type AppearanceSettings } from "../shared/appearance-settings.js";
 export type { AppearanceSettings } from "../shared/appearance-settings.js";
 import {
   FONT_SIZE_SCALE_VALUES,
@@ -938,7 +938,10 @@ export class SettingsService {
       | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
       | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance"
     >> & {
-      appearance?: Partial<Omit<AppearanceSettings, "terminalFont">> & { terminalFont?: Partial<AppearanceSettings["terminalFont"]> };
+      appearance?: Partial<Omit<AppearanceSettings, "terminalFont" | "terminal">> & {
+        terminalFont?: Partial<AppearanceSettings["terminalFont"]>;
+        terminal?: Partial<AppearanceSettings["terminal"]>;
+      };
       marketplace?: Partial<MarketplaceSettings>;
       llm?: LLMSettingsPatch;
       chat?: Partial<ChatSettings>;
@@ -957,6 +960,10 @@ export class SettingsService {
     const terminalFontPatch = partial.appearance?.terminalFont;
     if (terminalFontPatch && Object.prototype.hasOwnProperty.call(terminalFontPatch, "family") && !isValidFontFamilyOverride(terminalFontPatch.family)) {
       throw new Error("Invalid terminal font family");
+    }
+    // Refused before anything is written: the settings page would otherwise show the value it sent as saved.
+    if (partial.appearance?.terminal !== undefined) {
+      mergeTerminalBehavior({ ...this.settings.appearance.terminal }, partial.appearance.terminal, (field) => { throw new Error(field === null ? "Invalid terminal settings: not a set of fields" : `Invalid terminal setting: ${field}`); });
     }
     const chatPatch = partial.chat;
     if (
@@ -1114,6 +1121,11 @@ export class SettingsService {
         acceptField(mergedFont, "size", font.size, isTerminalFontSize, "appearance.terminalFont", PATCHED_FIELD);
         acceptField(mergedFont, "lineHeight", font.lineHeight, isTerminalLineHeight, "appearance.terminalFont", PATCHED_FIELD);
         nextAppearance.terminalFont = mergedFont;
+      }
+      if (patch.terminal !== undefined) {
+        const merged = { ...this.settings.appearance.terminal };
+        mergeTerminalBehavior(merged, patch.terminal, (field) => { throw new Error(field === null ? "Invalid terminal settings: not a set of fields" : `Invalid terminal setting: ${field}`); });
+        nextAppearance.terminal = merged;
       }
       this.settings.appearance = nextAppearance;
     }

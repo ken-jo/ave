@@ -2842,6 +2842,26 @@ describe("SettingsService appearance", () => {
     expect(service.get("appearance")).toEqual(DEFAULT_APPEARANCE);
   });
 
+  it("saves terminal behaviour field by field and refuses an invalid field without saving any", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    await service.patch({ appearance: { terminal: { scrollback: 20_000, cursorStyle: "bar" } } });
+    await service.patch({ appearance: { terminal: { shell: "/opt/homebrew/bin/fish", copyOnSelect: true } } });
+    const saved = { scrollback: 20_000, cursorStyle: "bar", optionAsMeta: false, copyOnSelect: true, shell: "/opt/homebrew/bin/fish" };
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("appearance").terminal).toEqual(saved);
+    for (const [patch, field] of [[{ scrollback: 50 }, "scrollback"], [{ cursorStyle: "beam" }, "cursorStyle"], [{ shell: "fish" }, "shell"], [{ optionAsMeta: 1 }, "optionAsMeta"]] as const) {
+      // A valid field sent with the invalid one is not saved either.
+      await expect(service.patch({ appearance: { mode: "light", terminal: { copyOnSelect: false, ...patch } } } as never)).rejects.toThrow(`Invalid terminal setting: ${field}`);
+    }
+    // Something that is not a set of fields at all is a broken request, refused whole: not an empty change that "saves".
+    for (const broken of [null, false, "bar", [], 7]) {
+      await expect(service.patch({ appearance: { mode: "light", terminal: broken } } as never)).rejects.toThrow("Invalid terminal settings: not a set of fields");
+    }
+    expect(service.get("appearance")).toMatchObject({ mode: DEFAULT_APPEARANCE.mode, terminal: saved });
+    // A font patch leaves the behaviour alone, and the other way round.
+    await service.patch({ appearance: { terminalFont: { size: 14 } } });
+    expect(service.get("appearance")).toMatchObject({ terminal: saved, terminalFont: { size: 14 } });
+  });
+
   it("replaces a released package selection once while preserving language and font", async () => {
     writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ appearance: { schemaVersion: 2, bundleId: "package-theme", followSystem: true, language: "ko", font: { family: "Menlo", sizeScale: 1 } } }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });

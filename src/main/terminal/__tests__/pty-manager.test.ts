@@ -229,6 +229,7 @@ import {
   killAllTerminals,
   killTerminalsOwnedBy,
   forceKillAllTerminalsForShutdown,
+  setManualShellPreference,
   setTerminalEmitter,
   _setTerminalInspectionForTest,
   _conversationTerminalOwnerForTest,
@@ -2485,6 +2486,31 @@ describe("host tabs and conversation-owned isolation", () => {
       if (!result.ok) throw new Error("expected host terminal");
       expect(await typeAgentTerminalCommand(result.session, 8, "echo no", "/workspace")).toMatchObject({ ok: false, reason: "no-terminal" });
       expect(writeLane(result.session, "echo user\r")).toEqual({ ok: true });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("starts the shell the user set for terminals, and fails to start rather than fall back when it is not a file", async () => {
+    gateActive = false;
+    vi.stubEnv("SHELL", "/bin/sh");
+    try {
+      let preferred = process.execPath;
+      setManualShellPreference(() => preferred);
+      const started = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, cwd: tmpdir() });
+      expect(started).toMatchObject({ ok: true, session: { lane: "manual" } });
+      expect(ptySpawnMock.mock.calls.at(-1)?.[0]).toBe(process.execPath);
+      killHostTerminal(tabId);
+      __resetTerminalsForTest();
+
+      // The setting is read at each start.
+      preferred = join(tmpdir(), "ave-no-such-shell");
+      setManualShellPreference(() => preferred);
+      const spawned = ptySpawnMock.mock.calls.length;
+      const refused = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, cwd: tmpdir() });
+      expect(refused).toMatchObject({ ok: false, reason: "spawn-failed" });
+      if (refused.ok) throw new Error("expected the missing shell to fail the start");
+      expect(refused.message).toContain(`the shell set for terminals is not a file: ${preferred}`);
+      // Nothing was started in its place: not the login shell, not anything.
+      expect(ptySpawnMock.mock.calls).toHaveLength(spawned);
     } finally { vi.unstubAllEnvs(); }
   });
 

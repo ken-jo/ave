@@ -131,8 +131,9 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   const appearance = themeContext.appearance;
   const terminalPalette = themeContext.appliedTheme.terminal;
   const terminalFont = appearance.terminalFont;
-  const terminalStyleRef = useRef({ terminalPalette, terminalFont });
-  terminalStyleRef.current = { terminalPalette, terminalFont };
+  const behavior = appearance.terminal;
+  const terminalStyleRef = useRef({ terminalPalette, terminalFont, behavior });
+  terminalStyleRef.current = { terminalPalette, terminalFont, behavior };
 
   // Attach the tab's live terminal to this view's host. Unmount detaches the view; the xterm and its shell stay until the
   // tab closes (closeWorkspaceTab → terminal.kill + disposeLiveTerminal).
@@ -200,8 +201,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   // Re-tint the live terminal when the applied theme changes: its options take a new theme in place, so the shell,
   // scrollback and cursor are kept.
   useEffect(() => {
-    live?.applyStyle({ terminalPalette, terminalFont });
-  }, [live, appliedRevision, terminalPalette, terminalFont]);
+    live?.applyStyle({ terminalPalette, terminalFont, behavior });
+  }, [live, appliedRevision, terminalPalette, terminalFont, behavior]);
 
   // Only a directory the shell reported is the current one; the launch directory is not evidence of it.
   const reportedCwd = session?.currentCwd ?? null;

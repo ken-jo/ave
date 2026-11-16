@@ -106,6 +106,13 @@ export function _setTerminalInspectionForTest(inspect: TerminalEmit): void {
 }
 
 /** Register the main→renderer output sink (called once at IPC registration). */
+let manualShellPreference: () => string = () => "";
+
+/** Where a new host terminal reads the shell the user set for their terminals (empty: the login shell). Read at each start, so a change applies to the next terminal. */
+export function setManualShellPreference(read: () => string): void {
+  manualShellPreference = read;
+}
+
 export function setTerminalEmitter(fn: TerminalEmit): void {
   _emit = fn;
 }
@@ -858,7 +865,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     const requestedCwd = options.cwd ?? process.cwd();
     if (!isAbsolute(requestedCwd) || !statSync(requestedCwd).isDirectory()) throw new Error("terminal cwd must be an existing absolute directory");
     const cwd = realpathSync(requestedCwd);
-    const launch = resolveManualShell();
+    const launch = resolveManualShell(process.platform, process.env, undefined, manualShellPreference());
     if (!statSync(launch.command).isFile()) throw new Error("terminal interpreter is not a file");
     accessSync(launch.command, process.platform === "win32" ? constants.F_OK : constants.X_OK);
     // The user's own shell inherits the application's environment (ZDOTDIR included), not the agent allowlist.
@@ -2045,6 +2052,7 @@ export function _reserveConversationTerminalForTest(sessionId: string, tabId: st
 
 /** Test-only: reset module state between tests. */
 export function __resetTerminalsForTest(): void {
+  manualShellPreference = () => "";
   for (const session of sessions.values()) {
     session.cleanupIntegration?.();
     stopTerminalObservation(session);

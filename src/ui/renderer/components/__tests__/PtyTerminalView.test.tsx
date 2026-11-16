@@ -27,7 +27,8 @@ const render = (ui: ReactElement) => renderUnwrapped(ui, { wrapper: ({ children 
 
 interface FakeMarker { line: number; isDisposed: boolean; onDispose: () => { dispose(): void }; dispose(): void }
 interface FakeTerminal {
-  options: { theme?: unknown; linkHandler?: { activate: LinkCallback; hover: LinkCallback; leave: LinkCallback; allowNonHttpProtocols?: boolean } };
+  select(text: string): void;
+  options: { theme?: unknown; scrollback?: number; cursorStyle?: string; macOptionIsMeta?: boolean; linkHandler?: { activate: LinkCallback; hover: LinkCallback; leave: LinkCallback; allowNonHttpProtocols?: boolean } };
   commandRow: string;
   oscHandlers: Map<number, (data: string) => boolean>;
   dataHandler: ((data: string) => void) | null;
@@ -82,6 +83,10 @@ vi.mock("@xterm/xterm", () => ({
     clears = 0;
     selectAll() { this.selectedAll++; this.selection = "everything"; }
     clear() { this.clears++; }
+    selectionListeners = new Set<() => void>();
+    onSelectionChange(listener: () => void) { this.selectionListeners.add(listener); return { dispose: () => { this.selectionListeners.delete(listener); } }; }
+    /** Select text as a drag does. */
+    select(text: string) { this.selection = text; for (const listener of this.selectionListeners) listener(); }
     scrollListeners = new Set<() => void>();
     onScroll(listener: () => void) { this.scrollListeners.add(listener); return { dispose: () => { this.scrollListeners.delete(listener); } }; }
     /** Move the view as a wheel or new output does. */
@@ -952,6 +957,47 @@ describe("a terminal whose shell ended", () => {
     fireEvent.click(screen.getByTestId("terminal-restart"));
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+});
+
+describe("terminal behaviour settings", () => {
+  it("starts a terminal with the saved scrollback, cursor and Option key, and applies a change to the open terminal", async () => {
+    const terminalSettings = { scrollback: 20_000, cursorStyle: "bar" as const, optionAsMeta: true, copyOnSelect: false, shell: "" };
+    const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, terminal: terminalSettings } } });
+    const ave = { ...api, terminal: terminalApi() };
+    renderUnwrapped(<ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, terminal: terminalSettings }}>
+      <TooltipProvider><PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:31" tabLabel="Terminal" /></TooltipProvider>
+    </ThemeProvider>);
+    await waitFor(() => expect(terminals).toHaveLength(1));
+    const xterm = fakeTerm();
+    expect(xterm.options).toMatchObject({ scrollback: 20_000, cursorStyle: "bar", macOptionIsMeta: true });
+    await act(async () => { await api.updateSettings({ appearance: { terminal: { scrollback: 3000, cursorStyle: "underline", optionAsMeta: false } } }); });
+    // The same xterm: its shell, screen and scrollback are kept.
+    await waitFor(() => expect(xterm.options).toMatchObject({ scrollback: 3000, cursorStyle: "underline", macOptionIsMeta: false }));
+    expect(terminals).toHaveLength(1);
+    expect(xterm.disposed).toBe(false);
+  });
+
+  it("copies a selection as it is made only while copy on select is on", async () => {
+    const writeText = vi.fn(async (_text: string) => undefined);
+    vi.stubGlobal("navigator", { ...navigator, userAgent: navigator.userAgent, clipboard: { writeText, readText: vi.fn(async () => "") } });
+    try {
+      const { api } = makeMockAveApi({ settings: { appearance: DEFAULT_APPEARANCE } });
+      const ave = { ...api, terminal: terminalApi() };
+      renderUnwrapped(<ThemeProvider api={api as never} initialAppearance={DEFAULT_APPEARANCE}>
+        <TooltipProvider><PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:32" tabLabel="Terminal" /></TooltipProvider>
+      </ThemeProvider>);
+      await waitFor(() => expect(terminals).toHaveLength(1));
+      const xterm = fakeTerm();
+      act(() => xterm.select("off by default"));
+      expect(writeText).not.toHaveBeenCalled();
+      await act(async () => { await api.updateSettings({ appearance: { terminal: { copyOnSelect: true } } }); });
+      await waitFor(() => { act(() => xterm.select("git status")); expect(writeText).toHaveBeenLastCalledWith("git status"); });
+      // A selection that was cleared copies nothing over the clipboard.
+      const calls = writeText.mock.calls.length;
+      act(() => xterm.select(""));
+      expect(writeText).toHaveBeenCalledTimes(calls);
+    } finally { vi.unstubAllGlobals(); }
   });
 });
 

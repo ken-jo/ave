@@ -302,6 +302,10 @@ const CLASSIFIED: Record<string, Classified> = {
     sites: { runTurn: 1 },
     classification: "scheduled routines: plugin-emitted",
   },
+  "shared/appearance-settings.ts": {
+    sites: { computedCall: 1 },
+    classification: "computed: the terminal behavior settings' per-field validator table, called for each saved field; no turn entry",
+  },
   "shared/chat-origin.ts": {
     sites: { mintUserKeyboardIntent: 1 },
     classification: "the single mint",

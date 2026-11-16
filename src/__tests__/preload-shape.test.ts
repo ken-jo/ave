@@ -148,6 +148,13 @@ describe("preload contextBridge world shape lock", () => {
           "lightScheme": "string",
           "mode": "string",
           "schemaVersion": "number",
+          "terminal": [
+            "copyOnSelect",
+            "cursorStyle",
+            "optionAsMeta",
+            "scrollback",
+            "shell",
+          ],
           "terminalFont": [
             "family",
             "lineHeight",

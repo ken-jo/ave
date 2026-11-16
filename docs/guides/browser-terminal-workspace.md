@@ -267,6 +267,13 @@ to Search) pressed in a terminal opens a find bar over its output. It searches
 the screen and the scrollback as you type; Enter goes to the next match,
 Shift+Enter to the previous one, and Escape closes it.
 
+Settings → Appearance → Terminal holds, under the font, how your terminals
+behave: the scrollback length (1,000 to 100,000 lines), the cursor shape, copy
+on select, Option as the Meta key (macOS) and the shell new terminals start.
+The shell is an absolute path; empty means your login shell. A path that is not
+a file makes the terminal say so instead of starting a different shell. Open
+terminals take every change at once except the shell.
+
 Cmd+Up and Cmd+Down (Ctrl+Up and Ctrl+Down on Windows and Linux) scroll to the
 previous and the next command. While a command's output fills the top of the
 view, its command line stays pinned over the first row; click it to scroll

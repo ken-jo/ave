@@ -8,6 +8,38 @@ export type DarkSchemeId = (typeof DARK_SCHEME_IDS)[number];
 export type LightSchemeId = (typeof LIGHT_SCHEME_IDS)[number];
 export type AppearanceMode = "system" | "dark" | "light";
 interface TerminalFontSettings { family: string; size: number; lineHeight: number }
+export const TERMINAL_CURSOR_STYLES = ["block", "bar", "underline"] as const;
+export type TerminalCursorStyle = (typeof TERMINAL_CURSOR_STYLES)[number];
+/** How the user's own terminals behave. Read by every open terminal as it changes, except `shell`, which a terminal reads when its shell starts. */
+export interface TerminalBehaviorSettings {
+  /** Lines kept above the screen. */
+  scrollback: number;
+  cursorStyle: TerminalCursorStyle;
+  /** macOS: Option sends Meta (Esc-prefixed) instead of composing a character. */
+  optionAsMeta: boolean;
+  /** Selecting text copies it. */
+  copyOnSelect: boolean;
+  /** Absolute path of the shell a new terminal starts; empty for the login shell. */
+  shell: string;
+}
+const TERMINAL_SCROLLBACK_MIN = 1000;
+const TERMINAL_SCROLLBACK_MAX = 100_000;
+export const TERMINAL_SCROLLBACK_STEP = 1000;
+export const DEFAULT_TERMINAL_BEHAVIOR: Readonly<TerminalBehaviorSettings> = Object.freeze({
+  scrollback: 5000, cursorStyle: "block", optionAsMeta: false, copyOnSelect: false, shell: "",
+});
+export function isTerminalScrollback(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= TERMINAL_SCROLLBACK_MIN && value <= TERMINAL_SCROLLBACK_MAX;
+}
+function isTerminalCursorStyle(value: unknown): value is TerminalCursorStyle {
+  return typeof value === "string" && (TERMINAL_CURSOR_STYLES as readonly string[]).includes(value);
+}
+/** Empty (the login shell) or an absolute path in either platform's spelling. Whether a file is there and can be started is decided when a terminal starts it. */
+export function isTerminalShellPath(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 1024) return false;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: a path with a control character is refused, so the pattern names them.
+  return value === "" || (/^(?:\/|[A-Za-z]:[\\/])/u.test(value) && !/[\u0000-\u001f\u007f]/u.test(value));
+}
 export interface AppearanceSettings {
   schemaVersion: 3;
   mode: AppearanceMode;
@@ -16,6 +48,7 @@ export interface AppearanceSettings {
   font?: AppearanceFontSettings;
   zoomLevel?: number;
   terminalFont: TerminalFontSettings;
+  terminal: TerminalBehaviorSettings;
   language?: Locale;
   /** Percent card-colour cover over the system window material, 0–100 (0 = bare material, 100 = opaque). Absent = {@link DEFAULT_GLASS_TINT}. */
   glassTint?: number;
@@ -25,7 +58,7 @@ const DEFAULT_TERMINAL_FONT: Readonly<TerminalFontSettings> = Object.freeze({
 });
 export const DEFAULT_APPEARANCE: Readonly<AppearanceSettings> = Object.freeze({
   schemaVersion: 3, mode: "system", darkScheme: "github-dark", lightScheme: "github-light",
-  terminalFont: DEFAULT_TERMINAL_FONT, language: "en", zoomLevel: 0,
+  terminalFont: DEFAULT_TERMINAL_FONT, terminal: DEFAULT_TERMINAL_BEHAVIOR, language: "en", zoomLevel: 0,
 });
 /**
  * One percent-cover value drives both shells: 0 leaves the system material bare,
@@ -64,6 +97,33 @@ export function isTerminalLineHeight(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 2;
 }
 
+const TERMINAL_BEHAVIOR_FIELDS = {
+  scrollback: isTerminalScrollback,
+  cursorStyle: isTerminalCursorStyle,
+  optionAsMeta: (value: unknown): value is boolean => typeof value === "boolean",
+  copyOnSelect: (value: unknown): value is boolean => typeof value === "boolean",
+  shell: isTerminalShellPath,
+} satisfies { [Field in keyof TerminalBehaviorSettings]: (value: unknown) => value is TerminalBehaviorSettings[Field] };
+
+/**
+ * Take each valid field of `patch` into `target` and name each invalid one to `refuse`; a field the patch does not have is left alone. A patch
+ * that is present and is not a set of fields at all (null, a string, a list) is refused as a whole, with `null` for the field: it is a broken
+ * request or broken stored data, not an empty change.
+ */
+export function mergeTerminalBehavior(target: TerminalBehaviorSettings, patch: unknown, refuse: (field: keyof TerminalBehaviorSettings | null) => void): void {
+  if (patch === undefined) return;
+  if (!isAppearanceRecord(patch)) {
+    refuse(null);
+    return;
+  }
+  const fields = patch;
+  for (const field of Object.keys(TERMINAL_BEHAVIOR_FIELDS) as Array<keyof TerminalBehaviorSettings>) {
+    if (!(field in fields)) continue;
+    if (TERMINAL_BEHAVIOR_FIELDS[field](fields[field])) (target as unknown as Record<string, unknown>)[field] = fields[field];
+    else refuse(field);
+  }
+}
+
 function isAppearanceRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -71,7 +131,9 @@ function isAppearanceRecord(value: unknown): value is Record<string, unknown> {
 /** Retire released bundle selections once; current settings keep only the curated scheme contract. */
 export function normalizeAppearance(input: unknown, warn: (field: string) => void = (field) => console.warn(`Invalid appearance setting: ${field}`)): AppearanceSettings {
   const obj = isAppearanceRecord(input) ? input : {};
-  const result: AppearanceSettings = { ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont }, language: normalizeLocale(obj.language) };
+  const result: AppearanceSettings = {
+    ...DEFAULT_APPEARANCE, terminalFont: { ...DEFAULT_APPEARANCE.terminalFont }, terminal: { ...DEFAULT_TERMINAL_BEHAVIOR }, language: normalizeLocale(obj.language),
+  };
   result.zoomLevel = normalizeZoomLevel(obj.zoomLevel);
   if ("zoomLevel" in obj && !isZoomLevel(obj.zoomLevel)) warn("zoomLevel");
   const font = normalizeAppearanceFont(obj.font);
@@ -91,6 +153,7 @@ export function normalizeAppearance(input: unknown, warn: (field: string) => voi
   if (isValidFontFamilyOverride(terminalFont.family)) result.terminalFont.family = terminalFont.family;
   if (isTerminalFontSize(terminalFont.size)) result.terminalFont.size = terminalFont.size;
   if (isTerminalLineHeight(terminalFont.lineHeight)) result.terminalFont.lineHeight = terminalFont.lineHeight;
+  mergeTerminalBehavior(result.terminal, obj.terminal, (field) => warn(field === null ? "terminal" : `terminal.${field}`));
   if (isGlassTint(obj.glassTint)) result.glassTint = obj.glassTint;
   else if ("glassTint" in obj) warn("glassTint");
   return result;

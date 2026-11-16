@@ -39,9 +39,14 @@ vi.mock("../../main/terminal/terminal-blocks.js", async (importOriginal) => {
       ? terminalSessionFixture("terminal:0000000a-1", "manual") : actual.getWindowTerminalBlockSession(...args),
   };
 });
-const { spawnRequests } = vi.hoisted(() => ({ spawnRequests: [] as Array<Record<string, unknown>> }));
+const { spawnRequests, shellPreference, appearance } = vi.hoisted(() => ({
+  spawnRequests: [] as Array<Record<string, unknown>>,
+  shellPreference: { read: null as (() => string) | null },
+  appearance: { terminal: { shell: "" } },
+}));
 vi.mock("../../main/terminal/pty-manager.js", () => ({
   setTerminalEmitter: (fn: TerminalEmit) => { emitter = fn; },
+  setManualShellPreference: (read: () => string) => { shellPreference.read = read; },
   spawnTerminal: vi.fn(async ({ tabId, lane, ...rest }: { tabId: string; lane: "manual" | "agent"; replay?: boolean }) => {
     spawnRequests.push({ tabId, lane, ...rest });
     return { ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" };
@@ -86,6 +91,7 @@ beforeEach(() => {
     auditLogger: { log: vi.fn() },
     getMainWindow: () => windowOne,
     getAppWindows: () => [windowOne, windowTwo],
+    settingsService: { get: (key: string) => (key === "appearance" ? appearance : undefined) },
   } as never);
 });
 
@@ -132,6 +138,16 @@ describe("terminal IPC between two windows", () => {
   });
 });
 
+
+describe("terminal shell setting", () => {
+  it("gives the PTY manager the saved shell, read again at every start", () => {
+    if (!shellPreference.read) throw new Error("the terminal domain registered no shell preference");
+    expect(shellPreference.read()).toBe("");
+    appearance.terminal.shell = "/opt/homebrew/bin/fish";
+    expect(shellPreference.read()).toBe("/opt/homebrew/bin/fish");
+    appearance.terminal.shell = "";
+  });
+});
 
 describe("terminal IPC lane validation", () => {
   it("forwards a no-replay re-attach and refuses a replay flag that is not a boolean", async () => {

@@ -12,6 +12,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 import { isDarwin } from "../api-client.js";
 import { matchesShortcut } from "../hooks/use-shortcuts.js";
+import type { TerminalBehaviorSettings } from "../../../shared/appearance-settings.js";
 import { terminalClipboardAction, terminalCommandJump, terminalPlatform } from "./terminal-keys.js";
 import { onTerminalUserInput } from "./terminal-user-input.js";
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
@@ -31,6 +32,7 @@ type Translate = (key: string, params?: Record<string, string | number>) => stri
 export interface LiveTerminalStyle {
   readonly terminalPalette: ITheme;
   readonly terminalFont: { readonly family: string; readonly size: number; readonly lineHeight: number };
+  readonly behavior: Omit<TerminalBehaviorSettings, "shell">;
 }
 
 /** What a mounted view shows of its terminal. A new object on every change. */
@@ -78,6 +80,7 @@ export class LiveTerminal {
   readonly anchors: XtermBlockAnchors;
   private readonly fitAddon = new FitAddon();
   private readonly searchAddon = new SearchAddon();
+  private copyOnSelect = false;
   private state: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null, inputNotice: null, sticky: null };
   /** Where a restarted shell starts: the directory the ended one last reported. */
   private restartCwd: string | null = null;
@@ -119,7 +122,9 @@ export class LiveTerminal {
       fontFamily: style.terminalFont.family,
       lineHeight: style.terminalFont.lineHeight,
       theme: style.terminalPalette,
-      scrollback: 5000,
+      scrollback: style.behavior.scrollback,
+      cursorStyle: style.behavior.cursorStyle,
+      macOptionIsMeta: style.behavior.optionAsMeta,
       allowProposedApi: true,
       // OSC 8 hyperlinks take the same path as detected URLs; without this xterm asks through a native confirm() and opens the system browser.
       linkHandler: {
@@ -205,8 +210,14 @@ export class LiveTerminal {
     });
     // The sticky command follows the view: a scroll (the user's or new output's) and a command starting or leaving the scrollback.
     const scrollSub = this.term.onScroll(() => this.syncSticky());
+    this.copyOnSelect = style.behavior.copyOnSelect;
+    // Copy on select: a finished selection is on the clipboard without a key. An emptied selection copies nothing.
+    const selectionSub = this.term.onSelectionChange(() => {
+      if (this.copyOnSelect) this.copySelection();
+    });
     this.disposers.push(
       () => scrollSub.dispose(),
+      () => selectionSub.dispose(),
       this.anchors.subscribe(() => this.syncSticky()),
       () => markerSub.dispose(),
       () => inputSub.dispose(),
@@ -296,6 +307,10 @@ export class LiveTerminal {
     this.term.options.fontFamily = style.terminalFont.family;
     this.term.options.fontSize = style.terminalFont.size;
     this.term.options.lineHeight = style.terminalFont.lineHeight;
+    this.term.options.scrollback = style.behavior.scrollback;
+    this.term.options.cursorStyle = style.behavior.cursorStyle;
+    this.term.options.macOptionIsMeta = style.behavior.optionAsMeta;
+    this.copyOnSelect = style.behavior.copyOnSelect;
     if (this.host) this.fitToHost();
   }
 

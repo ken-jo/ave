@@ -24,6 +24,7 @@ export class FakeXterm {
   }
   onData() { return disposable; }
   onScroll() { return disposable; }
+  onSelectionChange() { return disposable; }
   write(text: string) { fakeXtermWrites.push(text); }
   focus() {}
   dispose() {}

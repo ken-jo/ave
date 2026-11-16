@@ -5,7 +5,7 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import { fanOutToAllWindows } from "../window-fanout.js";
 import { createLogger } from "../../lib/logger.js";
 import {
-  setTerminalEmitter, spawnTerminal, writeTerminal, resizeTerminal, killTerminal,
+  setManualShellPreference, setTerminalEmitter, spawnTerminal, writeTerminal, resizeTerminal, killTerminal,
   terminalOwnedBy, controlTerminal,
 } from "../../main/terminal/pty-manager.js";
 import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession, listTerminalBlockTabs } from "../../main/terminal/terminal-blocks.js";
@@ -18,6 +18,7 @@ const log = createLogger("terminal-ipc");
 
 export function registerTerminalHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
+  setManualShellPreference(() => deps.settingsService.get("appearance").terminal.shell);
   setTerminalEmitter((event, payload, ownerWindowId) => {
     if (payload.lane !== "manual") return;
     const channel = event === "data" ? CHANNELS.terminal.data : event === "exit" ? CHANNELS.terminal.exit : CHANNELS.terminal.controlChanged;
