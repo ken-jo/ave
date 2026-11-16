@@ -97,6 +97,7 @@ async function setup() {
       setConfigOverride: vi.fn(),
       restartPlugin,
       listPluginCards,
+      getPerfStats: vi.fn(() => [{ pluginId: "plugin-config", calls: 2 }]),
     },
     settingsService: {
       get: vi.fn(() => ({})),
@@ -465,6 +466,16 @@ describe("ave:plugins:set-enabled", () => {
 });
 
 describe("ave:plugins:config:set", () => {
+  it("guards performance reads while allowing the host renderer", async () => {
+    const { deps } = await setup();
+    const handler = handlers.get("ave:plugins:perf-stats");
+    expect(handler).toBeDefined();
+    if (!handler) throw new Error("Performance handler missing");
+    expect(await handler({ senderFrame: { url: "https://untrusted.example" } })).toMatchObject({ ok: false, error: "unauthorized-frame" });
+    expect(deps.pluginRuntime.getPerfStats).not.toHaveBeenCalled();
+    expect(await invoke("ave:plugins:perf-stats")).toEqual([{ pluginId: "plugin-config", calls: 2 }]);
+    expect(deps.pluginRuntime.getPerfStats).toHaveBeenCalledOnce();
+  });
   it.each([
     { count: -1, name: "valid" },
     { count: 11, name: "valid" },

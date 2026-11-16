@@ -6624,4 +6624,5 @@ export const ko: Record<MessageCatalogKey, string> = {
   "auditTab.bundleConsentLoadFailed": "크래시 덤프 동의 상태를 읽지 못했습니다. 다시 시도한 후 진단 번들을 내보내세요.",
   "permissionJudge.chainUnsaved": "평가 체인에 저장하지 않은 변경 사항이 있습니다. 다른 설정은 즉시 적용됩니다.",
   "appearanceTab.fontLoadFailed": "저장된 글꼴 설정을 불러오지 못했습니다. 편집하려면 다시 시도하세요.",
+  "useSettingsOrchestration.loadFailed": "설정을 불러오지 못했습니다. 다시 시도해 주세요.",
 };

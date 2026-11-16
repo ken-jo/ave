@@ -682,7 +682,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
     }
   });
 
-  ipcMain.handle(CHANNELS.plugins.perfStats, () => pluginRuntime.getPerfStats());
+  ipcMain.handle(CHANNELS.plugins.perfStats, (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.plugins.perfStats, e); return UNAUTHORIZED_FRAME; }
+    return pluginRuntime.getPerfStats();
+  });
 
   ipcMain.handle(CHANNELS.plugins.call, (
     e,

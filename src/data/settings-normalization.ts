@@ -85,6 +85,7 @@ import { createLogger } from "../lib/logger.js";
 import { isAbsoluteHostPath, parseMainLayout, type MainLayoutSnapshot } from "../shared/main-layout.js";
 import {
   STORED_FIELD,
+  PATCHED_FIELD,
   acceptField,
   acceptNormalizedField,
   isBooleanValue,
@@ -112,11 +113,13 @@ import type {
   LLMSettings,
   LLMSettingsPatch,
   MarketplaceSettings,
+  PrivacySettings,
   SystemCloseBehavior,
   SystemSettings,
   TelemetrySettings,
   WebViewPreferredFlow,
   WebViewSettings,
+  WebSearchSettings,
 } from "./settings-store.js";
 import { isRecord } from "../shared/is-record.js";
 import { compactionModelSelection, isCompactionModelSelection } from "../shared/compaction-model.js";
@@ -497,7 +500,7 @@ export function mergeLlmPatch(
     provider: activeProvider,
     ...(marketplaceProviderPresetId ? { marketplaceProviderPresetId } : {}),
     vendors,
-    streamSmoothing: partial.streamSmoothing ?? base.streamSmoothing,
+    streamSmoothing: base.streamSmoothing,
     compactionModel: normalizeModelId("compactionModel" in partial ? partial.compactionModel : base.compactionModel) ?? "",
     compactionModelRoute: normalizeCompactionModelRoute("compactionModelRoute" in partial ? partial.compactionModelRoute : base.compactionModelRoute),
     fallbackChain,
@@ -518,6 +521,8 @@ export function mergeLlmPatch(
       : {}),
     // Drop the inert legacy host-resolver map rather than retaining internal hostnames.
   };
+  acceptField(normalized, "streamSmoothing", partial.streamSmoothing,
+    (value) => value === "none" || value === "word" || value === "char", "llm", PATCHED_FIELD);
   const selection = "compactionModelSelection" in partial
     ? partial.compactionModelSelection
     : "compactionModel" in partial ? undefined : base.compactionModelSelection;
@@ -694,6 +699,30 @@ const VALID_WEBVIEW_FLOWS: readonly WebViewPreferredFlow[] = ["in-app", "system-
 /** Share the accepted flow predicate across disk load and patches so invalid values cannot persist. */
 export function isWebViewPreferredFlow(value: unknown): value is WebViewPreferredFlow {
   return typeof value === "string" && (VALID_WEBVIEW_FLOWS as readonly string[]).includes(value);
+}
+
+export function isWebSearchProvider(value: unknown): value is WebSearchSettings["provider"] {
+  return value === "duckduckgo" || value === "tavily" || value === "serper";
+}
+
+export function normalizeWebSearch(
+  input: unknown,
+  retained: WebSearchSettings = DEFAULT_SETTINGS.webSearch,
+  rejection: FieldRejection = STORED_FIELD,
+): WebSearchSettings {
+  const result = { provider: retained.provider };
+  if (isRecord(input)) acceptField(result, "provider", input.provider, isWebSearchProvider, "webSearch", rejection);
+  return result;
+}
+
+export function normalizePrivacy(
+  input: unknown,
+  retained: PrivacySettings = DEFAULT_SETTINGS.privacy,
+  rejection: FieldRejection = STORED_FIELD,
+): PrivacySettings {
+  const result = { piiRedactEnabled: retained.piiRedactEnabled };
+  if (isRecord(input)) acceptField(result, "piiRedactEnabled", input.piiRedactEnabled, isBooleanValue, "privacy", rejection);
+  return result;
 }
 
 export function normalizeWebView(input: unknown): WebViewSettings {

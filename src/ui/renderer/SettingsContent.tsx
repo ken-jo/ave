@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../i18n/react.js";
+import { Button } from "../../components/ui/button.js";
 import { Tabs, VerticalTabsList, TabsTrigger, TabsContent } from "../../components/ui/tabs.js";
 import {
   Brain,
@@ -508,6 +509,7 @@ export function SettingsContent({
           isNarrow ? "px-4" : "px-8",
         )}
       >
+        {s.loadError && <div role="alert" className="mb-3 rounded-md border border-destructive p-3 text-sm text-destructive">{s.loadError} <Button size="sm" variant="outline" onClick={s.retryLoad}>{t("settingsEditor.retry")}</Button></div>}
         {s.lastSaveError && (
           <div
             role="alert"

@@ -117,6 +117,8 @@ import {
   normalizeWorkBoard,
   isWebViewPreferredFlow,
   normalizeWebView,
+  normalizeWebSearch,
+  normalizePrivacy,
   preserveInstalledProviderPresetMetadata,
   sanitizeStoredPluginConfigs,
   normalizeAlertSettings,
@@ -1055,7 +1057,7 @@ export class SettingsService {
     }
     if (partial.chat) this.settings.chat = normalizeChat({ ...this.settings.chat, ...partial.chat });
     if (partial.a2aRemote) this.settings.a2aRemote = normalizeA2ARemote({ ...this.settings.a2aRemote, ...partial.a2aRemote });
-    if (partial.webSearch) this.settings.webSearch = { ...this.settings.webSearch, ...partial.webSearch };
+    if (partial.webSearch) this.settings.webSearch = normalizeWebSearch(partial.webSearch, this.settings.webSearch, PATCHED_FIELD);
     if (partial.marketplace) {
       this.settings.marketplace = nextMarketplace;
       const normalizedLlm = mergeLlmPatch(
@@ -1088,7 +1090,7 @@ export class SettingsService {
       this.settings.permissions = { ...this.settings.permissions, ownerAwayAutoSkipMinutes: partial.permissions.ownerAwayAutoSkipMinutes };
     }
     if (partial.privacy) {
-      this.settings.privacy = { ...this.settings.privacy, ...partial.privacy };
+      this.settings.privacy = normalizePrivacy(partial.privacy, this.settings.privacy, PATCHED_FIELD);
     }
     if (partial.plugins) {
       this.settings.plugins = { ...this.settings.plugins, ...partial.plugins };
@@ -1790,7 +1792,7 @@ export class SettingsService {
         llm,
         chat: normalizeChat(parsed.chat),
         a2aRemote: normalizeA2ARemote(parsed.a2aRemote),
-        webSearch: { ...DEFAULT_SETTINGS.webSearch, ...parsed.webSearch },
+        webSearch: normalizeWebSearch(parsed.webSearch),
         marketplace,
         routine: normalizedRoutine,
         homeDocs: normalizeHomeDocs(parsed.homeDocs),
@@ -1798,7 +1800,7 @@ export class SettingsService {
           ownerAwayAutoSkipMinutes: isOwnerAwayAutoSkipMinutes(parsed.permissions?.ownerAwayAutoSkipMinutes)
             ? parsed.permissions.ownerAwayAutoSkipMinutes : DEFAULT_OWNER_AWAY_AUTO_SKIP_MINUTES,
         },
-        privacy: { ...DEFAULT_SETTINGS.privacy, ...parsed.privacy },
+        privacy: normalizePrivacy(parsed.privacy),
         updates: { ...DEFAULT_SETTINGS.updates, ...parsed.updates },
         telemetry: normalizeTelemetry(parsed.telemetry),
         audit: { ...DEFAULT_SETTINGS.audit, ...parsed.audit },

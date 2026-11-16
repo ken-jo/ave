@@ -7,7 +7,7 @@ import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
 import { saveApprovalCardRule } from "../../permissions/approval-rule-save.js";
-import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
+import { loadPolicy, savePolicy, validatePolicyPatch, PolicyWriteError } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
@@ -292,8 +292,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     return windows.some((window) => window && !window.isDestroyed() && window.webContents === event.sender);
   };
 
-  // read-only, sender guard optional
-  ipcMain.handle(PERMISSIONS.getMode, () => handleGetMode(deps));
+  ipcMain.handle(PERMISSIONS.getMode, (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.getMode, e); return UNAUTHORIZED_FRAME; }
+    return handleGetMode(deps);
+  });
 
   // read-only, sender guard optional; honest OS sandbox capability for the current platform. `available`/`kind` report the PLATFORM's potential (macOS/Linux can fully confine, Windows can partially confine filesystem + network, others cannot), NOT whether a runner
   // is currently registered; registration is verified at boot, so reporting the platform potential lets the toggle show "not available on this platform" rather than reading as unavailable merely because it's off. `enabled` separately reflects the current setting.
@@ -719,8 +721,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     });
   });
 
-  // read-only, sender guard optional
-  ipcMain.handle(PERMISSIONS.listRules, async () => {
+  ipcMain.handle(PERMISSIONS.listRules, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.listRules, e); return UNAUTHORIZED_FRAME; }
     const pm = conversationLoop.permissionManager;
     if (!pm) return [];
     return pm.listPersistedRules();
@@ -929,8 +931,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
   });
 
-  // read-only, sender guard optional
-  ipcMain.handle(PERMISSIONS.policyGet, async () => {
+  ipcMain.handle(PERMISSIONS.policyGet, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.policyGet, e); return UNAUTHORIZED_FRAME; }
     const policy = await loadPolicy();
     // `editable` is host-derived, never re-derived in the renderer: it is the same predicate that decides whether `savePolicy` will accept a write.
     return { ...policy, editable: isPolicyUserEditable(policy) };
@@ -1146,21 +1148,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
-    const patch = payloadRecord(body.patch);
-    if ("managed" in patch) {
-      return { ok: false, error: "invalid-patch", message: "'managed' field is read-only and cannot be modified by user" };
-    }
-    if ("requireExplicitApproval" in patch && typeof patch.requireExplicitApproval !== "boolean") {
-      return { ok: false, error: "invalid-patch", message: "'requireExplicitApproval' must be a boolean" };
-    }
     try {
-      const updated = await savePolicy(patch as Parameters<typeof savePolicy>[0]);
+      const patch = validatePolicyPatch(body.patch);
+      const updated = await savePolicy(patch);
       if (approvalGate) {
         approvalGate.setPolicy(updated);
       }
       return { ok: true, policy: updated };
     } catch (err) {
-      return { ok: false, error: "managed", message: (err as Error).message };
+      return { ok: false, error: err instanceof PolicyWriteError ? err.code : "policy-save-failed" };
     }
   });
 

@@ -2,8 +2,8 @@
 
 import { join, resolve } from "node:path";
 import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
-import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
+import { isPlainRecord } from "../shared/is-record.js";
 import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
 import { parsePolicyDocument } from "../shared/configuration-document.js";
 import { checkAdminPolicyPath } from "../shared/ave-home-test-guard.js";
@@ -39,6 +39,27 @@ export interface PolicyFile {
 
   managed: boolean;
   updatedAt: string;
+}
+
+export type PolicyPatch = Partial<Pick<PolicyFile, "requireExplicitApproval">>;
+
+export class PolicyWriteError extends Error {
+  constructor(readonly code: "managed" | "invalid-patch", message: string) {
+    super(message);
+    this.name = "PolicyWriteError";
+  }
+}
+
+export function validatePolicyPatch(patch: unknown): PolicyPatch {
+  if (!isPlainRecord(patch)
+    || Object.keys(patch).some((key) => key !== "requireExplicitApproval")) {
+    throw new PolicyWriteError("invalid-patch", "Policy patch contains unsupported fields.");
+  }
+  const value = patch.requireExplicitApproval;
+  if (value !== undefined && typeof value !== "boolean") {
+    throw new PolicyWriteError("invalid-patch", "Explicit approval must be a boolean.");
+  }
+  return value === undefined ? {} : { requireExplicitApproval: value };
 }
 
 export interface LoadedPolicy extends PolicyFile, AdminPolicyDiagnostic {
@@ -210,31 +231,33 @@ async function loadPolicySources(userPath: string, adminPath: string): Promise<L
   };
 }
 
-// Save policy to disk. Blocking conditions, in priority order: 1. admin-dir file is not absent, including read/validation failure → always throw 2. user file managed: true → throw the localized managed-policy error The managed flag itself cannot be changed via patch; it belongs to the IT Admin API.
+// User writes accept only policy preferences. Administrative files, including unreadable files,
+// and managed user policies keep editing locked.
 export async function savePolicy(
-  patch: Partial<Omit<PolicyFile, "version" | "managed" | "updatedAt">>,
+  patch: PolicyPatch,
   userPath = userPolicyPath(),
   adminPath = getAdminPolicyPath(),
 ): Promise<PolicyFile> {
+  const validated = validatePolicyPatch(patch);
   return withAveHomeConfigurationWrite(userPath, async (userPath) => {
     // Check admin-dir first.
     const adminFile = await readPolicyFile(adminPath, true);
     if (adminFile.status !== "absent") {
-      throw new Error("Policy is managed by IT (admin-dir file exists)");
+      throw new PolicyWriteError("managed", "Policy is managed by IT (admin-dir file exists)");
     }
 
     const userRead = await readPolicyFile(userPath);
     const existing = userRead.status === "valid" ? userRead.fields : null;
 
-    // Check user managed: true, preserving the existing B1 behavior.
+    // A user policy marked managed remains read-only.
     if (existing?.managed === true) {
-      throw new Error(t("be_policyStore.managedPolicyUserCannotChange"));
+      throw new PolicyWriteError("managed", "Managed policy cannot be changed by the user.");
     }
 
     const current = existing ? completePolicy(existing) : defaultPolicy();
     const updated: PolicyFile = {
       ...current,
-      ...patch,
+      ...validated,
       version: 1,
       managed: current.managed, // Users cannot change managed.
       updatedAt: new Date().toISOString(),

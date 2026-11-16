@@ -1,3 +1,4 @@
+import { isWebSearchProvider } from "../../data/settings-normalization.js";
 import { isSubAgentMaxRounds } from "../../shared/subagent-policy.js";
 import { containsSecuritySettings } from "../../shared/security-settings.js";
 import { telemetryPatchError } from "../../shared/telemetry-policy.js";
@@ -602,7 +603,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   // Read-only, and presence only: the answer is a list of settings paths the environment is forcing ON, never the value of any variable. A control that
   // showed the saved value alone would be describing a state the running app is not in, since every one of these gates resolves as `settings || env`.
-  ipcMain.handle(CHANNELS.settings.envForcedSettings, () => envForcedSettingsPaths());
+  ipcMain.handle(CHANNELS.settings.envForcedSettings, (event) => {
+    if (!validateHostRendererSender(event)) { auditUnauthorized(auditLogger, CHANNELS.settings.envForcedSettings, event); return UNAUTHORIZED_FRAME; }
+    return envForcedSettingsPaths();
+  });
 
   ipcMain.handle(CHANNELS.settings.update, async (e, partial) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.update, e); return UNAUTHORIZED_FRAME; }
@@ -612,7 +616,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       if (error) return { ok: false, error };
     }
     if (containsSecuritySettings(partial)) return { ok: false, error: "security-settings-main-owned" };
-    if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "pluginConfigs")) {
+    if (partial && typeof partial === "object" && Object.hasOwn(partial, "pluginConfigs")) {
       return { ok: false, error: "plugin-config-settings-main-owned" };
     }
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "a2aRemote")) {
@@ -816,7 +820,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     reconcileShortcutStartupIfChanged();
     if (marketplaceWritten) hooks?.marketplaceSettingsChanged();
     await broadcastSettingsSnapshot(deps);
-    return result;
+    return rendererSettingsSnapshot(settingsService, result);
   });
 
   ipcMain.handle(CHANNELS.settings.setApiKey, async (e, vendor: string, apiKey: string) => {
@@ -1211,18 +1215,23 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
 
   ipcMain.handle(CHANNELS.settings.setWebApiKey, async (e, provider: string, apiKey: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.setWebApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!isWebSearchProvider(provider) || typeof apiKey !== "string" || apiKey.trim() === "") {
+      return { ok: false, error: "invalid-input" };
+    }
     await settingsService.setSecret(`web.apiKey.${provider}`, apiKey);
     await broadcastSettingsSnapshot(deps);
     return { ok: true };
   });
 
-  // read-only; sender guard optional
-  ipcMain.handle(CHANNELS.settings.hasWebApiKey, async (_e, provider: string) => {
-    return (await settingsService.getSecret(`web.apiKey.${provider}`)) !== null;
+  ipcMain.handle(CHANNELS.settings.hasWebApiKey, async (e, provider: string) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.hasWebApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!isWebSearchProvider(provider)) throw new Error("Unsupported web search provider.");
+    return settingsService.hasStoredSecret(`web.apiKey.${provider}`);
   });
 
   ipcMain.handle(CHANNELS.settings.deleteWebApiKey, async (e, provider: string) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.deleteWebApiKey, e); return UNAUTHORIZED_FRAME; }
+    if (!isWebSearchProvider(provider)) return { ok: false, error: "invalid-input" };
     await settingsService.deleteSecret(`web.apiKey.${provider}`);
     await broadcastSettingsSnapshot(deps);
     return { ok: true };

@@ -141,6 +141,11 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "not-applicable": "formatIpcError.notApplicable",
 
   // ── Payload / validation ──
+  "directory-picker-empty-result": "settingsEditor.pickFolderFailed",
+  "duplicate-rule": "permissionsTab.ruleDuplicate",
+  "invalid-subagent-max-rounds": "formatIpcError.invalidInput",
+  "plugin-config-settings-main-owned": "formatIpcError.invalidInput",
+  "settings-file-open-failed": "settingsEditor.openFileFailed",
   "invalid-payload": "formatIpcError.invalidPayload",
   "drop-token-invalid": "formatIpcError.dropTokenInvalid",
   "drop-token-expired": "formatIpcError.dropTokenExpired",

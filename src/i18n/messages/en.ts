@@ -6622,6 +6622,7 @@ export const en = {
   "auditTab.bundleConsentLoadFailed": "Could not read crash-dump consent. Retry before exporting a diagnostics bundle.",
   "permissionJudge.chainUnsaved": "The evaluator chain has unsaved changes. Other controls apply immediately.",
   "appearanceTab.fontLoadFailed": "Could not load your saved font settings. Retry to edit them.",
+  "useSettingsOrchestration.loadFailed": "Settings could not be loaded. Try again.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

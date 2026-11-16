@@ -1,3 +1,4 @@
+import { requiredFixture } from "../../../__tests__/support/required-fixture.js";
 import type { IpcDeps } from "../../types.js";
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 /** MAJOR-3 regression: all 4 secret-mutation handlers broadcast SETTINGS.updated to all app windows so the reviewer tab auto-unlocks without a full reload: -
@@ -266,6 +267,44 @@ describe("delete-api-key broadcast (MAJOR-3)", () => {
 });
 
 describe("set-web-api-key broadcast (MAJOR-3)", () => {
+  it.each([
+    ["unsupported", "key"], ["../other", "key"], [null, "key"], ["tavily", 12], ["serper", null], ["serper", "  "],
+  ])("rejects an invalid provider or key before secret storage: %j %j", async (provider, key) => {
+    const deps = makeDeps([]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    expect(await invoke("ave:settings:set-web-api-key", provider, key)).toMatchObject({ ok: false, error: "invalid-input" });
+    expect(deps.settingsService.setSecret).not.toHaveBeenCalled();
+  });
+
+  it("checks key presence without decrypting a stored credential", async () => {
+    const deps = makeDeps([]);
+    deps.settingsService.hasStoredSecret.mockReturnValueOnce(true);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    expect(await invoke("ave:settings:has-web-api-key", "tavily")).toBe(true);
+    expect(deps.settingsService.hasStoredSecret).toHaveBeenCalledWith("web.apiKey.tavily");
+    expect(deps.settingsService.getSecret).not.toHaveBeenCalled();
+    await expect(invoke("ave:settings:has-web-api-key", "../unknown")).rejects.toThrow("Unsupported web search provider.");
+    expect(deps.settingsService.hasStoredSecret).toHaveBeenCalledOnce();
+  });
+
+  it.each(["ave:settings:has-web-api-key", "ave:settings:env-forced"])("refuses non-host readers at %s", async (channel) => {
+    const deps = makeDeps([]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    expect(await requiredFixture(handlers.get(channel))({ senderFrame: { url: "https://untrusted.example" } }, "tavily"))
+      .toMatchObject({ ok: false, error: "unauthorized-frame" });
+    expect(deps.settingsService.hasStoredSecret).not.toHaveBeenCalled();
+  });
+
+  it("keeps environment setting disclosures readable from the host renderer", async () => {
+    const deps = makeDeps([]);
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(deps as never);
+    expect(Array.isArray(await invoke("ave:settings:env-forced"))).toBe(true);
+  });
+
   it("broadcasts SETTINGS.updated to all app windows after storing the web key", async () => {
     const windows = [makeWindow(), makeWindow()];
     const deps = makeDeps(windows);
@@ -275,9 +314,9 @@ describe("set-web-api-key broadcast (MAJOR-3)", () => {
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
 
-    await invoke("ave:settings:set-web-api-key", "bing", "bing-key-123");
+    await invoke("ave:settings:set-web-api-key", "tavily", "fixture-web-key");
 
-    expect(deps.settingsService.setSecret).toHaveBeenCalledWith("web.apiKey.bing", "bing-key-123");
+    expect(deps.settingsService.setSecret).toHaveBeenCalledWith("web.apiKey.tavily", "fixture-web-key");
     for (const win of windows) {
       expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
@@ -294,9 +333,9 @@ describe("delete-web-api-key broadcast (MAJOR-3)", () => {
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
 
-    await invoke("ave:settings:delete-web-api-key", "bing");
+    await invoke("ave:settings:delete-web-api-key", "tavily");
 
-    expect(deps.settingsService.deleteSecret).toHaveBeenCalledWith("web.apiKey.bing");
+    expect(deps.settingsService.deleteSecret).toHaveBeenCalledWith("web.apiKey.tavily");
     for (const win of windows) {
       expect(win.webContents.send).toHaveBeenCalledWith(SETTINGS.updated, { ...snapshot, activeChatModel: NO_CONNECTED_PROVIDER });
     }
@@ -1465,14 +1504,14 @@ describe("the renderer settings snapshot", () => {
     const deps = makeDeps([makeWindow()]);
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
-    expect(await handlers.get("ave:settings:get")!({ senderFrame: { url } })).toHaveProperty("llm");
+    expect(await requiredFixture(handlers.get("ave:settings:get"))({ senderFrame: { url } })).toHaveProperty("llm");
   });
 
   it.each([undefined, "ave-mcp-app://server/proxy.html", "https://untrusted.test"])("refuses a non-host settings reader at %s", async (url) => {
     const deps = makeDeps([makeWindow()]);
     const { registerSettingsHandlers } = await import("../settings.js");
     registerSettingsHandlers(deps as never);
-    expect(await handlers.get("ave:settings:get")!(url ? { senderFrame: { url } } : {})).toEqual({ ok: false, error: "unauthorized-frame" });
+    expect(await requiredFixture(handlers.get("ave:settings:get"))(url ? { senderFrame: { url } } : {})).toEqual({ ok: false, error: "unauthorized-frame" });
     expect(deps.settingsService.getAll).not.toHaveBeenCalled();
   });
 

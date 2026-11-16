@@ -135,10 +135,8 @@ export interface SettingsOrchestrationState {
   lastSaveError: { tab: string; message: string } | null;
   /** Programmatic clear — used when the user opens the dialog fresh. */
   clearLastSaveError: () => void;
-  /** Rehydrate the in-memory LLM draft from a freshly-read settings snapshot. Used by host-managed login so the renderer
-   * cache and visible fields move together after the backend writes provider/model/key state. */
-  hydrateLlmFromSettings: (settings: AppSettings) => void;
-  /** Invalidate scheduled manual LLM saves when host-managed login takes ownership of provider/model/key state. */
+  loadError: string | null;
+  retryLoad: () => void;
 
   save: (tab: string) => Promise<boolean>;
   vendorInfo: VendorOption;
@@ -173,7 +171,9 @@ export function useSettingsOrchestration(
   const [enableThinking, setEnableThinkingState] = useState(true);
   const [thinkingBudget, setThinkingBudgetState] = useState(() => getLlmVendorSettings(undefined, DEFAULT_LLM_VENDOR).thinkingBudgetTokens);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [loadRevision] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadRevision, setLoadRevision] = useState(0);
+  const retryLoad = useCallback(() => setLoadRevision((revision) => revision + 1), []);
   const [baseUrl, setBaseUrl] = useState("");
   const [streamSmoothing, setStreamSmoothingState] = useState<"none" | "word" | "char">("none");
   const [fallbackChain, setFallbackChainState] = useState<FallbackEntry[]>([]);
@@ -322,9 +322,12 @@ export function useSettingsOrchestration(
       setSubAgentMaxRounds(liveValues.subAgentMaxRounds);
       setFallbackChainState(s.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
       setSettingsLoaded(true);
-    })();
+      setLoadError(null);
+    })().catch(() => {
+      if (!cancelled) setLoadError(t("useSettingsOrchestration.loadFailed"));
+    });
     return () => { cancelled = true; };
-  }, [api]);
+  }, [api, loadRevision, reloadEpoch]);
 
   // Stay in sync with cross-window settings broadcasts. Updating the snapshot refreshes the cached source that the
   // vendor-switch effect consults; the userTouchedRef-style guards in this hook protect in-flight form edits.
@@ -401,25 +404,6 @@ export function useSettingsOrchestration(
     vendor, api, settingsLoaded, settingsSnapshot, activeCredentialProviderId,
     marketplaceProviderPresetId,
   ]);
-
-  function hydrateLlmFromSettings(next: AppSettings): void {
-    providerSelectionRef.current = false;
-    const nextVendor = isLLMVendor(next.llm.provider)
-      ? next.llm.provider
-      : DEFAULT_LLM_VENDOR;
-    const block = getLlmVendorSettings(next.llm.vendors, nextVendor);
-    const providerPresetId = nextVendor === "openai-compatible"
-      ? next.llm.marketplaceProviderPresetId ?? ""
-      : "";
-    hydratedVendorRef.current = nextVendor;
-    setSettingsSnapshot(next);
-    setVendor(nextVendor);
-    setMarketplaceProviderPresetId(providerPresetId);
-    setMarketplaceProviderPresets(next.marketplace?.installedProviderPresets ?? []);
-    hydrateVendorBlock(block, providerPresetId);
-    setStreamSmoothingState(next.llm.streamSmoothing);
-    setFallbackChainState(next.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
-  }
 
   // Re-check web key when webProvider changes
   useEffect(() => {
@@ -813,7 +797,7 @@ export function useSettingsOrchestration(
   return {
     lastSaveError,
     clearLastSaveError,
-    hydrateLlmFromSettings,
+    loadError, retryLoad,
     vendor,
     retiredLlmProvider: settingsSnapshot?.llm.retiredProvider ?? null,
     providerCredentialDrafts, setProviderCredentialDrafts,

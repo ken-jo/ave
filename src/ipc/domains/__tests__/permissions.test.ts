@@ -6,7 +6,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { migrateAveHomeConfiguration } from "../../../shared/ave-home-configuration.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import type { PluginReadjudicationEvidence, ScopedPermissionRule, ScopedPermissionRuleError } from "../../../shared/permissions-events.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
@@ -44,6 +45,7 @@ vi.mock("electron", () => ({
 // `policyGet` must attach the host-derived `editable` flag. loadPolicy itself reads real OS paths (/etc/ave,
 // %ProgramData%), so the file layer is stubbed while the handler under test; and the predicate it calls; stay real.
 const loadPolicyMock = vi.hoisted(() => vi.fn());
+const savePolicyMock = vi.hoisted(() => vi.fn());
 const egressRuntimeMock = vi.hoisted(() => ({
   listEgressGrants: vi.fn(async (): Promise<unknown[]> => []),
   revokeEgressGrant: vi.fn(async (_target: unknown) => ({ removed: true, closed: 0 })),
@@ -52,7 +54,7 @@ vi.mock("../../../permissions/egress-runtime.js", () => egressRuntimeMock);
 
 vi.mock("../../../permissions/policy-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../permissions/policy-store.js")>();
-  return { ...actual, loadPolicy: loadPolicyMock };
+  return { ...actual, loadPolicy: loadPolicyMock, savePolicy: savePolicyMock };
 });
 
 vi.mock("../../../permissions/user-approval-store.js", async (importOriginal) => {
@@ -243,9 +245,46 @@ async function setup(options: Parameters<typeof makeDeps>[0] = {}) {
 }
 
 beforeEach(() => {
+  migrateAveHomeConfiguration(aveHome(), ensureAveHomePrivate(aveHome()));
   handlers.clear();
   recordApprovalMock.mockClear();
   readWindowsStatusMock.mockReset();
+  savePolicyMock.mockReset();
+});
+
+describe("policy patch validation and failure kinds", () => {
+  it.each([null, [], "invalid", { managed: false }, { extra: true }, { version: 2 }, { requireExplicitApproval: "false" }])("rejects unsupported policy patch %j", async (patch) => {
+    await setup();
+    expect(await invoke(PERMISSIONS.policySet, { patch, intent: USER_INTENT })).toMatchObject({ ok: false, error: "invalid-patch" });
+    expect(savePolicyMock).not.toHaveBeenCalled();
+  });
+
+  it("reports a storage error separately from a managed policy refusal", async () => {
+    await setup();
+    savePolicyMock.mockRejectedValueOnce(new Error("disk unavailable"));
+    expect(await invoke(PERMISSIONS.policySet, { patch: { requireExplicitApproval: false }, intent: USER_INTENT }))
+      .toEqual({ ok: false, error: "policy-save-failed" });
+    const { PolicyWriteError } = await import("../../../permissions/policy-store.js");
+    savePolicyMock.mockRejectedValueOnce(new PolicyWriteError("managed", "Policy is managed."));
+    expect(await invoke(PERMISSIONS.policySet, { patch: { requireExplicitApproval: false }, intent: USER_INTENT }))
+      .toEqual({ ok: false, error: "managed" });
+  });
+
+  it.each([PERMISSIONS.getMode, PERMISSIONS.listRules, PERMISSIONS.policyGet])("guards read handler %s before reading host state", async (channel) => {
+    const { permissionManager } = await setup();
+    expect(await invokeRegisteredHandlerWithEvent(handlers, channel, isolatedAppFrameEvent())).toEqual(UNAUTHORIZED_FRAME);
+    expect(permissionManager.getMode).not.toHaveBeenCalled();
+    expect(permissionManager.listPersistedRules).not.toHaveBeenCalled();
+  });
+
+  it("keeps mode, rules and policy readable from the host renderer", async () => {
+    const { permissionManager } = await setup({ mode: "strict" });
+    expect(await invoke(PERMISSIONS.getMode)).toMatchObject({ mode: "strict" });
+    expect(await invoke(PERMISSIONS.listRules)).toEqual([]);
+    expect(permissionManager.listPersistedRules).toHaveBeenCalledOnce();
+    loadPolicyMock.mockResolvedValueOnce({ version: 1, requireExplicitApproval: true, managed: false, source: "defaults", updatedAt: "2026-01-01T00:00:00Z" });
+    expect(await invoke(PERMISSIONS.policyGet)).toMatchObject({ editable: true });
+  });
 });
 
 describe("permissions IPC handlers", () => {

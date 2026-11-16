@@ -92,6 +92,24 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it("exposes an initial load failure and recovers on an explicit user retry", async () => {
+    const settings = makeSettings();
+    let completeRetry!: (settings: AppSettings) => void;
+    const getSettings = vi.fn().mockRejectedValueOnce(new Error("Storage unavailable")).mockImplementationOnce(() => new Promise<AppSettings>((resolve) => { completeRetry = resolve; }));
+    const api = makeSettingsApi({ settings }, { getSettings });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.loadError).toBeTruthy());
+    expect(result.current.settingsLoaded).toBe(false);
+    expect(getSettings).toHaveBeenCalledOnce();
+    act(() => result.current.retryLoad());
+    expect(result.current.loadError).toBeTruthy();
+    await act(async () => { completeRetry(settings); await Promise.resolve(); });
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    expect(result.current.loadError).toBeNull();
+    expect(getSettings).toHaveBeenCalledTimes(2);
+    expect(result.current.model).toBe(settings.llm.vendors.openai!.model);
+  });
+
   it("keeps a newer feature edit across unrelated broadcasts and an older write failure", async () => {
     const settings = makeSettings();
     settings.features = { ...settings.features, idlePreferenceRefresh: false };
@@ -368,7 +386,8 @@ describe("useSettingsOrchestration", () => {
     await waitFor(() => expect(result.current.retiredLlmProvider).toBe("copilot"));
     const next = structuredClone(settings);
     delete next.llm.retiredProvider;
-    act(() => result.current.hydrateLlmFromSettings(next));
+    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    act(() => broadcast(next));
     expect(result.current.retiredLlmProvider).toBeNull();
   });
   it("hydrates and saves the processing detail through the chat patch", async () => {

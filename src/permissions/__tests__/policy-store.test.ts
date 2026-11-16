@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { dirname, join, parse, resolve } from "node:path";
 import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { tmpdir } from "node:os";
-import { loadPolicy, savePolicy, getAdminPolicyPath } from "../policy-store.js";
+import { loadPolicy, savePolicy, getAdminPolicyPath, PolicyWriteError } from "../policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { makeTestPolicy } from "./test-helpers.js";
 
@@ -134,16 +134,18 @@ describe("policy-store", () => {
 
     await expect(
       savePolicy({ requireExplicitApproval: false }, USER_PATH, ADMIN_PATH),
-    ).rejects.toThrow("IT 관리 정책은 사용자가 변경할 수 없습니다.");
+    ).rejects.toMatchObject({ code: "managed", name: "PolicyWriteError" });
   });
 
-  it("managed 플래그는 사용자가 patch로 변경 불가", async () => {
-    const saved = await savePolicy(
-      // @ts-expect-error — 의도적 타입 위반 테스트
-      { requireExplicitApproval: false, managed: true },
-      USER_PATH, ADMIN_PATH,
-    );
-    expect(saved.managed).toBe(false);
+  it.each(["managed", "version", "updatedAt", "source", "extra"])("refuses unsupported policy field %s before writing", async (field) => {
+    const patch = { requireExplicitApproval: false, [field]: true };
+    await expect(savePolicy(patch, USER_PATH, ADMIN_PATH)).rejects.toMatchObject({ code: "invalid-patch" });
+    expect(existsSync(USER_PATH)).toBe(false);
+  });
+
+  it.each([null, [], "false", { requireExplicitApproval: "false" }, { requireExplicitApproval: 0 }])("refuses malformed policy patch %j", async (patch) => {
+    await expect(savePolicy(patch as never, USER_PATH, ADMIN_PATH)).rejects.toBeInstanceOf(PolicyWriteError);
+    expect(existsSync(USER_PATH)).toBe(false);
   });
 
   it("동시 2개 save가 serialize — 둘 다 반영됨", async () => {

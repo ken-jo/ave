@@ -226,11 +226,11 @@ export function StartupTab() {
       const value = Number(event.target.value);
       // The option values come from the frozen list above, so a value outside it means the DOM was tampered with rather than a
       // choice being made.
-      if (!SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS.includes(value)) return;
+      if (value === shutdownCleanupTimeoutMs || !SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS.includes(value)) return;
       setShutdownCleanupTimeoutMs(value);
       persistSystem({ shutdownCleanupTimeoutMs: value });
     },
-    [persistSystem],
+    [persistSystem, shutdownCleanupTimeoutMs],
   );
 
   const handleCloseBehaviorChange = useCallback(
@@ -588,13 +588,13 @@ export function StartupTab() {
             disabled={!loaded || envForcedPaths.includes("system.shutdownCleanupTimeoutMs")}
             data-testid="startup-shutdown-timeout"
           >
-            {SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS.map((ms) => (
+            {[...new Set([...SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS, shutdownCleanupTimeoutMs])].sort((a, b) => a - b).map((ms) => (
               <NativeSelectOption key={ms} value={String(ms)}>
                 {t(
                   ms === TOOL_TIMEOUT_POLICY.shutdownCleanupMs
                     ? "startupTab.shutdownTimeoutSecondsDefault"
                     : "startupTab.shutdownTimeoutSeconds",
-                  { seconds: String(Math.round(ms / 1000)) },
+                  { seconds: String(ms / 1000) },
                 )}
               </NativeSelectOption>
             ))}
