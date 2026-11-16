@@ -350,7 +350,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "attachmentChip.collapsedAriaLabel": "첨부 {total}개 — 목록 보기",
   "attachmentChip.collapsedTitle": "첨부 목록 보기",
   "attachmentChip.overlayCount": "첨부 {count}개",
-  "attachmentChip.overlayRemoveHint": "제거: textarea 의 [...#N] 삭제",
+  "attachmentChip.overlayRemoveHint": "여기서 삭제하거나 입력창의 [...#N] 표시를 지우세요",
   "attachmentChip.pastedFromClipboard": "클립보드에서 붙여넣음",
   "attachmentChip.pastedTextOriginal": "붙여넣은 텍스트 #{n} 원문",
   "attachmentChip.pastedTextMore": "… 나머지 {count}자는 여기 표시하지 않습니다 (전송에는 모두 포함)",
@@ -358,6 +358,16 @@ export const ko: Record<MessageCatalogKey, string> = {
   "attachmentChip.openExternalButton": "열기",
   "attachmentChip.resourceFromServer": "MCP 서버 {server} 제공 · 비신뢰 콘텐츠",
   "attachmentChip.resourceClipped": "MCP 서버 {server} 제공 · 비신뢰, 일부 잘림",
+  "attachmentChip.imageLabel": "이미지 #{n}",
+  "attachmentChip.fileLabel": "파일 #{n}",
+  "attachmentChip.resourceLabel": "리소스 #{n}",
+  "attachmentChip.pasteLabel": "붙여넣은 텍스트 #{n}",
+  "attachmentChip.pasteLines": "+{count}줄",
+  "attachmentChip.pasteLinesChars": "+{lines}줄 · {chars}자",
+  "attachmentChip.badgeFull": "{used}/{max} 가득 참",
+  "attachmentChip.removeAttachment": "{label} 삭제",
+  "clipboardPaste.imageTooLarge": "클립보드 이미지가 {maxMb}MB보다 큽니다.",
+  "clipboardPaste.notImage": "클립보드에 첨부할 수 있는 이미지가 없습니다.",
 
   // auditPanel
   "auditPanel.title": "권한 감사 로그",
@@ -1607,10 +1617,10 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // clipboardPaste
   "clipboardPaste.attachmentLimitReached": "첨부 {max}개 한도에 도달 — 더 추가하려면 textarea 의 [...#N] 마커를 지워주세요",
-  "clipboardPaste.imageSaveFailed": "클립보드 이미지 저장 실패",
-  "clipboardPaste.imageSaveFailedWithError": "클립보드 이미지 저장 실패: {error}",
+  "clipboardPaste.imageSaveFailed": "클립보드 이미지를 저장하지 못했습니다.",
 
   // codeRewind
+  "clipboardPaste.imageSaveFailedWithError": "클립보드 이미지 저장 실패: {error}",
   "codeRewind.title": "이 턴으로 되돌아가기",
   "codeRewind.description": "코드 복원은 이 턴 이후 로컬 파일 편집 도구의 변경을 되돌립니다. Bash 등 셸 명령의 부수 효과는 추적하지 않습니다. 파일 전송과 원격 편집은 복원할 수 없습니다. 외부 변경이 있으면 코드 복원을 거부하고 충돌 파일을 표시합니다.",
   "codeRewind.limits": "대화별 최대 {turns}턴, 전체 {storage} MiB, 파일별 {file} MiB를 보관합니다. 오래된 체크포인트부터 삭제하며, 사용할 수 없는 체크포인트의 코드 복원은 거부합니다.",

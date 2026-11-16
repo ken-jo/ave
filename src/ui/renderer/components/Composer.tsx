@@ -29,7 +29,7 @@ import {
   type FileAttachment,
   type ResourceAttachment,
 } from "../types/attachments.js";
-import { findMarkerAt, parseMarkers } from "../utils/attachment-markers.js";
+import { findMarkerAt, parseMarkers, removeMarker } from "../utils/attachment-markers.js";
 import { handleClipboardPaste } from "../utils/clipboard-paste.js";
 import { isComposingKeyEvent } from "../utils/ime-key-event.js";
 import { IDLE_PROMPT_HISTORY, stepPromptHistory, type PromptHistoryCursor } from "../utils/prompt-history.js";
@@ -190,8 +190,9 @@ export interface ComposerProps {
  * Single source of truth: the textarea body holds marker tokens
  * ([Image #N], [File #N], [Pasted text #N +X lines]). The attachment
  * list is derived per-render from `parseMarkers(text)`. When the user
- * deletes a marker, the matching attachment disappears automatically;
- * there is no separate ⓧ button on chips.
+ * deletes a marker, the matching attachment disappears automatically. A
+ * chip's remove button does the same from the other side: it deletes the
+ * marker and the attachment together.
  */
 /** Keep optional plugin-selection fallback stable so memoized menu keyboard dependencies remain observable. */
 const NOOP_SELECT_PLUGIN = () => {};
@@ -462,8 +463,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const insertFileMention = useCallback((path: string) => insertFileMentionAttachment(path), [insertFileMentionAttachment]);
 
-  const removeFileReference = useCallback((attachment: FileAttachment) => {
-    const next = textRef.current.split(`[File #${attachment.n}]`).join("");
+  // Marker and attachment go in one flush: the marker-sync effect would otherwise see one without the other.
+  const removeAttachment = useCallback((attachment: Attachment) => {
+    const next = removeMarker(textRef.current, attachment.n);
     flushSync(() => {
       onAttachmentsChange((previous) => previous.filter((item) => item.id !== attachment.id));
       onTextChange(next);
@@ -935,7 +937,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         <div data-testid="composer-reference-strip" className="flex min-w-0 flex-wrap gap-1.5 px-3 pt-2 pb-1">
           {referenceAttachments.map((attachment) => (
             <AttachmentChip key={attachment.id} attachment={attachment} total={chipStripCount}
-              onRemove={() => removeFileReference(attachment)} />
+              onRemove={() => removeAttachment(attachment)} />
           ))}
         </div>
       )}
@@ -965,6 +967,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               attachment={ordinaryAttachments[0]}
               total={chipStripCount}
               onOpenExternal={openExternal}
+              onRemove={() => removeAttachment(ordinaryAttachments[0])}
             />
           </div>
         ) : ordinaryAttachments.length >= 2 ? (
@@ -976,6 +979,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               attachments={ordinaryAttachments}
               slotsUsed={chipStripCount}
               onOpenExternal={openExternal}
+              onRemove={removeAttachment}
             />
           </div>
         ) : null}

@@ -7,6 +7,7 @@ import { Composer, composerDropZoneProps, type ComposerHandle } from "../Compose
 import type { Attachment } from "../../types/attachments.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { FILE_MENTION_DRAG_MIME } from "../../../../shared/file-mention-reference.js";
+import { composerTextarea as textarea } from "./support/composer-textarea.js";
 
 const MATCHES = [
   { path: "/ws/src/app.ts", relativePath: "src/app.ts", root: "/ws", bytes: 12 },
@@ -42,8 +43,6 @@ function Harness({
     />
   );
 }
-
-const textarea = () => screen.getByTestId(TEST_IDS.composerTextarea) as HTMLTextAreaElement;
 
 describe("Composer changed-location references", () => {
   const reference = { path: "src/app.ts", startLine: 3, endLine: 5, turnId: "turn-1", hunkId: "hunk-1" };

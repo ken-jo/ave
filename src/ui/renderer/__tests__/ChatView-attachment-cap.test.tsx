@@ -4,6 +4,7 @@ import { act, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import { ATTACH_MAX_COUNT } from "../types/attachments.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
+import { t } from "../../../i18n/runtime.js";
 
 type AttachMock = {
   openFile: ReturnType<typeof vi.fn>;
@@ -76,8 +77,7 @@ describe("ChatView attachment 5-cap (handleAttach)", () => {
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(badge.textContent).toContain(`${ATTACH_MAX_COUNT}/${ATTACH_MAX_COUNT}`);
-    expect(badge.textContent).toContain("full");
+    expect(badge.textContent).toBe(t("attachmentChip.badgeFull", { used: ATTACH_MAX_COUNT, max: ATTACH_MAX_COUNT }));
 
     // Markers #1..#5 landed in the composer body; the dropped 6th did not.
     const textarea = container.querySelector(
@@ -107,8 +107,7 @@ describe("ChatView attachment 5-cap (handleAttach)", () => {
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(badge.textContent).toContain(`${ATTACH_MAX_COUNT}/${ATTACH_MAX_COUNT}`);
-    expect(badge.textContent).toContain("full");
+    expect(badge.textContent).toBe(t("attachmentChip.badgeFull", { used: ATTACH_MAX_COUNT, max: ATTACH_MAX_COUNT }));
 
     const textarea = container.querySelector(
       testIdSelector(TEST_IDS.composerTextarea),

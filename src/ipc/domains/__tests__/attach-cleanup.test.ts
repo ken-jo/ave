@@ -25,6 +25,7 @@ vi.mock("electron", () => ({
 
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { registerAttachHandlers } from "../attach.js";
+import { MAX_COMPOSER_IMAGE_BYTES } from "../../../shared/composer-image-input.js";
 
 const PNG_BASE64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64");
 const invoke = (channel: string, ...args: unknown[]) => invokeAppIpcHandler(handlers, channel, ...args);
@@ -212,6 +213,16 @@ describe("ave:attach:openFile refusals (F10)", () => {
         { name: "setup.exe", reason: "denied-extension" },
         { name: "gone.txt", reason: "not-found" },
       ],
+    });
+  });
+});
+
+describe("ave:attach:saveClipboardImage size refusal (F20)", () => {
+  it("answers an oversized clipboard image with a bare code, never the byte counts", async () => {
+    const oversized = "A".repeat(MAX_COMPOSER_IMAGE_BYTES * 2 + 4);
+    expect(await invoke(CHANNELS.attach.saveClipboardImage, { base64: oversized })).toEqual({
+      ok: false,
+      error: "clipboard_too_large",
     });
   });
 });

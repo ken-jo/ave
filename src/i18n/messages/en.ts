@@ -348,7 +348,7 @@ export const en = {
   "attachmentChip.collapsedAriaLabel": "{total} attachments — view list",
   "attachmentChip.collapsedTitle": "View attachment list",
   "attachmentChip.overlayCount": "{count} attachments",
-  "attachmentChip.overlayRemoveHint": "To remove: delete the [...#N] marker in the textarea",
+  "attachmentChip.overlayRemoveHint": "Remove one here, or delete its [...#N] marker",
   "attachmentChip.pastedFromClipboard": "Pasted from clipboard",
   "attachmentChip.pastedTextOriginal": "Original text of pasted text #{n}",
   "attachmentChip.pastedTextMore": "… {count} more characters not shown here (all of it is sent)",
@@ -356,6 +356,16 @@ export const en = {
   "attachmentChip.openExternalButton": "Open",
   "attachmentChip.resourceFromServer": "From MCP server {server} · untrusted content",
   "attachmentChip.resourceClipped": "From MCP server {server} · untrusted, clipped",
+  "attachmentChip.imageLabel": "Image #{n}",
+  "attachmentChip.fileLabel": "File #{n}",
+  "attachmentChip.resourceLabel": "Resource #{n}",
+  "attachmentChip.pasteLabel": "Pasted text #{n}",
+  "attachmentChip.pasteLines": "+{count} lines",
+  "attachmentChip.pasteLinesChars": "+{lines} lines · {chars} chars",
+  "attachmentChip.badgeFull": "{used}/{max} full",
+  "attachmentChip.removeAttachment": "Remove {label}",
+  "clipboardPaste.imageTooLarge": "The clipboard image is larger than {maxMb} MB.",
+  "clipboardPaste.notImage": "The clipboard did not hold an image this app can attach.",
 
   // auditPanel
   "auditPanel.title": "Permission Audit Log",
@@ -1605,10 +1615,10 @@ export const en = {
 
   // clipboardPaste
   "clipboardPaste.attachmentLimitReached": "Attachment limit of {max} reached — remove a [...#N] marker in the textarea to add more",
-  "clipboardPaste.imageSaveFailed": "Clipboard image save failed",
-  "clipboardPaste.imageSaveFailedWithError": "Clipboard image save failed: {error}",
+  "clipboardPaste.imageSaveFailed": "The clipboard image could not be saved.",
 
   // codeRewind
+  "clipboardPaste.imageSaveFailedWithError": "Clipboard image save failed: {error}",
   "codeRewind.title": "Rewind to this turn",
   "codeRewind.description": "Code restore covers local file-edit tools from this turn onward. Bash and other shell side effects are not tracked. File transfers and remote edits cannot be restored. External file changes block code restore and are listed as conflicts.",
   "codeRewind.limits": "Up to {turns} turns per conversation, {storage} MiB total and {file} MiB per file. Oldest checkpoints are pruned; unavailable checkpoints refuse code restore.",

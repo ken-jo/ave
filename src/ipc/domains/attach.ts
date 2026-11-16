@@ -426,17 +426,11 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         }
         if (input.base64.length > MAX_CLIPBOARD_BASE64_INPUT_CHARS) {
           // Allow base64 expansion while rejecting pathological strings before allocation.
-          return {
-            ok: false,
-            error: `clipboard_too_large: ${input.base64.length} > ${MAX_CLIPBOARD_BASE64_INPUT_CHARS}`,
-          };
+          return { ok: false, error: "clipboard_too_large" };
         }
         const buf = Buffer.from(input.base64, "base64");
         if (buf.length > MAX_COMPOSER_IMAGE_BYTES) {
-          return {
-            ok: false,
-            error: `clipboard_too_large: ${buf.length} > ${MAX_COMPOSER_IMAGE_BYTES}`,
-          };
+          return { ok: false, error: "clipboard_too_large" };
         }
         // Clipboard extensions are untrusted; verify magic bytes before provider delivery or temp storage.
         const detected = sniffComposerImageFormat(buf);

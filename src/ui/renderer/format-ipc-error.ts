@@ -428,6 +428,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "clipboard-image-not-owned": "formatIpcError.pathNotAuthorized",
   "not_image": "formatIpcError.notImage",
   "image_too_large": "formatIpcError.imageTooLarge",
+  "clipboard_too_large": "formatIpcError.imageTooLarge",
   "invalid_payload": "formatIpcError.invalidPayloadSnake",
   "denied_extension": "formatIpcError.deniedExtension",
   "no-store": "formatIpcError.noStore",
@@ -560,6 +561,16 @@ const DEFAULT_APP_REFUSALS_WITH_OWN_MESSAGE: ReadonlySet<string> = new Set(["typ
 export function defaultAppOpenErrorKey(code: string | undefined): string {
   const key = code !== undefined && DEFAULT_APP_REFUSALS_WITH_OWN_MESSAGE.has(code) ? resolveIpcErrorKey(code) : undefined;
   return key ?? "chatPreviewRail.openDefaultAppError";
+}
+
+/** What a person is told when a pasted image could not be saved (`attach.saveClipboardImage`). A known cause gets its own
+ * sentence. Anything else, an operating-system error text included, is reported as a failed save and never shown raw. */
+export function clipboardImageErrorMessage(code: string | undefined): string {
+  if (code === "clipboard_too_large") {
+    return t("clipboardPaste.imageTooLarge", { maxMb: MAX_COMPOSER_IMAGE_BYTES / (1024 * 1024) });
+  }
+  if (code === "not_image") return t("clipboardPaste.notImage");
+  return t("clipboardPaste.imageSaveFailed");
 }
 
 const ATTACHMENT_REJECT_REASON_KEYS: Record<AttachmentRejectReason, string> = {

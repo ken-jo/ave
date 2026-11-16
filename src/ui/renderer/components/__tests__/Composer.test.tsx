@@ -17,6 +17,7 @@ import { MCP_RESOURCE_ATTACHMENTS_PER_TURN } from "../../../../shared/mcp-resour
 import { PASTE_INLINE_MAX_CHARS } from "../../types/attachments.js";
 import type { SubscriptionImageAttachmentLimits } from "../../../../shared/subscription-runtime.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { composerTextarea } from "./support/composer-textarea.js";
 
 // Stable across renders ON PURPOSE. Passing nothing let Composer's default parameter
 // mint a fresh `[]` every render, which rebuilt the memoized keydown handler every
@@ -1442,7 +1443,7 @@ describe("Composer — @ resource mention", () => {
     expect(screen.getByTestId("composer-limit-warning")).toBeTruthy();
   });
 
-  it("counts two resources and three images as three slots, on the chip and for the limit (F11)", () => {
+  it("counts two resources and three images as three slots, on the chip and for the limit", () => {
     installMcpApi();
     const images: Attachment[] = Array.from({ length: 3 }, (_, i) => ({ ...img1, id: `i${i}`, n: i + 1 }));
     const resources: Attachment[] = Array.from({ length: 2 }, (_, i) => ({
@@ -1460,5 +1461,46 @@ describe("Composer — @ resource mention", () => {
     // Five chips are stacked, and the badge counts the three that take a slot.
     expect(screen.getByTestId("chip-stack").getAttribute("data-layers")).toBe("5");
     expect(screen.getByTestId("chip-count-badge").textContent).toBe("3/5");
+  });
+});
+
+describe("Composer — removing an attachment from its chip", () => {
+  const textarea = composerTextarea;
+
+  it("removes a single chip's attachment and its marker together", () => {
+    render(<Harness initialText="see [Image #1] here" initialAttachments={[img1]} />);
+    fireEvent.click(screen.getByTestId("attachment-chip-remove"));
+    expect(textarea().value).toBe("see here");
+    expect(screen.queryByTestId("attachment-chip")).toBeNull();
+    expect(screen.queryByTestId("composer-strip")).toBeNull();
+    expect(document.activeElement).toBe(textarea());
+  });
+
+  it("removes one attachment from a stacked chip and keeps the others", () => {
+    render(<Harness initialText="[Image #1] [Image #2] compare" initialAttachments={[img1, img2]} />);
+    fireEvent.click(screen.getByTestId("attachment-chip-collapsed"));
+    fireEvent.click(screen.getAllByTestId("overlay-item-remove")[0]);
+    expect(textarea().value).toBe("[Image #2] compare");
+    // One left: the stack becomes a single chip, still attached.
+    expect(screen.queryByTestId("attachment-chip-collapsed")).toBeNull();
+    expect(screen.getByTestId("attachment-chip")).toBeTruthy();
+  });
+
+  it("removes a pasted text whose marker lost its line count", () => {
+    const paste: Attachment = { id: "p9", n: 9, kind: "paste", text: "a\nb\nc", lines: 3, chars: 5 };
+    render(<Harness initialText="log: [Pasted text #9] end" initialAttachments={[paste]} />);
+    fireEvent.click(screen.getByTestId("attachment-chip-remove"));
+    expect(textarea().value).toBe("log: end");
+    expect(screen.queryByTestId("attachment-chip")).toBeNull();
+  });
+
+  it("frees the slot: the limit notice goes away when one of five is removed", () => {
+    const five: Attachment[] = Array.from({ length: 5 }, (_, i) => ({ ...img1, id: `i${i}`, n: i + 1 }));
+    render(<Harness initialText={five.map((a) => `[Image #${a.n}]`).join(" ")} initialAttachments={five} />);
+    expect(screen.getByTestId("composer-limit-warning")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("attachment-chip-collapsed"));
+    fireEvent.click(screen.getAllByTestId("overlay-item-remove")[4]);
+    expect(screen.queryByTestId("composer-limit-warning")).toBeNull();
+    expect(screen.getByTestId("chip-count-badge").textContent).toBe("4/5");
   });
 });

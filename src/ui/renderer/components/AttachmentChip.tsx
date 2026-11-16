@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { TranslateFn } from "../../../i18n/translate.js";
 import { File as FileIcon, ClipboardPaste, Database, Link2, X } from "lucide-react";
 import { displaySafeLabel } from "../../../shared/display-safe-text.js";
 import { MCP_RESOURCE_URI_MAX_CHARS } from "../../../shared/mcp-resource-bounds.js";
@@ -43,14 +44,14 @@ const STACK_COLORS = [
 
 const STACK_OFFSET_PX = 2;
 
-function ImageThumb({ att }: { att: Extract<Attachment, { kind: "image" }> }) {
+function ImageThumb({ att, alt }: { att: Extract<Attachment, { kind: "image" }>; alt: string }) {
   const longest = Math.max(att.width, att.height) || 1;
   const w = Math.round((att.width / longest) * THUMB_MAX_PX);
   const h = Math.round((att.height / longest) * THUMB_MAX_PX);
   return (
     <img
       src={att.dataUrl}
-      alt={`Image #${att.n}`}
+      alt={alt}
       width={w}
       height={h}
       style={{ width: w, height: h, objectFit: "contain" }}
@@ -83,13 +84,28 @@ function ResourceThumb() {
   );
 }
 
-function chipLabel(att: Attachment): string {
+function chipLabel(att: Attachment, t: TranslateFn): string {
   if (att.kind === "image") return `#${att.n}`;
   if (att.kind === "file") return att.location
     ? fileMentionReferenceLabel({ path: att.path, ...att.location })
     : collapsePath(att.name);
   if (att.kind === "resource") return att.label;
-  return `+${att.lines} lines`;
+  return t("attachmentChip.pasteLines", { count: att.lines });
+}
+
+/** The attachment's kind and number in the reader's language, e.g. "Image #2". The marker in the message body stays
+ * `[Image #2]` in every language: it is part of what is sent. */
+function attachmentTitle(att: Attachment, t: TranslateFn): string {
+  if (att.kind === "image") return t("attachmentChip.imageLabel", { n: att.n });
+  if (att.kind === "file") return t("attachmentChip.fileLabel", { n: att.n });
+  if (att.kind === "resource") return t("attachmentChip.resourceLabel", { n: att.n });
+  return t("attachmentChip.pasteLabel", { n: att.n });
+}
+
+/** What a remove button names: the file or resource by its name, an image or pasted text by its kind and number. */
+function removeLabel(att: Attachment, t: TranslateFn): string {
+  const subject = att.kind === "file" ? att.name : att.kind === "resource" ? att.label : attachmentTitle(att, t);
+  return t("attachmentChip.removeAttachment", { label: subject });
 }
 
 function badgeClass(count: number): string {
@@ -143,8 +159,9 @@ function StackVisual({ layers }: { layers: number }) {
  * is a popover trigger so the user can inspect the file path and open the
  * file in the OS's default app, matching the multi-attachment overlay UX.
  *
- * Path references use a removable inline chip. Ordinary attachments retain
- * their popover; removing a reference also removes its composer marker.
+ * Path references use a removable inline chip. Ordinary attachments keep
+ * their popover and carry a remove button beside it. Removing either kind
+ * also removes its composer marker.
  */
 export function AttachmentChip({
   attachment,
@@ -176,19 +193,21 @@ export function AttachmentChip({
     );
   }
   return (
+    // The remove button is the chip's sibling, not its child: the chip is itself a button.
+    <span className="relative inline-flex">
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
           data-testid="attachment-chip"
-          aria-label={t("attachmentChip.chipAriaLabel", { label: chipLabel(attachment) })}
+          aria-label={t("attachmentChip.chipAriaLabel", { label: chipLabel(attachment, t) })}
           className="flex max-w-20 flex-col items-center gap-1 rounded-sm select-none focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
           title={attachment.kind === "file" && attachment.location
             ? t("attachmentChip.locationSourceTurn", { turn: attachment.location.turnId })
             : t("attachmentChip.chipTitle")}
         >
           {attachment.kind === "image" ? (
-            <ImageThumb att={attachment} />
+            <ImageThumb att={attachment} alt={attachmentTitle(attachment, t)} />
           ) : attachment.kind === "file" ? (
             <FileThumb />
           ) : attachment.kind === "resource" ? (
@@ -199,9 +218,9 @@ export function AttachmentChip({
           <span
             className={`max-w-full truncate text-tiny font-mono ${badgeClass(total)}`}
             data-testid="chip-count-badge"
-            title={`${chipLabel(attachment)} · ${total}/${ATTACH_MAX_COUNT}`}
+            title={`${chipLabel(attachment, t)} · ${total}/${ATTACH_MAX_COUNT}`}
           >
-            {chipLabel(attachment)} · {total}/{ATTACH_MAX_COUNT}
+            {chipLabel(attachment, t)} · {total}/{ATTACH_MAX_COUNT}
           </span>
         </button>
       </PopoverTrigger>
@@ -215,9 +234,23 @@ export function AttachmentChip({
         <AttachmentOverlay
           attachments={[attachment]}
           onOpenExternal={onOpenExternal}
+          onRemove={onRemove}
         />
       </PopoverContent>
     </Popover>
+    {onRemove ? (
+      <button
+        type="button"
+        data-testid="attachment-chip-remove"
+        onClick={onRemove}
+        aria-label={removeLabel(attachment, t)}
+        title={removeLabel(attachment, t)}
+        className="absolute right-0 top-0 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-background text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <X aria-hidden="true" className="h-3 w-3" />
+      </button>
+    ) : null}
+    </span>
   );
 }
 
@@ -231,11 +264,14 @@ export function AttachmentChipCollapsed({
   attachments,
   slotsUsed,
   onOpenExternal,
+  onRemove,
 }: {
   attachments: Attachment[];
   /** Composer slots in use (`attachmentSlotsUsed`), which the badge counts against the limit. */
   slotsUsed: number;
   onOpenExternal?: OpenAttachmentExternally;
+  /** Remove one attachment and its marker; each row of the list gets a button for it. */
+  onRemove?: (attachment: Attachment) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
@@ -256,8 +292,9 @@ export function AttachmentChipCollapsed({
             className={`max-w-full truncate text-tiny font-mono ${badgeClass(slotsUsed)}`}
             data-testid="chip-count-badge"
           >
-            {slotsUsed}/{ATTACH_MAX_COUNT}
-            {isFull ? " full" : ""}
+            {isFull
+              ? t("attachmentChip.badgeFull", { used: slotsUsed, max: ATTACH_MAX_COUNT })
+              : `${slotsUsed}/${ATTACH_MAX_COUNT}`}
           </span>
         </button>
       </PopoverTrigger>
@@ -271,6 +308,7 @@ export function AttachmentChipCollapsed({
         <AttachmentOverlay
           attachments={attachments}
           onOpenExternal={onOpenExternal}
+          onRemove={onRemove}
         />
       </PopoverContent>
     </Popover>
@@ -280,9 +318,8 @@ export function AttachmentChipCollapsed({
 /**
  * Overlay body — listed by attachment N, each row shows thumbnail + name +
  * collapsed path + meta. The "open externally" action delegates to the host
- * via window.ave.attach.openExternal (passed in as callback).
- *
- * No remove buttons: removal is exclusively via deleting the marker text.
+ * via window.ave.attach.openExternal (passed in as callback). With `onRemove`
+ * each row has a remove button; deleting the marker text removes it too.
  */
 /** Hand an attached file to the OS default app (`attach.openExternal`). */
 export type OpenAttachmentExternally = (path: string) => Promise<{ ok: boolean; error?: string }>;
@@ -290,9 +327,11 @@ export type OpenAttachmentExternally = (path: string) => Promise<{ ok: boolean; 
 export function AttachmentOverlay({
   attachments,
   onOpenExternal,
+  onRemove,
 }: {
   attachments: Attachment[];
   onOpenExternal?: OpenAttachmentExternally;
+  onRemove?: (attachment: Attachment) => void;
 }) {
   const { t } = useTranslation();
   // The i18n key of each attachment's last refused or failed open, by path.
@@ -320,7 +359,7 @@ export function AttachmentOverlay({
               {att.kind === "image" ? (
                 <img
                   src={att.dataUrl}
-                  alt={`Image #${att.n}`}
+                  alt={attachmentTitle(att, t)}
                   className="h-9 w-9 rounded object-contain"
                 />
               ) : att.kind === "file" ? (
@@ -333,13 +372,7 @@ export function AttachmentOverlay({
             </div>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium">
-                {att.kind === "image"
-                  ? `Image #${att.n}`
-                  : att.kind === "file"
-                    ? `File #${att.n}`
-                    : att.kind === "resource"
-                      ? `Resource #${att.n}`
-                      : `Pasted text #${att.n}`}
+                {attachmentTitle(att, t)}
               </div>
               <div
                 className="truncate font-mono text-tiny text-muted-foreground"
@@ -353,7 +386,7 @@ export function AttachmentOverlay({
                     ? att.location ? fileMentionReferenceLabel({ path: att.path, ...att.location }) : collapsePath(att.path)
                     : att.kind === "resource"
                       ? displaySafeLabel(att.uri, MCP_RESOURCE_URI_MAX_CHARS)
-                      : `+${att.lines} lines · ${att.chars} chars`}
+                      : t("attachmentChip.pasteLinesChars", { lines: att.lines, chars: att.chars })}
               </div>
               <div className="text-tiny text-muted-foreground/(--opacity-stronger)">
                 {att.kind === "image"
@@ -386,6 +419,18 @@ export function AttachmentOverlay({
                 title={t("attachmentChip.openExternalTitle")}
               >
                 ↗ {t("attachmentChip.openExternalButton")}
+              </button>
+            ) : null}
+            {onRemove ? (
+              <button
+                type="button"
+                data-testid="overlay-item-remove"
+                onClick={() => onRemove(att)}
+                aria-label={removeLabel(att, t)}
+                title={removeLabel(att, t)}
+                className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded border border-border text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <X aria-hidden="true" className="h-3 w-3" />
               </button>
             ) : null}
             {(att.kind === "image" || att.kind === "file") && openErrors[att.path] ? (
