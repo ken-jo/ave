@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { emitEvent as emitHostEvent } from "../../boot/types.js";
 import { PluginDeploymentDeniedError } from "../../plugins/deployment-guard.js";
-import { stripSecretFields } from "../../plugins/config-schema.js";
+import { applyConfigDefaults, compileConfigSchemaValidator, listSecretKeys, stripSecretFields } from "../../plugins/config-schema.js";
 import { shouldBlockPluginSecretRead, validateApiKeyLikeSecretValue } from "../../plugins/secret-shape.js";
 import { emitPluginConfigChange, SECRET_REDACTED_SENTINEL } from "../../plugins/config-change-bus.js";
 import { latestBootstrapStatus } from "../../boot/bootstrap-status.js";
@@ -510,8 +510,28 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         if (!manifest) {
           throw new Error(`Plugin not found: ${pluginId}`);
         }
-        const schema = manifest?.configSchema;
+        const schema = manifest.configSchema;
+        if (!config || typeof config !== "object" || Array.isArray(config)) {
+          throw new Error("Plugin configuration must be an object.");
+        }
         const stripped = stripSecretFields(schema, asPlainRecord(config));
+        if (schema) {
+          const secretKeys = listSecretKeys(schema);
+          for (const key of schema.required ?? []) {
+            if (secretKeys.has(key) && !await settingsService.hasStoredSecret(`plugin.${pluginId}.${key}`)) {
+              return pluginConfigError("plugin-config-secret-required", "Required secret must be stored before saving configuration.");
+            }
+          }
+          const validator = compileConfigSchemaValidator({
+            ...schema,
+            properties: Object.fromEntries(Object.entries(schema.properties).filter(([key]) => !secretKeys.has(key))),
+            required: schema.required?.filter((key) => !secretKeys.has(key)),
+          });
+          if (!validator) throw new Error("Plugin configuration schema is invalid.");
+          if (!validator(stripSecretFields(schema, applyConfigDefaults(schema, stripped)))) {
+            throw new Error("Plugin configuration does not match its schema.");
+          }
+        }
         const previous = settingsService.getPluginConfig(pluginId) ?? {};
         const savedConfig = await settingsService.setPluginConfig(pluginId, stripped);
         pluginRuntime.setConfigOverride(pluginId, savedConfig);
@@ -524,6 +544,7 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
         }
         return { manifest, savedConfig };
       });
+      if ("ok" in persisted) return persisted;
       // Host config writes may restart safely; see plugins/config-restart-policy.ts.
       if (pluginRuntime.getPluginManifest(pluginId) !== persisted.manifest) {
         throw new Error(`Plugin instance changed before config reload: ${pluginId}`);
@@ -565,7 +586,10 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
       if (!/^[A-Za-z][A-Za-z0-9._-]{0,127}$/.test(safePluginId)) {
         return pluginConfigError("plugin-config-secret-invalid-plugin-id", `Invalid pluginId: ${pluginId}`);
       }
-      const secretValue = String(value ?? "");
+      if (typeof value !== "string") {
+        return pluginConfigError("plugin-config-secret-invalid-value", "Secret value must be a string.");
+      }
+      const secretValue = value;
       const validationError = validateSecretConfigValue(safePluginId, key, secretValue);
       if (validationError) return validationError;
       const persisted = await withPluginInstallLock(safePluginId, async () => {
@@ -577,7 +601,18 @@ export function registerPluginsHandlers(deps: IpcDeps): void {
             `Plugin '${safePluginId}' configSchema does not declare a secret field '${key}'.`,
           );
         }
-        await settingsService.setSecret(`plugin.${safePluginId}.${key}`, secretValue);
+        if (secretValue === "") {
+          if (manifest?.configSchema?.required?.includes(key)) {
+            return pluginConfigError("plugin-config-secret-required", "Required secret cannot be deleted.");
+          }
+          await settingsService.deleteSecret(`plugin.${safePluginId}.${key}`);
+        } else {
+          const validator = compileConfigSchemaValidator({ properties: { [key]: prop }, required: [key] });
+          if (!validator?.({ [key]: secretValue })) {
+            throw new Error("Secret value does not match its schema.");
+          }
+          await settingsService.setSecret(`plugin.${safePluginId}.${key}`, secretValue);
+        }
         const current = settingsService.getPluginConfig(safePluginId) ?? {};
         // An update can mark an existing plaintext key secret, leaving a cleartext copy to remove.
         let mutatedCleartextConfig = false;

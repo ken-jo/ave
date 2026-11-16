@@ -956,6 +956,50 @@ describe("PluginConfigTab", () => {
 });
 
 describe("PluginConfigTab — §9.2 Track B configSchema rendering", () => {
+  it("localizes a required-secret refusal from the owning configuration writer", async () => {
+    const set = vi.fn(async () => ({ ok: false as const, error: "plugin-config-secret-required", message: "Required secret must be stored before saving configuration." }));
+    Object.defineProperty(window, "ave", { value: { pluginConfig: { get: mockGet, set } }, writable: true, configurable: true });
+    stubPluginCards(mockCards);
+    render(<PluginConfigTab />);
+    await screen.findByDisplayValue("abc");
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(screen.getByTestId("plugin-config:banner")).toHaveTextContent("필수 항목입니다."));
+    expect(screen.queryByText("Required secret must be stored before saving configuration.")).not.toBeInTheDocument();
+  });
+
+  it("preserves numeric-looking text in the schema-less editor", async () => {
+    Object.defineProperty(window, "ave", {
+      value: { pluginConfig: { get: mockGet, set: mockSet } }, writable: true, configurable: true,
+    });
+    stubPluginCards(mockCards);
+    render(<PluginConfigTab />);
+    const value = await screen.findByDisplayValue("abc");
+    fireEvent.change(value, { target: { value: "007" } });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(mockSet).toHaveBeenCalledWith("meeting", { apiKey: "007" }));
+  });
+
+  it("preserves the typed secret when the host returns a failed save result", async () => {
+    const card = makePluginCard({
+      id: "secret-extension", configSchema: { properties: { token: { type: "string", format: "secret" } } },
+    });
+    const setSecret = vi.fn(async () => ({ ok: false as const, error: "plugin-config-secret-save-failed" }));
+    Object.defineProperty(window, "ave", {
+      value: { pluginConfig: {
+        get: vi.fn(async () => ({ ok: true as const, config: {} })), set: vi.fn(), setSecret,
+        listSecretKeys: vi.fn(async () => ({ ok: true as const, keys: [] })),
+      } }, writable: true, configurable: true,
+    });
+    stubPluginCards(vi.fn(async () => [card]));
+    render(<PluginConfigTab />);
+    const input = await screen.findByTestId("pcfg:secret-extension:token:input");
+    fireEvent.change(input, { target: { value: "typed-secret" } });
+    fireEvent.click(screen.getByTestId("pcfg:secret-extension:token:save"));
+    await waitFor(() => expect(setSecret).toHaveBeenCalledWith("secret-extension", "token", "typed-secret"));
+    await waitFor(() => expect(screen.getByTestId("pcfg:secret-extension:token:save")).not.toBeDisabled());
+    expect(input).toHaveValue("typed-secret");
+  });
+
   it("renders the typed form when manifest declares configSchema and routes secrets through setSecret", async () => {
     // Override the cards mock with a plugin that declares a typed schema including one secret key.
     const mockCardsTyped = vi.fn(async () => [

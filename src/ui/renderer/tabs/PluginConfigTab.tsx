@@ -190,12 +190,7 @@ function entriesToConfig(entries: KV[]): Record<string, unknown> {
   for (const { key, value } of entries) {
     const k = sanitizePluginConfigKey(key.trim());
     if (!k) continue;
-    // Try to parse JSON values (numbers, booleans, objects); fall back to string.
-    try {
-      out[k] = JSON.parse(value);
-    } catch {
-      out[k] = value;
-    }
+    out[k] = value;
   }
   return sanitizePluginConfig(out);
 }
@@ -480,7 +475,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
       const config = entriesToConfig(entries);
       const result = await window.ave.pluginConfig.set(selectedId, config);
       if (!result.ok) {
-        showBanner("error", result.message ?? t("pluginConfigTab.errorSave"));
+        showBanner("error", result.error === "plugin-config-secret-required"
+          ? t("pluginConfigSchemaForm.errorRequired") : result.message ?? t("pluginConfigTab.errorSave"));
         return;
       }
       setEntries(configToEntries(result.config));
@@ -1209,8 +1205,8 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                               values,
                             );
                             if (!result.ok) {
-                              showBanner("error", result.message ?? t("pluginConfigTab.errorSave"));
-                              return;
+                              showBanner("error", t("pluginConfigTab.errorSave"));
+                              throw new Error(t("pluginConfigTab.errorSave"));
                             }
                             setSavedConfig(result.config as Record<string, unknown>);
                             setEntries(configToEntries(result.config));
@@ -1218,6 +1214,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                             notifySaved();
                           } catch (e) {
                             showBanner("error", errorMessage(e) || t("pluginConfigTab.errorSave"));
+                            throw e;
                           } finally {
                             setSaving(false);
                             void refreshPlugins();
@@ -1232,12 +1229,12 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                           // A secret save may restart the plugin; its card carries the outcome either way.
                           void refreshPlugins();
                           if (!result.ok) {
-                            showBanner("error", result.message ?? t("pluginConfigTab.errorSaveSecret"));
-                            return;
+                            showBanner("error", t("pluginConfigTab.errorSaveSecret"));
+                            throw new Error(t("pluginConfigTab.errorSaveSecret"));
                           }
                           // Optimistically mark the key as present so the masked "**** (저장됨)" placeholder appears immediately.
-                          setSecretsPresent((prev) => ({ ...prev, [key]: true }));
-                          showBanner("success", t("pluginConfigTab.successSaveSecret", { key }));
+                          setSecretsPresent((prev) => ({ ...prev, [key]: value !== "" }));
+                          showBanner("success", value === "" ? t("pluginConfigSchemaForm.secretDeleted") : t("pluginConfigTab.successSaveSecret", { key }));
                           notifySaved();
                         }}
                       />
@@ -1248,7 +1245,7 @@ export function PluginConfigTab({ api, initialPluginId, onNavigate }: { api?: Av
                         key/value editor. Without an explicit heading the
                         user can't tell what this list represents (missing
                         environment-variable header), so anchor it visually with a label and
-                        a hint that the value box accepts JSON. The row
+                        a hint that values are saved as text. The row
                         list caps at ~5 rows (220px ≈ row height × 5 +
                         gaps) and scrolls beyond that so a plugin with 20
                         env vars doesn't push the Save button off-screen. */}

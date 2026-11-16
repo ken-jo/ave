@@ -4204,10 +4204,10 @@ export const en = {
   "pluginConfigTab.contributionTrustError": "Failed to update bundled capability trust",
   "pluginConfigTab.configSectionLabel": "Configuration",
   "pluginConfigTab.envVarsLabel": "Environment Variables",
-  "pluginConfigTab.envVarsCount": "{count} entries · values are strings or JSON",
+  "pluginConfigTab.envVarsCount": "{count} entries · values are saved as text",
   "pluginConfigTab.noEntriesHint": "No values configured. Add one below.",
   "pluginConfigTab.deleteButton": "Delete",
-  "pluginConfigTab.valuePlaceholder": "value (string / JSON)",
+  "pluginConfigTab.valuePlaceholder": "value (text)",
   "pluginConfigTab.addButton": "+ Add",
   "pluginConfigTab.savingLabel": "Saving…",
   "pluginConfigTab.saveButton": "Save",
@@ -6524,6 +6524,11 @@ export const en = {
   "auditTab.bundleAllDates": "All dates",
   "auditTab.statsFailed": "Could not load audit statistics.",
   "mcpTab.credentialMigrationFailed": "API keys could not be moved to encrypted storage. Servers have not started. Check secret storage, then refresh; the original keys are retained if storage fails.",
+  "pluginConfigSchemaForm.errorRequired": "This field is required.",
+  "pluginConfigSchemaForm.errorInvalidValue": "Enter a valid value.",
+  "pluginConfigSchemaForm.errorInteger": "Enter a whole number.",
+  "pluginConfigSchemaForm.deleteSecret": "Delete secret",
+  "pluginConfigSchemaForm.secretDeleted": "Secret deleted.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */
