@@ -64,7 +64,7 @@ import {
   remoteControllerOriginOf,
 } from "../shared/chat-origin.js";
 import { isRationaleEligible, RationaleHumanApprovalDeniedError } from "./pipeline/rationale-control.js";
-import type { ApprovalDecision } from "../permissions/approval-gate.js";
+import { approvalReasonCodeOf, approvalTargetFor, type ApprovalDecision } from "../permissions/approval-gate.js";
 import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import {
   buildPermissionEvaluationContext,
@@ -1438,7 +1438,8 @@ async function runToolInvocationAttempt(
     const canonicalTargets: Array<{ filePath: string; canonicalPath: string; runtimePath: string }> = [];
     let directoryAuthorization: AuthorizationStageContext["directoryAuthorization"];
     const requestOutOfAllowedDirectoryAccess = async (
-      outOfAllowedTarget: { filePath: string; canonicalPath: string },
+      // `realPath`: the resolved location in its on-disk spelling; `canonicalPath` is the case-folded matching form.
+      outOfAllowedTarget: { filePath: string; canonicalPath: string; realPath: string },
       dirLayerResult: PermissionCheckResult,
       requestSensitivePathPattern: string | null,
       reviewerPathFields: readonly string[],
@@ -1629,7 +1630,8 @@ async function runToolInvocationAttempt(
           source: source as ToolSource,
           ...(source === "plugin" && tool.pluginId ? { sourcePluginId: tool.pluginId } : {}),
           createdAt: Date.now(),
-          target: { filePath: outOfAllowedTarget.filePath },
+          target: approvalTargetFor(outOfAllowedTarget.filePath, outOfAllowedTarget.realPath),
+          ...(approvalReasonCodeOf(dirLayerResult.reasonCode) ? { reasonCode: approvalReasonCodeOf(dirLayerResult.reasonCode) } : {}),
           ownerUnattended: invocationPermissionContext.ownerUnattended,
           ...(dirLayerResult.forceModal === true ? { forceExplicit: true as const } : {}),
           sensitivePathPattern: requestSensitivePathPattern,
@@ -2023,7 +2025,8 @@ async function runToolInvocationAttempt(
         }
 
         if (shellPathViolation.kind === "sandbox-boundary" && shellPathViolation.path) {
-          const canonicalPath = caseFoldForMatch(canonicalizePathForMatch(shellPathViolation.path));
+          const realPath = canonicalizePathForMatch(shellPathViolation.path);
+          const canonicalPath = caseFoldForMatch(realPath);
           const dirLayerResult: PermissionCheckResult = {
             decision: "ask",
             reason: `out-of-allowed-dir: ${shellPathViolation.path} (not in additionalDirectories)`,
@@ -2035,7 +2038,7 @@ async function runToolInvocationAttempt(
             ],
           };
           const resolution = await requestOutOfAllowedDirectoryAccess(
-            { filePath: shellPathViolation.path, canonicalPath },
+            { filePath: shellPathViolation.path, canonicalPath, realPath },
             dirLayerResult,
             null,
             [],
@@ -2219,6 +2222,8 @@ async function runToolInvocationAttempt(
           blockReadsOutsideWorkingDirectories,
         }).sensitiveHit;
     const targetFilePath = canonicalTargets[0]?.filePath;
+    // Targets a link sends somewhere other than their spelling; a card shows both.
+    const linkedTargets = canonicalTargets.map((target) => approvalTargetFor(target.filePath, target.runtimePath)).filter((target) => target.canonicalPath !== undefined);
     const sensitivePathPattern = sensitiveTarget?.pattern ?? null;
 
     // Turn-scope admission. `pluginTurnScopeTarget` answers "which plugin does
@@ -2325,7 +2330,9 @@ async function runToolInvocationAttempt(
           effect: pathEffect,
           blockReadsOutsideWorkingDirectories,
         });
-        const outOfAllowedTarget = pathScope.outOfAllowed;
+        const outOfAllowed = pathScope.outOfAllowed;
+        const outOfAllowedTarget = outOfAllowed === null ? null : { ...outOfAllowed,
+          realPath: canonicalTargets.find((target) => target.filePath === outOfAllowed.filePath)?.runtimePath ?? outOfAllowed.canonicalPath };
         if (!outOfAllowedTarget) {
           // A read the directory list would have refused leaves no prompt and
           // no grant behind it, so the audit row is the only record that the
@@ -2437,6 +2444,7 @@ async function runToolInvocationAttempt(
       rationaleResumeContext,
       rationaleBatchContext,
       targetFilePath,
+      linkedTargets,
       canonicalTargets,
       approvalCacheKey,
       executionCwd,
@@ -2583,6 +2591,7 @@ async function runToolInvocationAttempt(
       parentEffectLedger,
       effectLedger,
       targetFilePath,
+      linkedTargets,
       preResult,
       scriptPre,
       resolvedPluginOperation,

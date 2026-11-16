@@ -5848,6 +5848,8 @@ export const en = {
   "toolApprovalDialog.hiddenCharactersWarning": "This path contains hidden or reordering characters. They are shown as ⟨U+…⟩ codes so the name you read is the name that is used.",
   "toolApprovalDialog.changeShowAll": "Show all {count} lines",
   "toolApprovalDialog.changeShowLess": "Show fewer lines",
+  "toolApprovalDialog.reasonProjectEscape": "This path leads outside the project through a link. Approving acts on the real target.",
+  "toolApprovalDialog.realTarget": "Real target:",
   "toolApprovalDialog.rowCaution": "Caution",
   "toolApprovalDialog.cautionNonUserOrigin": "Not user-initiated — originated from {originLabel}; verify the tool args and target path.",
   "toolApprovalDialog.rowTarget": "Target",

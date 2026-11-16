@@ -944,8 +944,9 @@ export function ToolApprovalContent({
   const shownCandidatePath = revealHiddenCharacters(outOfDirCandidatePath, { lineBreaks: true });
   const shownSuggestedParent = outOfDirSuggestedParent === null ? null : revealHiddenCharacters(outOfDirSuggestedParent, { lineBreaks: true });
   const requestArgs = isRecord(request.args) ? request.args : {};
+  const shownRealTarget = request.target?.canonicalPath ? revealHiddenCharacters(request.target.canonicalPath, { lineBreaks: true }) : null;
   const pathHasHiddenCharacters = [
-    request.target?.filePath, outOfDirCandidatePath, outOfDirSuggestedParent, selectedFolderScope?.path, requestArgs.path, requestArgs.filePath,
+    request.target?.filePath, request.target?.canonicalPath, outOfDirCandidatePath, outOfDirSuggestedParent, selectedFolderScope?.path, requestArgs.path, requestArgs.filePath,
   ].some(path => typeof path === "string" && hasHiddenCharacters(path));
   const action = approvalAction(request, tHook);
   const source = request.source ?? "unknown";
@@ -1071,6 +1072,18 @@ export function ToolApprovalContent({
                               path: revealHiddenCharacters(selectedFolderScope.path ?? "", { lineBreaks: true }),
                             })
                           : shownCandidatePath}
+                    </p>
+                  ) : null}
+                  {/* The host's own reason for asking stays on the card whatever the purpose or reviewer text says. */}
+                  {request.reasonCode === "project-escape" ? (
+                    <p className="mt-1 break-words text-xs leading-relaxed" data-testid="approval-ask-reason">
+                      {tHook("toolApprovalDialog.reasonProjectEscape")}
+                    </p>
+                  ) : null}
+                  {shownRealTarget ? (
+                    <p className="mt-0.5 break-all text-tiny" data-testid="approval-real-target">
+                      {tHook("toolApprovalDialog.realTarget")}{" "}
+                      <code className="font-mono">{shownRealTarget}</code>
                     </p>
                   ) : null}
                   {pathHasHiddenCharacters ? (

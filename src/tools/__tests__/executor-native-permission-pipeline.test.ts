@@ -629,6 +629,32 @@ describe("native invocation permission evidence", () => {
     } });
   });
 
+  // F09: the card must name where the write really lands, in its on-disk spelling, and why the host asks.
+  it.each([["out-of-allowed-dir", [] as string[]], ["tool", ["<root>"]]] as const)("names the real target and the project-escape reason on a symlink-escape %s card", async (kind, directories) => {
+    const outside = join(root, "Outside-Target.txt");
+    await writeFile(outside, "outside resource");
+    await symlink(outside, join(project, "linked.txt"));
+    const [result] = await run(executor(), "write_file", { path: "linked.txt", content: "changed" },
+      { additionalDirectories: directories.map(() => root) });
+    expect(result.is_error).toBe(true);
+    expect(await readFile(outside, "utf8")).toBe("outside resource");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.kind ?? "tool").toBe(kind);
+    expect(requests[0]).toMatchObject({
+      reasonCode: "project-escape", allowedChoices: ["allow-once", "deny-once"],
+      target: { filePath: join(project, "linked.txt"), canonicalPath: outside },
+    });
+  });
+
+  it("sends no real target for a write whose spelling is its location", async () => {
+    const path = join(project, "plain.txt");
+    const [result] = await run(executor(), "write_file", { path, content: "changed" });
+    expect(result.is_error).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.target).toEqual({ filePath: path });
+    expect(requests[0]!.reasonCode).toBe("file-write");
+  });
+
   it("allows read-only protocol discovery metadata through the real executor", async () => {
     manager.setMode("strict");
     const callTool = vi.fn(async () => ({ text: "fixture result" }));

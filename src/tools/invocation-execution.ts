@@ -3,7 +3,7 @@ import { userOwnedSurfaceCardFacts, resolveUserOwnedSurfaceApproval } from "./pi
 import { NO_APPROVER_MESSAGE, offersFloorSessionAllow } from "../permissions/decision-pipeline.js";
 import { checkReplayRootBinding, type ReplayRootBinding } from "../permissions/reviewer/replay-root-binding.js";
 import { attachSandboxBlock, sandboxBlockForResult, type SandboxBlock } from "../shared/sandbox-block.js";
-import { isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
+import { approvalReasonCodeOf, approvalRequestTarget, isHostApprovalRejectedDecision } from "../permissions/approval-gate.js";
 import type { PermissionEvaluationContext } from "../permissions/evaluation-context.js";
 import type { ApprovalPurposeSuggestion } from "../shared/permission-review-status.js";
 import { classifyApprovalRuleVerdict } from "./pipeline/approval-memory-skip.js";
@@ -12,7 +12,7 @@ import { approvalFailureOutcome } from "./pipeline/approval-outcome.js";
 import { hostTerminalApprovalFacts } from "./pipeline/host-terminal-approval.js";
 import { disposableContainerCapability, resolveReviewerSandboxCapability } from "../permissions/sandbox-capability.js";
 import type { ToolOutputArtifactInfo, ToolOutputCapture } from "../shared/tool-output-artifact.js";
-import type { ApprovalDecision, ApprovalRequestInput } from "../permissions/approval-gate.js";
+import type { ApprovalDecision, ApprovalRequestInput, ApprovalRequestTarget } from "../permissions/approval-gate.js";
 import { randomUUID } from "node:crypto";
 import type { PermissionCheckResult } from "../permissions/permission-manager.js";
 import type { ToolExecutionAuditMetadata } from "../audit/audit-schema.js";
@@ -224,6 +224,7 @@ export interface ExecutionStageContext {
   parentEffectLedger: EffectLedger | undefined;
   effectLedger: EffectLedger;
   targetFilePath: string | undefined;
+  linkedTargets: readonly (ApprovalRequestTarget & { filePath: string })[];
   preResult: Awaited<ReturnType<HookRunner["runPreHooks"]>>;
   scriptPre: Awaited<ReturnType<typeof runScriptHook>>;
   resolvedPluginOperation: ResolvedPluginOperation | undefined;
@@ -285,6 +286,7 @@ export async function executeAuthorizedToolInvocation(
     parentEffectLedger,
     effectLedger,
     targetFilePath,
+    linkedTargets,
     preResult,
     resolvedPluginOperation,
     pluginOperationPrincipal,
@@ -1042,7 +1044,8 @@ export async function executeAuthorizedToolInvocation(
       ...(permissionResult.forceModal ? { forceExplicit: true as const, allowedChoices: ["allow-once", "deny-once"] as const, durableApprovalRecordAllowed: false,
         ...(offersFloorSessionAllow(permissionResult) ? { floorSessionAllowed: true as const } : {}) } : {}),
       ownerUnattended: invocationPermissionContext.ownerUnattended === true,
-      ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
+      ...(approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) ? { target: approvalRequestTarget(targetFilePath, linkedTargets, permissionResult.reasonCode) } : {}),
+      ...(approvalReasonCodeOf(permissionResult.reasonCode) ? { reasonCode: approvalReasonCodeOf(permissionResult.reasonCode) } : {}),
       sensitivePathPattern, evaluationContext,
       ...(approvalCacheKey ? { approvalCacheKey } : {}),
       ...(invocationPermissionContext.approvalMemory ? { approvalMemory: invocationPermissionContext.approvalMemory } : {}),

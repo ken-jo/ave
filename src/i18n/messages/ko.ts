@@ -5850,6 +5850,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "toolApprovalDialog.hiddenCharactersWarning": "이 경로에 보이지 않거나 글자 순서를 바꾸는 문자가 들어 있습니다. 실제로 쓰이는 이름을 그대로 읽을 수 있도록 ⟨U+…⟩ 코드로 표시했습니다.",
   "toolApprovalDialog.changeShowAll": "{count}줄 모두 보기",
   "toolApprovalDialog.changeShowLess": "줄여서 보기",
+  "toolApprovalDialog.reasonProjectEscape": "이 경로는 링크를 따라 프로젝트 밖으로 이어집니다. 허용하면 실제 대상에 적용됩니다.",
+  "toolApprovalDialog.realTarget": "실제 대상:",
   "toolApprovalDialog.rowCaution": "주의",
   "toolApprovalDialog.cautionNonUserOrigin": "사용자 직접 입력이 아니라 {originLabel} 발원 — 인자·대상 경로 확인 후 승인.",
   "toolApprovalDialog.rowTarget": "대상",
