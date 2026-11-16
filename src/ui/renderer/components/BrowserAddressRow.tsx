@@ -9,6 +9,7 @@ import type { AveApi } from "../types.js";
 import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../hooks/use-browser-navigation.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
 import { loadBrowserPageUrl, stopBrowserPageLoad, useBrowserPageStatus } from "../preview/browser-page-status.js";
+import { BrowserPagePrompts } from "./BrowserPagePrompts.js";
 import { resolveAddressSubmission } from "../preview/url-safety.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 
@@ -178,6 +179,7 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
           {error}
         </div>
       ) : null}
+      <BrowserPagePrompts tabId={tabId} />
     </>
   );
 }

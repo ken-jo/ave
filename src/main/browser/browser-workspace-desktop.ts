@@ -43,7 +43,7 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
       const window = mainWindow(request.windowId);
       if (!window || !window.isVisible() || window.isMinimized()) return false;
       const result = await dialog.showMessageBox(window, {
-        type: "question", title: t("browserWorkspace.permissionPrompt.title"),
+        type: "question", title: request.origin,
         message: t("browserWorkspace.permissionPrompt.message", {
           origin: request.origin, permissions: request.permissions.map((permission) => t(`browserWorkspace.permission.${permission}`)).join(", "),
         }),

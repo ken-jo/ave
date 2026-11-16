@@ -58,3 +58,8 @@ export async function typeAddress(window: Page, text: string): Promise<void> {
   await address.fill(text);
   await address.press("Enter");
 }
+
+/** The title of the user tab's page, read from the page itself rather than from the app's chrome. */
+export function reviewGuestTitle(app: SeededElectronContext["app"]): Promise<string | undefined> {
+  return app.evaluate(({ webContents }) => webContents.getAllWebContents().find((contents) => contents.getType() === "webview")?.getTitle());
+}

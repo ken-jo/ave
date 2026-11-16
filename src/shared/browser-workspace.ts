@@ -29,12 +29,26 @@ export interface BrowserLoadError {
   /** The address that failed; empty when the failed navigation named none the browser may open. */
   readonly url: string;
 }
+/** Pending prompts one tab may hold; a page that raises more is answered as dismissed. */
+export const BROWSER_PAGE_PROMPT_LIMIT = 8;
+export type BrowserPermissionChoice = "allow-once" | "block" | "always-block";
+/**
+ * Something a page asked for that needs the user's answer, drawn by the host inside the tab's own panel and titled with the
+ * host-computed origin. Text fields that come from the page are bounded and rendered as plain text.
+ */
+export type BrowserPagePrompt =
+  | { readonly id: string; readonly kind: "permission"; readonly origin: string; readonly permissions: readonly BrowserSitePermission[] };
+export type BrowserPromptAnswer =
+  | { readonly kind: "permission"; readonly choice: BrowserPermissionChoice };
+export interface BrowserPromptAnswerRequest { readonly tabId: string; readonly promptId: string; readonly answer: BrowserPromptAnswer }
 /** What the host knows about one tab's page beyond its address. One entry per listed tab. */
 export interface BrowserPageStatus {
   readonly tabId: string;
   /** The main frame is fetching or rendering a navigation. */
   readonly loading: boolean;
   readonly loadError: BrowserLoadError | null;
+  /** Oldest first. The tab shows the first one. */
+  readonly prompts: readonly BrowserPagePrompt[];
 }
 export interface BrowserWorkspaceState {
   readonly revision: number; readonly bookmarks: readonly BrowserLibraryEntry[]; readonly history: readonly BrowserLibraryEntry[];
@@ -77,6 +91,8 @@ export interface BrowserWorkspaceApi {
   retryLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
   /** Load `url` in the tab's existing page, even when the tab is already pointed at it. */
   load(request: BrowserLoadRequest): Promise<BrowserWorkspaceResult<null>>;
+  /** Answer one pending page prompt of a tab. */
+  answerPrompt(request: BrowserPromptAnswerRequest): Promise<BrowserWorkspaceResult<null>>;
   /** Stop the tab's load in progress. */
   stopLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
   onChanged(handler: (state: BrowserWorkspaceState) => void): () => void;
@@ -92,6 +108,7 @@ export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
   capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest;
+  answerPrompt: BrowserPromptAnswerRequest;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
 export const BROWSER_SITE_DECISIONS: readonly BrowserSiteDecision[] = ["ask", "allow", "block"];
@@ -114,10 +131,29 @@ function target(record: Record<string, unknown>): boolean {
   return typeof record.tabId === "string" && record.tabId.length > 0 && record.tabId.length <= 200
     && Number.isSafeInteger(record.documentGeneration) && Number(record.documentGeneration) >= 1;
 }
+const PERMISSION_CHOICES: readonly string[] = ["allow-once", "block", "always-block"];
+function validPromptAnswer(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.kind === "permission") return keys(value, ["kind", "choice"]) && PERMISSION_CHOICES.includes(value.choice as string);
+  return false;
+}
+function validPrompt(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.id !== "string" || value.id.length === 0 || value.id.length > 64 || !browserWorkspaceOrigin(value.origin)) return false;
+  if (value.kind === "permission") {
+    return keys(value, ["id", "kind", "origin", "permissions"]) && Array.isArray(value.permissions) && value.permissions.length > 0
+      && value.permissions.length <= BROWSER_SITE_PERMISSIONS.length && value.permissions.every((item) => BROWSER_SITE_PERMISSIONS.includes(item as BrowserSitePermission));
+  }
+  return false;
+}
 export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceRequests>(operation: K, value: unknown): BrowserWorkspaceRequests[K] | null {
   if (operation === "getState" || operation === "clearHistory") return value === undefined ? undefined as BrowserWorkspaceRequests[K] : null;
   const record = value;
   if (!isRecord(record)) return null;
+  if (operation === "answerPrompt") {
+    return keys(record, ["tabId", "promptId", "answer"]) && typeof record.tabId === "string" && record.tabId.length > 0 && record.tabId.length <= 200
+      && typeof record.promptId === "string" && record.promptId.length > 0 && record.promptId.length <= 64 && validPromptAnswer(record.answer)
+      ? record as unknown as BrowserWorkspaceRequests[K] : null;
+  }
   if (operation === "setBookmark") {
     const url = browserWorkspaceUrl(record.url);
     if (!keys(record, ["url", "title", "bookmarked"]) || !url || typeof record.title !== "string" || record.title.length > BROWSER_WORKSPACE_LIMITS.titleLength || typeof record.bookmarked !== "boolean") return null;
@@ -165,7 +201,9 @@ export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceStat
   })) return null;
   if (!Array.isArray(record.pages) || record.pages.length > record.tabs.length || !record.pages.every((item) => {
     const page = item;
-    return isRecord(page) && keys(page, ["tabId", "loading", "loadError"]) && typeof page.tabId === "string" && typeof page.loading === "boolean"
+    return isRecord(page) && keys(page, ["tabId", "loading", "loadError", "prompts"]) && typeof page.tabId === "string" && typeof page.loading === "boolean"
+      && Array.isArray(page.prompts) && page.prompts.length <= BROWSER_PAGE_PROMPT_LIMIT && page.prompts.every(validPrompt)
+      && new Set(page.prompts.map((prompt) => (prompt as { id: string }).id)).size === page.prompts.length
       && (record.tabs as readonly Record<string, unknown>[]).some((tab) => tab.tabId === page.tabId)
       && (page.loadError === null || validLoadError(page.loadError));
   })) return null;

@@ -361,6 +361,7 @@ describe("preload contextBridge world shape lock", () => {
             "stop",
           ],
           "browserWorkspace": [
+            "answerPrompt",
             "capture",
             "clearHistory",
             "find",

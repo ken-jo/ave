@@ -532,7 +532,7 @@ describe("WebSurfaceLayer", () => {
     const failed: BrowserWorkspaceState = {
       revision: 5, bookmarks: [], history: [], sitePermissions: [], downloads: [], storageStatus: "ready", capabilities: { fullscreen: false },
       tabs: [{ tabId: "browser:1", documentGeneration: 3, url: "https://example.com/", title: "", zoomFactor: 1 }],
-      pages: [{ tabId: "browser:1", loading: false, loadError: { reason: "connection", code: -102, detail: "ERR_CONNECTION_REFUSED", url: "https://example.com/" } }],
+      pages: [{ tabId: "browser:1", loading: false, loadError: { reason: "connection", code: -102, detail: "ERR_CONNECTION_REFUSED", url: "https://example.com/" }, prompts: [] }],
     };
     publishLiveWebTabs(source, new Set(["browser:1"]));
     await render(<Harness where="side" />);
@@ -558,7 +558,7 @@ describe("WebSurfaceLayer", () => {
     screen.getByTestId("browser-load-error-open-external").click();
     expect(openExternalUrl).toHaveBeenCalledWith("https://example.com/");
 
-    act(() => __setBrowserPageStatusForTest({ ...failed, revision: 6, pages: [{ tabId: "browser:1", loading: false, loadError: null }] }, client));
+    act(() => __setBrowserPageStatusForTest({ ...failed, revision: 6, pages: [{ tabId: "browser:1", loading: false, loadError: null, prompts: [] }] }, client));
     act(() => { placeWebSurfaces(); });
     expect(screen.queryByTestId("browser-load-error")).toBeNull();
     expect(frame("browser:1").style.visibility).toBe("visible");

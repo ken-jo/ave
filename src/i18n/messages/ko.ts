@@ -1266,6 +1266,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "browserLoadError.hint.failed": "이 주소를 불러오는 중 문제가 발생했습니다.",
   "browserLoadError.retry": "다시 시도",
   "browserLoadError.openExternal": "시스템 브라우저에서 열기",
+  "browserPagePrompt.permission.wants": "사이트가 다음을 사용하려고 합니다: {permissions}",
+  "browserPagePrompt.permission.alwaysBlock": "이 사이트에서 항상 차단",
   "browserWorkspace.title": "브라우저 워크스페이스",
   "browserWorkspace.library": "라이브러리",
   "browserWorkspace.bookmark": "북마크",

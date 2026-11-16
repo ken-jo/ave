@@ -1264,6 +1264,8 @@ export const en = {
   "browserLoadError.hint.failed": "Something went wrong while loading this address.",
   "browserLoadError.retry": "Try again",
   "browserLoadError.openExternal": "Open in system browser",
+  "browserPagePrompt.permission.wants": "wants to use: {permissions}",
+  "browserPagePrompt.permission.alwaysBlock": "Always block on this site",
   "browserWorkspace.title": "Browser workspace",
   "browserWorkspace.library": "Library",
   "browserWorkspace.bookmark": "Bookmark",

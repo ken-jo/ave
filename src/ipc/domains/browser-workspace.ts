@@ -43,5 +43,6 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   register("capture", (windowId, request) => service.capture(windowId, request));
   register("retryLoad", (windowId, request) => service.retryLoad(windowId, request));
   register("load", (windowId, request) => service.load(windowId, request));
+  register("answerPrompt", (windowId, request) => service.answerPrompt(windowId, request));
   register("stopLoad", (windowId, request) => service.stopLoad(windowId, request));
 }

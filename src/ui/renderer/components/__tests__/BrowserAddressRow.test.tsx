@@ -28,7 +28,7 @@ function mount(testIds: BrowserAddressRowTestIds, options: { fallbackUrl?: strin
     getSettings: vi.fn(async () => ({ webView: { addressSearchEngine: "duckduckgo" } })),
     openExternalUrl: vi.fn(async () => ({ ok: true })),
     browserTabs: { stop: vi.fn(async () => ({ ok: options.stopOk ?? true })) },
-    browserWorkspace: { stopLoad: vi.fn(async () => ({ ok: true, value: null })), load: vi.fn(async () => ({ ok: true, value: null })) },
+    browserWorkspace: { stopLoad: vi.fn(async () => ({ ok: true, value: null })), load: vi.fn(async () => ({ ok: true, value: null })), answerPrompt: vi.fn(async () => ({ ok: true, value: null })) },
   } as unknown as AveApi;
   render(<TooltipProvider><BrowserAddressRow api={api} tabId={TAB} chrome="card" testIds={testIds}
     fallbackUrl={options.fallbackUrl === undefined ? "https://a.example/start" : options.fallbackUrl} onNavigate={onNavigate} /></TooltipProvider>);
@@ -41,7 +41,7 @@ function pageState(loading: boolean): BrowserWorkspaceState {
   return {
     revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], storageStatus: "ready", capabilities: { fullscreen: false },
     tabs: [{ tabId: TAB, documentGeneration: 2, url: "https://a.example/start", title: "", zoomFactor: 1 }],
-    pages: [{ tabId: TAB, loading, loadError: null }],
+    pages: [{ tabId: TAB, loading, loadError: null, prompts: [] }],
   };
 }
 
@@ -141,5 +141,24 @@ describe.each([
     fireEvent.change(address(), { target: { value: "https://a.example/other" } });
     await act(async () => { fireEvent.submit(address().closest("form") as HTMLFormElement); });
     expect(api.browserWorkspace?.load).toHaveBeenCalledOnce();
+  });
+
+  it("draws the page's permission question under the row with the host's origin and sends the chosen answer", () => {
+    const { api } = mount(ids);
+    expect(screen.queryByTestId("browser-page-prompt")).toBeNull();
+    const state = pageState(false);
+    const prompts = [
+      { id: "prompt-4", kind: "permission" as const, origin: "https://a.example", permissions: ["geolocation" as const] },
+      { id: "prompt-5", kind: "permission" as const, origin: "https://a.example", permissions: ["camera" as const] },
+    ];
+    act(() => __setBrowserPageStatusForTest({ ...state, pages: [{ tabId: TAB, loading: false, loadError: null, prompts }] }, api));
+    expect(screen.getAllByTestId("browser-page-prompt")).toHaveLength(1);
+    expect(screen.getByTestId("browser-page-prompt-origin").textContent).toBe("https://a.example");
+    expect(screen.getByTestId("browser-page-prompt").textContent).toContain("위치");
+    fireEvent.click(screen.getByTestId("browser-page-prompt-always-block"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenCalledWith({ tabId: TAB, promptId: "prompt-4", answer: { kind: "permission", choice: "always-block" } });
+    fireEvent.click(screen.getByTestId("browser-page-prompt-block"));
+    fireEvent.click(screen.getByTestId("browser-page-prompt-allow-once"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenCalledTimes(3);
   });
 });

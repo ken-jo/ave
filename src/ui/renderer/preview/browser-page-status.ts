@@ -3,7 +3,7 @@
  * window. Main sends whole revisioned snapshots; the newest one replaces the previous, nothing is merged.
  */
 import { useSyncExternalStore } from "react";
-import type { BrowserPageStatus, BrowserWorkspaceState, BrowserWorkspaceTarget } from "../../../shared/browser-workspace.js";
+import type { BrowserPageStatus, BrowserPromptAnswer, BrowserWorkspaceState, BrowserWorkspaceTarget } from "../../../shared/browser-workspace.js";
 import type { AveApi } from "../types.js";
 import { navigateBrowserTabAsUser } from "./agent-browser-bridge.js";
 
@@ -64,6 +64,10 @@ export function retryBrowserPageLoad(tabId: string): void {
 export function loadBrowserPageUrl(tabId: string, url: string): void {
   const target = browserPageTarget(tabId);
   if (target) void api?.browserWorkspace?.load({ ...target, url });
+}
+
+export function answerBrowserPagePrompt(tabId: string, promptId: string, answer: BrowserPromptAnswer): void {
+  void api?.browserWorkspace?.answerPrompt({ tabId, promptId, answer });
 }
 
 /** The user stops the load in progress. */

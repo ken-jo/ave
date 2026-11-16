@@ -165,7 +165,7 @@ describe("browser workspace desktop composition", () => {
   it("uses a trusted owning-window dialog and rejects a hidden or replaced owner after its await", async () => {
     const window = owner();
     getBrowserWorkspaceService();
-    const request = { windowId: 1, origin: "https://site.example", permissions: ["camera" as const] };
+    const request = { windowId: 1, guestId: 7, origin: "https://site.example", permissions: ["camera" as const] };
     expect(await native.deps!.promptPermission(request)).toBe(true);
     expect(native.showMessageBox.mock.calls[0]![0]).toBe(window);
     expect(native.showMessageBox.mock.calls[0]![1]).toMatchObject({ defaultId: 0, cancelId: 0, noLink: true });

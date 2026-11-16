@@ -26,7 +26,7 @@ async function setup() {
   const onError = vi.fn(); const promptPermission = vi.fn(async () => true);
   const service = new BrowserWorkspaceService({ store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, promptPermission, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 
@@ -94,7 +94,7 @@ describe("browser workspace service", () => {
   it("reports a main-frame load failure for the tab until the user navigates away from it", async () => {
     const { service, guest, events } = await setup();
     service.observeGuest(1, guest);
-    expect((await service.getState(1)).pages).toEqual([{ tabId: "browser:one", loading: false, loadError: null }]);
+    expect((await service.getState(1)).pages).toEqual([{ tabId: "browser:one", loading: false, loadError: null, prompts: [] }]);
     events.emit("did-fail-load", {}, -102, "ERR_CONNECTION_REFUSED", "http://127.0.0.1:1/", true);
     expect((await service.getState(1)).pages[0]?.loadError).toEqual({ reason: "connection", code: -102, detail: "ERR_CONNECTION_REFUSED", url: "http://127.0.0.1:1/" });
     // The browser's own error document commits after the failure; it is not a navigation away.
@@ -144,7 +144,7 @@ describe("browser workspace service", () => {
 
     setLive(true);
     service.tabsChanged(1);
-    await vi.waitFor(() => expect(published.at(-1)).toEqual([{ tabId: "browser:one", loading: false, loadError: expect.objectContaining({ reason: "connection" }) }]));
+    await vi.waitFor(() => expect(published.at(-1)).toEqual([{ tabId: "browser:one", loading: false, loadError: expect.objectContaining({ reason: "connection" }), prompts: [] }]));
     const settled = published.length;
     service.tabsChanged(1);
     service.tabsChanged(2);
@@ -174,5 +174,33 @@ describe("browser workspace service", () => {
     expect(() => service.load(1, { ...TARGET, url: "https://user:pw@site.example/" })).toThrow("bad-request");
     expect(() => service.load(2, { ...TARGET, url: "https://site.example/" })).toThrow("no-such-tab");
     expect(loadURL).toHaveBeenCalledOnce();
+  });
+  it("asks a tab's permission question in its panel, and a guest without a tab in a native dialog", async () => {
+    const { service, guest, events, promptPermission, setLive } = await setup();
+    service.observeGuest(1, guest);
+    const details = { requestingUrl: "https://site.example/", isMainFrame: true };
+    const asked = service.requestPermission(7, "geolocation", details);
+    await vi.waitFor(async () => expect((await service.getState(1)).pages[0]?.prompts).toHaveLength(1));
+    const prompt = (await service.getState(1)).pages[0]?.prompts[0];
+    expect(prompt).toEqual({ id: prompt?.id, kind: "permission", origin: "https://site.example", permissions: ["geolocation"] });
+    expect(promptPermission).not.toHaveBeenCalled();
+    expect(() => service.answerPrompt(1, { tabId: "browser:one", promptId: "prompt-missing", answer: { kind: "permission", choice: "allow-once" } })).toThrow("stale-document");
+    expect(() => service.answerPrompt(2, { tabId: "browser:one", promptId: String(prompt?.id), answer: { kind: "permission", choice: "allow-once" } })).toThrow("no-such-tab");
+    service.answerPrompt(1, { tabId: "browser:one", promptId: String(prompt?.id), answer: { kind: "permission", choice: "always-block" } });
+    await expect(asked).resolves.toBe(false);
+    const state = await service.getState(1);
+    expect(state.pages[0]?.prompts).toEqual([]);
+    expect(state.sitePermissions).toEqual([{ origin: "https://site.example", permission: "geolocation", decision: "block" }]);
+
+    // A question whose document navigates away ends unanswered and is no longer shown.
+    const pending = service.requestPermission(7, "notifications", details);
+    await vi.waitFor(async () => expect((await service.getState(1)).pages[0]?.prompts).toHaveLength(1));
+    events.emit("did-start-navigation", {}, "https://site.example/next", false, true);
+    await expect(pending).resolves.toBe(false);
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([]);
+
+    setLive(false);
+    await expect(service.requestPermission(7, "notifications", details)).resolves.toBe(true);
+    expect(promptPermission).toHaveBeenCalledWith({ windowId: 1, guestId: 7, origin: "https://site.example", permissions: ["notifications"] });
   });
 });

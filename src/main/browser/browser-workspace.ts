@@ -2,7 +2,8 @@ import { setBrowserGuestZoomFactor } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 import type { DownloadItem, WebContents } from "electron";
 import { describeLoadFailure, describePageCrash } from "./browser-load-failure.js";
-import { BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BrowserPagePrompts } from "./browser-page-prompts.js";
+import { BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -13,6 +14,7 @@ export interface BrowserWorkspaceServiceDeps {
   liveTab(windowId: number, tabId: string): BrowserWorkspaceLiveTab | null;
   listTabs(windowId: number): readonly Omit<BrowserWorkspaceTab, "zoomFactor">[];
   isWindowVisible(windowId: number): boolean;
+  /** Asks in a native dialog, for a guest that has no tab panel to ask in (a popup window). */
   promptPermission(request: BrowserPermissionPrompt): Promise<boolean>;
   fullscreenAvailable(windowId: number): boolean;
   onError(error: unknown): void;
@@ -25,6 +27,7 @@ export class BrowserWorkspaceService {
   private readonly previews: BrowserWorkspacePreview;
   private readonly captures: BrowserWorkspaceCapture;
   private readonly permissions: BrowserSitePermissionPolicy;
+  private readonly prompts = new BrowserPagePrompts(() => this.notify());
   private readonly guests = new Map<number, { guest: WebContents; windowId: number; generation: number; loading: boolean; loadError: BrowserLoadError | null; dispose: () => void }>();
   private readonly downloads = new Map<number, BrowserDownload[]>();
   private readonly downloadDisposers = new Map<number, Set<() => void>>();
@@ -37,7 +40,14 @@ export class BrowserWorkspaceService {
     this.store = deps.store ?? new BrowserWorkspaceStore();
     this.previews = new BrowserWorkspacePreview(deps);
     this.captures = new BrowserWorkspaceCapture(deps);
-    this.permissions = new BrowserSitePermissionPolicy({ store: this.store, prompt: deps.promptPermission, fullscreenAvailable: deps.fullscreenAvailable, currentContext: (guestId) => {
+    this.permissions = new BrowserSitePermissionPolicy({ store: this.store, prompt: async (request) => {
+      if (!deps.isWindowVisible(request.windowId)) return null;
+      // A tab asks in its own panel. A popup window has no panel, so it keeps the native question.
+      if (this.tabIdForGuest(request.windowId, request.guestId) === null) return await deps.promptPermission(request) ? "allow-once" : null;
+      const answer = await this.prompts.ask(request.guestId, { kind: "permission", origin: request.origin, permissions: request.permissions });
+      if (answer?.choice === "always-block") this.notify();
+      return answer?.choice ?? null;
+    }, fullscreenAvailable: deps.fullscreenAvailable, currentContext: (guestId) => {
       const entry = this.guests.get(guestId);
       return entry && !entry.guest.isDestroyed() ? { guestId, windowId: entry.windowId, documentGeneration: entry.generation, url: entry.guest.getURL() } : null;
     } });
@@ -50,6 +60,13 @@ export class BrowserWorkspaceService {
     }
   }
   private notify(): void { void this.changed().catch(this.deps.onError); }
+  private tabIdForGuest(windowId: number, guestId: number): string | null {
+    for (const tab of this.deps.listTabs(windowId)) {
+      const live = this.deps.liveTab(windowId, tab.tabId);
+      if (live && !live.guest.isDestroyed() && live.guest.id === guestId) return tab.tabId;
+    }
+    return null;
+  }
   /**
    * The tab list is owned elsewhere: a guest is bound to its tab after it attaches, and a page can fail before that. Page
    * status is keyed by tab, so a window whose listed tabs differ from the last snapshot it was sent gets a new one.
@@ -71,7 +88,7 @@ export class BrowserWorkspaceService {
       const live = this.deps.liveTab(windowId, tab.tabId);
       if (!live || live.guest.isDestroyed() || live.documentGeneration !== tab.documentGeneration) return [];
       const page = this.guests.get(live.guest.id);
-      pages.push({ tabId: tab.tabId, loading: page?.loading ?? false, loadError: page?.loadError ?? null });
+      pages.push({ tabId: tab.tabId, loading: page?.loading ?? false, loadError: page?.loadError ?? null, prompts: this.prompts.list(live.guest.id) });
       return [{ ...tab, title: tab.title.slice(0, BROWSER_WORKSPACE_LIMITS.titleLength), zoomFactor: live.guest.getZoomFactor() }];
     });
     this.publishedTabs.set(windowId, tabs.map((tab) => `${tab.tabId}:${tab.documentGeneration}`).join("\n"));
@@ -127,6 +144,15 @@ export class BrowserWorkspaceService {
     void this.target(windowId, parsed).guest.loadURL(parsed.url).catch(this.deps.onError);
     return null;
   }
+  answerPrompt(windowId: number, request: BrowserPromptAnswerRequest): null {
+    const parsed = parseBrowserWorkspaceRequest("answerPrompt", request);
+    if (!parsed) throw new Error("bad-request");
+    const live = this.deps.liveTab(windowId, parsed.tabId);
+    if (!live || live.guest.isDestroyed()) throw new Error("no-such-tab");
+    // The prompt id proves which question is answered; a question whose document left is already gone.
+    if (!this.prompts.answer(live.guest.id, parsed.promptId, parsed.answer)) throw new Error("stale-document");
+    return null;
+  }
   stopLoad(windowId: number, request: BrowserWorkspaceTarget): null { this.target(windowId, request).guest.stop(); return null; }
   preview(windowId: number, request: BrowserWorkspaceTarget) { this.target(windowId, request); return this.previews.capture(windowId, request); }
   capture(windowId: number, request: BrowserCaptureRequest) { this.target(windowId, request); return this.captures.capture(windowId, request); }
@@ -138,7 +164,7 @@ export class BrowserWorkspaceService {
     const existing = this.guests.get(guestId);
     if (existing && existing.windowId !== windowId) throw new Error("guest-owner-mismatch");
     if (existing) return existing.dispose;
-    const invalidate = () => { const entry = this.guests.get(guestId); if (entry) entry.generation++; this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    const invalidate = () => { const entry = this.guests.get(guestId); if (entry) entry.generation++; this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const visit = () => { if (!guest.isDestroyed()) void this.store.recordVisit(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
     const started = (_event: unknown, url: string, inPlace: boolean, mainFrame: boolean) => {
       if (!mainFrame) return;
@@ -170,7 +196,7 @@ export class BrowserWorkspaceService {
     };
     const navigatedInPage = (_event: unknown, _url: string, mainFrame: boolean) => { if (mainFrame) { invalidate(); visit(); } };
     let unsubscribe = () => {};
-    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const titleChanged = () => { if (!guest.isDestroyed()) void this.store.updateHistoryTitle(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
     this.guests.set(guestId, { guest, windowId, generation: 1, loading: guest.isLoadingMainFrame(), loadError: null, dispose });
     guest.on("did-fail-load", failed); guest.on("render-process-gone", gone);

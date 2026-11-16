@@ -76,18 +76,34 @@ describe("browser workspace wire validation", () => {
   it("accepts a page status only for a listed tab, with a bounded host-classified failure", () => {
     const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
     const failure = { reason: "dns", code: -105, detail: "ERR_NAME_NOT_RESOLVED", url: "https://missing.invalid/" };
-    const state = { ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: true, loadError: failure }] };
+    const state = { ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: true, loadError: failure, prompts: [] }] };
     expect(parseBrowserWorkspaceState(state)).toEqual(state);
-    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loading: false, loadError: null }] })).not.toBeNull();
-    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, url: "" } }] })).not.toBeNull();
+    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [] }] })).not.toBeNull();
+    expect(parseBrowserWorkspaceState({ ...state, pages: [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, url: "" }, prompts: [] }] })).not.toBeNull();
     for (const pages of [
-      undefined, [{ tabId: "browser:other", loading: false, loadError: null }], [{ tabId: TARGET.tabId, loading: false }],
-      [{ tabId: TARGET.tabId, loadError: null }], [{ tabId: TARGET.tabId, loading: "yes", loadError: null }],
-      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, reason: "page says so" } }],
-      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, url: "javascript:alert(1)" } }],
-      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, detail: "x".repeat(101) } }],
-      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, html: "<b>" } }],
-      [{ tabId: TARGET.tabId, loading: false, loadError: null }, { tabId: TARGET.tabId, loading: false, loadError: null }],
+      undefined, [{ tabId: "browser:other", loading: false, loadError: null, prompts: [] }], [{ tabId: TARGET.tabId, loading: false, prompts: [] }],
+      [{ tabId: TARGET.tabId, loadError: null, prompts: [] }], [{ tabId: TARGET.tabId, loading: "yes", loadError: null, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, reason: "page says so" }, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, url: "javascript:alert(1)" }, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, detail: "x".repeat(101) }, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: { ...failure, html: "<b>" }, prompts: [] }],
+      [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [] }, { tabId: TARGET.tabId, loading: false, loadError: null, prompts: [] }],
     ]) expect(parseBrowserWorkspaceState({ ...state, pages })).toBeNull();
+  });
+  it("accepts only bounded, well-formed page prompts and answers of the matching kind", () => {
+    const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
+    const prompt = { id: "prompt-1", kind: "permission", origin: "https://site.example", permissions: ["camera", "microphone"] };
+    const withPrompts = (prompts: unknown) => ({ ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts }] });
+    expect(parseBrowserWorkspaceState(withPrompts([prompt]))).not.toBeNull();
+    for (const prompts of [
+      [{ ...prompt, origin: "https://site.example/path" }], [{ ...prompt, permissions: [] }], [{ ...prompt, permissions: ["usb"] }],
+      [{ ...prompt, kind: "page-defined" }], [{ ...prompt, html: "<b>" }], [prompt, prompt],
+      Array.from({ length: 9 }, (_item, index) => ({ ...prompt, id: `prompt-${index}` })),
+    ]) expect(parseBrowserWorkspaceState(withPrompts(prompts))).toBeNull();
+    const answer = { tabId: "browser:one", promptId: "prompt-1", answer: { kind: "permission", choice: "always-block" } };
+    expect(parseBrowserWorkspaceRequest("answerPrompt", answer)).toEqual(answer);
+    for (const bad of [{ ...answer, answer: { kind: "permission", choice: "allow-forever" } }, { ...answer, answer: { kind: "other" } }, { ...answer, promptId: "" }, { ...answer, windowId: 2 }]) {
+      expect(parseBrowserWorkspaceRequest("answerPrompt", bad)).toBeNull();
+    }
   });
 });
