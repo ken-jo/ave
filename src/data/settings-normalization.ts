@@ -3,6 +3,7 @@ import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags } from "../shared
 import { LlmProviderSettingsError } from "../shared/custom-provider.js";
 import { ACCESSIBILITY_SIGNAL_SETTING_KEYS, isAccessibilitySignalMode } from "../shared/accessibility-signals.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
+import { isEditorCommandSetting } from "../shared/editor-command.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
   normalizeCorpCaCommonName,
@@ -754,6 +755,7 @@ export function normalizeDocuments(input: unknown): DocumentSettings {
   const result = { ...DEFAULT_SETTINGS.documents };
   if (isRecord(input)) {
     acceptField(result, "openMode", input.openMode, isDocumentOpenMode, "documents", STORED_FIELD);
+    acceptField(result, "editorCommand", input.editorCommand, isEditorCommandSetting, "documents", STORED_FIELD);
   }
   return result;
 }

@@ -2,6 +2,7 @@ import { isSubAgentMaxRounds } from "../shared/subagent-policy.js";
 import { isTelemetryLevel, telemetryLevel, telemetryLevelFlags, type TelemetryLevel } from "../shared/telemetry-policy.js";
 import { isZoomLevel } from "../shared/app-zoom.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
+import { isEditorCommandSetting } from "../shared/editor-command.js";
 import { isWorkBoardToolApprovalSurface, type WorkBoardSettings } from "../shared/work-board-types.js";
 import {
   DEFAULT_CORP_CA_COMMON_NAME,
@@ -972,8 +973,10 @@ export class SettingsService {
     partial: Partial<Omit<
       AppSettings,
       | "llm" | "chat" | "marketplace" | "shortcuts" | "telemetry" | "appliedMigrations"
-      | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance"
+      | "alerts" | "retiredPluginConfigs" | "upstreamProxy" | "appearance" | "documents"
     >> & {
+      // Each document setting is saved on its own.
+      documents?: Partial<DocumentSettings>;
       appearance?: Partial<Omit<AppearanceSettings, "terminalFont" | "terminal">> & {
         terminalFont?: Partial<AppearanceSettings["terminalFont"]>;
         terminal?: Partial<AppearanceSettings["terminal"]>;
@@ -1176,6 +1179,7 @@ export class SettingsService {
     if (partial.documents && typeof partial.documents === "object" && !Array.isArray(partial.documents)) {
       const nextDocuments = { ...this.settings.documents };
       acceptField(nextDocuments, "openMode", partial.documents.openMode, isDocumentOpenMode, "documents", PATCHED_FIELD);
+      acceptField(nextDocuments, "editorCommand", partial.documents.editorCommand, isEditorCommandSetting, "documents", PATCHED_FIELD);
       this.settings.documents = nextDocuments;
     }
     if (partial.workBoard && typeof partial.workBoard === "object" && !Array.isArray(partial.workBoard)) {

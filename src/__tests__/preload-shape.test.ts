@@ -315,6 +315,7 @@ describe("preload contextBridge world shape lock", () => {
             "dropPrepare",
             "listDir",
             "listRoots",
+            "openInEditor",
             "openPath",
             "pickRoot",
             "previewRemoveRoot",

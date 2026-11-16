@@ -1,6 +1,6 @@
 // Folder view main-side contract: widened listDir entries and the user-gesture open-in-default-app channel.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import * as fsModule from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -41,8 +41,10 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 
 const appWindows: Array<{ isDestroyed: () => boolean; webContents: unknown }> = [];
 const auditLog = vi.fn();
+const editorCommand = { value: "" };
 const deps = {
   auditLogger: { log: auditLog },
+  settingsService: { get: (section: string) => (section === "documents" ? { openMode: "direct", editorCommand: editorCommand.value } : undefined) },
   pluginRuntime: { retireSandboxGrantsOutsideCeiling: vi.fn(async () => []) },
   getMainWindow: () => appWindows[0] ?? null,
   getAppWindows: () => appWindows,
@@ -126,6 +128,7 @@ beforeEach(() => {
   openPathMock.mockClear();
   openPathMock.mockResolvedValue("");
   auditLog.mockClear();
+  editorCommand.value = "";
 });
 
 describe("workspace.searchFiles in one folder", () => {
@@ -299,6 +302,23 @@ describe("workspace.openPath", () => {
     expect(entry?.input).toBeDefined();
     expect(entry!.input).not.toContain(root);
     expect(entry!.input).toContain("\"ok\":true");
+  });
+
+  it("opens a large presentation document for the person and refuses a confirmed key", async () => {
+    const window = 1024 * 1024;
+    const deck = join(root, "Big deck.key");
+    const key = join(root, "big.key");
+    writeFileSync(deck, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(window * 2, "s")]));
+    writeFileSync(key, Buffer.concat([Buffer.from("-----BEGIN PRIVATE" + " KEY-----\nFIXTURE\n"), Buffer.alloc(window * 2, "x")]));
+    try {
+      expect(await openPath({ projectRoot: root, path: deck, intent: GESTURE })).toEqual({ ok: true });
+      expect(openPathMock).toHaveBeenCalledWith(deck);
+      expect(await openPath({ projectRoot: root, path: key, intent: GESTURE })).toEqual({ ok: false, error: "sensitive-path" });
+      expect(openPathMock).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(deck, { force: true });
+      rmSync(key, { force: true });
+    }
   });
 
   it("follows an in-project link to an in-project file", async ({ skip }) => {
@@ -665,5 +685,137 @@ describe("workspace.listDir links to network locations", () => {
       realpath.mockRestore();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("workspace.openInEditor", () => {
+  type EditorResult = { ok: boolean; error?: string };
+  const openInEditor = (payload: unknown, event: unknown = frameEvent()) =>
+    invoke(CHANNELS.workspace.openInEditor, event, payload) as Promise<EditorResult>;
+  // A stand-in editor: the runner's script runtime records the arguments it was started with, then exits.
+  let recorder: string;
+  let runs = 0;
+  beforeAll(() => {
+    recorder = join(outside, "record-arguments.cjs");
+    writeFileSync(recorder, 'require("node:fs").writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));\nprocess.exit(0);\n');
+  });
+  function recordingEditor(template: string): { started: () => Promise<string[]> } {
+    const out = join(outside, `editor-run-${++runs}.json`);
+    const runtime = process.env.AVE_TEST_NODE_EXEC_PATH;
+    if (!runtime) throw new Error("The test runner must provide its script runtime");
+    editorCommand.value = `"${runtime}" "${recorder}" "${out}" ${template}`;
+    return {
+      started: async () => {
+        await vi.waitFor(() => expect(existsSync(out) && readFileSync(out, "utf8").length > 0).toBe(true), { timeout: 20_000, interval: 50 });
+        return JSON.parse(readFileSync(out, "utf8")) as string[];
+      },
+    };
+  }
+
+  it("starts the configured command with the file and the line as whole arguments, and audits an opaque reference", async () => {
+    const target = join(root, "src", "index.ts");
+    const editor = recordingEditor("--goto {file}:{line}");
+    expect(await openInEditor({ projectRoot: root, path: target, line: 7, intent: GESTURE })).toEqual({ ok: true });
+    expect(await editor.started()).toEqual(["--goto", `${target}:7`]);
+    expect(openPathMock).not.toHaveBeenCalled();
+    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
+      value.input?.includes(CHANNELS.workspace.openInEditor));
+    expect(entry?.input).toBeDefined();
+    expect(entry?.input).not.toContain(root);
+    expect(entry?.input).toContain("\"ok\":true");
+  });
+
+  it("keeps a path with blanks, a quote and shell characters inside one argument, and uses line 1 when none is given", async () => {
+    // Every character here is valid in a file name on all three platforms.
+    const odd = join(root, "my notes; it's odd $(touch pwned) & more %PATH% ^.txt");
+    writeFileSync(odd, "text\n");
+    try {
+      const editor = recordingEditor("+{line} {file}");
+      expect(await openInEditor({ projectRoot: root, path: odd, intent: GESTURE })).toEqual({ ok: true });
+      expect(await editor.started()).toEqual(["+1", odd]);
+      expect(existsSync(join(root, "pwned"))).toBe(false);
+    } finally {
+      rmSync(odd, { force: true });
+    }
+  });
+
+  it("opens a script and a file with an execute bit, which the default app refuses", async ({ skip }) => {
+    if (process.platform === "win32") skip("execute bits are POSIX");
+    const runnable = join(root, "run-me.txt");
+    writeFileSync(runnable, "#!/bin/sh\n");
+    chmodSync(runnable, 0o755);
+    try {
+      for (const target of [join(root, "deploy.sh"), runnable]) {
+        const editor = recordingEditor("{file}");
+        expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: true });
+        expect(await editor.started()).toEqual([target]);
+        expect((await openPath({ projectRoot: root, path: target, intent: GESTURE })).ok).toBe(false);
+      }
+    } finally {
+      rmSync(runnable, { force: true });
+    }
+  });
+
+  it("passes the real file when the requested name is an in-project link", async ({ skip }) => {
+    needsFileLinks(skip);
+    const editor = recordingEditor("{file}");
+    expect(await openInEditor({ projectRoot: root, path: join(root, "inside-link.md"), intent: GESTURE })).toEqual({ ok: true });
+    expect(await editor.started()).toEqual([join(root, "src", "notes.md")]);
+  });
+
+  it("answers not-configured when no command is set and invalid-command for one it will not start", async () => {
+    const target = join(root, "src", "index.ts");
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "not-configured" });
+    editorCommand.value = 'edit "{file}';
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "invalid-command" });
+    editorCommand.value = "./edit {file}";
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "invalid-command" });
+  });
+
+  it("reports a program that cannot be started", async () => {
+    editorCommand.value = `"${join(outside, "no-such-editor")}" {file}`;
+    expect(await openInEditor({ projectRoot: root, path: join(root, "src", "index.ts"), intent: GESTURE }))
+      .toEqual({ ok: false, error: "launch-failed" });
+    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
+      value.input?.includes(CHANNELS.workspace.openInEditor));
+    expect(entry?.input).toContain("\"error\":\"open-failed\"");
+  });
+
+  it("refuses everything the default-app open refuses before the hand-off, and starts nothing", async ({ skip }) => {
+    needsFileLinks(skip);
+    recordingEditor("{file}");
+    const out = join(outside, `editor-run-${runs}.json`);
+    const target = join(root, "src", "index.ts");
+    expect(await openInEditor({ projectRoot: root, path: target })).toEqual({ ok: false, error: "user-keyboard-required" });
+    expect(await openInEditor({ projectRoot: root, path: target, intent: { inputOrigin: "user-keyboard", userActivation: false } }))
+      .toEqual({ ok: false, error: "user-keyboard-required" });
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE }, frameEvent({ mainFrame: false })))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(await openInEditor({ projectRoot: root, path: target, intent: GESTURE }, frameEvent({ url: "https://evil.example.com/" })))
+      .toEqual({ ok: false, error: "unauthorized" });
+    expect(await openInEditor({ projectRoot: outside, path: join(outside, "secret.txt"), intent: GESTURE }))
+      .toEqual({ ok: false, error: "root-not-registered" });
+    expect(await openInEditor({ projectRoot: root, path: `${join(root, "src")}/../src/index.ts`, intent: GESTURE }))
+      .toEqual({ ok: false, error: "invalid-request" });
+    for (const line of [0, -1, 1.5, "3", Number.NaN]) {
+      expect(await openInEditor({ projectRoot: root, path: target, line, intent: GESTURE })).toEqual({ ok: false, error: "invalid-request" });
+    }
+    expect(await openInEditor({ projectRoot: root, path: join(root, "src"), intent: GESTURE })).toEqual({ ok: false, error: "not-a-file" });
+    expect(await openInEditor({ projectRoot: root, path: join(root, "gone.txt"), intent: GESTURE })).toEqual({ ok: false, error: "not-found" });
+    additionalDirectories.value = [root, outside];
+    try {
+      expect(await openInEditor({ projectRoot: root, path: join(root, "escape.txt"), intent: GESTURE }))
+        .toEqual({ ok: false, error: "outside-project" });
+    } finally {
+      additionalDirectories.value = [root];
+    }
+    const secret = join(root, ".env");
+    writeFileSync(secret, "TOKEN=1\n");
+    try {
+      expect(await openInEditor({ projectRoot: root, path: secret, intent: GESTURE })).toEqual({ ok: false, error: "sensitive-path" });
+    } finally {
+      rmSync(secret, { force: true });
+    }
+    expect(existsSync(out)).toBe(false);
   });
 });

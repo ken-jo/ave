@@ -268,6 +268,10 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "root-not-registered": "folderView.openRefusedScope",
   // Folder view search (workspace.searchFiles with a folder).
   "folder-not-allowed": "folderView.readFailedNotAllowed",
+  // Open in editor (workspace.openInEditor).
+  "not-configured": "folderView.editorNotConfigured",
+  "invalid-command": "folderView.editorInvalidCommand",
+  "launch-failed": "folderView.editorLaunchFailed",
   "type-not-allowed": "folderView.openRefusedType",
   "network-target": "folderView.openRefusedOutside",
   "executable": "folderView.openRefusedExecutable",

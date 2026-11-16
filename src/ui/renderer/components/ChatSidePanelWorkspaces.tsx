@@ -42,9 +42,10 @@ import {
 import { fileRowActions } from "./files/file-row-actions.js";
 import { FileRowMenu, type FileRowMenuState } from "./files/FileRowMenu.js";
 import { listWorkspaceDir } from "./files/workspace-listing.js";
+import { EDITOR_COMMAND_SETTINGS_PATH, EDITOR_NOT_CONFIGURED_KEY } from "./files/open-in-editor.js";
 import { coalesceRefresh, notifyWorkspaceFilesChanged, subscribeWorkspaceFilesChanged } from "../utils/workspace-files-signal.js";
 import { listNavigationTarget, mightProducePrintableCharacter, TypeNavigationController } from "../utils/list-keyboard-navigation.js";
-import { requestTerminalAt } from "../utils/app-shell-requests.js";
+import { requestFolderViewAt, requestSettingsSection, requestTerminalAt } from "../utils/app-shell-requests.js";
 import { incompleteToolStatusLabelKey } from "../utils/tool-status-label.js";
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import {
@@ -153,6 +154,8 @@ function ProjectRootsBrowser({
   // when a new op starts or the user dismisses it — a failed op no longer
   // swallows its error result silently.
   const [opError, setOpError] = useState<string | null>(null);
+  // "No editor command is set" comes with the way to the setting, so the explanation and its fix stay together.
+  const opErrorOffersEditorSetting = opError !== null && opError === t(EDITOR_NOT_CONFIGURED_KEY);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // One listing replaces what the folder showed: its entries, its omitted count and its failure. Nothing is merged.
@@ -368,6 +371,9 @@ function ProjectRootsBrowser({
           addToChat: onFileReference,
           openTerminal: activeRoot ? (dir) => {
             if (!requestTerminalAt({ dir, projectRoot: activeRoot })) setOpError(t("folderView.openTerminalFailed"));
+          } : undefined,
+          showInFolderView: activeRoot ? (path) => {
+            if (!requestFolderViewAt({ path, projectRoot: activeRoot })) setOpError(t("folderView.showInFolderViewFailed"));
           } : undefined,
           report: (messageKey) => setOpError(messageKey === null ? null : t(messageKey)),
         },
@@ -669,6 +675,16 @@ function ProjectRootsBrowser({
           className="flex items-start gap-1 rounded-md border border-destructive bg-destructive/(--opacity-muted) px-2 py-1 text-dense text-destructive"
         >
           <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{opError}</span>
+          {opErrorOffersEditorSetting ? (
+            <button
+              type="button"
+              className="shrink-0 rounded px-1 underline hover:bg-destructive/(--opacity-muted)"
+              data-testid="file-action-open-settings"
+              onClick={() => requestSettingsSection(EDITOR_COMMAND_SETTINGS_PATH)}
+            >
+              {t("folderView.editorOpenSettings")}
+            </button>
+          ) : null}
           <button
             type="button"
             className="shrink-0 rounded p-0.5 hover:bg-destructive/(--opacity-muted)"

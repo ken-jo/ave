@@ -11,6 +11,7 @@ import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { DENY_EXTENSIONS as DENY_LIST } from "../../shared/attachments-deny-list.js";
 import {
+  type ComposerImageFormat,
   MAX_COMPOSER_ATTACHMENT_COUNT,
   MAX_COMPOSER_IMAGE_BYTES,
   sniffComposerImageFormat,
@@ -20,7 +21,9 @@ import {
   allowKeyMaterialInspection,
   canonicalizePathForMatch,
   caseFoldForMatch,
+  isSensitiveContent,
   isSensitivePath,
+  judgedPathNamesOpenedFile,
 } from "../../permissions/sensitive-paths.js";
 import { randomBytes } from "node:crypto";
 import type { IpcMainInvokeEvent } from "electron";
@@ -347,7 +350,9 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         if (!ATTACH_PATH_ALLOWLIST.has(filePath)) {
           return { ok: false, error: "path_not_authorized" };
         }
-        const target = await resolveExternalOpenTarget(filePath);
+        // These bytes become an image part of the message the model reads, so they are judged as the agent's read: a
+        // key-extension file not shown to hold no key is refused here even though the person could attach it.
+        const target = await resolveExternalOpenTarget(filePath, "agent");
         if (!target.ok) return { ok: false, error: target.error };
         // Stat before buffering so multi-gigabyte files cannot exhaust memory.
         const stat = await fs.stat(target.real);
@@ -360,18 +365,40 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         if (!await sniffImageFilePrefix(target.real)) {
           return { ok: false, error: "not_image" };
         }
-        const buf = await fs.readFile(target.real);
-        if (buf.length > MAX_COMPOSER_IMAGE_BYTES) {
-          return {
-            ok: false,
-            error: `image_too_large: ${buf.length} > ${MAX_COMPOSER_IMAGE_BYTES}`,
-          };
-        }
-        // Re-sniff after the full read so a file replacement race cannot make
-        // a claimed image MIME disagree with the bytes sent to a provider.
-        const imageFormat = sniffComposerImageFormat(buf);
-        if (!imageFormat) {
-          return { ok: false, error: "not_image" };
+        // Read through one handle, opened without following a link in its last name where the platform can refuse one
+        // (Windows cannot). It stays open until the last check, so its file's identity cannot pass to another file first.
+        const handle = await fs.open(target.real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+        let buf: Buffer;
+        let imageFormat: ComposerImageFormat;
+        try {
+          const opened = await handle.stat({ bigint: true });
+          if (!opened.isFile()) return { ok: false, error: "not-a-file" };
+          buf = await handle.readFile();
+          if (buf.length > MAX_COMPOSER_IMAGE_BYTES) {
+            return {
+              ok: false,
+              error: `image_too_large: ${buf.length} > ${MAX_COMPOSER_IMAGE_BYTES}`,
+            };
+          }
+          // Re-sniff after the full read so a file replacement race cannot make
+          // a claimed image MIME disagree with the bytes sent to a provider.
+          const sniffed = sniffComposerImageFormat(buf);
+          if (!sniffed) {
+            return { ok: false, error: "not_image" };
+          }
+          imageFormat = sniffed;
+          // The bytes that become the image part are judged themselves, as the agent's read: what the path holds by now,
+          // or held when it was checked above, says nothing about a buffer read in between.
+          if (isSensitiveContent(caseFoldForMatch(canonicalizePathForMatch(target.real)), buf) !== null) {
+            return { ok: false, error: "sensitive-path" };
+          }
+          // The name and location rules were judged on `target.real`. They hold for these bytes only if that path, looked
+          // up again now, still names the very file they were read from: a folder or last name that led into a protected
+          // folder during the open and was put back leaves another file there, and one still leading there resolves to
+          // another path. A path switched back and forth between those two lookups is not seen.
+          if (!judgedPathNamesOpenedFile(target.real, opened)) return { ok: false, error: "changed" };
+        } finally {
+          await handle.close();
         }
         const mimeType = imageFormat.mimeType;
         const img = nativeImage.createFromBuffer(buf);

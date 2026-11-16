@@ -33,6 +33,7 @@ import type { SideChatOpenRequest } from "../SideChatView.js";
 import type { AgentSpawnEvent } from "../../../../shared/subagent-events.js";
 import type { SubAgentTranscriptRequest, SubAgentTranscriptResult } from "../../../../shared/subagent-transcript.js";
 import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
+import { handleFolderViewAtRequests, handleSettingsSectionRequests } from "../../utils/app-shell-requests.js";
 
 type ChildTranscriptResult = Awaited<ReturnType<NonNullable<AveApi["chatGetSubAgentTranscript"]>>>;
 
@@ -1386,7 +1387,7 @@ describe("ChatSidePanel", () => {
     fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
     // The same row actions the folder view offers, drawn in the page; this host has no composer to add to.
     expect(within(screen.getByTestId("file-row-menu")).getAllByRole("menuitem").map((item) => item.getAttribute("data-testid")))
-      .toEqual(["file-row-action-open", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path",
+      .toEqual(["file-row-action-open", "file-row-action-open-in-editor", "file-row-action-show-in-folder-view", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path",
         "file-row-action-open-terminal"]);
     expect(showNativeContextMenu).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("file-row-action-reveal"));
@@ -1538,6 +1539,49 @@ describe("ChatSidePanel", () => {
     fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
     fireEvent.click(screen.getByTestId("file-row-action-reveal"));
     await screen.findByTestId("chat-side-panel-op-error");
+  });
+
+  it("asks the shell for a folder view with the row's file selected", async () => {
+    stubRichWorkspace();
+    const shown = vi.fn();
+    const unregister = handleFolderViewAtRequests(shown);
+    renderPanel(
+      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+    const fileRow = await screen.findByText("readme.md");
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    fireEvent.click(screen.getByTestId("file-row-action-show-in-folder-view"));
+    expect(shown).toHaveBeenCalledTimes(1);
+    const request = shown.mock.calls[0]?.[0] as { path: string; projectRoot: string };
+    expect(request.path).toMatch(/readme\.md$/u);
+    expect(request.path.startsWith(request.projectRoot)).toBe(true);
+    unregister();
+    // With no shell to ask, the row says so.
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    fireEvent.click(screen.getByTestId("file-row-action-show-in-folder-view"));
+    expect((await screen.findByTestId("chat-side-panel-op-error")).textContent).toContain("폴더 보기를 열지 못했습니다.");
+  });
+
+  it("asks for the user's editor from a file row, and offers the setting when no editor is set", async () => {
+    const openInEditor = vi.fn(async () => ({ ok: false as const, error: "not-configured" as const }));
+    stubRichWorkspace({ openInEditor });
+    const shown = vi.fn();
+    const unregister = handleSettingsSectionRequests(shown);
+    renderPanel(
+      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
+    );
+    fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
+    const fileRow = await screen.findByText("readme.md");
+    fireEvent.contextMenu(fileRow.closest('[role="treeitem"]') ?? fileRow);
+    fireEvent.click(screen.getByTestId("file-row-action-open-in-editor"));
+    expect(openInEditor).toHaveBeenCalledTimes(1);
+    expect((openInEditor.mock.calls[0] as unknown as string[])[1]).toMatch(/readme\.md$/u);
+    const alert = await screen.findByTestId("chat-side-panel-op-error");
+    expect(alert.textContent).toContain("편집기 명령이 아직 없습니다.");
+    fireEvent.click(within(alert).getByTestId("file-action-open-settings"));
+    expect(shown).toHaveBeenCalledWith({ tab: "about", section: "chat-documents" });
+    unregister();
   });
 
   it("file tab keeps zero-count filters available on the same directory tree", async () => {

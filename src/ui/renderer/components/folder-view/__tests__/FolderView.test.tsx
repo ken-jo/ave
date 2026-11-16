@@ -21,6 +21,7 @@ const listings: Record<string, unknown> = {
 
 const listDir = vi.fn(async (path: string) => listings[path] ?? { ok: false, error: "not-found" });
 const openPath = vi.fn(async () => ({ ok: true }));
+const openInEditor = vi.fn(async (_root: string, _path: string, _line?: number): Promise<{ ok: boolean; error?: string }> => ({ ok: true }));
 const readFromDisk = async (path: string): Promise<Record<string, unknown>> => path.endsWith(".log")
   ? { ok: false, error: "too-large", bytes: 155_189_248 }
   : path.endsWith(".png") ? { ok: true, image: { dataUrl: "data:image/png;base64,AAAA", mimeType: "image/png" }, path }
@@ -37,7 +38,7 @@ beforeEach(() => {
   readFile.mockClear();
   Object.assign(window, {
     ave: {
-      workspace: { listDir, openPath, reveal: vi.fn(async () => ({ ok: true })), searchFiles: vi.fn(async () => ({ ok: true, matches: [], truncated: false })) },
+      workspace: { listDir, openPath, openInEditor, reveal: vi.fn(async () => ({ ok: true })), searchFiles: vi.fn(async () => ({ ok: true, matches: [], truncated: false })) },
       preview: { readFile },
     },
   });
@@ -310,7 +311,7 @@ describe("FolderView", () => {
       fireEvent.click(row(`${ROOT}/src`));
       await waitFor(() => expect(row(`${ROOT}/src/index.ts`)).toBeDefined());
       fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
-      expect(items()).toEqual(["file-row-action-open", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path",
+      expect(items()).toEqual(["file-row-action-open", "file-row-action-open-in-editor", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path",
         "file-row-action-add-to-chat", "file-row-action-open-terminal"]);
       fireEvent.click(screen.getByTestId("file-row-action-copy-relative-path"));
       await waitFor(() => expect(writeText).toHaveBeenCalledWith("src/index.ts"));
@@ -328,6 +329,20 @@ describe("FolderView", () => {
       fireEvent.click(screen.getByTestId("file-row-action-add-to-chat"));
       expect(onAttachText).toHaveBeenCalledWith(`\`${ROOT}/src/index.ts\``);
 
+      // The user's editor is asked for in the click itself; a folder has no such action.
+      openInEditor.mockClear();
+      openInEditor.mockResolvedValueOnce({ ok: false, error: "not-configured" });
+      fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
+      fireEvent.click(screen.getByTestId("file-row-action-open-in-editor"));
+      expect(openInEditor).toHaveBeenCalledWith(ROOT, `${ROOT}/src/index.ts`, undefined);
+      const alert = await screen.findByTestId("folder-view-alert");
+      expect(alert.textContent).toContain("편집기 명령이 아직 없습니다.");
+      expect(within(alert).getByTestId("file-action-open-settings")).toBeTruthy();
+      fireEvent.contextMenu(row(`${ROOT}/src/payments`), { clientX: 300, clientY: 120 });
+      expect(items()).not.toContain("file-row-action-open-in-editor");
+      fireEvent.keyDown(screen.getByTestId("file-row-menu"), { key: "Escape" });
+      await waitFor(() => expect(screen.queryByTestId("file-row-menu")).toBeNull());
+
       // A file opens the terminal in the folder that holds it; a folder opens itself.
       fireEvent.contextMenu(row(`${ROOT}/src/index.ts`), { clientX: 300, clientY: 120 });
       fireEvent.click(screen.getByTestId("file-row-action-open-terminal"));
@@ -343,7 +358,7 @@ describe("FolderView", () => {
       row(`${ROOT}/package.json`).focus();
       fireEvent.keyDown(row(`${ROOT}/package.json`), { key: "F10", shiftKey: true });
       // No terminal was offered by the host, so the menu has no such action.
-      expect(items()).toEqual(["file-row-action-open", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path", "file-row-action-add-to-chat"]);
+      expect(items()).toEqual(["file-row-action-open", "file-row-action-open-in-editor", "file-row-action-reveal", "file-row-action-copy-path", "file-row-action-copy-relative-path", "file-row-action-add-to-chat"]);
       fireEvent.keyDown(screen.getByTestId("file-row-menu"), { key: "Escape" });
       await waitFor(() => expect(screen.queryByTestId("file-row-menu")).toBeNull());
       await waitFor(() => expect(document.activeElement).toBe(row(`${ROOT}/package.json`)));

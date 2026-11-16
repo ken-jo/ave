@@ -3,6 +3,9 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileViewer } from "../FileViewer.js";
 import { VIEWER_HEADER_COMPACT_WIDTH } from "../ViewerHeader.js";
+import { isSettingsSection } from "../../../../../shared/settings-tabs.js";
+import { EDITOR_COMMAND_SETTINGS_PATH } from "../../files/open-in-editor.js";
+import { handleSettingsSectionRequests } from "../../../utils/app-shell-requests.js";
 import type { FolderEntry } from "../folder-columns.js";
 
 const ROOT = "/p/checkout-service";
@@ -11,6 +14,7 @@ const entry = (name: string, extra: Partial<FolderEntry> = {}): FolderEntry =>
 
 const reveal = vi.fn(async (_path: string) => ({ ok: true }) as { ok: boolean; error?: string });
 const openPath = vi.fn(async () => ({ ok: true }));
+const openInEditor = vi.fn(async (_root: string, _path: string, _line?: number): Promise<{ ok: boolean; error?: string }> => ({ ok: true }));
 const readFile = vi.fn(async (path: string): Promise<Record<string, unknown>> => path.endsWith("big.ts") || path.endsWith("big.log")
   ? { ok: false, error: "too-large" }
   : path.endsWith(".md") ? { ok: true, content: "# Title\n", truncated: false, lineCount: 2, path }
@@ -22,8 +26,9 @@ beforeEach(() => {
   headerWidth = 900;
   reveal.mockClear();
   openPath.mockClear();
+  openInEditor.mockClear();
   writeText.mockClear();
-  Object.assign(window, { ave: { workspace: { reveal, openPath }, preview: { readFile } } });
+  Object.assign(window, { ave: { workspace: { reveal, openPath, openInEditor }, preview: { readFile } } });
   Object.assign(navigator, { clipboard: { writeText } });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     const width = this.getAttribute("data-testid") === "folder-viewer-header" ? headerWidth : 0;
@@ -43,7 +48,7 @@ describe("FileViewer header", () => {
     render(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} onAttachText={() => true} />);
     await waitFor(() => expect(action("copy-content")).not.toBeNull());
     expect(within(screen.getByTestId("folder-viewer-actions")).getAllByRole("button").map((button) => button.getAttribute("data-testid")))
-      .toEqual(["folder-viewer-action-copy-content", "folder-viewer-action-add-context", "folder-viewer-action-reveal", "folder-viewer-action-copy-path"]);
+      .toEqual(["folder-viewer-action-copy-content", "folder-viewer-action-add-context", "folder-viewer-action-open-in-editor", "folder-viewer-action-reveal", "folder-viewer-action-copy-path"]);
     // A `.ts` file is not handed to the default app, so no such action is offered.
     expect(action("open-external")).toBeNull();
     fireEvent.click(action("reveal") as HTMLElement);
@@ -83,7 +88,7 @@ describe("FileViewer header", () => {
     const menu = await screen.findByTestId("folder-viewer-more-menu");
     expect(within(menu).getAllByRole("menuitem").map((item) => item.getAttribute("data-testid"))).toEqual([
       "folder-viewer-action-markdown-mode", "folder-viewer-action-copy-content", "folder-viewer-action-add-context",
-      "folder-viewer-action-reveal", "folder-viewer-action-copy-path", "folder-viewer-action-open-external",
+      "folder-viewer-action-open-in-editor", "folder-viewer-action-reveal", "folder-viewer-action-copy-path", "folder-viewer-action-open-external",
     ]);
     fireEvent.click(within(menu).getByTestId("folder-viewer-action-markdown-mode"));
     await waitFor(() => expect(screen.queryByTestId("folder-markdown-rendered")).toBeNull());
@@ -157,5 +162,49 @@ describe("FileViewer one notice for the card and the header", () => {
     expect(screen.getAllByRole("alert")).toHaveLength(1);
     fireEvent.click(action("reveal") as HTMLElement);
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+});
+
+describe("FileViewer open in editor", () => {
+  it("targets a section hosted by the requested settings tab", () => {
+    expect(isSettingsSection(EDITOR_COMMAND_SETTINGS_PATH.tab, EDITOR_COMMAND_SETTINGS_PATH.section)).toBe(true);
+  });
+
+  it("asks main in the click itself, for a file Ave previews and for one it does not", async () => {
+    const view = render(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} />);
+    await waitFor(() => expect(action("open-in-editor")).not.toBeNull());
+    fireEvent.click(action("open-in-editor") as HTMLElement);
+    // Called before the click handler returned: the user gesture is what main checks.
+    expect(openInEditor).toHaveBeenCalledWith(ROOT, `${ROOT}/index.ts`, undefined);
+    await waitFor(() => expect(screen.queryByTestId("folder-viewer-alert")).toBeNull());
+    view.unmount();
+    render(<FileViewer projectRoot={ROOT} entry={entry("big.log", { size: 2_097_152 })} />);
+    await waitFor(() => expect(action("open-in-editor")).not.toBeNull());
+    fireEvent.click(action("open-in-editor") as HTMLElement);
+    expect(openInEditor).toHaveBeenLastCalledWith(ROOT, `${ROOT}/big.log`, undefined);
+  });
+
+  it("explains that no editor is set and offers the way to the setting", async () => {
+    const shown = vi.fn();
+    const unregister = handleSettingsSectionRequests(shown);
+    openInEditor.mockResolvedValueOnce({ ok: false, error: "not-configured" });
+    render(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} />);
+    await waitFor(() => expect(action("open-in-editor")).not.toBeNull());
+    fireEvent.click(action("open-in-editor") as HTMLElement);
+    const alert = await screen.findByTestId("folder-viewer-alert");
+    expect(alert.textContent).toContain("편집기 명령이 아직 없습니다. 설정에서 정해 주세요.");
+    fireEvent.click(within(alert).getByTestId("file-action-open-settings"));
+    expect(shown).toHaveBeenCalledWith({ tab: "about", section: "chat-documents" });
+    unregister();
+  });
+
+  it("says when the editor could not be started, without a settings button", async () => {
+    openInEditor.mockResolvedValueOnce({ ok: false, error: "launch-failed" });
+    render(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} />);
+    await waitFor(() => expect(action("open-in-editor")).not.toBeNull());
+    fireEvent.click(action("open-in-editor") as HTMLElement);
+    const alert = await screen.findByTestId("folder-viewer-alert");
+    expect(alert.textContent).toContain("편집기를 시작하지 못했습니다.");
+    expect(within(alert).queryByTestId("file-action-open-settings")).toBeNull();
   });
 });

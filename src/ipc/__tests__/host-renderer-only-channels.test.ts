@@ -241,6 +241,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["workspace", CHANNELS.workspace.searchFiles, ["src"]],
   // Opening a project file in the default app is a user action of the host window, never a plugin frame's.
   ["workspace", CHANNELS.workspace.openPath, [{ projectRoot: "/", path: "/x.txt", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
+  // So is opening it in the user's editor command.
+  ["workspace", CHANNELS.workspace.openInEditor, [{ projectRoot: "/", path: "/x.txt", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
   ["attach", CHANNELS.attach.openFile, [{}]],
   ["attach", CHANNELS.attach.readImage, ["/x"]],
   ["attach", CHANNELS.attach.registerDrop, [["/x"]]],
@@ -376,7 +378,8 @@ describe("host-renderer-only IPC channels", () => {
 
   it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (domain, channel, args) => {
     // Preview and the default-app open admit only a registered app window's main frame.
-    const event = domain === "preview" || channel === CHANNELS.workspace.openPath ? registeredHostEvent() : hostFrameEvent();
+    const event = domain === "preview" || channel === CHANNELS.workspace.openPath || channel === CHANNELS.workspace.openInEditor
+      ? registeredHostEvent() : hostFrameEvent();
     if (channel === CHANNELS.preview.documentOpenAck) Object.assign(event.sender, { mainFrame: event.senderFrame });
     await invoke(channel, event, args);
     expect(guardRowsFor(channel)).toEqual([]);

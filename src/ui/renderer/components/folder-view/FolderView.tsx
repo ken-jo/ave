@@ -16,6 +16,7 @@ import { coalesceRefresh, notifyWorkspaceFilesChanged, subscribeWorkspaceFilesCh
 import { listNavigationTarget, mightProducePrintableCharacter, TypeNavigationController } from "../../utils/list-keyboard-navigation.js";
 import { fileRowActions } from "../files/file-row-actions.js";
 import { listWorkspaceDir } from "../files/workspace-listing.js";
+import { FileActionNotice } from "../files/FileActionNotice.js";
 import { FileRowMenu, type FileRowMenuState } from "../files/FileRowMenu.js";
 import { FileViewer } from "./FileViewer.js";
 import { FolderColumn } from "./FolderColumn.js";
@@ -459,9 +460,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
         ) : null}
       </div>
 
-      {notice ? (
-        <div role="alert" className="shrink-0 border-b px-3 py-1 text-dense text-destructive" data-testid="folder-view-alert">{t(notice)}</div>
-      ) : null}
+      {notice ? <FileActionNotice messageKey={notice} testId="folder-view-alert" /> : null}
       {rowMenu ? <FileRowMenu menu={rowMenu} onClose={closeRowMenu} focusTarget={() => rows.current.get(rowMenu.path)} /> : null}
 
       <div role="tree" aria-label={t("folderView.treeLabel")} className="flex min-h-0 flex-1" data-testid="folder-body">

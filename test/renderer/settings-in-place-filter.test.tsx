@@ -80,6 +80,33 @@ describe("settings in-place editor", () => {
       expect(row("appearance.terminal.shell").hidden).toBe(true);
     });
   });
+  it("registers and filters the editor command independently and resets its saved value", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.documents.editorCommand = "edit --goto {file}:{line}";
+    const view = await renderSettings(settings);
+    fireEvent.change(view.getByRole("searchbox", { name: "Search settings" }), { target: { value: "editor command" } });
+    const input = await view.findByTestId("document-editor-command");
+    expect(input.closest("[data-setting-id]")).toHaveAttribute("data-setting-id", "documents.editorCommand");
+    const row = (id: string) => requiredFixture(view.container.querySelector<HTMLElement>(`[data-setting-id="${id}"]:not([data-setting-registered])`));
+    await waitFor(() => {
+      expect(input).toHaveValue(settings.documents.editorCommand);
+      expect(row("documents.editorCommand").hidden).toBe(false);
+      expect(view.container.querySelector('[data-setting-control-id="documents.editorCommand"][data-setting-registered="true"]')).toBeTruthy();
+    });
+    fireEvent.click(view.getByRole("button", { name: "Modified settings" }));
+    fireEvent.change(view.getByRole("searchbox", { name: "Search settings" }), { target: { value: "" } });
+    await waitFor(() => {
+      expect(row("documents.editorCommand").hidden).toBe(false);
+      expect(row("documents.openMode").hidden).toBe(true);
+    });
+    const actions = requiredFixture(view.container.querySelector<HTMLDetailsElement>('[data-settings-actions="chat-documents"]'));
+    actions.open = true;
+    fireEvent.click(view.getByRole("button", { name: "Reset Editor command" }));
+    await waitFor(() => {
+      expect(view.api.updateSettings).toHaveBeenCalledWith({ documents: { editorCommand: "" } });
+      expect(input).toHaveValue("");
+    });
+  });
   it("fills the directory draft from the picker without granting access", async () => {
     const view = await renderSettings();
     view.api.pickSettingsDirectory.mockResolvedValue({ ok: true, path: "/synthetic/project" });

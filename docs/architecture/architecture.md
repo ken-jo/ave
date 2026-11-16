@@ -541,6 +541,26 @@ the open. The folder view's open also requires a user gesture
 (`user-keyboard-required` otherwise). This is a user action: it emits
 no agent observation and grants no document write authority.
 
+"Open in editor" (`workspace.openInEditor`, offered by the folder view's
+viewer header and by the file rows of the folder view and the side panel's
+tree) hands a project file to the editor command the user set in
+`documents.editorCommand`. It passes the same admission as
+`workspace.openPath` and runs the same sequence with a different hand-off: a
+text editor reads a file as text, so the allowed-extension list and the
+execute-bit refusal do not apply, while the link-chain walk, the sensitive-path
+floor, project containment, the regular-file requirement and the second
+resolution all do. Main splits the command into a program and arguments
+(blanks separate, quotes group, nothing else is special), fills `{file}` and
+`{line}` in afterwards as whole arguments using the verified real path, and
+starts the program directly, never through a shell, detached and without the
+app's own environment variables. The program is an absolute path or a bare name
+found in an absolute `PATH` folder; a relative program is refused
+(`invalid-command`), because it would resolve against the app's working
+folder. With no command set the answer is `not-configured`, and the renderer
+shows that sentence with a button that opens the setting. The command is
+written only through `settings.update` from the settings screen; the settings
+file is on the sensitive floor, so no tool can write it.
+
 `folder` is an instance view and a main-surface kind. A folder surface belongs
 to one project, is saved in the v2 main layout with its folder and selection,
 and is neither an agent tool surface nor movable to a side panel. Its listing

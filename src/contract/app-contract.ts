@@ -713,6 +713,11 @@ export const CHANNELS = {
     // regular file + picker deny list, re-checked on a fresh resolution right before shell.openPath.
     // INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE / EXTERNAL_MUTATION_CHANNELS.
     openPath: "ave:workspace:open-path",
+    // Folder view and file tree "open in editor": the same user-click admission as `openPath` (main-frame app-window
+    // sender, preload-reported user gesture, registered project root, realpath inside that root, regular file), then the
+    // user's own `documents.editorCommand`, started by main without a shell. A user action, not a tool.
+    // INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE / EXTERNAL_MUTATION_CHANNELS.
+    openInEditor: "ave:workspace:open-in-editor",
   },
   // ── Interactive PTY terminal (#1444, workspace rail) ──────────────────────
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /

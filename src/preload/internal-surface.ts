@@ -221,6 +221,11 @@ export function buildAveNamespaceExtras() {
     // Folder view "open in default app"; the gesture flag is read here, inside the click or key handler's task.
     openPath: (projectRoot: string, targetPath: string) =>
       ipcRenderer.invoke(CHANNELS.workspace.openPath, { projectRoot, path: targetPath, intent: ipcUserKeyboardIntent() }),
+    // The same user-gesture report; `line` is optional.
+    openInEditor: (projectRoot: string, targetPath: string, line?: number) =>
+      ipcRenderer.invoke(CHANNELS.workspace.openInEditor, {
+        projectRoot, path: targetPath, ...(line === undefined ? {} : { line }), intent: ipcUserKeyboardIntent(),
+      }),
   },
   };
 }

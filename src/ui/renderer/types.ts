@@ -117,7 +117,7 @@ import type { WorkspacePreviewRemoveRootResult } from "../../ipc/domains/workspa
 // `a2aRemote` block, expressed once by the IPC projection type.
 import type { RendererSettingsSnapshot as AppSettings } from "../../ipc/domains/settings.js";
 import type { HomeDocsStatus } from "../../ipc/domains/home-docs.js";
-import type { WorkspaceListDirResult, WorkspaceOpenPathResult } from "../../ipc/domains/workspace.js";
+import type { WorkspaceListDirResult, WorkspaceOpenInEditorResult, WorkspaceOpenPathResult } from "../../ipc/domains/workspace.js";
 export type { AppSettings };
 
 // Approval / permission contracts are the host types themselves (the full
@@ -2002,6 +2002,11 @@ export interface AveWorkspaceApi {
    * gesture flag and main refuses without it. Main re-checks the root, the real path, the file type and the deny list.
    */
   openPath: (projectRoot: string, path: string) => Promise<WorkspaceOpenPathResult>;
+  /**
+   * Open one file inside `projectRoot` in the editor command the user set (`documents.editorCommand`), at `line` when
+   * given. Call it only from a click or key handler, as `openPath`. Main answers `not-configured` when no command is set.
+   */
+  openInEditor: (projectRoot: string, path: string, line?: number) => Promise<WorkspaceOpenInEditorResult>;
 }
 
 /**

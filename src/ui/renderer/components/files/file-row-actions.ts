@@ -1,12 +1,13 @@
 /** What a person can do with one file or folder row. Both file explorers (the folder view's columns and the side panel's
  * tree) build their row menu from this one list, so a row offers the same actions wherever it is shown. */
-import { FileSymlink, FolderOpen, Link2, MessageSquarePlus, Route, SquareTerminal } from "lucide-react";
+import { Columns3, FileSymlink, FolderOpen, Link2, MessageSquarePlus, Route, SquarePen, SquareTerminal } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
 import { relativeToRoot } from "../folder-view/folder-columns.js";
 import { revealKey } from "../folder-view/FolderColumn.js";
+import { openInEditor } from "./open-in-editor.js";
 
-type FileRowActionId = "open" | "reveal" | "copy-path" | "copy-relative-path" | "add-to-chat" | "open-terminal";
+type FileRowActionId = "open" | "open-in-editor" | "show-in-folder-view" | "reveal" | "copy-path" | "copy-relative-path" | "add-to-chat" | "open-terminal";
 
 export interface FileRowTarget {
   path: string;
@@ -26,6 +27,8 @@ export interface FileRowActionHost {
   /** Put a reference to `path` into a chat composer. */
   addToChat?: ((path: string) => AttachTextResult) | undefined;
   openTerminal?: ((dir: string) => void) | undefined;
+  /** Open a folder view with `path` selected; offered by an explorer that is not itself the folder view. */
+  showInFolderView?: ((path: string) => void) | undefined;
   /** Show (or with null, clear) the i18n key of a failure next to the list. Every action clears it first. */
   report: (messageKey: string | null) => void;
 }
@@ -46,6 +49,17 @@ export function fileRowActions(target: FileRowTarget, host: FileRowActionHost): 
   const actions: FileRowAction[] = [];
   const act = (run: () => void) => () => { host.report(null); run(); };
   if (host.open && target.type !== "link") actions.push({ id: "open", labelKey: "chatPreviewRail.ctxOpen", icon: FileSymlink, run: act(host.open) });
+  // The user's own editor, for a file of a project: main checks the click and the path and starts the configured command.
+  if (target.type === "file" && target.root !== null) {
+    const root = target.root;
+    actions.push({ id: "open-in-editor", labelKey: "folderView.openInEditor", icon: SquarePen, run: act(() => {
+      void openInEditor(root, target.path).then((failure) => { if (failure !== null) host.report(failure); });
+    }) });
+  }
+  if (host.showInFolderView && !(target.type === "link" && target.outside)) {
+    const showInFolderView = host.showInFolderView;
+    actions.push({ id: "show-in-folder-view", labelKey: "folderView.showInFolderView", icon: Columns3, run: act(() => showInFolderView(target.path)) });
+  }
   // A link that leaves the project is not handed to the file manager, which would open where it points.
   if (!(target.type === "link" && target.outside)) {
     actions.push({ id: "reveal", labelKey: revealKey(), icon: FolderOpen, run: act(() => {

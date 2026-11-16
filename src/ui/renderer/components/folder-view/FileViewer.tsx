@@ -1,7 +1,7 @@
 /** The folder view's file viewer. It routes like the side-panel preview (table, page, then the text registry), shows images
  * with fit and zoom, and gives anything it cannot show to the info card. */
 import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Code, Copy, ExternalLink, FileText, FolderOpen, Link2, MessageSquarePlus, Minus, Plus, Scan } from "lucide-react";
+import { Check, Code, Copy, ExternalLink, FileText, FolderOpen, Link2, MessageSquarePlus, Minus, Plus, Scan, SquarePen } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -19,6 +19,8 @@ import { FOLDER_KIND_LABEL_KEYS, folderFileKind, type FolderEntry } from "./fold
 import { useOpenInDefaultApp } from "./use-open-in-default-app.js";
 import { canOpenInDefaultApp } from "../../../../shared/preview-external-open.js";
 import { subscribeWorkspaceFilesChanged } from "../../utils/workspace-files-signal.js";
+import { FileActionNotice } from "../files/FileActionNotice.js";
+import { openInEditor } from "../files/open-in-editor.js";
 
 type ReadResult = Awaited<ReturnType<typeof window.ave.preview.readFile>>;
 type ViewerState =
@@ -149,15 +151,17 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   // Every header carries the two ways out that need no viewer: show the file in the file manager, and copy its path. A link
   // outside the project is not handed to the file manager, which would open where it points.
   const exits: ViewerAction[] = [
+    // The user's own editor takes any file of the project, including one too large or of a kind Ave does not preview.
+    ...(entry.type === "file" ? [{ id: "open-in-editor", label: t("folderView.openInEditor"), icon: SquarePen, onSelect: () => {
+      clearNotices();
+      void openInEditor(projectRoot, entry.path).then((failure) => { if (failure !== null) setNotice(failure); });
+    } }] : []),
     ...(entry.type === "link" && entry.outside ? [] : [{ id: "reveal", label: t(revealKey()), icon: FolderOpen, onSelect: reveal }]),
     { id: "copy-path", label: t(pathCopy.copied ? "folderView.copied" : "folderView.copyPath"), icon: pathCopy.copied ? Check : Link2,
       onSelect: () => { clearNotices(); pathCopy.copy(entry.path); } },
   ];
   const alertKey = open.error ?? notice;
-  const alert = alertKey ? t(alertKey) : null;
-  const alertStrip = alert ? (
-    <div role="alert" className="shrink-0 border-b px-3 py-1 text-dense text-destructive" data-testid="folder-viewer-alert">{alert}</div>
-  ) : null;
+  const alertStrip = alertKey ? <FileActionNotice messageKey={alertKey} testId="folder-viewer-alert" /> : null;
 
   const shell = (children: ReactNode) => (
     <div ref={ref} tabIndex={-1} role="region" aria-label={entry.name} data-testid="folder-viewer" data-path={entry.path}
