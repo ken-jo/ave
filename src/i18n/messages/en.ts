@@ -5836,6 +5836,8 @@ export const en = {
   "toolApprovalDialog.networkLocalScopeNotOffered": "A local or unverified destination cannot be allowed for good.",
   "toolApprovalDialog.pathGrantOnlyFolder": "A folder is allowed once, for this session, or for good.",
   "toolApprovalDialog.hostTerminalTarget": "Types `{command}` into your own terminal {terminal} ({shell}) and runs it there, in {cwd}. You can take over at any time.",
+  "toolApprovalDialog.hostTerminalCommandLabel": "Command to run in your terminal",
+  "toolApprovalDialog.hostTerminalWhere": "Runs in your own terminal {terminal} ({shell}), in {cwd}. You can take over at any time.",
   "toolApprovalDialog.hostTerminalWarning": "This is your real shell, with your permissions and no sandbox. The command's output returns to the model and may contain secrets from your machine.",
   "toolApprovalDialog.hostTerminalAfterExternalContent": "External content was read earlier in this turn. Check that this command follows your request before approving it for this time only.",
   "toolApprovalDialog.hostTerminalOutsideAllowed": "{cwd} is outside your allowed folders. The command runs there in your own shell.",

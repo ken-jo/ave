@@ -6,13 +6,25 @@ import { canonicalStringify } from "../../../../shared/canonical-json.js";
 import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
 import type { ApprovalChoice, ApprovalRequest } from "../../types.js";
 
-export function UserOwnedSurfaceApprovalCard({ request, conversationLabel, interactionLocked, onDecide, targetDescription, notes, pendingCount = 1 }: {
+/** The host-terminal command as the card shows it above its choices. */
+export interface HostTerminalCommandFacts {
+  /** The exact command text the approval types. */
+  text: string;
+  /** The sealed terminal, shell and directory; null when the request carries no sealed target. */
+  where: string | null;
+  /** Characters that can look like others, named by code point; null when there are none. */
+  lookalikeNote: string | null;
+}
+
+export function UserOwnedSurfaceApprovalCard({ request, conversationLabel, interactionLocked, onDecide, targetDescription, notes, command = null, pendingCount = 1 }: {
   request: ApprovalRequest;
   conversationLabel: string;
   interactionLocked: boolean;
   onDecide: (choice: ApprovalChoice, pattern?: string, extras?: ApprovalDecisionExtras) => void;
   targetDescription: string | null;
   notes: readonly string[];
+  /** Host terminal only: the command this card approves. It is drawn before the choices, never only inside the collapsed details. */
+  command?: HostTerminalCommandFacts | null;
   pendingCount?: number;
 }) {
   const { t } = useTranslation();
@@ -40,13 +52,24 @@ export function UserOwnedSurfaceApprovalCard({ request, conversationLabel, inter
         <h3 className="text-sm font-semibold">{request.userOwnedSurface === "browser" ? t("toolApprovalDialog.surfaceBrowser") : t("toolApprovalDialog.surfaceTerminal")}</h3>
         <p className="truncate text-xs text-muted-foreground" title={conversationLabel}>{conversationLabel}</p>
       </div>
+      {command && (
+        <section className="flex min-h-12 shrink flex-col gap-1 overflow-hidden" data-testid="user-owned-surface-command-block" aria-labelledby={`surface-command-${request.id}`}>
+          <p className="shrink-0 text-xs font-medium" id={`surface-command-${request.id}`}>{t("toolApprovalDialog.hostTerminalCommandLabel")}</p>
+          {/* The exact text: wrapped, never truncated; a long command scrolls inside this block so the choices stay on screen. */}
+          <pre className="min-h-6 max-h-28 shrink overflow-y-auto whitespace-pre-wrap break-all rounded border bg-muted/(--opacity-subtle) px-2 py-1 font-mono text-xs"
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: a long command scrolls inside this block, and a keyboard user must be able to scroll it to read all of what they approve.
+            data-testid="user-owned-surface-command" tabIndex={0}>{command.text}</pre>
+          {command.lookalikeNote && <p className="shrink-0 text-xs font-medium leading-snug text-warning" role="note" data-testid="user-owned-surface-lookalikes">{command.lookalikeNote}</p>}
+          {command.where && <p className="shrink-0 break-words text-xs leading-snug text-muted-foreground" data-testid="user-owned-surface-command-where">{command.where}</p>}
+        </section>
+      )}
       {realShellWarning && <p className="shrink-0 text-xs leading-snug text-muted-foreground" data-testid="user-owned-surface-note">{realShellWarning}</p>}
       <details className="min-h-0 shrink overflow-hidden rounded border open:flex open:flex-col" data-testid="user-owned-surface-review-details">
         <summary className="shrink-0 cursor-pointer px-2 py-1 text-xs font-medium" title={t("toolApprovalDialog.reviewDetailsHint")}>{t("toolApprovalDialog.reviewDetails")}</summary>
         <div className="min-h-0 max-h-32 space-y-2 overflow-y-auto border-t p-2 text-xs" data-testid="user-owned-surface-details-content">
           <p>{request.reason}</p>
           {targetDescription && <p className="break-words" data-testid="user-owned-surface-target">{targetDescription}</p>}
-          {notes.filter((note) => note !== realShellWarning).map((note) => <p key={note} className="text-muted-foreground" data-testid="user-owned-surface-note">{note}</p>)}
+          {notes.filter((note) => note !== realShellWarning && note !== command?.lookalikeNote).map((note) => <p key={note} className="text-muted-foreground" data-testid="user-owned-surface-note">{note}</p>)}
           <p className="font-medium">{t("toolApprovalDialog.showFullInput")}</p>
           <pre className="whitespace-pre-wrap break-words font-mono" data-testid="user-owned-surface-full-input">{JSON.stringify(request.args, null, 2)}</pre>
           <p className="text-muted-foreground">{t("toolApprovalDialog.surfaceSessionOnly")}</p>

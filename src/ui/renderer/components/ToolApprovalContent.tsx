@@ -25,7 +25,7 @@ import { useApprovalSurfaceNotice, type ApprovalDecisionExtras } from "../hooks/
 import { HOME_FOLDER_REFUSED } from "../../../shared/permissions-events.js";
 import { EgressHostApprovalCard } from "./permissions/EgressHostApprovalCard.js";
 import { BrowserSiteApprovalCard } from "./permissions/BrowserSiteApprovalCard.js";
-import { UserOwnedSurfaceApprovalCard } from "./permissions/UserOwnedSurfaceApprovalCard.js";
+import { UserOwnedSurfaceApprovalCard, type HostTerminalCommandFacts } from "./permissions/UserOwnedSurfaceApprovalCard.js";
 import type { ReviewerSuggestion } from "../hooks/use-permission-signals.js";
 import type { ApprovalChoice, ApprovalRequest } from "../types.js";
 import { canonicalStringify as canonicalStringifyForRenderer } from "../../../shared/canonical-json.js";
@@ -361,6 +361,37 @@ function terminalTargetText(
     : t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
 }
 
+/** The lookalike note for a command: each confusable character with its code point, at most twelve. */
+function terminalLookalikeNote(t: (key: string, params?: Record<string, string>) => string, command: string): string | null {
+  const lookalikes = terminalCommandLookalikes(command);
+  if (lookalikes.length === 0) return null;
+  const list = lookalikes
+    .slice(0, 12)
+    .map((ch) => `${ch} U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
+    .join(", ");
+  return t("toolApprovalDialog.terminalLookalike", { list: lookalikes.length > 12 ? `${list}, …` : list });
+}
+
+/** What the host-terminal card shows above its choices: the exact command (permission-policy-design.md, "The card shows the exact command"), where the host sealed it to run, and
+ * the lookalike naming. The command comes from the request's arguments, so it is shown even when no target was sealed. */
+function hostTerminalCommandFacts(
+  t: (key: string, params?: Record<string, string>) => string,
+  request: Pick<ApprovalRequest, "approvalMemory" | "args">,
+): HostTerminalCommandFacts | null {
+  const command = parseArgs(request.args)?.command;
+  if (typeof command !== "string") return null;
+  const memory = request.approvalMemory;
+  const scope = memory?.kind === "key" && memory.scope.kind === "terminal-command" && memory.scope.lane === "manual" ? memory.scope : null;
+  const active = getActiveSurface();
+  return {
+    text: command,
+    where: scope ? t("toolApprovalDialog.hostTerminalWhere", {
+      terminal: active?.kind === "terminal" && active.tabId === scope.tabId ? active.label : scope.tabId, shell: scope.shell, cwd: scope.physicalCwd,
+    }) : null,
+    lookalikeNote: terminalLookalikeNote(t, command),
+  };
+}
+
 /** Facts about a `terminal_run` command a reader could miss in its text: each character that could pass for another, by code point (a look-alike reads as the letter it imitates; words in one
  * script, such as Korean filenames, are not listed; see terminalCommandLookalikes), and a terminal directory outside the allowed folders (the command still runs there, inside the terminal's sandbox). */
 function terminalCommandNotes(
@@ -375,14 +406,8 @@ function terminalCommandNotes(
   if (memory.scope.lane === "manual") notes.push(t("toolApprovalDialog.hostTerminalWarning"));
   const command = parseArgs(request.args)?.command;
   if (typeof command === "string") {
-    const lookalikes = terminalCommandLookalikes(command);
-    if (lookalikes.length > 0) {
-      const list = lookalikes
-        .slice(0, 12)
-        .map((ch) => `${ch} U+${ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`)
-        .join(", ");
-      notes.push(t("toolApprovalDialog.terminalLookalike", { list: lookalikes.length > 12 ? `${list}, …` : list }));
-    }
+    const lookalikeNote = terminalLookalikeNote(t, command);
+    if (lookalikeNote !== null) notes.push(lookalikeNote);
   }
   const context = request.evaluationContext;
   if (context) {
@@ -889,7 +914,8 @@ export function ToolApprovalContent({
   if (request.userOwnedSurface !== undefined && request.userOwnedSurfaceReviewFallback !== true) {
     return <UserOwnedSurfaceApprovalCard key={request.id} request={request} conversationLabel={conversationLabel} interactionLocked={interactionLocked} onDecide={onDecide} pendingCount={pendingCount}
       targetDescription={request.userOwnedSurface === "browser" ? browserTargetText(tHook, request) : terminalTargetText(tHook, request)}
-      notes={request.userOwnedSurface === "host-terminal" ? terminalCommandNotes(tHook, request) : []} />;
+      notes={request.userOwnedSurface === "host-terminal" ? terminalCommandNotes(tHook, request) : []}
+      command={request.userOwnedSurface === "host-terminal" ? hostTerminalCommandFacts(tHook, request) : null} />;
   }
   if (request.kind === "egress-host") {
     return (

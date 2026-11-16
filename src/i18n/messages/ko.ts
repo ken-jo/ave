@@ -5838,6 +5838,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "toolApprovalDialog.networkLocalScopeNotOffered": "로컬 또는 확인되지 않은 대상은 영구히 허용할 수 없습니다.",
   "toolApprovalDialog.pathGrantOnlyFolder": "폴더는 한 번만, 이 세션 동안 또는 영구히 허용합니다.",
   "toolApprovalDialog.hostTerminalTarget": "`{command}` 를 내 터미널 {terminal} ({shell}) 에 입력해 {cwd} 에서 실행합니다. 언제든 제어를 가져올 수 있습니다.",
+  "toolApprovalDialog.hostTerminalCommandLabel": "내 터미널에서 실행할 명령",
+  "toolApprovalDialog.hostTerminalWhere": "내 터미널 {terminal} ({shell}) 의 {cwd} 에서 실행합니다. 언제든 제어를 가져올 수 있습니다.",
   "toolApprovalDialog.hostTerminalWarning": "샌드박스 없이 내 권한으로 실행되는 실제 셸입니다. 명령의 출력은 모델에 전달되며 이 컴퓨터의 비밀 정보가 포함될 수 있습니다.",
   "toolApprovalDialog.hostTerminalAfterExternalContent": "이 턴에서 외부 내용을 읽었습니다. 이 명령이 내 요청에 맞는지 확인한 뒤 이번 한 번만 승인하세요.",
   "toolApprovalDialog.hostTerminalOutsideAllowed": "{cwd} 는 허용된 폴더 밖입니다. 명령은 그곳에서 내 셸로 실행됩니다.",
