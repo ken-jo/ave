@@ -275,6 +275,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "not-configured": "folderView.editorNotConfigured",
   "invalid-command": "folderView.editorInvalidCommand",
   "launch-failed": "folderView.editorLaunchFailed",
+  // In-app edit (workspace.saveEdit): the file no longer holds what the edit started from.
+  "changed": "folderView.editChanged",
   "type-not-allowed": "folderView.openRefusedType",
   "network-target": "folderView.openRefusedOutside",
   "executable": "folderView.openRefusedExecutable",

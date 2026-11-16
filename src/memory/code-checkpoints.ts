@@ -958,6 +958,55 @@ async function applyUserFileWrites(
   }
 }
 
+export type UserFileEditError = "changed" | "not-editable" | "denied" | "failed";
+
+/**
+ * Read a file the person is about to edit in the app: its bytes and the hash a later save must still find on disk.
+ * Only a plain file at its canonical path is editable; a link, a file with other hard links or a special file is not.
+ */
+export async function readUserEditableFile(path: string): Promise<
+  | { ok: true; bytes: Buffer; hash: string; mode: number }
+  | { ok: false; error: "not-found" | "not-editable" }
+> {
+  let file: { bytes: Buffer | null; mode: number };
+  try { file = await snapshot(path); }
+  catch { return { ok: false, error: "not-editable" }; }
+  const digest = hash(file.bytes);
+  if (file.bytes === null || digest === null) return { ok: false, error: "not-found" };
+  return { ok: true, bytes: file.bytes, hash: digest, mode: file.mode };
+}
+
+/**
+ * Save text the person typed in the app over a file, if the file still holds what they started from.
+ * A file that a turn's checkpoint already covers stays covered: that capture's after-hash follows the save, so the turn's
+ * review shows the file as it now is and a rewind of the turn still restores the turn's before-image. A file that no
+ * checkpoint covers gets no record; it is the person's own change, as one made in any other editor would be, and a later
+ * turn captures the saved content as its before-image.
+ */
+export async function saveUserFileEdit(
+  path: string,
+  expectedHash: string,
+  next: Buffer,
+  accessDenied: (path: string) => boolean,
+): Promise<{ ok: true; hash: string } | { ok: false; error: UserFileEditError }> {
+  if (next.length > CODE_CHECKPOINT_POLICY.maxFileBytes) return { ok: false, error: "not-editable" };
+  return exclusive(async () => {
+    const current = await readUserEditableFile(path);
+    if (!current.ok) return { ok: false, error: current.error === "not-found" ? "changed" : "not-editable" };
+    if (current.hash !== expectedHash) return { ok: false, error: "changed" };
+    try {
+      await applyUserFileWrites(await load(), [{ path, expectedHash, next, mode: current.mode }], accessDenied, { applied: 0 });
+    } catch (error) {
+      if (error instanceof TurnReviewReadError) {
+        return { ok: false, error: error.code === "turn-review-write-denied" ? "denied" : "changed" };
+      }
+      log.warn("user file edit failed: %s", (error as Error).message);
+      return { ok: false, error: "failed" };
+    }
+    return { ok: true, hash: hash(next) as string };
+  });
+}
+
 /**
  * Keep or undo the latest turn's changes for one hunk, one file or the whole turn.
  * Keep records the hunk as reviewed and writes nothing. Undo writes the earlier text back for exactly the

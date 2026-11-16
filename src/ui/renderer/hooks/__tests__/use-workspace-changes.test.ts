@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { notifyWorkspaceFilesChanged, subscribeWorkspaceFilesChanged } from "../../utils/workspace-files-signal.js";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { useWorkspaceChanges } from "../use-workspace-changes.js";
@@ -85,6 +86,32 @@ describe("workspace change decisions", () => {
     expect(result.current.decisionError).toBeNull();
     expect(api.chatGetTurnReview).toHaveBeenCalledTimes(1);
   });
+  it("tells every file surface after an undo rewrote files, without asking for its own review again", async () => {
+    const decided: TurnReviewResult = { ok: true, review: { sessionId: "session", turnId: "turn", files: [] } };
+    const api = { chatGetTurnReview: vi.fn(async (session: string) => review(session)), chatDecideTurnReview: vi.fn(async () => decided) };
+    const heard = vi.fn();
+    const unsubscribe = subscribeWorkspaceFilesChanged(heard);
+    const { result } = renderHook(() => useWorkspaceChanges({ api, sessionId: "session", streaming: false, turnKey: "turn", files, targets }));
+    await waitFor(() => expect(result.current.latestFiles).toHaveLength(1));
+    await act(async () => { result.current.onDecide({ action: "keep", scope: "turn" }); });
+    // Keep writes nothing, so no file surface is disturbed.
+    expect(heard).not.toHaveBeenCalled();
+    await act(async () => { result.current.onDecide({ action: "undo", scope: "turn" }); });
+    expect(heard).toHaveBeenCalledTimes(1);
+    expect(api.chatGetTurnReview).toHaveBeenCalledTimes(1);
+    unsubscribe();
+  });
+  it("asks for the review again when files changed elsewhere, such as a text saved in the folder view", async () => {
+    const api = { chatGetTurnReview: vi.fn(async (session: string) => review(session)), chatDecideTurnReview: vi.fn() };
+    const { result, unmount } = renderHook(() => useWorkspaceChanges({ api, sessionId: "session", streaming: false, turnKey: "turn", files, targets }));
+    await waitFor(() => expect(result.current.latestFiles).toHaveLength(1));
+    expect(api.chatGetTurnReview).toHaveBeenCalledTimes(1);
+    await act(async () => { notifyWorkspaceFilesChanged("manual"); });
+    await waitFor(() => expect(api.chatGetTurnReview).toHaveBeenCalledTimes(2));
+    unmount();
+    await act(async () => { notifyWorkspaceFilesChanged("manual"); });
+    expect(api.chatGetTurnReview).toHaveBeenCalledTimes(2);
+  });
   it("reports a refused decision and asks for the current review again", async () => {
     const api = {
       chatGetTurnReview: vi.fn(async (session: string) => review(session)),
@@ -96,6 +123,65 @@ describe("workspace change decisions", () => {
     await waitFor(() => expect(result.current.decisionError).toBe("turn-review-stale"));
     await waitFor(() => expect(api.chatGetTurnReview).toHaveBeenCalledTimes(2));
     expect(result.current.latestFiles).toHaveLength(1);
+  });
+  it("tells every file surface after any settled undo, also one that answered with an error after changing files", async () => {
+    const api = {
+      chatGetTurnReview: vi.fn(async (session: string) => review(session)),
+      chatDecideTurnReview: vi.fn(async (): Promise<TurnReviewResult> => ({ ok: false, error: "turn-review-stale" })),
+    };
+    // Two surfaces that show files at once: an open file and a folder list.
+    const openFile = vi.fn();
+    const folderList = vi.fn();
+    const unsubscribes = [subscribeWorkspaceFilesChanged(openFile), subscribeWorkspaceFilesChanged(folderList)];
+    const { result } = renderHook(() => useWorkspaceChanges({ api, sessionId: "session", streaming: false, turnKey: "turn", files, targets }));
+    await waitFor(() => expect(result.current.latestFiles).toHaveLength(1));
+    // Keep writes nothing: no surface is disturbed, whatever it answers.
+    await act(async () => { result.current.onDecide({ action: "keep", scope: "turn" }); });
+    await waitFor(() => expect(api.chatGetTurnReview).toHaveBeenCalledTimes(2));
+    expect(openFile).not.toHaveBeenCalled();
+    // An undo answered with an error may still have changed files (the review read after it can fail, or it can stop
+    // part-way), and a lost answer says nothing either way: each tells both surfaces once.
+    const outcomes: Array<() => Promise<TurnReviewResult>> = [
+      async () => ({ ok: false, error: "turn-review-stale" }),
+      async () => ({ ok: false, error: "turn-review-applied" }),
+      async () => ({ ok: false, error: "turn-review-partial" }),
+      async () => { throw new Error("lost"); },
+    ];
+    for (const [index, outcome] of outcomes.entries()) {
+      api.chatDecideTurnReview.mockImplementationOnce(outcome);
+      await act(async () => { result.current.onDecide({ action: "undo", scope: "turn" }); });
+      await waitFor(() => expect(result.current.deciding).toBe(false));
+      expect(openFile).toHaveBeenCalledTimes(index + 1);
+      expect(folderList).toHaveBeenCalledTimes(index + 1);
+    }
+    expect(result.current.decisionError).toBe("turn-review-failed");
+    for (const unsubscribe of unsubscribes) unsubscribe();
+  });
+  it("tells the other file surfaces after an undo whose view was replaced or closed while it was on its way", async () => {
+    const finishes: Array<{ resolve: (result: TurnReviewResult) => void; reject: (error: Error) => void }> = [];
+    const api = {
+      chatGetTurnReview: vi.fn(async (session: string) => review(session)),
+      chatDecideTurnReview: vi.fn((): Promise<TurnReviewResult> => new Promise((resolve, reject) => { finishes.push({ resolve, reject }); })),
+    };
+    const openFile = vi.fn();
+    const unsubscribe = subscribeWorkspaceFilesChanged(openFile);
+    // The view switches to another conversation while its undo is on its way, and the undo then answers that it happened.
+    const switched = renderHook(({ sessionId }) => useWorkspaceChanges({ api, sessionId, streaming: false, turnKey: "turn", files, targets }), { initialProps: { sessionId: "session" } });
+    await waitFor(() => expect(switched.result.current.latestFiles).toHaveLength(1));
+    await act(async () => { switched.result.current.onDecide({ action: "undo", scope: "turn" }); });
+    switched.rerender({ sessionId: "other" });
+    await act(async () => { finishes[0]?.resolve({ ok: false, error: "turn-review-applied" }); });
+    expect(openFile).toHaveBeenCalledTimes(1);
+    switched.unmount();
+    // A view closed while its undo is on its way, whose answer never comes back.
+    const closed = renderHook(() => useWorkspaceChanges({ api, sessionId: "session", streaming: false, turnKey: "turn", files, targets }));
+    await waitFor(() => expect(closed.result.current.latestFiles).toHaveLength(1));
+    await act(async () => { closed.result.current.onDecide({ action: "undo", scope: "turn" }); });
+    closed.unmount();
+    await act(async () => { finishes[1]?.reject(new Error("lost")); });
+    expect(openFile).toHaveBeenCalledTimes(2);
+    expect(finishes).toHaveLength(2);
+    unsubscribe();
   });
   it("sends one decision at a time", async () => {
     let finish!: (result: TurnReviewResult) => void;

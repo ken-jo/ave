@@ -226,6 +226,11 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.invoke(CHANNELS.workspace.openInEditor, {
         projectRoot, path: targetPath, ...(line === undefined ? {} : { line }), intent: ipcUserKeyboardIntent(),
       }),
+    // The in-app text editor: both carry the user-gesture report, as the two hand-offs above.
+    readForEdit: (projectRoot: string, targetPath: string) =>
+      ipcRenderer.invoke(CHANNELS.workspace.readForEdit, { projectRoot, path: targetPath, intent: ipcUserKeyboardIntent() }),
+    saveEdit: (projectRoot: string, targetPath: string, baseHash: string, text: string) =>
+      ipcRenderer.invoke(CHANNELS.workspace.saveEdit, { projectRoot, path: targetPath, baseHash, text, intent: ipcUserKeyboardIntent() }),
   },
   };
 }

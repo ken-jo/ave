@@ -292,4 +292,50 @@ test.describe("folder view", () => {
     await expect.poll(() => (fs.existsSync(recorded) ? fs.readFileSync(recorded, "utf8") : "")).not.toBe("");
     expect(JSON.parse(fs.readFileSync(recorded, "utf8"))).toEqual(["--goto", `${fs.realpathSync(file)}:1`]);
   });
+
+  test("edits a file in the viewer: saves in the file's own line endings and never over a file that changed meanwhile", async ({ app, mainWindow, aveHome, t }) => {
+    const target = writeProjectFile(aveHome, "notes.txt", "first\r\nsecond\r\n");
+    await setWindowSize(app, 1280, 800, mainWindow);
+    await openFolderView(mainWindow);
+    await row(mainWindow, "notes.txt").click();
+    await expect(mainWindow.getByTestId("folder-viewer")).toContainText("second");
+
+    // Edit and save with the pointer: the file on disk keeps its CRLF endings around the edit.
+    await mainWindow.getByTestId("folder-viewer-action-edit").click();
+    const editor = mainWindow.getByTestId("folder-text-editor");
+    await expect(editor).toBeFocused();
+    await expect(editor).toHaveValue("first\nsecond\n");
+    const save = mainWindow.getByTestId("folder-viewer-action-edit-save");
+    await expect(save).toBeDisabled();
+    await editor.fill("first\nsecond\nthird by hand\n");
+    await expect(mainWindow.getByTestId("folder-viewer-subtitle")).toContainText(t("folderView.editUnsaved"));
+    await save.click();
+    await expect(editor).toHaveCount(0);
+    expect(fs.readFileSync(target, "utf8")).toBe("first\r\nsecond\r\nthird by hand\r\n");
+    await expect(mainWindow.getByTestId("folder-viewer")).toContainText("third by hand");
+    await expect(mainWindow.getByTestId("folder-viewer-alert")).toHaveCount(0);
+
+    // Save from the keyboard while the text has focus.
+    await mainWindow.getByTestId("folder-viewer-action-edit").click();
+    await expect(editor).toBeFocused();
+    await mainWindow.keyboard.press("ControlOrMeta+ArrowDown");
+    await mainWindow.keyboard.type("typed");
+    await mainWindow.keyboard.press("ControlOrMeta+s");
+    await expect(editor).toHaveCount(0);
+    expect(fs.readFileSync(target, "utf8")).toBe("first\r\nsecond\r\nthird by hand\r\ntyped");
+
+    // The file changes in another program while a draft is open: the save writes nothing and the draft stays.
+    await mainWindow.getByTestId("folder-viewer-action-edit").click();
+    await editor.fill("my draft\n");
+    fs.writeFileSync(target, "changed elsewhere\n");
+    await save.click();
+    await expect(mainWindow.getByTestId("folder-viewer-alert")).toHaveText(t("folderView.editChanged"));
+    await expect(editor).toHaveValue("my draft\n");
+    expect(fs.readFileSync(target, "utf8")).toBe("changed elsewhere\n");
+
+    // Discarding is immediate, and the viewer shows what is on disk.
+    await mainWindow.getByTestId("folder-viewer-action-edit-discard").click();
+    await expect(editor).toHaveCount(0);
+    await expect(mainWindow.getByTestId("folder-viewer")).toContainText("changed elsewhere");
+  });
 });

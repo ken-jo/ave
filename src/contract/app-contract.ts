@@ -720,6 +720,12 @@ export const CHANNELS = {
     // user's own `documents.editorCommand`, started by main without a shell. A user action, not a tool.
     // INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE / EXTERNAL_MUTATION_CHANNELS.
     openInEditor: "ave:workspace:open-in-editor",
+    // Folder view "Edit": read one project file for the in-app text editor, and save the edited text back if the file still
+    // holds what the edit started from. The same user-click admission as `openPath`; the save also passes the write guard
+    // and goes through the code checkpoints. User actions, not tools.
+    // INTERNAL: absent from PUBLIC_CHANNELS / CHANNEL_GESTURE / EXTERNAL_MUTATION_CHANNELS.
+    readForEdit: "ave:workspace:read-for-edit",
+    saveEdit: "ave:workspace:save-edit",
   },
   // ── Interactive PTY terminal (#1444, workspace rail) ──────────────────────
   // ALL INTERNAL: deliberately absent from PUBLIC_CHANNELS / CHANNEL_GESTURE /

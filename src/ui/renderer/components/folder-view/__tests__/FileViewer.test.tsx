@@ -6,6 +6,8 @@ import { VIEWER_HEADER_COMPACT_WIDTH } from "../ViewerHeader.js";
 import { isSettingsSection } from "../../../../../shared/settings-tabs.js";
 import { EDITOR_COMMAND_SETTINGS_PATH } from "../../files/open-in-editor.js";
 import { handleSettingsSectionRequests } from "../../../utils/app-shell-requests.js";
+import { _resetFileTextDraftsForTest } from "../file-text-edit.js";
+import { subscribeWorkspaceFilesChanged } from "../../../utils/workspace-files-signal.js";
 import type { FolderEntry } from "../folder-columns.js";
 
 const ROOT = "/p/checkout-service";
@@ -19,6 +21,10 @@ const readFile = vi.fn(async (path: string): Promise<Record<string, unknown>> =>
   ? { ok: false, error: "too-large" }
   : path.endsWith(".md") ? { ok: true, content: "# Title\n", truncated: false, lineCount: 2, path }
   : { ok: true, content: "export const MAX = 3;\n", truncated: false, lineCount: 2, path });
+const readForEdit = vi.fn(async (_root: string, _path: string): Promise<{ ok: boolean; error?: string; text?: string; hash?: string }> =>
+  ({ ok: true, text: "export const MAX = 3;\n", hash: "a".repeat(64) }));
+const saveEdit = vi.fn(async (_root: string, _path: string, _baseHash: string, _text: string): Promise<{ ok: boolean; error?: string; hash?: string }> =>
+  ({ ok: true, hash: "b".repeat(64) }));
 const writeText = vi.fn(async (_text: string) => undefined);
 let headerWidth = 900;
 
@@ -27,8 +33,11 @@ beforeEach(() => {
   reveal.mockClear();
   openPath.mockClear();
   openInEditor.mockClear();
+  readForEdit.mockClear();
+  saveEdit.mockClear();
+  _resetFileTextDraftsForTest();
   writeText.mockClear();
-  Object.assign(window, { ave: { workspace: { reveal, openPath, openInEditor }, preview: { readFile } } });
+  Object.assign(window, { ave: { workspace: { reveal, openPath, openInEditor, readForEdit, saveEdit }, preview: { readFile } } });
   Object.assign(navigator, { clipboard: { writeText } });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     const width = this.getAttribute("data-testid") === "folder-viewer-header" ? headerWidth : 0;
@@ -48,7 +57,7 @@ describe("FileViewer header", () => {
     render(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} onAttachText={() => true} />);
     await waitFor(() => expect(action("copy-content")).not.toBeNull());
     expect(within(screen.getByTestId("folder-viewer-actions")).getAllByRole("button").map((button) => button.getAttribute("data-testid")))
-      .toEqual(["folder-viewer-action-copy-content", "folder-viewer-action-add-context", "folder-viewer-action-open-in-editor", "folder-viewer-action-reveal", "folder-viewer-action-copy-path"]);
+      .toEqual(["folder-viewer-action-copy-content", "folder-viewer-action-edit", "folder-viewer-action-add-context", "folder-viewer-action-open-in-editor", "folder-viewer-action-reveal", "folder-viewer-action-copy-path"]);
     // A `.ts` file is not handed to the default app, so no such action is offered.
     expect(action("open-external")).toBeNull();
     fireEvent.click(action("reveal") as HTMLElement);
@@ -87,7 +96,7 @@ describe("FileViewer header", () => {
     fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
     const menu = await screen.findByTestId("folder-viewer-more-menu");
     expect(within(menu).getAllByRole("menuitem").map((item) => item.getAttribute("data-testid"))).toEqual([
-      "folder-viewer-action-markdown-mode", "folder-viewer-action-copy-content", "folder-viewer-action-add-context",
+      "folder-viewer-action-markdown-mode", "folder-viewer-action-copy-content", "folder-viewer-action-edit", "folder-viewer-action-add-context",
       "folder-viewer-action-open-in-editor", "folder-viewer-action-reveal", "folder-viewer-action-copy-path", "folder-viewer-action-open-external",
     ]);
     fireEvent.click(within(menu).getByTestId("folder-viewer-action-markdown-mode"));
@@ -206,5 +215,126 @@ describe("FileViewer open in editor", () => {
     const alert = await screen.findByTestId("folder-viewer-alert");
     expect(alert.textContent).toContain("편집기를 시작하지 못했습니다.");
     expect(within(alert).queryByTestId("file-action-open-settings")).toBeNull();
+  });
+});
+
+describe("FileViewer editing", () => {
+  const editor = () => screen.getByTestId("folder-text-editor") as HTMLTextAreaElement;
+  async function startEditing(name = "index.ts") {
+    const view = render(<FileViewer projectRoot={ROOT} entry={entry(name)} />);
+    await waitFor(() => expect(action("edit")).not.toBeNull());
+    fireEvent.click(action("edit") as HTMLElement);
+    // Called before the click handler returned: the user gesture is what main checks.
+    expect(readForEdit).toHaveBeenCalledWith(ROOT, `${ROOT}/${name}`);
+    await screen.findByTestId("folder-text-editor");
+    return view;
+  }
+
+  it("edits the text main read for editing and saves it against the hash it was read at", async () => {
+    const changed = vi.fn();
+    const unsubscribe = subscribeWorkspaceFilesChanged(changed);
+    await startEditing();
+    expect(editor().value).toBe("export const MAX = 3;\n");
+    expect((action("edit-save") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("folder-viewer-subtitle").textContent).toContain("편집 중");
+
+    fireEvent.change(editor(), { target: { value: "export const MAX = 4;\n" } });
+    expect(screen.getByTestId("folder-viewer-subtitle").textContent).toContain("저장하지 않은 변경 있음");
+    fireEvent.click(action("edit-save") as HTMLElement);
+    expect(saveEdit).toHaveBeenCalledWith(ROOT, `${ROOT}/index.ts`, "a".repeat(64), "export const MAX = 4;\n");
+    // Saved: the viewer is back, and every file list was told to ask main again.
+    await waitFor(() => expect(screen.queryByTestId("folder-text-editor")).toBeNull());
+    expect(changed).toHaveBeenCalledWith("manual");
+    expect(screen.queryByTestId("folder-viewer-alert")).toBeNull();
+    unsubscribe();
+  });
+
+  it("saves from the keyboard shortcut while the text has focus", async () => {
+    await startEditing();
+    fireEvent.change(editor(), { target: { value: "changed\n" } });
+    fireEvent.keyDown(editor(), { key: "s", metaKey: true });
+    expect(saveEdit).toHaveBeenCalledWith(ROOT, `${ROOT}/index.ts`, "a".repeat(64), "changed\n");
+  });
+
+  it("keeps the typed text and says why when the file changed on disk meanwhile", async () => {
+    saveEdit.mockResolvedValueOnce({ ok: false, error: "changed" });
+    await startEditing();
+    fireEvent.change(editor(), { target: { value: "mine\n" } });
+    fireEvent.click(action("edit-save") as HTMLElement);
+    expect((await screen.findByTestId("folder-viewer-alert")).textContent).toContain("파일이 디스크에서 바뀌어 저장하지 않았습니다");
+    expect(editor().value).toBe("mine\n");
+    expect((action("edit-save") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("keeps a draft while another file is shown and brings it back with the file", async () => {
+    const view = await startEditing();
+    fireEvent.change(editor(), { target: { value: "half-typed\n" } });
+    view.rerender(<FileViewer projectRoot={ROOT} entry={entry("other.ts")} />);
+    await waitFor(() => expect(screen.queryByTestId("folder-text-editor")).toBeNull());
+    view.rerender(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} />);
+    expect(editor().value).toBe("half-typed\n");
+    expect(readForEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the text locked while a save is on its way, even after leaving the file and coming back", async () => {
+    let answer: (result: { ok: boolean; hash?: string }) => void = () => undefined;
+    saveEdit.mockReturnValueOnce(new Promise((resolve) => { answer = resolve; }));
+    const view = await startEditing();
+    fireEvent.change(editor(), { target: { value: "first edit\n" } });
+    fireEvent.click(action("edit-save") as HTMLElement);
+    view.rerender(<FileViewer projectRoot={ROOT} entry={entry("other.ts")} />);
+    await waitFor(() => expect(screen.queryByTestId("folder-text-editor")).toBeNull());
+    view.rerender(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} />);
+    // Back on the file before the answer: the draft is the one being saved and cannot be typed over or discarded.
+    expect(editor().readOnly).toBe(true);
+    fireEvent.change(editor(), { target: { value: "typed while the save is out\n" } });
+    expect(editor().value).toBe("first edit\n");
+    expect((action("edit-discard") as HTMLButtonElement).disabled).toBe(true);
+    answer({ ok: true, hash: "b".repeat(64) });
+    await waitFor(() => expect(screen.queryByTestId("folder-text-editor")).toBeNull());
+    expect(saveEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards the draft at once, without asking, and shows the file again", async () => {
+    await startEditing();
+    fireEvent.change(editor(), { target: { value: "throwaway\n" } });
+    fireEvent.click(action("edit-discard") as HTMLElement);
+    expect(screen.queryByTestId("folder-text-editor")).toBeNull();
+    expect(saveEdit).not.toHaveBeenCalled();
+    await waitFor(() => expect(action("edit")).not.toBeNull());
+  });
+
+  it.each([
+    ["too-large", "파일이 너무 큽니다"],
+    ["mixed-line-endings", "줄 끝 형식이 섞여"],
+    ["not-text", "UTF-8 텍스트가 아니어서"],
+    ["not-editable", "제자리에서 바꿀 수 없습니다"],
+  ])("stays on the viewer and gives the reason when main refuses the file (%s)", async (error, sentence) => {
+    readForEdit.mockResolvedValueOnce({ ok: false, error });
+    render(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} />);
+    await waitFor(() => expect(action("edit")).not.toBeNull());
+    fireEvent.click(action("edit") as HTMLElement);
+    expect((await screen.findByTestId("folder-viewer-alert")).textContent).toContain(sentence);
+    expect(screen.queryByTestId("folder-text-editor")).toBeNull();
+  });
+
+  it("tells a failed open for editing from a failed save", async () => {
+    readForEdit.mockRejectedValueOnce(new Error("ipc down"));
+    render(<FileViewer projectRoot={ROOT} entry={entry("index.ts")} />);
+    await waitFor(() => expect(action("edit")).not.toBeNull());
+    fireEvent.click(action("edit") as HTMLElement);
+    expect((await screen.findByTestId("folder-viewer-alert")).textContent).toContain("편집용으로 열지 못했습니다");
+    readForEdit.mockResolvedValueOnce({ ok: true, text: "a\n", hash: "a".repeat(64) });
+    saveEdit.mockResolvedValueOnce({ ok: false, error: "failed" });
+    fireEvent.click(action("edit") as HTMLElement);
+    fireEvent.change(await screen.findByTestId("folder-text-editor"), { target: { value: "b\n" } });
+    fireEvent.click(action("edit-save") as HTMLElement);
+    await waitFor(() => expect(screen.getByTestId("folder-viewer-alert").textContent).toContain("저장하지 못했습니다"));
+  });
+
+  it("offers no edit for a file the viewer does not show as text", async () => {
+    render(<FileViewer projectRoot={ROOT} entry={entry("big.log", { size: 2_097_152 })} />);
+    await waitFor(() => expect(action("open-in-editor")).not.toBeNull());
+    expect(action("edit")).toBeNull();
   });
 });

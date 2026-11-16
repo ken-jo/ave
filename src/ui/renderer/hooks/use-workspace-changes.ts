@@ -3,6 +3,7 @@ import type { TurnChangeReview, TurnReviewDecision, TurnReviewError } from "../.
 import type { AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
 import { deriveWorkspaceChanges } from "../preview/workspace-changes.js";
+import { notifyWorkspaceFilesChanged, subscribeWorkspaceFilesChanged } from "../utils/workspace-files-signal.js";
 
 /** Shared by the chat summary and Files workspace; never retains review data across session or turn replacement. */
 export function useWorkspaceChanges({ api, sessionId, streaming, turnKey, files, targets, workspaceRoot }: {
@@ -33,16 +34,28 @@ export function useWorkspaceChanges({ api, sessionId, streaming, turnKey, files,
     }
     let cancelled = false;
     let deciding = false;
+    let ownSignal = false;
     const decide = (next: TurnReviewDecision) => {
       // A decision names the turn whose review is on screen; with no review shown there is nothing to decide.
       const reviewed = shownReviewRef.current;
       if (cancelled || deciding || reviewed === null || reviewed.sessionId !== sessionId) return;
       deciding = true;
       setDecision({ pending: true, error: null });
+      // Every settled undo, whatever it answered, tells every file list and open file to ask main again: an undo can
+      // change files and still fail afterwards, and a surface that asks once too often only reads the same bytes again.
+      // This hook's own review is replaced by the answer or asked for below, so its own signal does not make it ask. The
+      // signal goes out even when this view was replaced or closed while the undo was on its way: the files changed for
+      // every other surface all the same.
+      const filesMayHaveChanged = () => {
+        if (next.action !== "undo") return;
+        ownSignal = true;
+        try { notifyWorkspaceFilesChanged("checkpoint"); } finally { ownSignal = false; }
+      };
       // The host answers with the review as it is afterwards; it replaces the shown one wholesale.
       api.chatDecideTurnReview(sessionId, { ...next, turnId: reviewed.turnId }).then(
         (result) => {
           deciding = false;
+          filesMayHaveChanged();
           if (cancelled) return;
           if (result.ok && result.review.sessionId === sessionId) {
             setSnapshot({ api, sessionId, turnKey, review: result.review });
@@ -55,6 +68,7 @@ export function useWorkspaceChanges({ api, sessionId, streaming, turnKey, files,
         },
         () => {
           deciding = false;
+          filesMayHaveChanged();
           if (cancelled) return;
           setDecision({ pending: false, error: "turn-review-failed" });
           refreshRef.current();
@@ -81,8 +95,12 @@ export function useWorkspaceChanges({ api, sessionId, streaming, turnKey, files,
     };
     refreshRef.current = refresh;
     refresh();
+    // Files changed outside this hook (a text saved in the folder view, a rewind, the window coming back): the shown
+    // review may describe other content now, so it is asked for again.
+    const unsubscribe = subscribeWorkspaceFilesChanged(() => { if (!ownSignal) refresh(); });
     return () => {
       cancelled = true;
+      unsubscribe();
       if (refreshRef.current === refresh) refreshRef.current = () => {};
       if (decideRef.current === decide) decideRef.current = null;
     };

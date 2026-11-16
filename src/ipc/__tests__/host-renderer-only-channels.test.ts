@@ -243,6 +243,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["workspace", CHANNELS.workspace.openPath, [{ projectRoot: "/", path: "/x.txt", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
   // So is opening it in the user's editor command.
   ["workspace", CHANNELS.workspace.openInEditor, [{ projectRoot: "/", path: "/x.txt", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
+  ["workspace", CHANNELS.workspace.readForEdit, [{ projectRoot: "/", path: "/x.txt", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
+  ["workspace", CHANNELS.workspace.saveEdit, [{ projectRoot: "/", path: "/x.txt", baseHash: "0".repeat(64), text: "", intent: { inputOrigin: "user-keyboard", userActivation: true } }]],
   ["attach", CHANNELS.attach.openFile, [{}]],
   ["attach", CHANNELS.attach.readImage, ["/x"]],
   ["attach", CHANNELS.attach.registerDrop, [["/x"]]],
@@ -379,6 +381,7 @@ describe("host-renderer-only IPC channels", () => {
   it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (domain, channel, args) => {
     // Preview and the default-app open admit only a registered app window's main frame.
     const event = domain === "preview" || channel === CHANNELS.workspace.openPath || channel === CHANNELS.workspace.openInEditor
+      || channel === CHANNELS.workspace.readForEdit || channel === CHANNELS.workspace.saveEdit
       ? registeredHostEvent() : hostFrameEvent();
     if (channel === CHANNELS.preview.documentOpenAck) Object.assign(event.sender, { mainFrame: event.senderFrame });
     await invoke(channel, event, args);

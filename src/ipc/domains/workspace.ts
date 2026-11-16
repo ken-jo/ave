@@ -7,7 +7,7 @@ import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { createLogger } from "../../lib/logger.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
-import { sensitiveFilePattern } from "../../tools/file-access-policy.js";
+import { ensureFileAccess, sensitiveFilePattern } from "../../tools/file-access-policy.js";
 import { expandLeadingTilde } from "../../shared/home-tilde.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
 import {
@@ -47,6 +47,8 @@ import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shar
 import { validateAppWindowMainFrameSender } from "../app-window-sender.js";
 import { linkChainVerdict, openVerifiedExternalFile, type ExternalOpenPass, type ExternalOpenRefusal } from "../../main/external-open-target.js";
 import { buildEditorArgv, launchEditor } from "../../main/editor-command.js";
+import { readUserEditableFile, saveUserFileEdit, type UserFileEditError } from "../../memory/code-checkpoints.js";
+import { decodeEditableText, encodeEditableText, type EditableTextRefusal } from "../../shared/editable-text.js";
 import { isWindowsNetworkOrDevicePath } from "../../shared/shell-native-path.js";
 import {
   searchWorkspaceFiles,
@@ -176,6 +178,19 @@ export type WorkspaceOpenPathResult =
 export type WorkspaceOpenInEditorResult =
   | { ok: true }
   | { ok: false; error: Exclude<Extract<WorkspaceOpenPathResult, { ok: false }>["error"], "open-failed"> | "not-configured" | "invalid-command" | "launch-failed" };
+
+type ProjectFileRefusal = Exclude<Extract<WorkspaceOpenPathResult, { ok: false }>["error"], "open-failed">;
+
+/** The in-app editor's read: the whole text with "\n" line breaks, and the hash of the file's bytes that a save must name.
+ * Refused for a file a text box cannot give back byte for byte (see `editable-text.ts`) or cannot replace in place. */
+export type WorkspaceReadForEditResult =
+  | { ok: true; text: string; hash: string }
+  | { ok: false; error: ProjectFileRefusal | EditableTextRefusal | "not-editable" };
+
+/** The in-app editor's save. `changed` means the file no longer holds what the edit started from; nothing was written. */
+export type WorkspaceSaveEditResult =
+  | { ok: true; hash: string }
+  | { ok: false; error: ProjectFileRefusal | EditableTextRefusal | UserFileEditError };
 
 export interface WorkspaceRemoveRootResult {
   ok: boolean;
@@ -1334,6 +1349,71 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         opened.ok ? opened.real : admitted.resolved, opened.ok ? null : opened.error);
       if (opened.ok) return { ok: true };
       return { ok: false, error: opened.error === "open-failed" ? "launch-failed" : opened.error };
+    },
+  );
+
+  // The in-app text editor. Both calls are the person's own clicks on a file of a project they opened, so they pass the same
+  // admission and the same twice-resolved target as the two hand-offs above; what differs is the last step, which reads or
+  // replaces the file here instead of starting a program. Neither is a tool and neither asks: the permission tree has no
+  // node for them. The save still passes the write guard (sensitive floor, project scope), and it goes through the
+  // checkpoint module, which serializes it with agent writes and keeps a turn's record of the file truthful.
+  async function withVerifiedEditTarget<R extends { ok: boolean }>(
+    e: Electron.IpcMainInvokeEvent, channel: string, auditSession: string, payload: unknown,
+    act: (real: string, stillAuthorized: () => boolean) => Promise<R>,
+  ): Promise<R | { ok: false; error: ProjectFileRefusal }> {
+    const admitted = await admitProjectFileOpen(e, channel, payload);
+    if (!admitted.ok) return admitted.refusal;
+    let outcome: R | undefined;
+    const verified = await openVerifiedExternalFile(admitted.rawPath, admitted.authorize, {
+      formats: "any",
+      // `stillAuthorized` judges the sender and the registered project again, whenever the act asks.
+      launch: async (real) => { outcome = await act(real, () => admitted.authorize(real, "final") === null); return true; },
+    });
+    const error = !verified.ok ? verified.error : outcome?.ok === false ? (outcome as { error?: string }).error ?? "failed" : null;
+    auditProjectFileOpen(channel, auditSession, admitted.rootPath, verified.ok ? verified.real : admitted.resolved, error);
+    if (!verified.ok) {
+      if (verified.error === "open-failed") throw new Error("edit hand-off reported a failed launch");
+      return { ok: false, error: verified.error };
+    }
+    if (outcome === undefined) throw new Error("edit hand-off did not run");
+    return outcome;
+  }
+
+  ipcMain.handle(
+    CHANNELS.workspace.readForEdit,
+    async (e, payload: unknown): Promise<WorkspaceReadForEditResult> =>
+      withVerifiedEditTarget<WorkspaceReadForEditResult>(e, CHANNELS.workspace.readForEdit, "workspace-read-for-edit", payload, async (real) => {
+        const file = await readUserEditableFile(real);
+        if (!file.ok) return { ok: false, error: file.error };
+        const decoded = decodeEditableText(file.bytes);
+        return decoded.ok ? { ok: true, text: decoded.text, hash: file.hash } : { ok: false, error: decoded.error };
+      }),
+  );
+
+  ipcMain.handle(
+    CHANNELS.workspace.saveEdit,
+    async (e, payload: unknown): Promise<WorkspaceSaveEditResult> => {
+      const { baseHash, text } = (typeof payload === "object" && payload !== null ? payload : {}) as { baseHash?: unknown; text?: unknown };
+      if (typeof baseHash !== "string" || !/^[0-9a-f]{64}$/u.test(baseHash) || typeof text !== "string") {
+        // Sender and gesture are judged first for every request; only then is a malformed one named.
+        const admitted = await admitProjectFileOpen(e, CHANNELS.workspace.saveEdit, payload);
+        return admitted.ok ? { ok: false, error: "invalid-request" } : admitted.refusal;
+      }
+      return withVerifiedEditTarget<WorkspaceSaveEditResult>(e, CHANNELS.workspace.saveEdit, "workspace-save-edit", payload, async (real, stillAuthorized) => {
+        // The line ending and byte order mark come from the file as it is now, never from the renderer.
+        const file = await readUserEditableFile(real);
+        if (!file.ok) return { ok: false, error: file.error === "not-found" ? "changed" : "not-editable" };
+        if (file.hash !== baseHash) return { ok: false, error: "changed" };
+        const decoded = decodeEditableText(file.bytes);
+        if (!decoded.ok) return { ok: false, error: decoded.error };
+        // Asked again immediately before the file is replaced, so each answer reads the project list and the folder
+        // grants as they are then: a project removed while the save was on its way is no longer written to.
+        return saveUserFileEdit(real, baseHash, Buffer.from(encodeEditableText(text, decoded.shape)), (path) => {
+          if (!stillAuthorized()) return true;
+          const scope = currentScope();
+          return ensureFileAccess(path, { cwd: scope.cwd, extraAllowedDirectories: scope.extraAllowed, metadata: {} }, "write") !== null;
+        });
+      });
     },
   );
 

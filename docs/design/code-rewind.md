@@ -42,7 +42,18 @@ Keep writes nothing. It records the hunk as reviewed in the turn's checkpoint en
 
 Both decisions keep the checkpoint truthful. After an undo, the most recent capture of that path in every session that describes the old content moves its after-hash to the new content, so the review, later decisions and a rewind across turns still describe the file on disk. Rewind images are never changed by a decision: rewinding the turn restores the original files whether changes were kept or undone. The ledger is written before the file; a crash in between leaves a mismatch that review and rewind refuse. Each decision answers with the review as it is afterwards and the renderer replaces what it shows; it does not patch its list.
 
+A decision names the turn whose review was on screen. Main applies it only while that turn is still the latest reviewable one and answers `turn-review-stale` otherwise, so a click that arrives after a newer turn settled changes nothing.
+
 Review hunks come from the shared line diff ([line-diff](../../src/shared/line-diff.ts)), the same model the tool result cards and the approval card use.
+
+### Edits the person makes in the app
+
+The folder view can edit a project file's text (owner decision 2026-11-16). A save is the person's own write and goes through the same primitive as an undo, inside the same exclusive section as agent writes.
+
+- A file that a checkpoint already covers stays covered. In every session whose most recent unconsumed capture of the path describes the content the edit started from, that capture's after-hash moves to the saved content. The turn's review then shows the agent's change and the person's edit together, keep and undo work on the file as it now is, and a rewind of that turn restores the turn's before-image, which also removes the person's edit to that file.
+- A file that no checkpoint covers gets no record. It is the person's own change, as one made in any other editor would be: a rewind leaves it alone, and a later turn that changes the file captures the saved content as its before-image.
+- A save names the hash of the content the edit started from. If the file holds anything else, including a tool's write that finished in the meantime, nothing is written.
+- The hash, the folder grant and (for a keep or undo) the conversation are judged again for each file after the ledger was written, and the replacement is attempted once. Reading the file for that hash takes time, so the grant and the conversation are asked once more after the read, with nothing awaited between that answer and the rename or unlink. A file another program saved meanwhile is left as it is and the ledger entry is put back. The platform has no compare-and-swap for a whole file, so a write that lands between the hash check and the rename is still replaced; nothing here claims otherwise.
 
 The File reference control inserts an ordinary file mention without a line range. Activating a hunk by click or Enter inserts its workspace-relative path, current changed-line range and source turn through the existing file-mention attachment and composer marker path, at the current caret or selection. The chip shows the referenced path and range, supports removal and ignores duplicate references. A deleted or empty current file has no referenceable current-line range. Common unchanged lines separate hunks; excessive diff complexity falls back to one whole-file hunk, and rendering remains bounded. Binary, invalid UTF-8 and oversized content cannot be reviewed. Shell, external-writer, file-transfer and remote-workload effects remain outside checkpoint capture.
 

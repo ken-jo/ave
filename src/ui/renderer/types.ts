@@ -118,7 +118,7 @@ import type { WorkspacePreviewRemoveRootResult } from "../../ipc/domains/workspa
 // `a2aRemote` block, expressed once by the IPC projection type.
 import type { RendererSettingsSnapshot as AppSettings } from "../../ipc/domains/settings.js";
 import type { HomeDocsStatus } from "../../ipc/domains/home-docs.js";
-import type { WorkspaceListDirResult, WorkspaceOpenInEditorResult, WorkspaceOpenPathResult } from "../../ipc/domains/workspace.js";
+import type { WorkspaceListDirResult, WorkspaceOpenInEditorResult, WorkspaceOpenPathResult, WorkspaceReadForEditResult, WorkspaceSaveEditResult } from "../../ipc/domains/workspace.js";
 export type { AppSettings };
 
 // Approval / permission contracts are the host types themselves (the full
@@ -2005,6 +2005,16 @@ export interface AveWorkspaceApi {
    * given. Call it only from a click or key handler, as `openPath`. Main answers `not-configured` when no command is set.
    */
   openInEditor: (projectRoot: string, path: string, line?: number) => Promise<WorkspaceOpenInEditorResult>;
+  /**
+   * Read one file inside `projectRoot` for the in-app text editor: its whole text with "\n" line breaks and the hash a save
+   * must name. Call it only from a click or key handler, as `openPath`.
+   */
+  readForEdit: (projectRoot: string, path: string) => Promise<WorkspaceReadForEditResult>;
+  /**
+   * Save text edited in the app over the file, if it still holds the content `baseHash` names; main restores the file's own
+   * line ending and byte order mark. Call it only from a click or key handler. `changed` means nothing was written.
+   */
+  saveEdit: (projectRoot: string, path: string, baseHash: string, text: string) => Promise<WorkspaceSaveEditResult>;
 }
 
 /**

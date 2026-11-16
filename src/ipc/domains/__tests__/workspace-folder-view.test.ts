@@ -36,6 +36,7 @@ vi.mock("../../../permissions/permission-settings-store.js", () => ({
 }));
 
 import { registerWorkspaceHandlers } from "../workspace.js";
+import * as fileAccessPolicy from "../../../tools/file-access-policy.js";
 import { linkChainVerdict } from "../../../main/external-open-target.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 
@@ -214,7 +215,7 @@ describe("workspace.listDir folder-view entries", () => {
     }
   });
 
-  it("hides a key-extension file only when it holds a private key (F19)", async () => {
+  it("hides a key-extension file only when it holds a private key", async () => {
     const dir = join(root, "key-files");
     mkdirSync(dir);
     // The header is written in two parts so no scanner takes this test file for key material.
@@ -817,5 +818,136 @@ describe("workspace.openInEditor", () => {
       rmSync(secret, { force: true });
     }
     expect(existsSync(out)).toBe(false);
+  });
+});
+
+describe("workspace.readForEdit and workspace.saveEdit", () => {
+  type ReadResult = { ok: boolean; error?: string; text?: string; hash?: string };
+  type SaveResult = { ok: boolean; error?: string; hash?: string };
+  const readForEdit = (payload: unknown, event: unknown = frameEvent()) =>
+    invoke(CHANNELS.workspace.readForEdit, event, payload) as Promise<ReadResult>;
+  const saveEdit = (payload: unknown, event: unknown = frameEvent()) =>
+    invoke(CHANNELS.workspace.saveEdit, event, payload) as Promise<SaveResult>;
+  let target: string;
+  let serial = 0;
+  beforeEach(() => {
+    // The checkpoint ledger the save consults lives under this test's own state folder.
+    vi.stubEnv("AVE_HOME", join(outside, "edit-state"));
+    target = join(root, `editable-${++serial}.txt`);
+  });
+  afterAll(() => { vi.unstubAllEnvs(); });
+  async function opened(path = target): Promise<string> {
+    const read = await readForEdit({ projectRoot: root, path, intent: GESTURE });
+    if (!read.ok || read.hash === undefined) throw new Error(`read refused: ${read.error}`);
+    return read.hash;
+  }
+
+  it("reads the text with LF line breaks and saves an edit back in the file's own CRLF and byte order mark", async () => {
+    writeFileSync(target, "﻿one\r\ntwo\r\nthree\r\n");
+    const read = await readForEdit({ projectRoot: root, path: target, intent: GESTURE });
+    expect(read).toMatchObject({ ok: true, text: "one\ntwo\nthree\n" });
+    const saved = await saveEdit({ projectRoot: root, path: target, baseHash: read.hash, text: "one\nTWO\nthree\n", intent: GESTURE });
+    expect(saved.ok).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe("﻿one\r\nTWO\r\nthree\r\n");
+    // The returned hash is the new base: a second save from it goes through without another read.
+    expect((await saveEdit({ projectRoot: root, path: target, baseHash: saved.hash, text: "x\n", intent: GESTURE })).ok).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe("﻿x\r\n");
+  });
+
+  it("writes nothing when the project is removed while the save is on its way", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    // The write guard is asked before staging, after staging and at the effect. The project leaves the list after the
+    // second answer, so only a guard that reads the list again at the effect can refuse.
+    let calls = 0;
+    const guard = vi.spyOn(fileAccessPolicy, "ensureFileAccess").mockImplementation(() => {
+      if (++calls === 2) additionalDirectories.value = [];
+      return null;
+    });
+    try {
+      expect(await saveEdit({ projectRoot: root, path: target, baseHash, text: "mine\n", intent: GESTURE })).toEqual({ ok: false, error: "denied" });
+    } finally {
+      guard.mockRestore();
+      additionalDirectories.value = [root];
+    }
+    expect(calls).toBe(2);
+    expect(readFileSync(target, "utf8")).toBe("start\n");
+  });
+
+  it("writes nothing when the project is removed while the file is read for the last check", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    // The third answer opens the last check; the project leaves the list while that check reads the file. Only a
+    // question asked after the read, directly before the rename, finds the project gone.
+    let calls = 0;
+    const guard = vi.spyOn(fileAccessPolicy, "ensureFileAccess").mockImplementation(() => {
+      if (++calls === 3) queueMicrotask(() => { additionalDirectories.value = []; });
+      return null;
+    });
+    try {
+      expect(await saveEdit({ projectRoot: root, path: target, baseHash, text: "mine\n", intent: GESTURE })).toEqual({ ok: false, error: "denied" });
+    } finally {
+      guard.mockRestore();
+      additionalDirectories.value = [root];
+    }
+    expect(calls).toBe(3);
+    expect(readFileSync(target, "utf8")).toBe("start\n");
+  });
+
+  it("writes nothing when the file changed after it was opened", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    writeFileSync(target, "changed in another program\n");
+    expect(await saveEdit({ projectRoot: root, path: target, baseHash, text: "mine\n", intent: GESTURE })).toEqual({ ok: false, error: "changed" });
+    expect(readFileSync(target, "utf8")).toBe("changed in another program\n");
+  });
+
+  it("refuses files a text box cannot give back byte for byte, with the reason", async () => {
+    writeFileSync(target, "a\r\nb\n");
+    expect(await readForEdit({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "mixed-line-endings" });
+    writeFileSync(target, Buffer.from([0x61, 0x00, 0xff]));
+    expect(await readForEdit({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "not-text" });
+    writeFileSync(target, Buffer.alloc(1024 * 1024 + 1, 0x61));
+    expect(await readForEdit({ projectRoot: root, path: target, intent: GESTURE })).toEqual({ ok: false, error: "too-large" });
+  });
+
+  it("needs the user gesture, the app window's main frame and a registered project for the read and for the save", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    const save = { projectRoot: root, path: target, baseHash, text: "mine\n" };
+    expect(await readForEdit({ projectRoot: root, path: target })).toMatchObject({ ok: false, error: "user-keyboard-required" });
+    expect(await saveEdit(save)).toMatchObject({ ok: false, error: "user-keyboard-required" });
+    expect(await saveEdit({ ...save, intent: GESTURE }, frameEvent({ mainFrame: false }))).toEqual({ ok: false, error: "unauthorized" });
+    expect(await saveEdit({ ...save, projectRoot: outside, intent: GESTURE })).toEqual({ ok: false, error: "root-not-registered" });
+    expect(await saveEdit({ ...save, baseHash: "not-a-hash", intent: GESTURE })).toEqual({ ok: false, error: "invalid-request" });
+    expect(await saveEdit({ ...save, baseHash: "not-a-hash" })).toMatchObject({ ok: false, error: "user-keyboard-required" });
+    expect(readFileSync(target, "utf8")).toBe("start\n");
+  });
+
+  it("does not write through a link that leaves the project", async () => {
+    const elsewhere = join(outside, `edit-elsewhere-${serial}.txt`);
+    writeFileSync(elsewhere, "outside\n");
+    const link = join(root, `edit-link-${serial}.txt`);
+    symlinkSync(elsewhere, link);
+    try {
+      const read = await readForEdit({ projectRoot: root, path: link, intent: GESTURE });
+      expect(read.ok).toBe(false);
+      const saved = await saveEdit({ projectRoot: root, path: link, baseHash: "0".repeat(64), text: "mine\n", intent: GESTURE });
+      expect(saved.ok).toBe(false);
+      expect(readFileSync(elsewhere, "utf8")).toBe("outside\n");
+    } finally {
+      unlinkSync(link);
+    }
+  });
+
+  it("audits a save with opaque references and its outcome", async () => {
+    writeFileSync(target, "start\n");
+    const baseHash = await opened();
+    auditLog.mockClear();
+    expect((await saveEdit({ projectRoot: root, path: target, baseHash, text: "mine\n", intent: GESTURE })).ok).toBe(true);
+    const entry = auditLog.mock.calls.map(([value]) => value as { input?: string }).find((value) =>
+      value.input?.includes(CHANNELS.workspace.saveEdit));
+    expect(entry?.input).toContain('"ok":true');
+    expect(entry?.input).not.toContain(target);
   });
 });

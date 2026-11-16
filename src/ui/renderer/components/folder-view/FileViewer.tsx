@@ -1,7 +1,7 @@
 /** The folder view's file viewer. It routes like the side-panel preview (table, page, then the text registry), shows images
  * with fit and zoom, and gives anything it cannot show to the info card. */
 import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Code, Copy, ExternalLink, FileText, FolderOpen, Link2, MessageSquarePlus, Minus, Plus, Scan, SquarePen } from "lucide-react";
+import { Check, Code, Copy, ExternalLink, FileText, FolderOpen, Link2, MessageSquarePlus, Minus, Pencil, Plus, Save, Scan, SquarePen, Undo2 } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -21,6 +21,8 @@ import { canOpenInDefaultApp } from "../../../../shared/preview-external-open.js
 import { subscribeWorkspaceFilesChanged } from "../../utils/workspace-files-signal.js";
 import { FileActionNotice } from "../files/FileActionNotice.js";
 import { openInEditor } from "../files/open-in-editor.js";
+import { FileTextEditor } from "./FileTextEditor.js";
+import { useFileTextEdit } from "./file-text-edit.js";
 
 type ReadResult = Awaited<ReturnType<typeof window.ave.preview.readFile>>;
 type ViewerState =
@@ -108,6 +110,7 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   // One place for what the last action could not do (an i18n key); the next action clears it, whichever it is.
   const [notice, setNotice] = useState<string | null>(null);
   const clearNotices = (): void => { setNotice(null); open.clearError(); };
+  const edit = useFileTextEdit(projectRoot, entry.path, setNotice);
   const [markdownSource, setMarkdownSource] = useState(false);
   const kind = folderFileKind(entry.name);
   const route = useMemo(() => resolveFilePreviewRoute(entry.path), [entry.path]);
@@ -197,6 +200,23 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
     </>);
   }
 
+  if (edit.text !== null) {
+    // While the file is being edited the header holds the two ways to end it; the other actions return with the viewer.
+    // Both are the person's own clicks on their own text: neither asks first.
+    const editing: ViewerAction[] = [
+      { id: "edit-save", label: t("folderView.editSave"), icon: Save, disabled: !edit.dirty || edit.busy, labelled: true,
+        onSelect: () => { edit.save(); open.clearError(); } },
+      { id: "edit-discard", label: t(edit.dirty ? "folderView.editDiscard" : "folderView.editClose"), icon: Undo2, disabled: edit.busy,
+        labelled: true, onSelect: () => { edit.discard(); open.clearError(); } },
+    ];
+    return shell(<>
+      <ViewerHeader entry={entry} back={back} actions={editing}
+        subtitle={[previewFormatLabel(entry.path), t(edit.dirty ? "folderView.editUnsaved" : "folderView.editing")].join(" · ")} />
+      {alertStrip}
+      <FileTextEditor name={entry.name} text={edit.text} busy={edit.busy} onChange={edit.change} onSave={edit.save} />
+    </>);
+  }
+
   if (state.phase === "info") {
     return shell(<>
       <ViewerHeader entry={entry} subtitle={`${t(FOLDER_KIND_LABEL_KEYS[kind])} · ${formatBytes(entry.size)}`} actions={exits} back={back} />
@@ -219,6 +239,11 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   if (state.phase === "text") {
     actions.push({ id: "copy-content", label: t(contentCopy.copied ? "folderView.copied" : "folderView.copyContent"),
       icon: contentCopy.copied ? Check : Copy, onSelect: () => { clearNotices(); contentCopy.copy(state.content); } });
+  }
+  if (state.phase === "text") {
+    // Main decides whether the file can be edited here (size, encoding, line endings) and says why when it cannot.
+    actions.push({ id: "edit", label: t("folderView.edit"), icon: Pencil, disabled: edit.busy,
+      onSelect: () => { edit.begin(); open.clearError(); } });
   }
   if (onAttachText) {
     actions.push({ id: "add-context", label: t("folderView.addToContext"), icon: MessageSquarePlus, onSelect: () => {
