@@ -35,6 +35,7 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
       .filter((pane) => pane.getBoundingClientRect().width > 0);
     return {
       viewport: { width: innerWidth, height: innerHeight },
+      inset: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-inset")),
       // Where the band's path row starts: its content edge, past the padding CustomTitleBar computes.
       bandLead: band ? band.getBoundingClientRect().left + parseFloat(getComputedStyle(band).paddingLeft) : null,
       strip: strip ? box(strip) : null,
@@ -58,6 +59,34 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
   await testInfo.attach(`${name}.json`, { path: measurements, contentType: "application/json" });
   await page.screenshot({ path: testInfo.outputPath(`${name}.png`) });
   return geometry;
+}
+
+for (const [width, height] of [[950, 734], [1440, 900], [360, 734]]) {
+  for (const state of ["expanded", "rail", "hidden"] as const) {
+    test(`${width}x${height} ${state} shares the outside card inset`, async () => {
+      const context = await launchSeededElectron({
+        historyRows: [],
+        settings: { ...buildLlmSettings(), system: { sidebarState: state } },
+      });
+      try {
+        await setWindowSize(context.app, width, height);
+        for (const gap of [8, 12]) {
+          await context.page.evaluate((value) => document.documentElement.style.setProperty("--chrome-gap", `${value}px`), gap);
+          const geometry = await measureShell(context.page, test.info(), `outside-${width}-${state}-${gap}`);
+          expect(geometry.viewport).toEqual({ width, height });
+          const pane = geometry.panes[0];
+          expect((geometry.rail ?? pane).left).toBe(geometry.inset);
+          expect(width - pane.right).toBe(geometry.inset);
+          expect(height - pane.bottom).toBe(geometry.inset);
+          for (const card of [geometry.rail, geometry.card]) {
+            if (card) expect(height - card.bottom).toBe(geometry.inset);
+          }
+        }
+      } finally {
+        await teardownSeededElectron(context, { terminate: true });
+      }
+    });
+  }
 }
 
 test("empty banner text cannot reserve space above the pane cards", async () => {

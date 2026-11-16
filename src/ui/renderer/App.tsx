@@ -2657,7 +2657,7 @@ export function App() {
                                     than nested flex containers, so a tile's rectangle is
                                     one number that the layout, a drag hit-test, and a
                                     measurement in a test all read the same way. */}
-                                <div className={`min-h-0 min-w-0 flex-1 pb-(--chrome-gap) pr-(--chrome-gap) pt-0 ${sidebarHidden ? "pl-(--chrome-gap-tight)" : "pl-0"}`} data-testid="pane-row">
+                                <div className={`min-h-0 min-w-0 flex-1 pb-(--shell-pane-inset) pr-(--shell-pane-inset) pt-0 ${sidebarHidden ? "pl-(--shell-pane-inset)" : "pl-0"}`} data-testid="pane-row">
                                 {/* The positioning context is INSIDE the padding: an
                                     absolutely-positioned child resolves against the padding
                                     box, so anchoring the tiles to the row itself would eat

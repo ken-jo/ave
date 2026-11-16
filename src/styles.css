@@ -753,15 +753,16 @@
    *
    * The window inset and the split tiles' gutter share `--chrome-gap`.
    * Navigation leaves only `--chrome-gap-tight` before the first pane card.
-   * The inset aliases the gutter instead of restating its pixel count. The bottom
-   * inset is larger: a card resting exactly on the window's bottom edge reads
-   * as stuck to it rather than floating. `SHELL_GUTTER`
+   * The inset aliases the gutter on every outside edge. Pane cells already
+   * contribute half a gutter, so their row supplies only the remaining inset.
+   * `SHELL_GUTTER`
    * (shared/shell-geometry.ts) is the same value for the arithmetic done in
    * TypeScript, and doubled it is the side panel's card inset
    * (shared/side-panel.ts). */
   :root {
     --shell-card-inset: var(--chrome-gap);
-    --shell-card-inset-bottom: 12px;
+    --shell-card-inset-bottom: var(--chrome-gap);
+    --shell-pane-inset: calc(var(--shell-card-inset) - var(--chrome-gap-tight));
     /* The shared card top clears the window band by one tight gap.
      * The first row inside each card is a `--chrome-band-height` band, so
      * their header text shares a centre line as well. The band above stays
