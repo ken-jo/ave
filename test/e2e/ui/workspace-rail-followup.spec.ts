@@ -137,7 +137,7 @@ test.describe("workspace rail follow-up", () => {
     const menu = page.getByTestId("file-row-menu");
     await expect(menu).toBeVisible();
     await expect(menu.getByRole("menuitem")).toHaveText([
-      t("chatPreviewRail.ctxOpen"),
+      t("chatPreviewRail.ctxOpen"), t("folderView.showInFolderView"),
       t(process.platform === "darwin" ? "folderView.revealFinder" : process.platform === "win32" ? "folderView.revealExplorer" : "folderView.revealFileManager"),
       t("folderView.copyPath"), t("folderView.copyRelativePath"), t("folderView.addToContext"), t("folderView.openTerminalHere"),
     ]);
@@ -152,5 +152,16 @@ test.describe("workspace rail follow-up", () => {
 
     await expect(page.getByTestId("chat-side-panel-collapse-all")).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-remove-root")).toHaveCount(0);
+
+    // A file row also offers the user's editor, and "Show in folder view" opens a folder view with that file selected.
+    const fileRow = page.getByTestId("chat-side-panel-fs-file").filter({ hasText: "guide.md" });
+    await fileRow.click({ button: "right" });
+    await expect(menu.getByTestId("file-row-action-open-in-editor")).toBeVisible();
+    await menu.getByTestId("file-row-action-show-in-folder-view").click();
+    await expect(page.getByTestId("folder-view")).toBeVisible();
+    // Beside the conversation the folder view is narrow, so the open file takes the place of the columns.
+    await expect(page.getByTestId("folder-path")).toContainText("docs");
+    await expect(page.getByTestId("folder-viewer-header")).toContainText("guide.md");
+    await expect(page.getByTestId("folder-viewer")).toContainText("nested-marker");
   });
 });

@@ -352,6 +352,17 @@ describe("FolderView", () => {
       expect(onOpenTerminal).toHaveBeenLastCalledWith(`${ROOT}/src/payments`);
     });
 
+    it("anchors the menu to the window, not to the panel that holds the list", async () => {
+      render(<div style={{ transform: "translateX(40px)" }}><FolderView projectRoot={ROOT} /></div>);
+      await waitFor(() => expect(row(`${ROOT}/package.json`)).toBeDefined());
+      fireEvent.contextMenu(row(`${ROOT}/package.json`), { clientX: 300, clientY: 120 });
+      await screen.findByTestId("file-row-menu");
+      // A fixed anchor inside a transformed panel would be measured from that panel; under the body it is a window point.
+      const anchor = [...document.body.children].find((child) => child instanceof HTMLElement && child.style.position === "fixed" && child.style.width === "0px") as HTMLElement | undefined;
+      expect(anchor?.style.left).toBe("300px");
+      expect(anchor?.style.top).toBe("120px");
+    });
+
     it("opens from the keyboard with Shift+F10, returns focus to the row on Escape, and reports a failed action", async () => {
       render(<FolderView projectRoot={ROOT} onAttachText={() => "no-composer"} />);
       await waitFor(() => expect(row(`${ROOT}/package.json`)).toBeDefined());
