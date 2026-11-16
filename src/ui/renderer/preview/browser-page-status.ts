@@ -53,6 +53,11 @@ function browserPageTarget(tabId: string): BrowserWorkspaceTarget | null {
   return tab ? { tabId: tab.tabId, documentGeneration: tab.documentGeneration } : null;
 }
 
+/** The whole snapshot the page statuses come from: the site rules and what the host can grant. */
+export function useBrowserWorkspaceSnapshot(): BrowserWorkspaceState | null {
+  return useSyncExternalStore(subscribe, () => state);
+}
+
 export function useBrowserPageStatus(tabId: string): BrowserPageStatus | null {
   return useSyncExternalStore(subscribe, () => browserPageStatus(tabId));
 }

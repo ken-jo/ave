@@ -26,16 +26,16 @@ async function setup() {
   let agentDriving = false;
   const loadURL = vi.fn(async (_url: string) => {}); const reload = vi.fn(); const stop = vi.fn();
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
-  let hostType = "webview";
+  let hostType = "webview"; let agentSession: string | null = null;
   const guest = Object.assign(events, { id: 7, session: {}, mainFrame: { frameTreeNodeId: 1 }, getType: () => hostType, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
   const onError = vi.fn(); const clearSiteData = vi.fn(async () => undefined); const clearCache = vi.fn(async () => undefined); const promptPermission = vi.fn(async () => true); const openExternal = vi.fn(async () => undefined); const allowDownloads = vi.fn(); const showItemInFolder = vi.fn();
   let requestHold: BrowserPageRequestHold | null = null;
   const holdPageRequests = vi.fn((hold: BrowserPageRequestHold | null) => { requestHold = hold; });
   /** A request reaching the browser profile: how the hold answered it, or "unheld" when nothing holds requests. */
   const pageRequest = (request: BrowserPageRequest) => requestHold === null ? Promise.resolve("unheld" as const) : new Promise<boolean>((resolve) => requestHold?.(request, resolve));
-  const service = new BrowserWorkspaceService({ openExternal, clearSiteData, clearCache, allowDownloads, showItemInFolder, agentDrives: () => agentDriving, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
+  const service = new BrowserWorkspaceService({ openExternal, clearSiteData, clearCache, allowDownloads, showItemInFolder, agentSessionOf: (windowId, tabId) => windowId === 1 && tabId === "browser:one" ? agentSession : null, agentDrives: () => agentDriving, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, clearSiteData, clearCache, allowDownloads, showItemInFolder, runtimeDialog, setAgentDriving: (next: boolean) => { agentDriving = next; }, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, clearSiteData, clearCache, allowDownloads, showItemInFolder, runtimeDialog, setAgentDriving: (next: boolean) => { agentDriving = next; }, setAgentSession: (next: string | null) => { agentSession = next; }, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 const PAGE_FRAME = { origin: "https://site.example", detached: false, top: { frameTreeNodeId: 1 } };
@@ -682,5 +682,14 @@ describe("browser workspace service", () => {
     await vi.waitFor(async () => expect((await service.getState(1)).history.map((entry) => entry.by)).toEqual(["agent", "user"]));
     const state = await service.deleteHistory(1, { url: "https://site.example/", by: "user" });
     expect(state.history.map((entry) => entry.by)).toEqual(["agent"]);
+  });
+  it("names the conversation whose agent owns a tab only for the site that tab is on", async () => {
+    const { service, setAgentSession } = await setup();
+    expect(service.agentSessionForSite(1, { ...TARGET, origin: "https://site.example" })).toBeNull();
+    setAgentSession("session-1");
+    expect(service.agentSessionForSite(1, { ...TARGET, origin: "https://site.example" })).toBe("session-1");
+    expect(() => service.agentSessionForSite(1, { ...TARGET, origin: "https://other.example" })).toThrow("origin-mismatch");
+    expect(() => service.agentSessionForSite(2, { ...TARGET, origin: "https://site.example" })).toThrow();
+    expect(() => service.agentSessionForSite(1, { ...TARGET, documentGeneration: 9, origin: "https://site.example" })).toThrow();
   });
 });

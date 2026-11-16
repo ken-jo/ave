@@ -775,6 +775,8 @@ export const CHANNELS = {
     stopLoad: "ave:browser-workspace:stop-load",
     showDownload: "ave:browser-workspace:show-download",
     clearData: "ave:browser-workspace:clear-data",
+    agentSiteGrant: "ave:browser-workspace:agent-site-grant",
+    revokeAgentSiteGrant: "ave:browser-workspace:revoke-agent-site-grant",
     deleteHistory: "ave:browser-workspace:delete-history",
     clearSiteData: "ave:browser-workspace:clear-site-data",
     cancelDownload: "ave:browser-workspace:cancel-download",

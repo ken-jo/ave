@@ -28,4 +28,24 @@ describe("agent browser site permissions", () => {
     expect(decidePermission({ ...base, headless: true }).outcome).toBe("deny");
     expect(decidePermission({ ...base, userOwnedSurface: { kind: "browser", choice: "ask" } }).outcome).toBe("ask");
   });
+  it("reports what allows a site and takes it back so the next request asks again", () => {
+    const sites = new BrowserSitePermissions();
+    expect(sites.granted("s1", "https://a.example/")).toBeNull();
+    sites.allow("s1", "https://a.example/page", "this-site");
+    sites.allow("s1", "https://b.example/", "this-site");
+    expect(sites.granted("s1", "https://a.example/other")).toBe("this-site");
+    expect(sites.revoke("s1", "https://a.example/")).toBe(true);
+    expect(sites.allows("s1", "https://a.example/")).toBe(false);
+    expect(sites.allows("s1", "https://b.example/")).toBe(true);
+    expect(sites.revoke("s1", "https://a.example/")).toBe(false);
+    // An any-site grant is what opens every site, so revoking one site under it removes it; exact grants stay.
+    sites.allow("s1", "https://c.example/", "any-site");
+    expect(sites.granted("s1", "https://z.example/")).toBe("any-site");
+    expect(sites.revoke("s1", "https://z.example/")).toBe(true);
+    expect(sites.allows("s1", "https://z.example/")).toBe(false);
+    expect(sites.allows("s1", "https://b.example/")).toBe(true);
+    expect(sites.revoke("other", "https://b.example/")).toBe(false);
+    expect(sites.revoke("s1", "https://b.example/")).toBe(true);
+    expect(sites.granted("s1", "https://b.example/")).toBeNull();
+  });
 });

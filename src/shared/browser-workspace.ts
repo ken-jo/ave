@@ -43,6 +43,10 @@ export const BROWSER_REALM_LIMIT = 100;
 const BROWSER_DOWNLOAD_BLOCK_REASONS = ["rate", "queue", "size", "staging"] as const;
 export type BrowserDownloadBlockReason = typeof BROWSER_DOWNLOAD_BLOCK_REASONS[number];
 export interface BrowserDownloadTarget { readonly id: string }
+export interface BrowserAgentSiteGrant { readonly grant: "this-site" | "any-site" | null }
+export function parseBrowserAgentSiteGrant(value: unknown): BrowserAgentSiteGrant | null {
+  return isRecord(value) && keys(value, ["grant"]) && (value.grant === null || value.grant === "this-site" || value.grant === "any-site") ? { grant: value.grant } : null;
+}
 /** What to clear from the browser profile every tab shares. `siteData` is cookies and each site's stored data. */
 export interface BrowserClearDataRequest { readonly history: boolean; readonly siteData: boolean; readonly cache: boolean }
 /** Clear the cookies and stored data of the site the tab shows; `origin` proves which site the user was looking at. */
@@ -147,6 +151,10 @@ export interface BrowserWorkspaceApi {
   answerPrompt(request: BrowserPromptAnswerRequest): Promise<BrowserWorkspaceResult<null>>;
   /** Stop the tab's load in progress. */
   stopLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
+  /** What the agent of the conversation that owns this tab may open: this site, any site, or nothing. Memory of this session only. */
+  agentSiteGrant(request: BrowserClearSiteDataRequest): Promise<BrowserWorkspaceResult<BrowserAgentSiteGrant>>;
+  /** Take that access back. The agent's next request for the site asks the user again. */
+  revokeAgentSiteGrant(request: BrowserClearSiteDataRequest): Promise<BrowserWorkspaceResult<null>>;
   /** Remove one visit from the history: the user's own, or one of the agent's. */
   deleteHistory(request: BrowserHistoryTarget): Promise<BrowserWorkspaceResult<BrowserWorkspaceState>>;
   clearData(request: BrowserClearDataRequest): Promise<BrowserWorkspaceResult<BrowserWorkspaceState>>;
@@ -175,7 +183,7 @@ export function parseBrowserAttachBlocked(value: unknown): BrowserAttachBlocked 
 export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
-  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest; showDownload: BrowserDownloadTarget; cancelDownload: BrowserDownloadTarget; clearData: BrowserClearDataRequest; deleteHistory: BrowserHistoryTarget; clearSiteData: BrowserClearSiteDataRequest;
+  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest; showDownload: BrowserDownloadTarget; cancelDownload: BrowserDownloadTarget; clearData: BrowserClearDataRequest; deleteHistory: BrowserHistoryTarget; agentSiteGrant: BrowserClearSiteDataRequest; revokeAgentSiteGrant: BrowserClearSiteDataRequest; clearSiteData: BrowserClearSiteDataRequest;
   answerPrompt: BrowserPromptAnswerRequest; userNavigation: BrowserWorkspaceTarget;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
@@ -259,7 +267,7 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
     if (typeof history !== "boolean" || typeof siteData !== "boolean" || typeof cache !== "boolean" || !(history || siteData || cache)) return null;
     return { history, siteData, cache } as BrowserWorkspaceRequests[K];
   }
-  if (operation === "clearSiteData") {
+  if (operation === "clearSiteData" || operation === "agentSiteGrant" || operation === "revokeAgentSiteGrant") {
     if (!isRecord(value) || !keys(value, ["tabId", "documentGeneration", "origin"]) || !target(value) || !browserWorkspaceOrigin(value.origin)) return null;
     return { tabId: value.tabId, documentGeneration: value.documentGeneration, origin: value.origin } as BrowserWorkspaceRequests[K];
   }

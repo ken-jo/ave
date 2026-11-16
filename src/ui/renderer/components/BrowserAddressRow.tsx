@@ -9,6 +9,7 @@ import type { AveApi } from "../types.js";
 import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../hooks/use-browser-navigation.js";
 import { loadBrowserPageUrl, navigateBrowserPageAsUser, stopBrowserPageLoad, useBrowserPageStatus } from "../preview/browser-page-status.js";
 import { BrowserPagePrompts } from "./BrowserPagePrompts.js";
+import { BrowserSiteInfo } from "./BrowserSiteInfo.js";
 import { resolveAddressSubmission } from "../preview/url-safety.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 
@@ -56,6 +57,7 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
   const reported = (status?.loadError?.url || null) ?? navigation.url ?? fallbackUrl ?? "";
   // An empty bootstrap page has no address a person would recognise or retype.
   const currentAddress = reported === "about:blank" ? "" : reported;
+  const [siteInfoOpen, setSiteInfoOpen] = useState(false);
   const [draft, setDraft] = useState(currentAddress);
   const [error, setError] = useState<string | null>(null);
   const draftEditedForTab = useRef<string | null>(null);
@@ -148,7 +150,15 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
         {loading
           ? iconButton(t("browserAddressRow.stop"), testIds.stop, <X className="h-3.5 w-3.5" aria-hidden="true" />, () => { discardDraft(); stopBrowserPageLoad(tabId); }, false)
           : iconButton(t("mainPanels.reload"), testIds.reload, <RotateCw className="h-3.5 w-3.5" aria-hidden="true" />, () => act("reload"), !surface || !currentAddress)}
-        <Globe className="ml-1 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button type="button" variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label={t("browserSiteInfo.title")} aria-expanded={siteInfoOpen}
+              disabled={!api.browserWorkspace} onClick={() => setSiteInfoOpen((open) => !open)} data-testid="browser-site-info-toggle">
+              <Globe className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{t("browserSiteInfo.title")}</TooltipContent>
+        </Tooltip>
         <Input
           ref={inputRef}
           data-testid={testIds.address}
@@ -189,6 +199,7 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
         </div>
       ) : null}
       <BrowserPagePrompts tabId={tabId} />
+      {siteInfoOpen && api.browserWorkspace ? <BrowserSiteInfo api={api.browserWorkspace} tabId={tabId} chrome={chrome} /> : null}
     </>
   );
 }

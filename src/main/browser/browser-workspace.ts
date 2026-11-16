@@ -35,6 +35,8 @@ export interface BrowserWorkspaceServiceDeps {
   /** Lifts the site's download limit after the user asked for that in the tab. */
   allowDownloads(origin: string): void;
   showItemInFolder(path: string): void;
+  /** The conversation whose agent owns the tab, or null when no agent does. */
+  agentSessionOf(windowId: number, tabId: string): string | null;
   /** Whether the agent is driving this page right now: its dialogs are dismissed and reported, never shown. */
   agentDrives(guestId: number): boolean;
   /** Hands a link to the system's own app for it. Called only for a scheme in BROWSER_EXTERNAL_SCHEMES the user agreed to. */
@@ -193,6 +195,14 @@ export class BrowserWorkspaceService {
   }
   async setBookmark(windowId: number, request: BrowserBookmarkRequest): Promise<BrowserWorkspaceState> { await this.store.setBookmark(request); await this.changed(); return this.getState(windowId); }
   async clearHistory(windowId: number): Promise<BrowserWorkspaceState> { await this.store.clearHistory(); await this.changed(); return this.getState(windowId); }
+  /** The conversation whose agent owns this tab, once the request is shown to name the site the tab is on; null for a tab no agent owns. */
+  agentSessionForSite(windowId: number, request: BrowserClearSiteDataRequest): string | null {
+    const parsed = parseBrowserWorkspaceRequest("agentSiteGrant", request);
+    if (!parsed) throw new Error("bad-request");
+    const url = browserWorkspaceUrl(this.target(windowId, parsed).guest.getURL());
+    if (!url || new URL(url).origin !== parsed.origin) throw new Error("origin-mismatch");
+    return this.deps.agentSessionOf(windowId, parsed.tabId);
+  }
   async deleteHistory(windowId: number, request: BrowserHistoryTarget): Promise<BrowserWorkspaceState> { await this.store.deleteHistory(request); await this.changed(); return this.getState(windowId); }
   /** Clears what the user chose from the profile every tab shares. Site data ends sign-ins; the pages stay open. */
   async clearData(windowId: number, request: BrowserClearDataRequest): Promise<BrowserWorkspaceState> {

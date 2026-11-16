@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserOpenTab, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState } from "../browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserOpenTab, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState, parseBrowserAgentSiteGrant } from "../browser-workspace.js";
 
 const TARGET = { tabId: "browser:one", documentGeneration: 4 };
 const STATE = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
@@ -173,5 +173,10 @@ describe("browser workspace wire validation", () => {
     expect(parseBrowserWorkspaceState({ ...STATE, bookmarks: [{ ...entry, by: "user" }] })).toBeNull();
     expect(parseBrowserWorkspaceRequest("deleteHistory", { url: "https://site.example/", by: "agent" })).toEqual({ url: "https://site.example/", by: "agent" });
     for (const bad of [{ url: "https://site.example/" }, { url: "https://site.example/", by: "page" }, { url: "site.example", by: "user" }]) expect(parseBrowserWorkspaceRequest("deleteHistory", bad)).toBeNull();
+  });
+  it("accepts only the three agent site grant values", () => {
+    for (const grant of ["this-site", "any-site", null]) expect(parseBrowserAgentSiteGrant({ grant })).toEqual({ grant });
+    for (const bad of [{}, { grant: "always" }, { grant: null, origin: "https://site.example" }, null]) expect(parseBrowserAgentSiteGrant(bad)).toBeNull();
+    expect(parseBrowserWorkspaceRequest("revokeAgentSiteGrant", { ...TARGET, origin: "https://site.example/path" })).toBeNull();
   });
 });

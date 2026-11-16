@@ -61,6 +61,7 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
       downloadAllowance(origin);
     },
     showItemInFolder: (path) => shell.showItemInFolder(path),
+    agentSessionOf: (windowId, tabId) => browserTabRegistry.liveRendererTab(windowId, tabId)?.owner?.sessionId ?? null,
     agentDrives: (guestId) => browserTabRegistry.isAgentActiveGuest(guestId),
     openExternal: (url) => shell.openExternal(url),
     promptPermission: async (request) => {

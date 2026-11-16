@@ -361,6 +361,7 @@ describe("preload contextBridge world shape lock", () => {
             "stop",
           ],
           "browserWorkspace": [
+            "agentSiteGrant",
             "answerPrompt",
             "cancelDownload",
             "capture",
@@ -376,6 +377,7 @@ describe("preload contextBridge world shape lock", () => {
             "onOpenTab",
             "preview",
             "retryLoad",
+            "revokeAgentSiteGrant",
             "setBookmark",
             "setSitePermission",
             "showDownload",

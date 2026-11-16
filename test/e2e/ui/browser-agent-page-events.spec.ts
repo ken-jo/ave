@@ -129,6 +129,16 @@ test("an agent click that opens a dialog or starts a download says so in its too
     expect(results[7]).toMatch(/"found"\s*:\s*true/);
     expect(results[7]).toMatch(/"name"\s*:\s*"late\.bin"\s*,\s*"state"\s*:\s*"cancelled"/);
     expect(await app.evaluate(() => (globalThis as unknown as { reviewDialogs: number }).reviewDialogs)).toBe(0);
+
+    // The tab's site information shows the access the approval gave the agent, and takes it back.
+    await page.getByTestId("browser-site-info-toggle").click();
+    const access = page.getByTestId("browser-site-info-agent");
+    await expect(access).toHaveAttribute("data-grant", "this-site");
+    await page.getByTestId("browser-site-info-revoke").click();
+    await expect(access).toHaveAttribute("data-grant", "none");
+    await page.getByTestId("browser-site-info-toggle").click();
+    await page.getByTestId("browser-site-info-toggle").click();
+    await expect(page.getByTestId("browser-site-info-agent")).toHaveAttribute("data-grant", "none");
   } finally {
     await teardownSeededElectron(context);
     llm.close();

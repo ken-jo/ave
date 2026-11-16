@@ -37,6 +37,8 @@ if (process.platform === "darwin") {
         await expect(tooltip).toHaveCount(0);
         await fixture.page.getByTestId("web-panel-address").focus();
         await fixture.page.keyboard.press("Shift+Tab");
+        await expect(fixture.page.getByTestId("browser-site-info-toggle")).toBeFocused();
+        await fixture.page.keyboard.press("Shift+Tab");
         await expect(reload).toBeFocused();
         await expect(tooltip).toBeVisible();
         await reload.press("Enter");
