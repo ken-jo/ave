@@ -3683,7 +3683,8 @@ with its own owner rule:
   newer run, a settled record its run history still lists keeps only how it
   ended and each stage's status, times, result hash and output hash, in the
   same covered file.
-  Archiving a template keeps its runs.
+  Archiving a template keeps its runs; a real template delete removes that
+  template's run records in the same change.
   Entries that do not parse are never removed, and nothing is removed by age.
   A write that would grow the run file past the read limit is refused, so the
   file stays readable and deleting rows makes room again.
