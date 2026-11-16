@@ -166,6 +166,7 @@ export interface WorkItemListFilter {
 // Discriminated outcomes let callers branch without parsing exception messages.
 
 export type WorkItemListResult =
+  | { status: "pending-review" }
   | { status: "ok"; items: WorkItemResolved[] }
   | { status: "invalid"; reason: string };
 

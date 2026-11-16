@@ -23,6 +23,18 @@ function apiFor(items: WorkItemResolved[]) {
 
 afterEach(cleanup);
 describe("work board review", () => {
+  it("explains a pending-review board and clears the notice after a trusted refresh", async () => {
+    const api = apiFor([result]);
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "pending-review" });
+    let changed = () => {};
+    api.onWorkBoardItemChanged = handler => { changed = handler; return () => {}; };
+    render(withApprovalSurface(<WorkBoardPanel api={api} />));
+    expect(await screen.findByTestId("work-board-pending-review")).toHaveTextContent("검토");
+    expect(screen.queryByTestId("work-board-card")).toBeNull();
+    changed();
+    expect(await screen.findByTestId("work-board-card")).toBeTruthy();
+    expect(screen.queryByTestId("work-board-pending-review")).toBeNull();
+  });
   it("places a completed run only in Review and opens its summary below the lanes", async () => {
     render(withApprovalSurface(<WorkBoardPanel api={apiFor([result])} />));
     const card = await screen.findByTestId("work-board-card");

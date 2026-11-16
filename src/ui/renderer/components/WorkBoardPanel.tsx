@@ -1648,6 +1648,7 @@ export function WorkBoardPanel({
 
   // Set once the first list read settled, so a focus request can see which item it names and what that item's run waits on.
   const [listedOnce, setListedOnce] = useState(false);
+  const [pendingReview, setPendingReview] = useState(false);
 
   const refresh = useCallback(async () => {
     if (typeof api.listWorkBoard !== "function") {
@@ -1663,6 +1664,7 @@ export function WorkBoardPanel({
           }
         : undefined);
       if (!mountedRef.current) return;
+      setPendingReview("status" in result && result.status === "pending-review");
       if ("status" in result && result.status === "ok") {
         setItems(result.items);
       } else {
@@ -2066,6 +2068,7 @@ export function WorkBoardPanel({
           </Badge>
         </div>
       </div>
+      {pendingReview && <p role="alert" className="pb-3 text-sm text-destructive" data-testid="work-board-pending-review">{t("workBoard.pendingReview")}</p>}
       <div className="@container flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
         {narrow && (
           <div role="tablist" className="flex gap-1" data-testid="work-board-tabs">

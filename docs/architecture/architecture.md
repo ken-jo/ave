@@ -3647,14 +3647,24 @@ with its own owner rule:
   merges root data into committed configuration.
   Home content trust. Other inputs in the home that change what Ave runs or
   allows load only when vouched for by `config/.ave-trust-manifest.json`, read on
-  the verified `config/` boundary: `{version:1, state, entries}` where `state` is
+  the verified `config/` boundary: `{version:1, state, entries, coveredFiles?, adoptedFiles?}` where `state` is
   `fresh`, `bootstrapped:false` or `bootstrapped:true` and each entry key (home
   relative, `/`-separated, lower-cased on Windows) holds `current` and at most
-  one `pendingWrite` SHA-256. Covered inputs are `permissions.json` and the
+  one `pendingWrite` SHA-256. `coveredFiles` records the known single-file keys;
+  an absent record identifies a manifest written before board coverage. At boot
+  the owner may adopt an existing `work-board/board.json` when coverage is absent
+  or explicitly excludes it, it has no entry or permanent `adoptedFiles` marker, and
+  ownership evidence is clean. Template authority and stage state are stripped
+  using the same helper as legacy plugin-board migration before its hash, marker
+  and current coverage are recorded in one atomic manifest replacement.
+  Rebuilt missing or corrupt manifests never adopt existing inputs. The current
+  coverage set is recorded even when the board is absent, so later files cannot
+  reopen adoption. Covered inputs are `permissions.json` and the
   `permissions/` stores, `mcp/servers.json`, `governance/mcp-policy.json`,
   `plugins/registry.json` and every `plugins/.cache/*/install-receipt.json`, the
   plugin contribution and agent-plugin trust approvals, `skill-approvals.json`,
-  `routine/routines.json`, the marketplace sources, states and snapshots,
+  `routine/routines.json`, `work-board/board.json`, `work-board/templates.json`,
+  the marketplace sources, states and snapshots,
   `packages/ledger.json` and `packages/mcp-installs.json`, `AGENTS.md`,
   `agents.custom.md`, `user-preferences.md`, `memories/MEMORY.md`, and each
   first-level entry of `skills/`, `agents/` and `commands/` (a file hashed as

@@ -294,7 +294,7 @@ function templateRunError(item: WorkItem): "invalid-template-run" | undefined {
   catch (error) { if (error instanceof WorkflowTemplateError) return "invalid-template-run"; throw error; }
 }
 
-function readFileOrEmpty(filePath: string, onUnreadable: (item: WorkItem) => void): Promise<BoardFile> {
+function readFileOrEmpty(filePath: string, onUnreadable: (item: WorkItem) => void, onPendingReview: () => void): Promise<BoardFile> {
   return readJsonFileOrEmpty(filePath, emptyBoard, (parsed) => {
     const file = parsed as BoardFile;
     if (!Array.isArray(file.items)) {
@@ -332,7 +332,7 @@ function readFileOrEmpty(filePath: string, onUnreadable: (item: WorkItem) => voi
       nextId,
       items,
     };
-  });
+  }, onPendingReview);
 }
 
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
@@ -395,13 +395,15 @@ export class WorkBoardStore {
   readonly boardChanged = new ChangeSignal((err) => log.warn("[work-board] change listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   private loaded = false;
+  private pendingReview = false;
   private readonly warnedTemplateRows = new Set<number>();
   private readBoard(): Promise<BoardFile> {
+    this.pendingReview = false;
     return readFileOrEmpty(this.filePath, item => {
       if (this.warnedTemplateRows.has(item.id)) return;
       this.warnedTemplateRows.add(item.id);
       log.warn("[work-board-store] unreadable template state on item %d; execution refused", item.id);
-    });
+    }, () => { this.pendingReview = true; });
   }
   private readonly filePath: string;
   // Activity-log storage rooted in the same directory as `board.json`.
@@ -441,7 +443,8 @@ export class WorkBoardStore {
 
   // List items, newest-id first, with `status_resolved` computed + filter applied.
   async list(filter: WorkItemListFilter = {}): Promise<WorkItemListResult> {
-    await this.ensureLoaded();
+    await this.load();
+    if (this.pendingReview) return { status: "pending-review" };
     if (filter.limit !== undefined && (!Number.isFinite(filter.limit) || filter.limit < 0)) {
       return { status: "invalid", reason: "limit must be a non-negative number" };
     }

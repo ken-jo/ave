@@ -86,3 +86,20 @@ export function assertTemplateRunFields(raw: unknown): void {
   }
   if (isRecord(raw.planApproval) && raw.planApproval.templateGraphHash !== undefined) check(isGraphHash(raw.planApproval.templateGraphHash) && raw.planApproval.templateGraphHash === raw.runTemplateGraphHash);
 }
+
+/** Legacy boards predate template authority; retain ordinary item and run history fields only. */
+export function stripLegacyBoardTemplateRunFields<T extends { items: unknown[] }>(board: T): T {
+  const strip = (value: unknown, fields: readonly string[]): unknown => {
+    if (!isRecord(value)) return value;
+    const clean = { ...value };
+    for (const field of fields) delete clean[field];
+    return clean;
+  };
+  return { ...board, items: board.items.map(value => {
+    if (!isRecord(value)) return value;
+    const row = strip(value, ["templateId", "runTemplateVersion", "runTemplateGraphHash", "runStartedBy", "pin", "stageRuns", "stageJoins", "runWorkspace", "templateRunError"]) as Record<string, unknown>;
+    if (Array.isArray(row.runHistory)) row.runHistory = row.runHistory.map(entry => strip(entry, ["templateVersion", "templateGraphHash", "stageRuns"]));
+    if (isRecord(row.planApproval)) row.planApproval = strip(row.planApproval, ["templateGraphHash"]);
+    return row;
+  }) };
+}

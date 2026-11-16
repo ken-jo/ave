@@ -101,10 +101,12 @@ export async function readJsonFileOrEmpty<T>(
   filePath: string,
   empty: () => T,
   hydrate: (parsed: unknown) => T,
+  onPendingReview?: () => void,
 ): Promise<T> {
   // One verified buffer: a covered input pending review in the home content trust manifest reads as empty and is left in place
   // (never quarantined), and a later write over it is refused.
   const input = await readAveHomeInput(filePath);
+  if (input.status === "untrusted") onPendingReview?.();
   if (input.status !== "trusted") return empty();
   const raw = input.bytes.toString("utf-8");
   let parsed: unknown;

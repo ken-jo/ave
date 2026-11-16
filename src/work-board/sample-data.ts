@@ -98,6 +98,7 @@ export async function seedSampleWorkBoard(deps: SampleSeedDeps): Promise<SampleS
     return { seeded: false, reason: "migrated" };
   }
   const listed = await store.list();
+  if (listed.status !== "ok") return { seeded: false, reason: listed.status };
   if (listed.status === "ok" && listed.items.length > 0) {
     await marker.writeJson(SAMPLE_SEEDED_FILE, { seeded: false, decidedAt });
     return { seeded: false, reason: "non-empty" };

@@ -18,6 +18,7 @@ import { buildMandatorySandboxWritePolicy } from "../../permissions/sandbox-writ
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../../permissions/sensitive-paths.js";
 import { getDefaultSensitiveReadDenyPaths, getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
 import { hostRuntimeReads } from "../../sandbox/wrap-bundled-command.js";
+import * as policyHome from "../policy-home.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
@@ -31,6 +32,7 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, fstatSync: vi.fn(actual.fstatSync), openSync: vi.fn(actual.openSync), unlinkSync: vi.fn(actual.unlinkSync) };
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.mocked(execFileSync).mockImplementation((await vi.importActual<typeof import("node:child_process")>("node:child_process")).execFileSync);
   vi.mocked(unlinkSync).mockImplementation((await vi.importActual<typeof import("node:fs")>("node:fs")).unlinkSync);
   vi.mocked(openSync).mockImplementation((await vi.importActual<typeof import("node:fs")>("node:fs")).openSync);
@@ -276,7 +278,7 @@ describe("protected home configuration", () => {
       expect(readFileSync(asideOf(diagnostics, dir, name), "utf8")).toBe(bytes);
     }
     // A home with legacy content starts its trust manifest pending review.
-    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toEqual({ version: 1, state: "bootstrapped:false", entries: {} });
+    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toMatchObject({ version: 1, state: "bootstrapped:false", coveredFiles: expect.arrayContaining(["work-board/board.json"]), entries: {} });
     _resetAveHomePrivacyForTest();
     expect(migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir))).toEqual([]);
   });
@@ -433,7 +435,7 @@ describe("protected home configuration", () => {
     expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe(DEFAULT_SETTINGS);
     expect(JSON.parse(readFileSync(join(dir, "config", "policy.json"), "utf8"))).toEqual(DEFAULT_POLICY);
     // Placeholders are not legacy content, so the home starts fresh rather than pending review.
-    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toEqual({ version: 1, state: "fresh", entries: {} });
+    expect(JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"))).toMatchObject({ version: 1, state: "fresh", coveredFiles: expect.arrayContaining(["work-board/board.json"]), entries: {} });
     for (const name of names) expect(statSync(join(dir, name)).size).toBe(0);
     expect(readdirSync(dir).filter((name) => name.includes(".post-migration-"))).toEqual([]);
   });
@@ -483,6 +485,9 @@ describe("protected home configuration", () => {
     expect(ensureAveHomePrivate(dir).enforcement).not.toBe("none");
     migrateAveHomeConfiguration(dir);
     vi.stubEnv("AVE_HOME", dir);
+    vi.stubEnv("GIT_CONFIG_GLOBAL", join(dir, ".gitconfig-fixture"));
+    vi.stubEnv("GIT_CONFIG_NOSYSTEM", "1");
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([dirname(dir)]);
     expect(SENSITIVE_PATH_ENTRIES).toContainEqual({ anchor: "ave-home", segments: ["config"], kind: "dir", why: "permission settings, user policy, and legacy secrets" });
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/config/**");
     expect(isSensitivePath(caseFoldForMatch(canonicalizePathForMatch(join(dir, "config", "settings.json"))), "read")).toBe("ave-home:config");

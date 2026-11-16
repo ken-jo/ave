@@ -7,6 +7,8 @@ import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { createLogger } from "../../lib/logger.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 
+import { stripLegacyBoardTemplateRunFields } from "../../work-board/template-run-fields.js";
+
 const log = createLogger("ave");
 
 const BOARD_FILE = "board.json";
@@ -97,7 +99,7 @@ export async function migrateLegacyPluginBoardToWorkBoard(): Promise<boolean> {
       return false;
     }
 
-    await ns.writeJson(BOARD_FILE, parsed);
+    await ns.writeJson(BOARD_FILE, stripLegacyBoardTemplateRunFields(parsed));
     log.info(
       "boot: migrated legacy plugin board → work-board namespace (%s → %s)",
       legacyPath,
