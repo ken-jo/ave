@@ -2768,7 +2768,7 @@ export function App() {
                                 </div>
                                 );
                                 })}
-                                {/* The boundaries sit in the 8px the cells' half-gutters
+                                {/* The boundaries sit in the shared gap the cells' half-gutters
                                     leave between tiles, so the bar's strip is exactly
                                     the gap and steals nothing from either transcript. */}
                                 {chatGroups.gutters.map((gutter) => (

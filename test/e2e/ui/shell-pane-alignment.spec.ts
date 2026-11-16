@@ -308,6 +308,43 @@ for (const axis of ["row", "column"] as const) {
       if (axis === "column") expect(Math.abs(second.titleLeft - first.titleLeft)).toBeLessThanOrEqual(0.5);
       expect(geometry.handle.hit).toBe(true);
       expect(geometry.panes.every((pane) => pane.buttons.length > 0 && pane.buttons.every((button) => button.hit))).toBe(true);
+      for (const gap of [4, 6]) {
+        await page.evaluate(value => document.documentElement.style.setProperty("--shell-card-gap", `${value}px`), gap);
+        await measureShell(page, testInfo, `shell-split-${axis}-hit-gap-${gap}`);
+        const targets = await page.evaluate(axis => {
+          const panes = [...document.querySelectorAll('[data-testid="pane"]')];
+          const bar = document.querySelector('[data-testid^="pane-gutter-bar:"]');
+          if (panes.length !== 2 || !bar) throw new Error("Expected split panes and separator");
+          const first = panes[0].getBoundingClientRect();
+          const second = panes[1].getBoundingClientRect();
+          const bounds = bar.getBoundingClientRect();
+          const start = axis === "row" ? first.right : first.bottom;
+          const end = axis === "row" ? second.left : second.top;
+          const cross = axis === "row" ? (first.top + first.bottom) / 2 : (first.left + first.right) / 2;
+          const samples = [-1.5, -1, 0.5, (end - start) / 2, end - start - 0.5, end - start + 1, end - start + 1.5].map(offset => {
+            const x = axis === "row" ? start + offset : cross;
+            const y = axis === "row" ? cross : start + offset;
+            const hit = document.elementFromPoint(x, y);
+            return { x, y, owner: hit && bar.contains(hit) ? "separator" : hit && panes[0].contains(hit) ? "first" : hit && panes[1].contains(hit) ? "second" : "other" };
+          });
+          document.body.dataset.separatorHits = "0";
+          document.addEventListener("pointerdown", event => {
+            if (event.target instanceof Element && event.target.closest('[data-testid^="pane-gutter-bar:"]')) {
+              document.body.dataset.separatorHits = String(Number(document.body.dataset.separatorHits) + 1);
+            }
+          }, { capture: true });
+          return { start, end, barStart: axis === "row" ? bounds.left : bounds.top,
+            barEnd: axis === "row" ? bounds.right : bounds.bottom, barBounds: bounds.toJSON(),
+            parentBounds: bar.parentElement?.getBoundingClientRect().toJSON(), samples };
+        }, axis);
+        await testInfo.attach(`separator-hit-targets-${axis}-${gap}.json`, { body: JSON.stringify(targets, null, 2), contentType: "application/json" });
+        expect(targets.end - targets.start).toBeCloseTo(gap, 4);
+        expect(targets.barStart).toBeCloseTo(targets.start, 4);
+        expect(targets.barEnd).toBeCloseTo(targets.end, 4);
+        expect(targets.samples.map(sample => sample.owner)).toEqual(["first", "first", "separator", "separator", "separator", "second", "second"]);
+        for (const point of [...targets.samples.slice(0, 2), ...targets.samples.slice(-2)]) await page.mouse.click(point.x, point.y);
+        expect(await page.evaluate(() => Number(document.body.dataset.separatorHits))).toBe(0);
+      }
     } finally {
       await teardownSeededElectron(context, { terminate: true });
     }

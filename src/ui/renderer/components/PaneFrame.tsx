@@ -1171,6 +1171,7 @@ export function PaneGutter({ gutter, canvasRef, previewResize, onResize }: PaneG
         onWidthCommit={(px) => onResize(gutter, px / pairPx)}
         ariaLabel={t("pane.resize")}
         data-testid={`pane-gutter-bar:${gutter.key}`}
+        style={gutter.axis === "row" ? { width: "var(--shell-card-gap)" } : { height: "var(--shell-card-gap)" }}
       />
     </div>
   );
