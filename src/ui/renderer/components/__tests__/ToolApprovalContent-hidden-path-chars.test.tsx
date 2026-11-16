@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../../shared/permission-reviewer-framework.js";
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
@@ -6,7 +7,7 @@ import { renderApproval } from "./support/render-approval.js";
 import type { ApprovalRequest } from "../../types.js";
 import { t } from "../../../../i18n/runtime.js";
 
-/** F01: the name a person approves must be the name that is written; hidden characters are spelled, never rendered. */
+/** The name a person approves must be the name that is written; hidden characters are spelled, never rendered. */
 const RLO = String.fromCodePoint(0x202e);
 const SPOOFED = `/work/project/safe${RLO}gnp.exe`;
 const SPELLED = "/work/project/safe\u27e8U+202E\u27e9gnp.exe";
@@ -59,6 +60,24 @@ describe("approval card paths with hidden characters", () => {
     renderApproval(writeRequest({ args: { path, content: "x" }, target: { filePath: path } }), vi.fn());
     expect(screen.getByTestId("approval-action-primary").textContent).toBe("/work/project/a\u27e8U+000A\u27e9/etc/passwd");
     expect(screen.getByTestId("approval-hidden-characters-warning")).toBeInTheDocument();
+  });
+
+  it("spells hidden characters in the remember sentence and the evaluation details", () => {
+    renderApproval(writeRequest({
+      allowedChoices: undefined,
+      persistentApprovalCwd: `/work/pro${RLO}ject`,
+      approvalMemory: { kind: "key", key: `file-write-path:${SPOOFED}`, scope: { kind: "path", path: SPOOFED } },
+      evaluationContext: {
+        version: "permission-evaluation-context/v1", policyMode: "strict", headless: false, source: "builtin", category: "write",
+        trustOrigin: "llm-tool-arg", executionCwd: `/work/pro${RLO}ject`, allowedDirectories: [`/work/pro${RLO}ject`],
+        targetFilePaths: [SPOOFED], pathFields: ["path"], sensitivePathsAdjacent: [], reviewerFrameworkVersion: PERMISSION_REVIEWER_FRAMEWORK_VERSION,
+      },
+    }), vi.fn());
+    const text = visibleText() + (screen.getByTestId("tool-approval-panel").textContent ?? "");
+    expect(text).toContain(SPELLED);
+    expect(text).toContain("/work/pro\u27e8U+202E\u27e9ject");
+    expect(text).not.toContain(RLO);
+    expect(screen.getByTestId("permission-evaluation-context").textContent).toContain(SPELLED);
   });
 
   it("spells the candidate and the parent folder on an outside-project card", () => {

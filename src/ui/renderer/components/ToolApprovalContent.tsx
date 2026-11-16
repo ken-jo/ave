@@ -334,9 +334,12 @@ function ReviewerSuggestionBand({ suggestion }: { suggestion: ReviewerSuggestion
 function rememberScopeText(
   t: (key: string, params?: Record<string, string>) => string,
   request: Pick<ApprovalRequest, "toolName" | "source" | "approvalMemory">,
-  path: string,
+  workingDirectory: string,
 ): string {
   const memory = request.approvalMemory;
+  // The sentence states what a remembered answer will cover, so every path in it is spelled as it is written.
+  const shown = (value: string) => revealHiddenCharacters(value, { lineBreaks: true });
+  const path = shown(workingDirectory);
   if (memory?.kind !== "key") return t("toolApprovalDialog.exactPersistentScope", { path });
   const toolName = request.toolName;
   const pathToolName = memory.scope.kind === "path" && request.source === "builtin"
@@ -350,15 +353,15 @@ function rememberScopeText(
     case "origin":
       return t("toolApprovalDialog.rememberScopeOrigin", { toolName, origin: memory.scope.origin, path });
     case "path":
-      return t("toolApprovalDialog.rememberScopePath", { toolName: pathToolName, target: memory.scope.path, path });
+      return t("toolApprovalDialog.rememberScopePath", { toolName: pathToolName, target: shown(memory.scope.path), path });
     case "paths":
-      return t("toolApprovalDialog.rememberScopePath", { toolName, target: memory.scope.paths.map((target) => JSON.stringify(target)).join(", "), path });
+      return t("toolApprovalDialog.rememberScopePath", { toolName, target: memory.scope.paths.map((target) => shown(JSON.stringify(target))).join(", "), path });
     case "transfer":
       return t(
         memory.scope.overwrite
           ? "toolApprovalDialog.rememberScopeTransferOverwrite"
           : "toolApprovalDialog.rememberScopeTransfer",
-        { toolName, source: memory.scope.sourcePath, destination: memory.scope.destinationPath, path },
+        { toolName, source: shown(memory.scope.sourcePath), destination: shown(memory.scope.destinationPath), path },
       );
     case "command":
       return t("toolApprovalDialog.rememberScopeCommand", { path });
