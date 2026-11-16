@@ -24,8 +24,6 @@ export function createPassConditionRegistry(): PassConditionRegistry {
         return { passed, evidence: passed ? "the stage ended cleanly" : `the stage did not finish (${result.stopReason ?? "no result"})`, judgedBy: "host" };
       },
     }],
-    // The host runs no command. The child's recorded steps carry no exit status, so exit zero cannot be proven and the gate fails.
-    ["check_exit_zero", { evaluate: () => ({ passed: false, evidence: "the stage's recorded steps carry no exit status for the command", judgedBy: "host" }) }],
   ]);
   return {
     register: (kind, entry) => { entries.set(kind, entry); },

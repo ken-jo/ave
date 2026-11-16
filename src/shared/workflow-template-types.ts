@@ -97,7 +97,7 @@ export type WorkflowTemplateErrorCode =
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
   | "bad-stage-id" | "too-many-entries" | "envelope-refused"
   | "scope-changed" | "project-mismatch" | "scope-not-authorised" | "output-not-declared"
-  | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only";
+  | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only" | "gate-check-unsupported";
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "storage-error" };
 
 export interface WorkItemStageRun {
