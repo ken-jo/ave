@@ -57,6 +57,7 @@ import {
 import { hasHiddenCharacters, revealHiddenCharacters } from "../../../shared/display-safe-text.js";
 import { isRecord } from "../../../shared/is-record.js";
 import { approvalActionSummary } from "../../../shared/approval-action-summary.js";
+import { ApprovalEditDiff } from "./permissions/ApprovalEditDiff.js";
 import { approvalAction } from "./permissions/approval-action.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
 import type { RiskLevel, ToolCategory } from "../../../shared/permission-review-status.js";
@@ -1114,6 +1115,9 @@ export function ToolApprovalContent({
                     </p>
                   ) : null}
                 </div>
+
+            {/* An edit is approved by reading it, so the change sits on the card, not inside the collapsed input. */}
+            <ApprovalEditDiff request={request} />
 
             <details
               className="group min-w-0 overflow-hidden rounded-lg border border-border-strong bg-muted/(--opacity-light)"

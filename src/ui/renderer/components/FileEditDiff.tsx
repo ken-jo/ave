@@ -235,7 +235,7 @@ function ReviewHunk({
 }
 
 /** The rows of a line diff: context, removed and added lines, with real line numbers when the whole file was compared. */
-function FileDiffRows({ view, numbered }: { view: FileDiffView; numbered: boolean }) {
+export function FileDiffRows({ view, numbered }: { view: FileDiffView; numbered: boolean }) {
   const { t } = useTranslation();
   return (
     <>

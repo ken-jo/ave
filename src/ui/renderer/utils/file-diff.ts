@@ -73,28 +73,37 @@ export function extractFileEditDiff(tool: ToolItem): FileEditDiffData | null {
 function extractEditFile(tool: ToolItem): FileEditDiffData | null {
   if (!isRecord(tool.input)) return null;
   const result = parseResult(tool.result);
-  const path = asString(result?.path) ?? asString(tool.input.path);
-  const oldText = asString(tool.input.oldText);
-  const newText = asString(tool.input.newText);
-  if (path == null || oldText == null || newText == null) return null;
-  return { path, tool: "edit_file", hunks: [{ oldText, newText }], hasSidecar: result?.hasSidecar === true };
+  const data = fileEditDiffFromInput("edit_file", tool.input, asString(result?.path));
+  return data && { ...data, hasSidecar: result?.hasSidecar === true };
 }
 
 function extractMultiEdit(tool: ToolItem): FileEditDiffData | null {
   if (!isRecord(tool.input)) return null;
   const result = parseResult(tool.result);
-  const path = asString(result?.path) ?? asString(tool.input.path);
-  const reps = tool.input.replacements;
-  if (path == null || !Array.isArray(reps)) return null;
+  const data = fileEditDiffFromInput("multi_edit", tool.input, asString(result?.path));
+  return data && { ...data, hasSidecar: result?.hasSidecar === true };
+}
+
+/**
+ * The replacements an edit tool was asked to make, read from its input alone.
+ * A result card and the approval card both start here, so a person approves the same change they later see applied.
+ */
+export function fileEditDiffFromInput(
+  tool: "edit_file" | "multi_edit",
+  input: Record<string, unknown>,
+  resolvedPath: string | null = null,
+): FileEditDiffData | null {
+  const path = resolvedPath ?? asString(input.path);
+  if (path == null) return null;
+  const replacements = tool === "edit_file" ? [input] : Array.isArray(input.replacements) ? input.replacements : [];
   const hunks: FileEditHunk[] = [];
-  for (const r of reps) {
-    if (!isRecord(r)) continue;
-    const o = asString(r.oldText);
-    const n = asString(r.newText);
-    if (o != null && n != null) hunks.push({ oldText: o, newText: n });
+  for (const replacement of replacements) {
+    if (!isRecord(replacement)) continue;
+    const oldText = asString(replacement.oldText);
+    const newText = asString(replacement.newText);
+    if (oldText != null && newText != null) hunks.push({ oldText, newText });
   }
-  if (hunks.length === 0) return null;
-  return { path, tool: "multi_edit", hunks, hasSidecar: result?.hasSidecar === true };
+  return hunks.length === 0 ? null : { path, tool, hunks };
 }
 
 /**

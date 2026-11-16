@@ -5830,6 +5830,8 @@ export const en = {
   "toolApprovalDialog.sandboxDisposableGuest": "Disposable guest — runs in a broker-issued container whose files and processes are discarded with it; network is the guest's own",
   "toolApprovalDialog.rowSandbox": "Security isolation",
   "toolApprovalDialog.hiddenCharactersWarning": "This path contains hidden or reordering characters. They are shown as ⟨U+…⟩ codes so the name you read is the name that is used.",
+  "toolApprovalDialog.changeShowAll": "Show all {count} lines",
+  "toolApprovalDialog.changeShowLess": "Show fewer lines",
   "toolApprovalDialog.rowCaution": "Caution",
   "toolApprovalDialog.cautionNonUserOrigin": "Not user-initiated — originated from {originLabel}; verify the tool args and target path.",
   "toolApprovalDialog.rowTarget": "Target",

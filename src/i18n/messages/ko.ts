@@ -5832,6 +5832,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "toolApprovalDialog.sandboxDisposableGuest": "일회용 게스트 — 브로커가 발급한 컨테이너에서 실행되며 파일과 프로세스는 컨테이너와 함께 폐기됩니다. 네트워크는 게스트 자체 정책입니다",
   "toolApprovalDialog.rowSandbox": "보안 격리",
   "toolApprovalDialog.hiddenCharactersWarning": "이 경로에 보이지 않거나 글자 순서를 바꾸는 문자가 들어 있습니다. 실제로 쓰이는 이름을 그대로 읽을 수 있도록 ⟨U+…⟩ 코드로 표시했습니다.",
+  "toolApprovalDialog.changeShowAll": "{count}줄 모두 보기",
+  "toolApprovalDialog.changeShowLess": "줄여서 보기",
   "toolApprovalDialog.rowCaution": "주의",
   "toolApprovalDialog.cautionNonUserOrigin": "사용자 직접 입력이 아니라 {originLabel} 발원 — 인자·대상 경로 확인 후 승인.",
   "toolApprovalDialog.rowTarget": "대상",
