@@ -1329,15 +1329,23 @@ and a restart keeps the pending plan (boot reconciliation leaves an
 `awaiting_approval` run alone only while its plan, run id and pending decision
 are whole and the plan hash still matches; anything less becomes `error`).
 A template run has the same boundary for its stages:
-`ave:work-board:decide-stage`, `ave:work-board:decide-join` and
-`ave:work-board:retry-stage` (internal, sender-validated board-window main
+`ave:work-board:decide-stage`, `ave:work-board:decide-join`,
+`ave:work-board:retry-stage` and `ave:work-board:continue-run` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carry the run id, the stage or join id,
 the attempt and the hash the card showed, never the output; the stage scheduler
 checks each against the stored run before anything changes. The scheduler
 reads the pin, the source, the stage runs, the joins and the gates of a run
 only through its run-state seam (`src/work-board/workflow/run-state.ts`), keyed
 by run id; a board row names its run by id and nothing on the row is read as
-run state.
+run state. The seam is the board store's covered run file
+(`work-board/workflow-runs.json`). The write that ends a run stores the final
+stage states and `settled` together in that file; the board row is written
+after it and only shows it, so after a crash between the two writes boot
+restores the row from the record. A run a restart left unsettled is shown as
+resuming (`templateRunState`, added by the host on every list and get, never
+taken from a row) until the scheduler has taken it over; nothing starts by
+itself, and the user continues, decides or stops it. Deleting a run's row
+cancels the run and interrupts its live stage children.
 `ave:work-board:decide-plan` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carries the run id, the hash of the plan
 the card showed and the decision, never the plan text. The store checks all of
