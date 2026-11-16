@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileViewer } from "../FileViewer.js";
+import { VIEWER_HEADER_COMPACT_WIDTH } from "../ViewerHeader.js";
 import type { FolderEntry } from "../folder-columns.js";
 
 const ROOT = "/p/checkout-service";
@@ -69,6 +70,23 @@ describe("FileViewer header", () => {
     rerender(<FileViewer projectRoot={ROOT} entry={entry("shared-config", { type: "link", outside: true })} />);
     expect(action("reveal")).toBeNull();
     expect(action("copy-path")).not.toBeNull();
+  });
+
+  it("moves every action into one menu when the header is narrower than the action row needs", async () => {
+    headerWidth = VIEWER_HEADER_COMPACT_WIDTH - 1;
+    render(<FileViewer projectRoot={ROOT} entry={entry("README.md")} onAttachText={() => true} />);
+    const more = await screen.findByTestId("folder-viewer-more");
+    await waitFor(() => expect(screen.getByTestId("folder-markdown-rendered")).toBeDefined());
+    expect(screen.queryByTestId("folder-viewer-actions")).toBeNull();
+    expect(screen.queryByTestId("folder-markdown-source")).toBeNull();
+    fireEvent.pointerDown(more, { button: 0, ctrlKey: false });
+    const menu = await screen.findByTestId("folder-viewer-more-menu");
+    expect(within(menu).getAllByRole("menuitem").map((item) => item.getAttribute("data-testid"))).toEqual([
+      "folder-viewer-action-markdown-mode", "folder-viewer-action-copy-content", "folder-viewer-action-add-context",
+      "folder-viewer-action-reveal", "folder-viewer-action-copy-path", "folder-viewer-action-open-external",
+    ]);
+    fireEvent.click(within(menu).getByTestId("folder-viewer-action-markdown-mode"));
+    await waitFor(() => expect(screen.queryByTestId("folder-markdown-rendered")).toBeNull());
   });
 });
 

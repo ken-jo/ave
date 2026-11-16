@@ -1,7 +1,7 @@
 /** The folder view's file viewer. It routes like the side-panel preview (table, page, then the text registry), shows images
  * with fit and zoom, and gives anything it cannot show to the info card. */
 import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Copy, ExternalLink, FolderOpen, Link2, MessageSquarePlus, Minus, Plus, Scan } from "lucide-react";
+import { Check, Code, Copy, ExternalLink, FileText, FolderOpen, Link2, MessageSquarePlus, Minus, Plus, Scan } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -194,6 +194,10 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   if (modified) subtitleParts.push(modified);
   const isMarkdown = state.phase === "text" && resolvePreviewRenderer({ text: "", path: entry.path }).kind === "markdown";
   const actions: ViewerAction[] = [];
+  if (isMarkdown) {
+    actions.push({ id: "markdown-mode", label: t(markdownSource ? "folderView.markdownShowView" : "folderView.markdownShowSource"),
+      icon: markdownSource ? FileText : Code, onSelect: () => setMarkdownSource((source) => !source), menuOnly: true });
+  }
   if (state.phase === "text") {
     actions.push({ id: "copy-content", label: t(contentCopy.copied ? "folderView.copied" : "folderView.copyContent"),
       icon: contentCopy.copied ? Check : Copy, onSelect: () => contentCopy.copy(state.content) });
