@@ -136,8 +136,16 @@ describe("browser capture", () => {
     if (!original) throw new Error("Capture fixture has no protocol session");
     let x = 10, y = 20;
     const animationFrame = vi.fn(() => 1);
+    const scrolling = new EventTarget();
     const world = {
-      window: { scrollTo: (position: { left: number; top: number }) => { x = position.left; y = position.top; } },
+      window: {
+        addEventListener: scrolling.addEventListener.bind(scrolling),
+        removeEventListener: scrolling.removeEventListener.bind(scrolling),
+        scrollTo: (position: { left: number; top: number }) => {
+          x = position.left; y = position.top;
+          queueMicrotask(() => scrolling.dispatchEvent(new Event("scrollend")));
+        },
+      },
       requestAnimationFrame: animationFrame,
     };
     send.mockImplementation(async (method, params) => {
