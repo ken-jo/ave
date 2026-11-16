@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkBoardStore } from "../work-board-store.js";
 import { BOARD_VERSION } from "../../work-board/board-file.js";
+import type { BoardFile } from "../../work-board/board-file.js";
+import { WorkflowTemplateError } from "../../work-board/template-graph.js";
 let dir: string;
 beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "board-template-")); });
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
@@ -46,4 +48,42 @@ it("parks template execution until the scheduler owns run pinning", async () => 
   const ordinary = await store.create({ title: "Ordinary" });
   if (ordinary.status !== "created") throw new Error("missing");
   expect(await store.beginRun(ordinary.itemId, "run-2", "2026-01-01")).toMatchObject({ status: "updated", item: { runId: "run-2" } });
+});
+
+it.each([48_000, 48_001])("enforces the stored stage output bound on read at %i characters", async length => {
+  const path = join(dir, "board.json");
+  const output = "x".repeat(length);
+  await writeFile(path, JSON.stringify({ version: 1, nextId: 2, items: [{ ...item(), stageRuns: [{ ...stage, output }] }] }));
+  const before = await readFile(path, "utf8");
+  const store = new WorkBoardStore(path);
+  if (length === 48_000) {
+    expect(await store.get(1)).toMatchObject({ status: "found", item: { stageRuns: [{ output }] } });
+  } else {
+    await expect(store.load()).rejects.toBeInstanceOf(WorkflowTemplateError);
+    await expect(store.load()).rejects.toMatchObject({ code: "invalid-template-run", message: "Stage output exceeds 48000 characters" });
+  }
+  expect(await readFile(path, "utf8")).toBe(before);
+});
+it("enforces the output bound before a board write without changing disk or cache", async () => {
+  const path = join(dir, "board.json");
+  await writeFile(path, JSON.stringify({ version: 1, nextId: 2, items: [item()] }));
+  const store = new WorkBoardStore(path);
+  await store.load();
+  const board: BoardFile = JSON.parse(await readFile(path, "utf8"));
+  const output = "x".repeat(48_000);
+  board.items[0].stageRuns![0].output = output;
+  // All board mutations share this commit boundary.
+  const writer = store as unknown as { commit(board: BoardFile): Promise<void> };
+  await writer.commit(board);
+  expect(JSON.parse(await readFile(path, "utf8")).items[0].stageRuns[0].output).toBe(output);
+  const before = await readFile(path, "utf8");
+  const oversized = structuredClone(board);
+  oversized.items[0].stageRuns![0].output += "x";
+  let changes = 0;
+  store.boardChanged.subscribe(() => { changes++; });
+  await expect(writer.commit(oversized)).rejects.toBeInstanceOf(WorkflowTemplateError);
+  await expect(writer.commit(oversized)).rejects.toMatchObject({ code: "invalid-template-run", message: "Stage output exceeds 48000 characters" });
+  expect(await readFile(path, "utf8")).toBe(before);
+  expect(await store.get(1)).toMatchObject({ status: "found", item: { stageRuns: [{ output }] } });
+  expect(changes).toBe(0);
 });

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkflowTemplateStore } from "../workflow-template-store.js";
-import { graphHashOf } from "../../work-board/template-graph.js";
+import { canonicalTemplateGraph, graphHashOf, WorkflowTemplateError } from "../../work-board/template-graph.js";
 import type { WorkflowTemplateDraftInput } from "../../shared/workflow-template-types.js";
 
 const input = (): WorkflowTemplateDraftInput => ({
@@ -74,6 +74,24 @@ describe("workflow template store", () => {
   });
 });
 describe("canonical graph hash", () => {
+  it("accepts and hashes the model verdict pass kind distinctly from stage success", async () => {
+    const graph = input();
+    graph.stages[1].gate = { type: "auto", pass: { kind: "model_verdict" } };
+    expect(canonicalTemplateGraph(graph).stages.find(stage => stage.id === "build")!.gate).toEqual(graph.stages[1].gate);
+    const hash = graphHashOf(graph);
+    expect(hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(hash).not.toBe(graphHashOf(input()));
+    const draft = await store.draft(null, graph);
+    const version = await store.confirm(draft.template.id, { expectedGraphHash: hash }, actor);
+    expect(version.graphHash).toBe(hash);
+    expect((await new WorkflowTemplateStore(path).get(draft.template.id)).versions[0]).toEqual(version);
+  });
+  it("rejects an unknown automatic pass kind", () => {
+    const graph = input();
+    Object.assign(graph.stages[1].gate, { pass: { kind: "unknown" } });
+    expect(() => canonicalTemplateGraph(graph)).toThrow(WorkflowTemplateError);
+    expect(() => graphHashOf(graph)).toThrow("invalid-input");
+  });
   it("ignores object, stage, edge and input ordering", () => {
     const a = input(); a.stages.push({ ...a.stages[1], id: "review", name: "Review", inputs: ["plan", "build"], gate: { type: "human" } }); a.edges.push({ from: "build", to: "review" }, { from: "plan", to: "review" });
     const permuted = { stages: a.stages.map(s => Object.fromEntries(Object.entries({ ...s, inputs: [...s.inputs].reverse() }).reverse())).reverse(), edges: [...a.edges].reverse().map(e => ({ to: e.to, from: e.from })) };

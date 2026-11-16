@@ -3,7 +3,7 @@ import type { TemplateGraph, TemplateStage, WorkflowTemplateDraftInput, Workflow
 import { hasOnlyKeys, isPlainRecord, isRecord } from "../shared/is-record.js";
 
 export class WorkflowTemplateError extends Error {
-  constructor(readonly code: WorkflowTemplateErrorCode) { super(code); this.name = "WorkflowTemplateError"; }
+  constructor(readonly code: WorkflowTemplateErrorCode, message: string = code) { super(message); this.name = "WorkflowTemplateError"; }
 }
 export function requireTemplate(condition: unknown, code: WorkflowTemplateErrorCode = "invalid-input"): asserts condition {
   if (!condition) throw new WorkflowTemplateError(code);
@@ -33,7 +33,7 @@ export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
     else {
       requireTemplate(g.type === "auto" && hasTemplateKeys(g, ["type", "pass"]) && isRecord(g.pass));
       const p = g.pass;
-      requireTemplate((p.kind === "stage_ok" && hasTemplateKeys(p, ["kind"])) || (p.kind === "check_exit_zero" && text(p.command, 2000) && hasTemplateKeys(p, ["kind", "command"])));
+      requireTemplate(((p.kind === "stage_ok" || p.kind === "model_verdict") && hasTemplateKeys(p, ["kind"])) || (p.kind === "check_exit_zero" && text(p.command, 2000) && hasTemplateKeys(p, ["kind", "command"])));
     }
     return { id: s.id, name: s.name, goal: s.goal, inputs: [...s.inputs].sort(compare), toolScope: s.toolScope, ...(s.agentName !== undefined ? { agentName: s.agentName as string } : {}), allowSubAgents: s.allowSubAgents === true, gate: structuredClone(g) as TemplateStage["gate"] };
   }).sort((a, b) => compare(a.id, b.id));

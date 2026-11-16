@@ -1,6 +1,11 @@
 export type TemplateConfirmationOrigin = "local-desktop" | "tailnet-surface";
 export type TemplateScope = { kind: "all" } | { kind: "project"; projectRoot: string };
-export type StageGate = { type: "human" } | { type: "auto"; pass: { kind: "stage_ok" } | { kind: "check_exit_zero"; command: string } };
+export type StageGate = { type: "human" } | {
+  type: "auto";
+  pass: { kind: "stage_ok" } | { kind: "check_exit_zero"; command: string }
+    // Scheduler predicate labelled as a model judgement; never answers, skips or pre-fills a permission card (D9).
+    | { kind: "model_verdict" };
+};
 export interface TemplateStage {
   id: string;
   name: string;
@@ -64,6 +69,7 @@ export interface WorkItemStageRun {
   childSessionId?: string;
   startedAt?: string;
   endedAt?: string;
+  /** At most 48,000 characters; the engine truncates before storing. */
   output?: string;
   outputHash?: string;
   gate?: { type: "human"; status: "pending" | "approved" | "changes_requested" | "rejected"; note?: string; decidedAt?: string; revision: number }

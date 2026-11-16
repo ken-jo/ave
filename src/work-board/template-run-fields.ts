@@ -1,10 +1,11 @@
 import { isRecord } from "../shared/is-record.js";
-import { isGraphHash, isTemplateId, isTemplateVersion, requireTemplate } from "./template-graph.js";
+import { isGraphHash, isTemplateId, isTemplateVersion, requireTemplate, WorkflowTemplateError } from "./template-graph.js";
 
 const STAGE_STATUSES = ["waiting", "running", "awaiting_gate", "passed", "failed", "cancelled", "rejected"];
 function validStage(value: unknown, summary: boolean): boolean {
   if (!isRecord(value) || !isTemplateId(value.stageId) || !Number.isInteger(value.attempt) || (value.attempt as number) < 1 || (value.attempt as number) > 3 || !STAGE_STATUSES.includes(value.status as string)) return false;
   for (const key of ["startedAt", "endedAt", "childSessionId", "output"]) if (value[key] !== undefined && typeof value[key] !== "string") return false;
+  if (typeof value.output === "string" && value.output.length > 48_000) throw new WorkflowTemplateError("invalid-template-run", "Stage output exceeds 48000 characters");
   if (value.outputHash !== undefined && !isGraphHash(value.outputHash)) return false;
   if (summary && (value.output !== undefined || value.gate !== undefined || value.childSessionId !== undefined)) return false;
   if (value.gate === undefined) return true;
