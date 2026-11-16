@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { createRef, useRef, useState } from "react";
-import { Composer, type ComposerHandle } from "../Composer.js";
+import { Composer, composerDropZoneProps, type ComposerHandle } from "../Composer.js";
 import type { Attachment } from "../../types/attachments.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
+import { FILE_MENTION_DRAG_MIME } from "../../../../shared/file-mention-reference.js";
 
 const MATCHES = [
   { path: "/ws/src/app.ts", relativePath: "src/app.ts", root: "/ws", bytes: 12 },
@@ -22,7 +23,7 @@ let lastAttachments: Attachment[] = [];
 function Harness({
   filesEnabled,
   onDropFiles,
-}: { filesEnabled?: boolean; onDropFiles?: (files: FileList) => void }) {
+}: { filesEnabled?: boolean; onDropFiles?: (files: FileList | readonly File[]) => void }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const counter = useRef(0);
@@ -271,14 +272,42 @@ describe("Composer — @file mention", () => {
   });
 });
 
-describe("Composer — file drop", () => {
+/** The composer inside a surface that is its drop zone, with a conversation area beside the input, as both chats mount it. */
+function Surface({ onDropFiles, disabled = false }: { onDropFiles?: (files: FileList | readonly File[]) => void; disabled?: boolean }) {
+  const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const counter = useRef(0);
+  const composer = useRef<ComposerHandle | null>(null);
+  lastAttachments = attachments;
+  return (
+    <div data-testid="surface" {...composerDropZoneProps(composer)}>
+      <div data-testid="conversation">transcript</div>
+      <Composer ref={composer} text={text} onTextChange={setText} attachments={attachments}
+        onAttachmentsChange={setAttachments} allocateN={() => ++counter.current}
+        saveClipboardImage={vi.fn(async () => ({ ok: false }))} onSend={vi.fn()}
+        onDropFiles={onDropFiles} disabled={disabled} />
+    </div>
+  );
+}
+
+describe("Composer — drop zone and pasted files", () => {
   function fileDrag(type: string, files: File[] = []) {
     return { dataTransfer: { types: ["Files"], files, dropEffect: "none" }, type };
   }
+  function mentionDrag(path: string) {
+    return {
+      dataTransfer: {
+        types: ["text/plain", FILE_MENTION_DRAG_MIME],
+        files: [],
+        dropEffect: "none",
+        getData: (type: string) => (type === FILE_MENTION_DRAG_MIME || type === "text/plain" ? path : ""),
+      },
+    };
+  }
 
-  it("shows the drop affordance on a file drag and hands the dropped FileList over", () => {
+  it("shows the drop affordance on a file drag and hands the dropped files over once", () => {
     const onDropFiles = vi.fn();
-    render(<Harness onDropFiles={onDropFiles} />);
+    render(<Surface onDropFiles={onDropFiles} />);
     const target = screen.getByTestId(TEST_IDS.composer);
     fireEvent.dragEnter(target, fileDrag("dragenter"));
     expect(screen.getByTestId("composer-drop-overlay")).toBeTruthy();
@@ -289,11 +318,95 @@ describe("Composer — file drop", () => {
     expect(screen.queryByTestId("composer-drop-overlay")).toBeNull();
   });
 
-  it("ignores a non-file drag", () => {
+  it("attaches a file dropped on the conversation area, and claims the event so the window guard has nothing to discard", () => {
     const onDropFiles = vi.fn();
-    render(<Harness onDropFiles={onDropFiles} />);
-    const target = screen.getByTestId(TEST_IDS.composer);
-    fireEvent.dragEnter(target, { dataTransfer: { types: ["text/plain"], files: [] } });
+    render(<Surface onDropFiles={onDropFiles} />);
+    const conversation = screen.getByTestId("conversation");
+    fireEvent.dragOver(conversation, fileDrag("dragover"));
+    expect(screen.getByTestId("composer-drop-overlay")).toBeTruthy();
+    const file = new File(["x"], "report.pdf");
+    const claimed = !fireEvent.drop(conversation, fileDrag("drop", [file]));
+    expect(claimed).toBe(true);
+    expect(onDropFiles).toHaveBeenCalledTimes(1);
+    expect(Array.from(onDropFiles.mock.calls[0][0] as File[])).toEqual([file]);
+  });
+
+  it("keeps the affordance while the drag moves inside the surface and drops it when the drag leaves", () => {
+    render(<Surface onDropFiles={vi.fn()} />);
+    const surface = screen.getByTestId("surface");
+    fireEvent.dragEnter(screen.getByTestId("conversation"), fileDrag("dragenter"));
+    // The test DOM has no DragEvent, so the element the drag moves to is set on the event by hand.
+    const leave = (from: HTMLElement, to: HTMLElement) => {
+      const event = createEvent.dragLeave(from);
+      Object.defineProperty(event, "relatedTarget", { value: to });
+      fireEvent(from, event);
+    };
+    leave(screen.getByTestId("conversation"), screen.getByTestId(TEST_IDS.composer));
+    expect(screen.getByTestId("composer-drop-overlay")).toBeTruthy();
+    leave(surface, document.body);
     expect(screen.queryByTestId("composer-drop-overlay")).toBeNull();
+  });
+
+  it("ignores a drag that carries neither files nor a file row", () => {
+    const onDropFiles = vi.fn();
+    render(<Surface onDropFiles={onDropFiles} />);
+    const target = screen.getByTestId(TEST_IDS.composer);
+    const text = { dataTransfer: { types: ["text/plain"], files: [], getData: () => "/w/notes.md" } };
+    fireEvent.dragEnter(target, text);
+    expect(screen.queryByTestId("composer-drop-overlay")).toBeNull();
+    expect(fireEvent.drop(target, text)).toBe(true);
+    expect(onDropFiles).not.toHaveBeenCalled();
+    expect(lastAttachments).toEqual([]);
+  });
+
+  it("turns a dragged file row into a file mention, wherever on the surface it is dropped", () => {
+    render(<Surface />);
+    const conversation = screen.getByTestId("conversation");
+    fireEvent.dragEnter(conversation, mentionDrag("/w/src/app.ts"));
+    expect(screen.getByTestId("composer-drop-overlay")).toBeTruthy();
+    const claimed = !fireEvent.drop(conversation, mentionDrag("/w/src/app.ts"));
+    expect(claimed).toBe(true);
+    expect(lastAttachments).toEqual([expect.objectContaining({ kind: "file", path: "/w/src/app.ts", name: "app.ts", reference: true })]);
+    expect(textarea().value).toBe("[File #1]");
+    expect(screen.getByTestId("composer-reference-strip").textContent).toContain("app.ts");
+  });
+
+  it("takes nothing while the composer is disabled, leaving the drop to the window guard", () => {
+    const onDropFiles = vi.fn();
+    render(<Surface onDropFiles={onDropFiles} disabled />);
+    const conversation = screen.getByTestId("conversation");
+    fireEvent.dragEnter(conversation, fileDrag("dragenter"));
+    expect(screen.queryByTestId("composer-drop-overlay")).toBeNull();
+    expect(fireEvent.drop(conversation, fileDrag("drop", [new File(["x"], "notes.txt")]))).toBe(true);
+    expect(fireEvent.drop(conversation, mentionDrag("/w/src/app.ts"))).toBe(true);
+    expect(onDropFiles).not.toHaveBeenCalled();
+    expect(lastAttachments).toEqual([]);
+  });
+
+  function paste(files: File[], text = "") {
+    const items = files.map((file) => ({ kind: "file", type: file.type, getAsFile: () => file }));
+    return fireEvent.paste(textarea(), {
+      clipboardData: { files, items, types: ["Files"], getData: (type: string) => (type === "text/plain" ? text : "") },
+    });
+  }
+
+  it("sends a pasted file that is not an image down the drop path, and keeps its name out of the field", () => {
+    const onDropFiles = vi.fn();
+    render(<Surface onDropFiles={onDropFiles} />);
+    const pdf = new File(["%PDF-1.4"], "report.pdf", { type: "application/pdf" });
+    const notes = new File(["notes"], "notes.md", { type: "" });
+    // A file-manager copy also puts the file names on the clipboard as text.
+    const claimed = !paste([pdf, notes], "report.pdf\nnotes.md");
+    expect(claimed).toBe(true);
+    expect(onDropFiles).toHaveBeenCalledTimes(1);
+    expect(onDropFiles.mock.calls[0][0]).toEqual([pdf, notes]);
+    expect(textarea().value).toBe("");
+  });
+
+  it("leaves a pasted image to the clipboard-image path", async () => {
+    const onDropFiles = vi.fn();
+    render(<Surface onDropFiles={onDropFiles} />);
+    await act(async () => { paste([new File(["png"], "shot.png", { type: "image/png" })]); });
+    expect(onDropFiles).not.toHaveBeenCalled();
   });
 });

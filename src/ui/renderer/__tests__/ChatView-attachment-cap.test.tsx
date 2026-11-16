@@ -117,3 +117,40 @@ describe("ChatView attachment 5-cap (handleAttach)", () => {
     expect(textarea.value).not.toContain(`[File #${ATTACH_MAX_COUNT + 1}]`);
   });
 });
+
+describe("ChatView — the conversation is a drop target (F13)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (window as unknown as Record<string, unknown>).aveDrop;
+  });
+
+  it("attaches a file dropped on the transcript through the drop-token path", async () => {
+    const { container } = await renderApp({ hasApiKey: true });
+    const prepareFileDrop = vi.fn(async (_files: readonly File[]) => ({ ok: true, token: "tok", rejected: [] }));
+    (window as unknown as Record<string, unknown>).aveDrop = { prepareFileDrop, resolveDroppedPaths: () => [] };
+    const redeemDrop = vi.fn(async () => ({
+      ok: true,
+      files: [{ path: "/work/report.pdf", name: "report.pdf", ext: "pdf", bytes: 8, isImage: false }],
+    }));
+    (window.ave as unknown as { attach: Record<string, unknown> }).attach = { redeemDrop };
+    const transcript = await waitFor(() => {
+      const el = container.querySelector('[data-testid="chat-transcript-stage"]');
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    const file = new File(["%PDF-1.4"], "report.pdf", { type: "application/pdf" });
+
+    let claimed = false;
+    await act(async () => {
+      claimed = !fireEvent.drop(transcript, { dataTransfer: { types: ["Files"], files: [file] } });
+    });
+
+    expect(claimed).toBe(true);
+    const textarea = container.querySelector(testIdSelector(TEST_IDS.composerTextarea)) as HTMLTextAreaElement;
+    await waitFor(() => { expect(textarea.value).toContain("[File #1]"); });
+    expect(prepareFileDrop).toHaveBeenCalledTimes(1);
+    expect(prepareFileDrop.mock.calls[0][0]).toEqual([file]);
+    expect(redeemDrop).toHaveBeenCalledWith("tok");
+    expect(container.querySelectorAll('[data-testid="attachment-chip"]')).toHaveLength(1);
+  });
+});

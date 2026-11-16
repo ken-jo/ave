@@ -68,8 +68,8 @@ interface PickedFile {
 
 export interface UseAttachmentPickerResult {
   handleAttach: () => Promise<void>;
-  /** Attach files dropped on the composer. Hands the `File`s to the preload (which resolves and registers them with main in
-   * one step), redeems the one-shot token, and commits through the SAME path as the picker. */
+  /** Attach files dropped on the composer's surface or pasted into it. Hands the `File`s to the preload (which resolves and
+   * registers them with main in one step), redeems the one-shot token, and commits through the SAME path as the picker. */
   handleDropFiles: (files: FileList | readonly File[]) => Promise<void>;
   /** Attach `text` as a pasted-text chip, as if the user had pasted it — the path for content another surface hands to the
    * composer (a terminal block). Returns false when the attachment cap is already reached. */
@@ -306,11 +306,14 @@ export function useAttachmentPicker({
   }, [commitFiles]);
 
   const handleDropFiles = useCallback(async (files: FileList | readonly File[]) => {
-    const names = Array.from(files, (file) => file.name);
+    // An array, never the FileList: the bridge to the preload carries an array of File objects intact, and hands over a
+    // FileList as an object with no files in it, which registers nothing.
+    const dropped = Array.from(files);
+    const names = dropped.map((file) => file.name);
     if (names.length === 0) return;
     // Step 1 runs in the preload: it resolves OS-backed paths and registers them with main. This world never sees or sends a
     // path string.
-    const prepared = await window.aveDrop.prepareFileDrop(files);
+    const prepared = await window.aveDrop.prepareFileDrop(dropped);
     const refusedAtRegister = prepared.rejected ?? [];
     if (!prepared.ok) {
       // Main names what it refused. With nothing named, no item had a path to register ("nothing-attachable") or the request

@@ -12,7 +12,8 @@ function setup(initial: Attachment[] = [], strict = false, imagesEnabled = true)
   const insertAtCursor = vi.fn();
   const onPastedTextClipped = vi.fn();
   const focus = vi.fn();
-  const composerRef = { current: { insertAtCursor, insertFileReference: vi.fn(() => ({ inserted: false })), insertFileMention: vi.fn(() => ({ inserted: false })), focus, textarea: () => null } };
+  const composerRef = { current: { insertAtCursor, insertFileReference: vi.fn(() => ({ inserted: false })), insertFileMention: vi.fn(() => ({ inserted: false })), focus, textarea: () => null,
+    dropZone: { onDragEnter: () => {}, onDragOver: () => {}, onDragLeave: () => {}, onDrop: () => {} } } };
   const counter = { current: 0 };
   const hook = renderHook(() => {
     const [attachments, setAttachments] = useState<Attachment[]>(initial);

@@ -7,6 +7,7 @@ import {
   Presentation, RefreshCw, ScrollText, SquareTerminal,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { FILE_MENTION_DRAG_MIME } from "../../../../shared/file-mention-reference.js";
 import { cn } from "../../../../lib/utils.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import { formatBytes } from "../../../../lib/turn-summary-format.js";
@@ -118,7 +119,10 @@ export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(functi
               data-entry-type={entry.type}
               data-state={selected ? (isCurrent ? "selected" : "on-path") : undefined}
               draggable={entry.type !== "link"}
-              onDragStart={(event) => event.dataTransfer.setData("text/plain", entry.path)}
+              onDragStart={(event) => {
+                event.dataTransfer.setData("text/plain", entry.path);
+                if (entry.type === "file") event.dataTransfer.setData(FILE_MENTION_DRAG_MIME, entry.path);
+              }}
               onClick={() => { onFocusRow(entry.path); onSelect(entry); }}
               onFocus={() => onFocusRow(entry.path)}
               onKeyDown={(event) => onKey(event, entry)}

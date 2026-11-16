@@ -52,6 +52,19 @@ describe("useAttachmentPicker — composer drop", () => {
     expect(onRejected).not.toHaveBeenCalled();
   });
 
+  it("hands the preload an array even when the drop gave a FileList, which the bridge would deliver empty", async () => {
+    const prepareFileDrop = vi.fn(async (_files: readonly File[]) => ({ ok: true, token: "tok", rejected: [] }));
+    install({ prepareFileDrop, redeemDrop: vi.fn(async () => ({ ok: true, files: [NOTES] })) });
+    const { result } = renderHook(() => useHarness(vi.fn()));
+    const file = new File(["hello"], "notes.txt");
+    // What a real drop hands over: indexed, with a length, and not an array.
+    const fileList = { 0: file, length: 1, item: (index: number) => (index === 0 ? file : null) } as unknown as FileList;
+    await act(async () => { await result.current.handleDropFiles(fileList); });
+    const sent = prepareFileDrop.mock.calls[0][0];
+    expect(Array.isArray(sent)).toBe(true);
+    expect(sent).toEqual([file]);
+  });
+
   it("names each lost file with its reason, once, when main refuses the token", async () => {
     const prepareFileDrop = vi.fn(async () => ({
       ok: true,

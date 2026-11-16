@@ -6,7 +6,7 @@ import { ChevronDown, Plus } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { TranscriptRenderer } from "./TranscriptRenderer.js";
-import { Composer, ComposerFrame, captureComposerKeyboardIntent, type ComposerHandle } from "./Composer.js";
+import { Composer, ComposerFrame, captureComposerKeyboardIntent, composerDropZoneProps, type ComposerHandle } from "./Composer.js";
 import { BoundSurfaceChip, type BoundSurface } from "./BoundSurfaceChip.js";
 import { registerComposerTarget } from "../preview/composer-targets.js";
 import { ComposerApiKeyChip, resolveComposerRuntimeGates } from "./ChatComposerDock.js";
@@ -324,6 +324,8 @@ function SideChatSession({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentNCounter = useRef(0);
   const composerRef = useRef<ComposerHandle | null>(null);
+  // The whole side chat is the drop target, as the conversation column is for the main chat.
+  const composerDropZone = useMemo(() => composerDropZoneProps(composerRef), []);
   const shellTasksApi = useMemo(() => ({
     chatListShellTasks: sideChat.listShellTasks,
     chatControlShellTask: sideChat.controlShellTask,
@@ -532,7 +534,7 @@ function SideChatSession({
   }, [chatGroupId]);
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col" data-testid="side-chat-view" data-approval-scope>
+    <div className="relative flex h-full min-h-0 flex-col" data-testid="side-chat-view" data-approval-scope {...composerDropZone}>
       <div className="flex shrink-0 items-center justify-between border-b px-3 py-1.5">
         <span className="text-dense font-semibold uppercase tracking-wider text-muted-foreground">
           {t("chatPreviewRail.sideChat.title")}

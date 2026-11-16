@@ -9,6 +9,7 @@ import {
   useState,
   type Dispatch,
   type DragEvent as ReactDragEvent,
+  type RefObject,
   type SetStateAction,
 } from "react";
 import { flushSync } from "react-dom";
@@ -50,7 +51,7 @@ import {
   type SuggestedRepliesSnapshot,
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
-import { FILE_MENTION_REFERENCE_POLICY, formatFileMentionReference, type FileMentionReference } from "../../../shared/file-mention-reference.js";
+import { FILE_MENTION_DRAG_MIME, FILE_MENTION_REFERENCE_POLICY, formatFileMentionReference, type FileMentionReference } from "../../../shared/file-mention-reference.js";
 import { matchesShortcut } from "../hooks/use-shortcuts.js";
 
 export interface ComposerHandle {
@@ -62,6 +63,8 @@ export interface ComposerHandle {
   insertFileReference(reference: FileMentionReference): { inserted: boolean };
   /** Insert an ordinary path mention through the existing attachment marker path. */
   insertFileMention(path: string): { inserted: boolean };
+  /** Drag handlers for the surface this composer belongs to (see {@link composerDropZoneProps}). */
+  dropZone: ComposerDropZoneHandlers;
   /**
    * The live textarea element. Window-level shortcuts (⌘⏎, Esc) are owned by
    * the composer's keyboard hook, and several composers can be mounted at once
@@ -80,6 +83,29 @@ export interface ComposerHandle {
  * is the same code on both.
  */
 export type ComposerSurface = "main" | "side";
+
+/** The four drag handlers of a drop target. */
+export interface ComposerDropZoneHandlers {
+  onDragEnter(event: ReactDragEvent): void;
+  onDragOver(event: ReactDragEvent): void;
+  onDragLeave(event: ReactDragEvent): void;
+  onDrop(event: ReactDragEvent): void;
+}
+
+/**
+ * Props that make an element a drop target for `composer`. The composer owns what a drop means (files are attached, a
+ * dragged file row becomes an `@file` mention, nothing is taken while it is disabled); the element only decides where a
+ * drop can land. Spread on the chat surface around the composer, so a file dropped on the conversation is attached and
+ * not left to the window guard, which would only discard it.
+ */
+export function composerDropZoneProps(composer: RefObject<ComposerHandle | null>): ComposerDropZoneHandlers {
+  return {
+    onDragEnter: (event) => composer.current?.dropZone.onDragEnter(event),
+    onDragOver: (event) => composer.current?.dropZone.onDragOver(event),
+    onDragLeave: (event) => composer.current?.dropZone.onDragLeave(event),
+    onDrop: (event) => composer.current?.dropZone.onDrop(event),
+  };
+}
 
 /** Use rows=1 and override the primitive textarea minimum; grow to five lines in main chat and four in the side rail. */
 const TEXTAREA_MAX_HEIGHT_CLASS: Record<ComposerSurface, string> = {
@@ -126,9 +152,9 @@ export interface ComposerProps {
   imagesEnabled?: boolean;
   /** False when the active runtime cannot take file attachments — no `@file` rows then. */
   filesEnabled?: boolean;
-  /** Files dropped on the composer. Omitted → the composer is not a drop target (the window guard still blocks file://
-   * navigation). */
-  onDropFiles?: (files: FileList) => void;
+  /** Files dropped on the composer's surface or pasted into it. Omitted → file drags are not claimed and pasted files are
+   * ignored (the window guard still blocks file:// navigation). */
+  onDropFiles?: (files: FileList | readonly File[]) => void;
   /** Exact main-verified raw-image budget for the selected subscription runtime. */
   imageAttachmentLimits?: SubscriptionImageAttachmentLimits | null;
   /** Disable Enter-to-send while preserving editable draft text and markers. */
@@ -445,6 +471,55 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     taRef.current?.focus();
   }, [onAttachmentsChange, onTextChange]);
 
+  // Drop target. A file drag (types include "Files") and a dragged file row (FILE_MENTION_DRAG_MIME) are claimed; text and
+  // other in-app drags keep their own behaviour. The File objects go to the preload, which resolves and registers them with
+  // main — no path is read here. The handlers read the latest props through a ref, so the object a surface spreads stays
+  // the same one.
+  const dropInputRef = useRef({ disabled, onDropFiles, insertFileMentionAttachment });
+  dropInputRef.current = { disabled, onDropFiles, insertFileMentionAttachment };
+  const dropZone = useMemo<ComposerDropZoneHandlers>(() => {
+    const typesOf = (event: ReactDragEvent) => Array.from(event.dataTransfer?.types ?? []);
+    const claims = (event: ReactDragEvent): boolean => {
+      const input = dropInputRef.current;
+      if (input.disabled) return false;
+      const types = typesOf(event);
+      return types.includes(FILE_MENTION_DRAG_MIME) || (input.onDropFiles !== undefined && types.includes("Files"));
+    };
+    return {
+      onDragEnter(event) {
+        if (!claims(event)) return;
+        event.preventDefault();
+        setDropActive(true);
+      },
+      onDragOver(event) {
+        if (!claims(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        setDropActive(true);
+      },
+      onDragLeave(event) {
+        const next = event.relatedTarget as Node | null;
+        if (next && event.currentTarget.contains(next)) return;
+        setDropActive(false);
+      },
+      onDrop(event) {
+        setDropActive(false);
+        const input = dropInputRef.current;
+        if (input.disabled) return;
+        const mentionedPath = typesOf(event).includes(FILE_MENTION_DRAG_MIME) ? event.dataTransfer.getData(FILE_MENTION_DRAG_MIME) : "";
+        if (mentionedPath) {
+          event.preventDefault();
+          input.insertFileMentionAttachment(mentionedPath);
+          return;
+        }
+        const files = event.dataTransfer.files;
+        if (!input.onDropFiles || files.length === 0) return;
+        event.preventDefault();
+        input.onDropFiles(files);
+      },
+    };
+  }, []);
+
   // Expose imperative API to parents (focus + caret-aware insertion).
   // Deps include `insertAtCursor` (which itself depends on `text` /
   // `onTextChange`), so the handle is recreated whenever the closure's
@@ -456,9 +531,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       insertAtCursor(insertion: string) { insertAtCursor(insertion); },
       insertFileReference,
       insertFileMention,
+      dropZone,
       textarea() { return taRef.current; },
     }),
-    [insertAtCursor, insertFileReference, insertFileMention],
+    [insertAtCursor, insertFileReference, insertFileMention, dropZone],
   );
 
   const warnImageAttachmentUnavailable = useCallback(() => {
@@ -505,6 +581,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // has nothing to insert for it.
       if (plainPasteRequested && (e.clipboardData?.getData("text/plain") ?? "") !== "") {
         return;
+      }
+      // A file copied in the file manager is attached the way a dropped one is. Read and claimed before the first await: the
+      // clipboard's files are gone once this event has been dispatched, and the copy also carries the file's name as text,
+      // which the field would otherwise insert. An image keeps the path below, which also takes one that has no file on
+      // disk (a screenshot).
+      const pastedFiles = Array.from(e.clipboardData?.files ?? []).filter((file) => !file.type.startsWith("image/"));
+      if (pastedFiles.length > 0 && onDropFiles) {
+        e.preventDefault();
+        onDropFiles(pastedFiles);
+        if (!clipboardContainsImage(e.nativeEvent)) return;
       }
       // Keep ordinary text paste available when only native image egress is unavailable. A clipboard image itself is consumed so
       // the browser does not create an untracked attachment-like draft representation.
@@ -597,6 +683,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     },
     [
       disabled,
+      onDropFiles,
       imagesEnabled,
       liveAttachments,
       allocateN,
@@ -842,38 +929,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     !(suggestedReplies?.isDismissed ?? false);
   const fallbackPlaceholder = ghostVisible ? "" : t("composer.defaultPlaceholder");
 
-  // Drop target. Only a FILE drag is claimed (types include "Files"); text and in-app drags keep their own behaviour. The
-  // File objects go to the preload, which resolves and registers them with main — no path is read here.
-  const isFileDrag = (e: ReactDragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
-  const dropHandlers = onDropFiles && !disabled
-    ? {
-        onDragEnter: (e: ReactDragEvent) => {
-          if (!isFileDrag(e)) return;
-          e.preventDefault();
-          setDropActive(true);
-        },
-        onDragOver: (e: ReactDragEvent) => {
-          if (!isFileDrag(e)) return;
-          e.preventDefault();
-          e.dataTransfer.dropEffect = "copy";
-          if (!dropActive) setDropActive(true);
-        },
-        onDragLeave: (e: ReactDragEvent) => {
-          const next = e.relatedTarget as Node | null;
-          if (next && e.currentTarget.contains(next)) return;
-          setDropActive(false);
-        },
-        onDrop: (e: ReactDragEvent) => {
-          if (!isFileDrag(e) && e.dataTransfer.files.length === 0) return;
-          e.preventDefault();
-          setDropActive(false);
-          if (e.dataTransfer.files.length > 0) onDropFiles(e.dataTransfer.files);
-        },
-      }
-    : {};
-
   return (
-    <div data-testid={TEST_IDS.composer} className="min-w-0" {...dropHandlers}>
+    <div data-testid={TEST_IDS.composer} className="min-w-0">
       {referenceAttachments.length > 0 && (
         <div data-testid="composer-reference-strip" className="flex min-w-0 flex-wrap gap-1.5 px-3 pt-2 pb-1">
           {referenceAttachments.map((attachment) => (

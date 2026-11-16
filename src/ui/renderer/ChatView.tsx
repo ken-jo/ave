@@ -16,7 +16,7 @@ import type { SideChatOpenRequest } from "./components/SideChatView.js";
 import { getApi } from "./api-client.js";
 import { useChatContext } from "./context/ChatContext.js";
 import { useInputStatusRow } from "./hooks/use-input-status-row.js";
-import { captureComposerKeyboardIntent, type ComposerHandle } from "./components/Composer.js";
+import { captureComposerKeyboardIntent, composerDropZoneProps, type ComposerHandle } from "./components/Composer.js";
 import { useSuggestedReplies } from "./hooks/use-suggested-replies.js";
 import { hasActiveSuggestedReplies } from "./utils/composer-placeholder.js";
 import type { PluginEntry } from "./types.js";
@@ -172,6 +172,8 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
   const workflowApi = getApi();
   const debugStreamEnabled = isDebugStreamEnabled();
   const composerRef = useRef<ComposerHandle | null>(null);
+  // The conversation column is the drop target, not only the input: a file let go over the transcript is attached too.
+  const composerDropZone = useMemo(() => composerDropZoneProps(composerRef), []);
   const suggestedReplies = useSuggestedReplies();
   const suggestedRepliesActive = hasActiveSuggestedReplies(suggestedReplies);
   const readingColumnClass = "chat-reading-column mx-auto w-full max-w-(--reading-column-max)";
@@ -863,6 +865,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
       <div
         className="@container/chat-transcript relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden [container-type:size]"
         data-testid="chat-main-column"
+        {...composerDropZone}
       >
 
       <div ref={transcriptStageRef} data-testid="chat-transcript-stage" className="relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden">

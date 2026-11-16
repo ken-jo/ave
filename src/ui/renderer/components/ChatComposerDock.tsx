@@ -79,7 +79,7 @@ export interface ChatComposerDockProps {
   ringSlot: React.ReactNode;
   onAttach: () => Promise<void> | void;
   /** Files dropped on the composer (resolved and registered through the preload). */
-  onDropFiles?: (files: FileList) => void;
+  onDropFiles?: (files: FileList | readonly File[]) => void;
   /** Shows a composer refusal (attachment limit, clipboard image that could not be saved) to the user. */
   onComposerWarning?: (message: string) => void;
   /** App-owned warning for a verified image-capability refusal only. */

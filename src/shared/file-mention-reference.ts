@@ -9,6 +9,10 @@ export interface FileMentionReference {
   hunkId?: string;
 }
 
+/** Drag data a file row sets beside `text/plain`: the row's path, which a composer turns into an `@file` mention. It names a
+ * path and grants nothing; main judges the read when the message is sent, as it does for a typed mention. */
+export const FILE_MENTION_DRAG_MIME = "application/x-ave-file-mention";
+
 export const FILE_MENTION_REFERENCE_POLICY = Object.freeze({
   maxCount: MAX_COMPOSER_ATTACHMENT_COUNT,
   maxOccurrences: 50,
