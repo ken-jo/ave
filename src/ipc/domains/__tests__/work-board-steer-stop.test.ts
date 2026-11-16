@@ -9,6 +9,7 @@ import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
 import { PARENT_DIRECTIVE_MAX_CHARS } from "../../../engine/parent-directive.js";
 import { MAX_PLAN_NOTE_LENGTH } from "../../../shared/work-board-types.js";
+import { registeredIpcHandlers } from "./test-helpers.js";
 
 const ipc = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -33,11 +34,7 @@ vi.mock("../../gated.js", () => ({
 
 const GESTURE = { inputOrigin: "user-keyboard", userActivation: true } as const;
 
-function handler(channel: string): (...args: unknown[]) => Promise<unknown> {
-  const h = ipc.handlers.get(channel);
-  if (!h) throw new Error(`missing handler for ${channel}`);
-  return h as (...args: unknown[]) => Promise<unknown>;
-}
+const handler = registeredIpcHandlers(ipc.handlers);
 
 function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: false }) {
   const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } };

@@ -5,6 +5,7 @@ import type {
   RunTranscriptEvent,
   WorkBoardCancelIpcResult,
   WorkBoardRunToolStep,
+  WorkBoardStagePhase,
   WorkBoardSteerAck,
   WorkBoardSteerIpcResult,
   WorkItemResolved,
@@ -17,7 +18,7 @@ import { errorMessage } from "../../../shared/error-message.js";
 // Run state is derived only from host events and the persisted transcript. A plan waiting for the user's work approval is not in
 // flight: the run call has returned, and the decision continues it later through decide-plan. The board card and the step panel (LS-2) both read this one state.
 
-export type RunPhase = RunProgressEventPayload["phase"];
+export type RunPhase = Exclude<RunProgressEventPayload["phase"], WorkBoardStagePhase>;
 
 /** A phase in which the child agent takes turns. */
 type TurnPhase = "planning" | "executing";
@@ -415,16 +416,19 @@ export function useWorkBoardRun(
             }
             return;
           }
+          // A stage event of a template run is not the run's phase; the board re-lists the item for it.
+          if (ev.phase === "stage_gate" || ev.phase === "stage_passed" || ev.phase === "stage_failed") return;
+          const runPhase = ev.phase;
           // A tool step update is not a phase entry either; it only revises that phase's steps.
           const tools = ev.tools;
           if (tools !== undefined) {
-            const phase = ev.phase;
+            const phase = runPhase;
             if (!isActivePhase(phase)) throw new Error(`work-board tool steps reported in phase ${phase}`);
             update(ev.itemId, (cur) => ({ ...cur, tools: mergeTools(cur.tools, tools.map((step) => ({ ...step, phase }))) }));
             return;
           }
           update(ev.itemId, (cur) => {
-            const phase = ev.phase;
+            const phase = runPhase;
             const turns =
               isActivePhase(phase) && typeof ev.turn === "number"
                 ? mergeTurns(cur.turns, [{ phase, turn: ev.turn, text: ev.text ?? "", at: ev.at }])

@@ -1,7 +1,7 @@
 // Running and resumed children share one directive grammar.
 // Keep host labels outside fences and neutralize parent-authored closing tags.
 import { t } from "../i18n/index.js";
-import { neutralizeFenceClose, type FenceTag } from "../shared/fence-sanitizer.js";
+import { fenceAttrValue, neutralizeFenceClose, type FenceTag } from "../shared/fence-sanitizer.js";
 
 /** Registered in `fence-sanitizer.ts`; the tag is a host constant, never caller text. */
 export const PARENT_DIRECTIVE_FENCE_TAG: FenceTag = "ave-parent-directive";
@@ -80,4 +80,14 @@ export function formatPlanRevisionDirective(priorPlan: string, note: string): st
  * guidance (permission-decision-tree.md S→T, "Delegated work"): it is never the user-keyboard principal inside the child. */
 export function formatUserSteerDirective(maskedText: string): string {
   return fenceDirective(t("be_parentDirective.userSteerInstruction"), maskedText);
+}
+
+const STAGE_INPUT_FENCE_TAG: FenceTag = "ave-stage-input";
+
+/** Frame data for a workflow stage (an earlier stage's output, a prior attempt, the user's change note): the host label outside, the
+ * data inside. A close tag that survives neutralising is a host fault and throws, so the data can never end its own fence. */
+export function formatStageInputDirective(hostLabel: string, data: string): string {
+  const body = neutralizeFenceClose(data, STAGE_INPUT_FENCE_TAG);
+  if (/<\s*\/\s*ave-stage-input\b/i.test(body)) throw new Error("stage input still closes its fence after neutralising");
+  return [fenceAttrValue(hostLabel, 400), `<${STAGE_INPUT_FENCE_TAG}>`, body, `</${STAGE_INPUT_FENCE_TAG}>`].join("\n");
 }

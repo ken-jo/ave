@@ -31,6 +31,8 @@ import { createWorkBoardEngine, type WorkBoardEngine,
 import { createWorkBoardReporter, type WorkBoardReporter,
 } from "../../work-board/work-report.js";
 import { appendMemory } from "../../work-board/work-memory.js";
+import { workflowEngineExtensions } from "./workflow-engine-extensions.js";
+import { isAuthorizedWorkspaceProjectRoot } from "../../main/project-root-authorization.js";
 import { WORK_BOARD } from "../../shared/ipc-channels.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { emitEvent } from "../types.js";
@@ -630,7 +632,22 @@ export async function wireConversation(
       ),
     // Persist each run’s conversations so context survives restart and accumulates across reruns.
     transcriptStorage: workBoardStorage,
+    workflow: {
+      ...workflowEngineExtensions(),
+      templates: ctx.workflowTemplateStore,
+      attachments: ctx.workflowTemplateStore,
+      scopeAuthorised: (scope) => scope.kind === "all" || isAuthorizedWorkspaceProjectRoot(scope.projectRoot),
+      audit: ({ itemId, ...detail }) => bootAuditLogger?.log({
+        timestamp: new Date().toISOString(),
+        sessionId: `work-board:${itemId}`,
+        type: "approval",
+        output: JSON.stringify(detail),
+      }),
+    },
   });
+  // Runs a restart left waiting for the user: nothing starts here, but Stop must reach them.
+  void workBoardEngine.adoptParkedTemplateRuns().catch((err: unknown) =>
+    log.warn("boot: template run adoption failed (non-fatal): %s", (err as Error).message));
 
   const workBoardReporter: WorkBoardReporter = createWorkBoardReporter({
     store: workBoardStore,

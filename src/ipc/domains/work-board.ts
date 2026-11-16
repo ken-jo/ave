@@ -1,4 +1,5 @@
-import { WorkflowTemplateError } from "../../work-board/template-graph.js";
+import { isGraphHash, isStageId, isTemplateId, isTemplateVersion, WorkflowTemplateError } from "../../work-board/template-graph.js";
+import type { RunAuthoritySource, TemplateVersionPin } from "../../shared/workflow-template-types.js";
 import { registerWorkflowTemplateHandlers } from "../workflow-template-handlers.js";
 // Work-board mutations use the store's lifecycle; execution and reports require their separately wired services.
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
@@ -9,8 +10,13 @@ import type {
   WorkBoardBriefingKind,
   WorkBoardBriefingResult,
   WorkBoardCancelIpcResult,
+  TemplateRunRequest,
   WorkBoardSteerIpcResult,
   WorkItemRunResult,
+  StageGateDecideInput,
+  StageGateDecideIpcResult,
+  StageJoinDecideIpcResult,
+  StageRetryIpcResult,
   WorkPlanDecideInput,
   WorkPlanDecideIpcResult,
   WorkPlanDecision,
@@ -96,6 +102,35 @@ function parseDecidePlanInput(raw: unknown): WorkPlanDecideInput | null {
   if (typeof decision !== "string" || !PLAN_DECISIONS.includes(decision as WorkPlanDecision)) return null;
   if (note !== undefined && typeof note !== "string") return null;
   return { runId, planHash, decision: decision as WorkPlanDecision, ...(note !== undefined ? { note } : {}) };
+}
+
+/** A plain object with no key outside `keys`; anything else is invalid input. */
+function exactRecord(raw: unknown, keys: readonly string[]): Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  return Object.keys(record).every((key) => keys.includes(key)) ? record : null;
+}
+
+/** Accept exactly `{ runId, stageId, attempt, resultHash, outputHash?, decision, note? }`; never a partial decision. */
+function parseDecideStageInput(raw: unknown): StageGateDecideInput | null {
+  const record = exactRecord(raw, ["runId", "stageId", "attempt", "resultHash", "outputHash", "decision", "note"]);
+  if (!record) return null;
+  const { runId, stageId, attempt, resultHash, outputHash, decision, note } = record;
+  if (typeof runId !== "string" || !RUN_ID_PATTERN.test(runId) || !isStageId(stageId)) return null;
+  if (typeof attempt !== "number" || !Number.isInteger(attempt) || attempt < 1 || attempt > 3) return null;
+  if (typeof resultHash !== "string" || !PLAN_HASH_PATTERN.test(resultHash)) return null;
+  if (outputHash !== undefined && (typeof outputHash !== "string" || !PLAN_HASH_PATTERN.test(outputHash))) return null;
+  if (typeof decision !== "string" || !PLAN_DECISIONS.includes(decision as WorkPlanDecision)) return null;
+  if (note !== undefined && typeof note !== "string") return null;
+  return { runId, stageId, attempt, resultHash, decision: decision as WorkPlanDecision, ...(outputHash !== undefined ? { outputHash } : {}), ...(note !== undefined ? { note } : {}) };
+}
+
+/** The `Create and run` tuple the user saw, with the project the card showed. Null when the renderer sent none or a malformed one. */
+function parseTemplateRunTuple(raw: unknown): { pin: TemplateVersionPin; projectRoot?: string } | null {
+  const record = exactRecord(raw, ["templateId", "version", "graphHash", "projectRoot"]);
+  if (!record || !isTemplateId(record.templateId) || !isTemplateVersion(record.version) || !isGraphHash(record.graphHash)) return null;
+  if (record.projectRoot !== undefined && (typeof record.projectRoot !== "string" || record.projectRoot.length === 0)) return null;
+  return { pin: { templateId: record.templateId, version: record.version, graphHash: record.graphHash }, ...(record.projectRoot !== undefined ? { projectRoot: record.projectRoot } : {}) };
 }
 
 export function registerWorkBoardHandlers(deps: IpcDeps): void {
@@ -247,7 +282,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   });
 
   // Run returns a terminal result while progress events update the renderer.
-  handle(WORK_BOARD.run, async (e, id: number, opts?: { agentName?: string }) => {
+  handle(WORK_BOARD.run, async (e, id: number, opts?: { agentName?: string; template?: TemplateRunRequest }, intent?: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.run, e);
       return UNAUTHORIZED_FRAME;
@@ -261,7 +296,24 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
 
-    if (existing.item.templateRunError) return { status: "error", reason: "invalid-template-run" } satisfies WorkItemRunResult;
+    if (existing.item.templateRunError) return { status: "error", reason: existing.item.templateRunError } satisfies WorkItemRunResult;
+    // A template run starts only from a consumed keyboard gesture, for the exact tuple and project the user saw on the card. The source
+    // is minted here; nothing in a renderer payload is one.
+    let templateSource: RunAuthoritySource | undefined;
+    if (opts?.template !== undefined) {
+      const refused = (code: string): WorkItemRunResult => ({ status: "error", reason: code, reasonCode: code });
+      if (!hasUserKeyboardIntent(intent)) return refused("user-gesture-required");
+      const tuple = parseTemplateRunTuple(opts?.template);
+      if (tuple === null) return refused("invalid-input");
+      let cardRoot: string | undefined;
+      if (tuple.projectRoot !== undefined) {
+        // The registry root replaces whatever alias the renderer sent, as the attach handler does.
+        const resolved = resolveAuthorizedWorkspaceProject(tuple.projectRoot);
+        if (!resolved.authorized || !resolved.project) return refused("scope-not-authorised");
+        cardRoot = resolved.project.projectRoot;
+      }
+      templateSource = { kind: "local-create-and-run", pin: tuple.pin, ...(cardRoot !== undefined ? { projectRoot: cardRoot } : {}) };
+    }
     broadcastToAppWindows(deps, WORK_BOARD.runStarted, {
       itemId: id,
       at: new Date().toISOString(),
@@ -269,7 +321,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     try {
       const result: WorkItemRunResult = await workBoardEngine.runItem(
         id,
-        { ...(opts?.agentName ? { agentName: opts.agentName } : {}), approvalSurface: e.sender },
+        { ...(opts?.agentName ? { agentName: opts.agentName } : {}), approvalSurface: e.sender, ...(templateSource ? { templateSource } : {}) },
       );
       broadcastToAppWindows(deps, WORK_BOARD.runFinished, {
         itemId: id,
@@ -292,7 +344,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
   // Steer a running execution (permission-decision-tree.md S→T). Only a sender-validated board-window main frame carrying a consumed local
   // keyboard gesture may steer; anything else is refused, never downgraded to another principal (contrast chat guide). The engine picks the
   // child from its own record and the text enters as host-fenced non-principal guidance, so the child's permissions do not widen.
-  handle(WORK_BOARD.steerRun, async (e, id: number, text: unknown, intent?: unknown): Promise<WorkBoardSteerIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+  handle(WORK_BOARD.steerRun, async (e, id: number, text: unknown, intent?: unknown, stage?: unknown): Promise<WorkBoardSteerIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
       return UNAUTHORIZED_FRAME;
@@ -305,7 +357,8 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       auditUnauthorized(auditLogger, WORK_BOARD.steerRun, e);
       return UNAUTHORIZED_FRAME;
     }
-    if ((await loadAuthorizedItem(id)).status !== "found") return { ok: false, reason: "not-found" };
+    const target = await loadAuthorizedItem(id);
+    if (target.status !== "found") return { ok: false, reason: "not-found" };
     if (typeof text !== "string" || text.trim().length === 0) return { ok: false, reason: "empty-text" };
     // Bound the input before redaction and file-reference parsing do any work on it; the runner applies the same cap after masking.
     if (text.length > PARENT_DIRECTIVE_MAX_CHARS) return { ok: false, reason: "message-too-long" };
@@ -320,7 +373,10 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     const effective = sanitizeOutgoingInput(deps.settingsService, (event) => {
       if (event.kind === "privacy.redacted") redactedCount += event.count;
     }, text);
-    const result = workBoardEngine.steerRun(id, effective);
+    // A template run is steered by stage: the renderer names the stage and the engine resolves its live child from its own record, so a
+    // renderer never picks a child. Anything but the exact `{ stageId }` shape is an ordinary steer.
+    const named = exactRecord(stage, ["stageId"]);
+    const result = named && isStageId(named.stageId) ? workBoardEngine.steerRun(id, effective, named.stageId) : workBoardEngine.steerRun(id, effective);
     if (!result.ok) return result;
     return redactedCount > 0 ? { ok: true, messageId: result.messageId, redactedCount } : { ok: true, messageId: result.messageId };
   });
@@ -385,6 +441,93 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
         );
       }
       return redactedCount > 0 ? { ...outcome.result, redactedCount } : outcome.result;
+    },
+  );
+
+  /** The work-approval boundary every stage decision shares with decide-plan: a validated sender, a consumed local keyboard gesture, the
+   * board window's main frame, and an item this window may see. Returns the refusal, or null when the caller may go on. */
+  const stageDecisionRefusal = async (channel: string, e: IpcMainInvokeEvent, id: unknown, intent: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, channel, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!workBoardEngine) return NO_ENGINE;
+    if (!hasUserKeyboardIntent(intent)) return { ok: false as const, reason: "user-gesture-required" as const };
+    if (!isBoardOwnerFrame(e)) {
+      auditUnauthorized(auditLogger, channel, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (typeof id !== "number" || !Number.isInteger(id)) return { ok: false as const, reason: "invalid-input" as const };
+    const existing = await loadAuthorizedItem(id);
+    if (existing.status !== "found") return { ok: false as const, reason: "not_found" as const };
+    return null;
+  };
+  const auditStageDecision = (id: number, detail: Record<string, unknown>): void => {
+    auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: `work-board:${id}`,
+      type: "approval",
+      output: JSON.stringify({ event: "work-approval:stage-decided", origin: "local-desktop", ...detail }),
+    });
+  };
+
+  // The user's decision at a stage gate of a template run: the same boundary as decide-plan. The renderer names the run, the stage, the
+  // attempt and the hash of the output it showed, never the output; the engine checks each against the stored run before anything changes.
+  handle(
+    WORK_BOARD.decideStage,
+    async (e, id: unknown, input: unknown, intent?: unknown): Promise<StageGateDecideIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+      const refusal = await stageDecisionRefusal(WORK_BOARD.decideStage, e, id, intent);
+      if (refusal !== null) return refusal;
+      const parsed = parseDecideStageInput(input);
+      if (parsed === null || !workBoardEngine) return { ok: false, reason: "invalid-input" };
+      // Bound the note before redaction does any work on it; the engine checks the redacted note again.
+      if (parsed.note !== undefined && parsed.note.length > MAX_PLAN_NOTE_LENGTH) return { ok: false, reason: "note_too_long" };
+      let redactedCount = 0;
+      const note = parsed.note === undefined
+        ? undefined
+        : sanitizeOutgoingInput(deps.settingsService, (event) => {
+          if (event.kind === "privacy.redacted") redactedCount += event.count;
+        }, parsed.note);
+      const { note: _sent, ...bound } = parsed;
+      const result = await workBoardEngine.decideStageGate(id as number, { ...bound, ...(note !== undefined ? { note } : {}) }, { approvalSurface: e.sender });
+      if (!result.ok) return result;
+      // The decision only; the note body stays on the item.
+      auditStageDecision(id as number, { runId: parsed.runId, stageId: parsed.stageId, attempt: parsed.attempt, result: parsed.resultHash.slice(0, 8), decision: result.status, note: note !== undefined });
+      broadcastItemChanged(id as number, "updated");
+      return redactedCount > 0 ? { ...result, redactedCount } : result;
+    },
+  );
+
+  handle(
+    WORK_BOARD.decideJoin,
+    async (e, id: unknown, input: unknown, intent?: unknown): Promise<StageJoinDecideIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+      const refusal = await stageDecisionRefusal(WORK_BOARD.decideJoin, e, id, intent);
+      if (refusal !== null) return refusal;
+      const record = exactRecord(input, ["runId", "joinId", "conflictHash", "decision"]);
+      if (!record || !workBoardEngine || typeof record.runId !== "string" || !RUN_ID_PATTERN.test(record.runId) || !isTemplateId(record.joinId)
+        || typeof record.conflictHash !== "string" || !PLAN_HASH_PATTERN.test(record.conflictHash) || (record.decision !== "retry_merge" && record.decision !== "reject")) {
+        return { ok: false, reason: "invalid-input" };
+      }
+      const result = await workBoardEngine.decideStageJoin(id as number, { runId: record.runId, joinId: record.joinId, conflictHash: record.conflictHash, decision: record.decision }, { approvalSurface: e.sender });
+      if (!result.ok) return result;
+      auditStageDecision(id as number, { runId: record.runId, joinId: record.joinId, conflict: record.conflictHash.slice(0, 8), decision: record.decision });
+      broadcastItemChanged(id as number, "updated");
+      return result;
+    },
+  );
+
+  handle(
+    WORK_BOARD.retryStage,
+    async (e, id: unknown, input: unknown, intent?: unknown): Promise<StageRetryIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+      const refusal = await stageDecisionRefusal(WORK_BOARD.retryStage, e, id, intent);
+      if (refusal !== null) return refusal;
+      const record = exactRecord(input, ["runId", "stageId"]);
+      if (!record || !workBoardEngine || typeof record.runId !== "string" || !RUN_ID_PATTERN.test(record.runId) || !isStageId(record.stageId)) return { ok: false, reason: "invalid-input" };
+      const result = await workBoardEngine.retryStage(id as number, { runId: record.runId, stageId: record.stageId }, { approvalSurface: e.sender });
+      if (!result.ok) return result;
+      auditStageDecision(id as number, { runId: record.runId, stageId: record.stageId, decision: "retry" });
+      broadcastItemChanged(id as number, "updated");
+      return result;
     },
   );
 

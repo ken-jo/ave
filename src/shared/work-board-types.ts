@@ -1,3 +1,5 @@
+import type { EnvelopeToolRef } from "./workflow-template-types.js";
+
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
 
 export type WorkItemStatusStored = "planned" | "in_progress" | "completed";
@@ -271,6 +273,9 @@ type WorkBoardRunPhase =
   | "error"
   | "cancelled";
 
+/** Template runs: a stage waits at its gate, passed, or failed. Never the run's own phase, which stays `executing` until the run settles. */
+export type WorkBoardStagePhase = "stage_gate" | "stage_passed" | "stage_failed";
+
 /** Where a running work item's tool approval is answered (owner decision 2026-11-04). `chat`: the board marks the card and links to the run's
  * chat, where the normal approval card decides. `dialog`: the window's approval dialog over the board. Display location only: the same
  * request is decided once, through the same gate, in either place. */
@@ -334,7 +339,7 @@ interface WorkItemRunHistoryEntry {
 
 export interface WorkBoardRunEvent {
   itemId: number;
-  phase: WorkBoardRunPhase;
+  phase: WorkBoardRunPhase | WorkBoardStagePhase;
   /** 1-based child-agent turn number (planning / executing phases). */
   turn?: number;
   text?: string;
@@ -349,6 +354,12 @@ export interface WorkBoardRunEvent {
   /** A queued steer's outcome. Such an event reports nothing else: it may arrive after the run settled (a dropped steer), so its `phase`
    * is `executing` by construction and must not be read as the run's phase. */
   steer?: WorkBoardSteerAck;
+  /** Template runs: the stage (and its attempt) the event is about. */
+  stageId?: string;
+  attempt?: number;
+  /** Template runs: the run-authority code that refused the start or ended the run, with the tool it names when it names one. */
+  reasonCode?: string;
+  reasonTool?: EnvelopeToolRef;
   at: string;
 }
 
@@ -364,7 +375,51 @@ export interface WorkItemRunResult {
   runSessionId?: string;
   /** already_running reports the concurrent run without spawning another child. */
   reason?: string;
+  /** Template runs: the run-authority code that refused the start or ended the run, with the tool it names when it names one. */
+  reasonCode?: string;
+  reasonTool?: EnvelopeToolRef;
 }
+
+/** The user's decision at a stage's gate, bound to the run, the attempt and the hash of the output they saw; the output itself is never sent. */
+/** What `Create and run` sends beside the item id: the tuple the card showed and, when the card showed one, its project. Main resolves
+ * the project against the workspace registry and mints the run source; this is never one. */
+export interface TemplateRunRequest {
+  templateId: string;
+  version: number;
+  graphHash: string;
+  projectRoot?: string;
+}
+
+export interface StageRetryInput {
+  runId: string;
+  stageId: string;
+}
+
+export interface StageGateDecideInput {
+  runId: string;
+  stageId: string;
+  attempt: number;
+  resultHash: string;
+  /** Required when the stage run carries requested outputs; binds their approval. */
+  outputHash?: string;
+  decision: WorkPlanDecision;
+  note?: string;
+}
+type StageGateRefusal = "not_found" | "not_pending" | "run_mismatch" | "attempt_mismatch" | "result_mismatch" | "output_mismatch" | "attempts_exhausted"
+  | "note_required" | "note_too_long" | "note_invalid" | "version_missing" | "graph_mismatch";
+export type StageGateDecideResult = { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending"> } | { ok: false; reason: StageGateRefusal };
+export type StageGateDecideIpcResult =
+  | { ok: true; status: Exclude<WorkPlanApprovalStatus, "pending">; redactedCount?: number }
+  | { ok: false; reason: StageGateRefusal | "user-gesture-required" | "invalid-input" };
+
+/** The user's decision on a join that could not be collected, bound to the conflict they saw. */
+export interface StageJoinDecideInput { runId: string; joinId: string; conflictHash: string; decision: "retry_merge" | "reject" }
+type StageRunRefusal = "not_found" | "run_mismatch" | "not_pending" | "version_missing" | "graph_mismatch";
+export type StageJoinDecideResult = { ok: true } | { ok: false; reason: StageRunRefusal | "conflict_mismatch" };
+export type StageJoinDecideIpcResult = StageJoinDecideResult | { ok: false; reason: "user-gesture-required" | "invalid-input" };
+/** Retry of a failed stage, or continuing a run that has only ready stages after a restart. not_idle: a child of the run is still live. */
+export type StageRetryResult = { ok: true } | { ok: false; reason: StageRunRefusal | "attempts_exhausted" | "not_idle" };
+export type StageRetryIpcResult = StageRetryResult | { ok: false; reason: "user-gesture-required" | "invalid-input" };
 
 /** Steering a running execution (permission-decision-tree.md S→T): accepted means queued for the execute child's next round boundary,
  * not delivered; a steer still queued when the child's turn ends is dropped and recorded only in the audit.

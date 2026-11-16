@@ -25,7 +25,15 @@ import type {
   WorkPlanDecideRefusal,
   WorkPlanDecideResult,
   WorkPlanDecision,
+  StageGateDecideInput,
+  StageGateDecideResult,
+  StageJoinDecideInput,
+  StageJoinDecideResult,
+  StageRetryInput,
+  StageRetryResult,
 } from "../shared/work-board-types.js";
+import type { EnvelopeToolRef, RunAuthoritySource } from "../shared/workflow-template-types.js";
+import { createStageRunEngine, type StageRunEngineDeps } from "../work-board/workflow/stage-run-engine.js";
 import {
   MAX_PLAN_NOTE_LENGTH,
   BRIEFING_PROPOSAL_KINDS,
@@ -116,12 +124,16 @@ export interface WorkBoardEngineDeps {
   transcriptStorage?: TranscriptStorage;
   /** Invoke learning only after successful persistence; hook failures must not fail a completed run. */
   onRunComplete?: (info: { itemId: number; title: string; projectRoot?: string; projectName?: string }) => void | Promise<void>;
+  /** What a template run needs beyond the ordinary run's deps. Absent: an item made from a template refuses to run. */
+  workflow?: Omit<StageRunEngineDeps, "store" | "getRunner" | "getAgentProfile" | "emit" | "holdItem" | "releaseItem">;
 }
 
 interface RunItemOptions {
   agentName?: string;
   /** Set by the host entrypoint, never copied from a renderer payload. */
   approvalSurface?: WebContents | null;
+  /** Who asked for a template run. Minted by the host entrypoint after its own checks; a renderer or model payload never carries one. */
+  templateSource?: RunAuthoritySource;
 }
 
 interface RunItemResult {
@@ -132,6 +144,9 @@ interface RunItemResult {
   runSessionId?: string;
   /** Busy means another run owns the item and no second child was spawned. */
   reason?: string;
+  /** Template runs: the run-authority code behind a refused start or an ended run, with the tool it names when it names one. */
+  reasonCode?: string;
+  reasonTool?: EnvelopeToolRef;
 }
 
 /** The user's decision on a stored plan, named by its run and the hash of the plan they saw; the plan text itself is never sent. */
@@ -169,11 +184,22 @@ export interface WorkBoardEngine {
 
   /** Queue the local user's text for this item's execute child at its next round boundary. The child is the engine's own record, never a
    * caller-supplied id; the text enters as host-fenced non-principal guidance (permission-decision-tree.md S→T, "Delegated work"). */
-  steerRun(itemId: number, text: string): WorkBoardSteerResult;
+  steerRun(itemId: number, text: string, stageId?: string): WorkBoardSteerResult;
 
   /** Interrupt this item's execute child through the ordinary sub-agent cancellation path; the run settles as `cancelled`.
    * Planning and plan approval are not stoppable here and refuse as not-executing. */
   cancelRun(itemId: number): WorkBoardCancelResult;
+
+  /** Template runs. The user's decision at a stage gate or on a join that could not be collected, a retry of a failed stage, and
+   * continuing a run that a restart left with only ready stages. Each is refused and changes nothing unless it matches the stored run. */
+  decideStageGate(itemId: number, input: StageGateDecideInput, opts?: DecidePlanOptions): Promise<StageGateDecideResult>;
+  decideStageJoin(itemId: number, input: StageJoinDecideInput, opts?: DecidePlanOptions): Promise<StageJoinDecideResult>;
+  retryStage(itemId: number, input: StageRetryInput, opts?: DecidePlanOptions): Promise<StageRetryResult>;
+  continueRun(itemId: number, input: { runId: string }, opts?: DecidePlanOptions): Promise<StageRetryResult>;
+  /** Called beside the workspace revocation fan-out: stops every live stage child of template runs on that project. */
+  projectRootRevoked(canonicalRoot: string): void;
+  /** Boot, after the store reconciled: take over unsettled template runs so Stop reaches them. Spawns nothing. */
+  adoptParkedTemplateRuns(): Promise<void>;
 
   /** A read-only survey files proposals for user review without plan approval; individual tools remain gated. Allow only one survey per briefing window. */
   runBriefing(
@@ -447,6 +473,14 @@ export function createWorkBoardEngine(
     emitProgress({ ...event, at: new Date().toISOString() });
   };
 
+  const stageRuns = deps.workflow
+    ? createStageRunEngine({
+        ...deps.workflow, store, getRunner, getAgentProfile, emit,
+        holdItem: (itemId) => { inFlight.add(itemId); },
+        releaseItem: (itemId) => { inFlight.delete(itemId); },
+      })
+    : null;
+
   function openRecorder(itemId: number, runId: string): RunRecorder {
     const transcript: RunTranscriptWriter | null = transcriptStorage
       ? createRunTranscript(transcriptStorage, itemId, runId)
@@ -498,6 +532,14 @@ export function createWorkBoardEngine(
       };
     }
     inFlight.add(itemId);
+    // An item made from a template runs its pinned stages; it never takes the plan and execute path, and never the other way round.
+    if (opts.templateSource !== undefined) {
+      if (!stageRuns) {
+        inFlight.delete(itemId);
+        return { status: "error", reason: "template-run-unavailable", reasonCode: "template-run-unavailable" };
+      }
+      return stageRuns.start(itemId, item, { source: opts.templateSource, approvalSurface: opts.approvalSurface ?? null });
+    }
     return guarded(itemId, opts.approvalSurface, () => runItemGuarded(itemId, item, opts));
   }
 
@@ -933,7 +975,9 @@ export function createWorkBoardEngine(
     return runner;
   }
 
-  function steerRun(itemId: number, text: string): WorkBoardSteerResult {
+  function steerRun(itemId: number, text: string, stageId?: string): WorkBoardSteerResult {
+    // A stage is named only for a template run; the host resolves that stage's child from its own record.
+    if (stageId !== undefined) return stageRuns?.steer(itemId, stageId, text) ?? { ok: false, reason: "not-executing" };
     const child = executingChildByItem.get(itemId);
     if (child === undefined) return { ok: false, reason: "not-executing" };
     const turnOf = executingTurnByItem.get(itemId);
@@ -960,7 +1004,7 @@ export function createWorkBoardEngine(
 
   function cancelRun(itemId: number): WorkBoardCancelResult {
     const child = executingChildByItem.get(itemId);
-    if (child === undefined) return { ok: false, reason: "not-executing" };
+    if (child === undefined) return stageRuns?.stop(itemId) ?? { ok: false, reason: "not-executing" };
     // A second stop while the first is unwinding is the same stop. The runner already marked the run interrupted and would refuse a
     // second interrupt; clearing the first call's mark on that refusal would turn the user's stop into an error.
     if (cancelRequested.has(itemId)) return { ok: true };
@@ -983,5 +1027,11 @@ export function createWorkBoardEngine(
     executingChildSessionId: (itemId) => executingChildByItem.get(itemId),
     steerRun,
     cancelRun,
+    decideStageGate: async (itemId, input, opts) => stageRuns?.decideGate(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" },
+    decideStageJoin: async (itemId, input, opts) => stageRuns?.decideJoin(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" },
+    retryStage: async (itemId, input, opts) => stageRuns?.retryStage(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" },
+    continueRun: async (itemId, input, opts) => stageRuns?.continueRun(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" },
+    projectRootRevoked: (canonicalRoot) => stageRuns?.projectRootRevoked(canonicalRoot),
+    adoptParkedTemplateRuns: async () => { await stageRuns?.adoptParkedRuns(); },
   };
 }

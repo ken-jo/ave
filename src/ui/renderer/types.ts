@@ -1047,7 +1047,7 @@ export type AvePreloadApi = {
   // named agent profile (drives the child model for both phases).
   runWorkBoardItem: (
     id: number,
-    opts?: { agentName?: string },
+    opts?: { agentName?: string; template?: import("../../shared/work-board-types.js").TemplateRunRequest },
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkItemRunResult
     | { ok: false; error: string }
@@ -1113,6 +1113,7 @@ export type AvePreloadApi = {
     itemId: number,
     text: string,
     userIntent?: import("../../shared/chat-origin.js").UserKeyboardIntentSnapshot,
+    stageId?: string,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkBoardSteerIpcResult
     | { ok: false; error: string }
@@ -1122,6 +1123,27 @@ export type AvePreloadApi = {
     input: import("../../shared/work-board-types.js").WorkPlanDecideInput,
   ) => Promise<
     | import("../../shared/work-board-types.js").WorkPlanDecideIpcResult
+    | { ok: false; error: string }
+  >;
+  decideWorkStage: (
+    itemId: number,
+    input: import("../../shared/work-board-types.js").StageGateDecideInput,
+  ) => Promise<
+    | import("../../shared/work-board-types.js").StageGateDecideIpcResult
+    | { ok: false; error: string }
+  >;
+  decideWorkJoin: (
+    itemId: number,
+    input: import("../../shared/work-board-types.js").StageJoinDecideInput,
+  ) => Promise<
+    | import("../../shared/work-board-types.js").StageJoinDecideIpcResult
+    | { ok: false; error: string }
+  >;
+  retryWorkStage: (
+    itemId: number,
+    input: import("../../shared/work-board-types.js").StageRetryInput,
+  ) => Promise<
+    | import("../../shared/work-board-types.js").StageRetryIpcResult
     | { ok: false; error: string }
   >;
   cancelWorkBoardRun?: (
