@@ -6613,6 +6613,7 @@ export const en = {
   "appearanceTab.shortcutLabel": "{label} ({shortcut})",
   "appearanceTab.zoomIndicatorLabel": "{label} {percent}% ({zoomIn} / {zoomOut})",
   "rolesTab.contextFlow": "AGENTS.md                  -> project / org / agent operating context\nagents.custom.md            -> your own agent context under keep-latest, read after AGENTS.md\nAGENTS.md.merged            -> merge awaiting review; never read by the runtime\nmemories/MEMORY.md          -> urgent memory, references, and saved-memory index\nmemories/*.md               -> detailed long-term memories with references\nuser-preferences.md         -> compact durable user preferences only\nprompts/*.md                -> user-editable per-turn persona prompts\n\nIdle:\n  IDLE_SCAN -> optionally refresh user-preferences.md from sources, preferences only\n\nTurn:\n  system prompt reads AGENTS.md + user-preferences.md + MEMORY.md + memories/*.md\n  selected persona prompt is injected as a per-turn system prompt section",
+  "llmTab.fallbackPresetUnavailable": "The custom provider cannot be used in the fallback chain while a marketplace provider is active.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

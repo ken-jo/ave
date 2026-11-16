@@ -540,10 +540,11 @@ export function useSettingsOrchestration(
           marketplaceProviderPresetId:
             vendor === "openai-compatible" ? marketplaceProviderPresetId : "",
           streamSmoothing,
-          fallbackChain: fallbackChain.filter((e) => e.provider && e.model).map((e) => ({ provider: e.provider, model: e.model })),
         };
         llmPatch.vendors = { [vendor]: activeBlock };
-        const patch: DeepPartial<AppSettings> = tab === "llm"
+        const patch: DeepPartial<AppSettings> = tab === "llm-fallback"
+          ? { llm: { fallbackChain: fallbackChain.map((entry) => ({ provider: entry.provider, model: entry.model.trim() })) } }
+          : tab === "llm"
           ? { llm: llmPatch }
           : tab === "web"
             ? { webSearch: { provider: webProvider } }
@@ -555,7 +556,15 @@ export function useSettingsOrchestration(
           throw new Error(formatIpcError(updateResult.error, updateResult.message));
         }
         if (tab === "llm") {
-          llmSavedRevisionRef.current = llmRevisions;
+          const fallbackRevision = llmSavedRevisionRef.current.fallback;
+          llmSavedRevisionRef.current = { ...llmRevisions, fallback: fallbackRevision };
+        }
+        if (tab === "llm-fallback") {
+          setSettingsSnapshot(updateResult);
+          llmSavedRevisionRef.current.fallback = llmRevisions.fallback;
+          if (llmDraftRef.current.fallback === llmRevisions.fallback) {
+            setFallbackChainState(updateResult.llm.fallbackChain.map((entry) => ({ provider: entry.provider, model: entry.model })));
+          }
         }
         if (tab === "chat" && processingDisplayLevelDraftRef.current.revision === processingDisplayLevelRevision) {
           const authoritativeProcessingDisplayLevel = updateResult.chat.processingDisplayLevel;

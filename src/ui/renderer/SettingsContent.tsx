@@ -590,8 +590,7 @@ export function SettingsContent({
               onSaved={onSaved}
               onImmediateChange={llmSave.schedule}
               onSave={() => {
-                llmSave.cancel();
-                void s.save("llm");
+                void s.save("llm-fallback");
               }}
               saving={s.saving}
               settingsLoaded={s.settingsLoaded}

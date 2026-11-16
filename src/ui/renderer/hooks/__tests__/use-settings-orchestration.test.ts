@@ -78,6 +78,36 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it("persists fallback drafts only through their own explicit save and reconciles the saved chain", async () => {
+    const settings = makeSettings();
+    const normalized = structuredClone(settings);
+    const api = makeSettingsApi({ settings }, { updateSettings: vi.fn(async () => normalized) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => result.current.setFallbackChain([{ provider: "openai-compatible", model: "draft" }]));
+    await act(async () => { await result.current.save("llm"); });
+    expect(api.updateSettings.mock.calls[0]![0].llm).not.toHaveProperty("fallbackChain");
+    expect(result.current.fallbackChain).toEqual([{ provider: "openai-compatible", model: "draft" }]);
+    await act(async () => { await result.current.save("llm-fallback"); });
+    expect(api.updateSettings).toHaveBeenLastCalledWith({ llm: { fallbackChain: [{ provider: "openai-compatible", model: "draft" }] } });
+    expect(result.current.fallbackChain).toEqual([]);
+  });
+
+  it("does not overwrite a newer fallback draft with an older save response", async () => {
+    const settings = makeSettings();
+    let finish!: (value: AppSettings) => void;
+    const api = makeSettingsApi({ settings }, { updateSettings: vi.fn(() => new Promise<AppSettings>((resolve) => { finish = resolve; })) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => result.current.setFallbackChain([{ provider: "openai", model: "first" }]));
+    let saving!: Promise<boolean>;
+    act(() => { saving = result.current.save("llm-fallback"); });
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledOnce());
+    act(() => result.current.setFallbackChain([{ provider: "openai", model: "newer" }]));
+    await act(async () => { finish(settings); await saving; });
+    expect(result.current.fallbackChain).toEqual([{ provider: "openai", model: "newer" }]);
+  });
+
   it("never persists a web key draft from automatic tab saves and clears it on provider change", async () => {
     const settings = makeSettings();
     const api = makeSettingsApi({ settings });

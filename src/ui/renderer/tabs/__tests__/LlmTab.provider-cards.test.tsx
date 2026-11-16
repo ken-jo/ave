@@ -222,6 +222,7 @@ function profileSettings(profile: Profile) {
       ...(profile.compactionModelSelection !== undefined ? { compactionModelSelection: profile.compactionModelSelection } : {}),
       ...(profile.compactionModel !== undefined ? { compactionModel: profile.compactionModel, compactionModelRoute: profile.compactionModelRoute } : {}),
       pinnedModels: profile.pinnedModels ?? [],
+      fallbackChain: [],
       vendors: profile.vendors ?? {},
       modelListCache: profile.modelListCache ?? {},
     },
@@ -715,6 +716,26 @@ describe("LlmTab provider cards", () => {
     await pickCompactionModel(t("compactionSettings.currentModel"));
     fireEvent.click(screen.getByTestId("compaction-model-save"));
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: null } }));
+  });
+
+
+  it("enables fallback save only for a complete changed chain", async () => {
+    const api = makeApi();
+    const view = await renderTab(api, { fallbackOpen: true });
+    expect(screen.getByTestId("llm-tab:save-fallback")).toBeDisabled();
+    await view.rerender({ fallbackChain: [{ provider: "openai", model: "" }] });
+    expect(screen.getByTestId("llm-tab:save-fallback")).toBeDisabled();
+    await view.rerender({ fallbackChain: [{ provider: "openai", model: "draft-model" }] });
+    expect(screen.getByTestId("llm-tab:save-fallback")).toBeEnabled();
+  });
+
+  it("disables the incompatible fallback provider while a marketplace route is active", async () => {
+    const api = makeApi();
+    await renderTab(api, { fallbackOpen: true, marketplaceProviderPresetId: "fixture-preset", fallbackChain: [{ provider: "openai", model: "draft-model" }] });
+    const fallback = screen.getByTestId("fallback-chain-section");
+    expect(within(fallback).getByRole("status")).toHaveTextContent(t("llmTab.fallbackPresetUnavailable"));
+    openMenu(within(fallback).getAllByRole("combobox")[0]!);
+    expect(await screen.findByRole("option", { name: getVendorOption("openai-compatible").label, exact: true })).toHaveAttribute("aria-disabled", "true");
   });
 
   it("offers the catalog in release order in the fallback chooser without a key", async () => {

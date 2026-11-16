@@ -304,6 +304,7 @@ interface ProviderSelectProps {
   triggerTestId?: string;
   placeholder?: string;
   vendorOptions?: readonly ProviderOption[];
+  disabledOptionIds?: readonly string[];
 }
 
 type ProviderOption = Omit<VendorOption, "id"> & {
@@ -324,6 +325,7 @@ function ProviderSelect({
   triggerTestId,
   placeholder,
   vendorOptions = VENDORS,
+  disabledOptionIds = [],
 }: ProviderSelectProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -384,7 +386,7 @@ function ProviderSelect({
         <SelectGroup className="p-1" data-testid="llm-tab:vendor-options">
           {filteredOptions.length > 0 ? (
             filteredOptions.map((option) => (
-              <SelectItem key={option.id} value={option.id}>
+              <SelectItem key={option.id} value={option.id} disabled={disabledOptionIds.includes(option.id)}>
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="min-w-0 truncate">{option.label}</span>
                   {option.marketplaceInstalled && (
@@ -448,8 +450,7 @@ export interface LlmTabProps {
   /** Called after the user changes an immediate-apply control (the model chooser / vendor / thinking toggle / reasoning slider).
    * The dialog debounces these and persists via `s.save("llm")` so the user gets immediate-feel application without spamming saves. */
   onImmediateChange?: () => void;
-  /** Section-anchored explicit save handler, for the TYPED fields; an API key, a base URL; where a keystroke is not yet a decision. A pick from a chooser is, and goes through `onImmediateChange` instead. Both the 공급자 구성 and Fallback
-   * Chain sections render their own Save button that calls this; the orchestration save() persists the whole `llm` payload, so the two buttons are functionally identical and the visual placement just anchors each Save to its inputs. */
+  /** Commits only the fallback chain editor. Provider credentials have their own row-scoped save. */
   onSave?: () => void;
   saving?: boolean;
   settingsLoaded?: boolean;
@@ -1418,6 +1419,9 @@ export function LlmTab(props: LlmTabProps) {
     : undefined;
   const activeModelListCredentialScope = selectedMarketplaceProviderPreset?.providerId ?? "";
   const hasOnSave = typeof onSave === "function";
+  const [savedFallbackChain, setSavedFallbackChain] = useState<readonly FallbackEntry[]>([]);
+  const fallbackDirty = JSON.stringify(fallbackChain) !== JSON.stringify(savedFallbackChain);
+  const fallbackComplete = fallbackChain.every((entry) => entry.provider && entry.model.trim());
   const trimmedModel = model.trim();
   const activeModelValue = trimmedModel;
   /** What is actually stored for each vendor, mirrored so the typed fields can say whether they still hold something uncommitted. */
@@ -1712,6 +1716,7 @@ export function LlmTab(props: LlmTabProps) {
         const next = settings.llm?.vendors ?? {};
         return sameSavedVendorBlocks(current, next) ? current : next;
       });
+      setSavedFallbackChain(settings.llm.fallbackChain);
       setSettingsRevision((current) => current + 1);
       setPinnedModels(settings.llm?.pinnedModels ?? []);
       const compactSelection = compactionModelSelection(settings.llm, settings.marketplace?.installedProviderPresets);
@@ -3435,6 +3440,8 @@ export function LlmTab(props: LlmTabProps) {
         >
           {fallbackOpen && (
             <div id="fallback-chain-content" className="min-w-0 space-y-3">
+              {marketplaceProviderPresetId && <p className="text-xs text-muted-foreground" role="status">{t("llmTab.fallbackPresetUnavailable")}</p>}
+              {fallbackDirty && <Badge variant="secondary">{t("llmTab.unsavedChanges")}</Badge>}
               {fallbackChain.map((entry, idx) => {
                 const trimmedFallbackModel = entry.model.trim();
                 const fallbackModelListKey = vendorModelListKey(entry.provider);
@@ -3469,6 +3476,7 @@ export function LlmTab(props: LlmTabProps) {
                       }}
                       triggerClassName="w-full text-xs sm:w-36"
                       vendorOptions={visibleVendorsFor()}
+                      disabledOptionIds={marketplaceProviderPresetId ? ["openai-compatible"] : []}
                     />
                     <Select
                       value={fallbackModelValue}
@@ -3540,6 +3548,7 @@ export function LlmTab(props: LlmTabProps) {
                   onSave={onSave!}
                   saving={saving}
                   settingsLoaded={settingsLoaded}
+                  dirty={fallbackDirty && fallbackComplete}
                   testId="llm-tab:save-fallback"
                 />
               )}
