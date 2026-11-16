@@ -31,6 +31,8 @@ export interface RunSnapshot {
   stopping: boolean;
   /** A spawn of this run was refused by the run authority; nothing more starts and no gate opens. */
   refused: boolean;
+  /** The pin, the run state or the wiring failed. Like a stop, it starts nothing more; the run ends `error` once no child is live. */
+  faulted?: boolean;
   now: string;
 }
 
@@ -55,7 +57,8 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
   const effects: RunEffect[] = [];
   const find = (stageId: string): WorkItemStageRun | undefined => stageRuns.find(run => run.stageId === stageId);
   const denied = (): boolean => stageRuns.some(run => run.status === "rejected") || joins.some(join => join.status === "rejected");
-  const winding = (): boolean => snapshot.stopping || snapshot.refused || denied();
+  const faulted = snapshot.faulted === true || event.type === "fault";
+  const winding = (): boolean => snapshot.stopping || snapshot.refused || faulted || denied();
   const interruptRunning = (): void => {
     for (const run of stageRuns) if (run.status === "running") effects.push({ type: "interrupt", stageId: run.stageId });
   };
@@ -69,7 +72,9 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
     case "continue_requested":
       break;
     case "fault":
-      return settle("error");
+      // A live child is never left behind: each is interrupted, and the run ends when the last one has unwound.
+      interruptRunning();
+      break;
     case "stage_linked": {
       const run = find(event.stageId);
       if (run?.status === "running") run.childSessionId = event.childSessionId;
@@ -184,7 +189,7 @@ export function reduceRun(snapshot: RunSnapshot, event: RunEvent): RunStep {
   if (winding()) {
     if (stageRuns.some(run => run.status === "running")) return { stageRuns, joins, runStatus: "executing", effects };
     for (const run of stageRuns) if (run.status === "waiting" || run.status === "awaiting_gate") run.status = "cancelled";
-    return settle(snapshot.stopping || snapshot.refused ? "cancelled" : "denied");
+    return settle(snapshot.stopping ? "cancelled" : faulted ? "error" : snapshot.refused ? "cancelled" : "denied");
   }
 
   const steps = stepsOf(graph);

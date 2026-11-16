@@ -118,6 +118,9 @@ export type WorkPlanDecideIpcResult =
 export interface WorkItemResolved extends WorkItem {
   /** The run this row names cannot be used: its stored entry is unreadable or belongs to another row, or the run file awaits review. Never persisted. */
   templateRunError?: "invalid-template-run" | "template-runs-pending-review";
+  /** Where the row's template run stands, told by the host from the run file and its own state. resuming: a restart left the run and
+   * the host has not taken it over yet. Never persisted; a value a board row carries is dropped. */
+  templateRunState?: "running" | "awaiting_review" | "resuming";
   /** Host-issued snapshot revision for conditional lifecycle mutations; never persisted. */
   mutationRevision?: string;
   status_resolved: WorkItemStatusResolved;

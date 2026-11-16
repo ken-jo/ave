@@ -124,7 +124,7 @@ it("stores the authorized project root instead of its renderer alias", async () 
 it("returns typed row refusals over IPC without invoking execution or gates", async () => {
   const { WorkflowTemplateError } = await import("../../../work-board/template-graph.js");
   const board = { get: vi.fn(async () => ({ status: "found", itemId: 2, item: { id: 2, templateRunError: "invalid-template-run" } })), update: vi.fn(async () => { throw new WorkflowTemplateError("invalid-template-run"); }) };
-  const engine = { runItem: vi.fn(), decidePlan: vi.fn(), cancelRun: vi.fn(() => { throw new WorkflowTemplateError("invalid-template-run"); }) };
+  const engine = { runItem: vi.fn(), decidePlan: vi.fn(), projectTemplateRuns: async (items: unknown[]) => items, cancelRun: vi.fn(() => { throw new WorkflowTemplateError("invalid-template-run"); }) };
   const { event } = setup({ workBoardStore: board, workBoardEngine: engine } as unknown as Partial<IpcDeps>);
   expect(await handler(WORK_BOARD.get)(event, 2)).toMatchObject({ status: "found", item: { templateRunError: "invalid-template-run" } });
   expect(await handler(WORK_BOARD.update)(event, 2, { title: "Changed" })).toMatchObject({ status: "invalid", reason: "invalid-template-run" });

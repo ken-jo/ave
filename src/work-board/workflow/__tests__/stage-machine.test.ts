@@ -8,7 +8,7 @@ function driver(graph: TemplateGraph) {
   let stageRuns: WorkItemStageRun[] = waitingRuns(graph);
   let joins: StageJoin[] = [];
   let runStatus = "executing";
-  const flags = { stopping: false, refused: false };
+  const flags = { stopping: false, refused: false, faulted: false };
   const send = (event: RunEvent): RunEffect[] => {
     const step = reduceRun({ graph, stageRuns, joins, ...flags, now: "2026-11-16T00:00:00.000Z" }, event);
     ({ stageRuns, joins, runStatus } = step);
@@ -108,6 +108,27 @@ describe("stage machine", () => {
     parked.send(ended("a"));
     parked.flags.stopping = true;
     expect(parked.send({ type: "stop_requested" })[0]).toEqual({ type: "settle", runStatus: "cancelled" });
+  });
+
+  it("a fault interrupts every running stage and settles error only after the last child unwinds", () => {
+    const d = driver(graphOf([stageOf("a"), stageOf("b"), stageOf("c", { inputs: ["a", "b"] })]));
+    d.send({ type: "started" });
+    d.send(ended("a"));
+    d.flags.faulted = true;
+    expect(d.send({ type: "fault" })).toEqual([{ type: "interrupt", stageId: "b" }]);
+    expect(d.runStatus()).toBe("executing");
+    // A gate that was pending cannot be approved into a faulted run, and nothing later starts.
+    expect(spawned(d.send({ type: "gate_decided", stageId: "a", attempt: 1, decision: "approve" }))).toEqual([]);
+    const last = d.send({ type: "stage_ended", stageId: "b", attempt: 1, ok: false, interrupted: true });
+    expect(last[0]).toEqual({ type: "settle", runStatus: "error" });
+    expect(d.status("c")).not.toBe("running");
+    // A stop that arrived first keeps the run cancelled.
+    const stopped = driver(graphOf([stageOf("a")]));
+    stopped.send({ type: "started" });
+    stopped.flags.stopping = true;
+    stopped.flags.faulted = true;
+    stopped.send({ type: "fault" });
+    expect(stopped.send({ type: "stage_ended", stageId: "a", attempt: 1, ok: false, interrupted: true })[0]).toEqual({ type: "settle", runStatus: "cancelled" });
   });
 
   it("collects every step, then completes after the last one", () => {

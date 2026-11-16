@@ -198,8 +198,10 @@ export interface WorkBoardEngine {
   continueRun(itemId: number, input: { runId: string }, opts?: DecidePlanOptions): Promise<StageRetryResult>;
   /** Called beside the workspace revocation fan-out: stops every live stage child of template runs on that project. */
   projectRootRevoked(canonicalRoot: string): void;
-  /** Boot, after the store reconciled: take over unsettled template runs so Stop reaches them. Spawns nothing. */
+  /** Boot, after the store reconciled: show rows as the run file says and take over unsettled template runs. Spawns nothing. */
   adoptParkedTemplateRuns(): Promise<void>;
+  /** Adds what a board reader is told about each row's template run; drops whatever a row says about it itself. */
+  projectTemplateRuns<T extends WorkItemResolved>(items: readonly T[]): Promise<T[]>;
 
   /** A read-only survey files proposals for user review without plan approval; individual tools remain gated. Allow only one survey per briefing window. */
   runBriefing(
@@ -1033,5 +1035,6 @@ export function createWorkBoardEngine(
     continueRun: async (itemId, input, opts) => stageRuns?.continueRun(itemId, input, { approvalSurface: opts?.approvalSurface ?? null }) ?? { ok: false, reason: "not_found" },
     projectRootRevoked: (canonicalRoot) => stageRuns?.projectRootRevoked(canonicalRoot),
     adoptParkedTemplateRuns: async () => { await stageRuns?.adoptParkedRuns(); },
+    projectTemplateRuns: async (items) => stageRuns ? stageRuns.projectRuns(items) : items.map((item) => { const clean = { ...item }; delete clean.templateRunState; return clean; }),
   };
 }

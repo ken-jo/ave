@@ -91,7 +91,7 @@ describe("work-board project authorization", () => {
     const runBriefing = vi.fn(async () => ({ status: "empty", kind: "daily", reason: "no findings" }));
     registerWorkBoardHandlers({
       workBoardStore: { get: async () => ({ status: "found", item: { ...deniedItem(workspace), projectRoot: workspace } }) },
-      workBoardEngine: { runItem, runBriefing }, auditLogger: { log: vi.fn() },
+      workBoardEngine: { runItem, runBriefing, projectTemplateRuns: async (items: unknown[]) => items }, auditLogger: { log: vi.fn() },
       getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender: owner, senderFrame: owner.mainFrame };
@@ -111,7 +111,7 @@ describe("work-board project authorization", () => {
     const runBriefing = vi.fn();
     registerWorkBoardHandlers({
       workBoardStore: { get: async () => ({ status: "found", item: { ...deniedItem(workspace), projectRoot: workspace } }) },
-      workBoardEngine: { runItem, runBriefing }, auditLogger: { log: vi.fn() },
+      workBoardEngine: { runItem, runBriefing, projectTemplateRuns: async (items: unknown[]) => items }, auditLogger: { log: vi.fn() },
       getMainWindow: () => window, getAppWindows: () => [window],
     } as unknown as IpcDeps);
     const event = { sender, senderFrame: kind === "subframe" ? { url: "file:///index.html" } : sender.mainFrame };
@@ -161,6 +161,7 @@ describe("work-board project authorization", () => {
     };
     const engine = {
       runItem: vi.fn(async () => ({ status: "completed", output: "done" })),
+      projectTemplateRuns: async (items: unknown[]) => items,
     };
     registerWorkBoardHandlers({
       workBoardStore: store,

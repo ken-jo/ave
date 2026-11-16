@@ -1,5 +1,5 @@
 /** What a restart leaves of a template run: a run that waits for the user, never an error and never a spawn. The board fails every row it
- * finds running; the scheduler then parks the run from the run state and shows it on the board again. */
+ * finds running; the scheduler then parks the run from the run file and shows it on the board again. */
 import { rmSync } from "node:fs";
 import { expect, it } from "vitest";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
@@ -8,7 +8,7 @@ import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
-/** The next process over the same board file and run state. */
+/** The next process over the same board file and run file. */
 async function restarted(h: Harness) {
   await h.board.reconcileInterruptedRuns();
   const engine = h.makeEngine();
@@ -54,7 +54,7 @@ it("fails a gate whose stored output no longer matches its hash, and a kept stag
     void h.start(id, h.local(version));
     for (const child of await h.untilLive(2)) child.finish();
     const before = await h.until(id, item => item.stageRuns.length === 2 && item.stageRuns.every(run => run.status === "awaiting_gate"));
-    await h.runs.update(before.runId ?? "", run => ({ ...run, stageRuns: run.stageRuns.map(stage => stage.stageId === "a" ? { ...stage, output: "another output" } : stage) }));
+    await h.board.updateRun(id, before.runId ?? "", run => ({ ...run, stageRuns: run.stageRuns.map(stage => stage.stageId === "a" ? { ...stage, output: "another output" } : stage) }));
     rmSync((await h.stageRun(id, "b")).workspace?.root ?? "", { recursive: true, force: true });
 
     await restarted(h);
@@ -101,21 +101,22 @@ it("turns a join that was being collected into a conflict the user decides", asy
   }
 });
 
-it("ends an unsettled run the board row no longer names, and leaves the row alone", async () => {
+it("a row deleted while its run is parked after a restart ends the run cancelled in the run file", async () => {
   const h = await stageRunHarness();
   try {
     const version = await h.confirm([stageOf("a")]);
     const id = await h.addItem(version);
     void h.start(id, h.local(version));
-    await h.untilLive(1);
-    const first = (await h.item(id)).runId ?? "";
-    // The row moves on to a run the run state does not hold.
-    await h.board.beginRun(id, "wr-another-run", "2026-11-16T00:00:00.000Z");
+    (await h.untilLive(1))[0].finish();
+    const runId = (await h.untilStage(id, "a", "awaiting_gate")).runId ?? "";
 
-    const next = await restarted(h);
-    expect((await h.runs.get(first))?.status).toBe("error");
-    expect((await h.item(id)).runId).toBe("wr-another-run");
-    expect(await next.continueRun(id, { runId: first })).toEqual({ ok: false, reason: "run_mismatch" });
+    await restarted(h);
+    expect(await h.board.remove(id)).toMatchObject({ status: "deleted" });
+    for (let i = 0; i < 400 && (await h.runOf(runId))?.settled === undefined; i += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    const record = await h.runOf(runId);
+    expect(record?.settled?.status).toBe("cancelled");
+    expect(record?.stageRuns.map(stage => stage.status)).toEqual(["cancelled"]);
+    expect(h.events.at(-1)).toMatchObject({ itemId: id, phase: "cancelled", message: "item-removed" });
     expect(h.children).toHaveLength(1);
   } finally {
     await h.cleanup();

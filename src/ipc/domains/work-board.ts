@@ -169,11 +169,18 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     broadcastToAppWindows(deps, WORK_BOARD.itemChanged, payload);
   };
 
+  /** What the board shows of a template run comes from the host (the run file and the scheduler), never from the row. */
+  const withTemplateRuns = async (items: readonly WorkItemResolved[]): Promise<WorkItemResolved[]> => {
+    if (workBoardEngine) return workBoardEngine.projectTemplateRuns(items);
+    return items.map((item) => { const clean = { ...item }; delete clean.templateRunState; return clean; });
+  };
+
   const loadAuthorizedItem = async (id: number): Promise<WorkItemGetResult> => {
     if (!workBoardStore) return { status: "not_found", itemId: id };
     const result = await workBoardStore.get(id);
     if (result.status !== "found") return result;
-    return isAuthorizedStoredWorkItem(result.item) ? result : { status: "not_found", itemId: id };
+    if (!isAuthorizedStoredWorkItem(result.item)) return { status: "not_found", itemId: id };
+    return { ...result, item: (await withTemplateRuns([result.item]))[0] ?? result.item };
   };
 
   handle(WORK_BOARD.list, async (e, filter?: WorkItemListFilter) => {
@@ -182,7 +189,8 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
     if (!workBoardStore) return NO_STORE;
-    return workBoardStore.list(normalizeProjectListFilter(filter));
+    const listed = await workBoardStore.list(normalizeProjectListFilter(filter));
+    return listed.status === "ok" ? { ...listed, items: await withTemplateRuns(listed.items) } : listed;
   });
 
   handle(WORK_BOARD.get, async (e, id: number) => {

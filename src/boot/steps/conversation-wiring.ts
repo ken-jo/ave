@@ -32,8 +32,9 @@ import { createWorkBoardReporter, type WorkBoardReporter,
 } from "../../work-board/work-report.js";
 import { appendMemory } from "../../work-board/work-memory.js";
 import { workflowEngineExtensions } from "./workflow-engine-extensions.js";
-import { isAuthorizedWorkspaceProjectRoot } from "../../main/project-root-authorization.js";
+import { isAuthorizedWorkspaceProjectRoot, resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { WORK_BOARD } from "../../shared/ipc-channels.js";
+import type { WorkItemChangedEventPayload } from "../../shared/work-board-types.js";
 import { fanOutToAllWindows } from "../../ipc/window-fanout.js";
 import { emitEvent } from "../types.js";
 import { createLogger } from "../../lib/logger.js";
@@ -633,10 +634,16 @@ export async function wireConversation(
     // Persist each run’s conversations so context survives restart and accumulates across reruns.
     transcriptStorage: workBoardStorage,
     workflow: {
-      ...workflowEngineExtensions(),
+      ...workflowEngineExtensions(workBoardStore),
+      resolveProjectRoot: (projectRoot) => {
+        const resolved = resolveAuthorizedWorkspaceProject(projectRoot);
+        return resolved.authorized && resolved.project ? resolved.project.projectRoot : null;
+      },
       templates: ctx.workflowTemplateStore,
       attachments: ctx.workflowTemplateStore,
       scopeAuthorised: (scope) => scope.kind === "all" || isAuthorizedWorkspaceProjectRoot(scope.projectRoot),
+      itemChanged: (itemId) => fanOutToAllWindows(ctx.host.desktop?.getAppWindows() ?? [], WORK_BOARD.itemChanged,
+        { itemId, change: "updated", changedAt: new Date().toISOString() } satisfies WorkItemChangedEventPayload, { logger: log }),
       audit: ({ itemId, ...detail }) => bootAuditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: `work-board:${itemId}`,
@@ -645,7 +652,7 @@ export async function wireConversation(
       }),
     },
   });
-  // Runs a restart left waiting for the user: nothing starts here, but Stop must reach them.
+  // Template runs after a restart: rows are shown as the run file says and unsettled runs are taken over. Nothing starts here.
   void workBoardEngine.adoptParkedTemplateRuns().catch((err: unknown) =>
     log.warn("boot: template run adoption failed (non-fatal): %s", (err as Error).message));
 

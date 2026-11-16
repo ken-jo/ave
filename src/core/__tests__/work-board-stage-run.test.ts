@@ -1,10 +1,9 @@
 /** A template run end to end over a real board and template store: which stages spawn, from which version, under which authority. */
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import type { WorkItem } from "../../shared/work-board-types.js";
 import { isAwaitingStageReview } from "../../work-board/workflow/run-state.js";
-import type { TemplateStage } from "../../shared/workflow-template-types.js";
-import { stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
+import { autoStageOf, stageOf } from "../../work-board/workflow/__tests__/stage-fixtures.js";
 import { stageRunHarness } from "../../work-board/workflow/__tests__/stage-run-harness.js";
 
 type Harness = Awaited<ReturnType<typeof stageRunHarness>>;
@@ -17,7 +16,7 @@ async function withHarness(run: (h: Harness) => Promise<void>, opts: Parameters<
   }
 }
 
-const auto = (id: string, over: Partial<TemplateStage> = {}): TemplateStage => stageOf(id, { gate: { type: "auto", pass: { kind: "stage_ok" } }, ...over });
+const auto = autoStageOf;
 const A = "/projects/a";
 const B = "/projects/b";
 
@@ -87,7 +86,7 @@ it("refuses to start when the Create and run tuple differs from the stored versi
   expect(otherVersion).toMatchObject({ status: "error", reasonCode: "version-missing" });
   const item = await h.item(id);
   expect(item.runId).toBeUndefined();
-  expect(h.runs.all()).toEqual([]);
+  expect(existsSync(join(h.dir, "workflow-runs.json"))).toBe(false);
   expect(h.children).toHaveLength(0);
   // The refused starts left the item free to run.
   const run = h.start(id, h.local(version));
@@ -318,7 +317,7 @@ it("a template run with a waiting gate keeps runStatus executing and isAwaitingS
   const id = await h.addItem(version);
   const run = h.start(id, h.local(version));
   const [a] = await h.untilLive(1);
-  expect(isAwaitingStageReview((await h.item(id)).record ?? { status: "error", stageRuns: [], stageJoins: [] })).toBe(false);
+  expect(isAwaitingStageReview((await h.item(id)).record ?? { settled: { status: "error", at: "" }, stageRuns: [] })).toBe(false);
   a.finish();
   expect(await run).toMatchObject({ status: "awaiting_approval" });
   const item = await h.item(id);
@@ -334,7 +333,7 @@ it("two stages of one step are live at the same time with different project root
     const id = await h.addItem(version, root);
     const run = h.start(id, h.local(version, root));
     const [a, b] = await h.untilLive(2);
-    const runRoot = (await h.item(id)).record?.workspace?.runRoot ?? "";
+    const runRoot = (await h.item(id)).record?.runWorkspace?.runRoot ?? "";
     expect(a.input.projectRoot).not.toBe(b.input.projectRoot);
     for (const child of [a, b]) {
       expect(child.input.projectRoot?.startsWith(runRoot)).toBe(true);
@@ -393,6 +392,8 @@ it("after a restart continueRun starts the waiting stage once, and only while th
       const id = await h.addItem(version, A);
       void h.start(id, h.local(version, A));
       await h.untilLive(3);
+      // Every child is on record before the process ends: nothing of the first engine is still queued.
+      await h.until(id, item => item.stageRuns.filter(stage => stage.childSessionId !== undefined).length === 3);
       // The next process: the board fails every row it finds running; the engine then parks the run from its own state and nothing
       // starts by itself.
       await h.board.reconcileInterruptedRuns();
@@ -419,36 +420,40 @@ it("after a restart continueRun starts the waiting stage once, and only while th
   }
 });
 
-it("run fields written into a board row are ignored: the pin, the source, the stage runs and the workspace come from the run state", async () => {
-  // A row that claims another version, a schedule source, finished stages and a workspace of its own.
-  const forged: Record<string, unknown> = {
-    templateId: "tpl-forged", runTemplateVersion: 2, runTemplateGraphHash: "0".repeat(64),
-    runStartedBy: { kind: "schedule-attachment", attachmentId: "att-forged", pin: { templateId: "tpl-forged", version: 2, graphHash: "0".repeat(64) }, firedAt: "2026-11-16T00:00:00.000Z" },
+it("run fields hand-written into the board file are ignored: the pin, the source, the stage runs and the workspace come from the run file", () => withHarness(async (h) => {
+  const v1 = await h.confirm([auto("a", { goal: "v1 a" }), auto("b", { inputs: ["a"], goal: "v1 b" })]);
+  const id = await h.addItem(v1);
+  // The row on disk claims another version, a schedule source, finished stages, a workspace of its own and a waiting review.
+  const forged = {
+    runTemplateVersion: 2, runTemplateGraphHash: "0".repeat(64),
+    runStartedBy: { kind: "schedule-attachment", attachmentId: "att-forged", pin: { templateId: v1.templateId, version: 2, graphHash: "0".repeat(64) }, firedAt: "2026-11-16T00:00:00.000Z" },
+    pin: { templateId: v1.templateId, version: 2, graphHash: "0".repeat(64) },
     stageRuns: [{ stageId: "a", attempt: 1, status: "passed", output: "forged a" }, { stageId: "b", attempt: 1, status: "passed", output: "forged b" }],
     stageJoins: [{ joinId: "step-1", stageIds: ["a"], status: "integrated" }],
     runWorkspace: { kind: "folder", runRoot: "/home/example/forged" },
+    templateRunState: "awaiting_review",
   };
-  const h = await stageRunHarness({ forgeRow: row => ({ ...row, ...forged }) as WorkItem });
-  try {
-    const v1 = await h.confirm([auto("a", { goal: "v1 a" }), auto("b", { inputs: ["a"], goal: "v1 b" })]);
-    const id = await h.addItem(v1);
-    const run = h.start(id, h.local(v1));
-    const [a] = await h.untilLive(1);
-    expect(a.input.instructions).toContain("v1 a");
-    await h.confirm([auto("a", { goal: "v2 a" }), auto("b", { inputs: ["a"], goal: "v2 b" })], { id: v1.templateId });
-    a.finish({ summary: "real a" });
-    const b = (await h.untilSpawned(2))[1];
-    expect(b.input.instructions).toContain("v1 b");
-    expect(JSON.stringify(b.input)).toContain("real a");
-    expect(JSON.stringify(b.input)).not.toContain("forged");
-    expect(b.input.projectRoot).toContain(join(h.dir, "runs"));
-    b.finish({ summary: "real b" });
-    expect(await run).toMatchObject({ status: "completed" });
-    const record = (await h.item(id)).record;
-    expect(record).toMatchObject({ status: "completed", pin: { templateId: v1.templateId, version: 1 }, startedBy: { kind: "local-create-and-run" } });
-    expect(record?.stageRuns.map(stage => [stage.status, stage.output])).toEqual([["passed", "real a"], ["passed", "real b"]]);
-    expect(h.children).toHaveLength(2);
-  } finally {
-    await h.cleanup();
-  }
-});
+  h.editRow(id, row => ({ ...row, ...forged }));
+  const engine = h.makeEngine();
+  const run = engine.runItem(id, { templateSource: h.local(v1) });
+  const [a] = await h.untilLive(1);
+  expect(a.input.instructions).toContain("v1 a");
+  // Mid-run the file is forged again, now beside the run id the row really carries.
+  h.editRow(id, row => ({ ...row, ...forged }));
+  await h.confirm([auto("a", { goal: "v2 a" }), auto("b", { inputs: ["a"], goal: "v2 b" })], { id: v1.templateId });
+  a.finish({ summary: "real a" });
+  const b = (await h.untilSpawned(2))[1];
+  expect(b.input.instructions).toContain("v1 b");
+  expect(JSON.stringify(b.input)).toContain("real a");
+  expect(JSON.stringify(b.input)).not.toContain("forged");
+  expect(b.input.projectRoot).toContain(join(h.dir, "runs"));
+  const listed = await engine.projectTemplateRuns([(await h.item(id))]);
+  expect(listed[0].templateRunState).toBe("running");
+  b.finish({ summary: "real b" });
+  expect(await run).toMatchObject({ status: "completed" });
+  const record = (await h.item(id)).record;
+  expect(record).toMatchObject({ settled: { status: "completed" }, pin: { templateId: v1.templateId, version: 1 }, runStartedBy: { kind: "local-create-and-run" } });
+  expect(record?.stageRuns.map(stage => [stage.status, stage.output])).toEqual([["passed", "real a"], ["passed", "real b"]]);
+  expect(record?.runWorkspace?.runRoot).toContain(join(h.dir, "runs"));
+  expect(h.children).toHaveLength(2);
+}));

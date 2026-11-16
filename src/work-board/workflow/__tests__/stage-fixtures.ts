@@ -5,6 +5,11 @@ export function stageOf(id: string, over: Partial<TemplateStage> = {}): Template
   return { id, name: `Stage ${id}`, goal: `Do ${id}`, inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" }, ...over };
 }
 
+/** A stage whose gate passes on its own once the stage ends well. */
+export function autoStageOf(id: string, over: Partial<TemplateStage> = {}): TemplateStage {
+  return stageOf(id, { gate: { type: "auto", pass: { kind: "stage_ok" } }, ...over });
+}
+
 export function graphOf(stages: TemplateStage[], setupCommands?: string[]): TemplateGraph {
   return { stages, edges: [], ...(setupCommands ? { setupCommands } : {}) };
 }

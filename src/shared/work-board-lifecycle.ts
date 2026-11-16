@@ -1,4 +1,4 @@
-import type { WorkItem, WorkItemStatusStored } from "./work-board-types.js";
+import type { WorkItem, WorkItemResolved, WorkItemStatusStored } from "./work-board-types.js";
 
 /** Review is a read-time projection; the board file keeps its three lifecycle values. */
 export type WorkBoardStage = WorkItemStatusStored | "review";
@@ -13,11 +13,13 @@ export function workBoardReviewKind(item: WorkItem): "plan" | "result" | null {
   return null;
 }
 
-export function workBoardStage(item: WorkItem): WorkBoardStage {
+export function workBoardStage(item: WorkItem & Pick<WorkItemResolved, "templateRunState">): WorkBoardStage {
   switch (item.status) {
     case "planned": case "in_progress": case "completed": break;
     default: throw new Error(`Unknown stored work item status: ${String(item.status)}`);
   }
+  // A template run that waits at a stage gate or on a join: the host says so on read; the row itself still says executing.
+  if (item.status !== "completed" && item.templateRunState === "awaiting_review") return "review";
   if (item.status !== "completed" && (item.runStatus === "planning" || item.runStatus === "executing")) return "in_progress";
   return workBoardReviewKind(item) === null ? item.status : "review";
 }

@@ -416,7 +416,7 @@ export function useWorkBoardRun(
             }
             return;
           }
-          // A stage event of a template run is not the run's phase; the board re-lists the item for it.
+          // A stage event of a template run is not the run's phase; the host sends an item change beside it and the board re-lists.
           if (ev.phase === "stage_gate" || ev.phase === "stage_passed" || ev.phase === "stage_failed") return;
           const runPhase = ev.phase;
           // A tool step update is not a phase entry either; it only revises that phase's steps.
