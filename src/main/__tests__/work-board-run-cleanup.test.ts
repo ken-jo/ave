@@ -233,7 +233,7 @@ it("keeps a run record whose row write never happened until it is settled", asyn
 });
 
 const stageRunsOf = (char: string) => Array.from({ length: 12 }, (_, index) => ({
-  stageId: `stage-${index}`, attempt: 1, status: "passed" as const, startedAt: over.at, endedAt: over.at, output: char.repeat(48_000), resultHash: "a".repeat(64),
+  stageId: `stage-${index}`, attempt: 1, status: "passed" as const, startedAt: over.at, endedAt: over.at, output: char.repeat(48_000), resultHash: "a".repeat(64), outputHash: "c".repeat(64),
   requestedOutputs: [{ id: "report", decl: { kind: "upload" as const, toolName: "deliver", owner: "plugin" as const, ownerId: "media" }, args: "{}", summary: "s".repeat(400) }],
 }));
 
@@ -250,7 +250,8 @@ it("keeps the full record only for each row's current run and a summary for its 
   expect((await stat(runsPath)).size).toBeLessThan(1024 * 1024);
   const all = await entries() as unknown as { runId: string; settled: object; stageRuns: object[] }[];
   expect(all.map(entry => entry.runId)).toEqual(Array.from({ length: 20 }, (_, index) => `run-${index + 1}`));
-  expect(all[0]).toEqual({ ...all[0], settled: over, stageRuns: stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash }) => ({ stageId, attempt, status, startedAt, endedAt, resultHash })) });
+  expect(all[0]).toEqual({ ...all[0], settled: over, stageRuns: stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash, outputHash }) => ({ stageId, attempt, status, startedAt, endedAt, resultHash, outputHash })) });
+  expect(all[0].stageRuns.every(stage => (stage as { outputHash?: string }).outputHash === "c".repeat(64))).toBe(true);
   expect(Object.keys(all[0]).sort()).toEqual(["itemId", "pin", "runId", "runStartedBy", "settled", "stageRuns", "startedAt"]);
   expect(await store.getRun(id)).toMatchObject({ status: "found", run: { runId: "run-20", stageRuns } });
 });

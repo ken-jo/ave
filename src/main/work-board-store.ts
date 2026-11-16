@@ -356,11 +356,11 @@ function mutationRevision(item: WorkItem): string {
 // A template row names its run by runId alone. The run file decides whether that run can be read and whether it belongs to this row;
 // while the file awaits review no template run can be vouched for. Ordinary rows and unstarted template rows have no run in that file and
 // are never marked.
-// What a settled run keeps once its row names a newer run: how it ended and each stage's status, times and result hash.
+// What a settled run keeps once its row names a newer run: how it ended and each stage's status, times, result hash and output hash.
 function runSummary(run: WorkflowRunRecord): WorkflowRunRecord {
   const { runId, itemId, pin, runStartedBy, startedAt, settled } = run;
-  const stageRuns = run.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash }) =>
-    ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(resultHash === undefined ? {} : { resultHash }) }));
+  const stageRuns = run.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash, outputHash }) =>
+    ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(resultHash === undefined ? {} : { resultHash }), ...(outputHash === undefined ? {} : { outputHash }) }));
   return { runId, itemId, pin, runStartedBy, startedAt, stageRuns, ...(settled === undefined ? {} : { settled }) };
 }
 

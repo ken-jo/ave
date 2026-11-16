@@ -3681,8 +3681,8 @@ with its own owner rule:
   run, and stays as it is when the row names it or the board cannot be read. A
   row keeps the full record only for its current run: once the row names a
   newer run, a settled record its run history still lists keeps only how it
-  ended and each stage's status, times and result hash, in the same covered
-  file.
+  ended and each stage's status, times, result hash and output hash, in the
+  same covered file.
   Archiving a template keeps its runs.
   Entries that do not parse are never removed, and nothing is removed by age.
   A write that would grow the run file past the read limit is refused, so the
