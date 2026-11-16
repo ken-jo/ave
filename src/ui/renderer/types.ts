@@ -1172,6 +1172,7 @@ export type AvePreloadApi = {
   ) => () => void;
   /** Late-mount sync: fetch the last broadcasted state. */
   getAppUpdateState: () => Promise<import("../../shared/update-state.js").UpdateState>;
+  checkForAppUpdates: () => Promise<import("../../shared/restart-settings.js").AppUpdateCheckResult>;
   /** Trigger download. Valid only when state is "available". */
   downloadAppUpdate: () => Promise<{ ok: boolean; reason?: string }>;
   /** Quit & install after main-owned native confirmation. Valid only when state is "downloaded". */
@@ -1216,7 +1217,7 @@ export type AvePreloadApi = {
     platform: NodeJS.Platform;
     arch: string;
     userDataPath: string;
-  }>;
+  } & import("../../shared/restart-settings.js").BootSettingsSnapshot>;
   onViewActivate: (h: (k: string, settingsTab?: string) => void) => () => void;
 
   getUsageRange: (opts: { dateFrom: string; dateTo: string }) => Promise<UsageSummaryShape>;

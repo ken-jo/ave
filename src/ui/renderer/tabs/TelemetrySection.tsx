@@ -1,9 +1,11 @@
+import type { BootSettingsSnapshot } from "../../../shared/restart-settings.js";
 /** The consent level describes every reporting destination and can be withdrawn immediately. */
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
 import { SettingsSection } from "../components/PageShell.js";
 import { SettingsTextField } from "../components/SettingsTextField.js";
+import { RestartRequiredChip, RestartRequiredRow } from "../components/RestartRequiredRow.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
 import { isIpcErrorResult, type AppSettings } from "../types.js";
@@ -17,6 +19,8 @@ export function TelemetrySection() {
   const { t } = useTranslation();
   const api = getApi();
   const [loaded, setLoaded] = useState(false);
+  const [bootSettings, setBootSettings] = useState<BootSettingsSnapshot | null>(null);
+  const [bootReadError, setBootReadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [level, setLevel] = useState<TelemetryLevel>("off");
   const [legacyCrashDisabled, setLegacyCrashDisabled] = useState(false);
@@ -43,6 +47,12 @@ export function TelemetrySection() {
     return () => { alive = false; };
   }, [api, t]);
 
+  useEffect(() => {
+    let alive = true;
+    void api.getAppInfo().then((info) => { if (alive) setBootSettings(info); }, () => { if (alive) setBootReadError(true); });
+    return () => { alive = false; };
+  }, [api]);
+
   const persist = useCallback(async (next: TelemetryPatch) => {
     setError(null);
     setSaving(true);
@@ -66,6 +76,9 @@ export function TelemetrySection() {
     void persist({ [key]: next });
   }, [allowedHosts, persist, t]);
 
+  const crashEndpointPending = loaded && bootSettings !== null
+    && crashReportEndpoint !== (bootSettings.bootCrashReportEndpoint ?? "");
+
   return (
     <SettingsSection data-settings-section="audit-telemetry" title={t("auditTab.telemetrySectionTitle")} description={t("auditTab.telemetrySectionDesc")}>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -84,7 +97,11 @@ export function TelemetrySection() {
       <SettingsTextField id="telemetry-endpoint" label={t("auditTab.telemetryEndpointLabel")} help={t("auditTab.telemetryEndpointHelp")} value={endpoint} onCommit={(next) => commitEndpoint("endpoint", next)} disabled={!loaded || !hostsLoaded || saving} placeholder="https://" className="mt-4">
         <p className="text-xs text-muted-foreground" data-testid="telemetry-allowed-hosts">{allowedHosts.length > 0 ? t("auditTab.telemetryAllowedHosts", { hosts: allowedHosts.join(", ") }) : t("auditTab.telemetryNoAllowedHosts")}</p>
       </SettingsTextField>
-      <SettingsTextField id="telemetry-crash-endpoint" label={t("auditTab.telemetryCrashEndpointLabel")} help={t("auditTab.telemetryCrashEndpointHelp")} value={crashReportEndpoint} onCommit={(next) => commitEndpoint("crashReportEndpoint", next)} disabled={!loaded || !hostsLoaded || saving} placeholder="https://" className="mt-4" />
+      <SettingsTextField id="telemetry-crash-endpoint" label={t("auditTab.telemetryCrashEndpointLabel")} help={t("auditTab.telemetryCrashEndpointHelp")} value={crashReportEndpoint} onCommit={(next) => commitEndpoint("crashReportEndpoint", next)} disabled={!loaded || !hostsLoaded || saving} placeholder="https://" className="mt-4">
+        <RestartRequiredChip pending={crashEndpointPending} />
+      </SettingsTextField>
+      {bootReadError ? <p role="alert" className="mt-2 text-xs text-destructive">{t("settingsRestart.readFailed")}</p> : null}
+      <RestartRequiredRow pending={crashEndpointPending} />
       <p className="mt-2 text-xs text-muted-foreground" data-testid="telemetry-crash-reporting-help">{t("auditTab.telemetryCrashReportingHelp")}</p>
     </SettingsSection>
   );

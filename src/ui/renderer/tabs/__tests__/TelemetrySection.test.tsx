@@ -2,6 +2,7 @@ import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { fireEvent, render, waitFor, within } from "@testing-library/react";
 import { TelemetrySection } from "../TelemetrySection.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 import { installMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 
 const BASE_SETTINGS = { ...MOCK_DEFAULT_SETTINGS, telemetry: { level: "off", enabled: false, crashReportingEnabled: false } };
@@ -62,4 +63,48 @@ describe("TelemetrySection", () => {
     const input = await findByTestId("telemetry-crash-endpoint") as HTMLInputElement;
     await waitFor(() => expect(input.disabled).toBe(false));
   });
+  it("retains a saved crash destination restart indicator across remount and clears it on reset", async () => {
+    const api = installMockAveApi({ settings: BASE_SETTINGS, telemetryAllowedHosts: ["reports.example"] });
+    const first = render(<TelemetrySection />);
+    const input = await first.findByTestId("telemetry-crash-endpoint");
+    await waitFor(() => expect(input).not.toBeDisabled());
+    expect(first.queryByTestId("settings-restart-required")).toBeNull();
+    fireEvent.change(input, { target: { value: "https://reports.example/next" } });
+    fireEvent.click(first.getByTestId("telemetry-crash-endpoint-save"));
+    await first.findByTestId("settings-restart-required");
+    expect(first.getByTestId("setting-restart-chip")).toBeTruthy();
+    first.unmount();
+    const remount = render(<TelemetrySection />);
+    await remount.findByTestId("settings-restart-required");
+    expect(api.getAppInfo).toHaveBeenCalledTimes(2);
+    const savedInput = remount.getByTestId("telemetry-crash-endpoint");
+    fireEvent.change(savedInput, { target: { value: "" } });
+    fireEvent.click(remount.getByTestId("telemetry-crash-endpoint-save"));
+    await waitFor(() => expect(remount.queryByTestId("settings-restart-required")).toBeNull());
+    expect(remount.queryByTestId("setting-restart-chip")).toBeNull();
+  });
+  it.each(["refused", "thrown"])("does not show a pending restart after a %s crash destination write", async (failure) => {
+    const api = installMockAveApi({ settings: BASE_SETTINGS, telemetryAllowedHosts: ["reports.example"] });
+    if (failure === "refused") api.updateSettings.mockResolvedValueOnce({ ok: false, error: "settings-write-failed" });
+    else api.updateSettings.mockRejectedValueOnce(new Error("Write failed"));
+    const view = render(<TelemetrySection />);
+    const input = await view.findByTestId("telemetry-crash-endpoint") as HTMLInputElement;
+    await waitFor(() => expect(input).not.toBeDisabled());
+    fireEvent.change(input, { target: { value: "https://reports.example/next" } });
+    fireEvent.click(view.getByTestId("telemetry-crash-endpoint-save"));
+    await view.findByRole("alert");
+    expect(input.value).toBe("https://reports.example/next");
+    expect(view.queryByTestId("settings-restart-required")).toBeNull();
+    expect(view.queryByTestId("setting-restart-chip")).toBeNull();
+  });
+  it("uses the shared guarded restart action and displays its refusal for a pending crash destination", async () => {
+    const api = installMockAveApi({ settings: { ...BASE_SETTINGS, telemetry: { ...BASE_SETTINGS.telemetry, crashReportEndpoint: "https://reports.example/next" } } });
+    api.relaunchApp.mockResolvedValueOnce({ ok: false, error: "plugin-install-in-progress" });
+    const view = render(<TelemetrySection />);
+    const pending = await view.findByTestId("settings-restart-required");
+    fireEvent.click(within(pending).getByRole("button"));
+    await waitFor(() => expect(api.relaunchApp).toHaveBeenCalledOnce());
+    expect((await within(pending).findByRole("alert")).textContent).toBe(ko["permissionsTab.sandboxRestartPluginBusy"]);
+  });
+
 });

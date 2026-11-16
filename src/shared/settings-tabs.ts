@@ -93,7 +93,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
   mcp: ["mcp-servers"],
   "plugin-config": ["plugin-config-installed", "plugin-config-performance"],
   marketplace: ["marketplace-inventory", "marketplace-maintenance"],
-  about: ["about-system-info"],
+  about: ["about-system-info", "about-updates"],
 };
 
 /** Strict membership: is this the id of a tab this build actually ships? Separate from `normalizeSettingsTab`, which answers "llm" for anything it cannot place. That answer is right

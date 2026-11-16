@@ -328,7 +328,7 @@ export function SettingsContent({
   // and the last control lands flush against the window edge. Active panels
   // are flex columns so split-pane children can still use `flex-1 min-h-0`.
   const tabContentCls =
-    "min-h-full min-w-0 w-full shrink-0 outline-none data-[state=active]:flex data-[state=active]:flex-col";
+    "min-h-[calc(100%_-_0.5rem)] min-w-0 w-full shrink-0 outline-none data-[state=active]:flex data-[state=active]:flex-col";
   // Common icon class so the 12 nav entries render at a uniform 16px.
   const navIconCls = "size-4 shrink-0";
 

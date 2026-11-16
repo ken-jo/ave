@@ -6592,6 +6592,18 @@ export const en = {
   "be_mcpGovernance.invalidUserConfig": "Server configuration has an invalid ID, authentication method, arguments or environment.",
   "mcpTab.restoreFailed": "The server could not be restored. Refresh the list and check its policy.",
   "mcpTab.configRecoveryRequired": "Server configuration recovery failed. Further server changes and connections are blocked. Repair the configuration and secret storage before restarting.",
+  "settingsRestart.pending": "Restart required. Saved startup settings differ from this launch. Running agents and shells will stop on restart.",
+  "settingsRestart.readFailed": "Could not read the startup settings used by this launch.",
+  "startupTab.corpCaNameRequired": "Enter a certificate name before saving.",
+  "aboutUpdates.title": "App updates",
+  "aboutUpdates.description": "Check for new app versions. Downloads start only when you choose to download.",
+  "aboutUpdates.autoCheck": "Automatically check for updates",
+  "aboutUpdates.checkNow": "Check for updates",
+  "aboutUpdates.checked": "Update check completed. Available updates appear in the app update notice.",
+  "aboutUpdates.checkFailed": "Could not check for updates.",
+  "aboutUpdates.unavailable": "Update checks are unavailable in this build.",
+  "aboutUpdates.saveFailed": "Could not save the update preference.",
+  "settingsRestart.required": "Restart required",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

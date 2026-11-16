@@ -538,6 +538,7 @@ export function buildInternalApiSurface() {
       import("../shared/update-state.js").UpdateState
     >,
   /** Start the actual download. Only valid when the current state is "available"; rejected (ok:false) otherwise. */
+  checkForAppUpdates: () => ipcRenderer.invoke(CHANNELS.update.checkNow) as Promise<import("../shared/restart-settings.js").AppUpdateCheckResult>,
   downloadAppUpdate: () =>
     ipcRenderer.invoke(CHANNELS.update.downloadNow) as Promise<{ ok: boolean; reason?: string }>,
   /** Quit and apply the downloaded update. Main validates the sender and owns the native confirmation dialog before
@@ -632,7 +633,7 @@ export function buildInternalApiSurface() {
       platform: NodeJS.Platform;
       arch: string;
       userDataPath: string;
-    }>,
+    } & import("../shared/restart-settings.js").BootSettingsSnapshot>,
 
   // Assembled in its own module for size; spliced in here unchanged.
   mcp: mcpApiSurface,

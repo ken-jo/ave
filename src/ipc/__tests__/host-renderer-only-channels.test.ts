@@ -113,7 +113,7 @@ function makeDeps(): never {
     sideChatConversationLoop: undefined,
     approvalGate: undefined,
     settingsService: {
-      get: vi.fn(() => undefined),
+      get: vi.fn((key: string) => key === "system" ? { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Example Root CA", corpCaDebugLog: false } : key === "telemetry" ? {} : undefined),
       getAll: vi.fn(() => ({})),
       set: vi.fn(),
       patch: vi.fn(async () => undefined),

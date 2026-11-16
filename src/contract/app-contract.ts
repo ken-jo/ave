@@ -579,6 +579,7 @@ export const CHANNELS = {
   update: {
     state: "ave:update:state",
     getState: "ave:update:get-state",
+    checkNow: "ave:update:check-now",
     downloadNow: "ave:update:download-now",
     installNow: "ave:update:install-now",
     skipVersion: "ave:update:skip-version",

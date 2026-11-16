@@ -10,6 +10,8 @@ import {
 import { NativeSelect, NativeSelectOption } from "../../../components/ui/native-select.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
+import { RestartRequiredChip, RestartRequiredRow } from "../components/RestartRequiredRow.js";
+import type { BootSystemSettings } from "../../../shared/restart-settings.js";
 import { SettingsTextField } from "../components/SettingsTextField.js";
 import { getApi } from "../api-client.js";
 import { DEFAULT_CORP_CA_COMMON_NAME } from "../../../shared/corp-ca-common-name.js";
@@ -42,6 +44,13 @@ export function StartupTab() {
   const api = getApi();
 
   const [loaded, setLoaded] = useState(false);
+  const [bootSettings, setBootSettings] = useState<BootSystemSettings | null>(null);
+  const [bootReadError, setBootReadError] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void api.getAppInfo().then((info) => { if (alive) setBootSettings(info.startupSettings); }, () => { if (alive) setBootReadError(true); });
+    return () => { alive = false; };
+  }, [api]);
   const [enabled, setEnabled] = useState(false);
   const [toggleWindow, setToggleWindow] = useState<string | null>(null);
   const [launchAtStartup, setLaunchAtStartup] = useState(false);
@@ -186,10 +195,9 @@ export function StartupTab() {
     [persistSystem],
   );
 
-  // An emptied field means "use the default" rather than "search for nothing"; the host applies the same rule, so the field
-  // shows what will be saved.
+  // Empty names have no certificate subject to match and cannot be saved.
   const normalizeCorpCaCommonName = useCallback(
-    (raw: string) => raw.trim() || DEFAULT_CORP_CA_COMMON_NAME,
+    (raw: string) => raw.trim(),
     [],
   );
 
@@ -283,6 +291,11 @@ export function StartupTab() {
         description={t("startupTab.description")}
       />
 
+      {bootReadError ? <p role="alert" className="text-sm text-destructive">{t("settingsRestart.readFailed")}</p> : null}
+      <RestartRequiredRow pending={loaded && bootSettings !== null && (
+        bootSettings.hardwareAcceleration !== hardwareAcceleration || bootSettings.corpCaEnabled !== corpCaEnabled
+        || bootSettings.corpCaCommonName !== corpCaCommonName || bootSettings.corpCaDebugLog !== corpCaDebugLog
+      )} />
       {/* Global shortcut — show/hide window toggle */}
       <SettingsSection
         data-settings-section="startup-shortcut"
@@ -409,6 +422,7 @@ export function StartupTab() {
           <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="min-w-0 text-sm font-medium">
               {t("startupTab.hardwareAccelerationLabel")}
+              <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.hardwareAcceleration !== hardwareAcceleration} />
             </span>
           </div>
           <Switch
@@ -446,6 +460,7 @@ export function StartupTab() {
         <div className="flex items-center justify-between gap-4">
           <span className="min-w-0 text-sm font-medium">
             {t("startupTab.corpCaEnabledLabel")}
+            <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaEnabled !== corpCaEnabled} />
           </span>
           <Switch
             checked={corpCaEnabled}
@@ -473,9 +488,11 @@ export function StartupTab() {
           value={corpCaCommonName}
           onCommit={commitCorpCaCommonName}
           normalize={normalizeCorpCaCommonName}
+          validate={(raw) => raw.trim().length === 0 ? t("startupTab.corpCaNameRequired") : null}
           disabled={!loaded || !corpCaEnabled}
           className="mt-4"
         >
+          <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaCommonName !== corpCaCommonName} />
           <EnvForcedNotice
             settingsPath="system.corpCaCommonName"
             forcedPaths={envForcedPaths}
@@ -487,6 +504,7 @@ export function StartupTab() {
         <div className="mt-4 flex items-center justify-between gap-4">
           <span className="min-w-0 text-sm font-medium">
             {t("startupTab.corpCaDebugLabel")}
+            <RestartRequiredChip pending={loaded && bootSettings !== null && bootSettings.corpCaDebugLog !== corpCaDebugLog} />
           </span>
           <Switch
             checked={corpCaDebugLog}

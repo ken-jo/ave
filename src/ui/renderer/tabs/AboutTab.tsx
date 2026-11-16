@@ -2,14 +2,18 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { Button } from "../../../components/ui/button.js";
 import { Brain, Cpu, FolderOpen } from "lucide-react";
-import type { AveApi } from "../types.js";
+import { Switch } from "../../../components/ui/switch.js";
+import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
+import { formatIpcError } from "../format-ipc-error.js";
+import { isIpcErrorResult, type AppSettings, type AveApi } from "../types.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
+import type { BootSettingsSnapshot } from "../../../shared/restart-settings.js";
 
 export interface AboutTabProps {
   api: AveApi;
 }
 
-export interface AppInfo {
+export interface AppInfo extends BootSettingsSnapshot {
   version: string;
   electronVersion: string;
   nodeVersion: string;
@@ -66,6 +70,39 @@ export function useAppInfo(api: Pick<AveApi, "getAppInfo">): AppInfo | null {
 export function AboutTab({ api }: AboutTabProps) {
   const { t } = useTranslation();
   const appInfo = useAppInfo(api);
+  const [autoCheckEnabled, setAutoCheckEnabled] = useState<boolean | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateChecked, setUpdateChecked] = useState(false);
+  const applySettings = useCallback((settings: AppSettings) => setAutoCheckEnabled(settings.updates?.autoCheckEnabled ?? true), []);
+  useSettingsSnapshot(api, applySettings);
+  const handleAutoCheckChange = async (enabled: boolean) => {
+    setUpdateError(null);
+    setUpdateBusy(true);
+    try {
+      const result = await api.updateSettings({ updates: { autoCheckEnabled: enabled } });
+      if (isIpcErrorResult(result)) throw new Error(formatIpcError(result.error, result.message));
+      setAutoCheckEnabled(result.updates?.autoCheckEnabled ?? true);
+    } catch {
+      setUpdateError(t("aboutUpdates.saveFailed"));
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+  const handleCheck = async () => {
+    setUpdateError(null);
+    setUpdateChecked(false);
+    setUpdateBusy(true);
+    try {
+      const result = await api.checkForAppUpdates();
+      if (!result.ok) setUpdateError(t(result.reason === "updater-unavailable" ? "aboutUpdates.unavailable" : "aboutUpdates.checkFailed"));
+      else setUpdateChecked(true);
+    } catch {
+      setUpdateError(t("aboutUpdates.checkFailed"));
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
 
   const copyDataPath = useCallback(() => {
     if (!appInfo) return;
@@ -79,6 +116,16 @@ export function AboutTab({ api }: AboutTabProps) {
         description={t("generalTab.systemInfoDescription")}
       />
 
+      <SettingsSection data-settings-section="about-updates" title={t("aboutUpdates.title")} description={t("aboutUpdates.description")}>
+        <div className="flex items-center justify-between gap-4">
+          <span className="min-w-0 flex-1 text-sm">{t("aboutUpdates.autoCheck")}</span>
+          <Switch aria-label={t("aboutUpdates.autoCheck")} checked={autoCheckEnabled === true} disabled={autoCheckEnabled === null || updateBusy}
+            onCheckedChange={(enabled) => void handleAutoCheckChange(enabled)} data-testid="about-auto-check-updates" />
+        </div>
+        <Button className="mt-3" variant="outline" disabled={updateBusy} onClick={() => void handleCheck()} data-testid="about-check-updates">{t("aboutUpdates.checkNow")}</Button>
+        {updateError !== null ? <p role="alert" className="mt-2 text-sm text-destructive">{updateError}</p> : null}
+        {updateChecked ? <p role="status" className="mt-2 text-sm text-muted-foreground">{t("aboutUpdates.checked")}</p> : null}
+      </SettingsSection>
       {/* ── 시스템 정보 ─────────────────────────────── */}
       <SettingsSection data-settings-section="about-system-info" title={t("generalTab.systemInfoTitle")}>
         <dl className="grid grid-cols-1 gap-3 text-sm sm:grid-cols-2">

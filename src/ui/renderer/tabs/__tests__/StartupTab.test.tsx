@@ -2,7 +2,7 @@ import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { StartupTab } from "../StartupTab.js";
-import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
+import { DEFAULT_APP_INFO, makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../../shared/tool-timeout-policy.js";
 import * as shortcutHooks from "../../hooks/use-shortcuts.js";
 import { ko } from "../../../../i18n/messages/ko.js";
@@ -329,4 +329,29 @@ describe("StartupTab", () => {
       expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { toggleWindow: null } });
     });
   });
+});
+
+
+it("shows a restart action and chip against main's boot snapshot after remounting", async () => {
+  const api = installApi({
+    ...STARTUP_SETTINGS,
+    system: { ...STARTUP_SETTINGS.system, hardwareAcceleration: false, corpCaEnabled: true, corpCaCommonName: "Root", corpCaDebugLog: false },
+  });
+  api.getAppInfo.mockResolvedValue({ ...DEFAULT_APP_INFO, startupSettings: { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Root", corpCaDebugLog: false } });
+  const first = render(<StartupTab />);
+  expect(await first.findByTestId("settings-restart-required")).toBeTruthy();
+  expect((await first.findAllByTestId("setting-restart-chip")).length).toBe(1);
+  first.unmount();
+  const second = render(<StartupTab />);
+  expect(await second.findByTestId("settings-restart-required")).toBeTruthy();
+});
+
+it("refuses an empty certificate name with an inline reason", async () => {
+  installApi({ ...STARTUP_SETTINGS, system: { ...STARTUP_SETTINGS.system, corpCaEnabled: true, corpCaCommonName: "Root" } });
+  const { findByTestId, getByRole } = render(<StartupTab />);
+  const field = await findByTestId("startup-corp-ca-common-name");
+  await waitFor(() => expect((field as HTMLInputElement).value).toBe("Root"));
+  fireEvent.change(field, { target: { value: "   " } });
+  expect((await findByTestId("startup-corp-ca-common-name-save") as HTMLButtonElement).disabled).toBe(true);
+  expect(getByRole("alert").textContent).toBe(ko["startupTab.corpCaNameRequired"]);
 });

@@ -1,3 +1,4 @@
+import { DEFAULT_CORP_CA_COMMON_NAME } from "../../src/shared/corp-ca-common-name.js";
 import { DEFAULT_SETTINGS } from "../../src/data/settings-defaults.js";
 import { DEFAULT_APPEARANCE } from "../../src/shared/appearance-settings.js";
 import type { TurnReviewResult } from "../../src/shared/turn-change-review.js";
@@ -195,6 +196,8 @@ export const DEFAULT_APP_INFO = {
   platform: "test",
   arch: "x64",
   userDataPath: "/tmp/ave-test-user-data",
+  startupSettings: { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: DEFAULT_CORP_CA_COMMON_NAME, corpCaDebugLog: false },
+  bootCrashReportEndpoint: undefined,
 };
 
 /** The terminal surface: every shell spawns, and output reaches the app through the `onData` listeners the app registered; a test drives them with `emitTerminalData` below. */
@@ -796,6 +799,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     getUsageDailySummary: vi.fn(async () => ({ ok: false, error: "mock-unavailable" })),
     getPricingOverrides: vi.fn(async () => []),
     getAppInfo: vi.fn(async () => appInfo),
+    relaunchApp: vi.fn(async (): Promise<import("../../src/shared/app-relaunch.js").AppRelaunchResult> => ({ ok: true })),
+    checkForAppUpdates: vi.fn(async (): Promise<import("../../src/shared/restart-settings.js").AppUpdateCheckResult> => ({ ok: true })),
     // Routine API
     listRoutines: vi.fn(async () => ({ routines: [], invalid: [] })),
 

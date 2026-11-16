@@ -1162,7 +1162,7 @@ export function PermissionsTab({
         >
           <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
           <SandboxRestartDialog open={sandboxRestartOpen} onOpenChange={setSandboxRestartOpen} />
-          {sandboxRestartPending && <Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button>}
+          {sandboxRestartPending && <div className="space-y-2"><p className="text-sm text-muted-foreground">{t("settingsRestart.pending")}</p><Button variant="outline" onClick={() => setSandboxRestartOpen(true)}>{t("permissionsTab.sandboxRestartNow")}</Button></div>}
           {/* The two rows read the stored settings that the panel load returns; until it has, they would state a setting nobody read. */}
           {panelStaleNotice("os-sandbox-settings", ["settings"])}
           {settingsNotice ?? (

@@ -29,3 +29,25 @@ test('reporting levels and authorized destinations round-trip without inactive f
   await expect.poll(async () => (await readTelemetry()).endpoint).toBeUndefined();
   await closeInlineSettings(app, page);
 });
+
+test('a changed native crash destination keeps its restart indicator across settings remount', async ({ app, mainWindow }, testInfo) => {
+  let page = await openInlineSettings(app, mainWindow, 'audit');
+  const bootEndpoint = await page.evaluate(async () => (await window.aveApi.getAppInfo()).bootCrashReportEndpoint);
+  const nextEndpoint = 'https://localhost/crash-next';
+  expect(bootEndpoint).not.toBe(nextEndpoint);
+  const section = page.locator('[data-settings-section="audit-telemetry"]');
+  await page.getByTestId('telemetry-crash-endpoint').fill(nextEndpoint);
+  await page.getByTestId('telemetry-crash-endpoint-save').click();
+  await expect(section.getByTestId('settings-restart-required')).toBeVisible();
+  await expect(section.getByTestId('setting-restart-chip')).toBeVisible();
+  await closeInlineSettings(app, page);
+  page = await openInlineSettings(app, mainWindow, 'audit');
+  const reopened = page.locator('[data-settings-section="audit-telemetry"]');
+  await expect(reopened.getByTestId('settings-restart-required')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('crash-endpoint-restart-required.png') });
+  await page.getByTestId('telemetry-crash-endpoint').fill(bootEndpoint ?? '');
+  await page.getByTestId('telemetry-crash-endpoint-save').click();
+  await expect(reopened.getByTestId('settings-restart-required')).toHaveCount(0);
+  await expect(reopened.getByTestId('setting-restart-chip')).toHaveCount(0);
+  await closeInlineSettings(app, page);
+});

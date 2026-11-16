@@ -27,7 +27,7 @@ import { deferred } from "../../../__tests__/support/deferred.js";
 import { hasMarketplaceInstallInFlight } from "../../../marketplace/app/install-lifecycle.js";
 import { mutateMarketplaceProviderPresets } from "../settings.js";
 
-vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() } }));
+vi.mock("electron", () => ({ ipcMain: { handle: vi.fn() }, app: { getPath: () => "/tmp/app-profile" } }));
 
 const handlers = new Map<string, Parameters<typeof ipcMain.handle>[1]>();
 const auditLogger = { log: vi.fn() };
@@ -37,6 +37,8 @@ let mainEvent: IpcMainInvokeEvent;
 let marketplace: FolderServiceHarness | undefined;
 let settingsRoot: string | undefined;
 let presetDeps: IpcDeps;
+let bootTelemetry: { crashReportEndpoint?: string } = { crashReportEndpoint: "https://reports.example/boot" };
+let bootSystem = { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false };
 
 beforeEach(() => {
   clearAppUpdateInstallRequested();
@@ -46,7 +48,9 @@ beforeEach(() => {
   mainEvent = hostFrameEvent();
   Object.assign(mainEvent.sender, { mainFrame: mainEvent.senderFrame });
   vi.spyOn(ipcMain, "handle").mockImplementation((channel, handler) => { handlers.set(channel, handler); });
-  registerAppHandlers({ auditLogger, relaunchApp, getMainWindow: () => ({ webContents: mainEvent.sender, isDestroyed: () => false }) } as unknown as IpcDeps);
+  bootSystem = { hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false };
+  bootTelemetry = { crashReportEndpoint: "https://reports.example/boot" };
+  registerAppHandlers({ settingsService: { get: (key: string) => key === "telemetry" ? bootTelemetry : bootSystem }, auditLogger, relaunchApp, getMainWindow: () => ({ webContents: mainEvent.sender, isDestroyed: () => false }) } as unknown as IpcDeps);
 });
 afterEach(async () => {
   clearAppUpdateInstallRequested();
@@ -501,4 +505,27 @@ describe("app relaunch boundary", () => {
     relaunchApp.mockImplementation(() => { throw new Error("private runtime detail"); });
     expect(invoke()).toEqual({ ok: false, error: "relaunch-failed" });
   });
+});
+
+
+it("reports immutable startup inputs after settings change and a renderer remount", async () => {
+  bootSystem.hardwareAcceleration = false;
+  bootSystem.corpCaCommonName = "Changed Root";
+  const handler = handlers.get(CHANNELS.app.info);
+  expect(handler).toBeDefined();
+  const info = await handler?.(mainEvent);
+  expect(info.startupSettings).toEqual({ hardwareAcceleration: true, corpCaEnabled: true, corpCaCommonName: "Test Root", corpCaDebugLog: false });
+  const again = await handler?.(mainEvent);
+  expect(again.startupSettings).toEqual(info.startupSettings);
+});
+
+it("retains the native crash destination from this launch after later settings writes", async () => {
+  bootTelemetry.crashReportEndpoint = "https://reports.example/changed";
+  const handler = handlers.get(CHANNELS.app.info);
+  expect(handler).toBeDefined();
+  if (handler === undefined) throw new Error("Expected the app information handler");
+  const first = await handler(mainEvent);
+  expect(first.bootCrashReportEndpoint).toBe("https://reports.example/boot");
+  const remount = await handler(mainEvent);
+  expect(remount.bootCrashReportEndpoint).toBe(first.bootCrashReportEndpoint);
 });
