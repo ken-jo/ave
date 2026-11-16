@@ -262,6 +262,12 @@ links. Hovering one shows where it really goes. Hold Cmd (macOS) or Ctrl
 terminal in the main area, or as a new tab in the side panel. Only `http` and
 `https` links open, and never one that carries a user name or password.
 
+Copy and paste use the platform's terminal keys. On macOS, Cmd+C and Cmd+V.
+On Windows, Ctrl+C copies when text is selected (otherwise it interrupts, as
+usual) and Ctrl+V pastes; Ctrl+Shift+C and Ctrl+Shift+V also work. On Linux,
+Ctrl+Shift+C copies and Ctrl+Shift+V or Shift+Insert pastes, and Ctrl+C and
+Ctrl+V stay with the shell.
+
 When the shell exits, the terminal says **Ended** with the exit code and
 offers **Restart shell** and **Close tab**. Pressing Enter also starts a new
 shell, in the directory the old one was in, with the earlier output kept.

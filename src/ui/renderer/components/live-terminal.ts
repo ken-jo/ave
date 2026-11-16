@@ -9,6 +9,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 import { isDarwin } from "../api-client.js";
+import { terminalClipboardAction, terminalPlatform } from "./terminal-keys.js";
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { setTerminalAttended, setTerminalExited, setTerminalReplaying } from "../preview/terminal-attention.js";
 import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
@@ -118,6 +119,16 @@ export class LiveTerminal {
       if (marker === "A" || marker === "C" || marker === "D") this.bumpBlocks();
       return false;
     });
+    // Copy and paste keys where the platform has no menu key for them. Returning false keeps the key from xterm, and the
+    // default is prevented so the browser does not paste a second time.
+    this.term.attachCustomKeyEventHandler((event) => {
+      const action = terminalClipboardAction(event, terminalPlatform(), this.term.hasSelection());
+      if (action === null) return true;
+      event.preventDefault();
+      if (action === "copy") this.copySelection(true);
+      else this.pasteClipboard();
+      return false;
+    });
     // Forward keystrokes → PTY stdin.
     const inputSub = this.term.onData((data) => {
       // No shell is running: nothing takes the keys, and Enter starts a new one.
@@ -224,6 +235,21 @@ export class LiveTerminal {
     this.term.options.fontSize = style.terminalFont.size;
     this.term.options.lineHeight = style.terminalFont.lineHeight;
     if (this.host) this.fitToHost();
+  }
+
+  /** Copy the selected text. `clear` drops the selection afterwards, the convention where Ctrl+C both copies and interrupts, so the next Ctrl+C reaches the shell. */
+  copySelection(clear = false): void {
+    const text = this.term.getSelection();
+    if (text.length === 0) return;
+    void navigator.clipboard.writeText(text);
+    if (clear) this.term.clearSelection();
+  }
+
+  /** Paste the clipboard's text through xterm, which brackets it when the shell asked for bracketed paste. */
+  pasteClipboard(): void {
+    void navigator.clipboard.readText().then((text) => {
+      if (!this.disposed && text.length > 0) this.term.paste(text);
+    });
   }
 
   /** Start a new shell in this tab after its shell ended or failed to start. The screen and scrollback stay. */

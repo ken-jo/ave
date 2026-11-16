@@ -17,6 +17,7 @@ import { terminalCwd } from "../../preview/main-layout-restore.js";
 import { surfaceMountLocation } from "../../preview/surface-mounts.js";
 import { disposeLiveTerminal, requestTerminalFocus } from "../../preview/live-terminal-registry.js";
 import { useMainSurfaces } from "../../preview/main-surfaces.js";
+import { terminalClipboardAction } from "../terminal-keys.js";
 import { ThemeProvider, useTheme } from "../../theme/ThemeProvider.js";
 import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
 import { requireScheme } from "../../theme/schemes/index.js";
@@ -37,6 +38,9 @@ interface FakeTerminal {
   decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[];
   element: HTMLElement | null;
   disposed: boolean;
+  keyHandler: ((event: KeyboardEvent) => boolean) | null;
+  selection: string;
+  pasted: string[];
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
 
@@ -102,6 +106,14 @@ vi.mock("@xterm/xterm", () => ({
     }
     disposed = false;
     dispose() { this.disposed = true; }
+    keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
+    attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { this.keyHandler = handler; }
+    selection = "";
+    hasSelection() { return this.selection.length > 0; }
+    getSelection() { return this.selection; }
+    clearSelection() { this.selection = ""; }
+    pasted: string[] = [];
+    paste(text: string) { this.pasted.push(text); }
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
@@ -949,5 +961,66 @@ describe("a link opens as a browser tab of the side panel", () => {
     act(() => { id = tabs.result.current.openBrowserTab("file:///etc/passwd"); });
     expect(id).toBeNull();
     expect(tabs.result.current.tabs).toHaveLength(1);
+  });
+});
+
+describe("copy and paste keys off macOS", () => {
+  const key = (name: string, modifiers: Partial<Pick<KeyboardEvent, "ctrlKey" | "shiftKey" | "altKey" | "metaKey">> = {}, type = "keydown") =>
+    ({ type, key: name, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, ...modifiers });
+
+  it("binds Windows Ctrl+C to copy only with a selection, and Ctrl+V to paste", () => {
+    expect(terminalClipboardAction(key("c", { ctrlKey: true }), "win32", true)).toBe("copy");
+    // Without a selection Ctrl+C is the shell's interrupt.
+    expect(terminalClipboardAction(key("c", { ctrlKey: true }), "win32", false)).toBeNull();
+    expect(terminalClipboardAction(key("v", { ctrlKey: true }), "win32", false)).toBe("paste");
+    expect(terminalClipboardAction(key("C", { ctrlKey: true, shiftKey: true }), "win32", true)).toBe("copy");
+    expect(terminalClipboardAction(key("V", { ctrlKey: true, shiftKey: true }), "win32", false)).toBe("paste");
+    expect(terminalClipboardAction(key("v", { ctrlKey: true }, "keyup"), "win32", false)).toBeNull();
+    expect(terminalClipboardAction(key("v", { ctrlKey: true, altKey: true }), "win32", false)).toBeNull();
+  });
+
+  it("binds Linux Ctrl+Shift+C / Ctrl+Shift+V and Shift+Insert, leaving Ctrl+C and Ctrl+V to the shell", () => {
+    expect(terminalClipboardAction(key("C", { ctrlKey: true, shiftKey: true }), "linux", true)).toBe("copy");
+    expect(terminalClipboardAction(key("C", { ctrlKey: true, shiftKey: true }), "linux", false)).toBeNull();
+    expect(terminalClipboardAction(key("V", { ctrlKey: true, shiftKey: true }), "linux", false)).toBe("paste");
+    expect(terminalClipboardAction(key("Insert", { shiftKey: true }), "linux", false)).toBe("paste");
+    expect(terminalClipboardAction(key("c", { ctrlKey: true }), "linux", true)).toBeNull();
+    expect(terminalClipboardAction(key("v", { ctrlKey: true }), "linux", false)).toBeNull();
+    expect(terminalClipboardAction(key("Insert", { shiftKey: true }), "win32", false)).toBeNull();
+  });
+
+  it("binds nothing on macOS, where the Edit menu owns Cmd+C and Cmd+V", () => {
+    for (const modifiers of [{ ctrlKey: true }, { metaKey: true }, { ctrlKey: true, shiftKey: true }]) {
+      expect(terminalClipboardAction(key("c", modifiers), "darwin", true)).toBeNull();
+      expect(terminalClipboardAction(key("v", modifiers), "darwin", true)).toBeNull();
+    }
+  });
+
+  it("copies the selection and clears it, pastes through xterm, and keeps the key from the shell", async () => {
+    const writeText = vi.fn(async () => {});
+    const readText = vi.fn(async () => "pasted text");
+    vi.stubGlobal("navigator", { ...navigator, userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", clipboard: { writeText, readText } });
+    try {
+      const { api } = makeMockAveApi();
+      const terminal = terminalApi();
+      render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId="terminal:71" tabLabel="Terminal" />);
+      await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+      const xterm = fakeTerm();
+      const press = (name: string) => {
+        const event = new KeyboardEvent("keydown", { key: name, ctrlKey: true, cancelable: true });
+        return { handled: offerKey(xterm, event), event };
+      };
+      // No selection: Ctrl+C stays the shell's.
+      expect(press("c")).toMatchObject({ handled: true, event: { defaultPrevented: false } });
+      expect(writeText).not.toHaveBeenCalled();
+      xterm.selection = "selected output";
+      expect(press("c")).toMatchObject({ handled: false, event: { defaultPrevented: true } });
+      expect(writeText).toHaveBeenCalledExactlyOnceWith("selected output");
+      expect(xterm.selection).toBe("");
+      expect(press("v")).toMatchObject({ handled: false, event: { defaultPrevented: true } });
+      await waitFor(() => expect(xterm.pasted).toEqual(["pasted text"]));
+      // Nothing was written to the PTY by the key itself.
+      expect(terminal.input).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
   });
 });

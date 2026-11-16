@@ -8,6 +8,7 @@ import * as mainSurfaceStore from "../../src/ui/renderer/preview/main-surfaces.j
 import { SURFACE_DRAG_TYPE, getSideTabsSink } from "../../src/ui/renderer/preview/surface-moves.js";
 import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
 import { resetLiveTerminalsForTest } from "../../src/ui/renderer/preview/live-terminal-registry.js";
+import { fakeXtermWrites as xtermWrites } from "./fake-xterm.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
 import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
 import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
@@ -19,21 +20,8 @@ import type { TerminalSessionRef } from "../../src/shared/terminal-session.js";
 import { t } from "../../src/i18n/index.js";
 
 // Replace only terminal rendering because this DOM environment has no canvas.
-const { xtermWrites } = vi.hoisted(() => ({ xtermWrites: [] as string[] }));
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class {
-    cols = 80;
-    rows = 24;
-    options = {};
-    parser = { registerOscHandler: () => ({ dispose() {} }) };
-    loadAddon() {}
-    open() {}
-    onData() { return { dispose() {} }; }
-    write(text: string) { xtermWrites.push(text); }
-    focus() {}
-    dispose() {}
-  },
-}));
+
+vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("./fake-xterm.js")).FakeXterm }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
 afterEach(() => {

@@ -36,20 +36,7 @@ const render = (ui: ReactElement) => renderUnwrapped(ui, {
   wrapper: ({ children }) => <ThemeProvider initialAppearance={DEFAULT_APPEARANCE}>{children}</ThemeProvider>,
 });
 
-vi.mock("@xterm/xterm", () => ({
-  Terminal: class {
-    options = {};
-    cols = 80;
-    rows = 24;
-    parser = { registerOscHandler: () => ({ dispose() {} }) };
-    loadAddon() {}
-    open() {}
-    onData() { return { dispose() {} }; }
-    write() {}
-    focus() {}
-    dispose() {}
-  },
-}));
+vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../../../../test/renderer/fake-xterm.js")).FakeXterm }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
 function terminalApi() {
