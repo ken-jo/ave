@@ -36,7 +36,7 @@ function validateFile(raw: unknown): TemplatesFile {
     requireTemplate(record.scheduleAttachments === undefined || Array.isArray(record.scheduleAttachments), "invalid-template-file");
     for (const attachment of record.scheduleAttachments ?? []) {
       requireTemplate(hasTemplateKeys(attachment, ["id", "scheduleId", "templateId", "version", "graphHash", "who", "at", "origin", "detachedAt", "approvedScope"]) && isTemplateId(attachment.scheduleId) && (attachment.detachedAt !== undefined || !schedules.has(attachment.scheduleId)) && isTemplateId(attachment.id) && !attachmentIds.has(attachment.id) && (attachment.detachedAt === undefined || timestamp(attachment.detachedAt)) && attachment.templateId === t.id && isTemplateVersion(attachment.version) && isGraphHash(attachment.graphHash) && timestamp(attachment.at) && typeof attachment.who === "string" && attachment.who.length > 0 && attachment.who.length <= 128 && attachment.origin === "local-desktop", "invalid-template-file");
-      requireTemplate(attachment.approvedScope === undefined || isTemplateScope(attachment.approvedScope), "invalid-template-file");
+      requireTemplate(isTemplateScope(attachment.approvedScope), "invalid-template-file");
       const version = record.versions.find((v: TemplateVersion) => v.version === attachment.version);
       requireTemplate(version, "unknown-version");
       requireTemplate(version.graphHash === attachment.graphHash, "graph-hash-mismatch");

@@ -78,7 +78,8 @@ interface WorkflowTemplateDraft extends WorkflowTemplateDraftInput {
 export interface ScheduleAttachmentInput extends TemplateVersionPin { scheduleId: string }
 export interface ScheduleAttachment extends ScheduleAttachmentInput {
   id: string;
-  approvedScope?: TemplateScope;
+  /** Approved project-registry root, canonicalized at authorization; compared exactly. */
+  approvedScope: TemplateScope;
   detachedAt?: string;
   who: string;
   at: string;

@@ -838,14 +838,42 @@ describe.runIf(process.platform !== "win32")("POSIX home protection", () => {
   });
 });
 
-it("covers template authority and refuses foreign edits and overwrite", () => {
+it.each(["templates.json", "board.json"])("covers work-board %s authority and refuses foreign edits and overwrite", name => {
   const dir = home(); expect(boot(dir).pending).toBe(false);
-  const path = join(dir, "work-board", "templates.json");
-  const original = JSON.stringify({ version: 1, templates: [] });
+  const path = join(dir, "work-board", name);
+  const original = JSON.stringify(name === "templates.json" ? { version: 1, templates: [] } : { version: 1, nextId: 1, items: [] });
   writeUtf8FileAtomicSync(path, original);
-  expect(manifest(dir).entries["work-board/templates.json"]).toEqual({ current: sha256Hex(original) });
+  expect(manifest(dir).entries[manifestKey(`work-board/${name}`)]).toEqual({ current: sha256Hex(original) });
   expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
   writeFileSync(path, `${original} `);
   expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
   expect(() => writeUtf8FileAtomicSync(path, original)).toThrow();
+});
+
+it("refuses a foreign edit through the covered template store without rewriting it", async () => {
+  const { WorkflowTemplateStore } = await import("../../main/workflow-template-store.js");
+  const dir = home(); expect(boot(dir).pending).toBe(false);
+  const path = join(dir, "work-board", "templates.json"); const store = new WorkflowTemplateStore(path);
+  const record = await store.draft(null, { name: "Read", scope: { kind: "all" }, stages: [{ id: "a", name: "A", goal: "Read", inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" } }], edges: [] });
+  const draft = record.draft; if (!draft) throw new Error("Missing draft");
+  const version = await store.confirmDraft(record.template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, { who: "user", origin: "local-desktop" });
+  const edited = `${readFileSync(path, "utf8")} `; writeFileSync(path, edited);
+  await expect(store.resolveVersion({ templateId: record.template.id, version: 1, graphHash: version.graphHash })).rejects.toMatchObject({ code: "invalid-template-file" });
+  await expect(store.archive(record.template.id)).rejects.toMatchObject({ code: "invalid-template-file" });
+  expect(readFileSync(path, "utf8")).toBe(edited);
+});
+it("withholds a hand-edited board gate and refuses overwriting its file", async () => {
+  const { WorkBoardStore } = await import("../../main/work-board-store.js");
+  const dir = home(); expect(boot(dir).pending).toBe(false);
+  const path = join(dir, "work-board", "board.json"); const store = new WorkBoardStore(path);
+  const created = await store.create({ title: "Read", templateId: "template" }); if (created.status !== "created") throw new Error("Missing item");
+  const graphHash = "a".repeat(64); const pin = { templateId: "template", version: 1, graphHash };
+  await store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin }, stageRuns: [{ stageId: "a", attempt: 1, status: "awaiting_gate", gate: { type: "human", status: "pending", revision: 0 } }] });
+  const raw = JSON.parse(readFileSync(path, "utf8")); raw.items[0].stageRuns[0].gate.status = "approved";
+  const edited = JSON.stringify(raw); writeFileSync(path, edited);
+  const restarted = new WorkBoardStore(path);
+  expect(await restarted.list()).toMatchObject({ status: "ok", items: [] });
+  await expect(restarted.create({ title: "Replacement" })).rejects.toThrow();
+  expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
+  expect(readFileSync(path, "utf8")).toBe(edited);
 });

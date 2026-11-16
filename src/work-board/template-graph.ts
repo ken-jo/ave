@@ -101,6 +101,7 @@ export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
     requireTemplate(s.agentName === undefined || text(s.agentName, 128));
     requireTemplate(s.kind === undefined || s.kind === "plan");
     requireTemplate(s.allowSubAgents === undefined || typeof s.allowSubAgents === "boolean");
+    requireTemplate(s.outputs === undefined || Array.isArray(s.outputs));
     if (s.requestedOutputs !== undefined) requestedOutputs(s.requestedOutputs);
     const g = s.gate;
     requireTemplate(isRecord(g));
@@ -161,17 +162,17 @@ export function validateStageForConfirm(stage: TemplateStage, template: Template
   const refusals: EnvelopeRefusal[] = [];
   if (!isStageId(stage.id)) refusals.push("bad-stage-id");
   try { if (stage.outputs !== undefined) workspaceGlobs(stage.outputs, 32); if (stage.inputFiles !== undefined) { requireTemplate(stage.inputFiles.length <= 64, "too-many-entries"); for (const entry of stage.inputFiles) if (entry.from === "project") workspaceGlobs(entry.paths, 64); } }
-  catch (error) { if (error instanceof WorkflowTemplateError && error.code === "too-many-entries") refusals.push("too-many-entries"); }
+  catch (error) { if (error instanceof WorkflowTemplateError && error.code === "too-many-entries") refusals.push("too-many-entries"); else throw error; }
   if (stage.requestedOutputs?.length && stage.gate.type !== "human") refusals.push("outputs-need-human-gate");
   if (template.setupCommands?.length && !template.stages.some(entry => entry.toolScope === "all")) refusals.push("setup-outside-commands");
   const envelope = stage.envelope;
   if (!envelope) return refusals;
   try { canonicalEnvelope(envelope); }
   catch (error) {
-    if (error instanceof WorkflowTemplateError) {
-      if (error.code === "too-many-entries") refusals.push("too-many-entries");
-    } else throw error;
+    if (error instanceof WorkflowTemplateError && error.code === "too-many-entries") refusals.push("too-many-entries");
+    else throw error;
   }
+  if (stage.toolScope === "all" && (template.setupCommands ?? []).some(command => !envelope.commands.some(prefix => command === prefix || command.startsWith(`${prefix} `) || command.startsWith(`${prefix}\t`)))) refusals.push("setup-outside-commands");
   if (stage.toolScope === "read" && (envelope.tools.some(tool => !READ_ENVELOPE_TOOLS.has(tool)) || envelope.mcpGenerationTools.length > 0 || envelope.pluginGenerationTools.length > 0)) refusals.push("tools-broader-than-scope");
   if (envelope.tools.some(tool => ["host_shell", "host_bash", "host_powershell"].includes(tool))) refusals.push("host-shell");
   if (envelope.tools.some(tool => tool.startsWith("browser_") || tool.startsWith("terminal_"))) refusals.push("user-owned-surface");

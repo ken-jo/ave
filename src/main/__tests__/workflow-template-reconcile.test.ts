@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { canonicalTemplateGraph, graphHashOf, validateStageForConfirm, isAllReadOnlyVersion } from "../../work-board/template-graph.js";
+import { canonicalTemplateGraph, graphHashOf, validateStageForConfirm, isAllReadOnlyVersion, parseTemplateDraft } from "../../work-board/template-graph.js";
 import { WorkflowTemplateStore } from "../workflow-template-store.js";
 import { mintHostDecisionProof } from "../workflow-template-decision.js";
 import type { StageEnvelope, TemplateGraph } from "../../shared/workflow-template-types.js";
@@ -39,7 +39,7 @@ it.each(["outputs-need-human-gate", "setup-outside-commands", "tools-broader-tha
 it("keeps setup commands at template level and permits branch-only automatic gates", () => {
   const g = graph(); const s = g.stages[0]; s.toolScope = "all"; s.gate = { type: "auto", pass: { kind: "stage_ok" } }; requiredValue(s.envelope).outputs = ["branch"]; requiredValue(s.envelope).commands = ["prepare"];
   g.setupCommands = ["prepare assets"]; expect(validateStageForConfirm(s, g)).toEqual([]);
-  g.setupCommands = ["prepare-other"]; expect(validateStageForConfirm(s, g)).toEqual([]);
+  g.setupCommands = ["prepare-other"]; expect(validateStageForConfirm(s, g)).toEqual(["setup-outside-commands"]);
 });
 it("has one conservative read-only predicate", () => {
   const g = graph(); expect(isAllReadOnlyVersion(g)).toBe(true);
@@ -81,4 +81,17 @@ it("refuses non-human output gates at confirmation", async () => {
 });
 it.each([null, 1, {}, { from: "project" }, { from: "stage", stageId: "_out" }])("refuses malformed folder input with a typed error %j", entry => {
   const g = graph(); g.stages[0].inputFiles = [entry] as never; expect(() => graphHashOf(g)).toThrow(expect.objectContaining({ code: "invalid-input" }));
+});
+
+it.each(["reports/**", {}, null])("refuses malformed stage outputs at draft intake %j", outputs => {
+  const value = { ...graph(), name: "Template", scope: { kind: "all" } }; Object.assign(value.stages[0], { outputs });
+  expect(() => parseTemplateDraft(value)).toThrow(expect.objectContaining({ code: "invalid-input" }));
+});
+it.each([
+  { outputs: ["../outside"] },
+  { inputFiles: [{ from: "project", paths: ["../outside"] }] },
+  { envelope: { ...envelope(), commands: [""] } },
+])("surfaces invalid template errors during confirmation validation %j", patch => {
+  const value = graph(); Object.assign(value.stages[0], patch);
+  expect(() => validateStageForConfirm(value.stages[0], value)).toThrow(expect.objectContaining({ code: "invalid-input" }));
 });

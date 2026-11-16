@@ -73,7 +73,6 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     requireTemplate(args.length === 0 && isTemplateId(id));
     requireLocalGesture(event, intent, WORK_BOARD.templateDetachSchedule);
     const attachment = await store.getAttachment(id); requireTemplate(attachment, "template-not-found");
-    await load(attachment.templateId);
     const proof = mintHostDecisionProof("local-desktop");
     const detached = await store.detachSchedule(id, proof);
     if (detached) deps.auditLogger.log({ timestamp: proof.decidedAt, sessionId: `work-board:${attachment.templateId}`, type: "approval", output: JSON.stringify({ event: "template_schedule_detached", attachmentId: id, ...proof }) });

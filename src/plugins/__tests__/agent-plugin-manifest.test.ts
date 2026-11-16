@@ -85,5 +85,5 @@ describe("agent-plugin manifest branches", () => {
 });
 
 it.each(["host:git", "host:other"])("refuses a reserved host owner as a plugin name %s", name => {
-  expect(() => validatePluginManifestShape(JSON.stringify({ ...MARKET, name }))).toThrow();
+  expect(() => validatePluginManifestShape(JSON.stringify({ ...MARKET, name }))).toThrow(/plugin\.json \/name: must match pattern/);
 });

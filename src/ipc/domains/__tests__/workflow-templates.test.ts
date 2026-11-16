@@ -133,3 +133,17 @@ it("passes the resolved authorized project snapshot to attachment storage", asyn
   expect(store.attachSchedule).toHaveBeenCalledWith(request, expect.anything(), { kind: "project", projectRoot: "/projects/a" });
   vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValue({ authorized: false, project: null });
 });
+
+it("detaches after project authorization is withdrawn while preserving local decision checks", async () => {
+  const { resolveAuthorizedWorkspaceProject } = await import("../../../main/project-root-authorization.js");
+  vi.mocked(resolveAuthorizedWorkspaceProject).mockReturnValue({ authorized: false, project: null });
+  const { event, store } = setup(); store.get.mockResolvedValue({ template: { id: "t", scope: { kind: "project", projectRoot: "/projects/a" } } } as never);
+  expect(await handler(WORK_BOARD.templateDetachSchedule)(event, "attachment")).toEqual({ ok: false, error: "user-gesture-required" });
+  expect(await handler(WORK_BOARD.templateDetachSchedule)({ ...event, senderFrame: {} }, "attachment", gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
+  vi.mocked(validateHostRendererSender).mockReturnValueOnce(false);
+  expect(await handler(WORK_BOARD.templateDetachSchedule)(event, "attachment", gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
+  expect(store.getAttachment).not.toHaveBeenCalled(); expect(store.detachSchedule).not.toHaveBeenCalled();
+  expect(await handler(WORK_BOARD.templateDetachSchedule)(event, "attachment", gesture)).toEqual({ ok: true, value: true });
+  expect(store.get).not.toHaveBeenCalled();
+  expect(store.detachSchedule).toHaveBeenCalledWith("attachment", expect.objectContaining({ origin: "local-desktop" }));
+});

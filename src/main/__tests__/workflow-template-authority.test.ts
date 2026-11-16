@@ -29,7 +29,7 @@ it("refuses setup commands when no all-tools stage exists", () => {
 it("accepts template setup commands alongside a read plan stage", async () => {
   const value = input(); value.setupCommands = ["prepare"];
   value.stages[0].envelope = { tools: ["read_file"], writePaths: [], readRoots: [], network: [], commands: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 } };
-  value.stages.push({ ...value.stages[0], envelope: { ...value.stages[0].envelope, tools: ["write_file"] }, id: "b", inputs: ["a"], toolScope: "all" }); value.edges = [{ from: "a", to: "b" }];
+  value.stages.push({ ...value.stages[0], envelope: { ...value.stages[0].envelope, tools: ["write_file"], commands: ["prepare"] }, id: "b", inputs: ["a"], toolScope: "all" }); value.edges = [{ from: "a", to: "b" }];
   const store = new WorkflowTemplateStore(join(dir, "templates.json")); const version = await confirmVersion(store, value);
   expect(version.setupCommands).toEqual(["prepare"]); expect(version.stages[0].kind).toBe("plan");
   expect(graph.validateStageForConfirm(version.stages[0], version)).toEqual([]);
@@ -80,11 +80,12 @@ it("refuses a scope changed between authorization and attachment without writing
   await expect(store.attachSchedule({ templateId: version.templateId, version: 1, graphHash: version.graphHash, scheduleId: "daily" }, mintHostDecisionProof("local-desktop"), { kind: "project", projectRoot: "/projects/a" })).rejects.toMatchObject({ code: "scope-changed" });
   expect(await readFile(file, "utf8")).toBe(before);
 });
-it("reads legacy attachments but refuses them for fire and never repairs their scope", async () => {
+it("refuses attachments missing their approved scope snapshot without writing", async () => {
   const file = join(dir, "templates.json"); const store = new WorkflowTemplateStore(file); const version = await confirmVersion(store); const record = await store.get(version.templateId);
-  record.scheduleAttachments = [{ id: "legacy", templateId: version.templateId, version: 1, graphHash: version.graphHash, scheduleId: "daily", who: "user", origin: "local-desktop", at: version.confirmedAt }]; await writeFile(file, JSON.stringify({ version: 1, templates: [record] }));
-  const before = await readFile(file, "utf8"); const attachment = requiredValue(await store.getAttachment("legacy"));
-  expect(graph.attachmentScopeMatches(attachment, record.template)).toEqual({ ok: false, code: "scope-changed" }); expect(await readFile(file, "utf8")).toBe(before);
+  record.scheduleAttachments = [{ id: "legacy", templateId: version.templateId, version: 1, graphHash: version.graphHash, scheduleId: "daily", who: "user", origin: "local-desktop", at: version.confirmedAt }] as never; await writeFile(file, JSON.stringify({ version: 1, templates: [record] }));
+  const before = await readFile(file, "utf8");
+  await expect(store.getAttachment("legacy")).rejects.toMatchObject({ code: "invalid-template-file" });
+  expect(await readFile(file, "utf8")).toBe(before);
 });
 it("compares approved scopes in both directions and exact project identities", () => {
   const scopes: TemplateScope[] = [{ kind: "all" }, { kind: "project", projectRoot: "/projects/a" }, { kind: "project", projectRoot: "/projects/b" }];
@@ -113,4 +114,34 @@ it.each(["upload", "send-message", "publish-post", "external-write", "other"] as
 it("refuses duplicate output targets and non-array declarations", () => {
   const value = input(); value.stages[0].requestedOutputs = [output(), { ...output(), kind: "other" }]; expect(() => graph.graphHashOf(value)).toThrow();
   value.stages[0].requestedOutputs = "upload" as never; expect(() => graph.graphHashOf(value)).toThrow();
+});
+
+it("refuses all-tools setup commands outside the stage envelope before writing", async () => {
+  const value = input(); value.setupCommands = ["prepare assets"];
+  value.stages[0].toolScope = "all";
+  value.stages[0].envelope = { tools: ["write_file"], writePaths: [], readRoots: [], network: [], commands: [], mcpReadOnlyTools: [], mcpGenerationTools: [], pluginGenerationTools: [], outputs: [], budget: { rounds: 1, minutes: 1, costUsd: 0 } };
+  const file = join(dir, "templates.json"); const store = new WorkflowTemplateStore(file);
+  const record = await store.draft(null, value); const before = await readFile(file, "utf8"); const draft = requiredValue(record.draft);
+  await expect(store.confirmDraft(record.template.id, { expectedGraphHash: draft.graphHash, expectedDraftRevision: draft.revision }, actor)).rejects.toMatchObject({ code: "envelope-refused", refusals: ["setup-outside-commands"] });
+  expect(await readFile(file, "utf8")).toBe(before);
+});
+it("compares registry snapshots exactly without normalizing root aliases", () => {
+  const approvedScope = { kind: "project", projectRoot: "/projects/a" } as const;
+  for (const projectRoot of ["/projects/a/", "/projects/A", "/projects/a/../a"]) expect(graph.attachmentScopeMatches({ approvedScope }, { scope: { kind: "project", projectRoot } })).toEqual({ ok: false, code: "scope-changed" });
+  expect(graph.attachmentScopeMatches({}, { scope: approvedScope })).toEqual({ ok: false, code: "scope-changed" });
+});
+
+it("pins envelope defaults and ordering with setup, edges and folder declarations", () => {
+  const value = {
+    stages: [
+      { id: "b", name: "B", goal: "Build", inputs: ["a"], toolScope: "all", gate: { type: "human" },
+        inputFiles: [{ from: "stage", stageId: "a" }, { from: "project", paths: ["docs/**", "assets/**"] }], outputs: ["reports/**", "dist/**"],
+        envelope: { tools: ["write_file", "read_file", "write_file"], commands: ["prepare", "check", "prepare"], network: [{ host: "Z.EXAMPLE", port: 443 }, { host: "a.example" }, { host: "z.example", port: 443 }], budget: { rounds: 2, minutes: 3, costUsd: 0 } } },
+      { id: "a", name: "A", goal: "Read", inputs: [], toolScope: "read", gate: { type: "human" } },
+    ],
+    edges: [{ from: "a", to: "b" }], setupCommands: ["prepare assets", "check"],
+  };
+  const canonical = '{"edges":[{"from":"a","to":"b"}],"setupCommands":["prepare assets","check"],"stages":[{"allowSubAgents":false,"gate":{"type":"human"},"goal":"Read","id":"a","inputs":[],"kind":"plan","name":"A","toolScope":"read"},{"allowSubAgents":false,"envelope":{"budget":{"costUsd":0,"minutes":3,"rounds":2},"commands":["check","prepare"],"mcpGenerationTools":[],"mcpReadOnlyTools":[],"network":[{"host":"a.example"},{"host":"z.example","port":443}],"outputs":["branch"],"pluginGenerationTools":[],"readRoots":[],"tools":["read_file","write_file"],"writePaths":["**"]},"gate":{"type":"human"},"goal":"Build","id":"b","inputFiles":[{"from":"stage","stageId":"a"},{"from":"project","paths":["docs/**","assets/**"]}],"inputs":["a"],"name":"B","outputs":["reports/**","dist/**"],"toolScope":"all"}]}';
+  expect(canonicalWorkflowJson(graph.canonicalTemplateGraph(value))).toBe(canonical);
+  expect(graph.graphHashOf(value)).toBe("71d9a56f24d73bd1004107e90573e892fa90d2158dd1bfab3ec64509cbbfec87");
 });
