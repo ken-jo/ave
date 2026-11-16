@@ -10,6 +10,8 @@ import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../../shared/permis
 import { t } from "../../../../i18n/index.js";
 import { loadLocaleMessages } from "../../../../i18n/messages/index.js";
 import { setLocale } from "../../../../i18n/runtime.js";
+import { en } from "../../../../i18n/messages/en.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 
 /** A `terminal_run` card shows the exact command and the terminal it will be typed into; the target the host
  * sealed before the card was shown; and remembers the command in that directory for this app session only. */
@@ -62,24 +64,36 @@ describe("ToolApprovalContent terminal_run card", () => {
     clearActiveSurface();
   });
 
-  it("shows the exact command and names the terminal by its tab label and directory", () => {
+  it("shows the exact command, the conversation's isolated shell and its directory, never an internal terminal id", () => {
     vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    showActiveSurface({ kind: "terminal", tabId: "terminal:3fa91c0e-2", label: "Terminal 2", cwd: "/workspace/project/app" });
-    renderApproval(terminalRunRequest(), vi.fn());
-    const target = screen.getByTestId("approval-terminal-target");
-    // The exact command is on the always-visible line, not only behind the details toggle.
-    expect(target).toHaveTextContent("npm test -- --watch=false");
-    expect(target).toHaveTextContent("Terminal 2");
-    expect(target).toHaveTextContent("/workspace/project/app");
+    // Whatever terminal the window shows, the isolated shell is not one of its tabs: no label or id of a tab names it.
+    for (const active of [{ tabId: "terminal:3fa91c0e-2", label: "Terminal 2" }, { tabId: "terminal:3fa91c0e-1", label: "Terminal 1" }]) {
+      showActiveSurface({ kind: "terminal", ...active, cwd: "/workspace/project/app" });
+      const shown = renderApproval(terminalRunRequest(), vi.fn());
+      const target = screen.getByTestId("approval-terminal-target");
+      // The exact command is on the always-visible line, not only behind the details toggle.
+      expect(target).toHaveTextContent(t("toolApprovalDialog.terminalTarget", { command: "npm test -- --watch=false", cwd: "/workspace/project/app" }));
+      expect(target).not.toHaveTextContent("terminal:3fa91c0e");
+      expect(target).not.toHaveTextContent(active.label);
+      shown.unmount();
+    }
   });
 
-  it("names a terminal that is not the active one by its id rather than guessing a label", () => {
-    vi.stubGlobal("ave", { userApproval: { record: vi.fn() } });
-    showActiveSurface({ kind: "terminal", tabId: "terminal:3fa91c0e-1", label: "Terminal 1" });
-    renderApproval(terminalRunRequest(), vi.fn());
-    const target = screen.getByTestId("approval-terminal-target");
-    expect(target).toHaveTextContent("terminal:3fa91c0e-2");
-    expect(target).not.toHaveTextContent("Terminal 1");
+  it("states one lifetime for the session choice: the hint and the refusal both say this session, not an app restart", () => {
+    // The grant is a session approval: it is dropped when the conversation ends (dropSessionApprovals) and names the isolated shell's incarnation.
+    for (const key of ["toolApprovalDialog.rememberScopeTerminalCommand", "toolApprovalDialog.sessionOnlyRemember"] as const) {
+      expect(en[key]).toContain("this session");
+      expect(en[key]).not.toMatch(/restart/i);
+      expect(ko[key]).toContain("이번 세션");
+      expect(ko[key]).not.toContain("다시 시작");
+    }
+    expect(en["toolApprovalDialog.decisionAllowSession"]).toBe("Allow for session");
+    expect(ko["toolApprovalDialog.decisionAllowSession"]).toContain("이번 세션");
+    for (const catalog of [en, ko]) {
+      expect(catalog["toolApprovalDialog.terminalTarget"]).not.toContain("{terminal}");
+      expect(catalog["toolApprovalDialog.terminalTarget"]).toContain("{command}");
+    }
+    expect(en["toolApprovalDialog.terminalTarget"]).toContain("isolated shell");
   });
 
   it("names a look-alike letter in a mixed-script word by code point, so it cannot pass as the letter it imitates", () => {

@@ -344,8 +344,9 @@ function rememberScopeText(
   }
 }
 
-/** The exact command a `terminal_run` card types (as the card's input row shows it), the terminal it types into and the directory its shell is in; the last two
- * sealed by the host before the card was shown. Named the way the terminal's tab is labelled when it is the window's active terminal (the usual target), else by its id. */
+/** The exact command a `terminal_run` card runs (as the card's input row shows it), where it runs and the directory its shell is in, sealed by the host before the card was
+ * shown. A host terminal is named the way its tab is labelled when it is the window's active terminal (the usual target), else by its id. The conversation's isolated shell has
+ * no tab the user can open, so it is named as what it is and never by its internal id. */
 function terminalTargetText(
   t: (key: string, params?: Record<string, string>) => string,
   request: Pick<ApprovalRequest, "approvalMemory" | "args">,
@@ -354,11 +355,10 @@ function terminalTargetText(
   if (memory?.kind !== "key" || memory.scope.kind !== "terminal-command") return null;
   const command = parseArgs(request.args)?.command;
   if (typeof command !== "string") return null;
+  if (memory.scope.lane !== "manual") return t("toolApprovalDialog.terminalTarget", { command, cwd: memory.scope.cwd });
   const active = getActiveSurface();
   const terminal = active?.kind === "terminal" && active.tabId === memory.scope.tabId ? active.label : memory.scope.tabId;
-  return memory.scope.lane === "manual"
-    ? t("toolApprovalDialog.hostTerminalTarget", { command, terminal, shell: memory.scope.shell, cwd: memory.scope.physicalCwd })
-    : t("toolApprovalDialog.terminalTarget", { command, terminal, cwd: memory.scope.cwd });
+  return t("toolApprovalDialog.hostTerminalTarget", { command, terminal, shell: memory.scope.shell, cwd: memory.scope.physicalCwd });
 }
 
 /** The lookalike note for a command: each confusable character with its code point, at most twelve. */
