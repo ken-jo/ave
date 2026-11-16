@@ -259,7 +259,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       return UNAUTHORIZED_FRAME;
     }
 
-    if (existing.item.templateRunError) return { status: "error", reason: existing.item.templateRunError } satisfies WorkItemRunResult;
+    if (existing.item.templateRunError) return { status: "error", reason: "invalid-template-run" } satisfies WorkItemRunResult;
     broadcastToAppWindows(deps, WORK_BOARD.runStarted, {
       itemId: id,
       at: new Date().toISOString(),
@@ -346,7 +346,7 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
       if (parsed === null) return { ok: false, reason: "invalid-input" };
       const existing = await loadAuthorizedItem(id);
       if (existing.status !== "found") return { ok: false, reason: "not_found" };
-      if (existing.item.templateRunError) return { ok: false, reason: existing.item.templateRunError };
+      if (existing.item.templateRunError) return { ok: false, reason: "invalid-template-run" };
       // Bound the note before redaction does any work on it; the engine checks the redacted note again.
       if (parsed.note !== undefined && parsed.note.length > MAX_PLAN_NOTE_LENGTH) return { ok: false, reason: "note_too_long" };
       let redactedCount = 0;

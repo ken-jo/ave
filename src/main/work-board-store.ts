@@ -342,17 +342,18 @@ function mutationRevision(item: WorkItem): string {
 }
 
 // A template row names its run by runId alone. The run file decides whether that run can be read and whether it belongs to this row;
-// while the file awaits review no template run can be vouched for. Ordinary rows have no run in that file and are never marked.
+// while the file awaits review no template run can be vouched for. Ordinary rows and unstarted template rows have no run in that file and
+// are never marked.
 const namesTemplateRun = (item: WorkItem): boolean => item.templateId !== undefined && item.runId !== undefined;
-function templateRunError(item: WorkItem, runs: WorkflowRunView): "invalid-template-run" | undefined {
+function templateRunError(item: WorkItem, runs: WorkflowRunView): WorkItemResolved["templateRunError"] {
   if (!namesTemplateRun(item) || item.runId === undefined) return undefined;
   const result = runs.get(item.runId);
-  const unusable = result.status === "pending-review" || result.status === "invalid" || (result.status === "found" && result.run.itemId !== item.id);
-  return unusable ? "invalid-template-run" : undefined;
+  if (result.status === "pending-review") return "template-runs-pending-review";
+  return result.status === "invalid" || (result.status === "found" && result.run.itemId !== item.id) ? "invalid-template-run" : undefined;
 }
 
 // A pending plan also carries whether the item changed since the plan was made; main judges it once, here, for every reader.
-function decorate(item: WorkItem, nowMs: number, runError?: "invalid-template-run"): WorkItemResolved {
+function decorate(item: WorkItem, nowMs: number, runError?: WorkItemResolved["templateRunError"]): WorkItemResolved {
   const approval = item.planApproval;
   return {
     ...item,
@@ -434,9 +435,8 @@ export class WorkBoardStore {
   // List items, newest-id first, with `status_resolved` computed + filter applied.
   async list(filter: WorkItemListFilter = {}): Promise<WorkItemListResult> {
     await this.ensureLoaded();
-    // Read on every call, never cached: the answer follows the run file as it is now.
+    // Read on every call, never cached: the marks follow the run file as it is now.
     const runs = await this.runs.view();
-    if (runs.pendingReview) return { status: "pending-review" };
     if (filter.limit !== undefined && (!Number.isFinite(filter.limit) || filter.limit < 0)) {
       return { status: "invalid", reason: "limit must be a non-negative number" };
     }

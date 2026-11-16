@@ -3670,7 +3670,8 @@ with its own owner rule:
   first host write, and every reader of run authority reads that file alone.
   Run fields written into a board row are dropped on load, give no authority
   and are not shown. While the run file is pending review, or is larger than the
-  read limit, the board list reports pending review and no template run is started or
+  read limit, every board row stays listed, each template row that names a run
+  is marked pending review on that read, and no template run is started or
   changed; an entry that does not parse is left in place and marks only its own
   row. Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified

@@ -1664,11 +1664,12 @@ export function WorkBoardPanel({
           }
         : undefined);
       if (!mountedRef.current) return;
-      setPendingReview("status" in result && result.status === "pending-review");
       if ("status" in result && result.status === "ok") {
         setItems(result.items);
+        setPendingReview(result.items.some((item) => item.templateRunError === "template-runs-pending-review"));
       } else {
         setItems([]);
+        setPendingReview(false);
       }
     } finally {
       if (mountedRef.current) {

@@ -169,17 +169,22 @@ it("marks only the row whose stored run is unreadable and keeps that entry untou
   expect((await readJson(runsPath)).runs[0]).toEqual(file.runs[0]);
 });
 
-it("withholds the list and starts no template run while the run file awaits review", async () => {
+it("keeps every row listed, marks only started template rows and starts no template run while the run file awaits review", async () => {
   const store = new WorkBoardStore(boardPath);
+  const ordinary = await store.create({ title: "Ordinary" });
+  if (ordinary.status !== "created") throw new Error("Missing item");
   const id = await templateItem(store);
   const ran = await templateItem(store);
   await store.beginRun(ran, "run-1", "2026-01-01", start());
   const board = await readFile(boardPath, "utf8");
   const runs = await readFile(runsPath, "utf8");
   holdRunFileForReview();
-  expect(await store.list()).toEqual({ status: "pending-review" });
+  const listed = await store.list();
+  if (listed.status !== "ok") throw new Error("Missing list");
+  expect(listed.items.map(item => [item.id, item.templateRunError])).toEqual([[ran, "template-runs-pending-review"], [id, undefined], [ordinary.itemId, undefined]]);
+  for (const unmarked of [ordinary.itemId, id]) expect((await store.get(unmarked) as { item: object }).item).not.toHaveProperty("templateRunError");
   expect(await store.getRun(ran)).toEqual({ status: "pending-review" });
-  expect(await store.get(ran)).toMatchObject({ status: "found", item: { templateRunError: "invalid-template-run" } });
+  expect(await store.get(ran)).toMatchObject({ status: "found", item: { templateRunError: "template-runs-pending-review" } });
   expect(await store.beginRun(id, "run-2", "2026-01-01", start())).toMatchObject({ status: "invalid", reason: "template-runs-pending-review" });
   const mutate = vi.fn((value: WorkflowRunRecord) => value);
   expect(await store.updateRun(ran, "run-1", mutate)).toEqual({ status: "pending-review" });
@@ -189,5 +194,7 @@ it("withholds the list and starts no template run while the run file awaits revi
   vi.restoreAllMocks();
   expect(await readFile(runsPath, "utf8")).toBe(runs);
   expect((await readJson(boardPath)).items.find((item: { id: number }) => item.id === id)).toEqual(JSON.parse(board).items.find((item: { id: number }) => item.id === id));
-  expect(await store.list()).toMatchObject({ status: "ok" });
+  const recovered = await store.list();
+  if (recovered.status !== "ok") throw new Error("Missing list");
+  expect(recovered.items.map(item => item.templateRunError)).toEqual([undefined, undefined, undefined]);
 });

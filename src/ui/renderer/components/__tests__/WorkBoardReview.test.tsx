@@ -24,9 +24,10 @@ function apiFor(items: WorkItemResolved[]) {
 
 afterEach(cleanup);
 describe("work board review", () => {
-  it("explains a pending-review board and clears the notice after a trusted refresh", async () => {
+  it("explains a run pending review beside the listed rows and clears the notice after a trusted refresh", async () => {
     const api = apiFor([result]);
-    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "pending-review" });
+    const pending: WorkItemResolved = { ...result, id: 3, title: "Template run", templateId: "template-1", runStatus: "executing", templateRunError: "template-runs-pending-review" };
+    vi.mocked(api.listWorkBoard).mockResolvedValueOnce({ status: "ok", items: [pending, result] });
     let changed = () => {};
     api.onWorkBoardItemChanged = handler => { changed = handler; return () => {}; };
     render(withApprovalSurface(<WorkBoardPanel api={api} />));
@@ -34,10 +35,10 @@ describe("work board review", () => {
     expect(notice).toHaveTextContent(t("settingsContent.tabPermissions"));
     expect(notice).toHaveTextContent(t("permissionsTab.homeTrustTitle"));
     expect(notice.textContent).not.toMatch(/\{(?:tabPermissions|homeTrustTitle)\}/);
-    expect(screen.queryByTestId("work-board-card")).toBeNull();
+    expect(screen.getAllByTestId("work-board-card")).toHaveLength(2);
     changed();
-    expect(await screen.findByTestId("work-board-card")).toBeTruthy();
-    expect(screen.queryByTestId("work-board-pending-review")).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId("work-board-pending-review")).toBeNull());
+    expect(screen.getAllByTestId("work-board-card")).toHaveLength(1);
   });
   it("places a completed run only in Review and opens its summary below the lanes", async () => {
     render(withApprovalSurface(<WorkBoardPanel api={apiFor([result])} />));

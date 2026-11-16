@@ -916,10 +916,44 @@ describe("workflow run file", () => {
     writeFileSync(path, oversized);
     expect(await store.get("run")).toEqual({ status: "pending-review" });
     expect(await store.update("run", value => value)).toEqual({ status: "pending-review" });
+    expect(readFileSync(path).length).toBe(oversized.length);
+  });
+
+  it.each([
+    ["a foreign edit", (trusted: string) => trusted.replace('"awaiting_gate"', '"passed"')],
+    ["growth past the size limit", (trusted: string) => JSON.stringify({ ...JSON.parse(trusted), padding: " ".repeat(16 * 1024 * 1024) })],
+  ])("keeps the board listed and marks only started template rows after %s", async (_name, change) => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { path } = await runStore(dir);
     const { WorkBoardStore } = await import("../../main/work-board-store.js");
     const board = new WorkBoardStore(join(dir, "work-board", "board.json"));
-    await expect(board.load()).resolves.toBeUndefined();
-    expect(await board.list()).toEqual({ status: "pending-review" });
-    expect(readFileSync(path).length).toBe(oversized.length);
+    const create = async (templateId?: string): Promise<number> => {
+      const made = await board.create({ title: "Work", ...(templateId ? { templateId } : {}) });
+      if (made.status !== "created") throw new Error("Missing item");
+      return made.itemId;
+    };
+    const begin = { ...pin, source: run.runStartedBy, stageRuns: run.stageRuns };
+    const ordinary = await create(); const unstarted = await create(pin.templateId); const started = await create(pin.templateId);
+    expect(await board.beginRun(ordinary, "run-ordinary", run.startedAt)).toMatchObject({ status: "updated" });
+    expect(await board.beginRun(started, "run", run.startedAt, begin)).toMatchObject({ status: "updated" });
+    const marks = async () => {
+      const listed = await board.list();
+      if (listed.status !== "ok") throw new Error("Missing list");
+      const got = await Promise.all([started, unstarted, ordinary].map(id => board.get(id)));
+      expect(got.map(found => found.status === "found" ? [found.item.id, found.item.templateRunError] : null)).toEqual(listed.items.map(item => [item.id, item.templateRunError]));
+      return listed.items.map(item => [item.id, item.templateRunError]);
+    };
+    expect(await marks()).toEqual([[started, undefined], [unstarted, undefined], [ordinary, undefined]]);
+
+    const trusted = readFileSync(path, "utf8"); const changed = change(trusted);
+    expect(changed).not.toBe(trusted); writeFileSync(path, changed);
+    expect(await marks()).toEqual([[started, "template-runs-pending-review"], [unstarted, undefined], [ordinary, undefined]]);
+    expect(await board.beginRun(unstarted, "other", run.startedAt, begin)).toMatchObject({ status: "invalid", reason: "template-runs-pending-review" });
+    expect(await board.updateRun(started, "run", value => value)).toEqual({ status: "pending-review" });
+    expect(await board.update(ordinary, { title: "Renamed" })).toMatchObject({ status: "updated" });
+    expect(readFileSync(path, "utf8")).toBe(changed);
+
+    writeFileSync(path, trusted);
+    expect(await marks()).toEqual([[started, undefined], [unstarted, undefined], [ordinary, undefined]]);
   });
 });

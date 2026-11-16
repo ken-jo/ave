@@ -114,8 +114,8 @@ export type WorkPlanDecideIpcResult =
   | { ok: false; reason: WorkPlanDecideRefusal | "user-gesture-required" | "invalid-input" };
 
 export interface WorkItemResolved extends WorkItem {
-  /** The run this row names cannot be used: its stored entry is unreadable, belongs to another row, or the run file awaits review. Never persisted. */
-  templateRunError?: "invalid-template-run";
+  /** The run this row names cannot be used: its stored entry is unreadable or belongs to another row, or the run file awaits review. Never persisted. */
+  templateRunError?: "invalid-template-run" | "template-runs-pending-review";
   /** Host-issued snapshot revision for conditional lifecycle mutations; never persisted. */
   mutationRevision?: string;
   status_resolved: WorkItemStatusResolved;
@@ -159,7 +159,6 @@ export interface WorkItemListFilter {
 // Discriminated outcomes let callers branch without parsing exception messages.
 
 export type WorkItemListResult =
-  | { status: "pending-review" }
   | { status: "ok"; items: WorkItemResolved[] }
   | { status: "invalid"; reason: string };
 
