@@ -120,7 +120,7 @@ async function run(command: string, options: {
         return { ok: true, firstBlockId: 1 };
       },
       waitDisclosure: async (_ref, _windowId, _sessionId, turnId) => ({
-        requestingSessionId: "pane", turnId, command, cwd: dir, blockId: 1, state: "done", exitCode: 0, output: "done\n", truncated: false,
+        requestingSessionId: "pane", turnId, command, cwd: dir, blockId: 1, state: "done", exitCode: 0, output: "done\n", outputChars: 5, truncated: false,
       }),
     },
   }));

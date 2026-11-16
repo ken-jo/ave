@@ -263,7 +263,7 @@ it("serves a host command's continuation only as its own span, only to the conve
   registerTerminalBlockTracker(terminalSessionFixture("terminal:9", "manual"), manual, WINDOW);
   const span = {
     requestingSessionId: "main", turnId: "turn-1", command: "npm test", cwd: "/repo", blockId: 4, state: "running" as const, exitCode: null,
-    output: "approved output", truncated: false,
+    output: "approved output", outputChars: 15, truncated: false,
   };
   const hostDisclosure = vi.fn((ref: { lane: string }, _windowId: number, sessionId: string, turnId: string, blockId: number) =>
     ref.lane === "manual" && sessionId === "main" && turnId === "turn-1" && blockId === 4 ? span : undefined);
@@ -274,7 +274,8 @@ it("serves a host command's continuation only as its own span, only to the conve
   expect(read.isError).toBeFalsy();
   expect(bodyOf(read.output as string, false)).toMatchObject({ terminal: "host", finished: false, block: { id: 4, output: "approved output" }, continuation: { blockId: 4 } });
   expect(read.output).not.toContain("HOST-SECRET");
-  expect(read.output).not.toContain("exitCode");
+  // A running span has the shape of a running block: no exit code yet, and the same fields as an isolated shell's block.
+  expect(bodyOf(read.output as string, false).block).toEqual({ id: 4, command: "npm test", cwd: "/repo", exitCode: null, status: "running", outputChars: 15, truncated: false, output: "approved output" });
   // A sub-agent of that conversation, another block, or a listing never reads it.
   for (const [input, context] of [
     [{ tabId: "terminal:9", terminalSessionId: "terminal:9/manual", blockId: 4 }, ctxFor("child")],

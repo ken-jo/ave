@@ -24,11 +24,14 @@ const MAX_OSC_PAYLOAD_CHARS = 64 * 1024;
 const MAX_COMMAND_CHARS = 4096;
 
 // Plain-text accumulator for one region of terminal output. Applies the CR / LF / backspace rules and keeps a head and a tail when the region grows past its budget.
-class PlainTextBuffer {
+export class PlainTextBuffer {
   private head = "";
   private tail = "";
   private line = "";
   private crPending = false;
+  // A space arrived right after a pending CR on a line that already ended in spaces: either an ordinary rewrite, or the middle of a shell's
+  // end-of-line padding (see `append`). The next character decides.
+  private heldSpace = false;
   private total = 0;
 
   constructor(
@@ -36,8 +39,25 @@ class PlainTextBuffer {
     private readonly tailChars: number,
   ) {}
 
+  /**
+   * zsh ends a command whose output has no final newline with a mark ("%", "#" for root), spaces to the end of the row, then CR, space, CR. On screen the
+   * spaces wrap the cursor to the next row, so the CR-space-CR never touches the output. This buffer has no columns: by its CR rule the space would replace
+   * the line and the unterminated output would be lost. So CR, space, CR after a line that ends in spaces is read as that padding: the line keeps its
+   * text, loses the padding and one default mark, and ends there. A custom PROMPT_EOL_MARK stays in the text.
+   */
   append(text: string): void {
     for (const ch of text) {
+      if (this.heldSpace) {
+        this.heldSpace = false;
+        if (ch === "\r") {
+          const kept = this.line.replace(/ +$/u, "").replace(/[%#]$/u, "");
+          if (kept) this.commit(`${kept}\n`);
+          this.line = "";
+          continue;
+        }
+        // Not padding: the space rewrote the line, as any character after a CR does.
+        this.line = " ";
+      }
       if (ch === "\n") {
         this.crPending = false;
         this.commit(`${this.line}\n`);
@@ -50,6 +70,10 @@ class PlainTextBuffer {
         if (ch === "\u007f") continue;
         if (this.crPending) {
           this.crPending = false;
+          if (ch === " " && this.line.endsWith(" ")) {
+            this.heldSpace = true;
+            continue;
+          }
           this.line = "";
         }
         this.line += ch;
@@ -86,12 +110,12 @@ class PlainTextBuffer {
 
   // The current, uncommitted line (what the cursor row shows).
   currentLine(): string {
-    return this.line;
+    return this.heldSpace ? " " : this.line;
   }
 
   // The last non-empty line, committed or not.
   lastNonEmptyLine(): string {
-    if (this.line.trim()) return this.line;
+    if (this.currentLine().trim()) return this.line;
     const committed = `${this.head}${this.tail}`.split("\n");
     for (let i = committed.length - 1; i >= 0; i--) {
       const candidate = committed[i] ?? "";
@@ -100,8 +124,9 @@ class PlainTextBuffer {
     return "";
   }
 
+  // Counts what `text()` would show before any omission: a whitespace-only cursor row is prompt padding, not output.
   chars(): number {
-    return this.total + this.line.length;
+    return this.total + (this.currentLine().trim() ? this.line.length : 0);
   }
 
   truncated(): boolean {
@@ -116,7 +141,7 @@ class PlainTextBuffer {
     const omitted = this.total - kept;
     const gap = omitted > 0 ? `\n[… ${omitted} characters omitted …]\n` : "";
     // A whitespace-only cursor row is padding the shell drew before its next prompt (end-of-line marks, cleared rows), not output.
-    const line = this.line.trim() ? this.line : "";
+    const line = this.currentLine().trim() ? this.line : "";
     return `${this.head}${gap}${tail}${line}`;
   }
 }

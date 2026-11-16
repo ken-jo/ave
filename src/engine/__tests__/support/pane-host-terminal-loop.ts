@@ -142,7 +142,7 @@ export async function createPaneHostTerminalLoop(
         return { ok: true, firstBlockId: 1 };
       },
       waitDisclosure: async (_ref, _windowId, sessionId, turnId) => ({
-        requestingSessionId: sessionId, turnId, command: "printf ready", cwd: dir, blockId: 1, state: "done", exitCode: 0, output: "ready", truncated: false,
+        requestingSessionId: sessionId, turnId, command: "printf ready", cwd: dir, blockId: 1, state: "done", exitCode: 0, output: "ready", outputChars: 5, truncated: false,
       }),
     },
   }));

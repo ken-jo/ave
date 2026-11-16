@@ -90,7 +90,7 @@ async function fixture(options: { outside?: boolean; mode?: "default" | "strict"
       },
       waitDisclosure: async (_ref, _window, _session, turnId) => ({
         requestingSessionId: SESSION_ID, turnId, command, cwd: root, blockId: 1,
-        state: "done", exitCode: 0, output: "ready", truncated: false,
+        state: "done", exitCode: 0, output: "ready", outputChars: 5, truncated: false,
       }),
     },
   }));
