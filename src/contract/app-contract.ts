@@ -773,6 +773,8 @@ export const CHANNELS = {
     capture: "ave:browser-workspace:capture",
     retryLoad: "ave:browser-workspace:retry-load",
     stopLoad: "ave:browser-workspace:stop-load",
+    showDownload: "ave:browser-workspace:show-download",
+    cancelDownload: "ave:browser-workspace:cancel-download",
     load: "ave:browser-workspace:load",
     answerPrompt: "ave:browser-workspace:answer-prompt",
     userNavigation: "ave:browser-workspace:user-navigation",

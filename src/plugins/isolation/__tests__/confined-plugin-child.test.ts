@@ -120,6 +120,8 @@ const CANDIDATE_MANIFEST: PluginManifest = {
   configSchema: { properties: { workspace: { type: "string" } } },
 };
 const SECRET_TEXT = "the-host-secret-the-child-must-not-read";
+/** A page's download staged until the user picks where to save it; host-only, so no confined child may read, list or add to its folder. */
+const STAGED_DOWNLOAD_TEXT = "a-staged-browser-download-the-child-must-not-read";
 /** The bytes the host-owned trust-anchor file holds, so "the child read it" is checkable. */
 const CA_TEXT = "-----BEGIN CERTIFICATE-----\nthe-corporate-trust-anchor\n";
 /** The bytes an un-migrated session file holds, so "nothing moved" is checkable. */
@@ -139,6 +141,8 @@ interface Fixture {
   readonly root: string;
   readonly aveHome: string;
   readonly secretFile: string;
+  /** `<AVE_HOME>/browser-downloads/<name>`, holding {@link STAGED_DOWNLOAD_TEXT}. */
+  readonly stagedDownload: string;
   readonly pluginRoot: string;
   readonly pluginDataDir: string;
   readonly outsideFile: string;
@@ -202,6 +206,9 @@ function makeFixture(): Fixture {
   const secretFile = join(secretsDir, "api-key.txt");
   const caFile = join(certsDir, "corp-ca.pem");
   writeFileSync(secretFile, SECRET_TEXT, "utf-8");
+  const stagedDownload = join(aveHome, "browser-downloads", "0123456789abcdef0123456789abcdef");
+  mkdirSync(dirname(stagedDownload), { mode: 0o700 });
+  writeFileSync(stagedDownload, STAGED_DOWNLOAD_TEXT, "utf-8");
   writeFileSync(caFile, CA_TEXT, "utf-8");
   writeFileSync(join(pluginDataDir, "own-data.txt"), "the plugin's own bytes", "utf-8");
   writeFileSync(join(pluginRoot, "own-code.js"), PLUGIN_CODE_BYTES, "utf-8");
@@ -220,6 +227,7 @@ function makeFixture(): Fixture {
     root,
     aveHome,
     secretFile,
+    stagedDownload,
     pluginRoot,
     pluginDataDir,
     outsideFile: join(root, "outside-the-jail.txt"),
@@ -290,7 +298,7 @@ function writeProbeModule(fx: Fixture): string {
   );
   writeFileSync(
     probePath,
-    `import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+    `import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -302,6 +310,9 @@ const describeModule = (value) => (value && typeof value === "object")
   : { kind: typeof value, browserWindow: "undefined" };
 const report = {
   readSecret: attempt(() => readFileSync(${JSON.stringify(fx.secretFile)}, "utf-8")),
+  readStagedDownload: attempt(() => readFileSync(${JSON.stringify(fx.stagedDownload)}, "utf-8")),
+  listStagedDownloads: attempt(() => readdirSync(${JSON.stringify(dirname(fx.stagedDownload))})),
+  writeStagedDownloads: attempt(() => { writeFileSync(${JSON.stringify(join(dirname(fx.stagedDownload), "planted"))}, "escaped"); return "written"; }),
   readOwnData: attempt(() => readFileSync(${JSON.stringify(join(fx.pluginDataDir, "own-data.txt"))}, "utf-8")),
   writeOwnData: attempt(() => { writeFileSync(${JSON.stringify(join(fx.pluginDataDir, "written-by-child.txt"))}, "hello"); return "written"; }),
   writeOutside: attempt(() => { writeFileSync(${JSON.stringify(fx.outsideFile)}, "escaped"); return "written"; }),
@@ -399,6 +410,9 @@ interface ProbeNamespaceAttempt extends ProbeModuleAttempt {
 
 interface ProbeReport {
   readonly readSecret: ProbeAttempt;
+  readonly readStagedDownload: ProbeAttempt;
+  readonly listStagedDownloads: ProbeAttempt;
+  readonly writeStagedDownloads: ProbeAttempt;
   readonly readOwnData: ProbeAttempt;
   readonly writeOwnData: ProbeAttempt;
   readonly writeOutside: ProbeAttempt;
@@ -1245,6 +1259,13 @@ describe("the confined child, against the real sandbox", () => {
       // The assertion the whole exercise exists for. Not "we called spawnConfinedChild"; an actual `readFileSync` of an actual secret file that actually failed.
       expect(report.readSecret.ok, JSON.stringify(report.readSecret)).toBe(false);
       expect(report.readSecret.value).toBeUndefined();
+      // A page's download staged until its Save dialog is answered: not readable, not listable, and nothing can be added beside it.
+      expect(report.readStagedDownload.ok, JSON.stringify(report.readStagedDownload)).toBe(false);
+      expect(report.readStagedDownload.value).toBeUndefined();
+      expect(report.listStagedDownloads.ok, JSON.stringify(report.listStagedDownloads)).toBe(false);
+      expect(report.writeStagedDownloads.ok, JSON.stringify(report.writeStagedDownloads)).toBe(false);
+      expect(readdirSync(dirname(fx.stagedDownload))).toEqual([basename(fx.stagedDownload)]);
+      expect(readFileSync(fx.stagedDownload, "utf-8")).toBe(STAGED_DOWNLOAD_TEXT);
 
       // The write jail, in both directions.
       expect(report.writeOutside.ok, JSON.stringify(report.writeOutside)).toBe(false);

@@ -42,6 +42,31 @@ but `0` or `1`, or output that is not one line fails the folder input with
 that cause: a broken install is reported, never guessed as a network folder.
 The Windows CI job runs the test.
 
+## Held directory operations
+
+The `--dir-rename`, `--dir-copy`, `--dir-remove` and `--dir-sweep` modes
+(`dir-ops.h`) put a browser download where the user chose and remove staged
+files. They take the same arguments, follow the same stdin/stdout protocol and
+exit with the same codes as the macOS helper (`native/macos-dir-ops/README.md`);
+the directory identity is the volume serial number and 64-bit file index that
+Node reports as `dev` and `ino`. These modes are the helper's only writes.
+
+Each held directory is opened component by component from the volume root,
+every component through the handle of the one above it (`NtCreateFile` with a
+root directory, `FILE_OPEN_REPARSE_POINT`), and a link, junction or mount point
+at any component is refused. The handles have traverse access and share read
+and write but not delete, so neither the held directory nor any folder above it
+can be renamed or removed until the mode ends; attribute-only handles would not
+block that. Every file is opened, created exclusively and removed relative to
+those handles, a rename names its target folder by handle
+(`FILE_RENAME_INFO.RootDirectory`), and a removal sets the disposition on the
+file's own handle. A copy reports `progress <bytes copied>` after each chunk
+and flushes `part` every 16 MiB. `src/main/browser/browser-download-files.ts`
+runs the modes under the same stall bound and kill path as on macOS, removing a
+killed copy's `part` the same way, and `scripts/test-windows-path-kind.mjs`
+covers each mode, refusals, and renames of held folders failing while a copy
+waits at its commit.
+
 ## OS system directory
 
 `ave-path-kind.exe --system-directory` prints the result of

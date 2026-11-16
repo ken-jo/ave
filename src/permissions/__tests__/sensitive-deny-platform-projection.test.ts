@@ -134,6 +134,7 @@ const MAIN_FLOOR: readonly string[] = [
   `${FIXTURE_HOME}/.ave/audit.log`,
   `${FIXTURE_HOME}/.ave/sessions/`,
   `${FIXTURE_HOME}/.ave/host-runtime/`,
+  `${FIXTURE_HOME}/.ave/browser-downloads/`,
   `${FIXTURE_HOME}/.ave/routine/`,
   `${FIXTURE_HOME}/.ave/terminal-state/`,
   `${FIXTURE_HOME}/.ave/plugins/auth-partitions.json`,

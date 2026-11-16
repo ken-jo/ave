@@ -1283,6 +1283,12 @@ export const en = {
   "browserContextMenu.forward": "Forward",
   "browserContextMenu.reload": "Reload",
   "browserContextMenu.openInSystemBrowser": "Open Page in System Browser",
+  "browserPagePrompt.downloadBlocked.title": "Download blocked",
+  "browserPagePrompt.downloadBlocked.rate": "A download was blocked because several Save dialogs from this site were cancelled:",
+  "browserPagePrompt.downloadBlocked.queue": "A download was not started because several downloads are already waiting for you to choose where to save them:",
+  "browserPagePrompt.downloadBlocked.size": "A download was stopped because it kept writing before you chose where to save it:",
+  "browserPagePrompt.downloadBlocked.staging": "A download was not started because the app's private download folder could not be verified:",
+  "browserPagePrompt.downloadBlocked.allow": "Allow downloads from this site",
   "browserPagePrompt.dialog.title": "Message from the page",
   "browserPagePrompt.dialog.says": "says:",
   "browserPagePrompt.dialog.ok": "OK",
@@ -1332,6 +1338,9 @@ export const en = {
   "browserWorkspace.download.completed": "Completed",
   "browserWorkspace.download.cancelled": "Cancelled",
   "browserWorkspace.download.interrupted": "Interrupted",
+  "browserWorkspace.download.blocked": "Blocked",
+  "browserWorkspace.download.show": "Show in folder",
+  "browserWorkspace.download.cancel": "Cancel",
 
   // chatPreviewRail
   "chatPreviewRail.hiddenForWidth": "Work panel and side chat hidden: tile is too narrow",

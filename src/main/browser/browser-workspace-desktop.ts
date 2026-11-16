@@ -1,8 +1,9 @@
 import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
-import { clipboard, dialog, Menu, session, shell, type BrowserWindow, type DownloadItem, type MenuItemConstructorOptions, type WebContents } from "electron";
+import { clipboard, dialog, Menu, session, shell, type BrowserWindow, type MenuItemConstructorOptions, type WebContents } from "electron";
+import type { ObservedDownload } from "./browser-download-staging.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
-import { browserWorkspaceUrl } from "../../shared/browser-workspace.js";
+import { browserWorkspaceUrl, type BrowserDownloadBlockReason } from "../../shared/browser-workspace.js";
 import type { BrowserTabControlState } from "../../shared/browser-surface.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
 import { getMainWindows } from "../app-state.js";
@@ -47,6 +48,11 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
       if (hold === null) requests.onBeforeRequest(null);
       else requests.onBeforeRequest((details, callback) => hold(details, (send) => callback(send ? {} : { cancel: true })));
     },
+    allowDownloads: (origin) => {
+      if (!downloadAllowance) throw new Error("browser-download-policy-missing");
+      downloadAllowance(origin);
+    },
+    showItemInFolder: (path) => shell.showItemInFolder(path),
     agentDrives: (guestId) => browserTabRegistry.isAgentActiveGuest(guestId),
     openExternal: (url) => shell.openExternal(url),
     promptPermission: async (request) => {
@@ -135,8 +141,17 @@ export function observeBrowserWorkspaceGuest(contents: WebContents, owner: MainW
   unsubscribe = subscribeBrowserGuestDestroyed(contents, dispose);
 }
 
+let downloadAllowance: ((origin: string) => void) | null = null;
+/** The download policy hands over how to lift a site's limit; the service calls it when the user asks in the tab. */
+export function registerBrowserDownloadAllowance(allow: (origin: string) => void): void { downloadAllowance = allow; }
+/** The download policy refused a download of this guest before it started. */
+export function reportBrowserWorkspaceBlockedDownload(guestId: number, name: string, reason: BrowserDownloadBlockReason): void {
+  const entry = guests.get(guestId);
+  if (entry && !entry.owner.isDestroyed()) getBrowserWorkspaceService().blockedDownload(entry.owner.id, guestId, name, reason);
+}
+
 // Called only after the existing native Save/rate policy admits the download.
-export function observeBrowserWorkspaceDownload(contents: WebContents, item: DownloadItem): void {
+export function observeBrowserWorkspaceDownload(contents: WebContents, item: ObservedDownload): void {
   const windowId = browserWorkspaceGuestWindowId(contents);
   if (windowId !== null) {
     getBrowserWorkspaceService().observeDownload(windowId, item);

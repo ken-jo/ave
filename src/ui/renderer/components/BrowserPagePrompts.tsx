@@ -104,6 +104,30 @@ function DialogPrompt({ tabId, prompt }: { tabId: string; prompt: Extract<Browse
   );
 }
 
+function DownloadBlockedPrompt({ tabId, prompt }: { tabId: string; prompt: Extract<BrowserPagePrompt, { kind: "downloadBlocked" }> }) {
+  const { t } = useTranslation();
+  const answer = (allow: boolean) => answerBrowserPagePrompt(tabId, prompt.id, { kind: "downloadBlocked", allow });
+  return (
+    <>
+      <p className="min-w-0 flex-1 text-xs">
+        <span className="break-all font-medium" data-testid="browser-page-prompt-origin">{prompt.origin}</span>{" "}
+        {t(`browserPagePrompt.downloadBlocked.${prompt.reason}`)}
+        {prompt.name ? <span className="break-all font-mono" data-testid="browser-page-prompt-target"> {prompt.name}</span> : null}
+      </p>
+      <div className="flex shrink-0 flex-wrap gap-1">
+        {prompt.reason === "rate" ? (
+          <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => answer(true)} data-testid="browser-page-prompt-allow-downloads">
+            {t("browserPagePrompt.downloadBlocked.allow")}
+          </Button>
+        ) : null}
+        <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => answer(false)} data-testid="browser-page-prompt-dismiss">
+          {t("browserPagePrompt.external.dismiss")}
+        </Button>
+      </div>
+    </>
+  );
+}
+
 function SignInPrompt({ tabId, prompt }: { tabId: string; prompt: Extract<BrowserPagePrompt, { kind: "signIn" }> }) {
   const { t } = useTranslation();
   const [username, setUsername] = useState("");
@@ -132,6 +156,7 @@ function SignInPrompt({ tabId, prompt }: { tabId: string; prompt: Extract<Browse
 const PROMPT_TITLES = {
   permission: "browserWorkspace.permissionPrompt.title", leave: "browserPagePrompt.leave.title", external: "browserPagePrompt.external.title",
   signIn: "browserPagePrompt.signIn.title", dialog: "browserPagePrompt.dialog.title",
+  downloadBlocked: "browserPagePrompt.downloadBlocked.title",
 } as const;
 
 export function BrowserPagePrompts({ tabId }: { tabId: string }) {
@@ -145,6 +170,7 @@ export function BrowserPagePrompts({ tabId }: { tabId: string }) {
       {prompt.kind === "permission" ? <PermissionPrompt tabId={tabId} prompt={prompt} /> : null}
       {prompt.kind === "leave" ? <LeavePrompt tabId={tabId} prompt={prompt} /> : null}
       {prompt.kind === "dialog" ? <DialogPrompt key={prompt.id} tabId={tabId} prompt={prompt} /> : null}
+      {prompt.kind === "downloadBlocked" ? <DownloadBlockedPrompt tabId={tabId} prompt={prompt} /> : null}
       {prompt.kind === "signIn" ? <SignInPrompt key={prompt.id} tabId={tabId} prompt={prompt} /> : null}
       {prompt.kind === "external" ? <ExternalPrompt tabId={tabId} prompt={prompt} /> : null}
     </section>

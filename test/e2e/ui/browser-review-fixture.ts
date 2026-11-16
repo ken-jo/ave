@@ -35,12 +35,13 @@ export function reviewPage(response: ServerResponse, body: string, title?: strin
   return true;
 }
 
-export async function launchReviewApp(): Promise<SeededElectronContext> {
+export async function launchReviewApp(options: { prepareHome?: (aveHome: string) => void } = {}): Promise<SeededElectronContext> {
   const settings = buildLlmSettings() as Record<string, unknown>;
   settings.appearance = { ...(settings.appearance as Record<string, unknown>), language: "en", mode: "light" };
   return launchSeededElectron({
     settings, seedApiKey: true, sessionTitle: "Browser review",
     historyRows: [{ role: "user", content: "Browser review", createdAt: Date.now() }],
+    ...(options.prepareHome ? { prepareHome: options.prepareHome } : {}),
   });
 }
 

@@ -72,11 +72,12 @@ test("an agent click that opens a dialog says so in its tool result, and opens n
   const { app, page } = context;
   try {
     await setWindowSize(app, 1280, 800, page);
-    // Any native message box would be the regression.
+    // Any native message box would be the regression; the system Save dialog is answered by closing it.
     await app.evaluate(({ dialog }) => {
       const state = globalThis as unknown as { reviewDialogs: number };
       state.reviewDialogs = 0;
       dialog.showMessageBox = (async () => { state.reviewDialogs += 1; return { response: 0, checkboxChecked: false }; }) as typeof dialog.showMessageBox;
+      dialog.showSaveDialog = (async () => ({ canceled: true, filePath: "" })) as typeof dialog.showSaveDialog;
     });
     await page.evaluate(async () => { await (window as unknown as { aveApi: { setApiKey(vendor: string, key: string): Promise<void> } }).aveApi.setApiKey("openai-compatible", "sk-e2e-loopback-page-events"); });
     await page.getByTestId(TEST_IDS.panePanelToggle).click();

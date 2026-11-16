@@ -362,6 +362,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "browserWorkspace": [
             "answerPrompt",
+            "cancelDownload",
             "capture",
             "clearHistory",
             "find",
@@ -374,6 +375,7 @@ describe("preload contextBridge world shape lock", () => {
             "retryLoad",
             "setBookmark",
             "setSitePermission",
+            "showDownload",
             "stopFind",
             "stopLoad",
             "userNavigation",

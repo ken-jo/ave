@@ -14,7 +14,8 @@ export interface BrowserLibraryEntry { readonly url: string; readonly title: str
 export interface BrowserSiteRule { readonly origin: string; readonly permission: BrowserSitePermission; readonly decision: BrowserSiteDecision }
 export interface BrowserDownload {
   readonly id: string; readonly name: string; readonly receivedBytes: number; readonly totalBytes: number;
-  readonly state: "progressing" | "completed" | "cancelled" | "interrupted"; readonly at: number;
+  /** `blocked`: the download was refused before it started (another Save dialog was open, or too many were cancelled). */
+  readonly state: "progressing" | "completed" | "cancelled" | "interrupted" | "blocked"; readonly at: number;
 }
 export interface BrowserWorkspaceTab {
   readonly tabId: string; readonly documentGeneration: number; readonly url: string; readonly title: string; readonly zoomFactor: number;
@@ -33,6 +34,10 @@ export interface BrowserLoadError {
 export const BROWSER_PAGE_PROMPT_LIMIT = 8;
 export const BROWSER_EXTERNAL_TARGET_LIMIT = 200;
 export const BROWSER_REALM_LIMIT = 100;
+/** `busy`: a Save dialog of the same page was still open. `rate`: the user cancelled several Save dialogs from this site in a row. */
+const BROWSER_DOWNLOAD_BLOCK_REASONS = ["rate", "queue", "size", "staging"] as const;
+export type BrowserDownloadBlockReason = typeof BROWSER_DOWNLOAD_BLOCK_REASONS[number];
+export interface BrowserDownloadTarget { readonly id: string }
 const BROWSER_DIALOG_TEXT_LIMIT = 2_000;
 /** Dialogs one document may show before the rest end unanswered. */
 export const BROWSER_DIALOG_DOCUMENT_LIMIT = 20;
@@ -63,6 +68,8 @@ export type BrowserPagePrompt =
   | { readonly id: string; readonly kind: "external"; readonly origin: string; readonly scheme: string; readonly target: string; readonly openable: boolean }
   /** The page called alert or confirm and waits for the answer. `message` is the page's text, shown as plain text. */
   | { readonly id: string; readonly kind: "dialog"; readonly origin: string; readonly dialog: BrowserPageDialogType; readonly message: string; readonly canBlock: boolean }
+  /** A download from this page was refused before it started. `allow` lifts the site's limit so the user can try again. */
+  | { readonly id: string; readonly kind: "downloadBlocked"; readonly origin: string; readonly name: string; readonly reason: BrowserDownloadBlockReason }
   /** The server asked for a user name and password (HTTP authentication). `realm` is the server's own label, as plain text. */
   | { readonly id: string; readonly kind: "signIn"; readonly origin: string; readonly realm: string };
 export type BrowserPromptAnswer =
@@ -71,6 +78,7 @@ export type BrowserPromptAnswer =
   | { readonly kind: "external"; readonly open: boolean }
   /** `block` also ends every later dialog of the same document unanswered. */
   | { readonly kind: "dialog"; readonly accept: boolean; readonly block: boolean }
+  | { readonly kind: "downloadBlocked"; readonly allow: boolean }
   /** Null cancels the request. The credentials are passed to the one request that asked and are stored nowhere. */
   | { readonly kind: "signIn"; readonly credentials: { readonly username: string; readonly password: string } | null };
 export interface BrowserPromptAnswerRequest { readonly tabId: string; readonly promptId: string; readonly answer: BrowserPromptAnswer }
@@ -130,6 +138,9 @@ export interface BrowserWorkspaceApi {
   answerPrompt(request: BrowserPromptAnswerRequest): Promise<BrowserWorkspaceResult<null>>;
   /** Stop the tab's load in progress. */
   stopLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
+  /** Reveal a finished download in the system's file manager. The path never leaves main. */
+  showDownload(request: BrowserDownloadTarget): Promise<BrowserWorkspaceResult<null>>;
+  cancelDownload(request: BrowserDownloadTarget): Promise<BrowserWorkspaceResult<null>>;
   onChanged(handler: (state: BrowserWorkspaceState) => void): () => void;
   /** Main refused a page guest before it attached; `src` is the address the refused element carried. */
   onAttachBlocked(handler: (blocked: BrowserAttachBlocked) => void): () => void;
@@ -151,7 +162,7 @@ export function parseBrowserAttachBlocked(value: unknown): BrowserAttachBlocked 
 export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
-  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest;
+  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest; showDownload: BrowserDownloadTarget; cancelDownload: BrowserDownloadTarget;
   answerPrompt: BrowserPromptAnswerRequest; userNavigation: BrowserWorkspaceTarget;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
@@ -184,6 +195,7 @@ function validPromptAnswer(value: unknown): boolean {
   if (value.kind === "dialog") {
     return keys(value, ["kind", "accept", "block"]) && typeof value.accept === "boolean" && typeof value.block === "boolean";
   }
+  if (value.kind === "downloadBlocked") return keys(value, ["kind", "allow"]) && typeof value.allow === "boolean";
   if (value.kind === "signIn") {
     if (!keys(value, ["kind", "credentials"])) return false;
     const credentials = value.credentials;
@@ -203,6 +215,10 @@ function validPrompt(value: unknown): boolean {
     return keys(value, ["id", "kind", "origin", "dialog", "message", "canBlock"]) && BROWSER_PAGE_DIALOG_TYPES.includes(value.dialog as BrowserPageDialogType)
       && typeof value.canBlock === "boolean" && typeof value.message === "string" && value.message === browserDialogText(value.message);
   }
+  if (value.kind === "downloadBlocked") {
+    return keys(value, ["id", "kind", "origin", "name", "reason"]) && BROWSER_DOWNLOAD_BLOCK_REASONS.includes(value.reason as BrowserDownloadBlockReason)
+      && typeof value.name === "string" && value.name.length <= 300 && value.name === browserPlainText(value.name);
+  }
   if (value.kind === "signIn") {
     return keys(value, ["id", "kind", "origin", "realm"]) && typeof value.realm === "string" && value.realm.length <= BROWSER_REALM_LIMIT && value.realm === browserPlainText(value.realm);
   }
@@ -217,6 +233,9 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
   if (operation === "getState" || operation === "clearHistory") return value === undefined ? undefined as BrowserWorkspaceRequests[K] : null;
   const record = value;
   if (!isRecord(record)) return null;
+  if (operation === "showDownload" || operation === "cancelDownload") {
+    return isRecord(value) && keys(value, ["id"]) && typeof value.id === "string" && value.id.length > 0 && value.id.length <= 200 ? { id: value.id } as BrowserWorkspaceRequests[K] : null;
+  }
   if (operation === "answerPrompt") {
     return keys(record, ["tabId", "promptId", "answer"]) && typeof record.tabId === "string" && record.tabId.length > 0 && record.tabId.length <= 200
       && typeof record.promptId === "string" && record.promptId.length > 0 && record.promptId.length <= 64 && validPromptAnswer(record.answer)
@@ -277,7 +296,7 @@ export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceStat
   })) return null;
   if (!Array.isArray(record.downloads) || record.downloads.length > BROWSER_WORKSPACE_LIMITS.downloads || !record.downloads.every((item) => {
     const download = item;
-    return isRecord(download) && keys(download, ["id", "name", "receivedBytes", "totalBytes", "state", "at"]) && typeof download.id === "string" && download.id.length > 0 && download.id.length <= 200 && typeof download.name === "string" && download.name.length <= 300 && typeof download.state === "string" && ["progressing", "completed", "cancelled", "interrupted"].includes(download.state) && [download.receivedBytes, download.totalBytes, download.at].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0);
+    return isRecord(download) && keys(download, ["id", "name", "receivedBytes", "totalBytes", "state", "at"]) && typeof download.id === "string" && download.id.length > 0 && download.id.length <= 200 && typeof download.name === "string" && download.name.length <= 300 && typeof download.state === "string" && ["progressing", "completed", "cancelled", "interrupted", "blocked"].includes(download.state) && [download.receivedBytes, download.totalBytes, download.at].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0);
   })) return null;
   const unique = (items: readonly unknown[], identity: (entry: Record<string, unknown>) => string) => new Set(items.map((entry) => identity(entry as Record<string, unknown>))).size === items.length;
   if (!unique(record.bookmarks as unknown[], (entry) => String(entry.url)) || !unique(record.history as unknown[], (entry) => String(entry.url)) || !unique(record.sitePermissions, (entry) => `${entry.origin}:${entry.permission}`) || !unique(record.tabs, (entry) => String(entry.tabId)) || !unique(record.pages, (entry) => String(entry.tabId)) || !unique(record.downloads, (entry) => String(entry.id))) return null;

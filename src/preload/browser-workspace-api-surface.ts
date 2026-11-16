@@ -58,6 +58,8 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
     load: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.load, request), (value): value is null => value === null),
     userNavigation: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.userNavigation, request), (value): value is null => value === null),
     answerPrompt: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.answerPrompt, request), (value): value is null => value === null),
+    showDownload: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.showDownload, request), (value): value is null => value === null),
+    cancelDownload: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.cancelDownload, request), (value): value is null => value === null),
     stopLoad: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.stopLoad, request), (value): value is null => value === null),
     onChanged: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {

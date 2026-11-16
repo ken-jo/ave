@@ -23,6 +23,10 @@ export const TOOL_TIMEOUT_POLICY = {
   browserNavigationReadyMs: 10_000,
   // Let committed pages expose useful content without waiting for ads or open streams.
   browserContentSettleMs: 1_500,
+  // A browser download file helper that says nothing for this long (holding its folders, between copy progress lines, or ending
+  // after its outcome or a stop) is killed and its step fails. Startup awaits the boot sweep under the same bound.
+  // A copy reports after each 1 MiB chunk and syncs every 16 MiB; a single slow chunk or flush can reach the stall bound.
+  browserDownloadHelperStallMs: 30_000,
   // A fresh local identity probe bounds synchronous remote authority checks.
   tailnetIdentityProbeMs: 5_000,
   // Cold native startup includes module loading, compilation and account-provider initialization before READY.

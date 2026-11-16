@@ -48,5 +48,7 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   register("load", (windowId, request) => service.load(windowId, request));
   register("userNavigation", (windowId, request) => service.userNavigation(windowId, request));
   register("answerPrompt", (windowId, request) => service.answerPrompt(windowId, request));
+  register("showDownload", (windowId, request) => service.showDownload(windowId, request));
+  register("cancelDownload", (windowId, request) => service.cancelDownload(windowId, request));
   register("stopLoad", (windowId, request) => service.stopLoad(windowId, request));
 }

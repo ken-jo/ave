@@ -356,6 +356,30 @@ describe("StdioTransport ASRT wrap — gate ON", () => {
     expect(egressInvocationOwner(commandId)).toBeUndefined();
   });
 
+  it("keeps a confined server out of the browser download staging folder, for reading and for writing", async () => {
+    gateActive = true;
+    const fake = new FakeChildProcess();
+    fake.responses = handshakeResponses("fs");
+    wrapWorkerCommandMock.mockResolvedValueOnce({ argv: ["/bin/bash", "-c", "sandbox-exec ... ave-mcp-fs"], env: { ...process.env } });
+    spawnMock.mockReturnValueOnce(fake);
+    const sandboxRoot = join(aveHome(), "mcp", "fs", "sandbox");
+    const client = new McpClient({ id: "fs", transport: "stdio", command: "ave-mcp-fs", sandboxRoot },
+      governanceWithPolicy(buildPolicy([stdioApproval("fs", "ave-mcp-fs")])), new ToolRegistry(), unusedNetworkFetch);
+    await client.connect();
+    const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { filesystem: { allowWrite: string[]; allowRead: string[]; denyRead: string[]; denyWrite: string[] } }];
+    const staging = join(aveHome(), "browser-downloads");
+    const staged = join(staging, "0123456789abcdef0123456789abcdef");
+    const trim = (path: string) => path.replace(/[\\/]+$/, "");
+    // A deny row at the folder or above it covers it; no grant may name the folder, a path in it, or a directory holding it.
+    const covers = (row: string, path: string) => path === trim(row) || path.startsWith(`${trim(row)}/`);
+    expect(options.filesystem.denyRead.some((row) => covers(row, staged))).toBe(true);
+    expect(options.filesystem.denyWrite.map(trim)).toContain(staging);
+    for (const grant of [...options.filesystem.allowRead, ...options.filesystem.allowWrite]) {
+      expect(covers(grant, staged) || covers(staging, trim(grant)), grant).toBe(false);
+    }
+    await client.disconnect();
+  });
+
   it("absent sandboxRoot grants only the fresh process HOME and the server's temp directory (never real HOME/cwd)", async () => {
     gateActive = true;
     const fake = new FakeChildProcess();

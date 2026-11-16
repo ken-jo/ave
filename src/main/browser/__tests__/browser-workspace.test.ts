@@ -28,14 +28,14 @@ async function setup() {
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
   let hostType = "webview";
   const guest = Object.assign(events, { id: 7, session: {}, mainFrame: { frameTreeNodeId: 1 }, getType: () => hostType, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
-  const onError = vi.fn(); const promptPermission = vi.fn(async () => true); const openExternal = vi.fn(async () => undefined);
+  const onError = vi.fn(); const promptPermission = vi.fn(async () => true); const openExternal = vi.fn(async () => undefined); const allowDownloads = vi.fn(); const showItemInFolder = vi.fn();
   let requestHold: BrowserPageRequestHold | null = null;
   const holdPageRequests = vi.fn((hold: BrowserPageRequestHold | null) => { requestHold = hold; });
   /** A request reaching the browser profile: how the hold answered it, or "unheld" when nothing holds requests. */
   const pageRequest = (request: BrowserPageRequest) => requestHold === null ? Promise.resolve("unheld" as const) : new Promise<boolean>((resolve) => requestHold?.(request, resolve));
-  const service = new BrowserWorkspaceService({ openExternal, agentDrives: () => agentDriving, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
+  const service = new BrowserWorkspaceService({ openExternal, allowDownloads, showItemInFolder, agentDrives: () => agentDriving, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, runtimeDialog, setAgentDriving: (next: boolean) => { agentDriving = next; }, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, allowDownloads, showItemInFolder, runtimeDialog, setAgentDriving: (next: boolean) => { agentDriving = next; }, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 const PAGE_FRAME = { origin: "https://site.example", detached: false, top: { frameTreeNodeId: 1 } };
@@ -64,7 +64,8 @@ describe("browser workspace service", () => {
     expect(state.revision).toBeGreaterThan(first.revision);
     expect(state.downloads[0]).toMatchObject({ name: "report.txt", state: "completed", receivedBytes: 50 });
     expect((await service.getState(2)).downloads).toEqual([]);
-    expect(item.setSavePath).not.toHaveBeenCalled(); expect(item.getSavePath).not.toHaveBeenCalled();
+    // The save location is never preset; where the user saved is read only when a download completes and stays in main.
+    expect(item.setSavePath).not.toHaveBeenCalled(); expect(item.getSavePath).toHaveBeenCalledOnce();
     expect(JSON.stringify(state.downloads)).not.toMatch(/savePath|hostPath|file:\/\//);
   });
   it("denies an unrelated site decision and observes guest lifecycle without replacing existing listeners", async () => {
@@ -621,5 +622,37 @@ describe("browser workspace service", () => {
     setLive(false);
     expect(service.openLinkTab(1, 7, "https://other.example/", true)).toBe(false);
     expect(opened).toHaveBeenCalledOnce();
+  });
+  it("lists a refused download as blocked, says so in the tab, and lifts the site's limit only when the user asks", async () => {
+    const { service, guest, allowDownloads } = await setup();
+    service.observeGuest(1, guest);
+    service.blockedDownload(1, 7, "report\u0007.pdf", "rate");
+    service.blockedDownload(1, 7, "second.pdf", "rate");
+    const state = await service.getState(1);
+    expect(state.downloads.map((download) => [download.name, download.state])).toEqual([["second.pdf", "blocked"], ["report.pdf", "blocked"]]);
+    expect(state.pages[0]?.prompts).toEqual([{ id: state.pages[0]?.prompts[0]?.id, kind: "downloadBlocked", origin: "https://site.example", name: "report.pdf", reason: "rate" }]);
+    expect(parseBrowserWorkspaceState(state)).not.toBeNull();
+    service.answerPrompt(1, { tabId: "browser:one", promptId: String(state.pages[0]?.prompts[0]?.id), answer: { kind: "downloadBlocked", allow: false } });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(allowDownloads).not.toHaveBeenCalled();
+    service.blockedDownload(1, 7, "third.pdf", "rate");
+    service.answerPrompt(1, { tabId: "browser:one", promptId: String((await service.getState(1)).pages[0]?.prompts[0]?.id), answer: { kind: "downloadBlocked", allow: true } });
+    await vi.waitFor(() => expect(allowDownloads).toHaveBeenCalledWith("https://site.example"));
+  });
+  it("reveals a finished download by its id without the path leaving main, and cancels one in progress", async () => {
+    const { service, showItemInFolder } = await setup();
+    const item = Object.assign(new EventEmitter(), { getFilename: () => "report.txt", getReceivedBytes: () => 10, getTotalBytes: () => 10, getSavePath: () => "/Users/me/Downloads/report.txt", cancel: vi.fn() });
+    service.observeDownload(1, item as never);
+    const id = String((await service.getState(1)).downloads[0]?.id);
+    expect(() => service.showDownload(1, { id })).toThrow("bad-request");
+    service.cancelDownload(1, { id });
+    expect(item.cancel).toHaveBeenCalledOnce();
+    expect(() => service.cancelDownload(2, { id })).toThrow("bad-request");
+    item.emit("done", {}, "completed");
+    expect(() => service.cancelDownload(1, { id })).toThrow("bad-request");
+    expect(() => service.showDownload(2, { id })).toThrow("bad-request");
+    service.showDownload(1, { id });
+    expect(showItemInFolder).toHaveBeenCalledWith("/Users/me/Downloads/report.txt");
+    expect(JSON.stringify(await service.getState(1))).not.toContain("/Users/me");
   });
 });

@@ -1,13 +1,14 @@
 import { setBrowserGuestZoomFactor } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
-import type { DownloadItem, WebContents } from "electron";
+import type { WebContents } from "electron";
+import type { ObservedDownload } from "./browser-download-staging.js";
 import { describeLoadFailure, describePageCrash } from "./browser-load-failure.js";
 import { dismissedPageDialogs } from "./browser-page-dialogs.js";
 import { BrowserPagePrompts } from "./browser-page-prompts.js";
 
 /** The runtime's request to show a page dialog: (details, respond). */
 const RUN_DIALOG = "-run-dialog";
-import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserDownloadBlockReason, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -28,6 +29,9 @@ export interface BrowserWorkspaceServiceDeps {
   /** Asks in a native dialog, for a guest that has no tab panel to ask in (a popup window). */
   promptPermission(request: BrowserPermissionPrompt): Promise<boolean>;
   fullscreenAvailable(windowId: number): boolean;
+  /** Lifts the site's download limit after the user asked for that in the tab. */
+  allowDownloads(origin: string): void;
+  showItemInFolder(path: string): void;
   /** Whether the agent is driving this page right now: its dialogs are dismissed and reported, never shown. */
   agentDrives(guestId: number): boolean;
   /** Hands a link to the system's own app for it. Called only for a scheme in BROWSER_EXTERNAL_SCHEMES the user agreed to. */
@@ -58,6 +62,8 @@ export class BrowserWorkspaceService {
   private readonly downloads = new Map<number, BrowserDownload[]>();
   private readonly downloadDisposers = new Map<number, Set<() => void>>();
   private readonly listeners = new Set<(windowId: number, state: BrowserWorkspaceState) => void>();
+  private readonly activeDownloads = new Map<string, ObservedDownload>();
+  private readonly downloadPaths = new Map<string, string>();
   private readonly openTabListeners = new Set<(windowId: number, request: BrowserOpenTab) => void>();
   private readonly windows = new Set<number>();
   private readonly publishedTabs = new Map<number, string>();
@@ -406,8 +412,36 @@ export class BrowserWorkspaceService {
     unsubscribe = subscribeBrowserGuestDestroyed(guest, dispose);
     return dispose;
   }
-  observeDownload(windowId: number, item: DownloadItem): void {
+  /**
+   * A download was refused before it started. It is listed as blocked, and a tab says so with the reason and an offer
+   * to lift the site's limit, instead of the click doing nothing.
+   */
+  blockedDownload(windowId: number, guestId: number, rawName: string, reason: BrowserDownloadBlockReason): void {
+    const name = browserPlainText(rawName).slice(0, 300);
+    const entry: BrowserDownload = { id: `download-${this.nextDownload++}`, name, receivedBytes: 0, totalBytes: 0, state: "blocked", at: (this.deps.now ?? Date.now)() };
+    this.downloads.set(windowId, [entry, ...(this.downloads.get(windowId) ?? [])].slice(0, BROWSER_WORKSPACE_LIMITS.downloads));
+    const guest = this.guests.get(guestId)?.guest;
+    const url = guest && !guest.isDestroyed() ? browserWorkspaceUrl(guest.getURL()) : null;
+    if (url === null || this.tabIdForGuest(windowId, guestId) === null || this.prompts.list(guestId).some((prompt) => prompt.kind === "downloadBlocked")) { this.notify(); return; }
+    const origin = new URL(url).origin;
+    void this.prompts.ask(guestId, "downloadBlocked", { origin, name, reason }).then((answer) => { if (answer?.allow) this.deps.allowDownloads(origin); });
+  }
+  showDownload(windowId: number, request: BrowserDownloadTarget): null {
+    const path = this.downloadPaths.get(`${windowId}:${request.id}`);
+    if (path === undefined) throw new Error("bad-request");
+    this.deps.showItemInFolder(path);
+    return null;
+  }
+  cancelDownload(windowId: number, request: BrowserDownloadTarget): null {
+    const item = this.activeDownloads.get(`${windowId}:${request.id}`);
+    if (item === undefined) throw new Error("bad-request");
+    item.cancel();
+    return null;
+  }
+  observeDownload(windowId: number, item: ObservedDownload): void {
     const id = `download-${this.nextDownload++}`;
+    const key = `${windowId}:${id}`;
+    this.activeDownloads.set(key, item);
     const at = (this.deps.now ?? Date.now)();
     const update = (state: BrowserDownload["state"]) => {
       const entry: BrowserDownload = { id, name: item.getFilename().slice(0, 300), receivedBytes: Math.max(0, item.getReceivedBytes()), totalBytes: Math.max(0, item.getTotalBytes()), state, at };
@@ -416,7 +450,14 @@ export class BrowserWorkspaceService {
     };
     const updated = (_event: unknown, state: "progressing" | "interrupted") => update(state);
     const dispose = () => { item.removeListener("updated", updated); item.removeListener("done", done); this.downloadDisposers.get(windowId)?.delete(dispose); };
-    const done = (_event: unknown, state: "completed" | "cancelled" | "interrupted") => { dispose(); update(state); };
+    const done = (_event: unknown, state: "completed" | "cancelled" | "interrupted") => {
+      dispose();
+      this.activeDownloads.delete(key);
+      // Where the file was saved stays in main; the renderer names a download only by its id.
+      const path = state === "completed" ? item.getSavePath() : "";
+      if (path) this.downloadPaths.set(key, path);
+      update(state);
+    };
     const disposers = this.downloadDisposers.get(windowId) ?? new Set<() => void>();
     disposers.add(dispose);
     this.downloadDisposers.set(windowId, disposers);
@@ -426,7 +467,8 @@ export class BrowserWorkspaceService {
   }
   invalidateWindow(windowId: number): void { this.previews.invalidateWindow(windowId); this.captures.invalidateWindow(windowId); }
   disposeWindow(windowId: number): void {
-    this.windows.delete(windowId); this.publishedTabs.delete(windowId); this.downloads.delete(windowId); this.previews.disposeWindow(windowId);
+    this.windows.delete(windowId); this.publishedTabs.delete(windowId); this.downloads.delete(windowId);
+    for (const map of [this.activeDownloads, this.downloadPaths]) for (const key of [...map.keys()]) if (key.startsWith(`${windowId}:`)) map.delete(key); this.previews.disposeWindow(windowId);
     this.captures.invalidateWindow(windowId);
     for (const dispose of this.downloadDisposers.get(windowId) ?? []) dispose();
     this.downloadDisposers.delete(windowId);

@@ -6,7 +6,7 @@ import { configureE2eWindowPolicy } from "../../../../src/main/e2e-window-policy
 import { app, BrowserWindow, nativeImage, type WebContents, type WebPreferences } from "electron";
 import { createServer } from "node:http";
 import { promises as fs } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { getMainWindows, registerMainWindow, unregisterMainWindow } from "../../../../src/main/app-state.js";
 import { browserTabRegistry, type BrowserTabOpOutcome } from "../../../../src/main/browser/browser-tab-registry.js";
 import { trackBrowserGuest } from "../../../../src/main/browser/browser-guest-tracking.js";
@@ -294,7 +294,8 @@ void app.whenReady().then(async () => {
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("Workspace fixture server did not start");
   origin = `http://127.0.0.1:${address.port}`;
-  installSideBrowserPartitionPolicy();
+  // The checkout's resources folder: the fixture runs from the repository root, as the app does in development.
+  installSideBrowserPartitionPolicy(resolve("resources"));
   await reset();
   const fixture: WorkspaceNativeFixture = {
     ready: true, read, find, preview, hiddenPreviewRace, savePermissionRules, permissionState, resetWithPendingPermissionWrites, reset, assertClean,

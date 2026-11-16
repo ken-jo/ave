@@ -1285,6 +1285,12 @@ export const ko: Record<MessageCatalogKey, string> = {
   "browserContextMenu.forward": "앞으로",
   "browserContextMenu.reload": "새로 고침",
   "browserContextMenu.openInSystemBrowser": "시스템 브라우저에서 페이지 열기",
+  "browserPagePrompt.downloadBlocked.title": "다운로드 차단됨",
+  "browserPagePrompt.downloadBlocked.rate": "이 사이트의 저장 창을 여러 번 취소해서 다운로드를 차단했습니다:",
+  "browserPagePrompt.downloadBlocked.queue": "저장 위치를 고르기를 기다리는 다운로드가 이미 여러 개라서 다운로드를 시작하지 않았습니다:",
+  "browserPagePrompt.downloadBlocked.size": "저장 위치를 고르기 전에 계속 데이터를 받아서 다운로드를 멈췄습니다:",
+  "browserPagePrompt.downloadBlocked.staging": "앱의 비공개 다운로드 폴더를 확인할 수 없어 다운로드를 시작하지 않았습니다:",
+  "browserPagePrompt.downloadBlocked.allow": "이 사이트의 다운로드 허용",
   "browserPagePrompt.dialog.title": "페이지에서 보낸 메시지",
   "browserPagePrompt.dialog.says": "사이트의 메시지:",
   "browserPagePrompt.dialog.ok": "확인",
@@ -1333,6 +1339,9 @@ export const ko: Record<MessageCatalogKey, string> = {
   "browserWorkspace.download.progressing": "다운로드 중",
   "browserWorkspace.download.completed": "완료",
   "browserWorkspace.download.cancelled": "취소됨",
+  "browserWorkspace.download.blocked": "차단됨",
+  "browserWorkspace.download.show": "폴더에서 보기",
+  "browserWorkspace.download.cancel": "취소",
   "browserWorkspace.download.interrupted": "중단됨",
 
   // chatPreviewRail
