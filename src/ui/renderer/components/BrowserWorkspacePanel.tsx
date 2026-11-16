@@ -1,6 +1,6 @@
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import { useRef, useState } from "react";
-import { BROWSER_SITE_DECISIONS, BROWSER_SITE_PERMISSIONS, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, type BrowserFindRequest, type BrowserWorkspaceApi, type BrowserWorkspaceResult } from "../../../shared/browser-workspace.js";
+import { BROWSER_SITE_DECISIONS, BROWSER_SITE_PERMISSIONS, BROWSER_VISITORS, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, type BrowserFindRequest, type BrowserWorkspaceApi, type BrowserWorkspaceResult } from "../../../shared/browser-workspace.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useBrowserWorkspace, type BrowserWorkspaceTabsClient } from "../hooks/use-browser-workspace.js";
 import { BrowserWorkspaceCard } from "./BrowserWorkspaceCard.js";
@@ -19,6 +19,7 @@ export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, 
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
   const [operationFailed, setOperationFailed] = useState(false);
+  const [historyQuery, setHistoryQuery] = useState("");
   const [clearKinds, setClearKinds] = useState({ history: true, siteData: false, cache: false });
   const [dataCleared, setDataCleared] = useState(false);
   const [siteCleared, setSiteCleared] = useState<string | null>(null);
@@ -67,7 +68,28 @@ export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, 
         })}
       </ul></div>
       <div><h3 className="mb-1 font-semibold">{t("browserWorkspace.bookmarks")}</h3>{state.bookmarks.length === 0 && <EmptyState className="p-0" title={t("browserWorkspace.empty")} />}<ul>{state.bookmarks.map((entry) => <li key={entry.url}><button type="button" className="max-w-full truncate text-left underline" title={entry.url} onClick={() => onOpenUrl(entry.url)}>{entry.title || entry.url}</button></li>)}</ul></div>
-      <div><h3 className="mb-1 font-semibold">{t("browserWorkspace.history")}</h3><button type="button" className="mb-1 rounded border px-2 py-1" disabled={state.history.length === 0} onClick={() => void run(api.clearHistory())}>{t("browserWorkspace.clearHistory")}</button><ul>{state.history.map((entry) => <li key={entry.url}><button type="button" className="max-w-full truncate text-left underline" title={entry.url} onClick={() => onOpenUrl(entry.url)}>{entry.title || entry.url}</button></li>)}</ul></div>
+      <div data-testid="browser-history"><h3 className="mb-1 font-semibold">{t("browserWorkspace.history")}</h3>
+        <div className="mb-1 flex flex-wrap items-center gap-1">
+          <input aria-label={t("browserWorkspace.historySearch")} placeholder={t("browserWorkspace.historySearch")} className="w-40 min-w-0 rounded border bg-transparent px-1 py-1" value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} data-testid="browser-history-search" />
+          <button type="button" className="rounded border px-2 py-1" disabled={state.history.length === 0} onClick={() => void run(api.clearHistory())}>{t("browserWorkspace.clearHistory")}</button>
+        </div>
+        {BROWSER_VISITORS.map((by) => {
+          const needle = historyQuery.trim().toLowerCase();
+          const entries = state.history.filter((entry) => entry.by === by && (needle === "" || entry.title.toLowerCase().includes(needle) || entry.url.toLowerCase().includes(needle)));
+          // The agent's visits are listed apart, and only when there are any: they are not the user's own browsing.
+          if (by === "agent" && !state.history.some((entry) => entry.by === "agent")) return null;
+          return <div key={by} data-testid={`browser-history-${by}`}>
+            {by === "agent" && <h4 className="mb-1 mt-2 font-medium text-muted-foreground">{t("browserWorkspace.historyAgent")}</h4>}
+            {entries.length === 0 && <EmptyState className="p-0" title={t(needle === "" ? "browserWorkspace.empty" : "browserWorkspace.historyNoMatch")} />}
+            <ul>{entries.map((entry) => <li key={entry.url} className="flex items-center justify-between gap-2" data-testid="browser-history-row">
+              <button type="button" className="min-w-0 truncate text-left underline" title={entry.url} onClick={() => onOpenUrl(entry.url)}>{entry.title || entry.url}</button>
+              <span className="flex shrink-0 items-center gap-1 text-muted-foreground"><time dateTime={new Date(entry.at).toISOString()}>{new Date(entry.at).toLocaleString()}</time>
+                <button type="button" className="rounded border px-1" aria-label={t("browserWorkspace.historyDelete", { title: entry.title || entry.url })} onClick={() => void run(api.deleteHistory({ url: entry.url, by: entry.by }))} data-testid="browser-history-delete">{t("browserWorkspace.historyDeleteShort")}</button>
+              </span>
+            </li>)}</ul>
+          </div>;
+        })}
+      </div>
       <fieldset disabled={!target || !origin}><legend className="mb-1 font-semibold">{t("browserWorkspace.sitePermissions")}</legend><p className="mb-1 break-all text-muted-foreground">{origin ?? t("browserWorkspace.noSite")}</p>
         <button type="button" className="mb-1 rounded border px-2 py-1" data-testid="browser-clear-site-data" onClick={() => { if (target && origin) void run(api.clearSiteData({ ...target, origin })).then((ok) => setSiteCleared(ok ? origin : null)); }}>{t("browserWorkspace.clearSiteData")}</button>
         {siteCleared !== null && siteCleared === origin && <p role="status" className="mb-1 text-muted-foreground" data-testid="browser-site-data-cleared">{t("browserWorkspace.siteDataCleared")}</p>}

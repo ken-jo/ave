@@ -8,7 +8,7 @@ import { BrowserPagePrompts } from "./browser-page-prompts.js";
 
 /** The runtime's request to show a page dialog: (details, respond). */
 const RUN_DIALOG = "-run-dialog";
-import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserClearDataRequest, type BrowserClearSiteDataRequest, type BrowserDownloadBlockReason, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserClearDataRequest, type BrowserClearSiteDataRequest, type BrowserDownloadBlockReason, type BrowserHistoryTarget, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -193,6 +193,7 @@ export class BrowserWorkspaceService {
   }
   async setBookmark(windowId: number, request: BrowserBookmarkRequest): Promise<BrowserWorkspaceState> { await this.store.setBookmark(request); await this.changed(); return this.getState(windowId); }
   async clearHistory(windowId: number): Promise<BrowserWorkspaceState> { await this.store.clearHistory(); await this.changed(); return this.getState(windowId); }
+  async deleteHistory(windowId: number, request: BrowserHistoryTarget): Promise<BrowserWorkspaceState> { await this.store.deleteHistory(request); await this.changed(); return this.getState(windowId); }
   /** Clears what the user chose from the profile every tab shares. Site data ends sign-ins; the pages stay open. */
   async clearData(windowId: number, request: BrowserClearDataRequest): Promise<BrowserWorkspaceState> {
     const parsed = parseBrowserWorkspaceRequest("clearData", request);
@@ -294,7 +295,7 @@ export class BrowserWorkspaceService {
     const invalidateView = () => { this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const leaving = () => { this.prompts.dismissGuest(guestId); invalidateView(); };
     const replaced = () => { const entry = this.guests.get(guestId); if (entry) { entry.generation++; entry.dialogs = 0; entry.dialogsBlocked = false; } this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); invalidateView(); };
-    const visit = () => { if (!guest.isDestroyed()) void this.store.recordVisit(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
+    const visit = () => { if (!guest.isDestroyed()) void this.store.recordVisit(guest.getURL(), guest.getTitle(), this.deps.agentDrives(guestId) ? "agent" : "user").then(() => this.changed()).catch(this.deps.onError); };
     const started = (_event: unknown, url: string, inPlace: boolean, mainFrame: boolean) => {
       if (!mainFrame) return;
       // The browser commits its own internal error document after a failure; that is not the user leaving the failed page.

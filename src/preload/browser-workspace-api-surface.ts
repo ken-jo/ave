@@ -58,6 +58,7 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
     load: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.load, request), (value): value is null => value === null),
     userNavigation: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.userNavigation, request), (value): value is null => value === null),
     answerPrompt: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.answerPrompt, request), (value): value is null => value === null),
+    deleteHistory: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.deleteHistory, request), state),
     clearData: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.clearData, request), state),
     clearSiteData: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.clearSiteData, request), (value): value is null => value === null),
     showDownload: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.showDownload, request), (value): value is null => value === null),

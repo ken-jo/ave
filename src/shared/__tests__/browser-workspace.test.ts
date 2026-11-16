@@ -62,6 +62,14 @@ describe("browser workspace wire validation", () => {
     expect(parseBrowserWorkspaceState({ ...STATE, sitePermissions: [{ ...rule, permission: "unknown" }] })).toBeNull();
     expect(parseBrowserWorkspaceState({ ...STATE, history: Array.from({ length: BROWSER_WORKSPACE_LIMITS.history + 1 }, (_, i) => ({ url: `https://site.example/${i}`, title: "", at: i })) })).toBeNull();
     expect(parseBrowserWorkspaceState({ ...STATE, revision: -1 })).toBeNull();
+    // A time a date cannot hold would break every view that shows it as a date.
+    for (const at of [1e20, 8.64e15 + 1, 1.5, -1, Number.NaN]) {
+      expect(parseBrowserWorkspaceState({ ...STATE, history: [{ url: "https://site.example/", title: "", at, by: "user" }] })).toBeNull();
+      expect(parseBrowserWorkspaceState({ ...STATE, bookmarks: [{ url: "https://site.example/", title: "", at }] })).toBeNull();
+    }
+    const latest = { ...STATE, history: [{ url: "https://site.example/", title: "", at: 8.64e15, by: "user" }] };
+    expect(parseBrowserWorkspaceState(latest)).toEqual(latest);
+    expect(new Date(8.64e15).toISOString()).toBe("+275760-09-13T00:00:00.000Z");
     expect(parseBrowserWorkspaceState({ ...STATE, storageStatus: ["ready"] })).toBeNull();
     expect(parseBrowserWorkspaceState({ ...STATE, downloads: [{ id: "download-1", name: "a", receivedBytes: 1, totalBytes: 1, at: 1, state: ["completed"] }] })).toBeNull();
     expect(parseBrowserWorkspaceRequest("setBookmark", { url: `https://site.example/${"가".repeat(1000)}`, title: "", bookmarked: true })).toBeNull();
@@ -157,5 +165,13 @@ describe("browser workspace wire validation", () => {
     }
     expect(parseBrowserWorkspaceRequest("clearSiteData", { ...TARGET, origin: "https://site.example" })).toEqual({ ...TARGET, origin: "https://site.example" });
     for (const bad of [{ ...TARGET, origin: "https://site.example/path" }, { ...TARGET }, { ...TARGET, origin: "https://site.example", windowId: 2 }]) expect(parseBrowserWorkspaceRequest("clearSiteData", bad)).toBeNull();
+  });
+  it("requires every history entry to say who visited, and lets the user and the agent each hold one entry per address", () => {
+    const entry = { url: "https://site.example/", title: "Site", at: 1 };
+    expect(parseBrowserWorkspaceState({ ...STATE, history: [{ ...entry, by: "user" }, { ...entry, by: "agent" }] })).not.toBeNull();
+    for (const history of [[entry], [{ ...entry, by: "page" }], [{ ...entry, by: "user" }, { ...entry, by: "user" }]]) expect(parseBrowserWorkspaceState({ ...STATE, history })).toBeNull();
+    expect(parseBrowserWorkspaceState({ ...STATE, bookmarks: [{ ...entry, by: "user" }] })).toBeNull();
+    expect(parseBrowserWorkspaceRequest("deleteHistory", { url: "https://site.example/", by: "agent" })).toEqual({ url: "https://site.example/", by: "agent" });
+    for (const bad of [{ url: "https://site.example/" }, { url: "https://site.example/", by: "page" }, { url: "site.example", by: "user" }]) expect(parseBrowserWorkspaceRequest("deleteHistory", bad)).toBeNull();
   });
 });

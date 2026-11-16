@@ -12,7 +12,7 @@ function setup() {
   let stateChanged!: (state: BrowserWorkspaceState) => void;
   let controlChanged!: (state: BrowserTabControlState) => void;
   const unsubscribe = vi.fn();
-  const api = { getState: vi.fn(async () => ({ ok: true, value: STATE })), onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { stateChanged = handler; return unsubscribe; }), setBookmark: vi.fn(async () => ({ ok: true, value: STATE })), clearHistory: vi.fn(async () => ({ ok: true, value: STATE })), setSitePermission: vi.fn(async () => ({ ok: true, value: STATE })), find: vi.fn(async () => ({ ok: true, value: { requestId: 1 } })), stopFind: vi.fn(async () => ({ ok: true, value: null })), zoom: vi.fn(async () => ({ ok: true, value: { factor: 1.5 } })), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })), clearData: vi.fn(async () => ({ ok: true, value: STATE })), clearSiteData: vi.fn(async () => ({ ok: true, value: null })), showDownload: vi.fn(async () => ({ ok: true, value: null })), cancelDownload: vi.fn(async () => ({ ok: true, value: null })) } as unknown as BrowserWorkspaceApi;
+  const api = { getState: vi.fn(async () => ({ ok: true, value: STATE })), onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { stateChanged = handler; return unsubscribe; }), setBookmark: vi.fn(async () => ({ ok: true, value: STATE })), clearHistory: vi.fn(async () => ({ ok: true, value: STATE })), setSitePermission: vi.fn(async () => ({ ok: true, value: STATE })), find: vi.fn(async () => ({ ok: true, value: { requestId: 1 } })), stopFind: vi.fn(async () => ({ ok: true, value: null })), zoom: vi.fn(async () => ({ ok: true, value: { factor: 1.5 } })), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })), clearData: vi.fn(async () => ({ ok: true, value: STATE })), clearSiteData: vi.fn(async () => ({ ok: true, value: null })), showDownload: vi.fn(async () => ({ ok: true, value: null })), deleteHistory: vi.fn(async () => ({ ok: true, value: STATE })), cancelDownload: vi.fn(async () => ({ ok: true, value: null })) } as unknown as BrowserWorkspaceApi;
   const control = { revision: 1, tabs: [] } as BrowserTabControlState;
   const browserTabs = { getState: vi.fn(async () => control), onControl: vi.fn((handler: (state: BrowserTabControlState) => void) => { controlChanged = handler; return unsubscribe; }) };
   const onOpenUrl = vi.fn();
@@ -214,6 +214,28 @@ it("clears the chosen browsing data, and one site's data for the site the tab sh
   expect(screen.getByTestId("browser-site-data-cleared")).toBeTruthy();
 });
 
+it("lists the agent's visits apart from the user's, with a time, a search and a remove button per visit", async () => {
+  intersection();
+  const { props, api, stateChanged } = setup();
+  render(<BrowserWorkspacePanel {...props} />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByText("browserWorkspace.library"));
+  expect(screen.queryByTestId("browser-history-agent")).toBeNull();
+  act(() => stateChanged({ ...STATE, revision: 2, history: [
+    { url: "https://docs.example/guide", title: "Guide", at: Date.UTC(2026, 10, 16, 9), by: "user" },
+    { url: "https://shop.example/cart", title: "Cart", at: Date.UTC(2026, 10, 16, 10), by: "user" },
+    { url: "https://docs.example/guide", title: "Guide", at: Date.UTC(2026, 10, 16, 11), by: "agent" },
+  ] }));
+  const user = screen.getByTestId("browser-history-user");
+  expect(user.querySelectorAll('[data-testid="browser-history-row"]')).toHaveLength(2);
+  expect(screen.getByTestId("browser-history-agent").querySelectorAll('[data-testid="browser-history-row"]')).toHaveLength(1);
+  expect(user.querySelector("time")?.getAttribute("datetime")).toBe("2026-11-16T09:00:00.000Z");
+  fireEvent.change(screen.getByTestId("browser-history-search"), { target: { value: "SHOP" } });
+  expect(user.querySelectorAll('[data-testid="browser-history-row"]')).toHaveLength(1);
+  expect(screen.getByTestId("browser-history-agent").textContent).toContain("browserWorkspace.historyNoMatch");
+  await act(async () => { fireEvent.click(user.querySelector('[data-testid="browser-history-delete"]') as HTMLElement); });
+  expect(api.deleteHistory).toHaveBeenCalledWith({ url: "https://shop.example/cart", by: "user" });
+});
 it("shows an actual option for a site factor outside the preset list", async () => {
  const { props, stateChanged } = setup();
  render(<BrowserWorkspacePanel {...props} />);
@@ -226,4 +248,17 @@ it("shows an actual option for a site factor outside the preset list", async () 
  expect(select.selectedOptions[0]?.textContent).toBe("173%");
  fireEvent.change(select, { target: { value: "1.25" } });
  expect(props.api.zoom).toHaveBeenCalledWith({ tabId: "browser:one", documentGeneration: 4, factor: 1.25 });
+});
+it("history shows the earliest and the latest time the saved state can hold", async () => {
+  intersection();
+  const { props, stateChanged } = setup();
+  render(<BrowserWorkspacePanel {...props} />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByText("browserWorkspace.library"));
+  act(() => stateChanged({ ...STATE, revision: 2, history: [
+    { url: "https://late.example/", title: "Late", at: 8.64e15, by: "user" },
+    { url: "https://early.example/", title: "Early", at: 0, by: "user" },
+  ] }));
+  expect([...screen.getByTestId("browser-history-user").querySelectorAll("time")].map((time) => time.getAttribute("datetime")))
+    .toEqual(["+275760-09-13T00:00:00.000Z", "1970-01-01T00:00:00.000Z"]);
 });

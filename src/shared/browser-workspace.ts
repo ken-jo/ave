@@ -11,6 +11,11 @@ export const BROWSER_WORKSPACE_LIMITS = {
 export type BrowserSitePermission = "camera" | "microphone" | "geolocation" | "notifications" | "fullscreen";
 export type BrowserSiteDecision = "ask" | "allow" | "block";
 export interface BrowserLibraryEntry { readonly url: string; readonly title: string; readonly at: number }
+/** Who was acting on the page when it was visited. The agent's visits are kept apart from the user's own history. */
+export const BROWSER_VISITORS = ["user", "agent"] as const;
+export type BrowserVisitor = typeof BROWSER_VISITORS[number];
+export interface BrowserHistoryEntry extends BrowserLibraryEntry { readonly by: BrowserVisitor }
+export interface BrowserHistoryTarget { readonly url: string; readonly by: BrowserVisitor }
 export interface BrowserSiteRule { readonly origin: string; readonly permission: BrowserSitePermission; readonly decision: BrowserSiteDecision }
 export interface BrowserDownload {
   readonly id: string; readonly name: string; readonly receivedBytes: number; readonly totalBytes: number;
@@ -96,7 +101,7 @@ export interface BrowserPageStatus {
   readonly prompts: readonly BrowserPagePrompt[];
 }
 export interface BrowserWorkspaceState {
-  readonly revision: number; readonly bookmarks: readonly BrowserLibraryEntry[]; readonly history: readonly BrowserLibraryEntry[];
+  readonly revision: number; readonly bookmarks: readonly BrowserLibraryEntry[]; readonly history: readonly BrowserHistoryEntry[];
   readonly sitePermissions: readonly BrowserSiteRule[]; readonly downloads: readonly BrowserDownload[];
   readonly tabs: readonly BrowserWorkspaceTab[]; readonly pages: readonly BrowserPageStatus[]; readonly storageStatus: "ready" | "corrupt";
   readonly capabilities: { readonly fullscreen: boolean };
@@ -142,6 +147,8 @@ export interface BrowserWorkspaceApi {
   answerPrompt(request: BrowserPromptAnswerRequest): Promise<BrowserWorkspaceResult<null>>;
   /** Stop the tab's load in progress. */
   stopLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
+  /** Remove one visit from the history: the user's own, or one of the agent's. */
+  deleteHistory(request: BrowserHistoryTarget): Promise<BrowserWorkspaceResult<BrowserWorkspaceState>>;
   clearData(request: BrowserClearDataRequest): Promise<BrowserWorkspaceResult<BrowserWorkspaceState>>;
   clearSiteData(request: BrowserClearSiteDataRequest): Promise<BrowserWorkspaceResult<null>>;
   /** Reveal a finished download in the system's file manager. The path never leaves main. */
@@ -168,7 +175,7 @@ export function parseBrowserAttachBlocked(value: unknown): BrowserAttachBlocked 
 export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
-  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest; showDownload: BrowserDownloadTarget; cancelDownload: BrowserDownloadTarget; clearData: BrowserClearDataRequest; clearSiteData: BrowserClearSiteDataRequest;
+  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest; showDownload: BrowserDownloadTarget; cancelDownload: BrowserDownloadTarget; clearData: BrowserClearDataRequest; deleteHistory: BrowserHistoryTarget; clearSiteData: BrowserClearSiteDataRequest;
   answerPrompt: BrowserPromptAnswerRequest; userNavigation: BrowserWorkspaceTarget;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
@@ -242,6 +249,10 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
   if (operation === "showDownload" || operation === "cancelDownload") {
     return isRecord(value) && keys(value, ["id"]) && typeof value.id === "string" && value.id.length > 0 && value.id.length <= 200 ? { id: value.id } as BrowserWorkspaceRequests[K] : null;
   }
+  if (operation === "deleteHistory") {
+    if (!isRecord(value) || !keys(value, ["url", "by"]) || browserWorkspaceUrl(value.url) !== value.url || !BROWSER_VISITORS.includes(value.by as BrowserVisitor)) return null;
+    return { url: value.url, by: value.by } as BrowserWorkspaceRequests[K];
+  }
   if (operation === "clearData") {
     if (!isRecord(value) || !keys(value, ["history", "siteData", "cache"])) return null;
     const { history, siteData, cache } = value;
@@ -283,17 +294,23 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
   return record as unknown as BrowserWorkspaceRequests[K];
 }
 
+/** The latest moment a date can hold. A stored time beyond it, or one that is not a whole millisecond, is corrupt. */
+const BROWSER_LAST_TIME = 8.64e15;
+function browserTimestamp(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= BROWSER_LAST_TIME;
+}
+
 /** Persisted collections and host snapshots share this record validator. */
 export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceState | null {
   const record = value;
   if (!isRecord(record) || !keys(record, ["revision", "bookmarks", "history", "sitePermissions", "downloads", "tabs", "pages", "storageStatus", "capabilities"]) || !Number.isSafeInteger(record.revision) || Number(record.revision) < 0 || typeof record.storageStatus !== "string" || !["ready", "corrupt"].includes(record.storageStatus)) return null;
   const capabilities = record.capabilities;
   if (!isRecord(capabilities) || !keys(capabilities, ["fullscreen"]) || typeof capabilities.fullscreen !== "boolean") return null;
-  const library = (items: unknown, limit: number): boolean => Array.isArray(items) && items.length <= limit && items.every((item) => {
+  const library = (items: unknown, limit: number, visited = false): boolean => Array.isArray(items) && items.length <= limit && items.every((item) => {
     const entry = item;
-    return isRecord(entry) && keys(entry, ["url", "title", "at"]) && browserWorkspaceUrl(entry.url) === entry.url && typeof entry.title === "string" && entry.title.length <= BROWSER_WORKSPACE_LIMITS.titleLength && typeof entry.at === "number" && Number.isFinite(entry.at) && entry.at >= 0;
+    return isRecord(entry) && keys(entry, visited ? ["url", "title", "at", "by"] : ["url", "title", "at"]) && (!visited || BROWSER_VISITORS.includes(entry.by as BrowserVisitor)) && browserWorkspaceUrl(entry.url) === entry.url && typeof entry.title === "string" && entry.title.length <= BROWSER_WORKSPACE_LIMITS.titleLength && browserTimestamp(entry.at);
   });
-  if (!library(record.bookmarks, BROWSER_WORKSPACE_LIMITS.bookmarks) || !library(record.history, BROWSER_WORKSPACE_LIMITS.history)) return null;
+  if (!library(record.bookmarks, BROWSER_WORKSPACE_LIMITS.bookmarks) || !library(record.history, BROWSER_WORKSPACE_LIMITS.history, true)) return null;
   if (!Array.isArray(record.sitePermissions) || record.sitePermissions.length > BROWSER_WORKSPACE_LIMITS.sitePermissions || !record.sitePermissions.every((item) => {
     const rule = item;
     return isRecord(rule) && keys(rule, ["origin", "permission", "decision"]) && browserWorkspaceOrigin(rule.origin) && BROWSER_SITE_PERMISSIONS.includes(rule.permission as BrowserSitePermission) && BROWSER_SITE_DECISIONS.includes(rule.decision as BrowserSiteDecision);
@@ -315,7 +332,7 @@ export function parseBrowserWorkspaceState(value: unknown): BrowserWorkspaceStat
     return isRecord(download) && keys(download, ["id", "name", "receivedBytes", "totalBytes", "state", "at"]) && typeof download.id === "string" && download.id.length > 0 && download.id.length <= 200 && typeof download.name === "string" && download.name.length <= 300 && typeof download.state === "string" && ["progressing", "completed", "cancelled", "interrupted", "blocked"].includes(download.state) && [download.receivedBytes, download.totalBytes, download.at].every((number) => typeof number === "number" && Number.isFinite(number) && number >= 0);
   })) return null;
   const unique = (items: readonly unknown[], identity: (entry: Record<string, unknown>) => string) => new Set(items.map((entry) => identity(entry as Record<string, unknown>))).size === items.length;
-  if (!unique(record.bookmarks as unknown[], (entry) => String(entry.url)) || !unique(record.history as unknown[], (entry) => String(entry.url)) || !unique(record.sitePermissions, (entry) => `${entry.origin}:${entry.permission}`) || !unique(record.tabs, (entry) => String(entry.tabId)) || !unique(record.pages, (entry) => String(entry.tabId)) || !unique(record.downloads, (entry) => String(entry.id))) return null;
+  if (!unique(record.bookmarks as unknown[], (entry) => String(entry.url)) || !unique(record.history as unknown[], (entry) => `${String(entry.by)}:${String(entry.url)}`) || !unique(record.sitePermissions, (entry) => `${entry.origin}:${entry.permission}`) || !unique(record.tabs, (entry) => String(entry.tabId)) || !unique(record.pages, (entry) => String(entry.tabId)) || !unique(record.downloads, (entry) => String(entry.id))) return null;
   return record as unknown as BrowserWorkspaceState;
 }
 

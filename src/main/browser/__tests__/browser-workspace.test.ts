@@ -658,7 +658,7 @@ describe("browser workspace service", () => {
   it("clears only what the user chose from the shared profile, and one site's data only for the site the tab shows", async () => {
     const { service, guest, clearSiteData, clearCache } = await setup();
     service.observeGuest(1, guest);
-    await service.store.recordVisit("https://site.example/", "Site");
+    await service.store.recordVisit("https://site.example/", "Site", "user");
     expect((await service.clearData(1, { history: false, siteData: true, cache: false })).history).toHaveLength(1);
     expect(clearSiteData).toHaveBeenCalledWith(null);
     expect(clearCache).not.toHaveBeenCalled();
@@ -671,5 +671,16 @@ describe("browser workspace service", () => {
     await expect(service.clearSiteData(1, { ...TARGET, documentGeneration: 9, origin: "https://site.example" })).rejects.toThrow("stale-document");
     expect(await service.clearSiteData(1, { ...TARGET, origin: "https://site.example" })).toBeNull();
     expect(clearSiteData).toHaveBeenLastCalledWith("https://site.example");
+  });
+  it("records a visit as the agent's while the agent drives the page, apart from the user's history, and deletes one entry", async () => {
+    const { service, guest, events, setAgentDriving } = await setup();
+    service.observeGuest(1, guest);
+    events.emit("did-navigate", {}, "https://site.example/");
+    await vi.waitFor(async () => expect((await service.getState(1)).history).toHaveLength(1));
+    setAgentDriving(true);
+    events.emit("did-navigate", {}, "https://site.example/");
+    await vi.waitFor(async () => expect((await service.getState(1)).history.map((entry) => entry.by)).toEqual(["agent", "user"]));
+    const state = await service.deleteHistory(1, { url: "https://site.example/", by: "user" });
+    expect(state.history.map((entry) => entry.by)).toEqual(["agent"]);
   });
 });

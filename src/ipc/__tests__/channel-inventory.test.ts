@@ -322,6 +322,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:browser-workspace:clear-data",
         "ave:browser-workspace:clear-history",
         "ave:browser-workspace:clear-site-data",
+        "ave:browser-workspace:delete-history",
         "ave:browser-workspace:find",
         "ave:browser-workspace:get-state",
         "ave:browser-workspace:load",

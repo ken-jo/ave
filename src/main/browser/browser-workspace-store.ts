@@ -1,15 +1,20 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import { openFeatureNamespace, type FeatureNamespaceHandle } from "../storage/feature-namespace.js";
-import { BROWSER_WORKSPACE_LIMITS, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState, type BrowserBookmarkRequest, type BrowserLibraryEntry, type BrowserSiteDecision, type BrowserSitePermission, type BrowserSiteRule } from "../../shared/browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState, type BrowserBookmarkRequest, type BrowserHistoryEntry, type BrowserHistoryTarget, type BrowserLibraryEntry, type BrowserVisitor, type BrowserSiteDecision, type BrowserSitePermission, type BrowserSiteRule } from "../../shared/browser-workspace.js";
 
+/**
+ * Version 2 records who visited each history entry. A version 1 file could not tell, and every visit in it was listed as
+ * the user's history; it is read as exactly that (each entry becomes the user's) and is written back as version 2 by the
+ * next change. Any other shape is corrupt.
+ */
 interface PersistedWorkspace {
-  readonly version: 1;
+  readonly version: 2;
   readonly bookmarks: readonly BrowserLibraryEntry[];
-  readonly history: readonly BrowserLibraryEntry[];
+  readonly history: readonly BrowserHistoryEntry[];
   readonly sitePermissions: readonly BrowserSiteRule[];
 }
-const EMPTY: PersistedWorkspace = { version: 1, bookmarks: [], history: [], sitePermissions: [] };
+const EMPTY: PersistedWorkspace = { version: 2, bookmarks: [], history: [], sitePermissions: [] };
 const MAX_STORAGE_BYTES = 24_000_000;
 const STORAGE_IO_ERRORS: ReadonlySet<string> = new Set(["EACCES", "EPERM", "EIO", "ENOSPC", "EROFS", "ENOTDIR", "EISDIR", "EFBIG", "EMFILE", "ENFILE", "ENAMETOOLONG", "EBADF", "ENODEV", "ELOOP", "ESTALE", "EBUSY", "EINVAL", "EDQUOT", "ENOENT"]);
 function storageError(error: unknown): never {
@@ -40,8 +45,14 @@ export class BrowserWorkspaceStore {
       try { parsed = JSON.parse(raw); } catch { this.status = "corrupt"; return; }
       if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) { this.status = "corrupt"; return; }
       const record = parsed as Record<string, unknown>;
-      if (record.version !== 1 || Object.keys(record).length !== 4 || !parseBrowserWorkspaceState({ revision: 0, bookmarks: record.bookmarks, history: record.history, sitePermissions: record.sitePermissions, downloads: [], tabs: [], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } })) { this.status = "corrupt"; return; }
-      this.value = record as unknown as PersistedWorkspace;
+      if ((record.version !== 1 && record.version !== 2) || Object.keys(record).length !== 4) { this.status = "corrupt"; return; }
+      const history = record.version === 2 ? record.history
+        : Array.isArray(record.history) && record.history.every((entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry) && !Object.hasOwn(entry, "by"))
+          ? record.history.map((entry: object) => ({ ...entry, by: "user" }))
+          : null;
+      const state = parseBrowserWorkspaceState({ revision: 0, bookmarks: record.bookmarks, history, sitePermissions: record.sitePermissions, downloads: [], tabs: [], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } });
+      if (!state) { this.status = "corrupt"; return; }
+      this.value = { version: 2, bookmarks: state.bookmarks, history: state.history, sitePermissions: state.sitePermissions };
     })();
   }
 
@@ -73,16 +84,23 @@ export class BrowserWorkspaceStore {
     ].slice(0, BROWSER_WORKSPACE_LIMITS.bookmarks) }));
   }
 
-  async recordVisit(url: string, title: string): Promise<void> {
+  async recordVisit(url: string, title: string, by: BrowserVisitor): Promise<void> {
     const parsed = parseBrowserWorkspaceRequest("setBookmark", { url, title: title.slice(0, BROWSER_WORKSPACE_LIMITS.titleLength), bookmarked: true });
     if (!parsed) return;
-    await this.update((value) => ({ ...value, history: [{ url: parsed.url, title: parsed.title, at: this.now() }, ...value.history.filter((entry) => entry.url !== parsed.url)].slice(0, BROWSER_WORKSPACE_LIMITS.history) }));
+    await this.update((value) => ({ ...value, history: [{ url: parsed.url, title: parsed.title, at: this.now(), by }, ...value.history.filter((entry) => entry.url !== parsed.url || entry.by !== by)].slice(0, BROWSER_WORKSPACE_LIMITS.history) }));
   }
   async updateHistoryTitle(url: string, title: string): Promise<void> {
     const parsed = parseBrowserWorkspaceRequest("setBookmark", { url, title: title.slice(0, BROWSER_WORKSPACE_LIMITS.titleLength), bookmarked: true });
     if (!parsed) return;
     await this.update((value) => value.history.some((entry) => entry.url === parsed.url && entry.title !== parsed.title)
       ? { ...value, history: value.history.map((entry) => entry.url === parsed.url ? { ...entry, title: parsed.title } : entry) }
+      : value);
+  }
+  async deleteHistory(target: BrowserHistoryTarget): Promise<void> {
+    const parsed = parseBrowserWorkspaceRequest("deleteHistory", target);
+    if (!parsed) throw new Error("bad-request");
+    await this.update((value) => value.history.some((entry) => entry.url === parsed.url && entry.by === parsed.by)
+      ? { ...value, history: value.history.filter((entry) => entry.url !== parsed.url || entry.by !== parsed.by) }
       : value);
   }
   clearHistory(): Promise<void> { return this.update((value) => ({ ...value, history: [] })); }

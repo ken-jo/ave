@@ -220,7 +220,7 @@ async function reset(): Promise<void> {
     if (!window.isDestroyed()) window.destroy();
   }
   await previousWorkspace.store.snapshot();
-  await openFeatureNamespace("browser-workspace").writeJson("workspace.json", { version: 1, ...WORKSPACE_BASELINE });
+  await openFeatureNamespace("browser-workspace").writeJson("workspace.json", { version: 2, ...WORKSPACE_BASELINE });
   await clearNativeBrowserStorage(AVE_SIDE_BROWSER_PARTITION);
   nativeEvents.length = 0;
   requestId = "";
@@ -282,7 +282,7 @@ async function assertClean(): Promise<void> {
   await assertNativeBrowserState(owner, guest, rendererTabId);
   const state = await permissionState();
   const expected = { ...WORKSPACE_BASELINE, storageStatus: "ready" };
-  if (!isDeepStrictEqual(state.disk, { version: 1, ...WORKSPACE_BASELINE })
+  if (!isDeepStrictEqual(state.disk, { version: 2, ...WORKSPACE_BASELINE })
     || !isDeepStrictEqual(state.live, expected) || !isDeepStrictEqual(state.reloaded, expected)) {
     throw new Error("Native fixture retained dirty persisted workspace state");
   }

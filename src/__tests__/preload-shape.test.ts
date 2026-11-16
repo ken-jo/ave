@@ -367,6 +367,7 @@ describe("preload contextBridge world shape lock", () => {
             "clearData",
             "clearHistory",
             "clearSiteData",
+            "deleteHistory",
             "find",
             "getState",
             "load",
