@@ -13,7 +13,18 @@ describe('memory embedding graph', () => {
     for (const edge of edges) { expect(edge.a < edge.b).toBe(true); for (const id of [edge.a, edge.b]) degrees.set(id, (degrees.get(id) ?? 0) + 1); }
     expect(Math.max(...degrees.values())).toBeLessThanOrEqual(6);
     expect(new Set(edges.map(e => JSON.stringify([e.a,e.b]))).size).toBe(edges.length);
-    expect(semanticLinks([record(0), record(1)], [vector(1), vector(0)])).toEqual([]);
+    expect(semanticLinks([record(0), record(1)], [vector(1), vector(0)])).toHaveLength(1);
+  });
+  it('links ranked neighbours below an absolute floor and enforces identity and finite scores', () => {
+    const records = Array.from({ length: 24 }, (_, i) => record(i));
+    const vectors = records.map((_, i) => { const v = Array<number>(384).fill(0); v[0] = Math.sqrt(0.82); v[i + 1] = Math.sqrt(0.18); return v; });
+    const edges = semanticLinks(records, vectors, 17);
+    expect(edges).toHaveLength(17);
+    expect(edges.every(edge => edge.similarity >= 0.80 && edge.similarity <= 0.84)).toBe(true);
+    const degrees = records.map(r => edges.filter(e => e.a === r.memoryId || e.b === r.memoryId).length);
+    expect(Math.max(...degrees)).toBeLessThanOrEqual(6);
+    expect(semanticLinks([record(0), record(0)], [vector(), vector()])).toEqual([]);
+    expect(() => semanticLinks([record(0), record(1)], [Array(384).fill(NaN), vector()])).toThrow('Non-finite similarity');
   });
   it('is deterministic, reuses only current cache keys and prunes removed memories', async () => {
     let calls = 0;

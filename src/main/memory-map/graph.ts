@@ -4,7 +4,6 @@ import type { EmbeddingNamespace, GraphSnapshot, MemoryMapRecord, MemoryMapProgr
 import type { Embedder } from './embedding.js';
 import { LOCAL_MODEL_ID, LOCAL_MODEL_REVISION, PREPROCESSING_REVISION } from './model-manifest.js';
 export const LOCAL_NAMESPACE: EmbeddingNamespace = Object.freeze({ source: 'local', modelId: LOCAL_MODEL_ID, modelRevision: LOCAL_MODEL_REVISION, preprocessingRevision: PREPROCESSING_REVISION, dimensions: 384 });
-export const SIMILARITY_CUTOFF = 0.85;
 export const PROJECTION_SEED = 42;
 export interface VectorCache { [key: string]: number[] }
 export const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -13,6 +12,7 @@ export const catalogRevision = (records: MemoryMapRecord[]): string => digest(JS
 export function cosine(a: number[], b: number[]): number {
   if (a.length !== 384 || b.length !== 384) throw new Error('Expected 384 embedding dimensions');
   let value = 0; for (let i = 0; i < 384; i++) value += a[i]! * b[i]!;
+  if (!Number.isFinite(value)) throw new Error('Non-finite similarity');
   return Math.max(-1, Math.min(1, value));
 }
 export function semanticLinks(records: MemoryMapRecord[], vectors: number[][], budget = 17000): GraphSnapshot['edges'] {
@@ -28,11 +28,11 @@ export function semanticLinks(records: MemoryMapRecord[], vectors: number[][], b
     if (row.length > 12) row.pop();
   };
   for (let a = 0; a < records.length; a++) for (let b = a + 1; b < records.length; b++) {
+    if (records[a]!.memoryId === records[b]!.memoryId) continue;
     const score = cosine(vectors[a]!, vectors[b]!); admit(a, b, score); admit(b, a, score);
   }
   const candidates = new Map<string, { a: string; b: string; similarity: number; reciprocal: boolean }>();
   for (let from = 0; from < top.length; from++) for (const neighbour of top[from]!) {
-    if (neighbour.score < SIMILARITY_CUTOFF) continue;
     const ids = [records[from]!.memoryId, records[neighbour.index]!.memoryId].sort();
     const key = JSON.stringify(ids);
     candidates.set(key, { a: ids[0]!, b: ids[1]!, similarity: neighbour.score, reciprocal: top[neighbour.index]!.some(row => row.index === from) });
