@@ -61,6 +61,7 @@ import type { ProcessingDisplayLevel } from "../../../shared/processing-display-
 import type { MemoryFixTarget } from "./MemoryFixCard.js";
 import { ScheduleChatChip } from "./schedule/ScheduleChatChip.js";
 import { getAccessibilitySignalEngine, TurnSignalTracker } from "../accessibility-signal-engine.js";
+import { notifyWorkspaceFilesChanged, notifyWorkspaceFilesChangedByStream } from "../utils/workspace-files-signal.js";
 
 /** A new chat's opening text, followed by any unsent text that came along with it, so neither is lost. */
 function withOpeningText(opening: string, carried: string): string {
@@ -605,6 +606,8 @@ export function ChatGroupSession({
       );
       return { ok: false };
     }
+    // A code rewind restored files from a checkpoint; a conversation-only rewind touched none.
+    if (mode !== "conversation") notifyWorkspaceFilesChanged("checkpoint");
     if (mode === "code") return { ok: true };
     // The bubble goes too: its text is in the composer now, and leaving it in the transcript would read as a message that is
     // still part of the thread.
@@ -623,6 +626,9 @@ export function ChatGroupSession({
       env.starredToggle(entryIdx, entries, currentSessionId),
     [env, entries, currentSessionId],
   );
+
+  // A finished tool call or turn may have changed project files: open file lists and viewers ask main again.
+  useEffect(() => api.onChatStream(notifyWorkspaceFilesChangedByStream), [api]);
 
   // Accessibility signals: one cue per agent turn of this group. A stop the user pressed is theirs, so the frames that close
   // that turn stay silent; the tracker is told before the abort is sent, ahead of those frames.

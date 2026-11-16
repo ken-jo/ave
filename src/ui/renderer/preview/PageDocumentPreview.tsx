@@ -32,8 +32,10 @@ function sameTextContainer(left: PageElementAddress, right: PageElementAddress):
  * binding but stays mounted on its page; observing again re-reads that page as a fresh baseline. A view without a
  * session never observes, so the flag does not touch it.
  */
-export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe }: {
+export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe, reloadToken }: {
   path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean; observe: boolean;
+  /** A value that changes when the file changed on disk; each change reads the document again, keeping the page on screen. */
+  reloadToken?: string;
 }) {
   const { t } = useTranslation();
   const [index, setIndex] = useState(0);
@@ -47,6 +49,13 @@ export function PageDocumentPreview({ path, sessionId, workspaceRoot, canOpenExt
   const releaseObservation = useRef<(() => void) | undefined>(undefined);
   const active = sessionId === undefined || observe;
   const resumed = useRef(false);
+  const seenReloadToken = useRef(reloadToken);
+  useEffect(() => {
+    if (seenReloadToken.current === reloadToken) return;
+    seenReloadToken.current = reloadToken;
+    resumed.current = true;
+    setRetryGeneration((current) => current + 1);
+  }, [reloadToken]);
 
   useEffect(() => {
     if (!active) {

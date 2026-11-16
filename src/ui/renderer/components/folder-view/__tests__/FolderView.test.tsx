@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FolderView } from "../FolderView.js";
+import { notifyWorkspaceFilesChanged } from "../../../utils/workspace-files-signal.js";
 
 const ROOT = "/p/checkout-service";
 type Entry = { name: string; path: string; type: "file" | "directory" | "link"; outside?: boolean; size: number; mtimeMs: number; birthtimeMs: number };
@@ -20,11 +21,12 @@ const listings: Record<string, unknown> = {
 
 const listDir = vi.fn(async (path: string) => listings[path] ?? { ok: false, error: "not-found" });
 const openPath = vi.fn(async () => ({ ok: true }));
-const readFile = vi.fn(async (path: string) => path.endsWith(".log")
+const readFromDisk = async (path: string): Promise<Record<string, unknown>> => path.endsWith(".log")
   ? { ok: false, error: "too-large", bytes: 155_189_248 }
   : path.endsWith(".png") ? { ok: true, image: { dataUrl: "data:image/png;base64,AAAA", mimeType: "image/png" }, path }
   : path.endsWith(".md") ? { ok: true, content: "# Title\n\n- one\n", truncated: false, lineCount: 3, path }
-  : { ok: true, content: "export const MAX = 3;\n", truncated: false, lineCount: 2, path });
+  : { ok: true, content: "export const MAX = 3;\n", truncated: false, lineCount: 2, path };
+const readFile = vi.fn(readFromDisk);
 
 let width = 1_000;
 
@@ -165,6 +167,73 @@ describe("FolderView", () => {
     await waitFor(() => expect(searchFiles).toHaveBeenCalledWith("retry", { folder: `${ROOT}/src` }));
     const results = await screen.findByTestId("folder-search-results");
     expect(within(results).getByRole("option").textContent).toBe("payments/retry-policy.ts");
+  });
+
+  describe("refresh", () => {
+    const SRC = `${ROOT}/src`;
+    const original = { root: listings[ROOT], src: listings[SRC] };
+    afterEach(() => { listings[ROOT] = original.root; listings[SRC] = original.src; readFile.mockImplementation(readFromDisk); });
+
+    async function openIndex() {
+      await openView();
+      fireEvent.click(row(SRC));
+      await waitFor(() => expect(row(`${SRC}/index.ts`)).toBeDefined());
+      fireEvent.click(row(`${SRC}/index.ts`));
+      await waitFor(() => expect(screen.getAllByTestId("preview-code-line").length).toBeGreaterThan(0));
+    }
+
+    it("lists every open column again and re-reads the open file when files may have changed", async () => {
+      await openIndex();
+      listings[SRC] = { ok: true, entries: [dir(`${SRC}/payments`), file(`${SRC}/created-later.ts`), { ...file(`${SRC}/index.ts`, 99), mtimeMs: 5 }], truncated: false, hidden: 0 };
+      readFile.mockImplementation(async (path: string) => ({ ok: true, content: "export const CHANGED_ON_DISK = 1;\n", truncated: false, lineCount: 2, path }));
+      listDir.mockClear();
+      act(() => notifyWorkspaceFilesChanged("tool"));
+      await waitFor(() => expect(row(`${SRC}/created-later.ts`)).toBeDefined());
+      expect(listDir.mock.calls.map(([path]) => path)).toEqual([ROOT, SRC]);
+      await waitFor(() => expect(screen.getByTestId("folder-viewer").textContent).toContain("CHANGED_ON_DISK"));
+      // The open file stays open, with the fresh size in its header, and the view never went back to "loading".
+      expect(screen.getByTestId("folder-viewer").getAttribute("data-path")).toBe(`${SRC}/index.ts`);
+      expect(screen.getByTestId("folder-viewer-subtitle").textContent).toContain("99 B");
+      expect(screen.queryByTestId("folder-viewer-loading")).toBeNull();
+      expect(screen.queryByTestId("folder-column-loading")).toBeNull();
+    });
+
+    it("refreshes on window focus and from the refresh button", async () => {
+      await openView();
+      listings[ROOT] = { ok: true, entries: [dir(`${ROOT}/data`), file(`${ROOT}/from-focus.txt`)], truncated: false, hidden: 0 };
+      act(() => { window.dispatchEvent(new Event("focus")); });
+      await waitFor(() => expect(row(`${ROOT}/from-focus.txt`)).toBeDefined());
+      listings[ROOT] = { ok: true, entries: [dir(`${ROOT}/data`), file(`${ROOT}/from-button.txt`)], truncated: false, hidden: 0 };
+      fireEvent.click(screen.getByTestId("folder-refresh"));
+      await waitFor(() => expect(row(`${ROOT}/from-button.txt`)).toBeDefined());
+      expect(row(`${ROOT}/from-focus.txt`)).toBeUndefined();
+    });
+
+    it("closes the open file and its columns when the refreshed listing no longer has them, keeping focus in the view", async () => {
+      await openIndex();
+      row(`${SRC}/index.ts`).focus();
+      listings[ROOT] = { ok: true, entries: [dir(`${ROOT}/data`), file(`${ROOT}/package.json`)], truncated: false, hidden: 0 };
+      listings[SRC] = { ok: false, error: "not-found" };
+      act(() => notifyWorkspaceFilesChanged("turn"));
+      await waitFor(() => expect(columns()).toEqual([ROOT]));
+      expect(screen.queryByTestId("folder-viewer")).toBeNull();
+      await waitFor(() => expect(document.activeElement).toBe(row(`${ROOT}/data`)));
+    });
+
+    it("asks once more after a burst that arrived while a listing was in flight", async () => {
+      await openView();
+      const pending: Array<(value: unknown) => void> = [];
+      listDir.mockClear();
+      listDir.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }) as never);
+      act(() => { notifyWorkspaceFilesChanged("tool"); notifyWorkspaceFilesChanged("tool"); notifyWorkspaceFilesChanged("tool"); });
+      expect(listDir).toHaveBeenCalledTimes(1);
+      await act(async () => { pending.shift()?.(listings[ROOT]); });
+      await waitFor(() => expect(listDir).toHaveBeenCalledTimes(2));
+      await act(async () => { pending.shift()?.({ ok: true, entries: [file(`${ROOT}/last.txt`)], truncated: false, hidden: 0 }); });
+      await waitFor(() => expect(row(`${ROOT}/last.txt`)).toBeDefined());
+      expect(listDir).toHaveBeenCalledTimes(2);
+      listDir.mockImplementation(async (path: string) => listings[path] ?? { ok: false, error: "not-found" });
+    });
   });
 
   it("reopens on a restored location and reports where it is", async () => {

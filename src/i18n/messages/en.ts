@@ -1903,6 +1903,7 @@ export const en = {
   "folderView.searchPlaceholder": "Find in this folder",
   "folderView.searchResults": "Files in this folder",
   "folderView.searchNone": "No matching files in this folder",
+  "folderView.refresh": "Refresh",
   "folderView.sideChat": "Side chat",
   "folderView.loading": "Loading",
   "folderView.emptyTitle": "Empty",

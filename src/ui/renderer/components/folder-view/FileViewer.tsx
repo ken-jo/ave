@@ -1,6 +1,6 @@
 /** The folder view's file viewer. It routes like the side-panel preview (table, page, then the text registry), shows images
  * with fit and zoom, and gives anything it cannot show to the info card. */
-import { forwardRef, useEffect, useMemo, useState, type ReactNode } from "react";
+import { forwardRef, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, ChevronLeft, Copy, ExternalLink, Link2, MessageSquarePlus, Minus, Plus, Scan } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { cn } from "../../../../lib/utils.js";
@@ -17,6 +17,7 @@ import { folderEntryIcon } from "./FolderColumn.js";
 import { FOLDER_KIND_LABEL_KEYS, folderFileKind, type FolderEntry } from "./folder-columns.js";
 import { useOpenInDefaultApp } from "./use-open-in-default-app.js";
 import { canOpenInDefaultApp } from "../../../../shared/preview-external-open.js";
+import { subscribeWorkspaceFilesChanged } from "../../utils/workspace-files-signal.js";
 
 type ReadResult = Awaited<ReturnType<typeof window.ave.preview.readFile>>;
 type ViewerState =
@@ -43,6 +44,16 @@ function readState(result: ReadResult): ViewerState {
   if (result.image) return { phase: "image", dataUrl: result.image.dataUrl };
   const content = result.content ?? "";
   return { phase: "text", content, truncated: result.truncated === true, lineCount: result.lineCount ?? content.split(/\r\n|\r|\n/).length };
+}
+
+/** Keep the previous state object when a re-read found the same thing, so an unchanged file does not re-render. */
+function sameViewerState(previous: ViewerState, next: ViewerState): ViewerState {
+  if (previous.phase === "text" && next.phase === "text"
+    && previous.content === next.content && previous.truncated === next.truncated) return previous;
+  if (previous.phase === "image" && next.phase === "image" && previous.dataUrl === next.dataUrl) return previous;
+  if (previous.phase === "info" && next.phase === "info" && previous.reason === next.reason) return previous;
+  if (previous.phase === "error" && next.phase === "error" && previous.code === next.code) return previous;
+  return next;
 }
 
 function ImageViewer({ src, alt }: { src: string; alt: string }) {
@@ -107,18 +118,34 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
   // Formats with no viewer skip the read; table and page documents read through their own components.
   const reads = entry.type === "file" && route.kind === "text" && kind !== "database" && kind !== "design";
   const [state, setState] = useState<ViewerState>(() => (reads ? { phase: "loading" } : { phase: "info", reason: "unsupported" }));
+  const shownPath = useRef<string | null>(null);
   useEffect(() => {
-    setAttachNote(null);
-    setMarkdownSource(false);
+    const anotherFile = shownPath.current !== entry.path;
+    shownPath.current = entry.path;
+    if (anotherFile) {
+      setAttachNote(null);
+      setMarkdownSource(false);
+    }
     if (!reads) { setState({ phase: "info", reason: "unsupported" }); return; }
     let cancelled = false;
-    setState({ phase: "loading" });
-    void window.ave.preview.readFile(entry.path).then(
-      (result) => { if (!cancelled) setState(readState(result)); },
-      () => { if (!cancelled) setState({ phase: "error", code: "read-failed" }); },
-    );
-    return () => { cancelled = true; };
+    let issued = 0;
+    const read = (): void => {
+      // The newest request wins: an answer to an older one is dropped.
+      const request = ++issued;
+      void window.ave.preview.readFile(entry.path).then(
+        (result) => { if (!cancelled && request === issued) setState((previous) => sameViewerState(previous, readState(result))); },
+        () => { if (!cancelled && request === issued) setState({ phase: "error", code: "read-failed" }); },
+      );
+    };
+    // Only another file starts from "loading"; a re-read keeps the current content on screen until the fresh one arrives.
+    if (anotherFile) setState({ phase: "loading" });
+    read();
+    // The shared "files may have changed" signal asks for the file again; the answer replaces what is shown.
+    const unsubscribe = subscribeWorkspaceFilesChanged(read);
+    return () => { cancelled = true; unsubscribe(); };
   }, [entry.path, reads]);
+  // Table and page documents re-read through their own reload when the listing reports a new size or modified time.
+  const documentReloadToken = `${entry.size}:${entry.mtimeMs}`;
 
   const shell = (children: ReactNode) => (
     <div ref={ref} tabIndex={-1} role="region" aria-label={entry.name} data-testid="folder-viewer" data-path={entry.path}
@@ -144,7 +171,7 @@ export const FileViewer = forwardRef<HTMLDivElement, FileViewerProps>(function F
     return shell(<>
       {back ? <ViewerHeader entry={entry} subtitle={previewFormatLabel(entry.path)} back={back} /> : null}
       <div className="flex min-h-0 flex-1 flex-col overflow-auto px-3 py-2">
-        <Document key={entry.path} path={entry.path} workspaceRoot={projectRoot} observe />
+        <Document key={entry.path} path={entry.path} workspaceRoot={projectRoot} observe reloadToken={documentReloadToken} />
       </div>
     </>);
   }

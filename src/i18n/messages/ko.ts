@@ -1905,6 +1905,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "folderView.searchPlaceholder": "이 폴더에서 찾기",
   "folderView.searchResults": "이 폴더의 파일",
   "folderView.searchNone": "이 폴더에 맞는 파일이 없습니다",
+  "folderView.refresh": "새로 고침",
   "folderView.sideChat": "사이드 채팅",
   "folderView.loading": "불러오는 중",
   "folderView.emptyTitle": "비어 있음",

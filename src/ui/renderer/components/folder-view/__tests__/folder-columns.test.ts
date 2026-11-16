@@ -30,6 +30,29 @@ function opened() {
 }
 
 describe("folderReducer", () => {
+  it("replaces a refreshed column wholesale, keeping a choice only as the fresh entry of the same path and kind", () => {
+    const state = opened();
+    const fresh = { ...entry(`${ROOT}/src`), mtimeMs: 9 };
+    const kept = folderReducer(state, { type: "refreshed", dir: ROOT, result: { ok: true, entries: [entry(`${ROOT}/added`), fresh] } });
+    expect(kept.columns[0]?.entries.map((each) => each.path)).toEqual([`${ROOT}/added`, `${ROOT}/src`]);
+    expect(kept.selected[0]).toBe(fresh);
+    expect(kept.columns).toHaveLength(3);
+    // The chosen folder is now a file of the same name: its columns close.
+    const replaced = folderReducer(state, { type: "refreshed", dir: ROOT, result: { ok: true, entries: [entry(`${ROOT}/src`, "file")] } });
+    expect(replaced.columns.map((column) => column.dir)).toEqual([ROOT]);
+    expect(replaced.selected).toEqual([]);
+    const gone = folderReducer(state, { type: "refreshed", dir: `${ROOT}/src`, result: { ok: false, error: "not-found" } });
+    expect(gone.columns.map((column) => `${column.dir}:${column.status}`)).toEqual([`${ROOT}:ok`, `${ROOT}/src:error`]);
+    expect(gone.selected.map((each) => each.path)).toEqual([`${ROOT}/src`]);
+  });
+
+  it("keeps the state object when a refresh found nothing new, and leaves a column that is still loading alone", () => {
+    const state = opened();
+    expect(folderReducer(state, { type: "refreshed", dir: ROOT, result: { ok: true, entries: [entry(`${ROOT}/src`), entry(`${ROOT}/docs`)] } })).toBe(state);
+    expect(folderReducer(state, { type: "refreshed", dir: `${ROOT}/src/payments`, result: { ok: true, entries: [entry(`${ROOT}/x`)] } })).toBe(state);
+    expect(folderReducer(state, { type: "refreshed", dir: `${ROOT}/closed`, result: { ok: true, entries: [] } })).toBe(state);
+  });
+
   it("opens a column for a chosen folder and shows a chosen file in the viewer", () => {
     let state = opened();
     expect(state.columns.map((column) => column.dir)).toEqual([ROOT, `${ROOT}/src`, `${ROOT}/src/payments`]);

@@ -3,7 +3,7 @@
  * through `workspace.openPath` from a click or key handler only. */
 import { EmptyState } from "../../../../components/ui/empty-state.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type KeyboardEvent } from "react";
-import { ChevronRight, FileText, MessageSquare, Search } from "lucide-react";
+import { ChevronRight, FileText, MessageSquare, RefreshCw, Search } from "lucide-react";
 import { Button } from "../../../../components/ui/button.js";
 import { Input } from "../../../../components/ui/input.js";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../../../../components/ui/dropdown-menu.js";
@@ -12,6 +12,8 @@ import { useTranslation } from "../../../../i18n/react.js";
 import type { FolderLocation } from "../../preview/main-surfaces.js";
 import { isInsideRoot, prefixesUnderRoot } from "../../utils/project-path.js";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
+import { coalesceRefresh, notifyWorkspaceFilesChanged, subscribeWorkspaceFilesChanged } from "../../utils/workspace-files-signal.js";
+import type { WorkspaceListDirResult } from "../../../../ipc/domains/workspace.js";
 import { FileViewer } from "./FileViewer.js";
 import { FolderColumn } from "./FolderColumn.js";
 import {
@@ -96,6 +98,44 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
       );
     }
   }, [state.columns]);
+
+  // Files change under an open view (the agent writes, the user saves in another app). On the shared signal every listed
+  // column is asked for again and replaced wholesale; one query per folder runs at a time.
+  const columnsRef = useRef(state.columns);
+  columnsRef.current = state.columns;
+  const refreshers = useRef(new Map<string, () => void>());
+  const refreshColumns = useCallback(() => {
+    for (const column of columnsRef.current) {
+      // A column waiting for its first listing is about to get one.
+      if (column.status === "loading") continue;
+      const dir = column.dir;
+      let request = refreshers.current.get(dir);
+      if (!request) {
+        request = coalesceRefresh(async () => {
+          const result = await window.ave.workspace.listDir(dir)
+            .catch((): WorkspaceListDirResult => ({ ok: false, error: "read-failed" }));
+          dispatch({ type: "refreshed", dir, result });
+        });
+        refreshers.current.set(dir, request);
+      }
+      request();
+    }
+  }, []);
+  useEffect(() => subscribeWorkspaceFilesChanged(refreshColumns), [refreshColumns]);
+
+  // A refresh can remove the row that had keyboard focus; focus then goes to the deepest column's choice or first row
+  // instead of falling out of the view.
+  useEffect(() => {
+    if (!focusedPath || state.columns.some((column) => column.status === "loading"
+      || column.entries.some((entry) => entry.path === focusedPath))) return;
+    const active = document.activeElement;
+    const focusWasLost = active === null || active === document.body || !active.isConnected;
+    const deepest = state.columns[state.columns.length - 1];
+    const next = state.selected[state.columns.length - 1]?.path ?? deepest?.entries[0]?.path
+      ?? state.selected[state.columns.length - 2]?.path;
+    setFocusedPath(next);
+    if (focusWasLost && next) rows.current.get(next)?.focus();
+  }, [state.columns, state.selected, focusedPath]);
 
   // The first row of the project root takes focus when the view opens (case 15).
   const rootColumn = state.columns[0];
@@ -315,6 +355,10 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
           ) : null}
           {crumbs.tail.flatMap((each, index) => [separator(`s-${each.dir}`), crumb(each, index === crumbs.tail.length - 1)])}
         </nav>
+        <Button type="button" size="icon-xs" variant="ghost" aria-label={t("folderView.refresh")} title={t("folderView.refresh")}
+          onClick={() => notifyWorkspaceFilesChanged("manual")} data-testid="folder-refresh" className="shrink-0">
+          <RefreshCw aria-hidden="true" className="h-3.5 w-3.5" />
+        </Button>
         <div className="relative w-48 shrink-0">
           <Search aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("folderView.searchPlaceholder")}

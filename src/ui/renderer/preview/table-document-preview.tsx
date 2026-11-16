@@ -133,7 +133,11 @@ function TruncationNotices({ document }: { document: PreviewTableDocument }) {
  * same sheet as a fresh baseline. A view without a session never observes, so
  * the flag does not touch it.
  */
-export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe }: { path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean; observe: boolean }) {
+export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenExternal, observe, reloadToken }: {
+  path: string; sessionId?: string; workspaceRoot?: string; canOpenExternal?: boolean; observe: boolean;
+  /** A value that changes when the file changed on disk; each change reloads the document as the reload button does. */
+  reloadToken?: string;
+}) {
   const { t } = useTranslation();
   const [sheetIndex, setSheetIndex] = useState(0);
   const [sheetFallback, setSheetFallback] = useState(false);
@@ -147,6 +151,13 @@ export function TableDocumentPreview({ path, sessionId, workspaceRoot, canOpenEx
   const [openFailed, setOpenFailed] = useState<string | null>(null);
   const generation = useRef(0);
   const lastAcknowledgement = useRef("");
+  const seenReloadToken = useRef(reloadToken);
+  useEffect(() => {
+    if (seenReloadToken.current === reloadToken) return;
+    seenReloadToken.current = reloadToken;
+    setSheetFallback(false);
+    setRevision((previous) => previous + 1);
+  }, [reloadToken]);
 
   useEffect(() => {
     if (!active) {
