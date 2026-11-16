@@ -13,7 +13,7 @@ import { createLogger } from "../../lib/logger.js";
 import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { assertSrtWinSpawnIntegrity } from "../../permissions/srt-win-integrity.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
-import { buildHostShellChildEnv, buildSandboxedChildEnv } from "../../tools/safe-env.js";
+import { buildSandboxedChildEnv, buildUserTerminalEnv } from "../../tools/safe-env.js";
 import {
   getDefaultSensitiveReadDenyPaths,
   getDefaultSensitiveWriteDenyPaths,
@@ -850,10 +850,8 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     const launch = resolveManualShell();
     if (!statSync(launch.command).isFile()) throw new Error("terminal interpreter is not a file");
     accessSync(launch.command, process.platform === "win32" ? constants.F_OK : constants.X_OK);
-    integration = prepareHostShellIntegration(launch, buildHostShellChildEnv({
-      TERM: "xterm-256color", COLORTERM: "truecolor",
-      ...(process.env.ZDOTDIR === undefined ? {} : { ZDOTDIR: process.env.ZDOTDIR }),
-    }));
+    // The user's own shell inherits the application's environment (ZDOTDIR included), not the agent allowlist.
+    integration = prepareHostShellIntegration(launch, buildUserTerminalEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" }));
     const native = await loadPty();
     owner.abort.signal.throwIfAborted();
     pty = native.spawn(integration.command, integration.args, {

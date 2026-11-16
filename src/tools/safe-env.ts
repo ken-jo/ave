@@ -89,6 +89,39 @@ export function buildHostShellChildEnv(
   return { ...env, ...extra };
 }
 
+/*
+ * Portions adapted from microsoft/vscode src/vs/base/common/processes.ts @ 6659689e6b03ec062f5b7bcea9850b4c59045807,
+ * Copyright (c) Microsoft Corporation, MIT License.
+ */
+// The adapted part is `sanitizeProcessEnvironment`: inherit the application's environment and remove the application's own variables by name pattern.
+/** Variables that belong to Ave or its runtime, never to the user's shell. `AVE_` carries Ave's configuration and secrets;
+ * `ELECTRON_` changes how a child Electron or Node starts; the `SNAP` and `GDK_PIXBUF_` families describe the application's own package. */
+const USER_TERMINAL_REMOVED_ENV: readonly RegExp[] = [/^ELECTRON_.+$/, /^AVE_.+$/, /^SNAP(|_.*)$/, /^GDK_PIXBUF_.+$/];
+/** Values Ave writes into its own process (the packaged build forces NODE_ENV; the sandbox runtime points these temp variables at its own directory). */
+const USER_TERMINAL_REMOVED_ENV_NAMES: ReadonlySet<string> = new Set(["NODE_ENV", "CLAUDE_CODE_TMPDIR", "CLAUDE_TMPDIR"]);
+
+/**
+ * The environment of the user's own terminal: everything the application was started with (ssh agent socket, editor, language toolchains),
+ * minus Ave's own variables, plus `TERM_PROGRAM`. Only the visible host terminal uses it; agent and sandbox
+ * children keep the allowlist above.
+ */
+export function buildUserTerminalEnv(
+  extra: Record<string, string> = {},
+  source: Readonly<NodeJS.ProcessEnv> = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string> {
+  // Windows variable names are case-insensitive.
+  const fold = (name: string): string => (platform === "win32" ? name.toUpperCase() : name);
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(source)) {
+    if (value === undefined) continue;
+    const folded = fold(name);
+    if (USER_TERMINAL_REMOVED_ENV_NAMES.has(folded) || USER_TERMINAL_REMOVED_ENV.some((pattern) => pattern.test(folded))) continue;
+    env[name] = value;
+  }
+  return { ...env, TERM_PROGRAM: "Ave", ...extra };
+}
+
 // Permit only documented wrapper proxy, trust, and temporary-directory changes.
 // Comparing values alone could reintroduce a stripped secret if the wrapper mutates it.
 const ASRT_SANDBOX_ENV_KEYS: ReadonlySet<string> = new Set([

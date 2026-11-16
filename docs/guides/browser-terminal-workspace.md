@@ -207,7 +207,11 @@ Visible terminals have no lane selector. Each workspace or side-work-panel termi
 shell. In the side work panel it is labeled **My terminal (host) · No agent
 access**; agent commands in a workspace pane use your per-session surface
 choice. It uses your real HOME,
-profile and validated initial directory. Moving or hiding the pane preserves its
+profile and validated initial directory. Its shell starts with the environment
+Ave itself was started with (for example `SSH_AUTH_SOCK` and `EDITOR`), without
+Ave's own variables (`AVE_*`, `ELECTRON_*`, the packaged `NODE_ENV`), and with
+`TERM_PROGRAM=Ave`. The agent's isolated shell and other agent child processes
+still receive only the short allowlist. Moving or hiding the pane preserves its
 shell; closing the terminal tab ends that host shell.
 
 zsh, bash and pwsh use authenticated hooks installed through a temporary

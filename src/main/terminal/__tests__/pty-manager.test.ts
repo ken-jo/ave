@@ -126,7 +126,7 @@ vi.mock("../../../permissions/sandbox-write-jail.js", () => ({
 }));
 
 vi.mock("../../../tools/safe-env.js", () => ({
-  buildHostShellChildEnv: (extra: Record<string, string> = {}) => ({ HOME: process.env.HOME ?? "", PATH: "/usr/bin", ...extra }),
+  buildUserTerminalEnv: (extra: Record<string, string> = {}) => ({ HOME: process.env.HOME ?? "", PATH: "/usr/bin", ...(process.env.ZDOTDIR === undefined ? {} : { ZDOTDIR: process.env.ZDOTDIR }), ...extra }),
   buildSandboxedChildEnv: (env: NodeJS.ProcessEnv, extra: Record<string, string> = {}) => ({
     ...env,
     PATH: "/usr/bin",
