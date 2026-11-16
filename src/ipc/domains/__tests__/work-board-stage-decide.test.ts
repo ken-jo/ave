@@ -7,7 +7,7 @@ import { WORK_BOARD } from "../../../shared/ipc-channels.js";
 import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
 import { auditUnauthorized, UNAUTHORIZED_FRAME, validateHostRendererSender } from "../../gated.js";
-import { MAX_PLAN_NOTE_LENGTH, type StageRetryResult } from "../../../shared/work-board-types.js";
+import { MAX_PLAN_NOTE_LENGTH } from "../../../shared/work-board-types.js";
 import { registeredIpcHandlers } from "./test-helpers.js";
 
 const ipc = vi.hoisted(() => {
@@ -43,7 +43,6 @@ function setup(privacy: { piiRedactEnabled: boolean } = { piiRedactEnabled: fals
     decideStageGate: vi.fn(async () => ({ ok: true, status: "approved" })),
     decideStageJoin: vi.fn(async () => ({ ok: true })),
     retryStage: vi.fn(async () => ({ ok: true })),
-    continueRun: vi.fn(async (): Promise<StageRetryResult> => ({ ok: true })),
     projectTemplateRuns: vi.fn(async (items: unknown[]) => items),
     runItem: vi.fn(async () => ({ status: "awaiting_approval" })),
     steerRun: vi.fn(() => ({ ok: true, messageId: "m-1" })),
@@ -70,7 +69,6 @@ const decisions = [
   [WORK_BOARD.decideStage, gateInput, "decideStageGate"],
   [WORK_BOARD.decideJoin, joinInput, "decideStageJoin"],
   [WORK_BOARD.retryStage, retryInput, "retryStage"],
-  [WORK_BOARD.continueRun, { runId: RUN }, "continueRun"],
 ] as const;
 
 beforeEach(() => {
@@ -94,7 +92,7 @@ it("refuses without a keyboard gesture or from a non-owner frame", async () => {
     await expect(handler(channel)(event, 7, input, GESTURE)).resolves.toEqual(UNAUTHORIZED_FRAME);
     expect(engine[method]).not.toHaveBeenCalled();
   }
-  expect(auditUnauthorized).toHaveBeenCalledTimes(12);
+  expect(auditUnauthorized).toHaveBeenCalledTimes(9);
   expect(log).not.toHaveBeenCalled();
 });
 
@@ -106,12 +104,7 @@ it("forwards a gesture-carrying decision with the host's approval surface and au
   expect(engine.decideStageJoin).toHaveBeenCalledWith(7, joinInput, { approvalSurface: event.sender });
   await expect(handler(WORK_BOARD.retryStage)(event, 7, retryInput, GESTURE)).resolves.toEqual({ ok: true });
   expect(engine.retryStage).toHaveBeenCalledWith(7, retryInput, { approvalSurface: event.sender });
-  await expect(handler(WORK_BOARD.continueRun)(event, 7, { runId: RUN }, GESTURE)).resolves.toEqual({ ok: true });
-  expect(engine.continueRun).toHaveBeenCalledWith(7, { runId: RUN }, { approvalSurface: event.sender });
-  // The engine's own refusal comes back as it is and is not audited as a decision.
-  engine.continueRun.mockResolvedValueOnce({ ok: false, reason: "not_idle" });
-  await expect(handler(WORK_BOARD.continueRun)(event, 7, { runId: RUN }, GESTURE)).resolves.toEqual({ ok: false, reason: "not_idle" });
-  expect(log).toHaveBeenCalledTimes(4);
+  expect(log).toHaveBeenCalledTimes(3);
   const logged = log.mock.calls.map(call => (call[0] as { output: string; type: string; sessionId: string }));
   for (const entry of logged) {
     expect(entry).toMatchObject({ type: "approval", sessionId: "work-board:7" });
@@ -133,9 +126,6 @@ it("refuses a malformed or partial decision before the engine sees it", async ()
     [WORK_BOARD.decideJoin, { ...joinInput, conflictHash: 5 }],
     [WORK_BOARD.retryStage, { ...retryInput, attempt: 2 }],
     [WORK_BOARD.retryStage, "a"],
-    [WORK_BOARD.continueRun, { runId: RUN, stageId: "a" }],
-    [WORK_BOARD.continueRun, { runId: "not a run id" }],
-    [WORK_BOARD.continueRun, RUN],
   ];
   for (const [channel, input] of bad) await expect(handler(channel)(event, 7, input, GESTURE)).resolves.toEqual({ ok: false, reason: "invalid-input" });
   await expect(handler(WORK_BOARD.decideStage)(event, 7, { ...gateInput, note: "x".repeat(MAX_PLAN_NOTE_LENGTH + 1) }, GESTURE)).resolves.toEqual({ ok: false, reason: "note_too_long" });
@@ -144,7 +134,6 @@ it("refuses a malformed or partial decision before the engine sees it", async ()
   expect(engine.decideStageGate).not.toHaveBeenCalled();
   expect(engine.decideStageJoin).not.toHaveBeenCalled();
   expect(engine.retryStage).not.toHaveBeenCalled();
-  expect(engine.continueRun).not.toHaveBeenCalled();
   expect(log).not.toHaveBeenCalled();
 });
 

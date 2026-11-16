@@ -423,7 +423,7 @@ The board's own `reconcileInterruptedRuns` fails every ordinary row it finds run
 | item | stays `executing`; the Review lane is derived (`isAwaitingStageReview`); never `error` unless the pin is unreadable |
 | stage workspace folder missing for a kept stage | the stage is `failed`, `failure: "workspace-lost"` |
 
-Nothing spawns at boot. The run continues only on a user decision (gate, join, Retry) or Stop; each of those re-reads the store and starts whatever is ready. A run with only ready-but-unstarted stages is continued by `continueRun(itemId, { runId }, { approvalSurface })`, a separate user action that enqueues `continue_requested`; it is not a retry and does not consume an attempt. It arrives on `ave:work-board:continue-run`, which has the boundary of `retry-stage` (validated sender, consumed keyboard gesture, owner frame). See Q6.
+Nothing spawns at boot. The run continues only on a user decision (gate, join, Retry) or Stop; each of those re-reads the store and starts whatever is ready. A run with only ready-but-unstarted stages is continued by `continueRun(itemId, { runId }, { approvalSurface })`, a separate user action that enqueues `continue_requested`; it is not a retry and does not consume an attempt. Its channel ships with its first renderer caller, which is not in this change. See Q6.
 
 ### 2.8 Invariants (each throws or refuses with the named code)
 

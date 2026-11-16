@@ -1095,11 +1095,6 @@ export function buildInternalApiSurface() {
       | import("../shared/work-board-types.js").StageRetryIpcResult
       | { ok: false; error: string }
     >,
-  continueWorkRun: async (itemId: number, input: { runId: string }) =>
-    ipcRenderer.invoke(WORK_BOARD.continueRun, itemId, input, ipcUserKeyboardIntent()) as Promise<
-      | import("../shared/work-board-types.js").StageRetryIpcResult
-      | { ok: false; error: string }
-    >,
   // Stop the item's running execute child; the click's own activation is the gesture, as for the other required-gesture controls.
   cancelWorkBoardRun: async (itemId: number) =>
     ipcRenderer.invoke(WORK_BOARD.cancelRun, itemId, ipcUserKeyboardIntent()) as Promise<

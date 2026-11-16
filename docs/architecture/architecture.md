@@ -1329,8 +1329,8 @@ and a restart keeps the pending plan (boot reconciliation leaves an
 `awaiting_approval` run alone only while its plan, run id and pending decision
 are whole and the plan hash still matches; anything less becomes `error`).
 A template run has the same boundary for its stages:
-`ave:work-board:decide-stage`, `ave:work-board:decide-join`,
-`ave:work-board:retry-stage` and `ave:work-board:continue-run` (internal, sender-validated board-window main
+`ave:work-board:decide-stage`, `ave:work-board:decide-join` and
+`ave:work-board:retry-stage` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carry the run id, the stage or join id,
 the attempt and the hash the card showed, never the output; the stage scheduler
 checks each against the stored run before anything changes. The scheduler
