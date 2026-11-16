@@ -542,7 +542,7 @@ export function SettingsContent({
             data-testid="settings-save-error"
           >
             <div className="min-w-0">
-              <p className="font-medium">{t("settingsContent.saveErrorMessage", { tab: s.lastSaveError.tab })}</p>
+              <p className="font-medium">{t("settingsContent.saveErrorMessage", { tab: t(SETTINGS_TAB_LABEL_KEYS[normalizeSettingsTab(s.lastSaveError.tab)]) })}</p>
               <p className="text-dense opacity-80">{s.lastSaveError.message}</p>
             </div>
             <button

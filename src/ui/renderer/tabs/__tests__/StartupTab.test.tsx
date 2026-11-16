@@ -1,3 +1,4 @@
+import { formatGlobalAccelerator } from "../../../../shared/shortcuts.js";
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
@@ -36,19 +37,19 @@ describe("StartupTab", () => {
         const api = installApi({ ...STARTUP_SETTINGS, shortcuts: { toggleWindow: "Alt+F1", enabled: true } });
         const { findByTestId, getByRole, queryByRole } = render(<StartupTab />);
         const capture = await findByTestId("startup-accelerator-capture");
-        await waitFor(() => expect(capture.textContent).toBe("Alt+F1"));
+        await waitFor(() => expect(capture.textContent).toBe(formatGlobalAccelerator("Alt+F1", platform)));
         fireEvent.click(await findByTestId("startup-accelerator-record"));
         fireEvent.keyDown(capture, { key, code, shiftKey, metaKey: platform === "darwin", ctrlKey: platform === "other" });
         expect(getByRole("alert").textContent).toContain(ko[labelKey]);
         expect(api.updateSettings).not.toHaveBeenCalled();
         expect(capture.textContent).toBe(ko["startupTab.shortcutCapturing"]);
         fireEvent.keyDown(capture, { key: "Escape" });
-        expect(capture.textContent).toBe("Alt+F1");
+        expect(capture.textContent).toBe(formatGlobalAccelerator("Alt+F1", platform));
         fireEvent.click(await findByTestId("startup-accelerator-record"));
         fireEvent.keyDown(capture, { key, code, shiftKey, ctrlKey: platform === "other", metaKey: platform === "darwin" });
         fireEvent.keyDown(capture, { key, code, shiftKey, altKey: true });
         expect(api.updateSettings).toHaveBeenCalledWith({ shortcuts: { toggleWindow: `Alt+${token}` } });
-        expect(capture.textContent).toBe(`Alt+${token}`);
+        expect(capture.textContent).toBe(formatGlobalAccelerator(`Alt+${token}`, platform));
         expect(queryByRole("alert")).toBeNull();
         fireEvent.click(await findByTestId("startup-accelerator-record"));
         const calls = api.updateSettings.mock.calls.length;
@@ -68,7 +69,7 @@ describe("StartupTab", () => {
     const { findByTestId } = render(<StartupTab />);
     const capture = await findByTestId("startup-accelerator-capture");
     await waitFor(() => {
-      expect(capture.textContent).toContain("CommandOrControl+Shift+Space");
+      expect(capture.textContent).toBe("Ctrl+Shift+Space");
     });
     const enabled = await findByTestId("startup-shortcut-enabled");
     expect(enabled.getAttribute("aria-checked")).toBe("true");

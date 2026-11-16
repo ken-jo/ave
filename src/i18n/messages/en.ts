@@ -4473,9 +4473,9 @@ export const en = {
   // rolesTab
   "rolesTab.sectionAgents": "AGENTS.md",
   "rolesTab.sectionMemory": "Instructions (MEMORY.md)",
-  "rolesTab.sectionPreferences": "User Preferences",
+  "rolesTab.sectionPreferences": "User preferences",
   "rolesTab.sectionRoles": "Role Prompts",
-  "rolesTab.sectionPreview": "SSOT",
+  "rolesTab.sectionPreview": "Applied context",
   "rolesTab.pageTitle": "Memory",
   "rolesTab.pageDescription": "Manage Persona prompts in ~/.ave/prompts",
   "rolesTab.sectionSourceTitle": "Role Sources",
@@ -6608,6 +6608,11 @@ export const en = {
   "notificationsTab.description": "Manage sound signals, operating-system notifications and hidden notices.",
   "notificationsTab.delivery": "Notification delivery",
   "notificationsTab.hiddenNotices": "Hidden notices",
+  "usageDashboard.presetDays": "{count} days",
+  "mainDialog.diagnosticsExportTitle": "Save diagnostics bundle",
+  "appearanceTab.shortcutLabel": "{label} ({shortcut})",
+  "appearanceTab.zoomIndicatorLabel": "{label} {percent}% ({zoomIn} / {zoomOut})",
+  "rolesTab.contextFlow": "AGENTS.md                  -> project / org / agent operating context\nagents.custom.md            -> your own agent context under keep-latest, read after AGENTS.md\nAGENTS.md.merged            -> merge awaiting review; never read by the runtime\nmemories/MEMORY.md          -> urgent memory, references, and saved-memory index\nmemories/*.md               -> detailed long-term memories with references\nuser-preferences.md         -> compact durable user preferences only\nprompts/*.md                -> user-editable per-turn persona prompts\n\nIdle:\n  IDLE_SCAN -> optionally refresh user-preferences.md from sources, preferences only\n\nTurn:\n  system prompt reads AGENTS.md + user-preferences.md + MEMORY.md + memories/*.md\n  selected persona prompt is injected as a per-turn system prompt section",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

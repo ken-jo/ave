@@ -5,6 +5,7 @@ import { render, within } from "@testing-library/react";
 import { t } from "../../../../i18n/runtime.js";
 import { WEB_PROVIDERS } from "../../constants.js";
 import { WebTab } from "../WebTab.js";
+import { ko } from "../../../../i18n/messages/ko.js";
 import type { AveApi } from "../../types.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 
@@ -62,4 +63,12 @@ describe("WebTab — webView preferredFlow section", () => {
     expect(group.querySelector('[data-value="in-app"]')).toBeTruthy();
     expect(group.querySelector('[data-value="system-browser"]')).toBeTruthy();
   });
+});
+
+
+it("localizes the current browsing flow instead of exposing its persisted enum", () => {
+  const { container } = renderWebTab();
+  const header = container.querySelector('[data-settings-section="web-view-flow"] header');
+  expect(header?.textContent).toContain(ko["appearanceTab.webViewInApp"]);
+  expect(header?.textContent).not.toContain("in-app");
 });

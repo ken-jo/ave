@@ -20,7 +20,7 @@ const CURSOR_LABELS: Record<TerminalCursorStyle, string> = {
 };
 
 export function TerminalBehaviorFields() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const notifySaved = useNotifySaved();
   const { appearance } = useTheme();
   const saved = appearance.terminal;
@@ -63,7 +63,7 @@ export function TerminalBehaviorFields() {
           <div className="flex items-center gap-2 text-sm">
             <button type="button" aria-label={`${t("appearanceTab.terminalScrollback")} −`} disabled={!isTerminalScrollback(fewer)} onClick={() => update({ scrollback: fewer })}
               className="rounded border border-input px-2 py-1 disabled:opacity-(--opacity-half)">−</button>
-            <span className="min-w-24 text-center tabular-nums" data-testid="terminal-scrollback-value">{t("appearanceTab.terminalScrollbackLines", { lines: shown.scrollback.toLocaleString() })}</span>
+            <span className="min-w-24 text-center tabular-nums" data-testid="terminal-scrollback-value">{t("appearanceTab.terminalScrollbackLines", { lines: new Intl.NumberFormat(locale).format(shown.scrollback) })}</span>
             <button type="button" aria-label={`${t("appearanceTab.terminalScrollback")} +`} disabled={!isTerminalScrollback(more)} onClick={() => update({ scrollback: more })}
               className="rounded border border-input px-2 py-1 disabled:opacity-(--opacity-half)">+</button>
           </div>

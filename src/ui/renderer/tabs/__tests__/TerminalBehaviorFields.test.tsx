@@ -3,7 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { DEFAULT_TERMINAL_BEHAVIOR, type TerminalBehaviorSettings } from "../../../../shared/appearance-settings.js";
-import { t } from "../../../../i18n/runtime.js";
+import { getLocale, setLocale, t } from "../../../../i18n/runtime.js";
 import { TerminalBehaviorFields } from "../TerminalBehaviorFields.js";
 
 const { api, theme, platform, saved } = vi.hoisted(() => ({
@@ -89,5 +89,20 @@ describe("terminal behaviour settings", () => {
     await waitFor(() => expect(screen.getByTestId("terminal-behavior-save-failed")).toHaveTextContent(t("appearanceTab.terminalBehaviorSaveFailed")));
     expect(screen.getByTestId("terminal-scrollback-value")).toHaveTextContent((5000).toLocaleString());
     expect(saved).not.toHaveBeenCalled();
+  });
+
+  it("formats the scrollback line count in the app's language, not the system's", () => {
+    const previous = getLocale();
+    const numberFormat = vi.spyOn(Intl, "NumberFormat");
+    try {
+      setLocale("ko");
+      theme.appearance = { terminal: { ...DEFAULT_TERMINAL_BEHAVIOR, scrollback: 12000 } };
+      render(<TerminalBehaviorFields />);
+      expect(numberFormat).toHaveBeenCalledWith("ko");
+      expect(screen.getByTestId("terminal-scrollback-value")).toHaveTextContent(new Intl.NumberFormat("ko").format(12000));
+    } finally {
+      numberFormat.mockRestore();
+      setLocale(previous);
+    }
   });
 });

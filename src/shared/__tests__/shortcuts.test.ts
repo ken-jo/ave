@@ -9,6 +9,7 @@ import {
   nativeAcceleratorIdentity,
   conflictingShortcutIds,
   formatAccelerator,
+  formatGlobalAccelerator,
   globalShortcutBindingRefusal,
   globalShortcutOverlaps,
   fixedShortcutOwner,
@@ -548,5 +549,17 @@ describe("explicitly unbound shortcuts", () => {
     expect(resolveShortcut("app.commandPalette", { ...NO_SHORTCUT_OVERRIDES, bindings }, "other")).toBe("CommandOrControl+F");
     expect(resolveShortcut("app.search", { ...NO_SHORTCUT_OVERRIDES, bindings }, "other")).toBeNull();
     expect(conflictingShortcutIds(resolveShortcuts({ ...NO_SHORTCUT_OVERRIDES, bindings }, "other"), "other").size).toBe(0);
+  });
+});
+
+
+describe("global accelerator presentation", () => {
+  it("formats the stored global chord using platform key labels", () => {
+    expect(formatGlobalAccelerator("CommandOrControl+Shift+Space", "darwin")).toBe("⇧⌘Space");
+    expect(formatGlobalAccelerator("CommandOrControl+Shift+Space", "other")).toBe("Ctrl+Shift+Space");
+    expect(formatGlobalAccelerator("Command+Cmd+Meta+K", "darwin")).toBe("⌘K");
+    expect(formatGlobalAccelerator("AltGr+F2", "other")).toBe("AltGr+F2");
+    expect(formatGlobalAccelerator("Alt+!", "other")).toBe("Alt+Shift+1");
+    expect(() => formatGlobalAccelerator("Alt+NotAKey", "other")).toThrow();
   });
 });

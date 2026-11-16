@@ -50,7 +50,7 @@ const TYPE_BADGE: Record<string, string> = {
 };
 
 export function AuditTab() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   // The picker shows host-local civil days: "today" is the day on the person's calendar, not the UTC day the store
   // partitions by. The search side maps these keys back onto the UTC partitions.
   const [dateFrom, setDateFrom] = useState(() =>
@@ -319,7 +319,7 @@ export function AuditTab() {
                             className="px-3 py-1.5 font-mono text-tiny text-muted-foreground whitespace-nowrap"
                             data-testid="audit-row-time"
                           >
-                            {ts === undefined ? "—" : formatMediumDateTime(ts)}
+                            {ts === undefined ? "—" : formatMediumDateTime(ts, locale)}
                           </td>
                           <td className="px-3 py-1.5">
                             <Badge className={`text-tiny ${badgeClass}`}>{rowType}</Badge>

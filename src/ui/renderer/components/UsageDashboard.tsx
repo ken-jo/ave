@@ -172,7 +172,7 @@ export function UsageDashboard({
           <div className="flex gap-1 flex-wrap">
             {(["7d", "30d", "90d", "all", "custom"] as Preset[]).map((p) => (
               <Button key={p} size="sm" variant={preset === p ? "default" : "outline"} onClick={() => setPreset(p)} className="h-6 px-2 text-dense">
-                {p === "all" ? t("usageDashboard.presetAll") : p === "custom" ? t("usageDashboard.presetCustom") : p}
+                {p === "all" ? t("usageDashboard.presetAll") : p === "custom" ? t("usageDashboard.presetCustom") : t("usageDashboard.presetDays", { count: Number.parseInt(p, 10) })}
               </Button>
             ))}
           </div>

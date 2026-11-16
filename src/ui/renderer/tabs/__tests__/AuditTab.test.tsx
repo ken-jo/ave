@@ -10,6 +10,9 @@ vi.mock("../DiagnosticsSection.js", () => ({ DiagnosticsSection: () => null }));
 vi.mock("../TelemetrySection.js", () => ({ TelemetrySection: () => null }));
 
 import { AuditTab } from "../AuditTab.js";
+import { I18nProvider } from "../../../../i18n/react.js";
+import { getLocale, setLocale } from "../../../../i18n/runtime.js";
+import type { Locale } from "../../../../i18n/locale.js";
 
 /** 01:30 on the 16th in Seoul, 12:30 on the 15th in New York, 16:30 on the 15th in UTC. */
 const SEOUL_SMALL_HOURS = Date.parse("2026-06-15T16:30:00.000Z");
@@ -17,13 +20,16 @@ const SEOUL_SMALL_HOURS = Date.parse("2026-06-15T16:30:00.000Z");
 const NEW_YORK_EVENING = Date.parse("2026-06-16T01:00:00.000Z");
 
 let previousTz: string | undefined;
+let previousLocale: Locale;
 
 beforeEach(() => {
   previousTz = process.env.TZ;
+  previousLocale = getLocale();
 });
 
 afterEach(() => {
   vi.useRealTimers();
+  setLocale(previousLocale);
   if (previousTz === undefined) delete process.env.TZ;
   else process.env.TZ = previousTz;
 });
@@ -78,9 +84,9 @@ describe("AuditTab row timestamps", () => {
       { timestamp, sessionId: "session-1", type: "turn", input: "hello", output: "world" },
     ]);
     process.env.TZ = "UTC";
-    const utcLabel = formatMediumDateTime(timestamp);
+    const utcLabel = formatMediumDateTime(timestamp, getLocale());
     const { findByTestId } = renderAt("Asia/Seoul", SEOUL_SMALL_HOURS);
-    const seoulLabel = formatMediumDateTime(timestamp);
+    const seoulLabel = formatMediumDateTime(timestamp, getLocale());
     expect(seoulLabel).not.toBe(utcLabel);
     const cell = await findByTestId("audit-row-time");
     expect(cell.textContent).toBe(seoulLabel);
@@ -147,5 +153,18 @@ describe("AuditTab accessible controls", () => {
     expect(detailsId).toBeTruthy();
     if (!detailsId) throw new Error("Audit details control target is missing.");
     expect(document.getElementById(detailsId)).toHaveTextContent('"keyboard entry"');
+  });
+});
+
+describe("AuditTab active UI locale", () => {
+  it.each(["en", "ko"] as const)("renders timestamps in %s while using the host timezone", async (locale) => {
+    const timestamp = "2026-06-15T16:30:00.000Z";
+    installAuditApi([{ timestamp, sessionId: "session-1", type: "turn", input: "localized timestamp" }]);
+    process.env.TZ = "Asia/Seoul";
+    const view = render(<I18nProvider locale={locale} setLocale={vi.fn()}><AuditTab /></I18nProvider>);
+    const cell = await view.findByTestId("audit-row-time");
+    expect(cell.textContent).toBe(formatMediumDateTime(timestamp, locale));
+    if (locale === "en") expect(cell.textContent).toContain("Jun");
+    if (locale === "ko") expect(cell.textContent).toContain("오전");
   });
 });

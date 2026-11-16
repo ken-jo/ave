@@ -333,13 +333,17 @@ const OTHER_KEY_LABELS: Readonly<Record<string, string>> = {
 export function acceleratorKeycaps(accelerator: string, platform: ShortcutPlatform): string[] {
   const parsed = parseAccelerator(accelerator);
   if (!parsed) throw new Error(`Malformed shortcut accelerator: ${JSON.stringify(accelerator)}`);
-  const chord = resolveChord(parsed, platform);
+  return chordKeycaps(resolveChord(parsed, platform), platform);
+}
+
+function chordKeycaps(chord: ResolvedChord, platform: ShortcutPlatform, altGraph = false): string[] {
   const caps: string[] = [];
   if (platform === "darwin") {
     if (chord.ctrl) caps.push("⌃");
     if (chord.alt) caps.push("⌥");
     if (chord.shift) caps.push("⇧");
     if (chord.meta) caps.push("⌘");
+    if (altGraph) caps.push("AltGr");
     caps.push(DARWIN_KEY_GLYPHS[chord.key] ?? chord.key);
     return caps;
   }
@@ -347,6 +351,7 @@ export function acceleratorKeycaps(accelerator: string, platform: ShortcutPlatfo
   if (chord.alt) caps.push("Alt");
   if (chord.shift) caps.push("Shift");
   if (chord.meta) caps.push("Win");
+  if (altGraph) caps.push("AltGr");
   caps.push(OTHER_KEY_LABELS[chord.key] ?? chord.key);
   return caps;
 }
@@ -356,10 +361,28 @@ export function formatAccelerator(accelerator: string, platform: ShortcutPlatfor
   return acceleratorKeycaps(accelerator, platform).join(platform === "darwin" ? "" : "+");
 }
 
+/** Global bindings also accept native modifier aliases and key names outside the in-app grammar. */
+export function formatGlobalAccelerator(accelerator: string, platform: ShortcutPlatform): string {
+  const identity = nativeAcceleratorIdentity(accelerator, platform);
+  if (normalizeAccelerator(accelerator) === null || identity === null) throw new Error(`Malformed shortcut accelerator: ${JSON.stringify(accelerator)}`);
+  const modifiers = identity.slice(0, identity.indexOf("+"));
+  const parts = accelerator.split("+");
+  const rawKey = parts[parts.length - 1].trim();
+  const nativeKey = rawKey.toLowerCase();
+  const physicalKey = Object.hasOwn(NATIVE_SHIFTED_KEYS, nativeKey) ? NATIVE_SHIFTED_KEYS[nativeKey] : rawKey;
+  const chord: ResolvedChord = {
+    ctrl: modifiers.includes("C"), alt: modifiers.includes("A"), shift: modifiers.includes("S"), meta: modifiers.includes("M"),
+    key: canonicalKeyToken(physicalKey) ?? physicalKey,
+  };
+  return chordKeycaps(chord, platform, modifiers.includes("G")).join(platform === "darwin" ? "" : "+");
+}
+
+
 // ── Registry ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** Where a shortcut is listened for. `app` fires anywhere in the window, `menu` is a native menu accelerator, `system` is
  * OS-wide; those three overlap every other scope. The rest fire only while their surface has focus. */
+
 export const SHORTCUT_SCOPES = ["app", "menu", "workspace", "composer", "lists", "system"] as const;
 export type ShortcutScope = (typeof SHORTCUT_SCOPES)[number];
 

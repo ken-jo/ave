@@ -9,7 +9,9 @@ import { DEFAULT_APPEARANCE, type AppearanceSettings } from "../../../shared/app
 import { applyInstalledContent, resetInstalledContentForTests } from "../installed-content.js";
 import type { InstalledContentView } from "../../../shared/installed-content.js";
 import { makeMockAveApi } from "../../../../test/renderer/mock-ave-api.js";
-import { getLocale, setLocale } from "../../../i18n/runtime.js";
+import { rendererShortcutPlatform } from "../hooks/use-shortcuts.js";
+import { defaultAccelerator, formatAccelerator } from "../../../shared/shortcuts.js";
+import { t, getLocale, setLocale } from "../../../i18n/runtime.js";
 
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
 
@@ -227,18 +229,26 @@ it("renders each interface preset in its saved stack with the host default", asy
 
 it("offers the zoom row with percent, limits and reset", async () => {
  const view = renderAppearance();
- const zoom = within(view.getByRole("group", { name: "확대/축소" }));
+ const zoom = within(view.getByRole("group", { name: t("appearanceTab.zoom") }));
+ const platform = rendererShortcutPlatform();
+ const shortcutLabel = (id: "menu.zoomIn" | "menu.zoomOut" | "menu.resetZoom", labelKey: string) =>
+   t("appearanceTab.shortcutLabel", { label: t(labelKey), shortcut: formatAccelerator(defaultAccelerator(id, platform)!, platform) });
+ const resetName = shortcutLabel("menu.resetZoom", "be_main.menuResetZoom");
+ const zoomInName = shortcutLabel("menu.zoomIn", "be_main.menuZoomIn");
+ const zoomOutName = shortcutLabel("menu.zoomOut", "be_main.menuZoomOut");
  expect(zoom.getByText("100%")).toBeInTheDocument();
- expect(zoom.getByRole("button", { name: /Num0/ })).toBeDisabled();
+ expect(zoom.getByRole("button", { name: resetName })).toBeDisabled();
  const api = (window as unknown as { aveApi: ReturnType<typeof makeMockAveApi>["api"] }).aveApi;
- for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: /Ctrl\+=/ }));
- expect(zoom.getByRole("button", { name: /Ctrl\+=/ })).toBeDisabled();
+ for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: zoomInName }));
+ expect(zoom.getByRole("button", { name: zoomInName })).toBeDisabled();
  expect(zoom.getByText("430%")).toBeInTheDocument();
  expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { zoomLevel: 8 } });
- fireEvent.click(zoom.getByRole("button", { name: /Num0/ }));
+ fireEvent.click(zoom.getByRole("button", { name: resetName }));
  expect(zoom.getByText("100%")).toBeInTheDocument();
- for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: /Ctrl\+-/ }));
- expect(zoom.getByRole("button", { name: /Ctrl\+-/ })).toBeDisabled();
+ expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { zoomLevel: 0 } });
+ expect(zoom.getByRole("button", { name: resetName })).toBeDisabled();
+ for (let i = 0; i < 10; i++) fireEvent.click(zoom.getByRole("button", { name: zoomOutName }));
+ expect(zoom.getByRole("button", { name: zoomOutName })).toBeDisabled();
  expect(zoom.getByText("23%")).toBeInTheDocument();
 });
 

@@ -856,20 +856,7 @@ export function RolesTab({ api }: { api: AveApi }) {
 
       <SettingsSection data-settings-section="roles-preview" title={t("rolesTab.sectionPreview")}>
         <pre className="overflow-auto rounded-md bg-muted/(--opacity-half) p-3 text-xs leading-5">
-          {`AGENTS.md                  -> project / org / agent operating context
-agents.custom.md            -> your own agent context under keep-latest, read after AGENTS.md
-AGENTS.md.merged            -> merge awaiting review; never read by the runtime
-memories/MEMORY.md          -> urgent memory, references, and saved-memory index
-memories/*.md               -> detailed long-term memories with references
-user-preferences.md         -> compact durable user preferences only
-prompts/*.md                -> user-editable per-turn persona prompts
-
-Idle:
-  IDLE_SCAN -> optionally refresh user-preferences.md from sources, preferences only
-
-Turn:
-  system prompt reads AGENTS.md + user-preferences.md + MEMORY.md + memories/*.md
-  selected persona prompt is injected as a per-turn system prompt section`}
+          {t("rolesTab.contextFlow")}
         </pre>
       </SettingsSection>
 

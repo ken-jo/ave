@@ -4475,9 +4475,9 @@ export const ko: Record<MessageCatalogKey, string> = {
   // rolesTab
   "rolesTab.sectionAgents": "AGENTS.md",
   "rolesTab.sectionMemory": "지침 (MEMORY.md)",
-  "rolesTab.sectionPreferences": "User Preferences",
+  "rolesTab.sectionPreferences": "사용자 선호 사항",
   "rolesTab.sectionRoles": "역할 프롬프트",
-  "rolesTab.sectionPreview": "SSOT",
+  "rolesTab.sectionPreview": "적용 중인 컨텍스트",
   "rolesTab.pageTitle": "메모리",
   "rolesTab.pageDescription": "~/.ave/prompts의 Persona 프롬프트를 관리합니다",
   "rolesTab.sectionSourceTitle": "역할 소스",
@@ -6610,4 +6610,9 @@ export const ko: Record<MessageCatalogKey, string> = {
   "notificationsTab.description": "소리 신호, 운영체제 알림과 숨긴 안내를 관리합니다.",
   "notificationsTab.delivery": "알림 전달",
   "notificationsTab.hiddenNotices": "숨긴 안내",
+  "usageDashboard.presetDays": "{count}일",
+  "mainDialog.diagnosticsExportTitle": "진단 번들 저장",
+  "appearanceTab.shortcutLabel": "{label} ({shortcut})",
+  "appearanceTab.zoomIndicatorLabel": "{label} {percent}% ({zoomIn} / {zoomOut})",
+  "rolesTab.contextFlow": "AGENTS.md                  -> 프로젝트, 조직, 에이전트 운영 지침\nagents.custom.md            -> 최신 버전 유지 시 사용하는 사용자 에이전트 지침. AGENTS.md 다음에 읽음\nAGENTS.md.merged            -> 검토 대기 중인 병합 결과. 실행 중에는 읽지 않음\nmemories/MEMORY.md          -> 긴급 지침, 참고 자료, 저장된 기억의 색인\nmemories/*.md               -> 참고 자료가 포함된 장기 기억\nuser-preferences.md         -> 지속적으로 적용할 사용자 선호 사항\nprompts/*.md                -> 사용자가 편집하는 턴별 페르소나 프롬프트\n\n유휴 상태:\n  IDLE_SCAN -> 필요 시 원본에서 사용자 선호 사항만 갱신\n\n턴 실행:\n  시스템 프롬프트가 AGENTS.md + user-preferences.md + MEMORY.md + memories/*.md를 읽음\n  선택한 페르소나 프롬프트를 턴별 시스템 프롬프트에 추가",
 };

@@ -16,7 +16,7 @@ import { SettingsTextField } from "../components/SettingsTextField.js";
 import { getApi } from "../api-client.js";
 import { DEFAULT_CORP_CA_COMMON_NAME } from "../../../shared/corp-ca-common-name.js";
 import { TOOL_TIMEOUT_POLICY } from "../../../shared/tool-timeout-policy.js";
-import { acceleratorFromEvent, globalShortcutBindingRefusal, globalShortcutOverlaps, normalizeAccelerator, shortcutDefinition, type ShortcutSettings } from "../../../shared/shortcuts.js";
+import { acceleratorFromEvent, formatGlobalAccelerator, globalShortcutBindingRefusal, globalShortcutOverlaps, normalizeAccelerator, shortcutDefinition, type ShortcutSettings } from "../../../shared/shortcuts.js";
 import { rendererShortcutPlatform, setShortcutCaptureActive } from "../hooks/use-shortcuts.js";
 import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
@@ -339,7 +339,7 @@ export function StartupTab() {
             >
               {capturing
                 ? t("startupTab.shortcutCapturing")
-                : (toggleWindow ?? t("startupTab.shortcutUnset"))}
+                : (toggleWindow === null ? t("startupTab.shortcutUnset") : formatGlobalAccelerator(toggleWindow, rendererShortcutPlatform()))}
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
               <Button

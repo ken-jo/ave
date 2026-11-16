@@ -136,7 +136,7 @@ export function WebTab(props: WebTabProps) {
         description={t("appearanceTab.webViewSectionDescription")}
         actions={
           <span className="text-dense text-muted-foreground">
-            {t("appearanceTab.webViewCurrentLabel")} <span className="font-mono text-foreground">{webViewFlow}</span>
+            {t("appearanceTab.webViewCurrentLabel")} <span className="text-foreground">{t(WEBVIEW_OPTIONS.find((option) => option.value === webViewFlow)!.label)}</span>
           </span>
         }
       >
