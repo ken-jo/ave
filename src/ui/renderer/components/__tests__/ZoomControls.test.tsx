@@ -1,3 +1,4 @@
+import { ok as assertPresent } from "node:assert/strict";
 import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
@@ -18,7 +19,9 @@ describe("ZoomControls keyboard hint locale", () => {
     vi.mocked(rendererShortcutPlatform).mockReturnValue(platform);
     const view = render(<ZoomControls />);
     for (const [id, label] of [["menu.zoomOut", "be_main.menuZoomOut"], ["menu.zoomIn", "be_main.menuZoomIn"], ["menu.resetZoom", "be_main.menuResetZoom"]] as const) {
-      const shortcut = formatAccelerator(defaultAccelerator(id, platform)!, platform);
+      const accelerator = defaultAccelerator(id, platform);
+      assertPresent(accelerator);
+      const shortcut = formatAccelerator(accelerator, platform);
       expect(view.getByRole("button", { name: t("appearanceTab.shortcutLabel", { label: t(label), shortcut }) })).toBeInTheDocument();
     }
     expect(view.container.textContent).not.toContain("Cmd/Ctrl");

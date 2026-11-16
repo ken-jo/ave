@@ -195,7 +195,7 @@ export const en = {
   "app.deprecatedModelNoticeDismiss": "Dismiss",
 
   // appearanceTab
-  "appearanceTab.fontSaveFailed": "The font setting could not be loaded or saved.",
+  "appearanceTab.fontSaveFailed": "Could not save this appearance setting.",
   "appearanceTab.schemeTitle": "Color scheme",
   "appearanceTab.schemeDescription": "One scheme sets the interface and terminal colors. System mode keeps a selection for each appearance.",
   "appearanceTab.mode": "Appearance mode",
@@ -2991,7 +2991,7 @@ export const en = {
   "llmTab.saving": "Saving…",
   "llmTab.save": "Save",
   "llmTab.cancel": "Cancel",
-  "llmTab.immediateApply": "Instant Apply",
+  "llmTab.immediateApply": "Applies immediately",
   "llmTab.pageTitle": "Model",
   "llmTab.pageDescription": "Configure the AI provider, model, API key, and fallback chain",
   "llmTab.providerConfig": "Provider Configuration",
@@ -3643,9 +3643,9 @@ export const en = {
   "permissionJudge.moveDownStage": "Move stage {number} down",
   "permissionJudge.removeStage": "Remove stage {number}",
   "permissionJudge.addStage": "Add custom evaluator",
-  "permissionJudge.save": "Save judge settings",
+  "permissionJudge.save": "Save evaluator chain",
   "permissionJudge.saving": "Saving…",
-  "permissionJudge.saved": "Judge settings saved.",
+  "permissionJudge.saved": "Evaluator chain saved.",
   "permissionJudge.warnings": "{count} saved settings could not be applied. Review the values below before saving.",
   "permissionJudge.readFailed": "Judge settings could not be loaded. Reopen settings to try again.",
   "permissionJudge.invalidSettings": "Check each stage, model, endpoint and threshold, then save again. Stage identifiers must be unique.",
@@ -6153,7 +6153,7 @@ export const en = {
   "webTab.pageDescription": "Configure web search provider and behavior",
   "webTab.searchEngineTitle": "Search Engine",
   "webTab.searchEngineDescription": "Tavily and Serper provide high-performance search capabilities for AI agents.",
-  "webTab.immediateApplyBadge": "Immediate",
+  "webTab.immediateApplyBadge": "Applies immediately",
   "webTab.apiKeyTitle": "{label} API Key",
   "webTab.apiKeyLabel": "{label} API Key",
   "webTab.keySet": "Set",
@@ -6616,6 +6616,12 @@ export const en = {
   "llmTab.fallbackPresetUnavailable": "The custom provider cannot be used in the fallback chain while a marketplace provider is active.",
   "chatTab.subAgentRoundsInvalid": "Enter a whole number from {min} to {max}.",
   "permissionsTab.ownerAwayInvalid": "Enter a whole number from 0 to {max} minutes. The saved value has been restored.",
+  "webTab.saveKey": "Save API key",
+  "webTab.loadFailed": "Browsing settings could not be loaded.",
+  "auditTab.bundleConsentLoading": "Reading stored crash-dump consent…",
+  "auditTab.bundleConsentLoadFailed": "Could not read crash-dump consent. Retry before exporting a diagnostics bundle.",
+  "permissionJudge.chainUnsaved": "The evaluator chain has unsaved changes. Other controls apply immediately.",
+  "appearanceTab.fontLoadFailed": "Could not load your saved font settings. Retry to edit them.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

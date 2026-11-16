@@ -54,7 +54,8 @@ describe("settings model chooser", () => {
     other!.focus();
     fireEvent.keyDown(other!, { key: "Enter" });
 
-    type VendorPatch = { llm: { provider: string; vendors: Record<string, { model: string }> } };
+    // A model pick writes only the active vendor's model; the unchanged provider choice is not sent again.
+    type VendorPatch = { llm: { provider?: string; vendors: Record<string, { model: string }> } };
     // Catalog caching also writes settings; select the write carrying the provider choice.
     const vendorPatch = () => api.updateSettings.mock.calls
       .map((call) => call[0] as Partial<VendorPatch>)
@@ -65,6 +66,8 @@ describe("settings model chooser", () => {
     // Require exact ids so a selected model prefix cannot pass as a longer id.
     const pickedModelId = other!.querySelector("[data-model-id]")?.getAttribute("data-model-id");
     expect(pickedModelId).toBeTruthy();
-    expect(patch.llm.vendors[patch.llm.provider]!.model).toBe(pickedModelId);
+    expect(patch.llm.provider).toBeUndefined();
+    expect(Object.keys(patch.llm.vendors)).toEqual(["openai"]);
+    expect(patch.llm.vendors.openai!.model).toBe(pickedModelId);
   });
 });

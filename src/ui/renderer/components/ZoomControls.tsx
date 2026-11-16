@@ -6,6 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/
 import { MAX_ZOOM_LEVEL, MIN_ZOOM_LEVEL, nextZoomLevel, normalizeZoomLevel, zoomLevelToZoomFactor, type ZoomCommand } from "../../../shared/app-zoom.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
+import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { useTheme } from "../theme/index.js";
 import { defaultAccelerator, formatAccelerator } from "../../../shared/shortcuts.js";
@@ -24,10 +25,12 @@ export function ZoomControls() {
   const [level, setLevel] = useState(normalizeZoomLevel(appearance.zoomLevel));
   const [failed, setFailed] = useState(false);
   const levelRef = useRef(level);
+  const authoritativeRef = useRef(normalizeZoomLevel(appearance.zoomLevel));
   const revisionRef = useRef(0);
   useEffect(() => {
     revisionRef.current++;
-    levelRef.current = normalizeZoomLevel(appearance.zoomLevel);
+    authoritativeRef.current = normalizeZoomLevel(appearance.zoomLevel);
+    levelRef.current = authoritativeRef.current;
     setLevel(levelRef.current);
   }, [appearance.zoomLevel]);
   const run = (command: ZoomCommand) => {
@@ -36,9 +39,14 @@ export function ZoomControls() {
     setLevel(next);
     setFailed(false);
     const revision = ++revisionRef.current;
-    void getApi().updateSettings({ appearance: { zoomLevel: next } }).catch(() => {
+    void getApi().updateSettings({ appearance: { zoomLevel: next } }).then(requirePersistedResult).then((saved) => {
       if (revision !== revisionRef.current) return;
-      levelRef.current = normalizeZoomLevel(appearance.zoomLevel);
+      authoritativeRef.current = normalizeZoomLevel(saved.appearance.zoomLevel);
+      levelRef.current = authoritativeRef.current;
+      setLevel(levelRef.current);
+    }).catch(() => {
+      if (revision !== revisionRef.current) return;
+      levelRef.current = authoritativeRef.current;
       setLevel(levelRef.current);
       setFailed(true);
     });

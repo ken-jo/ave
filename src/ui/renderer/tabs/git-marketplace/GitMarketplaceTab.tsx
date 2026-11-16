@@ -21,6 +21,7 @@ import {
   type SourcePreviewView,
   type SourceView,
 } from "../../../../shared/git-marketplace.js";
+import { useSettingsPersistence } from "../../hooks/use-settings-persistence.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../../components/PageShell.js";
 import { isIpcErrorResult, type AveApi } from "../../types.js";
@@ -157,7 +158,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   const [flagsLoaded, setFlagsLoaded] = useState(false);
   const [flagsFailure, setFlagsFailure] = useState<string | null>(null);
   /** Why the last switch was not saved, as the raw text behind *Copy details*. */
-  const [flagSaveFailure, setFlagSaveFailure] = useState<string | null>(null);
+  const { error: flagSaveFailure, saving: flagSaving, persist: persistFlagChange } = useSettingsPersistence();
   const envForcedPaths = useEnvForcedSettings(api);
   const syncedOnce = useRef(false);
 
@@ -351,9 +352,13 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
   };
 
   const persistFlag = async (patch: { updateCheckEnabled?: boolean; offlineCacheEnabled?: boolean }) => {
-    setFlagSaveFailure(null);
-    const result = await api.updateSettings({ marketplace: patch });
-    if (isIpcErrorResult(result)) setFlagSaveFailure(result.message === undefined ? result.error : `${result.error}\n${result.message}`);
+    const previous = { updateCheckEnabled, offlineCacheEnabled };
+    await persistFlagChange(() => api.updateSettings({ marketplace: patch }), {
+      rollback: () => {
+        if (patch.updateCheckEnabled !== undefined) setUpdateCheckEnabled(previous.updateCheckEnabled);
+        if (patch.offlineCacheEnabled !== undefined) setOfflineCacheEnabled(previous.offlineCacheEnabled);
+      },
+    });
   };
 
   const entries = useMemo(() => (catalog?.entries ?? []).filter((entry) => kind === null || entry.key.kind === kind), [catalog, kind]);
@@ -673,7 +678,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.updateCheck")}</span>
           <Switch
             checked={updateCheckEnabled}
-            disabled={!flagsLoaded}
+            disabled={!flagsLoaded || flagSaving}
             aria-label={t("gitMarketplace.maintenance.updateCheck")}
             data-testid="git-marketplace:update-check"
             onCheckedChange={(checked) => {
@@ -694,7 +699,7 @@ export function GitMarketplaceTab({ api, initialKind = null, onOpenMcpSettings, 
           <span className="text-sm font-medium">{t("gitMarketplace.maintenance.offlineCache")}</span>
           <Switch
             checked={offlineCacheEnabled}
-            disabled={!flagsLoaded}
+            disabled={!flagsLoaded || flagSaving}
             aria-label={t("gitMarketplace.maintenance.offlineCache")}
             data-testid="git-marketplace:offline-cache"
             onCheckedChange={(checked) => {

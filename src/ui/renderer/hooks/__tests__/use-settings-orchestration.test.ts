@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 import { useSettingsOrchestration } from "../use-settings-orchestration.js";
 import type { AppSettings, AveApi } from "../../types.js";
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
@@ -7,6 +7,20 @@ import { fakeAppSettings } from "../../../../../test/renderer/fake-app-settings.
 import { marketplaceProviderPresetSecretId } from "../../../../shared/marketplace-package-assets.js";
 import { mergeLlmPatch } from "../../../../data/settings-normalization.js";
 import type { LLMSettingsPatch } from "../../../../data/settings-store.js";
+
+function openaiBlock(settings: AppSettings) {
+  const block = settings.llm.vendors.openai;
+  assert.exists(block, "Expected the fixture's configured vendor block");
+  return block;
+}
+
+function settingsBroadcast(api: ReturnType<typeof makeSettingsApi>): (next: AppSettings) => void {
+  const call = api.onSettingsUpdated.mock.calls[0];
+  assert.exists(call, "Expected a settings subscription");
+  const handler = call[0];
+  assert.isFunction(handler);
+  return handler;
+}
 
 function makeSettings(): AppSettings {
   return fakeAppSettings({
@@ -78,6 +92,106 @@ function makeSettingsWithVendor(vendor: string): AppSettings {
 }
 
 describe("useSettingsOrchestration", () => {
+  it("keeps a newer feature edit across unrelated broadcasts and an older write failure", async () => {
+    const settings = makeSettings();
+    settings.features = { ...settings.features, idlePreferenceRefresh: false };
+    let failFirst!: (value: { ok: false; error: string }) => void;
+    const api = makeSettingsApi({ settings }, { updateSettings: vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { failFirst = resolve; }))
+      .mockResolvedValue(settings) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => result.current.setIdlePreferenceRefresh(true));
+    const broadcast = settingsBroadcast(api);
+    act(() => broadcast(settings));
+    expect(result.current.idlePreferenceRefresh).toBe(true);
+    act(() => result.current.setIdlePreferenceRefresh(false));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledTimes(2));
+    await act(async () => { failFirst({ ok: false, error: "invalid-args" }); await Promise.resolve(); });
+    expect(result.current.idlePreferenceRefresh).toBe(false);
+    expect(result.current.lastSaveError).toBeNull();
+  });
+
+  it("saves reasoning without replaying model, endpoint, provider or unrelated Chat drafts", async () => {
+    const settings = makeSettings();
+    const api = makeSettingsApi({ settings });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => { result.current.setEnableThinking(false); result.current.setStreamSmoothing("char"); });
+    await act(async () => { await result.current.save("llm"); });
+    expect(api.updateSettings).toHaveBeenCalledExactlyOnceWith({ llm: { vendors: { openai: { enableThinking: false, thinkingBudgetTokens: 10_000 } } } });
+  });
+
+  it("rolls a failed control back to the latest authoritative broadcast", async () => {
+    const settings = makeSettings();
+    let finish!: (value: { ok: false; error: string }) => void;
+    const api = makeSettingsApi({ settings }, { updateSettings: vi.fn(() => new Promise((resolve) => { finish = resolve; })) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => result.current.setAutoCompact(false));
+    let saving!: Promise<boolean>;
+    act(() => { saving = result.current.save("chat"); });
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledOnce());
+    const broadcast = settingsBroadcast(api);
+    const newer = structuredClone(settings);
+    newer.chat.autoCompact = false;
+    act(() => broadcast(newer));
+    await act(async () => { finish({ ok: false, error: "invalid-args" }); await saving; });
+    expect(result.current.autoCompact).toBe(false);
+  });
+
+  it("rolls a refused privacy toggle back without marking it saved", async () => {
+    const settings = makeSettings();
+    const saved = vi.fn();
+    const api = makeSettingsApi({ settings }, { updateSettings: vi.fn(async () => ({ ok: false, error: "invalid-args" })) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, saved));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => result.current.setPiiRedactEnabled(true));
+    await act(async () => { expect(await result.current.save("chat")).toBe(false); });
+    expect(api.updateSettings).toHaveBeenCalledExactlyOnceWith({ privacy: { piiRedactEnabled: true } });
+    expect(result.current.piiRedactEnabled).toBe(false);
+    expect(result.current.lastSaveError?.tab).toBe("chat");
+    expect(saved).not.toHaveBeenCalled();
+  });
+
+  it("rolls back a refused immediate model pick while preserving an explicit fallback draft", async () => {
+    const settings = makeSettings();
+    const api = makeSettingsApi({ settings }, { updateSettings: vi.fn(async () => ({ ok: false, error: "invalid-args" })) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    act(() => { result.current.setModel("unsaved-model"); result.current.setFallbackChain([{ provider: "openai", model: "unsaved-fallback" }]); });
+    await act(async () => { expect(await result.current.save("llm")).toBe(false); });
+    expect(result.current.model).toBe(openaiBlock(settings).model);
+    expect(result.current.fallbackChain).toEqual([{ provider: "openai", model: "unsaved-fallback" }]);
+  });
+
+  it("does not report a failed provider secret write as saved", async () => {
+    const saved = vi.fn();
+    const api = makeSettingsApi({ settings: makeSettings() }, { setApiKey: vi.fn(async () => ({ ok: false, error: "secret-store-unavailable" })) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, saved));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    await act(async () => { expect(await result.current.saveProviderCredential({ vendorId: "claude", credentialProviderId: "claude", apiKey: "fixture-key" })).toBe(false); });
+    expect(result.current.lastSaveError?.tab).toBe("llm");
+    expect(saved).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["idlePreferenceRefresh", "setIdlePreferenceRefresh"],
+    ["idleMemoryConsolidation", "setIdleMemoryConsolidation"],
+    ["subAgentAutonomousWake", "setSubAgentAutonomousWake"],
+  ] as const)("rolls back %s with a visible error when its write is refused", async (field, setter) => {
+    const settings = makeSettings();
+    const saved = vi.fn();
+    const api = makeSettingsApi({ settings }, { updateSettings: vi.fn(async () => ({ ok: false, error: "invalid-args" })) });
+    const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, saved));
+    await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
+    const previous = result.current[field];
+    act(() => result.current[setter](!previous));
+    await waitFor(() => expect(result.current.lastSaveError?.tab).toBe("chat"));
+    expect(result.current[field]).toBe(previous);
+    expect(saved).not.toHaveBeenCalled();
+  });
+
   it("persists fallback drafts only through their own explicit save and reconciles the saved chain", async () => {
     const settings = makeSettings();
     const normalized = structuredClone(settings);
@@ -86,7 +200,7 @@ describe("useSettingsOrchestration", () => {
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
     act(() => result.current.setFallbackChain([{ provider: "openai-compatible", model: "draft" }]));
     await act(async () => { await result.current.save("llm"); });
-    expect(api.updateSettings.mock.calls[0]![0].llm).not.toHaveProperty("fallbackChain");
+    expect(api.updateSettings).not.toHaveBeenCalled();
     expect(result.current.fallbackChain).toEqual([{ provider: "openai-compatible", model: "draft" }]);
     await act(async () => { await result.current.save("llm-fallback"); });
     expect(api.updateSettings).toHaveBeenLastCalledWith({ llm: { fallbackChain: [{ provider: "openai-compatible", model: "draft" }] } });
@@ -145,20 +259,16 @@ describe("useSettingsOrchestration", () => {
     const api = makeSettingsApi({ settings });
     const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
-    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    const broadcast = settingsBroadcast(api);
     const next = structuredClone(settings);
-    next.llm.vendors.openai!.model = "external-model";
-    next.llm.vendors.openai!.enableThinking = false;
+    openaiBlock(next).model = "external-model";
+    openaiBlock(next).enableThinking = false;
     act(() => broadcast(next));
     expect(result.current.model).toBe("external-model");
     expect(result.current.enableThinking).toBe(false);
     act(() => result.current.setAutoCompact(false));
     await act(async () => { await result.current.save("chat"); });
-    expect(api.updateSettings).toHaveBeenCalledWith({
-      llm: { streamSmoothing: "none" },
-      chat: { autoCompact: false, processingDisplayLevel: settings.chat.processingDisplayLevel },
-      privacy: { piiRedactEnabled: false },
-    });
+    expect(api.updateSettings).toHaveBeenCalledWith({ chat: { autoCompact: false } });
   });
 
   it("keeps local model and thinking drafts while hydrating clean fields from a broadcast", async () => {
@@ -166,11 +276,11 @@ describe("useSettingsOrchestration", () => {
     const api = makeSettingsApi({ settings });
     const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
-    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    const broadcast = settingsBroadcast(api);
     act(() => { result.current.setModel("local-draft"); result.current.setEnableThinking(false); });
     const next = structuredClone(settings);
-    next.llm.vendors.openai!.model = "external-model";
-    next.llm.vendors.openai!.baseUrl = "https://new.example/v1";
+    openaiBlock(next).model = "external-model";
+    openaiBlock(next).baseUrl = "https://new.example/v1";
     next.llm.fallbackChain = [{ provider: "openai", model: "fallback-model" }];
     act(() => broadcast(next));
     expect(result.current.model).toBe("local-draft");
@@ -193,18 +303,19 @@ describe("useSettingsOrchestration", () => {
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledOnce());
     act(() => result.current.setModel("second"));
     await act(async () => { finish(settings); await saving; });
-    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    const broadcast = settingsBroadcast(api);
     act(() => broadcast(settings));
     expect(result.current.model).toBe("second");
   });
 
   it("saves an empty model as an explicit unselected route", async () => {
     const settings = makeSettings();
-    settings.llm.vendors.openai!.model = "";
+    openaiBlock(settings).model = "";
     const api = makeSettingsApi({ settings, hasApiKey: true });
     const { result } = renderHook(() => useSettingsOrchestration(api as unknown as AveApi, vi.fn()));
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
     expect(result.current.model).toBe("");
+    act(() => result.current.setModel(""));
     await act(async () => result.current.save("llm"));
     expect(api.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
       llm: expect.objectContaining({ vendors: expect.objectContaining({ openai: expect.objectContaining({ model: "" }) }) }),
@@ -295,7 +406,7 @@ describe("useSettingsOrchestration", () => {
       useSettingsOrchestration(api as unknown as AveApi, vi.fn()),
     );
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
-    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    const broadcast = settingsBroadcast(api);
 
     const external = structuredClone(settings);
     external.chat.processingDisplayLevel = "reasoning";
@@ -334,7 +445,7 @@ describe("useSettingsOrchestration", () => {
       useSettingsOrchestration(api as unknown as AveApi, vi.fn()),
     );
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
-    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    const broadcast = settingsBroadcast(api);
 
     act(() => result.current.setProcessingDisplayLevel("tools"));
     let firstSave!: Promise<boolean>;
@@ -371,7 +482,7 @@ describe("useSettingsOrchestration", () => {
       useSettingsOrchestration(api as unknown as AveApi, vi.fn()),
     );
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
-    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    const broadcast = settingsBroadcast(api);
 
     act(() => result.current.setProcessingDisplayLevel("tools"));
     let firstSave!: Promise<boolean>;
@@ -408,7 +519,7 @@ describe("useSettingsOrchestration", () => {
   it("preserves effort intent across output broadcasts without overwriting form edits", async () => {
     const settings = makeSettings();
     settings.llm.vendors.openai = {
-      ...settings.llm.vendors.openai!, thinkingBudgetTokens: 14_000, outputTokenLimit: 32_000,
+      ...openaiBlock(settings), thinkingBudgetTokens: 14_000, outputTokenLimit: 32_000,
     };
     const api = makeSettingsApi({ settings }, {
       updateSettings: vi.fn(async () => settings),
@@ -417,22 +528,24 @@ describe("useSettingsOrchestration", () => {
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
     expect(result.current.thinkingBudget).toBe(14_000);
     await act(async () => result.current.setModel("unsaved-model"));
-    const broadcast = api.onSettingsUpdated.mock.calls[0]![0] as (next: AppSettings) => void;
+    const broadcast = settingsBroadcast(api);
     await act(async () => broadcast({
       ...settings, llm: { ...settings.llm, vendors: { openai: {
-        ...settings.llm.vendors.openai!, outputTokenLimit: 16_000,
+        ...openaiBlock(settings), outputTokenLimit: 16_000,
       } } },
     }));
     expect(result.current.outputTokenLimit).toBe(16_000);
     expect(result.current.thinkingBudget).toBe(14_000);
     expect(result.current.model).toBe("unsaved-model");
     await act(async () => result.current.save("llm"));
-    const patch = api.updateSettings.mock.calls[0]![0] as { llm: { vendors: { openai: Record<string, unknown> } } };
-    expect(patch.llm.vendors.openai).toMatchObject({ model: "unsaved-model", thinkingBudgetTokens: 14_000 });
+    const update = api.updateSettings.mock.calls[0];
+    assert.exists(update);
+    const patch = update[0] as { llm: { vendors: { openai: Record<string, unknown> } } };
+    expect(patch.llm.vendors.openai).toEqual({ model: "unsaved-model" });
     expect(patch.llm.vendors.openai).not.toHaveProperty("outputTokenLimit");
     await act(async () => broadcast({
       ...settings, llm: { ...settings.llm, vendors: { openai: {
-        ...settings.llm.vendors.openai!, outputTokenLimit: 64_000,
+        ...openaiBlock(settings), outputTokenLimit: 64_000,
       } } },
     }));
     expect(result.current.outputTokenLimit).toBe(64_000);
@@ -510,6 +623,7 @@ describe("useSettingsOrchestration", () => {
     );
     await waitFor(() => expect(result.current.settingsLoaded).toBe(true));
 
+    act(() => result.current.setModel("queued-model"));
     let queued: Promise<boolean> | undefined;
     await act(async () => {
       void result.current.save("llm");
@@ -681,8 +795,7 @@ describe("useSettingsOrchestration", () => {
         marketplaceProviderPresetId: "",
       },
     });
-    expect(payload.llm.vendors["openai-compatible"].baseUrl)
-      .toBe("http://localhost:8001/v1");
+    expect(payload.llm.vendors["openai-compatible"]).not.toHaveProperty("baseUrl");
   });
 
   it("defaults idle long-term consolidation off and persists an explicit opt-in immediately", async () => {

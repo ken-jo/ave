@@ -153,3 +153,17 @@ describe("LocalApiSurfacesSection", () => {
     expect(screen.queryByTestId("local-api-surfaces-remote-a2a-start-failed")).toBeNull();
   });
 });
+
+it('restores security toggle state and permits retry after an IPC rejection', async () => {
+  updateSettings.mockRejectedValueOnce(new Error('Disconnected host'));
+  render(<LocalApiSurfacesSection />);
+  const toggle = await screen.findByTestId('local-api-surfaces-a2a-remote-routing');
+  await waitFor(() => expect(toggle).not.toBeDisabled());
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'));
+  expect(toggle).not.toBeDisabled();
+  expect(screen.getByRole('alert')).toBeTruthy();
+  fireEvent.click(toggle);
+  await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
+  expect(updateSettings).toHaveBeenCalledTimes(2);
+});

@@ -1,6 +1,7 @@
+import { ok as assertPresent } from "node:assert/strict";
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { ThemeProvider, useTheme } from "../theme/ThemeProvider.js";
 import { DEFAULT_APPEARANCE } from "../../../shared/appearance-settings.js";
 import { applyAppearance } from "../theme/resolve-theme.js";
@@ -17,6 +18,60 @@ function Picker() {
 }
 
 describe("appearance provider", () => {
+  it("returns failure and restores a refused mode instead of reporting it saved", async () => {
+    const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, mode: "light" } } });
+    api.updateSettings.mockResolvedValueOnce({ ok: false, error: "invalid-args" });
+    const { result } = renderHook(() => useTheme(), { wrapper: ({ children }) => <ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "light" }}>{children}</ThemeProvider> });
+    await act(async () => { expect(await result.current.setMode("dark")).toEqual({ ok: false }); });
+    expect(result.current.mode).toBe("light");
+    expect(result.current.persistenceError).toBeTruthy();
+    expect(document.documentElement.getAttribute("data-scheme")).toBe("github-light");
+  });
+
+  it("restores committed tint after a preview commit is refused", async () => {
+    const { api } = makeMockAveApi({ settings: { appearance: DEFAULT_APPEARANCE } });
+    api.updateSettings.mockResolvedValueOnce({ ok: false, error: "invalid-args" });
+    const { result } = renderHook(() => useTheme(), { wrapper: ({ children }) => <ThemeProvider api={api as never} initialAppearance={DEFAULT_APPEARANCE}>{children}</ThemeProvider> });
+    await act(async () => { expect(await result.current.setGlassTint(80, false)).toEqual({ ok: true }); });
+    expect(result.current.appearance.glassTint).toBe(80);
+    expect(api.updateSettings).not.toHaveBeenCalled();
+    await act(async () => { expect(await result.current.setGlassTint(80, true)).toEqual({ ok: false }); });
+    expect(result.current.appearance.glassTint).toBe(DEFAULT_APPEARANCE.glassTint);
+  });
+
+  it("restores the latest broadcast field and keeps unrelated appearance edits", async () => {
+    const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, mode: "light" } } });
+    let fail!: (value: { ok: false; error: string }) => void;
+    api.updateSettings.mockImplementationOnce(() => new Promise((resolve) => { fail = resolve; }));
+    const { result } = renderHook(() => useTheme(), { wrapper: ({ children }) => <ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "light" }}>{children}</ThemeProvider> });
+    let saving!: ReturnType<typeof result.current.setMode>;
+    act(() => { saving = result.current.setMode("dark"); });
+    const snapshot = await api.getSettings();
+    const [subscription] = api.onSettingsUpdated.mock.calls;
+    assertPresent(subscription);
+    const [broadcast] = subscription;
+    act(() => broadcast({ ...snapshot, appearance: { ...DEFAULT_APPEARANCE, mode: "system", font: { ...DEFAULT_APPEARANCE.font, family: "Example Sans" } } }));
+    expect(result.current.mode).toBe("dark");
+    await act(async () => { fail({ ok: false, error: "invalid-args" }); await saving; });
+    expect(result.current.mode).toBe("system");
+    expect(result.current.appearance.font?.family).toBe("Example Sans");
+  });
+
+  it("keeps a newer confirmed mode when an older write later fails", async () => {
+    const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, mode: "light" } } });
+    let fail!: (value: { ok: false; error: string }) => void;
+    const snapshot = await api.getSettings();
+    api.updateSettings.mockImplementationOnce(() => new Promise((resolve) => { fail = resolve; }))
+      .mockResolvedValueOnce({ ...snapshot, appearance: { ...DEFAULT_APPEARANCE, mode: "system" } });
+    const { result } = renderHook(() => useTheme(), { wrapper: ({ children }) => <ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "light" }}>{children}</ThemeProvider> });
+    let older!: ReturnType<typeof result.current.setMode>;
+    act(() => { older = result.current.setMode("dark"); });
+    await act(async () => { expect(await result.current.setMode("system")).toEqual({ ok: true }); });
+    await act(async () => { fail({ ok: false, error: "invalid-args" }); await older; });
+    expect(result.current.mode).toBe("system");
+    expect(result.current.persistenceError).toBeNull();
+  });
+
   it("applies mode and scheme immediately and persists each choice", async () => {
     const { api } = makeMockAveApi({ settings: { appearance: { ...DEFAULT_APPEARANCE, mode: "light" } } });
     render(<ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "light" }}><Picker /></ThemeProvider>);
@@ -36,7 +91,7 @@ describe("appearance provider", () => {
     const media = vi.spyOn(window, "matchMedia").mockReturnValue(query as unknown as MediaQueryList);
     const view = render(<ThemeProvider initialAppearance={{ ...DEFAULT_APPEARANCE, darkScheme: "nord", lightScheme: "one-light" }}><Picker /></ThemeProvider>);
     expect(screen.getByTestId("scheme")).toHaveTextContent("one-light");
-    act(() => { query.matches = true; listener!(); });
+    act(() => { query.matches = true; assertPresent(listener); listener(); });
     expect(screen.getByTestId("scheme")).toHaveTextContent("nord");
     view.unmount();
     expect(query.removeEventListener).toHaveBeenCalled();

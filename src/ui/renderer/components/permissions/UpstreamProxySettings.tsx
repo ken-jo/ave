@@ -1,6 +1,6 @@
 /** Main owns upstream proxy settings; the renderer receives credential-presence flags, never credentials. Changes affect
  * new connections immediately. */
-import { useCallback, useEffect, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Checkbox } from "../../../../components/ui/checkbox.js";
 import { Input } from "../../../../components/ui/input.js";
@@ -55,6 +55,7 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   // The mode shown; "manual" can be chosen before a URL is saved for it.
   const [mode, setMode] = useState<UpstreamProxyMode>("system");
   const [manualUrl, setManualUrl] = useState("");
@@ -80,7 +81,9 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
     }
   }, [reader, translate, adopt]);
 
-  const save = useCallback(async (patch: UpstreamProxyPatch, successNotice?: string) => {
+  const save = useCallback(async (patch: UpstreamProxyPatch, successNotice?: string): Promise<boolean> => {
+    if (busyRef.current) return false;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -91,10 +94,15 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
         setError(translate("upstreamProxySettings.saveFailed", { message: failed }));
         // Show what is actually stored again.
         if (view) setMode(view.settings.mode);
-        return;
+        return false;
       }
       const next = (result as { view?: unknown }).view;
-      if (isView(next)) adopt(next);
+      if (!isView(next)) {
+        setError(translate("upstreamProxySettings.saveFailed", { message: translate("formatIpcError.unknownError") }));
+        if (view) setMode(view.settings.mode);
+        return false;
+      }
+      adopt(next);
       // Credentials bound to the previous proxy are removed by main; say so whatever was saved, so the person is not surprised
       // by a 407 later.
       if ((result as { credentialsRemoved?: unknown }).credentialsRemoved === true) {
@@ -102,9 +110,12 @@ export function UpstreamProxySettings({ reader, writer }: UpstreamProxySettingsP
       } else if (successNotice !== undefined) {
         setNotice(successNotice);
       }
+      return true;
     } catch (err) {
       setError(translate("upstreamProxySettings.saveFailed", { message: errorMessage(err) }));
+      return false;
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }, [writer, translate, adopt, view]);

@@ -1,3 +1,4 @@
+import { requirePersistedResult, useSettingsPersistence } from "../hooks/use-settings-persistence.js";
 import { EmptyState } from "../../../components/ui/empty-state.js";
 import { Loader } from "../../../components/ui/loader.js";
 import { CUSTOM_PROVIDER_WIRES, customProviderWire, type CustomProviderWire } from "../../../shared/custom-provider.js";
@@ -1414,6 +1415,7 @@ export function LlmTab(props: LlmTabProps) {
     settingsLoaded = true,
   } = props;
   const { t } = useTranslation();
+  const persistence = useSettingsPersistence(onSaved);
   const selectedMarketplaceProviderPreset = vendor === "openai-compatible" && marketplaceProviderPresetId
     ? marketplaceProviderPresets.find((preset) => preset.providerId === marketplaceProviderPresetId)
     : undefined;
@@ -1640,25 +1642,33 @@ export function LlmTab(props: LlmTabProps) {
   // Mirrored from settings rather than held locally: another window may pin a model too, and the chooser must show one truth.
   const [pinnedModels, setPinnedModels] = useState<readonly string[]>([]);
   const [compactionModel, setCompactionModel] = useState<JudgeModel | null>(null);
-  const [savedCompactionModel, setSavedCompactionModel] = useState("");
+  const savedCompactionSelectionRef = useRef<ReturnType<typeof compactionModelSelection> | null>(null);
   const [compactionUnavailableSelection, setCompactionUnavailableSelection] = useState<string>();
   const [compactionSnapshot, setCompactionSnapshot] = useState<PermissionJudgeSnapshot | null>(null);
   const [compactionOptionsFailed, setCompactionOptionsFailed] = useState(false);
   const [compactionSaving, setCompactionSaving] = useState(false);
   const [compactionSaveFailed, setCompactionSaveFailed] = useState(false);
   const compactionModelDirtyRef = useRef(false);
-  const handleCompactionModelSave = async () => {
+  const handleCompactionModelChange = async (nextModel: JudgeModel | null) => {
+    if (compactionSaving || JSON.stringify(nextModel) === JSON.stringify(compactionModel) && !compactionUnavailableSelection) return;
     setCompactionSaving(true);
     setCompactionSaveFailed(false);
+    compactionModelDirtyRef.current = true;
+    setCompactionModel(nextModel);
+    setCompactionUnavailableSelection(undefined);
     try {
-      const result = await api.updateSettings({ llm: { compactionModelSelection: compactionModel } });
-      if (isIpcErrorResult(result)) throw new Error(result.error);
+      const result = requirePersistedResult(await api.updateSettings({ llm: { compactionModelSelection: nextModel } }));
       compactionModelDirtyRef.current = false;
       const selection = compactionModelSelection(result.llm, result.marketplace?.installedProviderPresets);
-      setSavedCompactionModel(JSON.stringify(selection));
+      savedCompactionSelectionRef.current = selection;
       setCompactionModel(selection.model);
       setCompactionUnavailableSelection(selection.unavailableLabel);
+      onSaved();
     } catch {
+      compactionModelDirtyRef.current = false;
+      const selection = savedCompactionSelectionRef.current!;
+      setCompactionModel(selection.model);
+      setCompactionUnavailableSelection(selection.unavailableLabel);
       setCompactionSaveFailed(true);
     } finally {
       setCompactionSaving(false);
@@ -1669,8 +1679,8 @@ export function LlmTab(props: LlmTabProps) {
       ? pinnedModels.filter((id: string) => id !== modelId)
       : [...pinnedModels, modelId];
     setPinnedModels(next);
-    void api.updateSettings({ llm: { pinnedModels: next } });
-  }, [api, pinnedModels]);
+    void persistence.persist(() => api.updateSettings({ llm: { pinnedModels: next } }), { rollback: () => setPinnedModels((current) => current === next ? pinnedModels : current) });
+  }, [api, pinnedModels, persistence.persist]);
 
   /** Key open credential forms by row identity to avoid rendering under a stale vendor; multiple rows may remain expanded. */
   const [openRowIds, setOpenRowIds] = useState<readonly string[]>([]);
@@ -1720,7 +1730,7 @@ export function LlmTab(props: LlmTabProps) {
       setSettingsRevision((current) => current + 1);
       setPinnedModels(settings.llm?.pinnedModels ?? []);
       const compactSelection = compactionModelSelection(settings.llm, settings.marketplace?.installedProviderPresets);
-      setSavedCompactionModel(JSON.stringify(compactSelection));
+      savedCompactionSelectionRef.current = compactSelection;
       if (!compactionModelDirtyRef.current) {
         setCompactionModel(compactSelection.model);
         setCompactionUnavailableSelection(compactSelection.unavailableLabel);
@@ -2613,15 +2623,12 @@ export function LlmTab(props: LlmTabProps) {
   const deleteRowKey = (row: ProviderConnection) => {
     const method = rowAuthMethod(row);
     if (method) pinAuthMethod(row, method);
-    void api.deleteApiKey(rowCredentialId(row)).then(() => {
+    void persistence.persist(() => api.deleteApiKey(rowCredentialId(row))).then((result) => {
+      if (result === null) return;
       if (rowIsActiveApiProvider(row)) setHasKey(false);
       // A row that existed only because of the key it held would otherwise disappear the moment the key does; taking the open
       // card, and the field for entering a replacement, with it. Pin it so removing a key leaves somewhere to put the next one.
       revealRow(row.id);
-      setSettingsRevision((current) => current + 1);
-      onSaved();
-    }).catch(() => {
-      // The key is still stored; re-ask the store so the card says so.
       setSettingsRevision((current) => current + 1);
     });
   };
@@ -3204,6 +3211,7 @@ export function LlmTab(props: LlmTabProps) {
         title={t("llmTab.pageTitle")}
         description={t("llmTab.pageDescription")}
       />
+      {persistence.error && <p role="alert" data-testid="llm-settings-persist-error" className="text-xs text-destructive">{persistence.error}</p>}
 
       {/* Provider configuration — API keys and endpoint settings are edited
           directly here. */}
@@ -3308,7 +3316,7 @@ export function LlmTab(props: LlmTabProps) {
       </SettingsSection>
 
       {/* Section B — Extended Thinking / Reasoning */}
-      <SettingsSection title={t("compactionSettings.title")} id="llm-compaction" data-settings-section="llm-compaction">
+      <SettingsSection title={t("compactionSettings.title")} id="llm-compaction" data-settings-section="llm-compaction" badge={<ImmediateBadge />}>
         <div className="space-y-2">
           <Label htmlFor="compaction-model">{t("compactionSettings.model")}</Label>
           <SystemSubagentModelSelect
@@ -3321,12 +3329,7 @@ export function LlmTab(props: LlmTabProps) {
             placeholder={t("compactionSettings.currentModel")}
             unavailableLabel={t("permissionJudge.modelUnavailableFacts")}
             disabled={!settingsLoaded || !compactionSnapshot || compactionSaving}
-            onChange={(model) => {
-              const selection = { model: model ?? null };
-              compactionModelDirtyRef.current = JSON.stringify(selection) !== savedCompactionModel;
-              setCompactionModel(model ?? null);
-              setCompactionUnavailableSelection(undefined);
-            }}
+            onChange={(model) => { void handleCompactionModelChange(model ?? null); }}
           />
           <p id="compaction-model-description" className="text-xs text-muted-foreground">
             {t("compactionSettings.description")}
@@ -3335,16 +3338,6 @@ export function LlmTab(props: LlmTabProps) {
             (option) => sameSystemSubagentModel(option, compactionModel),
           ))) && <p role="alert" data-testid="compaction-model-unavailable" className="text-xs text-destructive">{t("compactionSettings.selectedUnavailable")}</p>}
           {compactionOptionsFailed && <p role="alert" className="text-xs text-destructive">{t("permissionJudge.readFailed")}</p>}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            data-testid="compaction-model-save"
-            disabled={!settingsLoaded || !compactionSnapshot || compactionSaving || !compactionModelDirtyRef.current}
-            onClick={() => { void handleCompactionModelSave(); }}
-          >
-            {t(compactionSaving ? "llmTab.saving" : "llmTab.save")}
-          </Button>
           {compactionSaveFailed && <p role="alert" className="text-xs text-destructive">{t("compactionSettings.saveFailed")}</p>}
         </div>
       </SettingsSection>

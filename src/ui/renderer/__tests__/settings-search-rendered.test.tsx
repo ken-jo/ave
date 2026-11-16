@@ -9,7 +9,7 @@ describe("settings search destinations", () => {
     const { api } = makeMockAveApi();
     window.aveApi = api as never;
     const { container } = render(<WebTab api={api as never} webProvider="duckduckgo" setWebProvider={() => {}}
-      hasWebKey={false} setHasWebKey={() => {}} webKeyInput="" setWebKeyInput={() => {}} onSaved={() => {}} />);
+      hasWebKey={false} setHasWebKey={() => {}} webKeyInput="" setWebKeyInput={() => {}} onSaved={() => {}} onSaveKey={async () => true} saving={false} />);
     await waitFor(() => {
       const section = container.querySelector('[data-settings-section="web-api-key"]');
       expect(section).toBeTruthy();

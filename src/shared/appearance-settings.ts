@@ -179,3 +179,6 @@ function normalizeAppearanceFont(input: unknown): AppearanceFontSettings | undef
   }
   return Object.keys(out).length > 0 ? out : undefined;
 }
+
+/** A confirmed appearance write, including language, or a failure already exposed by its owning context. */
+export type AppearancePersistenceResult = { ok: true } | { ok: false };

@@ -1,3 +1,5 @@
+import { ok as assertPresent } from "node:assert/strict";
+import { useState } from "react";
 // @vitest-environment jsdom
 import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -11,9 +13,10 @@ import { resetInstalledContentForTests } from "../../installed-content.js";
 
 function installApi(initialLanguage: Locale = "en") {
   const settingsUpdatedHandlers: Array<(settings: { appearance?: { language?: Locale } }) => void> = [];
+  let settings = { appearance: { language: initialLanguage } };
   const api = {
-    getSettings: vi.fn(async () => ({ appearance: { language: initialLanguage } })),
-    updateSettings: vi.fn(async () => ({})),
+    getSettings: vi.fn(async () => settings),
+    updateSettings: vi.fn(async (patch: { appearance?: { language?: Locale } }): Promise<Record<string, unknown>> => { settings = { appearance: { ...settings.appearance, ...patch.appearance } }; return settings; }),
     onSettingsUpdated: vi.fn((handler: (settings: { appearance?: { language?: Locale } }) => void) => {
       settingsUpdatedHandlers.push(handler);
       return () => undefined;
@@ -24,12 +27,15 @@ function installApi(initialLanguage: Locale = "en") {
 }
 
 function LocaleProbe() {
-  const { locale, setLocale, t } = useTranslation();
+  const { locale, setLocale, t, persistenceError } = useTranslation();
+  const [lastResult, setLastResult] = useState<"saved" | "failed" | "">("");
   return (
     <div>
       <span data-testid="active-locale">{locale}</span>
       <span data-testid="language-title">{t("settings.appearance.language.title")}</span>
-      <button type="button" onClick={() => setLocale("ko")}>ko</button>
+      <button type="button" onClick={() => { void setLocale("ko").then((result) => setLastResult(result.ok ? "saved" : "failed")); }}>ko</button>
+      <span data-testid="locale-save-result">{lastResult}</span>
+      {persistenceError && <p role="alert">{persistenceError}</p>}
     </div>
   );
 }
@@ -85,7 +91,10 @@ describe("I18nSettingsProvider boot locale", () => {
     try {
       await import("../../../../renderer.js");
       await waitFor(() => expect(render).toHaveBeenCalledOnce());
-      const element = render.mock.calls[0]![0] as { props: { initialLocale?: string } };
+      const [call] = render.mock.calls;
+      assertPresent(call);
+      const element = call[0] as { props: { initialLocale?: string } };
+      assertPresent(element);
       expect(element.props.initialLocale).toBe("ko");
     } finally {
       root.remove();
@@ -103,6 +112,33 @@ describe("I18nSettingsProvider boot locale", () => {
 });
 
 describe("I18nSettingsProvider lazy locale loading", () => {
+  it.each(["refused", "rejected"] as const)("keeps the current language and reports a %s settings write", async (failure) => {
+    const { api } = installApi("en");
+    if (failure === "refused") api.updateSettings.mockResolvedValueOnce({ ok: false, error: "invalid-args" });
+    else api.updateSettings.mockRejectedValueOnce(new Error("Settings unavailable"));
+    renderLocaleProbe();
+    fireEvent.click(screen.getByText("ko"));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+    expect(screen.getByTestId("active-locale")).toHaveTextContent("en");
+    expect(screen.getByTestId("locale-save-result")).toHaveTextContent("failed");
+  });
+
+  it("retains an authoritative broadcast received while its language write fails", async () => {
+    const { api, settingsUpdatedHandlers } = installApi("en");
+    let fail!: (value: Record<string, unknown>) => void;
+    api.updateSettings.mockImplementationOnce(() => new Promise((resolve) => { fail = resolve; }));
+    renderLocaleProbe();
+    fireEvent.click(screen.getByText("ko"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledOnce());
+    const [broadcast] = settingsUpdatedHandlers;
+    assertPresent(broadcast);
+    broadcast({ appearance: { language: "ko" } });
+    await waitFor(() => expect(screen.getByTestId("active-locale")).toHaveTextContent("ko"));
+    fail({ ok: false, error: "invalid-args" });
+    await waitFor(() => expect(screen.getByTestId("locale-save-result")).toHaveTextContent("failed"));
+    expect(screen.getByTestId("active-locale")).toHaveTextContent("ko");
+  });
+
   it("hydrates a persisted lazy locale before switching the rendered catalog", async () => {
     installApi("ko");
 
@@ -158,11 +194,9 @@ describe("I18nSettingsProvider lazy locale loading", () => {
 
       fireEvent.click(screen.getByText("ko"));
 
-      await waitFor(() => {
-        expect(api.updateSettings).toHaveBeenCalledWith({
-          appearance: { schemaVersion: 3, language: "ko" },
-        });
-      });
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      expect(screen.getByTestId("locale-save-result")).toHaveTextContent("failed");
       expect(screen.getByTestId("active-locale")).toHaveTextContent("en");
       expect(screen.getByTestId("language-title")).toHaveTextContent("Language");
     } finally {

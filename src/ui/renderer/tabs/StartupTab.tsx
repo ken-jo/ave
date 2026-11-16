@@ -20,6 +20,8 @@ import { acceleratorFromEvent, formatGlobalAccelerator, globalShortcutBindingRef
 import { rendererShortcutPlatform, setShortcutCaptureActive } from "../hooks/use-shortcuts.js";
 import type { AppSettings } from "../types.js";
 import { useSettingsSnapshot } from "../hooks/use-settings-snapshot.js";
+import { useSettingsPersistence } from "../hooks/use-settings-persistence.js";
+import { useNotifySaved } from "../context/SavedToastContext.js";
 
 /** Offer bounded shutdown deadlines from policy; free-form overrides remain deployment-owned and the default must stay
  * selectable. */
@@ -42,6 +44,9 @@ const SHUTDOWN_CLEANUP_TIMEOUT_CHOICES_MS: readonly number[] = Object.freeze([
 export function StartupTab() {
   const { t } = useTranslation();
   const api = getApi();
+  const notifySaved = useNotifySaved();
+  const { error: saveError, persist } = useSettingsPersistence(notifySaved);
+  const latestSettings = useRef<AppSettings | null>(null);
 
   const [loaded, setLoaded] = useState(false);
   const [bootSettings, setBootSettings] = useState<BootSystemSettings | null>(null);
@@ -97,6 +102,7 @@ export function StartupTab() {
   }, [capturing]);
 
   const applySnapshot = useCallback((s: AppSettings) => {
+    latestSettings.current = s;
     setShortcutSettings(s.shortcuts);
     setEnabled(s.shortcuts?.enabled ?? false);
     setToggleWindow(s.shortcuts?.toggleWindow ?? null);
@@ -115,11 +121,17 @@ export function StartupTab() {
 
   useSettingsSnapshot(api, applySnapshot);
 
+  const restoreSnapshot = useCallback(() => {
+    const snapshot = latestSettings.current;
+    if (snapshot === null) throw new Error("Settings snapshot is unavailable.");
+    applySnapshot(snapshot);
+  }, [applySnapshot]);
+
   const persistShortcuts = useCallback(
     (next: { toggleWindow?: string | null; enabled?: boolean }) => {
-      void api.updateSettings({ shortcuts: next });
+      void persist(() => api.updateSettings({ shortcuts: next }), { rollback: restoreSnapshot });
     },
-    [api],
+    [api, persist, restoreSnapshot],
   );
 
   const persistSystem = useCallback(
@@ -133,9 +145,9 @@ export function StartupTab() {
       corpCaDebugLog?: boolean;
       shutdownCleanupTimeoutMs?: number;
     }) => {
-      void api.updateSettings({ system: next });
+      void persist(() => api.updateSettings({ system: next }), { rollback: restoreSnapshot });
     },
-    [api],
+    [api, persist, restoreSnapshot],
   );
 
   const handleEnabledChange = useCallback(
@@ -291,6 +303,7 @@ export function StartupTab() {
         description={t("startupTab.description")}
       />
 
+      {saveError !== null ? <p role="alert" className="text-sm text-destructive" data-testid="startup-save-error">{saveError}</p> : null}
       {bootReadError ? <p role="alert" className="text-sm text-destructive">{t("settingsRestart.readFailed")}</p> : null}
       <RestartRequiredRow pending={loaded && bootSettings !== null && (
         bootSettings.hardwareAcceleration !== hardwareAcceleration || bootSettings.corpCaEnabled !== corpCaEnabled

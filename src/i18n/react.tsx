@@ -1,3 +1,4 @@
+import type { AppearancePersistenceResult } from "../shared/appearance-settings.js";
 /**
  * React bindings for i18n (renderer-only).
  *
@@ -12,7 +13,7 @@
  *
  * Main process never imports this file, so React stays out of the main bundle.
  */
-import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, type ReactNode } from "react";
 import { type Locale } from "./locale.js";
 import { getLocale, setLocale as setRuntimeLocale, t as runtimeT } from "./runtime.js";
 import type { TranslateFn } from "./translate.js";
@@ -20,7 +21,8 @@ import type { TranslateFn } from "./translate.js";
 export interface I18nContextValue {
   locale: Locale;
   /** Change the active language (persists + re-renders the app). */
-  setLocale: (locale: Locale) => void;
+  setLocale: (locale: Locale) => Promise<AppearancePersistenceResult>;
+  persistenceError: string | null;
   /** Translate a key against the active locale. */
   t: TranslateFn;
 }
@@ -37,18 +39,20 @@ export function useTranslation(): I18nContextValue {
   if (ctx) return ctx;
   return {
     locale: getLocale(),
-    setLocale: (locale: Locale) => setRuntimeLocale(locale),
+    setLocale: async (locale: Locale) => { setRuntimeLocale(locale); return { ok: true }; },
+    persistenceError: null,
     t: runtimeT,
   };
 }
 
 export interface I18nProviderProps {
   locale: Locale;
-  setLocale: (locale: Locale) => void;
+  setLocale: ((locale: Locale) => void) | ((locale: Locale) => AppearancePersistenceResult | Promise<AppearancePersistenceResult>);
+  persistenceError?: string | null;
   children: ReactNode;
 }
 
-export function I18nProvider({ locale, setLocale, children }: I18nProviderProps) {
+export function I18nProvider({ locale, setLocale, persistenceError = null, children }: I18nProviderProps) {
   // Keep the module-level runtime in sync so `t()` (imported directly, not via
   // the hook — e.g. in event callbacks or non-React utils) resolves against the
   // active `locale`. The context value below is keyed on `locale`, so hook
@@ -60,9 +64,13 @@ export function I18nProvider({ locale, setLocale, children }: I18nProviderProps)
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
+  const changeLocale = useCallback(async (next: Locale): Promise<AppearancePersistenceResult> => {
+    const result = await setLocale(next);
+    return result === undefined ? { ok: true } : result;
+  }, [setLocale]);
   const value = useMemo<I18nContextValue>(
-    () => ({ locale, setLocale, t: (key, vars) => runtimeT(key, vars) }),
-    [locale, setLocale],
+    () => ({ locale, setLocale: changeLocale, persistenceError, t: (key, vars) => runtimeT(key, vars) }),
+    [locale, changeLocale, persistenceError],
   );
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }

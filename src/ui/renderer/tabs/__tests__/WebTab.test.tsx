@@ -48,7 +48,7 @@ describe("WebTab — webView preferredFlow section", () => {
     const api = installApi();
     const props = {
       api, webProvider: "tavily" as const, setWebProvider: () => {}, hasWebKey: false,
-      setHasWebKey: () => {}, webKeyInput: "", setWebKeyInput: () => {}, onSaved: () => {},
+      setHasWebKey: () => {}, webKeyInput: "", setWebKeyInput: () => {}, onSaved: () => {}, onSaveKey: async () => true, saving: false,
     };
     const { getByRole, queryByRole, rerender } = render(<WebTab {...props} />);
     expect(getByRole("status").textContent).toContain("DuckDuckGo");

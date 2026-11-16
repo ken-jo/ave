@@ -600,20 +600,14 @@ describe("PermissionsTab hook quarantine notice", () => {
       option.focus();
       fireEvent.keyDown(option, { key: "Enter" });
     };
-    const save = async () => {
-      await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: t("permissionJudge.save") }));
-      });
-    };
-
     await pick(/claude-reviewer/);
-    await save();
+    await waitFor(() => expect(judgeSet).toHaveBeenCalledTimes(1));
     expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({
       model: { vendor: "claude", model: "claude-reviewer" },
     }));
 
     await pick(new RegExp(t("permissionJudge.followChatModel")));
-    await save();
+    await waitFor(() => expect(judgeSet).toHaveBeenCalledTimes(2));
     expect(judgeSet).toHaveBeenLastCalledWith(expect.objectContaining({ model: null }));
   });
 
@@ -3069,9 +3063,7 @@ describe("reviewer mode recovery", () => {
     });
     option.focus();
     fireEvent.keyDown(option, { key: "Enter" });
-    await act(async () => { fireEvent.click(screen.getByRole("button", { name: t("permissionJudge.save") })); });
-
-    expect(judgeSet).toHaveBeenCalledExactlyOnceWith({ model: { vendor: "claude", model: "available-reviewer" } });
+    await waitFor(() => expect(judgeSet).toHaveBeenCalledExactlyOnceWith({ model: { vendor: "claude", model: "available-reviewer" } }));
     expect(api.permission.reviewerDispatch.mock.calls.map(([verb]) => verb)).toEqual(["show"]);
     expect(screen.getByTestId("reviewer-mode-fault")).toBeVisible();
     expect(screen.getByLabelText(t("permissionJudge.mode"))).toBeDisabled();

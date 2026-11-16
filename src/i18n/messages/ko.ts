@@ -197,7 +197,7 @@ export const ko: Record<MessageCatalogKey, string> = {
   "app.deprecatedModelNoticeDismiss": "닫기",
 
   // appearanceTab
-  "appearanceTab.fontSaveFailed": "글꼴 설정을 불러오거나 저장하지 못했습니다.",
+  "appearanceTab.fontSaveFailed": "화면 설정을 저장하지 못했습니다.",
   "appearanceTab.schemeTitle": "색상 스킴",
   "appearanceTab.schemeDescription": "하나의 스킴이 화면과 터미널 색상을 함께 설정합니다. 시스템 모드는 라이트와 다크 선택을 각각 저장합니다.",
   "appearanceTab.mode": "화면 모드",
@@ -3645,9 +3645,9 @@ export const ko: Record<MessageCatalogKey, string> = {
   "permissionJudge.moveDownStage": "{number}단계를 아래로 이동",
   "permissionJudge.removeStage": "{number}단계 제거",
   "permissionJudge.addStage": "사용자 지정 평가기 추가",
-  "permissionJudge.save": "판정기 설정 저장",
+  "permissionJudge.save": "평가 체인 저장",
   "permissionJudge.saving": "저장 중…",
-  "permissionJudge.saved": "판정기 설정을 저장했습니다.",
+  "permissionJudge.saved": "평가 체인을 저장했습니다.",
   "permissionJudge.warnings": "저장된 설정 {count}개를 적용하지 못했습니다. 저장하기 전에 아래 값을 확인하세요.",
   "permissionJudge.readFailed": "판정기 설정을 불러오지 못했습니다. 설정을 다시 열어 주세요.",
   "permissionJudge.invalidSettings": "각 단계, 모델, 엔드포인트, 임계값을 확인한 뒤 다시 저장하세요. 단계 식별자는 서로 달라야 합니다.",
@@ -6618,4 +6618,10 @@ export const ko: Record<MessageCatalogKey, string> = {
   "llmTab.fallbackPresetUnavailable": "마켓플레이스 공급자를 사용하는 동안에는 사용자 지정 공급자를 대체 모델 목록에 추가할 수 없습니다.",
   "chatTab.subAgentRoundsInvalid": "{min}~{max} 사이의 정수를 입력하세요.",
   "permissionsTab.ownerAwayInvalid": "0~{max}분 범위의 정수를 입력하세요. 저장된 값으로 복원했습니다.",
+  "webTab.saveKey": "API 키 저장",
+  "webTab.loadFailed": "브라우징 설정을 불러오지 못했습니다.",
+  "auditTab.bundleConsentLoading": "저장된 크래시 덤프 동의 상태를 읽는 중…",
+  "auditTab.bundleConsentLoadFailed": "크래시 덤프 동의 상태를 읽지 못했습니다. 다시 시도한 후 진단 번들을 내보내세요.",
+  "permissionJudge.chainUnsaved": "평가 체인에 저장하지 않은 변경 사항이 있습니다. 다른 설정은 즉시 적용됩니다.",
+  "appearanceTab.fontLoadFailed": "저장된 글꼴 설정을 불러오지 못했습니다. 편집하려면 다시 시도하세요.",
 };

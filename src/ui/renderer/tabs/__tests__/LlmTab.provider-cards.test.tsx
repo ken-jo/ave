@@ -601,20 +601,20 @@ describe("LlmTab provider cards", () => {
     await renderTab(api);
     await waitFor(() => expect(screen.getByTestId("compaction-model")).toBeEnabled());
     await pickCompactionModel("summary-model");
-    expect(screen.getByTestId("compaction-model-save")).toBeEnabled();
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: SUMMARY_MODEL } }));
+    expect(screen.queryByTestId("compaction-model-save")).toBeNull();
   });
 
-  it("preserves compaction selection on save failure and unrelated settings broadcasts", async () => {
+  it("rolls back a failed immediate compaction selection and follows authoritative broadcasts", async () => {
     const api = makeApi();
     offerCompactionModels();
     await renderTab(api);
-    await pickCompactionModel("summary-model");
-    await act(async () => { await api.updateSettings({ llm: { pinnedModels: [] } }); });
-    expect(screen.getByTestId("compaction-model")).toHaveTextContent("summary-model");
     api.updateSettings.mockRejectedValueOnce(new Error("unavailable"));
-    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await pickCompactionModel("summary-model");
     await waitFor(() => expect(screen.getByText(t("compactionSettings.saveFailed"))).toHaveAttribute("role", "alert"));
-    expect(screen.getByTestId("compaction-model")).toHaveTextContent("summary-model");
+    expect(screen.getByTestId("compaction-model")).toHaveTextContent(t("compactionSettings.currentModel"));
+    await act(async () => { await api.updateSettings({ llm: { pinnedModels: [] } }); });
+    expect(screen.getByTestId("compaction-model")).toHaveTextContent(t("compactionSettings.currentModel"));
   });
 
   it("saves a separate provider model and clears it to follow the current model", async () => {
@@ -623,10 +623,8 @@ describe("LlmTab provider cards", () => {
     await renderTab(api);
     expect(screen.getByTestId("compaction-model")).toHaveTextContent(t("compactionSettings.currentModel"));
     await pickCompactionModel("summary-model");
-    fireEvent.click(screen.getByTestId("compaction-model-save"));
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: SUMMARY_MODEL } }));
     await pickCompactionModel(t("compactionSettings.currentModel"));
-    fireEvent.click(screen.getByTestId("compaction-model-save"));
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: null } }));
   });
 
@@ -635,7 +633,7 @@ describe("LlmTab provider cards", () => {
     await renderTab(api);
     expect(screen.getByTestId("compaction-model")).toHaveTextContent("missing-summary");
     expect(await screen.findByTestId("compaction-model-unavailable")).toHaveTextContent(t("compactionSettings.selectedUnavailable"));
-    expect(screen.getByTestId("compaction-model-save")).toBeDisabled();
+    expect(screen.queryByTestId("compaction-model-save")).toBeNull();
   });
 
   it("keeps the saved compaction destination when only the chat provider changes", async () => {
@@ -647,7 +645,7 @@ describe("LlmTab provider cards", () => {
     expect(screen.getByTestId("compaction-model")).toHaveTextContent("summary-model");
     expect(screen.getByTestId("compaction-model-destination")).toHaveTextContent("https://preset.example.test/v1");
     expect(screen.queryByTestId("compaction-model-unavailable")).toBeNull();
-    expect(screen.getByTestId("compaction-model-save")).toBeDisabled();
+    expect(screen.queryByTestId("compaction-model-save")).toBeNull();
   });
 
   it("saves the exact destination when separate routes offer the same model", async () => {
@@ -662,7 +660,6 @@ describe("LlmTab provider cards", () => {
     offerCompactionModels([PRESET_SUMMARY_MODEL, alternate]);
     await renderTab(api);
     await pickCompactionModel("alternate.example.test");
-    fireEvent.click(screen.getByTestId("compaction-model-save"));
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: alternate } }));
     expect(screen.getByTestId("compaction-model-destination")).toHaveTextContent("https://alternate.example.test/v1");
     expect(screen.queryByText(alternate.route.credentialScope)).toBeNull();
@@ -676,7 +673,6 @@ describe("LlmTab provider cards", () => {
     expect(await screen.findByTestId("compaction-model-unavailable")).toBeVisible();
     expect(screen.getByTestId("compaction-model-destination")).toHaveTextContent("https://preset.example.test/v1");
     await pickCompactionModel("changed.example.test");
-    fireEvent.click(screen.getByTestId("compaction-model-save"));
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: changed } }));
     await waitFor(() => expect(screen.queryByTestId("compaction-model-unavailable")).toBeNull());
   });
@@ -714,7 +710,6 @@ describe("LlmTab provider cards", () => {
     expect(screen.getByTestId("compaction-model")).toHaveTextContent("legacy-summary");
     expect(await screen.findByTestId("compaction-model-unavailable")).toBeVisible();
     await pickCompactionModel(t("compactionSettings.currentModel"));
-    fireEvent.click(screen.getByTestId("compaction-model-save"));
     await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModelSelection: null } }));
   });
 
@@ -1696,6 +1691,15 @@ describe("LlmTab provider cards leave the chat route alone", () => {
       .toHaveAttribute("data-active", "false");
   });
 
+  it("reports a refused key deletion without showing the credential as deleted", async () => {
+    const api = makeApi({ hasApiKey: storedKeysFor("claude"), deleteApiKey: vi.fn(async () => ({ ok: false, error: "invalid-args" })) });
+    await renderTab(api, { vendor: "openai", model: "" });
+    fireEvent.click(await screen.findByTestId("llm-tab:connection:claude:toggle"));
+    fireEvent.click(screen.getByText(/^(삭제|Delete|Remove)$/));
+    expect(await screen.findByTestId("llm-settings-persist-error")).toHaveAttribute("role", "alert");
+    expect(screen.getByTestId("llm-tab:api-key-status")).toHaveTextContent(t("llmTab.apiKeySet"));
+  });
+
   it("keeps the card on screen after its only credential is deleted", async () => {
     // Removing a key must leave the row available for entering a replacement.
     const deleted = deferred<{ ok: true }>();
@@ -1778,7 +1782,7 @@ describe("LlmTab grouped model search", () => {
     const ids = () => within(screen.getByRole("listbox")).queryAllByRole("option").map((option) =>
       option.querySelector("[data-model-id]")?.getAttribute("data-model-id"));
     const search = (query: string) => fireEvent.change(input, { target: { value: query } });
-    return { ...result, input, list, ids, search };
+    return { ...result, api, input, list, ids, search };
   }
 
   it("groups upstream prefixes by readable labels, preserving order within each group", async () => {
@@ -2021,6 +2025,17 @@ describe("LlmTab grouped model search", () => {
     await user.keyboard("[Escape]");
     await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
     expect(screen.getByTestId(TEST_IDS.llmModelSelect)).toHaveFocus();
+  });
+
+  it("rolls back a pin when its settings write is refused", async () => {
+    const { api, list } = await openSearchCatalogue();
+    api.updateSettings.mockResolvedValueOnce({ ok: false, error: "invalid-args" });
+    const option = within(list).getAllByRole("option").find((node) => node.querySelector('[data-model-id="openai/gpt-paid"]'))!;
+    const pin = within(option).getByRole("button", { name: t("llmTab.modelPin") });
+    const id = pin.getAttribute("data-testid")!;
+    fireEvent.click(pin);
+    await waitFor(() => expect(screen.getByTestId(id)).toHaveAttribute("aria-pressed", "false"));
+    expect(await screen.findByTestId("llm-settings-persist-error")).toHaveAttribute("role", "alert");
   });
 
   it("keeps matching pins first without duplicating them in provider groups", async () => {

@@ -10,6 +10,7 @@ import {
   type PermissionJudgeSnapshot,
 } from "../../../../shared/permission-judge-settings.js";
 import { SettingsSection } from "../PageShell.js";
+import { useNotifySaved } from "../../context/SavedToastContext.js";
 import {
   SystemSubagentModelSelect,
 } from "../../tabs/LlmTab.js";
@@ -33,9 +34,15 @@ function transportFor(stage: JudgeStage): JudgeTransport {
 
 export function PermissionJudgeContent({ reviewerModeInvalid = false }: { reviewerModeInvalid?: boolean }) {
   const { t } = useTranslation();
+  const notifySaved = useNotifySaved();
   const [snapshot, setSnapshot] = useState<PermissionJudgeSnapshot | null>(null);
   const [draft, setDraft] = useState<PermissionJudgeSettings | null>(null);
   const [busy, setBusy] = useState(false);
+  const [savingChain, setSavingChain] = useState(false);
+  const [pendingPatch, setPendingPatch] = useState<Partial<PermissionJudgeSettings> | null>(null);
+  const busyRef = useRef(false);
+  const draftRef = useRef<PermissionJudgeSettings | null>(null);
+  const requestRevisionRef = useRef(0);
   const [error, setError] = useState<"read" | "invalid" | "keyboard" | "save" | "rewire" | "rollback" | null>(null);
   const [saved, setSaved] = useState(false);
   const [readAttempt, setReadAttempt] = useState(0);
@@ -44,14 +51,16 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
   const editRevisionRef = useRef(0);
 
   useEffect(() => {
+    if (busyRef.current) return;
     let cancelled = false;
     const initialRevision = editRevisionRef.current;
+    const requestRevision = ++requestRevisionRef.current;
     void (async () => {
       try {
         const api = window.ave?.permission;
         if (!api?.judgeGet) throw new Error("Judge settings unavailable");
         const result = await api.judgeGet();
-        if (cancelled) return;
+        if (cancelled || requestRevision !== requestRevisionRef.current) return;
         if (!result.ok) {
           setError("read");
           return;
@@ -61,17 +70,19 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
           return;
         }
         setSnapshot(result);
+        draftRef.current = result.settings;
         setDraft(result.settings);
         setError(null);
         setExternalChange(false);
       } catch {
-        if (!cancelled) setError("read");
+        if (!cancelled && requestRevision === requestRevisionRef.current) setError("read");
       }
     })();
     return () => { cancelled = true; };
   }, [readAttempt]);
 
   useEffect(() => window.ave?.permission?.onConfigChanged?.(() => {
+    if (busyRef.current) return;
     if (dirtyRef.current) setExternalChange(true);
     else setReadAttempt((attempt) => attempt + 1);
   }), []);
@@ -85,8 +96,10 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
   }
 
   function update(settings: PermissionJudgeSettings) {
-    dirtyRef.current = true;
+    if (!snapshot) return;
+    dirtyRef.current = chainChanged(settings.chain, snapshot.settings.chain);
     editRevisionRef.current++;
+    draftRef.current = settings;
     setDraft(settings);
     setError(null);
     setSaved(false);
@@ -103,30 +116,30 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
     update({ ...draft, chain });
   }
 
-  async function save() {
-    if (!draft) return;
+  function chainChanged(chain: JudgeStage[], savedChain: JudgeStage[]): boolean {
+    return JSON.stringify(serializePermissionJudgeSettingsPatch({ chain })) !== JSON.stringify(serializePermissionJudgeSettingsPatch({ chain: savedChain }));
+  }
+
+  async function persist(patch: Partial<PermissionJudgeSettings>, chainSave = false) {
+    if (!snapshot || busyRef.current) return;
+    const wire = (settings: Partial<PermissionJudgeSettings>) => JSON.stringify(serializePermissionJudgeSettingsPatch(settings));
+    const changed = Object.fromEntries((Object.keys(patch) as Array<keyof PermissionJudgeSettings>)
+      .filter((key) => wire({ [key]: patch[key] }) !== wire({ [key]: snapshot.settings[key] }))
+      .map((key) => [key, patch[key]])) as Partial<PermissionJudgeSettings>;
+    if (Object.keys(changed).length === 0) return;
+    busyRef.current = true;
+    const requestRevision = ++requestRevisionRef.current;
+    const submittedEditRevision = editRevisionRef.current;
     setBusy(true);
+    setSavingChain(chainSave);
+    setPendingPatch(changed);
     setError(null);
     setSaved(false);
     try {
-      const settingsToSave = {
-        ...draft,
-        chain: draft.chain.map((stage) => stage.external?.command ? {
-          ...stage,
-          external: {
-            ...stage.external,
-            command: [stage.external.command[0] ?? "", ...stage.external.command.slice(1).filter((arg) => arg.length > 0)],
-            ...(stage.external.env ? { env: stage.external.env.filter(Boolean) } : {}),
-          },
-        } : stage),
-      };
-      // Send only what changed. A stored value the host rejected (an unavailable model, a rejected chain) stays as stored unless edited.
-      const saved = snapshot?.settings;
-      const wire = (settings: Partial<PermissionJudgeSettings>) => JSON.stringify(serializePermissionJudgeSettingsPatch(settings));
-      const patch = Object.fromEntries((Object.keys(settingsToSave) as Array<keyof PermissionJudgeSettings>)
-        .filter((key) => !saved || wire({ [key]: settingsToSave[key] }) !== wire({ [key]: saved[key] }))
-        .map((key) => [key, settingsToSave[key]])) as Partial<PermissionJudgeSettings>;
-      const result = await window.ave.permission.judgeSet(patch);
+      // The invocation happens in this user handler, before any await, so main can check its gesture.
+      const request = window.ave.permission.judgeSet(changed);
+      const result = await request;
+      if (requestRevision !== requestRevisionRef.current) return;
       if (!result.ok) {
         setError(result.error === "invalid-judge-settings" ? "invalid"
           : result.error === "user-keyboard-required" ? "keyboard"
@@ -134,17 +147,52 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
           : result.error === "judge-rollback-failed" ? "rollback" : "save");
         return;
       }
+      const preserveChain = dirtyRef.current && (!chainSave || submittedEditRevision !== editRevisionRef.current);
+      const next = preserveChain && draftRef.current
+        ? { ...result.settings, chain: draftRef.current.chain }
+        : result.settings;
+      draftRef.current = next;
+      dirtyRef.current = chainChanged(next.chain, result.settings.chain);
       setSnapshot(result);
-      setDraft(result.settings);
-      dirtyRef.current = false;
+      setDraft(next);
       setExternalChange(false);
-      setSaved(true);
+      setSaved(chainSave);
+      if (!chainSave) notifySaved();
     } catch {
-      setError("save");
+      if (requestRevision === requestRevisionRef.current) setError("save");
     } finally {
-      setBusy(false);
+      if (requestRevision === requestRevisionRef.current) {
+        setPendingPatch(null);
+        setBusy(false);
+        setSavingChain(false);
+      }
+      busyRef.current = false;
     }
   }
+
+  function save() {
+    if (!draft || !dirtyRef.current) return;
+    const chain = draft.chain.map((stage) => stage.external?.command ? {
+      ...stage,
+      external: {
+        ...stage.external,
+        command: [stage.external.command[0] ?? "", ...stage.external.command.slice(1).filter((arg) => arg.length > 0)],
+        ...(stage.external.env ? { env: stage.external.env.filter(Boolean) } : {}),
+      },
+    } : stage);
+    void persist({ chain, ...(chain.length === 0 ? { mode: "shadow" as const } : {}) }, true);
+  }
+
+  function handleModeChange(mode: string) {
+    if (!snapshot || reviewerModeInvalid) return;
+    if (mode === "off") void persist({ chain: [], mode: "shadow" });
+    else if (mode === "shadow" || mode === "active") {
+      // Enabling an empty chain creates the standard stage, never an unsaved editor draft.
+      void persist({ mode, ...(snapshot.settings.chain.length === 0 ? { chain: [nextStage([])] } : {}) });
+    }
+  }
+
+  const controls = snapshot ? { ...snapshot.settings, ...pendingPatch } : null;
 
   const errorText = error === "read" ? t("permissionJudge.readFailed")
     : error === "invalid" ? t("permissionJudge.invalidSettings")
@@ -172,24 +220,25 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
           <Button type="button" variant="outline" disabled={busy} onClick={reload}>{t("permissionJudge.reload")}</Button>
         </div>
       )}
-      {draft && (
+      {draft && controls && snapshot && (
         <form onSubmit={(event) => { event.preventDefault(); void save(); }} className="space-y-4">
-          <fieldset disabled={busy} className="space-y-4">
+          <fieldset disabled={busy && savingChain} className="space-y-4">
             <div className="space-y-1.5">
               <Label htmlFor="permission-reviewer-model">{t("permissionJudge.reviewerModel")}</Label>
               <SystemSubagentModelSelect
                 id="permission-reviewer-model"
                 snapshot={snapshot}
-                value={draft.model ?? undefined}
+                value={controls.model ?? undefined}
+                disabled={busy}
                 unsetLabel={snapshot?.chatModel
                   ? t("permissionJudge.followChatModelNamed", { model: snapshot.chatModel })
                   : t("permissionJudge.followChatModel")}
                 placeholder={t("permissionJudge.followChatModel")}
                 unavailableLabel={t("permissionJudge.modelUnavailableFacts")}
-                onChange={(model) => update({ ...draft, model: model ?? null })}
+                onChange={(model) => void persist({ model: model ?? null })}
               />
               <p className="text-xs text-muted-foreground">{t("permissionJudge.reviewerModelHelp")}</p>
-              {snapshot?.reviewerModelUnavailable === true && !dirtyRef.current && (
+              {snapshot?.reviewerModelUnavailable === true && !(pendingPatch && "model" in pendingPatch) && (
                 <p role="alert" data-testid="permission-reviewer-model-unavailable" className="text-sm text-destructive">
                   {t("permissionJudge.reviewerModelUnavailable")}
                 </p>
@@ -200,15 +249,10 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
               <select
                 id="permission-judge-mode"
                 className={SELECT_CLASS}
-                disabled={reviewerModeInvalid}
+                disabled={reviewerModeInvalid || busy}
                 aria-describedby={reviewerModeInvalid ? "reviewer-mode-fault" : undefined}
-                value={reviewerModeInvalid ? "" : draft.chain.length === 0 ? "off" : draft.mode}
-                onChange={(event) => {
-                  if (reviewerModeInvalid) return;
-                  const mode = event.target.value;
-                  if (mode === "off") update({ ...draft, chain: [], mode: "shadow" });
-                  else if (mode === "shadow" || mode === "active") update({ ...draft, mode, chain: draft.chain.length ? draft.chain : [nextStage([])] });
-                }}
+                value={reviewerModeInvalid ? "" : controls.chain.length === 0 ? "off" : controls.mode}
+                onChange={(event) => handleModeChange(event.target.value)}
               >
                 {reviewerModeInvalid && <option value="" disabled>{t("permissionJudge.modeChoiceRequired")}</option>}
                 <option value="off">{t("permissionJudge.off")}</option>
@@ -223,7 +267,7 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
                   <legend className="mb-2 text-sm font-medium">{t("permissionJudge.categories")}</legend>
                   {(["shell", "write", "network"] as const).map((category) => (
                     <Label key={category} className="flex items-center gap-2">
-                      <input type="checkbox" checked={draft.categories[category]} onChange={(event) => update({ ...draft, categories: { ...draft.categories, [category]: event.target.checked } })} />
+                      <input type="checkbox" checked={controls.categories[category]} disabled={busy} onChange={(event) => void persist({ categories: { ...snapshot.settings.categories, [category]: event.target.checked } })} />
                       {category === "shell" ? t("permissionJudge.shell") : category === "write" ? t("permissionJudge.write") : t("permissionJudge.network")}
                     </Label>
                   ))}
@@ -314,9 +358,10 @@ export function PermissionJudgeContent({ reviewerModeInvalid = false }: { review
                 </ol>
               </>
             )}
+            {dirtyRef.current && <p role="status" className="text-sm text-warning">{t("permissionJudge.chainUnsaved")}</p>}
             <div className="flex flex-wrap gap-2">
               <Button type="button" variant="outline" disabled={draft.chain.length >= MAX_PERMISSION_JUDGE_STAGES} onClick={() => update({ ...draft, mode: draft.chain.length ? draft.mode : "shadow", chain: [...draft.chain, nextStage(draft.chain)] })}>{t("permissionJudge.addStage")}</Button>
-              <Button type="submit">{busy ? t("permissionJudge.saving") : t("permissionJudge.save")}</Button>
+              <Button type="submit" disabled={busy || !dirtyRef.current}>{savingChain ? t("permissionJudge.saving") : t("permissionJudge.save")}</Button>
             </div>
           </fieldset>
           {saved && <p role="status" className="text-sm text-muted-foreground">{t("permissionJudge.saved")}</p>}

@@ -105,4 +105,13 @@ describe("terminal behaviour settings", () => {
       setLocale(previous);
     }
   });
+
+  it("treats a save the host answers with an error result as refused, not saved", async () => {
+    api.updateSettings.mockResolvedValueOnce({ ok: false, error: "settings-write-failed" });
+    render(<TerminalBehaviorFields />);
+    await act(async () => { fireEvent.click(screen.getByTestId("terminal-copy-on-select")); });
+    await waitFor(() => expect(screen.getByTestId("terminal-behavior-save-failed")).toHaveTextContent(t("appearanceTab.terminalBehaviorSaveFailed")));
+    expect(screen.getByTestId("terminal-copy-on-select")).not.toBeChecked();
+    expect(saved).not.toHaveBeenCalled();
+  });
 });

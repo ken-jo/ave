@@ -9,6 +9,7 @@ import {
   type TerminalBehaviorSettings, type TerminalCursorStyle,
 } from "../../../shared/appearance-settings.js";
 import { getApi, isDarwin } from "../api-client.js";
+import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
 import { useNotifySaved } from "../context/SavedToastContext.js";
 import { useTheme } from "../theme/index.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -38,7 +39,7 @@ export function TerminalBehaviorFields() {
     const mine = ++revision.current;
     setShown((current) => ({ ...current, ...patch }));
     setFailed(false);
-    void getApi().updateSettings({ appearance: { terminal: patch } }).then(notifySaved, () => {
+    void getApi().updateSettings({ appearance: { terminal: patch } }).then(requirePersistedResult).then(() => notifySaved(), () => {
       if (mine !== revision.current) return;
       setFailed(true);
       setShown(saved);

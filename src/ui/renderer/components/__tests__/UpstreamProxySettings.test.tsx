@@ -100,3 +100,18 @@ describe("UpstreamProxySettings", () => {
     expect(screen.getByTestId("upstream-proxy-effective-source").textContent).toBe("From the environment variable ALL_PROXY.");
   });
 });
+
+
+it("rejects a success response without the saved proxy view and never displays Saved", async () => {
+  const previousLocale = getLocale(); setLocale("en");
+  try {
+    const writer = vi.fn(async () => ({ ok: true }));
+    render(<UpstreamProxySettings reader={async () => view({ settings: { mode: "manual", manualUrl: "http://proxy.test:3128", bypass: "", resolvesNames: false } })} writer={writer} />);
+    await screen.findByTestId("upstream-proxy-manual");
+    fireEvent.change(screen.getByTestId("upstream-proxy-url"), { target: { value: "http://other.test:3128" } });
+    fireEvent.click(screen.getByTestId("upstream-proxy-save"));
+    expect(await screen.findByTestId("upstream-proxy-error")).toBeVisible();
+    expect(screen.queryByTestId("upstream-proxy-notice")).toBeNull();
+    expect(writer).toHaveBeenCalledExactlyOnceWith({ mode: "manual", manualUrl: "http://other.test:3128", bypass: "" });
+  } finally { setLocale(previousLocale); }
+});

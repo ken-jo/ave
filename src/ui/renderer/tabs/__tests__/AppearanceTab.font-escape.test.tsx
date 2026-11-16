@@ -1,8 +1,9 @@
+import { t } from "../../../../i18n/runtime.js";
 import { SavedToastProvider } from "../../context/SavedToastContext.js";
 /** Escape must skip the synchronous blur commit via escapingRef; a batched state reset alone leaves the blur closure
  * holding the typed draft. */
 import "../../../../../test/renderer/setup.js";
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { within } from "@testing-library/react";
 import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
@@ -16,13 +17,25 @@ const { api, theme } = vi.hoisted(() => ({
     updateSettings: vi.fn().mockResolvedValue({}),
     onSettingsUpdated: vi.fn(() => () => {}),
   },
-  theme: { appearance: { terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 }, terminal: { scrollback: 5000, cursorStyle: "block", optionAsMeta: false, copyOnSelect: false, shell: "" } }, mode: "system", darkScheme: "github-dark", lightScheme: "github-light", setMode: vi.fn(), setScheme: vi.fn() },
+  theme: { appearance: { terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 }, terminal: { scrollback: 5000, cursorStyle: "block", optionAsMeta: false, copyOnSelect: false, shell: "" } }, mode: "system", darkScheme: "github-dark", lightScheme: "github-light", setMode: vi.fn(async () => ({ ok: true })), setScheme: vi.fn(async () => ({ ok: true })) },
 }));
 vi.mock("../../api-client.js", () => ({ getApi: () => api, isDarwin: () => false }));
 vi.mock("../../theme/index.js", async () => ({
   ...await vi.importActual<typeof import("../../theme/index.js")>("../../theme/index.js"),
   useTheme: () => theme,
 }));
+
+beforeEach(() => {
+  const settings = { appearance: { schemaVersion: 3, mode: "system", darkScheme: "github-dark", lightScheme: "github-light", font: { family: "system", sizeScale: 1 }, terminalFont: { family: "monospace", size: 12, lineHeight: 1.2 } } };
+  api.getSettings.mockResolvedValue(settings);
+  api.updateSettings.mockReset().mockImplementation(async (patch: { appearance?: { font?: object; terminalFont?: object } }) => {
+    settings.appearance = { ...settings.appearance, ...patch.appearance,
+      font: { ...settings.appearance.font, ...patch.appearance?.font },
+      terminalFont: { ...settings.appearance.terminalFont, ...patch.appearance?.terminalFont },
+    };
+    return structuredClone(settings);
+  });
+});
 
 describe("Custom font input Escape semantics", () => {
   it("Escape after typing does NOT commit the typed text", async () => {
@@ -69,7 +82,7 @@ it("renders code presets in their saved typeface", () => {
  expect(buttons[0]?.style.fontFamily).toBe(DEFAULT_APPEARANCE.terminalFont.family);
  for (const button of buttons) {
    fireEvent.click(button);
-   expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: button.style.fontFamily, size: 12, lineHeight: 1.2 } } });
+   expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: button.style.fontFamily } } });
  }
 });
 
@@ -83,7 +96,7 @@ it("rejects unsafe custom code stacks before saving", () => {
  expect(input).toHaveAttribute("aria-invalid", "true");
  fireEvent.change(input, { target: { value: "Example Mono, monospace" } });
  fireEvent.keyDown(input, { key: "Enter" });
- expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: "Example Mono, monospace", size: 12, lineHeight: 1.2 } } });
+ expect(api.updateSettings).toHaveBeenLastCalledWith({ appearance: { terminalFont: { family: "Example Mono, monospace" } } });
 });
 
 it("steps code metrics, disables at bounds and rolls back failed saves", async () => {
@@ -103,17 +116,20 @@ it("steps code metrics, disables at bounds and rolls back failed saves", async (
  for (let i = 0; i < 12; i++) fireEvent.click(height.getByRole("button", { name: /−/ }));
  expect(height.getByRole("button", { name: /−/ })).toBeDisabled();
  await waitFor(() => expect(notifySaved).toHaveBeenCalled());
+ const savedSize = screen.getByTestId("terminal-font-preview").style.fontSize;
+ const savedHeight = screen.getByTestId("terminal-font-preview").style.lineHeight;
  notifySaved.mockClear();
  api.updateSettings.mockRejectedValueOnce(new Error("save-failed"));
  fireEvent.click(size.getByRole("button", { name: /−/ }));
- await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("글꼴 설정을 불러오거나 저장하지 못했습니다."));
- expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontFamily: "monospace", fontSize: "12px", lineHeight: "1.2" });
+ await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(t("appearanceTab.fontSaveFailed")));
+ expect(screen.getByTestId("terminal-font-preview")).toHaveStyle({ fontFamily: "monospace", fontSize: savedSize, lineHeight: savedHeight });
  expect(notifySaved).not.toHaveBeenCalled();
 });
 
 it("keeps one live chat preview above both font sections before saving completes", async () => {
  api.updateSettings.mockImplementationOnce(() => new Promise(() => {}));
  const view = render(<AppearanceTab />);
+ await waitFor(() => expect(screen.getByTestId("appearance-font-controls")).not.toBeDisabled());
  const preview = screen.getByTestId("font-chat-preview");
  expect(preview).toHaveTextContent("이 코드를 설명해 주세요.");
  expect(preview).toHaveTextContent("인사말을 출력하는 예제입니다.");

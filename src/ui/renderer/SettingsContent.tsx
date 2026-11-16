@@ -1,6 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../i18n/react.js";
-import { Button } from "../../components/ui/button.js";
 import { Tabs, VerticalTabsList, TabsTrigger, TabsContent } from "../../components/ui/tabs.js";
 import {
   Brain,
@@ -119,32 +118,6 @@ const SETTINGS_NAV: { group: string; items: SettingsNavItem[] }[] = [
     ],
   },
 ];
-
-/**
- * Inline save bar rendered at the bottom of each tab that holds a
- * deferred-save form (llm / chat / web / marketplace). Replaces the
- * single page-level footer Save button so the action lives next to
- * the inputs it persists, matching the per-section save policy used
- * by the rest of the settings route.
- */
-function TabSaveBar({
-  onSave,
-  saving,
-  settingsLoaded,
-}: {
-  onSave: () => void;
-  saving: boolean;
-  settingsLoaded: boolean;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="mt-4 flex justify-end border-t border-border/(--opacity-medium) pt-3">
-      <Button onClick={onSave} disabled={saving || !settingsLoaded}>
-        {saving ? t("settingsContent.saving") : t("settingsContent.save")}
-      </Button>
-    </div>
-  );
-}
 
 // `./context/SavedToastContext.tsx` so PluginConfigTab can import the consumer hook without forming a circular import with
 // SettingsContent (which itself imports PluginConfigTab in this file).
@@ -640,14 +613,10 @@ export function SettingsContent({
               setWebKeyInput={s.setWebKeyInput}
               onSaved={onSaved}
               onImmediateChange={webSave.schedule}
-            />
-            <TabSaveBar
-              onSave={() => {
-                void s.saveWebApiKey();
-              }}
+              onSaveKey={s.saveWebApiKey}
               saving={s.saving}
-              settingsLoaded={s.settingsLoaded}
             />
+
           </TabsContent>
 
           <TabsContent value="startup" className={tabContentCls}><StartupTab /></TabsContent>

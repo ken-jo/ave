@@ -1,4 +1,4 @@
-import type { AppearanceSettings, AppearanceMode } from "../../../shared/appearance-settings.js";
+import type { AppearanceSettings, AppearanceMode, AppearancePersistenceResult } from "../../../shared/appearance-settings.js";
 import type { ThemeTokens, ThemeSurfaces } from "../../../shared/theme-tokens.js";
 
 export type ResolvedShell = "light" | "dark";
@@ -30,10 +30,11 @@ export interface ThemeContextValue {
   mode: AppearanceMode;
   darkScheme: string;
   lightScheme: string;
-  setMode: (mode: AppearanceMode) => void;
-  setScheme: (shell: ResolvedShell, id: string) => void;
+  persistenceError: string | null;
+  setMode: (mode: AppearanceMode) => Promise<AppearancePersistenceResult>;
+  setScheme: (shell: ResolvedShell, id: string) => Promise<AppearancePersistenceResult>;
   /** Paint a glass tint now; `persist` also saves it. A slider previews on every step and persists when the drag ends. */
-  setGlassTint: (tint: number, persist: boolean) => void;
+  setGlassTint: (tint: number, persist: boolean) => Promise<AppearancePersistenceResult>;
   resolved: ResolvedShell;
   scheme: ColorScheme;
   appliedTheme: ResolvedTheme;

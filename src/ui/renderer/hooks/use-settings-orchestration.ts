@@ -11,6 +11,7 @@ import {
   type AveApi,
 } from "../types.js";
 import { ALL_VENDORS, getVendorOption, type VendorOption } from "../constants.js";
+import { requirePersistedResult } from "./use-settings-persistence.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import type {
   FallbackEntry,
@@ -47,6 +48,22 @@ type PendingSave =
     /** Settles the promise the card is still holding. */
     resolve: (ok: boolean) => void;
   };
+
+type LiveSettingsValues = {
+  idlePreferenceRefresh: boolean;
+  idleMemoryConsolidation: boolean;
+  subAgentAutonomousWake: boolean;
+  subAgentMaxRounds: number;
+};
+
+function liveSettingsValues(settings: AppSettings): LiveSettingsValues {
+  return {
+    idlePreferenceRefresh: settings.features?.idlePreferenceRefresh ?? false,
+    idleMemoryConsolidation: settings.features?.idleMemoryConsolidation ?? false,
+    subAgentAutonomousWake: settings.features?.subAgentAutonomousWake ?? false,
+    subAgentMaxRounds: settings.chat.subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT,
+  };
+}
 
 export interface SettingsOrchestrationState {
   /** The provider chat runs on — `llm.provider`. Moved only by an explicit pick. */
@@ -130,6 +147,7 @@ export interface SettingsOrchestrationState {
 export function useSettingsOrchestration(
   api: AveApi,
   onSaved: () => void,
+  reloadEpoch = 0,
 ): SettingsOrchestrationState {
   // Initialize vendor to "" (empty) rather than "claude" so the UI never
   // flashes the wrong vendor label before the settings load effect hydrates
@@ -140,7 +158,7 @@ export function useSettingsOrchestration(
     useState<readonly ProviderCredentialDraft[]>([]);
   const [model, setModelState] = useState("");
   const [hasKey, setHasKey] = useState(false);
-  const [autoCompact, setAutoCompact] = useState(true);
+  const [autoCompact, setAutoCompactState] = useState(true);
   const [processingDisplayLevel, setProcessingDisplayLevelState] = useState<ProcessingDisplayLevel>(
     DEFAULT_PROCESSING_DISPLAY_LEVEL,
   );
@@ -155,10 +173,9 @@ export function useSettingsOrchestration(
   const [enableThinking, setEnableThinkingState] = useState(true);
   const [thinkingBudget, setThinkingBudgetState] = useState(() => getLlmVendorSettings(undefined, DEFAULT_LLM_VENDOR).thinkingBudgetTokens);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [loadRevision] = useState(0);
   const [baseUrl, setBaseUrl] = useState("");
-  const [vertexProject, setVertexProject] = useState("");
-  const [vertexLocation, setVertexLocation] = useState("");
-  const [streamSmoothing, setStreamSmoothing] = useState<"none" | "word" | "char">("none");
+  const [streamSmoothing, setStreamSmoothingState] = useState<"none" | "word" | "char">("none");
   const [fallbackChain, setFallbackChainState] = useState<FallbackEntry[]>([]);
   const [fallbackOpen, setFallbackOpen] = useState(false);
   const [webProvider, setWebProviderState] = useState<AppSettings["webSearch"]["provider"]>("duckduckgo");
@@ -176,17 +193,25 @@ export function useSettingsOrchestration(
     setWebKeyInputState(key);
   }, []);
   const [hasWebKey, setHasWebKey] = useState(false);
-  const [piiRedactEnabled, setPiiRedactEnabled] = useState(false);
+  const [piiRedactEnabled, setPiiRedactEnabledState] = useState(false);
   const [idlePreferenceRefresh, setIdlePreferenceRefresh] = useState(false);
   const [idleMemoryConsolidation, setIdleMemoryConsolidation] = useState(false);
   const [subAgentAutonomousWake, setSubAgentAutonomousWake] = useState(false);
   const [subAgentMaxRounds, setSubAgentMaxRounds] = useState(SUBAGENT_MAX_ROUNDS_DEFAULT);
+  const liveRevisionsRef = useRef({ idlePreferenceRefresh: 0, idleMemoryConsolidation: 0, subAgentAutonomousWake: 0, subAgentMaxRounds: 0 });
+  const livePendingRef = useRef(new Set<keyof LiveSettingsValues>());
+  const liveAuthoritativeRef = useRef<LiveSettingsValues>({ idlePreferenceRefresh: false, idleMemoryConsolidation: false, subAgentAutonomousWake: false, subAgentMaxRounds: SUBAGENT_MAX_ROUNDS_DEFAULT });
   const [marketplaceProviderPresetId, setMarketplaceProviderPresetId] = useState("");
   const [marketplaceProviderPresets, setMarketplaceProviderPresets] = useState<MarketplaceInstalledProviderPreset[]>([]);
   const [saving, setSaving] = useState(false);
   const [lastSaveError, setLastSaveError] = useState<{ tab: string; message: string } | null>(null);
   const clearLastSaveError = useCallback(() => setLastSaveError(null), []);
-  const [settingsSnapshot, setSettingsSnapshot] = useState<AppSettings | null>(null);
+  const [settingsSnapshot, setSettingsSnapshotState] = useState<AppSettings | null>(null);
+  const settingsSnapshotRef = useRef<AppSettings | null>(null);
+  const setSettingsSnapshot = useCallback((snapshot: AppSettings) => {
+    settingsSnapshotRef.current = snapshot;
+    setSettingsSnapshotState(snapshot);
+  }, []);
   // A migrated default is not a choice. Only the model chooser may release retirement; saving another setting must not
   // select that default.
   const providerSelectionRef = useRef(false);
@@ -210,6 +235,20 @@ export function useSettingsOrchestration(
     llmDraftRef.current.fallback++;
     setFallbackChainState(value);
   }, []);
+  const chatDraftRef = useRef({ autoCompact: 0, streamSmoothing: 0, pii: 0 });
+  const chatSavedRevisionRef = useRef({ autoCompact: 0, streamSmoothing: 0, pii: 0 });
+  const setAutoCompact = useCallback((value: boolean | ((previous: boolean) => boolean)) => {
+    chatDraftRef.current.autoCompact++;
+    setAutoCompactState(value);
+  }, []);
+  const setStreamSmoothing = useCallback((value: "none" | "word" | "char") => {
+    chatDraftRef.current.streamSmoothing++;
+    setStreamSmoothingState(value);
+  }, []);
+  const setPiiRedactEnabled = useCallback((value: boolean) => {
+    chatDraftRef.current.pii++;
+    setPiiRedactEnabledState(value);
+  }, []);
   const vendorInfo = getVendorOption(vendor);
   // Numeric request limits are applied separately from persisted effort intent.
   const outputTokenLimit = requestedLlmOutputTokenLimit(getLlmVendorSettings(
@@ -221,6 +260,20 @@ export function useSettingsOrchestration(
     vendor === "openai-compatible" && marketplaceProviderPresetId
       ? marketplaceProviderPresetSecretId(marketplaceProviderPresetId)
       : vendor;
+
+  const hydrateVendorBlock = useCallback((
+    block: LLMVendorSettings,
+    marketplaceProviderPresetIdForBlock = "",
+  ): void => {
+    setModelState(llmRouteModel(block, marketplaceProviderPresetIdForBlock));
+    setBaseUrl(block.baseUrl ?? "");
+    setEnableThinkingState(block.enableThinking);
+    setThinkingBudgetState(block.thinkingBudgetTokens);
+  }, []);
+
+  const hydrationKey = JSON.stringify([loadRevision, reloadEpoch]);
+  const currentHydrationKeyRef = useRef(hydrationKey);
+  currentHydrationKeyRef.current = hydrationKey;
 
   // Load all settings on mount. (Before the BrowserWindow conversion this was gated on `open`; that's now always true while
   // the window exists.)
@@ -242,7 +295,7 @@ export function useSettingsOrchestration(
           : provider),
         api.hasWebApiKey(s.webSearch.provider),
       ]);
-      if (cancelled) return;
+      if (cancelled || currentHydrationKeyRef.current !== hydrationKey) return;
       const block = getLlmVendorSettings(s.llm.vendors, provider);
       hydratedVendorRef.current = provider;
       hydratedWebProviderRef.current = s.webSearch.provider;
@@ -251,8 +304,8 @@ export function useSettingsOrchestration(
       setMarketplaceProviderPresetId(providerPresetId);
       setMarketplaceProviderPresets(s.marketplace?.installedProviderPresets ?? []);
       hydrateVendorBlock(block, providerPresetId);
-      setStreamSmoothing(s.llm.streamSmoothing);
-      setAutoCompact(s.chat.autoCompact ?? true);
+      setStreamSmoothingState(s.llm.streamSmoothing);
+      setAutoCompactState(s.chat.autoCompact ?? true);
       processingDisplayLevelDraftRef.current.dirty = false;
       setProcessingDisplayLevelState(
         s.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -260,11 +313,13 @@ export function useSettingsOrchestration(
       setHasKey(apiKeySet);
       setWebProvider(s.webSearch.provider);
       setHasWebKey(webApiKeySet);
-      setPiiRedactEnabled(s.privacy?.piiRedactEnabled ?? false);
-      setIdlePreferenceRefresh(s.features?.idlePreferenceRefresh ?? false);
-      setIdleMemoryConsolidation(s.features?.idleMemoryConsolidation ?? false);
-      setSubAgentAutonomousWake(s.features?.subAgentAutonomousWake ?? false);
-      setSubAgentMaxRounds(s.chat?.subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT);
+      setPiiRedactEnabledState(s.privacy?.piiRedactEnabled ?? false);
+      const liveValues = liveSettingsValues(s);
+      liveAuthoritativeRef.current = liveValues;
+      setIdlePreferenceRefresh(liveValues.idlePreferenceRefresh);
+      setIdleMemoryConsolidation(liveValues.idleMemoryConsolidation);
+      setSubAgentAutonomousWake(liveValues.subAgentAutonomousWake);
+      setSubAgentMaxRounds(liveValues.subAgentMaxRounds);
       setFallbackChainState(s.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
       setSettingsLoaded(true);
     })();
@@ -277,6 +332,9 @@ export function useSettingsOrchestration(
     return api.onSettingsUpdated((next) => {
       if (!next.llm.retiredProvider) providerSelectionRef.current = false;
       setSettingsSnapshot(next);
+      if (chatDraftRef.current.autoCompact === chatSavedRevisionRef.current.autoCompact) setAutoCompactState(next.chat.autoCompact);
+      if (chatDraftRef.current.streamSmoothing === chatSavedRevisionRef.current.streamSmoothing) setStreamSmoothingState(next.llm.streamSmoothing);
+      if (chatDraftRef.current.pii === chatSavedRevisionRef.current.pii) setPiiRedactEnabledState(next.privacy.piiRedactEnabled);
       const draft = llmDraftRef.current;
       const saved = llmSavedRevisionRef.current;
       const provider = draft.selection === saved.selection && isLLMVendor(next.llm.provider)
@@ -297,16 +355,16 @@ export function useSettingsOrchestration(
           setThinkingBudgetState(block.thinkingBudgetTokens);
         }
         setBaseUrl(block.baseUrl ?? "");
-        setVertexProject(block.vertexProject ?? "");
-        setVertexLocation(block.vertexLocation ?? "");
       }
       if (draft.fallback === saved.fallback) {
         setFallbackChainState(next.llm.fallbackChain.map((entry) => ({ provider: entry.provider, model: entry.model })));
       }
-      setIdlePreferenceRefresh(next.features?.idlePreferenceRefresh ?? false);
-      setIdleMemoryConsolidation(next.features?.idleMemoryConsolidation ?? false);
-      setSubAgentAutonomousWake(next.features?.subAgentAutonomousWake ?? false);
-      setSubAgentMaxRounds(next.chat?.subAgentMaxRounds ?? SUBAGENT_MAX_ROUNDS_DEFAULT);
+      const liveValues = liveSettingsValues(next);
+      liveAuthoritativeRef.current = liveValues;
+      if (!livePendingRef.current.has("idlePreferenceRefresh")) setIdlePreferenceRefresh(liveValues.idlePreferenceRefresh);
+      if (!livePendingRef.current.has("idleMemoryConsolidation")) setIdleMemoryConsolidation(liveValues.idleMemoryConsolidation);
+      if (!livePendingRef.current.has("subAgentAutonomousWake")) setSubAgentAutonomousWake(liveValues.subAgentAutonomousWake);
+      if (!livePendingRef.current.has("subAgentMaxRounds")) setSubAgentMaxRounds(liveValues.subAgentMaxRounds);
       if (!processingDisplayLevelDraftRef.current.dirty) {
         setProcessingDisplayLevelState(
           next.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
@@ -315,7 +373,7 @@ export function useSettingsOrchestration(
       // Follow installed-preset broadcasts without overwriting the form's unsaved provider selection or endpoint fields.
       setMarketplaceProviderPresets(next.marketplace?.installedProviderPresets ?? []);
     });
-  }, [api, marketplaceProviderPresetId]);
+  }, [api, marketplaceProviderPresetId, setSettingsSnapshot]);
 
   // Re-hydrate every vendor-specific field when the active vendor changes.
   useEffect(() => {
@@ -344,18 +402,6 @@ export function useSettingsOrchestration(
     marketplaceProviderPresetId,
   ]);
 
-  function hydrateVendorBlock(
-    block: LLMVendorSettings,
-    marketplaceProviderPresetIdForBlock = "",
-  ): void {
-    setModelState(llmRouteModel(block, marketplaceProviderPresetIdForBlock));
-    setBaseUrl(block.baseUrl ?? "");
-    setVertexProject(block.vertexProject ?? "");
-    setVertexLocation(block.vertexLocation ?? "");
-    setEnableThinkingState(block.enableThinking);
-    setThinkingBudgetState(block.thinkingBudgetTokens);
-  }
-
   function hydrateLlmFromSettings(next: AppSettings): void {
     providerSelectionRef.current = false;
     const nextVendor = isLLMVendor(next.llm.provider)
@@ -371,7 +417,7 @@ export function useSettingsOrchestration(
     setMarketplaceProviderPresetId(providerPresetId);
     setMarketplaceProviderPresets(next.marketplace?.installedProviderPresets ?? []);
     hydrateVendorBlock(block, providerPresetId);
-    setStreamSmoothing(next.llm.streamSmoothing);
+    setStreamSmoothingState(next.llm.streamSmoothing);
     setFallbackChainState(next.llm.fallbackChain.map((e) => ({ provider: e.provider, model: e.model })));
   }
 
@@ -405,8 +451,6 @@ export function useSettingsOrchestration(
     setVendor(vendorId);
     if (vendorId !== "openai-compatible") setMarketplaceProviderPresetId("");
     setBaseUrl(block.baseUrl ?? "");
-    setVertexProject(block.vertexProject ?? "");
-    setVertexLocation(block.vertexLocation ?? "");
     setEnableThinkingState(block.enableThinking);
     setThinkingBudgetState(block.thinkingBudgetTokens);
     setModelState(modelId);
@@ -430,8 +474,6 @@ export function useSettingsOrchestration(
     setModelState(llmRouteModel(openaiCompatibleDefaults, preset.providerId));
     // Keep the generic row's endpoint in its stored block; resolve preset addresses from their registry.
     setBaseUrl(openaiCompatibleDefaults.baseUrl ?? "");
-    setVertexProject("");
-    setVertexLocation("");
     setEnableThinkingState(openaiCompatibleDefaults.enableThinking);
     setThinkingBudgetState(openaiCompatibleDefaults.thinkingBudgetTokens);
     void api
@@ -453,7 +495,7 @@ export function useSettingsOrchestration(
     void api.hasApiKey("openai-compatible")
       .then((k) => setHasKey(k))
       .catch(() => setHasKey(false));
-  }, [api, settingsSnapshot, vendor]);
+  }, [api, settingsSnapshot, vendor, hydrateVendorBlock]);
 
   // In-flight guard + pending re-fire: if a debounced save lands while a
   // previous save is still in flight (cross-tab race), mark it pending
@@ -482,7 +524,7 @@ export function useSettingsOrchestration(
    * checks is already clear. Each run drains the next in its own `finally`,
    * which is what keeps the queue moving without a second scheduler.
    */
-  const drainPendingSaves = (): void => {
+  const drainPendingSaves = useCallback((): void => {
     const next = pendingSaves.current.shift();
     if (!next) return;
     if (next.kind === "tab") {
@@ -490,7 +532,7 @@ export function useSettingsOrchestration(
       return;
     }
     void saveProviderCredentialRef.current(next.input).then(next.resolve, () => next.resolve(false));
-  };
+  }, []);
   const save = async (tab: string): Promise<boolean> => {
     if (!settingsLoaded) return false;
     if (savingRef.current) {
@@ -505,44 +547,33 @@ export function useSettingsOrchestration(
     setSaving(true);
     const processingDisplayLevelRevision = processingDisplayLevelDraftRef.current.revision;
     const llmRevisions = { ...llmDraftRef.current };
+    const chatRevisions = { ...chatDraftRef.current };
+    const chatDirty = {
+      autoCompact: chatRevisions.autoCompact !== chatSavedRevisionRef.current.autoCompact,
+      streamSmoothing: chatRevisions.streamSmoothing !== chatSavedRevisionRef.current.streamSmoothing,
+      pii: chatRevisions.pii !== chatSavedRevisionRef.current.pii,
+      processing: processingDisplayLevelDraftRef.current.dirty,
+    };
     let ok = false;
     try {
       if (tab !== "permissions") {
-        // The row's OWN endpoint, never the active preset's. A preset's address belongs to the preset registry; writing it here
-        // would put it in the generic custom provider's block, which is a different row.
-        const trimmedBaseUrl = baseUrl.trim();
-        const trimmedVertexProject = vertexProject.trim();
-        const trimmedVertexLocation = vertexLocation.trim();
-        // A marketplace preset's model goes in its own slot, keyed by preset,
-        // and the block's single `model` is left untouched — that one belongs
-        // to the generic custom-provider row, which is a different row reached
-        // through the same vendor. Omitting a key leaves the stored value
-        // intact, so the row not being edited keeps its model.
-        const activePresetId = vendor === "openai-compatible"
-          ? marketplaceProviderPresetId
-          : "";
-        const routeModel = model.trim();
+        const selectionDirty = llmRevisions.selection !== llmSavedRevisionRef.current.selection;
+        const modelDirty = llmRevisions.model !== llmSavedRevisionRef.current.model;
+        const thinkingDirty = llmRevisions.thinking !== llmSavedRevisionRef.current.thinking;
+        const activePresetId = vendor === "openai-compatible" ? marketplaceProviderPresetId : "";
         const activeBlock: DeepPartial<LLMVendorSettings> = {
-          // This preset's key alone. The main side merges it into the stored map (`mergeLlmPatch`), so a save here can never carry a
-          // stale copy of another preset's model back over a newer one.
-          ...(activePresetId
-            ? { presetModels: { [activePresetId]: routeModel } }
-            : { model: routeModel }),
-          baseUrl: trimmedBaseUrl || undefined,
-          vertexProject: trimmedVertexProject || undefined,
-          vertexLocation: trimmedVertexLocation || undefined,
-          enableThinking,
-          thinkingBudgetTokens: effectiveThinkingBudget,
+          ...(modelDirty || selectionDirty
+            ? activePresetId ? { presetModels: { [activePresetId]: model.trim() } } : { model: model.trim() }
+            : {}),
+          ...(thinkingDirty || selectionDirty ? { enableThinking, thinkingBudgetTokens: effectiveThinkingBudget } : {}),
         };
         const llmPatch: DeepPartial<AppSettings["llm"]> = {
-          ...(!settingsSnapshot?.llm.retiredProvider || providerSelectionRef.current
-            ? { provider: vendor || undefined }
-            : {}),
-          marketplaceProviderPresetId:
-            vendor === "openai-compatible" ? marketplaceProviderPresetId : "",
-          streamSmoothing,
+          ...(selectionDirty ? {
+            ...(!settingsSnapshot?.llm.retiredProvider || providerSelectionRef.current ? { provider: vendor || undefined } : {}),
+            marketplaceProviderPresetId: activePresetId,
+          } : {}),
+          ...(Object.keys(activeBlock).length > 0 ? { vendors: { [vendor]: activeBlock } } : {}),
         };
-        llmPatch.vendors = { [vendor]: activeBlock };
         const patch: DeepPartial<AppSettings> = tab === "llm-fallback"
           ? { llm: { fallbackChain: fallbackChain.map((entry) => ({ provider: entry.provider, model: entry.model.trim() })) } }
           : tab === "llm"
@@ -550,12 +581,17 @@ export function useSettingsOrchestration(
           : tab === "web"
             ? { webSearch: { provider: webProvider } }
             : tab === "chat"
-              ? { llm: { streamSmoothing }, chat: { autoCompact, processingDisplayLevel }, privacy: { piiRedactEnabled } }
+              ? {
+                ...(chatDirty.streamSmoothing ? { llm: { streamSmoothing } } : {}),
+                ...(chatDirty.autoCompact || chatDirty.processing ? { chat: {
+                  ...(chatDirty.autoCompact ? { autoCompact } : {}),
+                  ...(chatDirty.processing ? { processingDisplayLevel } : {}),
+                } } : {}),
+                ...(chatDirty.pii ? { privacy: { piiRedactEnabled } } : {}),
+              }
               : {};
-        const updateResult = await api.updateSettings(patch);
-        if (isIpcErrorResult(updateResult)) {
-          throw new Error(formatIpcError(updateResult.error, updateResult.message));
-        }
+        if (Object.keys(patch).length === 0 || tab === "llm" && Object.keys(llmPatch).length === 0) return true;
+        const updateResult = requirePersistedResult(await api.updateSettings(patch));
         if (tab === "llm") {
           const fallbackRevision = llmSavedRevisionRef.current.fallback;
           llmSavedRevisionRef.current = { ...llmRevisions, fallback: fallbackRevision };
@@ -567,7 +603,13 @@ export function useSettingsOrchestration(
             setFallbackChainState(updateResult.llm.fallbackChain.map((entry) => ({ provider: entry.provider, model: entry.model })));
           }
         }
-        if (tab === "chat" && processingDisplayLevelDraftRef.current.revision === processingDisplayLevelRevision) {
+        if (tab === "chat") {
+          chatSavedRevisionRef.current = chatRevisions;
+          if (chatDirty.autoCompact && chatDraftRef.current.autoCompact === chatRevisions.autoCompact) setAutoCompactState(updateResult.chat.autoCompact);
+          if (chatDirty.streamSmoothing && chatDraftRef.current.streamSmoothing === chatRevisions.streamSmoothing) setStreamSmoothingState(updateResult.llm.streamSmoothing);
+          if (chatDirty.pii && chatDraftRef.current.pii === chatRevisions.pii) setPiiRedactEnabledState(updateResult.privacy.piiRedactEnabled);
+        }
+        if (tab === "chat" && chatDirty.processing && processingDisplayLevelDraftRef.current.revision === processingDisplayLevelRevision) {
           const authoritativeProcessingDisplayLevel = updateResult.chat.processingDisplayLevel;
           if (!isProcessingDisplayLevel(authoritativeProcessingDisplayLevel)) {
             throw new Error("Settings update returned an invalid processing display level.");
@@ -586,6 +628,47 @@ export function useSettingsOrchestration(
       // thinking a toggle persisted when it did not.
       const message =
         err instanceof Error && err.message ? err.message : t("useSettingsOrchestration.saveFailed");
+      const authoritative = settingsSnapshotRef.current;
+      if (tab === "chat" && authoritative) {
+        if (chatDirty.autoCompact && chatDraftRef.current.autoCompact === chatRevisions.autoCompact) {
+          chatSavedRevisionRef.current.autoCompact = chatRevisions.autoCompact;
+          setAutoCompactState(authoritative.chat.autoCompact);
+        }
+        if (chatDirty.streamSmoothing && chatDraftRef.current.streamSmoothing === chatRevisions.streamSmoothing) {
+          chatSavedRevisionRef.current.streamSmoothing = chatRevisions.streamSmoothing;
+          setStreamSmoothingState(authoritative.llm.streamSmoothing);
+        }
+        if (chatDirty.pii && chatDraftRef.current.pii === chatRevisions.pii) {
+          chatSavedRevisionRef.current.pii = chatRevisions.pii;
+          setPiiRedactEnabledState(authoritative.privacy.piiRedactEnabled);
+        }
+        if (chatDirty.processing && processingDisplayLevelDraftRef.current.revision === processingDisplayLevelRevision) {
+          processingDisplayLevelDraftRef.current.dirty = false;
+          setProcessingDisplayLevelState(authoritative.chat.processingDisplayLevel);
+        }
+      }
+      if (tab === "llm" && authoritative) {
+        const savedVendor = authoritative.llm.provider;
+        const presetId = savedVendor === "openai-compatible" ? authoritative.llm.marketplaceProviderPresetId ?? "" : "";
+        const block = getLlmVendorSettings(authoritative.llm.vendors, savedVendor);
+        if (llmDraftRef.current.selection === llmRevisions.selection) {
+          llmSavedRevisionRef.current.selection = llmRevisions.selection;
+          hydratedVendorRef.current = savedVendor;
+          providerSelectionRef.current = false;
+          setVendor(savedVendor);
+          setMarketplaceProviderPresetId(presetId);
+        }
+        if (llmDraftRef.current.model === llmRevisions.model) {
+          llmSavedRevisionRef.current.model = llmRevisions.model;
+          setModelState(llmRouteModel(block, presetId));
+        }
+        if (llmDraftRef.current.thinking === llmRevisions.thinking) {
+          llmSavedRevisionRef.current.thinking = llmRevisions.thinking;
+          setEnableThinkingState(block.enableThinking);
+          setThinkingBudgetState(block.thinkingBudgetTokens);
+        }
+      }
+      if (tab === "web" && authoritative) setWebProvider(authoritative.webSearch.provider);
       setLastSaveError({ tab, message });
     } finally {
       savingRef.current = false;
@@ -630,17 +713,11 @@ export function useSettingsOrchestration(
         // them here too.
         if (input.vendorId === vendor) {
           if (input.vendorBlock.baseUrl !== undefined) setBaseUrl(input.vendorBlock.baseUrl);
-          if (input.vendorBlock.vertexProject !== undefined) {
-            setVertexProject(input.vendorBlock.vertexProject);
-          }
-          if (input.vendorBlock.vertexLocation !== undefined) {
-            setVertexLocation(input.vendorBlock.vertexLocation);
-          }
         }
       }
       const trimmedKey = input.apiKey.trim();
       if (trimmedKey) {
-        await api.setApiKey(input.credentialProviderId, trimmedKey);
+        requirePersistedResult(await api.setApiKey(input.credentialProviderId, trimmedKey));
         if (input.credentialProviderId === activeCredentialProviderId) setHasKey(true);
       }
       onSaved();
@@ -657,7 +734,7 @@ export function useSettingsOrchestration(
       setSaving(false);
       drainPendingSaves();
     }
-  }, [api, activeCredentialProviderId, onSaved, settingsLoaded, vendor]);
+  }, [api, activeCredentialProviderId, drainPendingSaves, onSaved, settingsLoaded, vendor]);
   useEffect(() => {
     saveProviderCredentialRef.current = saveProviderCredential;
   }, [saveProviderCredential]);
@@ -668,8 +745,7 @@ export function useSettingsOrchestration(
     savingRef.current = true;
     setSaving(true);
     try {
-      const result: unknown = await api.setWebApiKey(draft.provider, draft.key.trim());
-      if (isIpcErrorResult(result)) throw new Error(formatIpcError(result.error, result.message));
+      requirePersistedResult(await api.setWebApiKey(draft.provider, draft.key.trim()));
       if (webKeyDraftRef.current === draft) {
         webKeyDraftRef.current = null;
         setWebKeyInputState("");
@@ -686,72 +762,54 @@ export function useSettingsOrchestration(
       setSaving(false);
       drainPendingSaves();
     }
-  }, [api, onSaved, settingsLoaded]);
+  }, [api, drainPendingSaves, onSaved, settingsLoaded]);
+
+  const persistLiveSetting = useCallback(<K extends keyof LiveSettingsValues>(
+    key: K,
+    next: LiveSettingsValues[K],
+    setValue: (value: LiveSettingsValues[K]) => void,
+  ) => {
+    if (!settingsLoaded) return;
+    const revision = ++liveRevisionsRef.current[key];
+    livePendingRef.current.add(key);
+    setValue(next);
+    const patch = key === "subAgentMaxRounds"
+      ? { chat: { subAgentMaxRounds: next as number } }
+      : { features: { [key]: next } };
+    void api.updateSettings(patch).then((result) => {
+      const updated = requirePersistedResult(result);
+      const actual = key === "subAgentMaxRounds" ? updated.chat.subAgentMaxRounds : updated.features?.[key as Exclude<keyof LiveSettingsValues, "subAgentMaxRounds">];
+      if (typeof actual !== typeof next) throw new Error("Settings update returned an invalid live setting.");
+      const authoritative = actual as LiveSettingsValues[K];
+      if (liveRevisionsRef.current[key] !== revision) return;
+      liveAuthoritativeRef.current[key] = authoritative;
+      livePendingRef.current.delete(key);
+      setSettingsSnapshot(updated);
+      setValue(authoritative);
+      setLastSaveError(null);
+      onSaved();
+    }).catch((error: unknown) => {
+      // A later edit owns this control and its status.
+      if (liveRevisionsRef.current[key] !== revision) return;
+      livePendingRef.current.delete(key);
+      setValue(liveAuthoritativeRef.current[key]);
+      setLastSaveError({ tab: "chat", message: error instanceof Error ? error.message : t("useSettingsOrchestration.saveFailed") });
+    });
+  }, [api, onSaved, setSettingsSnapshot, settingsLoaded]);
 
   const setIdlePreferenceRefreshLive = useCallback((next: boolean) => {
-    const previous = idlePreferenceRefresh;
-    setIdlePreferenceRefresh(next);
-    if (!settingsLoaded) return;
-    void api
-      .updateSettings({ features: { idlePreferenceRefresh: next } })
-      .then((updated) => {
-        if (isIpcErrorResult(updated)) throw new Error(updated.message ?? updated.error);
-        setSettingsSnapshot(updated);
-        onSaved();
-      })
-      .catch(() => {
-        setIdlePreferenceRefresh(previous);
-      });
-  }, [api, idlePreferenceRefresh, onSaved, settingsLoaded]);
-
+    if (next !== idlePreferenceRefresh) persistLiveSetting("idlePreferenceRefresh", next, setIdlePreferenceRefresh);
+  }, [idlePreferenceRefresh, persistLiveSetting]);
   const setIdleMemoryConsolidationLive = useCallback((next: boolean) => {
-    const previous = idleMemoryConsolidation;
-    setIdleMemoryConsolidation(next);
-    if (!settingsLoaded) return;
-    void api
-      .updateSettings({ features: { idleMemoryConsolidation: next } })
-      .then((updated) => {
-        if (isIpcErrorResult(updated)) throw new Error(updated.message ?? updated.error);
-        setSettingsSnapshot(updated);
-        onSaved();
-      })
-      .catch(() => {
-        setIdleMemoryConsolidation(previous);
-      });
-  }, [api, idleMemoryConsolidation, onSaved, settingsLoaded]);
-
+    if (next !== idleMemoryConsolidation) persistLiveSetting("idleMemoryConsolidation", next, setIdleMemoryConsolidation);
+  }, [idleMemoryConsolidation, persistLiveSetting]);
   const setSubAgentAutonomousWakeLive = useCallback((next: boolean) => {
-    const previous = subAgentAutonomousWake;
-    setSubAgentAutonomousWake(next);
-    if (!settingsLoaded) return;
-    void api
-      .updateSettings({ features: { subAgentAutonomousWake: next } })
-      .then((updated) => {
-        if (isIpcErrorResult(updated)) throw new Error(updated.message ?? updated.error);
-        setSettingsSnapshot(updated);
-        onSaved();
-      })
-      .catch(() => {
-        setSubAgentAutonomousWake(previous);
-      });
-  }, [api, onSaved, settingsLoaded, subAgentAutonomousWake]);
-
+    if (next !== subAgentAutonomousWake) persistLiveSetting("subAgentAutonomousWake", next, setSubAgentAutonomousWake);
+  }, [subAgentAutonomousWake, persistLiveSetting]);
   const setSubAgentMaxRoundsLive = useCallback((next: number) => {
-    const previous = subAgentMaxRounds;
-    if (!settingsLoaded || !Number.isInteger(next) || next < SUBAGENT_MAX_ROUNDS_MIN || next > SUBAGENT_MAX_ROUNDS_MAX || next === previous) return;
-    setSubAgentMaxRounds(next);
-    void api
-      .updateSettings({ chat: { subAgentMaxRounds: next } })
-      .then((updated) => {
-        if (isIpcErrorResult(updated)) throw new Error(updated.message ?? updated.error);
-        setSettingsSnapshot(updated);
-        setSubAgentMaxRounds(updated.chat.subAgentMaxRounds);
-        onSaved();
-      })
-      .catch(() => {
-        setSubAgentMaxRounds(previous);
-      });
-  }, [api, onSaved, settingsLoaded, subAgentMaxRounds]);
+    if (!Number.isInteger(next) || next < SUBAGENT_MAX_ROUNDS_MIN || next > SUBAGENT_MAX_ROUNDS_MAX || next === subAgentMaxRounds) return;
+    persistLiveSetting("subAgentMaxRounds", next, setSubAgentMaxRounds);
+  }, [persistLiveSetting, subAgentMaxRounds]);
   return {
     lastSaveError,
     clearLastSaveError,

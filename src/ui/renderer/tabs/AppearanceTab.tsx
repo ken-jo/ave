@@ -1,5 +1,8 @@
 /** Configure the shared interface and terminal appearance. */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { requirePersistedResult } from "../hooks/use-settings-persistence.js";
+import type { AppSettings } from "../types.js";
+import { Button } from "../../../components/ui/button.js";
 import { ZoomControls } from "../components/ZoomControls.js";
 import { HOST_FONT_STACK } from "../../../shared/host-font-stack.js";
 import { useTheme } from "../theme/index.js";
@@ -86,71 +89,106 @@ function presetForStack(stack: string | undefined, options: ReadonlyArray<{ valu
   return hit ? hit.value : "custom";
 }
 
-const FONT_SIZE_VALUES: ReadonlyArray<FontSizeScale> = FONT_SIZE_OPTIONS.map((o) => o.value);
-
 function useFontPreferences() {
   const [family, setFamilyState] = useState<string>("system");
   const [sizeScale, setSizeScaleState] = useState<FontSizeScale>(FONT_SIZE_SCALE_DEFAULT);
-
-  // Initial load + cross-window broadcast subscription. Without the subscription the radio buttons drift from the canonical
-  // state when the user changes the font in another window (native settings BrowserWindow or sibling).
-  useEffect(() => {
-    let cancelled = false;
-    let unsub: (() => void) | undefined;
-    void (async () => {
-      try {
-        const api = getApi();
-        const settings = await api.getSettings();
-        if (cancelled) return;
-        applyFromSettings(settings);
-        unsub = api.onSettingsUpdated((next) => {
-          if (cancelled) return;
-          applyFromSettings(next);
-        });
-      } catch {
-        /* ignore — defaults remain */
-      }
-    })();
-    function applyFromSettings(s: { appearance?: { font?: { family?: string; sizeScale?: number } } }) {
-      const font = s.appearance?.font;
-      if (font?.family && font.family !== "system") setFamilyState(font.family);
-      else setFamilyState("system");
-      if (font?.sizeScale && (FONT_SIZE_VALUES as readonly number[]).includes(font.sizeScale)) {
-        setSizeScaleState(font.sizeScale as FontSizeScale);
-      } else {
-        setSizeScaleState(FONT_SIZE_SCALE_DEFAULT);
-      }
-    }
-    return () => { cancelled = true; unsub?.(); };
-  }, []);
-
+  const [loaded, setLoaded] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const [reload, setReload] = useState(0);
+  const reloadEpoch = 0;
+  const loadKeyRef = useRef(`${reloadEpoch}:${reload}`);
+  loadKeyRef.current = `${reloadEpoch}:${reload}`;
+  const authoritativeRef = useRef<{ family: string; sizeScale: FontSizeScale }>({ family: "system", sizeScale: FONT_SIZE_SCALE_DEFAULT });
+  const valuesRef = useRef(authoritativeRef.current);
+  const revisionsRef = useRef({ family: 0, sizeScale: 0 });
+  const authoritativeRevisionRef = useRef(0);
   const notifySaved = useNotifySaved();
-  const setFamily = (next: string) => {
-    setFamilyState(next || "system");
-    try {
-      const api = getApi();
-      void api
-        .updateSettings({ appearance: { font: { family: next || "system" } } })
-        .then(() => notifySaved())
-        .catch(() => { /* ignore — local state already reflects */ });
-    } catch {
-      /* ignore */
-    }
-  };
-  const setSizeScale = (next: FontSizeScale) => {
-    setSizeScaleState(next);
-    try {
-      const api = getApi();
-      void api
-        .updateSettings({ appearance: { font: { sizeScale: next } } })
-        .then(() => notifySaved())
-        .catch(() => { /* ignore */ });
-    } catch {
-      /* ignore */
-    }
-  };
 
-  return { family, sizeScale, setFamily, setSizeScale };
+  useEffect(() => {
+    let active = true;
+    const loadKey = `${reloadEpoch}:${reload}`;
+    let receivedUpdate = false;
+    setLoaded(false);
+    setLoadFailed(false);
+    const apply = (settings: AppSettings) => {
+      if (!active || loadKeyRef.current !== loadKey) return;
+      const font = settings.appearance.font;
+      const value = { family: font?.family ?? "system", sizeScale: font?.sizeScale ?? FONT_SIZE_SCALE_DEFAULT };
+      authoritativeRef.current = value;
+      valuesRef.current = value;
+      authoritativeRevisionRef.current++;
+      setFamilyState(value.family);
+      setSizeScaleState(value.sizeScale);
+      setLoaded(true);
+      setLoadFailed(false);
+      setSaveFailed(false);
+    };
+    const api = getApi();
+    const unsubscribe = api.onSettingsUpdated((settings) => { receivedUpdate = true; apply(settings); });
+    void api.getSettings().then((settings) => { if (!receivedUpdate) apply(settings); }).catch(() => {
+      if (active && loadKeyRef.current === loadKey && !receivedUpdate) setLoadFailed(true);
+    });
+    return () => { active = false; unsubscribe(); };
+  }, [reload, reloadEpoch]);
+
+  const save = async (patch: { family: string } | { sizeScale: FontSizeScale }) => {
+    if (!loaded) return;
+    const key = "family" in patch ? "family" : "sizeScale";
+    const nextValue = "family" in patch ? patch.family : patch.sizeScale;
+    if (valuesRef.current[key] === nextValue) return;
+    const revision = ++revisionsRef.current[key];
+    const authoritativeRevision = authoritativeRevisionRef.current;
+    valuesRef.current = { ...valuesRef.current, ...patch };
+    setFamilyState(valuesRef.current.family);
+    setSizeScaleState(valuesRef.current.sizeScale);
+    setSaveFailed(false);
+    try {
+      const result = requirePersistedResult(await getApi().updateSettings({ appearance: { font: patch } }));
+      const actual = result.appearance.font;
+      if (revision === revisionsRef.current[key] && authoritativeRevision === authoritativeRevisionRef.current) {
+        const value = key === "family" ? { family: actual?.family ?? "system" } : { sizeScale: actual?.sizeScale ?? FONT_SIZE_SCALE_DEFAULT };
+        authoritativeRef.current = { ...authoritativeRef.current, ...value };
+        valuesRef.current = { ...valuesRef.current, ...value };
+        setFamilyState(valuesRef.current.family);
+        setSizeScaleState(valuesRef.current.sizeScale);
+      }
+      const actualValue = key === "family" ? actual?.family ?? "system" : actual?.sizeScale ?? FONT_SIZE_SCALE_DEFAULT;
+      if (revision === revisionsRef.current[key] && valuesRef.current[key] === actualValue) notifySaved();
+    } catch {
+      if (revision !== revisionsRef.current[key]) return;
+      const restored = key === "family" ? { family: authoritativeRef.current.family } : { sizeScale: authoritativeRef.current.sizeScale };
+      valuesRef.current = { ...valuesRef.current, ...restored };
+      setFamilyState(valuesRef.current.family);
+      setSizeScaleState(valuesRef.current.sizeScale);
+      setSaveFailed(true);
+    }
+  };
+  return { family, sizeScale, loaded, loadFailed, saveFailed, retry: () => setReload((epoch) => epoch + 1),
+    setFamily: (next: string) => { void save({ family: next || "system" }); },
+    setSizeScale: (next: FontSizeScale) => { void save({ sizeScale: next }); },
+  };
+}
+
+/** Theme and locale owners return a checked persistence outcome. */
+function useAppearanceChoicePersistence() {
+  const { t } = useTranslation();
+  const notifySaved = useNotifySaved();
+  const [error, setError] = useState<string | null>(null);
+  const revisionRef = useRef(0);
+  const save = async (operation: () => Promise<{ ok: boolean }>) => {
+    const revision = ++revisionRef.current;
+    setError(null);
+    try {
+      const result = await operation();
+      if (revision !== revisionRef.current) return;
+      if (!result.ok) { setError(t("useSettingsOrchestration.saveFailed")); return; }
+      notifySaved();
+    } catch {
+      if (revision === revisionRef.current) setError(t("useSettingsOrchestration.saveFailed"));
+    }
+  };
+  return { error, save };
 }
 
 /** Keep raw font input while typing; trim only on blur/Enter, and map empty input to system. */
@@ -237,8 +275,8 @@ function FontFamilyCustomInput({
  * are recognizable regardless of the current language.
  */
 function LanguageSection() {
-  const { locale, setLocale, t } = useTranslation();
-  const notifySaved = useNotifySaved();
+  const { locale, setLocale, t, persistenceError: localeError } = useTranslation();
+  const { error, save } = useAppearanceChoicePersistence();
   const visibleLocales = visibleLocalesFor();
   return (
     <SettingsSection
@@ -246,6 +284,7 @@ function LanguageSection() {
       title={t("settings.appearance.language.title")}
       description={t("settings.appearance.language.description")}
     >
+      {(localeError ?? error) !== null && <p role="alert" className="text-sm text-destructive">{localeError ?? error}</p>}
       <div role="radiogroup" onKeyDown={handleRadioGroupKeyDown} aria-label={t("settings.appearance.language.title")} className="flex flex-wrap gap-2">
         {visibleLocales.map((code) => {
           const selected = locale === code;
@@ -258,8 +297,7 @@ function LanguageSection() {
               data-testid={`language-option-${code}`}
               onClick={() => {
                 if (!selected) {
-                  setLocale(code);
-                  notifySaved();
+                  void save(() => setLocale(code));
                 }
               }}
               className={`rounded-md border px-3 py-2 text-sm transition-colors ${
@@ -279,11 +317,11 @@ function LanguageSection() {
 
 export function AppearanceTab() {
   const { t } = useTranslation();
-  const { mode, setMode, darkScheme, lightScheme, setScheme } = useTheme();
-  const { family, sizeScale, setFamily, setSizeScale } = useFontPreferences();
+  const { mode, setMode, darkScheme, lightScheme, setScheme, persistenceError: themeError } = useTheme();
+  const { family, sizeScale, setFamily, setSizeScale, loaded: fontLoaded, loadFailed: fontLoadFailed, saveFailed: fontSaveFailed, retry: retryFonts } = useFontPreferences();
   const terminal = useTerminalFontPreferences();
   const { appearance } = useTheme();
-  const notifySaved = useNotifySaved();
+  const { error: choiceError, save: saveChoice } = useAppearanceChoicePersistence();
   const installedContent = useInstalledContent();
   const fontOptions: ReadonlyArray<{ value: string; text: string; stack: string }> = [
     ...FONT_FAMILY_PRESETS.map((preset) => ({ value: preset.value, text: t(preset.label), stack: preset.stack })),
@@ -299,6 +337,7 @@ export function AppearanceTab() {
         description={t("appearanceTab.pageDescription")}
       />
 
+      {(themeError ?? choiceError) !== null && <p role="alert" className="text-sm text-destructive">{themeError ?? choiceError}</p>}
       {/* ── Language ──────────────────────────────────── */}
       <LanguageSection />
 
@@ -312,7 +351,7 @@ export function AppearanceTab() {
             <button key={value} type="button" role="radio" aria-checked={mode === value} tabIndex={mode === value ? 0 : -1}
               data-testid={`appearance-mode-${value}`}
               className={`rounded-md border px-4 py-2 text-sm ${mode === value ? "border-primary bg-primary text-primary-foreground" : "border-border"}`}
-              onClick={() => { setMode(value); notifySaved(); }}>
+              onClick={() => { void saveChoice(() => setMode(value)); }}>
               {t(`appearanceTab.mode.${value}`)}
             </button>
           ))}
@@ -326,7 +365,7 @@ export function AppearanceTab() {
                 return <button key={scheme.id} type="button" role="radio" aria-checked={selected} tabIndex={selected ? 0 : -1}
                   data-scheme-id={scheme.id}
                   className={`flex min-w-0 items-center gap-2 rounded-lg border p-2 text-left ${selected ? "border-primary ring-1 ring-primary" : "border-border"}`}
-                  onClick={() => { setScheme(shell, scheme.id); notifySaved(); }}>
+                  onClick={() => { void saveChoice(() => setScheme(shell, scheme.id)); }}>
                   <span aria-hidden="true" className="flex h-12 w-16 shrink-0 flex-col justify-center gap-2 rounded px-2"
                     style={{ background: scheme.terminal.background, color: scheme.terminal.foreground }}>
                     <span className="font-mono text-base leading-none">Aa</span>
@@ -355,8 +394,11 @@ export function AppearanceTab() {
         title={t("appearanceTab.fontSectionTitle")}
         description={t("appearanceTab.fontSectionDescription")}
       >
+        {fontLoadFailed && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{t("appearanceTab.fontLoadFailed")}</p><Button type="button" size="sm" variant="outline" onClick={retryFonts}>{t("settingsEditor.retry")}</Button></div>}
+        {fontSaveFailed && <p role="alert" className="text-sm text-destructive">{t("appearanceTab.fontSaveFailed")}</p>}
+        <fieldset disabled={!fontLoaded} aria-label={t("appearanceTab.fontSectionTitle")} data-testid="appearance-font-controls" className="space-y-4">
         {/* 폰트 패밀리 */}
-        <div className="space-y-2">
+        <div className="space-y-2" data-setting-row="appearance.font.family">
           <label className="text-dense text-muted-foreground">{t("appearanceTab.fontFamilyLabel")}</label>
           <div
             role="radiogroup"
@@ -397,7 +439,7 @@ export function AppearanceTab() {
         </div>
 
         {/* 폰트 크기 */}
-        <div className="space-y-2">
+        <div className="space-y-2" data-setting-row="appearance.font.sizeScale">
           <label className="text-dense text-muted-foreground">{t("appearanceTab.fontSizeLabel")}</label>
           <div
             role="radiogroup"
@@ -431,6 +473,7 @@ export function AppearanceTab() {
             })}
           </div>
         </div>
+        </fieldset>
       </SettingsSection>
 
       <TerminalFontSection {...terminal} />
@@ -464,8 +507,8 @@ function useReducedTransparency(): boolean {
  */
 function GlassTintControl() {
   const { t } = useTranslation();
-  const notifySaved = useNotifySaved();
-  const { appearance, setGlassTint } = useTheme();
+  const { error, save } = useAppearanceChoicePersistence();
+  const { appearance, setGlassTint, persistenceError } = useTheme();
   const reducedNow = useReducedTransparency();
   // A previewed value not yet saved. Every way a gesture can end (release, cancel, lost capture, key up, blur) commits it once;
   // the later ones of the same gesture find nothing pending, and a key that moved nothing (Tab) saves nothing.
@@ -476,11 +519,11 @@ function GlassTintControl() {
   const commit = (event: { currentTarget: HTMLInputElement }) => {
     if (!pendingRef.current) return;
     pendingRef.current = false;
-    setGlassTint(Number(event.currentTarget.value), true);
-    notifySaved();
+    const next = Number(event.currentTarget.value);
+    void save(() => setGlassTint(next, true));
   };
   return (
-    <div className="space-y-2" data-testid="appearance-glass-tint">
+    <div className="space-y-2" data-setting-row="appearance.glassTint" data-testid="appearance-glass-tint">
       <div className="flex items-center justify-between gap-2">
         <label htmlFor="appearance-glass-tint-input" className="text-sm font-medium">{t("appearanceTab.glassTintLabel")}</label>
         <span className="font-mono text-dense text-muted-foreground">{tint}%</span>
@@ -496,7 +539,7 @@ function GlassTintControl() {
         aria-describedby="appearance-glass-tint-hint"
         aria-valuetext={`${tint}%`}
         className="w-full accent-primary disabled:opacity-(--opacity-half)"
-        onChange={(event) => { pendingRef.current = true; setGlassTint(Number(event.currentTarget.value), false); }}
+        onChange={(event) => { pendingRef.current = true; void setGlassTint(Number(event.currentTarget.value), false); }}
         onPointerUp={commit}
         onPointerCancel={commit}
         onLostPointerCapture={commit}
@@ -507,6 +550,7 @@ function GlassTintControl() {
         <span>{t("appearanceTab.glassTintMin")}</span>
         <span>{t("appearanceTab.glassTintMax")}</span>
       </div>
+      {error !== null && !persistenceError && <p role="alert" className="text-xs text-destructive">{error}</p>}
       <p id="appearance-glass-tint-hint" className="text-xs text-muted-foreground">
         {t(available ? "appearanceTab.glassTintHint" : "appearanceTab.glassTintReducedHint")}
       </p>
@@ -528,24 +572,41 @@ function useTerminalFontPreferences() {
   const [font, setFont] = useState(appearance.terminalFont);
   const [failed, setFailed] = useState(false);
   const fontRef = useRef(font);
-  const revisionRef = useRef(0);
+  const authoritativeRef = useRef(appearance.terminalFont);
+  const revisionsRef = useRef({ family: 0, size: 0, lineHeight: 0 });
+  const authoritativeRevisionRef = useRef(0);
   useEffect(() => {
-    revisionRef.current++;
+    authoritativeRevisionRef.current++;
+    authoritativeRef.current = appearance.terminalFont;
     fontRef.current = appearance.terminalFont;
     setFont(appearance.terminalFont);
-  }, [appearance.terminalFont]);
-  const updateFont = (patch: Partial<typeof font>) => {
-    const next = { ...fontRef.current, ...patch };
-    fontRef.current = next;
-    const revision = ++revisionRef.current;
-    setFont(next);
     setFailed(false);
-    void getApi().updateSettings({ appearance: { terminalFont: next } }).then(notifySaved).catch(() => {
-      if (revision !== revisionRef.current) return;
-      fontRef.current = appearance.terminalFont;
-      setFailed(true);
+  }, [appearance.terminalFont]);
+  const updateFont = async (patch: Partial<typeof font>) => {
+    const keys = (Object.keys(patch) as Array<keyof typeof font>).filter((key) => patch[key] !== fontRef.current[key]);
+    if (keys.length === 0) return;
+    const revisions = { ...revisionsRef.current };
+    const authoritativeRevision = authoritativeRevisionRef.current;
+    for (const key of keys) revisions[key] = ++revisionsRef.current[key];
+    fontRef.current = { ...fontRef.current, ...patch };
+    setFont(fontRef.current);
+    setFailed(false);
+    try {
+      const result = requirePersistedResult(await getApi().updateSettings({ appearance: { terminalFont: patch } }));
+      const actual = result.appearance.terminalFont;
+      const accepted = Object.fromEntries(keys.filter((key) => revisions[key] === revisionsRef.current[key] && authoritativeRevision === authoritativeRevisionRef.current).map((key) => [key, actual[key]]));
+      authoritativeRef.current = { ...authoritativeRef.current, ...accepted };
+      fontRef.current = { ...fontRef.current, ...accepted };
       setFont(fontRef.current);
-    });
+      if (keys.every((key) => revisions[key] === revisionsRef.current[key] && fontRef.current[key] === actual[key])) notifySaved();
+    } catch {
+      const affected = keys.filter((key) => revisions[key] === revisionsRef.current[key]);
+      if (affected.length === 0) return;
+      const restored = Object.fromEntries(affected.map((key) => [key, authoritativeRef.current[key]]));
+      fontRef.current = { ...fontRef.current, ...restored };
+      setFont(fontRef.current);
+      setFailed(true);
+    }
   };
   return { font, failed, updateFont };
 }

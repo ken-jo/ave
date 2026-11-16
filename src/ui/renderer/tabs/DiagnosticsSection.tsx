@@ -7,6 +7,10 @@ import { SettingsSection } from "../components/PageShell.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { formatBytes } from "../../../lib/turn-summary-format.js";
+import { requirePersistedResult, useSettingsPersistence } from "../hooks/use-settings-persistence.js";
+import { useNotifySaved } from "../context/SavedToastContext.js";
+import { isIpcErrorResult, type AppSettings, type AveApi } from "../types.js";
+import { isRecord, isStringArray } from "../../../shared/is-record.js";
 
 interface CrashDumpMeta {
   name: string;
@@ -14,30 +18,17 @@ interface CrashDumpMeta {
   size: number;
 }
 
-type ExportResult =
-  | { ok: true; path: string; bytes: number }
-  | { ok: false; canceled: true }
-  | { ok: false; error: string };
-type CrashListResult = { ok: true; dumps: CrashDumpMeta[] } | { ok: false; error: string };
-type LogsTailResult = { ok: true; lines: string[] } | { ok: false; error: string };
-
-interface DiagnosticsApi {
-  diagnostics: {
-    export: (opts?: {
-      dateFrom?: string;
-      dateTo?: string;
-      includeCrashDumps?: boolean;
-    }) => Promise<ExportResult>;
-    crashList: () => Promise<CrashListResult>;
-  };
-  logs: {
-    tail: (args?: { lines?: number; level?: string }) => Promise<LogsTailResult>;
-  };
-  getSettings: () => Promise<{ diagnostics?: { includeCrashDumps?: boolean } } | null | undefined>;
-  updateSettings: (partial: {
-    diagnostics?: { includeCrashDumps?: boolean };
-  }) => Promise<unknown>;
+function isCrashDumpList(value: unknown): value is CrashDumpMeta[] {
+  if (!Array.isArray(value)) return false;
+  for (let index = 0; index < value.length; index++) {
+    const dump: unknown = value[index];
+    if (!isRecord(dump) || typeof dump.name !== "string" || typeof dump.mtime !== "string"
+      || typeof dump.size !== "number" || !Number.isFinite(dump.size) || dump.size < 0) return false;
+  }
+  return true;
 }
+
+type DiagnosticsApi = Pick<AveApi, "diagnostics" | "logs" | "getSettings" | "updateSettings" | "onSettingsUpdated">;
 
 function api(): DiagnosticsApi {
   return (window as unknown as { aveApi: DiagnosticsApi }).aveApi;
@@ -53,7 +44,13 @@ interface DiagnosticsSectionProps {
 export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: DiagnosticsSectionProps) {
   const { t } = useTranslation();
 
-  const [includeCrashDumps, setIncludeCrashDumps] = useState(false);
+  const notifySaved = useNotifySaved();
+  const { error: saveError, saving, persist } = useSettingsPersistence(notifySaved);
+  const [includeCrashDumps, setIncludeCrashDumps] = useState<boolean | null>(null);
+  const storedConsent = useRef<boolean | null>(null);
+  const [consentLoading, setConsentLoading] = useState(true);
+  const [consentLoadError, setConsentLoadError] = useState<string | null>(null);
+  const consentRequestId = useRef(0);
   const [exporting, setExporting] = useState(false);
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const [exportErr, setExportErr] = useState<string | null>(null);
@@ -70,26 +67,62 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
    * — the same mapper every other tab uses, so the diagnostics codes cannot drift from the shared set. */
   const mapError = useCallback((code: string): string => formatIpcError(code, undefined), []);
 
-  /**
-   * Toggle the crash-dump opt-in. The persisted setting is the AUTHORITATIVE
-   * SOT for the export handler (which only NARROWS by the renderer arg, never
-   * widens), so save the patch FIRST, then reflect it locally. Skipping the
-   * persist would leave the checkbox cosmetic: this component always sends a
-   * defined boolean, and a renderer `true` cannot widen past a stored `false`.
-   */
-  const handleToggleCrashDumps = useCallback(
-    async (next: boolean) => {
-      setIncludeCrashDumps(next);
+  const applyConsent = useCallback((settings: AppSettings, expectedRevision?: number) => {
+    const consent = settings?.diagnostics?.includeCrashDumps;
+    if (typeof consent !== "boolean") throw new Error(t("auditTab.bundleConsentLoadFailed"));
+    if (expectedRevision !== undefined && expectedRevision !== consentRequestId.current) return;
+    storedConsent.current = consent;
+    setIncludeCrashDumps(consent);
+    setConsentLoadError(null);
+  }, [t]);
+
+  const showConsentLoadError = useCallback(() => {
+    storedConsent.current = null;
+    setIncludeCrashDumps(null);
+    setConsentLoadError(t("auditTab.bundleConsentLoadFailed"));
+  }, [t]);
+
+  const loadConsent = useCallback(async () => {
+    const id = ++consentRequestId.current;
+    setConsentLoading(true);
+    setConsentLoadError(null);
+    try {
+      const settings = await api().getSettings();
+      if (id === consentRequestId.current) applyConsent(settings);
+    } catch {
+      if (id === consentRequestId.current) showConsentLoadError();
+    } finally {
+      if (id === consentRequestId.current) setConsentLoading(false);
+    }
+  }, [applyConsent, showConsentLoadError]);
+
+  useEffect(() => {
+    void loadConsent();
+    const unsubscribe = api().onSettingsUpdated((settings) => {
+      consentRequestId.current++;
       try {
-        await api().updateSettings({ diagnostics: { includeCrashDumps: next } });
+        applyConsent(settings);
       } catch {
-        /* best-effort persist — export still narrows against the stored value */
+        showConsentLoadError();
       }
-    },
-    [],
-  );
+      setConsentLoading(false);
+    });
+    return () => { consentRequestId.current++; unsubscribe(); };
+  }, [applyConsent, loadConsent, showConsentLoadError]);
+
+  const handleToggleCrashDumps = useCallback(async (next: boolean) => {
+    if (storedConsent.current === null || consentLoading || saving) return;
+    const revision = consentRequestId.current;
+    setIncludeCrashDumps(next);
+    await persist(async () => {
+      const settings = requirePersistedResult(await api().updateSettings({ diagnostics: { includeCrashDumps: next } }));
+      applyConsent(settings, revision);
+      return settings;
+    }, { rollback: () => setIncludeCrashDumps(storedConsent.current) });
+  }, [applyConsent, consentLoading, persist, saving]);
 
   const handleExport = useCallback(async () => {
+    if (includeCrashDumps === null || consentLoading || saving) return;
     if (defaultDateFrom && defaultDateTo && defaultDateFrom > defaultDateTo) {
       setExportErr(t("auditTab.invalidDateRange"));
       return;
@@ -103,19 +136,22 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
         dateTo: defaultDateTo || undefined,
         includeCrashDumps,
       });
-      if (res.ok) {
-        setExportMsg(t("auditTab.bundleExportSuccess", { bytes: formatBytes(res.bytes) }));
-      } else if ("canceled" in res && res.canceled) {
+      if (isIpcErrorResult(res)) {
+        setExportErr(mapError(res.error));
+      } else if (isRecord(res) && res.ok === false && res.canceled === true) {
         setExportMsg(t("auditTab.bundleExportCanceled"));
+      } else if (isRecord(res) && res.ok === true && typeof res.path === "string" && res.path.length > 0
+        && typeof res.bytes === "number" && Number.isSafeInteger(res.bytes) && res.bytes >= 0) {
+        setExportMsg(t("auditTab.bundleExportSuccess", { bytes: formatBytes(res.bytes) }));
       } else {
-        setExportErr(mapError((res as { error: string }).error));
+        setExportErr(t("auditTab.errExportFailed"));
       }
     } catch {
       setExportErr(t("auditTab.errExportFailed"));
     } finally {
       setExporting(false);
     }
-  }, [defaultDateFrom, defaultDateTo, includeCrashDumps, mapError, t]);
+  }, [defaultDateFrom, defaultDateTo, includeCrashDumps, consentLoading, saving, mapError, t]);
 
   const refreshLogs = useCallback(async () => {
     const id = ++logRequestId.current;
@@ -124,8 +160,9 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
     try {
       const res = await api().logs.tail({ lines: 200, level: logLevel });
       if (id !== logRequestId.current) return;
-      if (res.ok) setLogLines(res.lines);
-      else setLogErr(mapError(res.error));
+      if (isIpcErrorResult(res)) setLogErr(mapError(res.error));
+      else if (isRecord(res) && res.ok === true && isStringArray(res.lines)) setLogLines(res.lines);
+      else setLogErr(t("auditTab.errLogsTailFailed"));
     } catch {
       if (id === logRequestId.current) setLogErr(t("auditTab.errLogsTailFailed"));
     }
@@ -141,8 +178,9 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
     setCrashes([]);
     try {
       const res = await api().diagnostics.crashList();
-      if (res.ok) setCrashes(res.dumps);
-      else setCrashErr(mapError(res.error));
+      if (isIpcErrorResult(res)) setCrashErr(mapError(res.error));
+      else if (isRecord(res) && res.ok === true && isCrashDumpList(res.dumps)) setCrashes(res.dumps);
+      else setCrashErr(t("auditTab.errCrashListFailed"));
     } catch {
       setCrashErr(t("auditTab.errCrashListFailed"));
     }
@@ -150,20 +188,7 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
 
   useEffect(() => {
     void refreshCrashes();
-    // Seed the checkbox from the persisted setting so it reflects the true SOT the export handler reads, not a hardcoded
-    // default.
-    void (async () => {
-      try {
-        const settings = await api().getSettings();
-        if (typeof settings?.diagnostics?.includeCrashDumps === "boolean") {
-          setIncludeCrashDumps(settings.diagnostics.includeCrashDumps);
-        }
-      } catch {
-        /* fall back to the default-false initial state */
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [refreshCrashes]);
 
   return (
     <>
@@ -174,16 +199,26 @@ export function DiagnosticsSection({ defaultDateFrom, defaultDateTo }: Diagnosti
         <label className="flex items-center gap-2 text-xs">
           <input
             type="checkbox"
-            checked={includeCrashDumps}
+            checked={includeCrashDumps === true}
+            disabled={includeCrashDumps === null || consentLoading || saving || exporting}
+            aria-busy={consentLoading || saving}
             onChange={(e) => void handleToggleCrashDumps(e.target.checked)}
           />
           {t("auditTab.bundleIncludeCrashDumps")}
         </label>
-        {includeCrashDumps && (
+        {consentLoading && <p role="status" className="text-dense text-muted-foreground">{t("auditTab.bundleConsentLoading")}</p>}
+        {consentLoadError && (
+          <div className="space-y-2">
+            <p role="alert" className="text-dense text-destructive">{consentLoadError}</p>
+            <Button size="sm" variant="outline" onClick={() => void loadConsent()} disabled={consentLoading}>{t("common.retry")}</Button>
+          </div>
+        )}
+        {saveError && <p role="alert" className="text-dense text-destructive">{saveError}</p>}
+        {includeCrashDumps === true && (
           <p className="text-dense text-warning">{t("auditTab.bundleCrashDumpWarning")}</p>
         )}
         <div className="flex items-center gap-2">
-          <Button size="sm" className="h-8" onClick={() => void handleExport()} disabled={exporting}>
+          <Button size="sm" className="h-8" onClick={() => void handleExport()} disabled={exporting || saving || consentLoading || includeCrashDumps === null}>
             {exporting ? t("auditTab.bundleExporting") : t("auditTab.bundleExportButton")}
           </Button>
           {exportMsg && <span className="text-dense text-muted-foreground">{exportMsg}</span>}
