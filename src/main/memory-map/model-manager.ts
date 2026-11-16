@@ -1,0 +1,136 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
+import { lstat, realpath, rename, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { openFeatureNamespace, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
+import { MODEL_FILES, LOCAL_MODEL_REVISION, modelFileUrl, type ModelFile } from './model-manifest.js';
+import type { MemoryModelStatus, MemoryModelError as ModelErrorCode } from '../../shared/memory-model.js';
+export class MemoryModelError extends Error {
+  constructor(readonly code: ModelErrorCode) { super(code); this.name = 'MemoryModelError'; }
+}
+export async function verifyModelFolder(folder: string, files: readonly ModelFile[] = MODEL_FILES, signal?: AbortSignal): Promise<string> {
+  for (const root of [join(folder, 'onnx'), folder]) {
+    let valid = true;
+    for (const file of files) {
+      signal?.throwIfAborted();
+      try {
+        const info = await lstat(join(root, file.name));
+        if (!info.isFile() || info.isSymbolicLink() || info.size !== file.bytes) { valid = false; break; }
+        const hash = createHash('sha256');
+        for await (const chunk of createReadStream(join(root, file.name), { signal })) hash.update(chunk);
+        if (hash.digest('hex') !== file.sha256) { valid = false; break; }
+      } catch (error) { if (signal?.aborted) throw error; valid = false; break; }
+    }
+    if (valid) return realpath(root);
+  }
+  throw new MemoryModelError('model-integrity-failed');
+}
+interface ModelManagerOptions {
+  namespace?: FeatureNamespaceHandle;
+  files?: readonly ModelFile[];
+  downloadFile?: (name: string, signal: AbortSignal) => Promise<Response>;
+  readPath: () => string | undefined;
+  savePath: (path: string) => void | Promise<void>;
+  onProgress?: (status: MemoryModelStatus) => void;
+}
+export class LocalModelManager {
+  private readonly namespace: FeatureNamespaceHandle;
+  private readonly files: readonly ModelFile[];
+  private controller?: AbortController;
+  private task: Promise<MemoryModelStatus> = Promise.resolve(this.empty());
+  private generation = 0;
+  private state: MemoryModelStatus = this.empty();
+  constructor(private readonly options: ModelManagerOptions) {
+    this.namespace = options.namespace ?? openFeatureNamespace('models');
+    this.files = options.files ?? MODEL_FILES;
+  }
+  private empty(): MemoryModelStatus {
+    return { status: 'unconfigured', receivedBytes: 0, totalBytes: 0, completedFiles: 0, totalFiles: 4 };
+  }
+  private publish(state: MemoryModelStatus): MemoryModelStatus { this.state = state; this.options.onProgress?.({ ...state }); return { ...state }; }
+  cancel(): void { this.generation++; this.controller?.abort(); }
+  async validatedPath(): Promise<string> {
+    const path = this.options.readPath();
+    if (!path) throw new MemoryModelError('model-folder-invalid');
+    return verifyModelFolder(path, this.files);
+  }
+  async status(): Promise<MemoryModelStatus> {
+    if (this.state.status === 'downloading' || this.state.status === 'failed') return { ...this.state };
+    if (!this.options.readPath()) return { ...this.state };
+    try { await this.validatedPath(); return this.publish({ ...this.state, status: 'ready' }); }
+    catch { return this.publish({ ...this.state, status: 'failed', error: 'model-integrity-failed' }); }
+  }
+  private run(action: (signal: AbortSignal) => Promise<void>): Promise<MemoryModelStatus> {
+    this.cancel();
+    const generation = this.generation;
+    const previous = this.task;
+    const controller = new AbortController();
+    this.controller = controller;
+    this.task = (async () => {
+      await previous;
+      if (generation !== this.generation) return { ...this.state };
+      try {
+        await action(controller.signal);
+        controller.signal.throwIfAborted();
+        return this.publish({ ...this.state, status: 'ready', error: undefined });
+      } catch (error) {
+        const code = controller.signal.aborted ? 'model-cancelled' : error instanceof MemoryModelError ? error.code : 'model-download-failed';
+        return this.publish({ ...this.state, status: 'failed', error: code });
+      }
+    })();
+    return this.task;
+  }
+  useExisting(folder: string): Promise<MemoryModelStatus> {
+    return this.run(async signal => {
+      if (!folder) throw new MemoryModelError('model-folder-invalid');
+      const path = await verifyModelFolder(folder, this.files, signal);
+      signal.throwIfAborted();
+      await this.options.savePath(path);
+    });
+  }
+  download(): Promise<MemoryModelStatus> {
+    return this.run(async signal => {
+      const parent = await this.namespace.childDir('multilingual-e5-small');
+      const name = 'multilingual-e5-small/' + LOCAL_MODEL_REVISION + '.tmp-' + randomUUID();
+      const staging = await this.namespace.childDir(name, { exclusive: true });
+      const final = join(parent, LOCAL_MODEL_REVISION);
+      this.publish({ status: 'downloading', receivedBytes: 0, totalBytes: this.files.reduce((n, f) => n + f.bytes, 0), completedFiles: 0, totalFiles: this.files.length });
+      try {
+        for (const file of this.files) {
+          signal.throwIfAborted();
+          const response = await (this.options.downloadFile
+            ? this.options.downloadFile(file.name, signal)
+            : fetch(modelFileUrl(file.name), { signal, redirect: 'follow' }));
+          if (!response.ok || !response.body) throw new MemoryModelError('model-download-failed');
+          const handle = await this.namespace.createFile(name + '/' + file.name);
+          const hash = createHash('sha256');
+          let received = 0;
+          const reader = response.body.getReader();
+          try {
+            while (true) {
+              signal.throwIfAborted();
+              const chunk = await reader.read();
+              if (chunk.done) break;
+              received += chunk.value.byteLength;
+              if (received > file.bytes) throw new MemoryModelError('model-integrity-failed');
+              hash.update(chunk.value);
+              await handle.writeFile(chunk.value);
+              this.publish({ ...this.state, receivedBytes: this.state.receivedBytes + chunk.value.byteLength });
+            }
+            if (received !== file.bytes || hash.digest('hex') !== file.sha256) throw new MemoryModelError('model-integrity-failed');
+            await handle.sync();
+          } finally { await reader.cancel().catch(() => {}); await handle.close(); }
+          this.publish({ ...this.state, completedFiles: this.state.completedFiles + 1 });
+        }
+        signal.throwIfAborted();
+        try { await rename(staging, final); }
+        catch (error) {
+          if (!['EEXIST', 'ENOTEMPTY', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+          await verifyModelFolder(final, this.files, signal);
+        }
+        signal.throwIfAborted();
+        await this.options.savePath(await realpath(final));
+      } finally { await rm(staging, { recursive: true, force: true }); }
+    });
+  }
+}
