@@ -1,10 +1,30 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";
 import type { UserOwnedSurfaceChoice } from "../../../../shared/permissions-events.js";
 import { canonicalStringify } from "../../../../shared/canonical-json.js";
 import type { ApprovalDecisionExtras } from "../../hooks/use-approval.js";
 import type { ApprovalChoice, ApprovalRequest } from "../../types.js";
+import { isDarwin } from "../../api-client.js";
+import { MODAL_DIALOG_SELECTOR, TEST_IDS, testIdSelector } from "../../../../shared/test-ids.js";
+
+/**
+ * Whether Cmd+Enter (macOS) or Ctrl+Enter pressed now is meant for the card in `panel`. The card never takes focus from the user, so the key is
+ * accepted from where they are: the card itself, the composer of the card's own surface (a text field there), or nowhere in particular while this
+ * is the only approval card on screen. A user typing in another tile, in a dialog or in a terminal never answers this card: keys typed into the
+ * terminal the card is about belong to its shell, and must not approve the agent's access to it.
+ */
+function acceptShortcutIsFor(panel: HTMLElement, event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing" | "repeat">, darwin: boolean): boolean {
+  if (event.key !== "Enter" || event.isComposing || event.repeat || event.altKey || event.shiftKey) return false;
+  if (darwin ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey) return false;
+  if (document.querySelector(MODAL_DIALOG_SELECTOR) !== null) return false;
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || active === document.body) return document.querySelectorAll(testIdSelector(TEST_IDS.approvalDock)).length <= 1;
+  if (panel.contains(active)) return true;
+  if (active.closest(".xterm") !== null) return false;
+  const composer = active.matches("textarea, input, [contenteditable]:not([contenteditable='false'])");
+  return composer && panel.closest("[data-approval-scope]")?.contains(active) === true;
+}
 
 /** The pipeline's reasons for a user-owned-surface card that are fixed sentences: shown in the user's language by code. Any other reason (a rule's own text, an exfiltration
  * finding) is the host's and is shown as sent. */
@@ -53,8 +73,25 @@ export function UserOwnedSurfaceApprovalCard({ request, conversationLabel, inter
     if (allow) onDecide("allow-once", undefined, { userOwnedSurfaceChoice: selection });
     else onDecide("deny-once");
   };
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const answerRef = useRef(answer);
+  answerRef.current = answer;
+  const darwin = isDarwin();
+  // The accept key works from the composer the user is typing in: the card does not take their focus to be answerable.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const panel = panelRef.current;
+      if (!panel || !acceptShortcutIsFor(panel, event, darwin)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      answerRef.current(true);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [darwin]);
+  const acceptKeys = darwin ? "⌘↵" : "Ctrl+↵";
   return (
-    <div data-testid="tool-approval-panel" data-approval-request-id={request.id} data-approval-tool-name={request.toolName}
+    <div ref={panelRef} data-testid="tool-approval-panel" data-approval-request-id={request.id} data-approval-tool-name={request.toolName}
       data-approval-args={canonicalStringify(request.args)} data-pending-count={pendingCount} tabIndex={-1}
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); answer(false); } }}>
@@ -106,7 +143,11 @@ export function UserOwnedSurfaceApprovalCard({ request, conversationLabel, inter
         <p className="text-xs leading-snug text-muted-foreground" data-testid="user-owned-surface-choice-description">{selectedDescription}</p>
         <div className="flex justify-end gap-2">
           <Button type="button" variant="outline" disabled={disabled} data-testid="user-owned-surface-dismiss" onClick={() => answer(false)}>{t("toolApprovalDialog.surfaceDismiss")}</Button>
-          <Button type="submit" disabled={disabled} data-testid="user-owned-surface-confirm">{selection === "auto" ? t("toolApprovalDialog.surfaceReview") : t("toolApprovalDialog.surfaceConfirm")}</Button>
+          <Button type="submit" disabled={disabled} data-testid="user-owned-surface-confirm" aria-keyshortcuts={darwin ? "Meta+Enter" : "Control+Enter"}
+            title={t("toolApprovalDialog.surfaceAcceptHint", { keys: acceptKeys })}>
+            {selection === "auto" ? t("toolApprovalDialog.surfaceReview") : t("toolApprovalDialog.surfaceConfirm")}
+            <kbd className="ml-1.5 rounded border border-current/(--opacity-soft) px-1 font-sans text-tiny opacity-80" data-testid="user-owned-surface-accept-keys">{acceptKeys}</kbd>
+          </Button>
         </div>
       </form>
     </section>
