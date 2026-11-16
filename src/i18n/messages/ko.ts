@@ -1846,6 +1846,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "fileEditDiff.truncatedLabel": "잘림",
   "fileEditDiff.nextHunk": "다음 hunk",
   "fileEditDiff.truncatedTitle": "긴 파일은 미리보기가 잘렸습니다",
+  "fileEditDiff.lineEndingsOnly": "줄바꿈 문자만 바뀌었습니다",
+  "fileEditDiff.rowsTruncated": "변경 내용의 앞부분만 표시했습니다.",
   "fileEditDiff.noChanges": "변경된 내용 없음.",
   "fileEditDiff.diffFileLost": "diff 파일이 소실되었습니다 (세션 재시작 후 불가).",
   "fileEditDiff.ipcError": "IPC 오류",

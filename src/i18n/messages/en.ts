@@ -1844,6 +1844,8 @@ export const en = {
   "fileEditDiff.truncatedLabel": "truncated",
   "fileEditDiff.nextHunk": "next hunk",
   "fileEditDiff.truncatedTitle": "Long file preview has been truncated",
+  "fileEditDiff.lineEndingsOnly": "Only line endings changed",
+  "fileEditDiff.rowsTruncated": "Only the first part of this change is shown.",
   "fileEditDiff.noChanges": "No changes.",
   "fileEditDiff.diffFileLost": "Diff file has been lost (unavailable after session restart).",
   "fileEditDiff.ipcError": "IPC error",

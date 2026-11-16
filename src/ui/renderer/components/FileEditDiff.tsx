@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useId } from "react";
 import { ChevronDown, ChevronRight, FilePlus2, FilePenLine } from "lucide-react";
 import type { FileEditDiffData, FileEditHunk } from "../utils/file-diff.js";
-import { countDiffLines } from "../utils/file-diff.js";
+import { editDiffView } from "../utils/file-diff.js";
+import type { FileDiffHunk, FileDiffView } from "../../../shared/line-diff.js";
 import { getApi } from "../api-client.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
@@ -33,15 +34,15 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
     return (
       <div className="min-w-0 space-y-2.5" data-testid="file-edit-diff" data-tool={data.tool}>
         {data.hunks.map((hunk, index) => (
-          <DiffHunk key={review.hunks[index]?.id ?? index} hunk={hunk} startLine={review.hunks[index]?.oldStartLine ?? 1}
-            separator={false} reviewHunk={review.hunks[index]} review={review} path={data.path}
-            hunkNumber={(review.hunkOffset ?? 0) + index + 1} />
+          <ReviewHunk key={review.hunks[index]?.id ?? index} hunk={hunk} reviewHunk={requireReviewHunk(review, index)} review={review}
+            path={data.path} hunkNumber={(review.hunkOffset ?? 0) + index + 1} />
         ))}
         {data.hunks.length === 0 && <p className="text-xs text-muted-foreground">{t("fileEditDiff.noChanges")}</p>}
       </div>
     );
   }
-  const totals = computeLineTotals(data.hunks);
+  const view = editDiffView(data);
+  const totals = { added: view.added, removed: view.removed };
   const verb = t(data.isNewFile ? "fileEditDiff.verbCreate" : VERB_KEY_BY_TOOL[data.tool]);
   const Icon = data.isNewFile ? FilePlus2 : FilePenLine;
   const headerContent = (
@@ -74,7 +75,7 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
               −{totals.removed}
             </span>
           )}
-          {data.truncated && (
+          {(data.truncated || view.truncated) && (
             <span className="text-warning" title={t("fileEditDiff.truncatedTitle")}>
               {t("fileEditDiff.truncatedLabel")}
             </span>
@@ -89,7 +90,9 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
       data-testid="file-edit-diff"
       data-tool={data.tool}
       data-new-file={data.isNewFile ? "true" : "false"}
-      data-truncated={data.truncated ? "true" : "false"}
+      data-truncated={data.truncated || view.truncated ? "true" : "false"}
+      data-added={totals.added}
+      data-removed={totals.removed}
     >
       <button
         type="button"
@@ -107,19 +110,10 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
       </button>
       {open && (
         <div id={contentId} className="font-mono text-xs leading-[1.55]">
-          {data.hunks.map((hunk, i) => (
-            <DiffHunk
-              key={i}
-              hunk={hunk}
-              startLine={hunkStartLine(data.hunks, i)}
-              separator={data.hunks.length > 1 && i > 0}
-              path={data.path}
-              hunkNumber={i + 1}
-            />
-          ))}
+          <FileDiffRows view={view} numbered={data.view !== undefined} />
           {totals.added === 0 && totals.removed === 0 && (
-            <div className="px-3 py-2 text-tiny text-muted-foreground">
-              {t("fileEditDiff.noChanges")}
+            <div className="px-3 py-2 text-tiny text-muted-foreground" data-testid="file-diff-empty">
+              {t(view.lineEndingsOnly ? "fileEditDiff.lineEndingsOnly" : "fileEditDiff.noChanges")}
             </div>
           )}
         </div>
@@ -128,36 +122,38 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
   );
 }
 
-function DiffHunk({
+/** A review lists one host hunk per shown hunk; a missing one is a caller bug, not something to render around. */
+function requireReviewHunk(review: FileEditDiffReview, index: number): TurnReviewHunk {
+  const hunk = review.hunks[index];
+  if (!hunk) throw new Error(`turn review has no hunk at index ${index}`);
+  return hunk;
+}
+
+function ReviewHunk({
   hunk,
-  startLine,
-  separator,
   reviewHunk,
   review,
   path,
   hunkNumber,
 }: {
   hunk: FileEditHunk;
-  startLine: number;
-  separator: boolean;
-  reviewHunk?: TurnReviewHunk;
-  review?: FileEditDiffReview;
+  reviewHunk: TurnReviewHunk;
+  review: FileEditDiffReview;
   path: string;
   hunkNumber: number;
 }) {
   const { t } = useTranslation();
-  const hasReviewHunk = reviewHunk !== undefined;
-  const preview = useMemo(() => hasReviewHunk ? {
+  const preview = useMemo(() => ({
     old: reviewPreview(hunk.oldText), next: reviewPreview(hunk.newText),
     oldCount: countReviewLines(hunk.oldText), newCount: countReviewLines(hunk.newText),
-  } : undefined, [hasReviewHunk, hunk.oldText, hunk.newText]);
-  const oldPreview = preview?.old;
-  const newPreview = preview?.next;
-  const removed = oldPreview?.lines ?? (hunk.oldText.length > 0 ? hunk.oldText.split("\n") : []);
-  const added = newPreview?.lines ?? (hunk.newText.length > 0 ? hunk.newText.split("\n") : []);
-  let oldLine = reviewHunk?.oldStartLine ?? startLine;
-  let newLine = reviewHunk?.newStartLine ?? startLine + removed.length;
-  if (reviewHunk && review) {
+  }), [hunk.oldText, hunk.newText]);
+  const oldPreview = preview.old;
+  const newPreview = preview.next;
+  const removed = oldPreview.lines;
+  const added = newPreview.lines;
+  let oldLine = reviewHunk.oldStartLine;
+  let newLine = reviewHunk.newStartLine;
+  {
     const disabled = !review.referenceable || !review.onReference;
     return (
       <button type="button" disabled={disabled} data-hunk-id={reviewHunk.id}
@@ -166,7 +162,7 @@ function DiffHunk({
           turnId: review.turnId, hunkId: reviewHunk.id })}
         className="group block w-full min-w-0 overflow-hidden rounded-[10px] border border-border bg-background text-left outline-none enabled:hover:border-(--file-reference-fg) focus-visible:border-(--file-reference-fg) focus-visible:ring-2 focus-visible:ring-(--file-reference-fg) disabled:cursor-default">
         <span className="flex min-w-0 items-center gap-2 bg-muted/(--opacity-muted) px-2.5 py-1.5 font-mono text-dense text-muted-foreground">
-          <span className="min-w-0 flex-1 truncate">@@ -{reviewHunk.oldStartLine},{preview?.oldCount} +{reviewHunk.newStartLine},{preview?.newCount} @@</span>
+          <span className="min-w-0 flex-1 truncate">@@ -{reviewHunk.oldStartLine},{preview.oldCount} +{reviewHunk.newStartLine},{preview.newCount} @@</span>
           {!disabled && <span className="shrink-0 font-sans font-medium text-(--file-reference-fg) opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none">
             {t("fileEditDiff.hunkReferenceCue", { start: reviewHunk.startLine, end: reviewHunk.endLine })}
           </span>}
@@ -175,30 +171,50 @@ function DiffHunk({
           {removed.map((text, index) => <DiffLine key={`r-${index}`} kind="removed" lineNo={oldLine++} text={text} columns />)}
           {added.map((text, index) => <DiffLine key={`a-${index}`} kind="added" lineNo={newLine++} text={text} columns />)}
         </span>
-        {(oldPreview?.truncated || newPreview?.truncated) && (
+        {(oldPreview.truncated || newPreview.truncated) && (
           <span className="block px-2.5 py-1 font-sans text-dense text-muted-foreground">{t("fileEditDiff.reviewPreviewTruncated")}</span>
         )}
       </button>
     );
   }
+}
+
+/** The rows of a line diff: context, removed and added lines, with real line numbers when the whole file was compared. */
+function FileDiffRows({ view, numbered }: { view: FileDiffView; numbered: boolean }) {
+  const { t } = useTranslation();
   return (
-    <div>
-      {separator && (
-        <div className="border-t border-dashed border-border/(--opacity-strong) bg-muted/(--opacity-light) px-3 py-0.5 text-tiny text-muted-foreground">
-          @@ {t("fileEditDiff.nextHunk")}
+    <>
+      {view.hunks.map((hunk, index) => (
+        <FileDiffHunkRows key={`${hunk.oldStart}:${hunk.newStart}:${index}`} hunk={hunk} numbered={numbered} separator={index > 0} />
+      ))}
+      {view.truncated && (
+        <p className="px-3 py-1 font-sans text-dense text-warning" data-testid="file-diff-truncated">{t("fileEditDiff.rowsTruncated")}</p>
+      )}
+    </>
+  );
+}
+
+function FileDiffHunkRows({ hunk, numbered, separator }: { hunk: FileDiffHunk; numbered: boolean; separator: boolean }) {
+  const { t } = useTranslation();
+  let oldLine = hunk.oldStart;
+  let newLine = hunk.newStart;
+  return (
+    <div data-testid="file-diff-hunk">
+      {(numbered || separator) && (
+        <div className="border-t border-dashed border-border/(--opacity-strong) bg-muted/(--opacity-light) px-3 py-0.5 text-tiny text-muted-foreground first:border-t-0" data-testid="file-diff-hunk-header">
+          {numbered ? `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@` : `@@ ${t("fileEditDiff.nextHunk")}`}
         </div>
       )}
-      {removed.map((text, i) => {
-        const n = oldLine++;
-        return <DiffLine key={`r-${i}`} kind="removed" lineNo={n} text={text} />;
-      })}
-      {added.map((text, i) => {
-        const n = newLine++;
-        return <DiffLine key={`a-${i}`} kind="added" lineNo={n} text={text} />;
-      })}
-      {(oldPreview?.truncated || newPreview?.truncated) && (
-        <p className="px-3 py-1 font-sans text-dense text-warning">{t("fileEditDiff.reviewPreviewTruncated")}</p>
-      )}
+      {hunk.rows.map((row, index) => (
+        <DiffLine
+          key={index}
+          kind={row.kind}
+          oldLineNo={numbered && row.kind !== "added" ? oldLine++ : undefined}
+          newLineNo={numbered && row.kind !== "removed" ? newLine++ : undefined}
+          numbered={numbered}
+          text={row.text}
+        />
+      ))}
     </div>
   );
 }
@@ -221,11 +237,19 @@ function countReviewLines(text: string): number {
 function DiffLine({
   kind,
   lineNo,
+  oldLineNo,
+  newLineNo,
+  numbered = false,
   text,
   columns = false,
 }: {
-  kind: "added" | "removed";
-  lineNo: number;
+  kind: "added" | "removed" | "context";
+  /** Turn-review hunks number one side per line. */
+  lineNo?: number;
+  oldLineNo?: number;
+  newLineNo?: number;
+  /** Tool cards show both line-number columns only when the whole file was compared. */
+  numbered?: boolean;
   text: string;
   columns?: boolean;
 }) {
@@ -235,8 +259,10 @@ function DiffLine({
   // status color for the redundant border state cue.
   const colors = kind === "added"
     ? { background: "var(--diff-add)", accent: "var(--diff-add-fg)" }
-    : { background: "var(--diff-remove)", accent: "var(--diff-remove-fg)" };
-  const sigil = kind === "added" ? "+" : "−";
+    : kind === "removed"
+      ? { background: "var(--diff-remove)", accent: "var(--diff-remove-fg)" }
+      : { background: "transparent", accent: "transparent" };
+  const sigil = kind === "added" ? "+" : kind === "removed" ? "−" : " ";
   if (columns) {
     return (
       <span className="flex min-w-0 text-foreground" style={{ backgroundColor: colors.background }} data-diff-kind={kind}>
@@ -249,14 +275,17 @@ function DiffLine({
   }
   return (
     <div
-      className="flex min-w-0 gap-2 border-l-[3px] px-3 text-foreground"
+      className={`flex min-w-0 gap-2 border-l-[3px] px-3 ${kind === "context" ? "text-muted-foreground" : "text-foreground"}`}
       style={{ backgroundColor: colors.background, borderLeftColor: colors.accent }}
       data-diff-kind={kind}
     >
-      <span className="w-10 shrink-0 select-none text-right text-tiny text-foreground">
-        {lineNo}
-      </span>
-      <span className="shrink-0 select-none font-semibold text-foreground">
+      {numbered && (
+        <>
+          <span data-line-column="old" className="w-8 shrink-0 select-none text-right text-tiny">{oldLineNo ?? ""}</span>
+          <span data-line-column="new" className="w-8 shrink-0 select-none text-right text-tiny">{newLineNo ?? ""}</span>
+        </>
+      )}
+      <span aria-hidden="true" className="w-2 shrink-0 select-none font-semibold">
         {sigil}
       </span>
       <span className="min-w-0 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
@@ -264,26 +293,6 @@ function DiffLine({
       </span>
     </div>
   );
-}
-
-function computeLineTotals(hunks: FileEditHunk[]): { added: number; removed: number } {
-  return hunks.reduce(
-    (acc, h) => ({
-      added: acc.added + countDiffLines(h.newText),
-      removed: acc.removed + countDiffLines(h.oldText),
-    }),
-    { added: 0, removed: 0 },
-  );
-}
-
-function hunkStartLine(hunks: FileEditHunk[], idx: number): number {
-  let n = 1;
-  for (let i = 0; i < idx; i++) {
-    const h = hunks[i];
-    if (!h) continue;
-    n += countDiffLines(h.oldText) + countDiffLines(h.newText);
-  }
-  return n;
 }
 
 /** Split content into lines (no trailing newline artifact). */

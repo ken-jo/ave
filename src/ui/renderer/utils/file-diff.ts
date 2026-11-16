@@ -1,5 +1,6 @@
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { isRecord } from "../../../shared/is-record.js";
+import { buildFileDiffView, DEFAULT_FILE_DIFF_LIMITS, type FileDiffView } from "../../../shared/line-diff.js";
 
 type FileDiffTool = "edit_file" | "multi_edit" | "write_file";
 
@@ -14,6 +15,39 @@ export interface FileEditDiffData {
   hunks: FileEditHunk[];
   isNewFile?: boolean;
   truncated?: boolean;
+  /** Whole-file diff with real line numbers; absent when only the tool input is known. */
+  view?: FileDiffView;
+}
+
+/** A tool card shows at most this many rows; the full change stays in the turn review. */
+const CARD_DIFF_LIMITS = { ...DEFAULT_FILE_DIFF_LIMITS, maxRows: 400, maxCharacters: 65_536 };
+
+/**
+ * The line diff a card shows. Without a whole-file comparison each replacement is diffed on its own text,
+ * so unchanged lines inside a replaced block are context and the counts are the lines that really changed.
+ */
+export function editDiffView(data: FileEditDiffData): FileDiffView {
+  if (data.view) return data.view;
+  const view: FileDiffView = { hunks: [], added: 0, removed: 0, truncated: false };
+  let rows = 0;
+  let characters = 0;
+  for (const hunk of data.hunks) {
+    const part = buildFileDiffView(hunk.oldText, hunk.newText, {
+      ...CARD_DIFF_LIMITS,
+      maxRows: CARD_DIFF_LIMITS.maxRows - rows,
+      maxCharacters: CARD_DIFF_LIMITS.maxCharacters - characters,
+    });
+    view.added += part.added;
+    view.removed += part.removed;
+    view.truncated ||= part.truncated;
+    if (part.lineEndingsOnly) view.lineEndingsOnly = true;
+    for (const partHunk of part.hunks) {
+      rows += partHunk.rows.length;
+      for (const row of partHunk.rows) characters += row.text.length;
+      view.hunks.push(partHunk);
+    }
+  }
+  return view;
 }
 
 type ToolItem = Extract<ChatEntry, { kind: "tool_group" }>["tools"][number];
@@ -98,11 +132,4 @@ function readResultField(result: string | undefined, field: string): string | nu
 
 function asString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
-}
-
-export function countDiffLines(text: string): number {
-  if (text.length === 0) return 0;
-  let count = 1;
-  for (let offset = text.indexOf("\n"); offset !== -1; offset = text.indexOf("\n", offset + 1)) count++;
-  return count;
 }
