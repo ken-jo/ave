@@ -3,7 +3,7 @@ import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 import type { DownloadItem, WebContents } from "electron";
 import { describeLoadFailure, describePageCrash } from "./browser-load-failure.js";
 import { BrowserPagePrompts } from "./browser-page-prompts.js";
-import { BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -24,6 +24,8 @@ export interface BrowserWorkspaceServiceDeps {
   /** Asks in a native dialog, for a guest that has no tab panel to ask in (a popup window). */
   promptPermission(request: BrowserPermissionPrompt): Promise<boolean>;
   fullscreenAvailable(windowId: number): boolean;
+  /** Hands a link to the system's own app for it. Called only for a scheme in BROWSER_EXTERNAL_SCHEMES the user agreed to. */
+  openExternal(url: string): Promise<void>;
   onError(error: unknown): void;
   readonly store?: BrowserWorkspaceStore;
   readonly now?: () => number;
@@ -232,8 +234,23 @@ export class BrowserWorkspaceService {
       entry.userNavigation = "none";
       event.preventDefault();
     };
+    // A link that is not a web page never loads in the tab. Instead of failing silently the tab says so, and offers to
+    // hand a mail or phone link to the system's own app. The address shown is the link's own text, bounded, as plain text.
+    const externalLink = (url: string) => {
+      const scheme = /^([a-z][a-z0-9+.-]{0,31}):/i.exec(url)?.[1]?.toLowerCase();
+      const origin = browserWorkspaceUrl(guest.getURL());
+      if (!scheme || scheme === "http" || scheme === "https" || origin === null || this.tabIdForGuest(windowId, guestId) === null) return;
+      if (this.prompts.list(guestId).some((prompt) => prompt.kind === "external")) return;
+      const openable = BROWSER_EXTERNAL_SCHEMES.includes(scheme) && url.length <= 2_000;
+      const target = openable ? browserPlainText(url.slice(scheme.length + 1).split("?")[0] ?? "").slice(0, BROWSER_EXTERNAL_TARGET_LIMIT) : "";
+      void this.prompts.ask(guestId, "external", { origin: new URL(origin).origin, scheme, target, openable }).then((answer) => {
+        if (answer?.open && openable) void this.deps.openExternal(url).catch(this.deps.onError);
+      });
+    };
     const pageNavigation = (event: { preventDefault(): void; url?: string; isMainFrame?: boolean }, legacyUrl?: string) => {
       const entry = this.guests.get(guestId);
+      const requested = typeof event.url === "string" ? event.url : legacyUrl;
+      if (entry && event.isMainFrame !== false && typeof requested === "string") externalLink(requested);
       if (!entry?.unloadHeld || event.isMainFrame === false) return;
       entry.unloadHeld = false;
       const destination = browserWorkspaceUrl(typeof event.url === "string" ? event.url : legacyUrl);

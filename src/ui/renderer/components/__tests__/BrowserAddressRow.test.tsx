@@ -207,4 +207,18 @@ describe.each([
       loadError: { reason: "dns", code: -105, detail: "ERR_NAME_NOT_RESOLVED", url: "https://missing.invalid/" } }] }, api));
     expect(address().value).toBe("https://missing.invalid/");
   });
+
+  it("offers Open for a mail link with its address as text, and only Dismiss for a link the app cannot open", () => {
+    const { api } = mount(ids);
+    const show = (prompt: object) => act(() => __setBrowserPageStatusForTest({ ...pageState(false), pages: [{ tabId: TAB, loading: false, loadError: null, prompts: [prompt as never] }] }, api));
+    show({ id: "prompt-2", kind: "external", origin: "https://a.example", scheme: "mailto", target: "<b>someone@example.com</b>", openable: true });
+    expect(screen.getByTestId("browser-page-prompt-target").textContent).toBe(" <b>someone@example.com</b>");
+    fireEvent.click(screen.getByTestId("browser-page-prompt-open"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenCalledWith({ tabId: TAB, promptId: "prompt-2", answer: { kind: "external", open: true } });
+    show({ id: "prompt-3", kind: "external", origin: "https://a.example", scheme: "ms-settings", target: "", openable: false });
+    expect(screen.queryByTestId("browser-page-prompt-open")).toBeNull();
+    expect(screen.getByTestId("browser-page-prompt").textContent).toContain("ms-settings:");
+    fireEvent.click(screen.getByTestId("browser-page-prompt-dismiss"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-3", answer: { kind: "external", open: false } });
+  });
 });

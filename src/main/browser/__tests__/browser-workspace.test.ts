@@ -23,14 +23,14 @@ async function setup() {
   const loadURL = vi.fn(async (_url: string) => {}); const reload = vi.fn(); const stop = vi.fn();
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
   const guest = Object.assign(events, { id: 7, session: {}, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
-  const onError = vi.fn(); const promptPermission = vi.fn(async () => true);
+  const onError = vi.fn(); const promptPermission = vi.fn(async () => true); const openExternal = vi.fn(async () => undefined);
   let requestHold: BrowserPageRequestHold | null = null;
   const holdPageRequests = vi.fn((hold: BrowserPageRequestHold | null) => { requestHold = hold; });
   /** A request reaching the browser profile: how the hold answered it, or "unheld" when nothing holds requests. */
   const pageRequest = (request: BrowserPageRequest) => requestHold === null ? Promise.resolve("unheld" as const) : new Promise<boolean>((resolve) => requestHold?.(request, resolve));
-  const service = new BrowserWorkspaceService({ holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
+  const service = new BrowserWorkspaceService({ openExternal, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 
@@ -316,5 +316,38 @@ describe("browser workspace service", () => {
     attempt();
     expect(holding()).toBe(true);
     expect(navigation.preventDefault).not.toHaveBeenCalled();
+  });
+  it("offers a mail link to the system's app only after the user agrees, and only says so for other schemes", async () => {
+    const { service, guest, events, openExternal, setLive } = await setup();
+    service.observeGuest(1, guest);
+    const follow = (url: string, isMainFrame = true) => events.emit("will-navigate", { preventDefault: () => {}, url, isMainFrame });
+    const prompt = async () => (await service.getState(1)).pages[0]?.prompts[0];
+    const answer = async (open: boolean) => service.answerPrompt(1, { tabId: "browser:one", promptId: String((await prompt())?.id), answer: { kind: "external", open } });
+    follow("https://site.example/next"); follow("mailto:sub@example.com", false);
+    expect(await prompt()).toBeUndefined();
+
+    follow("MAILTO:someone@example.com?subject=Hello\u0007&body=x"); follow("mailto:second@example.com");
+    expect((await service.getState(1)).pages[0]?.prompts).toEqual([{ id: (await prompt())?.id, kind: "external", origin: "https://site.example", scheme: "mailto", target: "someone@example.com", openable: true }]);
+    expect(openExternal).not.toHaveBeenCalled();
+    await answer(false);
+    expect(openExternal).not.toHaveBeenCalled();
+    follow("tel:+15550100");
+    await answer(true);
+    await vi.waitFor(() => expect(openExternal).toHaveBeenCalledWith("tel:+15550100"));
+
+    follow("ms-settings:privacy");
+    expect(await prompt()).toMatchObject({ kind: "external", scheme: "ms-settings", target: "", openable: false });
+    // Agreeing to something that was never offered opens nothing.
+    await answer(true);
+    follow(`mailto:${"a".repeat(2_100)}@example.com`);
+    expect(await prompt()).toMatchObject({ scheme: "mailto", openable: false });
+    await answer(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(openExternal).toHaveBeenCalledOnce();
+
+    setLive(false);
+    follow("mailto:popup@example.com");
+    setLive(true);
+    expect(await prompt()).toBeUndefined();
   });
 });

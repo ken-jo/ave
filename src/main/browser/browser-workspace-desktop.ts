@@ -1,5 +1,5 @@
 import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
-import { dialog, Menu, session, type BrowserWindow, type DownloadItem, type WebContents } from "electron";
+import { dialog, Menu, session, shell, type BrowserWindow, type DownloadItem, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BrowserTabControlState } from "../../shared/browser-surface.js";
@@ -45,6 +45,7 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
       if (hold === null) requests.onBeforeRequest(null);
       else requests.onBeforeRequest((details, callback) => hold(details, (send) => callback(send ? {} : { cancel: true })));
     },
+    openExternal: (url) => shell.openExternal(url),
     promptPermission: async (request) => {
       const window = mainWindow(request.windowId);
       if (!window || !window.isVisible() || window.isMinimized()) return false;

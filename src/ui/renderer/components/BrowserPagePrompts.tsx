@@ -52,15 +52,47 @@ function LeavePrompt({ tabId, prompt }: { tabId: string; prompt: Extract<Browser
   );
 }
 
+function ExternalPrompt({ tabId, prompt }: { tabId: string; prompt: Extract<BrowserPagePrompt, { kind: "external" }> }) {
+  const { t } = useTranslation();
+  const answer = (open: boolean) => answerBrowserPagePrompt(tabId, prompt.id, { kind: "external", open });
+  return (
+    <>
+      <p className="min-w-0 flex-1 text-xs">
+        <span className="break-all font-medium" data-testid="browser-page-prompt-origin">{prompt.origin}</span>{" "}
+        {prompt.openable
+          ? t(prompt.scheme === "mailto" ? "browserPagePrompt.external.mail" : "browserPagePrompt.external.phone")
+          : t("browserPagePrompt.external.unsupported", { scheme: prompt.scheme })}
+        {prompt.openable && prompt.target ? <span className="break-all font-mono" data-testid="browser-page-prompt-target"> {prompt.target}</span> : null}
+      </p>
+      <div className="flex shrink-0 flex-wrap gap-1">
+        {prompt.openable ? (
+          <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => answer(true)} data-testid="browser-page-prompt-open">
+            {t("browserPagePrompt.external.open")}
+          </Button>
+        ) : null}
+        <Button type="button" size="sm" variant="outline" className="h-7 text-xs" onClick={() => answer(false)} data-testid="browser-page-prompt-dismiss">
+          {t(prompt.openable ? "browserPagePrompt.external.cancel" : "browserPagePrompt.external.dismiss")}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+const PROMPT_TITLES = {
+  permission: "browserWorkspace.permissionPrompt.title", leave: "browserPagePrompt.leave.title", external: "browserPagePrompt.external.title",
+} as const;
+
 export function BrowserPagePrompts({ tabId }: { tabId: string }) {
   const { t } = useTranslation();
   const prompt = useBrowserPageStatus(tabId)?.prompts[0];
   if (!prompt) return null;
   return (
-    <section role="alertdialog" aria-label={t(prompt.kind === "permission" ? "browserWorkspace.permissionPrompt.title" : "browserPagePrompt.leave.title")} data-native-page-chrome="background"
+    <section role="alertdialog" aria-label={t(PROMPT_TITLES[prompt.kind])} data-native-page-chrome="background"
       className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted/(--opacity-muted) px-3 py-2"
       data-testid="browser-page-prompt" data-kind={prompt.kind} data-tab-id={tabId}>
-      {prompt.kind === "permission" ? <PermissionPrompt tabId={tabId} prompt={prompt} /> : <LeavePrompt tabId={tabId} prompt={prompt} />}
+      {prompt.kind === "permission" ? <PermissionPrompt tabId={tabId} prompt={prompt} /> : null}
+      {prompt.kind === "leave" ? <LeavePrompt tabId={tabId} prompt={prompt} /> : null}
+      {prompt.kind === "external" ? <ExternalPrompt tabId={tabId} prompt={prompt} /> : null}
     </section>
   );
 }

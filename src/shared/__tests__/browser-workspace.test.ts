@@ -106,4 +106,16 @@ describe("browser workspace wire validation", () => {
       expect(parseBrowserWorkspaceRequest("answerPrompt", bad)).toBeNull();
     }
   });
+  it("accepts an external-link prompt only with a bare scheme and a bounded plain-text target", () => {
+    const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
+    const prompt = { id: "prompt-1", kind: "external", origin: "https://site.example", scheme: "mailto", target: "someone@example.com", openable: true };
+    const withPrompt = (value: unknown) => ({ ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [value] }] });
+    expect(parseBrowserWorkspaceState(withPrompt(prompt))).not.toBeNull();
+    for (const bad of [{ ...prompt, scheme: "Mailto" }, { ...prompt, scheme: "mailto:" }, { ...prompt, target: "x".repeat(201) }, { ...prompt, target: "a\nb" }, { ...prompt, openable: "yes" }, { ...prompt, url: "mailto:x" }]) {
+      expect(parseBrowserWorkspaceState(withPrompt(bad))).toBeNull();
+    }
+    const answer = { tabId: "browser:one", promptId: "prompt-1", answer: { kind: "external", open: true } };
+    expect(parseBrowserWorkspaceRequest("answerPrompt", answer)).toEqual(answer);
+    expect(parseBrowserWorkspaceRequest("answerPrompt", { ...answer, answer: { kind: "external", open: "yes" } })).toBeNull();
+  });
 });

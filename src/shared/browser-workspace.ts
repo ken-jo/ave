@@ -31,6 +31,13 @@ export interface BrowserLoadError {
 }
 /** Pending prompts one tab may hold; a page that raises more is answered as dismissed. */
 export const BROWSER_PAGE_PROMPT_LIMIT = 8;
+export const BROWSER_EXTERNAL_TARGET_LIMIT = 200;
+/** Text with every control character removed, for a page-supplied string the host shows on one line. */
+export function browserPlainText(text: string): string {
+  return Array.from(text).filter((character) => { const code = character.codePointAt(0) ?? 0; return code > 0x1f && code !== 0x7f; }).join("");
+}
+/** Link schemes a page may ask to hand to the system's own app, each only after the user agrees in the tab. */
+export const BROWSER_EXTERNAL_SCHEMES: readonly string[] = ["mailto", "tel"];
 export type BrowserPermissionChoice = "allow-once" | "block" | "always-block";
 /**
  * Something a page asked for that needs the user's answer, drawn by the host inside the tab's own panel and titled with the
@@ -39,10 +46,13 @@ export type BrowserPermissionChoice = "allow-once" | "block" | "always-block";
 export type BrowserPagePrompt =
   | { readonly id: string; readonly kind: "permission"; readonly origin: string; readonly permissions: readonly BrowserSitePermission[] }
   /** The page asked to confirm before a navigation it started itself unloads it. */
-  | { readonly id: string; readonly kind: "leave"; readonly origin: string };
+  | { readonly id: string; readonly kind: "leave"; readonly origin: string }
+  /** The page followed a link that is not a web page. `openable` links can be handed to the system's own app for them. */
+  | { readonly id: string; readonly kind: "external"; readonly origin: string; readonly scheme: string; readonly target: string; readonly openable: boolean };
 export type BrowserPromptAnswer =
   | { readonly kind: "permission"; readonly choice: BrowserPermissionChoice }
-  | { readonly kind: "leave"; readonly leave: boolean };
+  | { readonly kind: "leave"; readonly leave: boolean }
+  | { readonly kind: "external"; readonly open: boolean };
 export interface BrowserPromptAnswerRequest { readonly tabId: string; readonly promptId: string; readonly answer: BrowserPromptAnswer }
 /** What the host knows about one tab's page beyond its address. One entry per listed tab. */
 export interface BrowserPageStatus {
@@ -141,6 +151,7 @@ function validPromptAnswer(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (value.kind === "permission") return keys(value, ["kind", "choice"]) && PERMISSION_CHOICES.includes(value.choice as string);
   if (value.kind === "leave") return keys(value, ["kind", "leave"]) && typeof value.leave === "boolean";
+  if (value.kind === "external") return keys(value, ["kind", "open"]) && typeof value.open === "boolean";
   return false;
 }
 function validPrompt(value: unknown): boolean {
@@ -150,6 +161,11 @@ function validPrompt(value: unknown): boolean {
       && value.permissions.length <= BROWSER_SITE_PERMISSIONS.length && value.permissions.every((item) => BROWSER_SITE_PERMISSIONS.includes(item as BrowserSitePermission));
   }
   if (value.kind === "leave") return keys(value, ["id", "kind", "origin"]);
+  if (value.kind === "external") {
+    return keys(value, ["id", "kind", "origin", "scheme", "target", "openable"]) && typeof value.openable === "boolean"
+      && typeof value.scheme === "string" && /^[a-z][a-z0-9+.-]{0,31}$/.test(value.scheme)
+      && typeof value.target === "string" && value.target.length <= BROWSER_EXTERNAL_TARGET_LIMIT && value.target === browserPlainText(value.target);
+  }
   return false;
 }
 export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceRequests>(operation: K, value: unknown): BrowserWorkspaceRequests[K] | null {
