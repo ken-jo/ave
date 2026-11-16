@@ -47,8 +47,10 @@ describe("browser workspace panel", () => {
     fireEvent.change(screen.getByLabelText("browserWorkspace.zoom"), { target: { value: "1.5" } });
     expect(api.zoom).toHaveBeenCalledWith({ tabId: "browser:one", documentGeneration: 4, factor: 1.5 });
     fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.library" }));
-    expect(screen.getByLabelText("browserWorkspace.permission.fullscreen")).toHaveProperty("disabled", true);
-    expect(screen.getByText("browserWorkspace.fullscreenUnavailable")).toBeTruthy();
+    // A permission the host cannot grant is not offered at all, rather than listed as a disabled control with an apology.
+    expect(screen.queryByLabelText("browserWorkspace.permission.fullscreen")).toBeNull();
+    expect(screen.queryByText("browserWorkspace.fullscreenUnavailable")).toBeNull();
+    expect(screen.getByLabelText("browserWorkspace.permission.camera")).toBeTruthy();
     expect(onOpenUrl).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Saved site" }));
     expect(onOpenUrl).toHaveBeenCalledWith("https://saved.example/");
