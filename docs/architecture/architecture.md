@@ -3681,6 +3681,13 @@ with its own owner rule:
   Entries that do not parse are never removed, and nothing is removed by age.
   A write that would grow the run file past the read limit is refused, so the
   file stays readable and deleting rows makes room again.
+  API for WT-3 (the run engine): `runs.list()` on the board store returns every
+  readable run record, whether or not a row names it, or `pending-review`
+  while the file awaits review; at boot the engine adopts back each record
+  without `settled`, and the board's boot reconcile leaves every row that names
+  a template run to it. `updateRun` changes only the run a row names; a run
+  whose row is gone or names a newer run is settled with `runs.update`, then
+  `pruneSettledRuns()` removes the settled runs no row lists.
   Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry

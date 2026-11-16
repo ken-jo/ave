@@ -146,3 +146,13 @@ it("stores how a run ended and refuses a malformed end", async () => {
     await expect(store.update("run-1", value => ({ ...value, settled: bad as never }))).rejects.toMatchObject({ code: "invalid-template-run" });
   }
 });
+
+it("lists every readable run, leaves out unreadable and repeated entries, and lists nothing while the file awaits review", async () => {
+  const store = new WorkflowRunStore(file);
+  expect(await store.list()).toEqual({ status: "found", runs: [] });
+  const settled = run({ runId: "run-2", itemId: 2, settled: { status: "completed", at: "2026-01-02T00:00:00.000Z" } });
+  await writeFile(file, JSON.stringify({ version: 1, runs: [run(), { runId: "broken" }, settled, run({ runId: "twice" }), run({ runId: "twice", itemId: 3 })] }));
+  expect(await store.list()).toEqual({ status: "found", runs: [run(), settled] });
+  vi.spyOn(homeTrust, "readAveHomeInput").mockResolvedValue({ status: "untrusted", bytes: Buffer.alloc(0), reason: "changed" });
+  expect(await store.list()).toEqual({ status: "pending-review" });
+});

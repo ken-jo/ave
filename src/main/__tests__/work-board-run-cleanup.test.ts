@@ -220,6 +220,25 @@ it("refuses a run write that would pass the read limit, so deleting a row still 
   expect(await fill(second, `run-${second}-5`)).toBe("stored");
 }, 120_000);
 
+it("visits a run record whose row is gone, removing it only once settled", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const gone = await templateItem(store);
+  const other = await templateItem(store);
+  expect(await store.remove(gone)).toMatchObject({ status: "deleted" });
+  const pin = pinOf("template-1");
+  // A record its row never named, left by a process that stopped before its row write, after that row was deleted.
+  expect(await store.runs.put({ runId: "rowless", itemId: gone, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: over.at, stageRuns: [] })).toMatchObject({ status: "stored" });
+
+  await settled(store, other, "other-1");
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual(["rowless", "other-1"]);
+  expect(await store.runs.list()).toMatchObject({ status: "found", runs: [{ runId: "rowless" }, { runId: "other-1" }] });
+
+  expect(await store.runs.update("rowless", run => ({ ...run, settled: { status: "error", at: over.at } }))).toMatchObject({ status: "stored" });
+  await store.pruneSettledRuns();
+  expect(await runIds()).toEqual(["other-1"]);
+});
+
 it("leaves a row that names a template run to the engine at boot reconcile", async () => {
   const store = new WorkBoardStore(boardPath);
   const id = await templateItem(store);

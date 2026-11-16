@@ -6,7 +6,7 @@ import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
 import { requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { assertWorkflowRunRecord } from "../work-board/template-run-fields.js";
-import type { WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
+import type { WorkflowRunListResult, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 
 interface RunsFile { version: 1; runs: unknown[] }
 /** One read of the run file, for a caller that looks up several runs. */
@@ -68,6 +68,20 @@ export class WorkflowRunStore {
 
   async get(runId: string): Promise<WorkflowRunReadResult> {
     return (await this.view()).get(runId);
+  }
+
+  /** Every readable run, whether or not a row names it: what the engine adopts back at boot. Unreadable and repeated entries are left
+   * out, as get() refuses them; nothing is listed while the file awaits review. */
+  async list(): Promise<WorkflowRunListResult> {
+    const file = await this.read();
+    if (file === undefined) return { status: "pending-review" };
+    const runs: WorkflowRunRecord[] = [];
+    for (const entry of file.runs) {
+      if (!isRecord(entry) || typeof entry.runId !== "string") continue;
+      const { result } = lookup(file, entry.runId);
+      if (result.status === "found") runs.push(result.run);
+    }
+    return { status: "found", runs };
   }
 
   /** Store a new run, or replace one whose item, pin and start authority are unchanged. The same write removes the other runs `drop` accepts. */
