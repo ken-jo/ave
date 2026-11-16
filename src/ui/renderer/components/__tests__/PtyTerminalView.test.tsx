@@ -28,6 +28,7 @@ const render = (ui: ReactElement) => renderUnwrapped(ui, { wrapper: ({ children 
 interface FakeMarker { line: number; isDisposed: boolean; onDispose: () => { dispose(): void }; dispose(): void }
 interface FakeTerminal {
   select(text: string): void;
+  resizes: Array<[number, number]>;
   options: { theme?: unknown; scrollback?: number; cursorStyle?: string; macOptionIsMeta?: boolean; linkHandler?: { activate: LinkCallback; hover: LinkCallback; leave: LinkCallback; allowNonHttpProtocols?: boolean } };
   commandRow: string;
   oscHandlers: Map<number, (data: string) => boolean>;
@@ -48,7 +49,7 @@ interface FakeTerminal {
   rowText: Map<number, string>;
   scrolledTo: Array<number | "bottom">;
   scrollViewTo(line: number): void;
-  buffer: { active: { viewportY: number; type: string } };
+  buffer: { active: { viewportY: number; type: string }; normal: { length: number } };
   unicode: { activeVersion: string; providers: Map<string, { version: string; wcwidth(codepoint: number): number }> };
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
@@ -83,6 +84,8 @@ vi.mock("@xterm/xterm", () => ({
     clears = 0;
     selectAll() { this.selectedAll++; this.selection = "everything"; }
     clear() { this.clears++; }
+    resizes: Array<[number, number]> = [];
+    resize(cols: number, rows: number) { this.cols = cols; this.rows = rows; this.resizes.push([cols, rows]); }
     selectionListeners = new Set<() => void>();
     onSelectionChange(listener: () => void) { this.selectionListeners.add(listener); return { dispose: () => { this.selectionListeners.delete(listener); } }; }
     /** Select text as a drag does. */
@@ -100,7 +103,7 @@ vi.mock("@xterm/xterm", () => ({
       const text = this.rowText.get(line) ?? this.commandRow;
       return { length: this.cols, translateToString: () => text,
         getCell: (x: number) => ({ getChars: () => text[x] ?? "", getWidth: () => 1 }) };
-    } } };
+    } }, normal: { length: 0 } };
     registerMarker(offset = 0): FakeMarker {
       const marker = { line: this.cursorLine + offset, isDisposed: false, onDispose: () => ({ dispose() {} }), dispose() {} };
       this.markers.push({ offset, marker });
@@ -157,7 +160,11 @@ vi.mock("@xterm/xterm", () => ({
     paste(text: string) { this.pasted.push(text); }
   },
 }));
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+/** What the fit addon measures the host to hold; undefined while the host is not laid out. */
+const { fit } = vi.hoisted(() => ({ fit: { proposal: undefined as { cols: number; rows: number } | undefined } }));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { proposeDimensions() { return fit.proposal; } } }));
+// The columns come from the real terminal's cell width (terminal-fit.test.ts); here the host simply holds what the test says it does.
+vi.mock("../terminal-fit.js", () => ({ terminalColumnsFor: () => fit.proposal?.cols ?? null }));
 interface FakeSearch {
   calls: Array<{ direction: "next" | "previous"; query: string; options: { caseSensitive?: boolean; incremental?: boolean; decorations?: Record<string, string> } }>;
   found: boolean;
@@ -208,6 +215,7 @@ function offerKey(xterm: FakeTerminal, event: KeyboardEvent): boolean {
 }
 
 afterEach(() => {
+  fit.proposal = undefined;
   terminals.length = 0;
   webLinks.length = 0;
 });
@@ -960,6 +968,189 @@ describe("a terminal whose shell ended", () => {
   });
 });
 
+describe("the size a terminal and its shell are given", () => {
+  /** A laid-out host whose size the test changes, with the observer that reports it. */
+  function layout() {
+    const box = { width: 800, height: 600 };
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(() => box.width);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(() => box.height);
+    const observers = new Set<() => void>();
+    vi.stubGlobal("ResizeObserver", class {
+      private readonly notify: () => void;
+      constructor(callback: ResizeObserverCallback) { this.notify = () => callback([], this as unknown as ResizeObserver); }
+      observe() { observers.add(this.notify); }
+      unobserve() {}
+      disconnect() { observers.delete(this.notify); }
+    });
+    /** The host took a new size: what the fit addon now measures, and whether it has a box at all. */
+    const resizeTo = (cols: number, rows: number, shown = true): void => {
+      fit.proposal = { cols, rows };
+      box.width = shown ? cols * 8 : 0;
+      act(() => { for (const notify of [...observers]) notify(); });
+    };
+    return { resizeTo };
+  }
+  async function sizedTerminal(tabId: string) {
+    const host = layout();
+    fit.proposal = { cols: 100, rows: 30 };
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const session = terminalSessionFixture(tabId, "manual", "sized-shell");
+    terminal.spawn.mockResolvedValueOnce({ ok: true, tabId, replayed: false, session, blockMarkerToken: "view-token" });
+    const mount = () => render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" />);
+    const view = mount();
+    await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    const told = (): Array<[number, number]> => (terminal.resize.mock.calls as unknown as Array<[unknown, number, number]>).map(([, cols, rows]) => [cols, rows]);
+    // A buffer long enough that reflowing it at every width of a drag is work worth sparing; a test of a short one sets its own length.
+    fakeTerm().buffer.normal.length = 5_000;
+    return { ...host, terminal, session, xterm: fakeTerm(), view, mount, told };
+  }
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("starts the shell at the host's first size, without waiting", async () => {
+    const { terminal, xterm, told } = await sizedTerminal("terminal:41");
+    expect(xterm.resizes).toEqual([[100, 30]]);
+    expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ cols: 100, rows: 30 }));
+    expect(told()).toEqual([[100, 30]]);
+  });
+
+  it("gives a short buffer every size as it is painted: nothing waits when there is no reflow to spare", async () => {
+    const { resizeTo, xterm, told } = await sizedTerminal("terminal:48");
+    xterm.buffer.normal.length = 199;
+    vi.useFakeTimers();
+    resizeTo(80, 20);
+    vi.advanceTimersByTime(0);
+    expect(told()).toEqual([[100, 30], [80, 20]]);
+    resizeTo(60, 20);
+    vi.advanceTimersByTime(0);
+    expect(xterm.resizes).toEqual([[100, 30], [80, 20], [60, 20]]);
+    expect(told()).toEqual([[100, 30], [80, 20], [60, 20]]);
+  });
+
+  it("reflows a long buffer once for a drag: the widths a dragged divider passes are skipped", async () => {
+    const { resizeTo, xterm, told } = await sizedTerminal("terminal:42");
+    vi.useFakeTimers();
+    // A divider dragged toward the terminal, a frame at a time.
+    for (const cols of [92, 81, 70, 61, 53, 48, 45]) {
+      resizeTo(cols, 30);
+      vi.advanceTimersByTime(16);
+    }
+    expect(xterm.resizes).toEqual([[100, 30]]);
+    expect(told()).toEqual([[100, 30]]);
+    vi.advanceTimersByTime(100);
+    expect(xterm.resizes).toEqual([[100, 30], [45, 30]]);
+    expect(told()).toEqual([[100, 30], [45, 30]]);
+    // And back: again one reflow, at the width the drag ended on.
+    for (const cols of [164, 112, 95, 85, 77, 70, 67]) {
+      resizeTo(cols, 30);
+      vi.advanceTimersByTime(16);
+    }
+    vi.advanceTimersByTime(100);
+    expect(told()).toEqual([[100, 30], [45, 30], [67, 30]]);
+  });
+
+  it("follows a height change at once and a width change once it holds", async () => {
+    const { resizeTo, xterm, told } = await sizedTerminal("terminal:43");
+    vi.useFakeTimers();
+    resizeTo(80, 20);
+    // Nothing until the frame is painted; then rows, at the old width, and the columns after the wait.
+    expect(xterm.resizes).toEqual([[100, 30]]);
+    vi.advanceTimersByTime(0);
+    expect(xterm.resizes).toEqual([[100, 30], [100, 20]]);
+    vi.advanceTimersByTime(99);
+    expect(told()).toEqual([[100, 30], [100, 20]]);
+    vi.advanceTimersByTime(1);
+    expect(told()).toEqual([[100, 30], [100, 20], [80, 20]]);
+    // The same size again changes nothing and tells the shell nothing.
+    resizeTo(80, 20);
+    vi.advanceTimersByTime(200);
+    expect(told()).toHaveLength(3);
+  });
+
+  it("measures the host once per painted frame: a size the layout only had before the paint is never the terminal's", async () => {
+    const { resizeTo, xterm, told } = await sizedTerminal("terminal:49");
+    vi.useFakeTimers();
+    // One frame of a window crossing its narrow threshold: the host is reported at a few pixels while a panel is still docked beside it,
+    // the container re-renders before the paint, and the host is reported again at the size that is shown.
+    resizeTo(2, 3);
+    resizeTo(45, 20);
+    vi.advanceTimersByTime(0);
+    // Rows follow at once, and they are the painted frame's: the three rows of the unpainted layout were never taken.
+    expect(xterm.resizes).toEqual([[100, 30], [100, 20]]);
+    vi.advanceTimersByTime(100);
+    expect(xterm.resizes).toEqual([[100, 30], [100, 20], [45, 20]]);
+    expect(told()).toEqual([[100, 30], [100, 20], [45, 20]]);
+  });
+
+  it("gives a short buffer the painted frame's size alone, at once", async () => {
+    const { resizeTo, xterm, told } = await sizedTerminal("terminal:50");
+    xterm.buffer.normal.length = 12;
+    vi.useFakeTimers();
+    resizeTo(2, 3);
+    resizeTo(45, 20);
+    vi.advanceTimersByTime(0);
+    expect(xterm.resizes).toEqual([[100, 30], [45, 20]]);
+    expect(told()).toEqual([[100, 30], [45, 20]]);
+  });
+
+  it("keeps the terminal's size while its host has no box, and takes the host's size when it is shown again", async () => {
+    const { resizeTo, xterm, told } = await sizedTerminal("terminal:44");
+    vi.useFakeTimers();
+    resizeTo(2, 1, false);
+    vi.advanceTimersByTime(500);
+    expect(xterm.resizes).toEqual([[100, 30]]);
+    expect(told()).toEqual([[100, 30]]);
+    resizeTo(90, 30);
+    vi.advanceTimersByTime(100);
+    expect(told()).toEqual([[100, 30], [90, 30]]);
+  });
+
+  it("drops a width that was still waiting when the view goes away: the shell is not told a width the layout only passed through", async () => {
+    const { resizeTo, xterm, told, view } = await sizedTerminal("terminal:45");
+    vi.useFakeTimers();
+    // The frame before a tab switch or a move to another pane squeezes the host.
+    resizeTo(2, 30);
+    view.unmount();
+    vi.advanceTimersByTime(500);
+    expect(xterm.resizes).toEqual([[100, 30]]);
+    expect(told()).toEqual([[100, 30]]);
+  });
+
+  it("drops a width that was still waiting when the host is hidden, and measures again when it is shown", async () => {
+    const { resizeTo, xterm, told } = await sizedTerminal("terminal:47");
+    vi.useFakeTimers();
+    resizeTo(2, 30);
+    vi.advanceTimersByTime(40);
+    // Hidden before the width held.
+    resizeTo(2, 30, false);
+    vi.advanceTimersByTime(500);
+    expect(xterm.resizes).toEqual([[100, 30]]);
+    expect(told()).toEqual([[100, 30]]);
+    resizeTo(90, 30);
+    vi.advanceTimersByTime(100);
+    expect(told()).toEqual([[100, 30], [90, 30]]);
+  });
+
+  it("does not take the width its host has the instant its view mounts again", async () => {
+    const { resizeTo, xterm, told, view, mount } = await sizedTerminal("terminal:48");
+    vi.useFakeTimers();
+    view.unmount();
+    // The destination is mid-layout when the view comes back, and is its full width a few frames later.
+    fit.proposal = { cols: 7, rows: 30 };
+    act(() => { mount(); });
+    expect(xterm.resizes).toEqual([[100, 30]]);
+    vi.advanceTimersByTime(50);
+    resizeTo(100, 30);
+    vi.advanceTimersByTime(500);
+    expect(xterm.resizes).toEqual([[100, 30]]);
+    expect(told()).toEqual([[100, 30]]);
+  });
+});
+
 describe("terminal behaviour settings", () => {
   it("starts a terminal with the saved scrollback, cursor and Option key, and applies a change to the open terminal", async () => {
     const terminalSettings = { scrollback: 20_000, cursorStyle: "bar" as const, optionAsMeta: true, copyOnSelect: false, shell: "" };
@@ -1089,7 +1280,7 @@ describe("the terminal's own context menu", () => {
       restore: () => { (window as unknown as { ave?: unknown }).ave = previous; },
     };
   }
-  async function terminalWithMenu(tabId: string, attach?: (text: string) => true | "full" | "no-composer") {
+  async function terminalWithMenu(tabId: string, attach?: (text: string) => boolean | "no-composer") {
     const { api } = makeMockAveApi();
     const terminal = terminalApi();
     const writeText = vi.fn(async (_text: string) => undefined);

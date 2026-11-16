@@ -22,7 +22,7 @@ import { t } from "../../src/i18n/index.js";
 // Replace only terminal rendering because this DOM environment has no canvas.
 
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("./fake-xterm.js")).FakeXterm }));
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { proposeDimensions() { return undefined; } } }));
 
 afterEach(() => {
   clearActiveSurface();

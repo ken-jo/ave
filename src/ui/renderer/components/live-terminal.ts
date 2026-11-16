@@ -14,7 +14,9 @@ import { isDarwin } from "../api-client.js";
 import { matchesShortcut } from "../hooks/use-shortcuts.js";
 import type { TerminalBehaviorSettings } from "../../../shared/appearance-settings.js";
 import { terminalClipboardAction, terminalCommandJump, terminalPlatform } from "./terminal-keys.js";
+import { terminalColumnsFor } from "./terminal-fit.js";
 import { onTerminalUserInput } from "./terminal-user-input.js";
+import { TerminalResizeDebouncer } from "./terminal-resize-debouncer.js";
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { setTerminalAttended, setTerminalExited, setTerminalReplaying } from "../preview/terminal-attention.js";
 import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
@@ -80,6 +82,15 @@ export class LiveTerminal {
   readonly anchors: XtermBlockAnchors;
   private readonly fitAddon = new FitAddon();
   private readonly searchAddon = new SearchAddon();
+  /** The last size sent to a shell, and which one. */
+  private told: { session: string; cols: number; rows: number } | null = null;
+  private readonly resizer = new TerminalResizeDebouncer(
+    () => this.term.buffer.normal.length,
+    (cols, rows) => this.applySize(cols, rows),
+    (cols) => this.applySize(cols, this.term.rows),
+    (rows) => this.applySize(this.term.cols, rows),
+  );
+  private paintedFit: ReturnType<typeof setTimeout> | null = null;
   private copyOnSelect = false;
   private state: LiveTerminalState = { session: null, control: null, blockRevision: 0, ended: null, inputNotice: null, sticky: null };
   /** Where a restarted shell starts: the directory the ended one last reported. */
@@ -267,11 +278,13 @@ export class LiveTerminal {
       host.appendChild(this.term.element);
     }
     this.reportAttended();
-    this.fitToHost();
+    // A terminal with no shell yet takes the host's size now, for the shell to start at, whatever its buffer holds. One whose shell is running
+    // is sized as any later change is.
+    this.fitToHost(this.liveRef === null);
     // Resize the PTY when the pane changes size.
     this.observer = new ResizeObserver(() => {
       this.reportAttended();
-      this.fitToHost();
+      this.fitOncePainted();
     });
     this.observer.observe(host);
     this.chain = this.chain.then(() => this.sync());
@@ -280,6 +293,10 @@ export class LiveTerminal {
   /** Stop showing this terminal in `host`. The instance and its shell stay; the tab's close disposes them. */
   detach(host: HTMLElement): void {
     if (this.host !== host) return;
+    // A width still waiting was measured in a host this view is leaving. The terminal keeps the size it has, and is measured against
+    // whichever host shows it next.
+    this.resizer.cancel();
+    this.cancelPaintedFit();
     this.observer?.disconnect();
     this.observer = null;
     this.host = null;
@@ -303,6 +320,7 @@ export class LiveTerminal {
 
   /** Re-tint in place: the options take a new theme and font, so the shell, scrollback and cursor are kept. */
   applyStyle(style: LiveTerminalStyle): void {
+    const { fontFamily, fontSize, lineHeight, scrollback } = this.term.options;
     this.term.options.theme = style.terminalPalette;
     this.term.options.fontFamily = style.terminalFont.family;
     this.term.options.fontSize = style.terminalFont.size;
@@ -311,7 +329,12 @@ export class LiveTerminal {
     this.term.options.cursorStyle = style.behavior.cursorStyle;
     this.term.options.macOptionIsMeta = style.behavior.optionAsMeta;
     this.copyOnSelect = style.behavior.copyOnSelect;
-    if (this.host) this.fitToHost();
+    // Only a change of the cell's size, or of the scrollbar's presence, changes how many cells the host holds. A view that mounts again with the
+    // same style has nothing to refit, and must not take whatever width its host has that instant.
+    const options = this.term.options;
+    const cellsChanged = options.fontFamily !== fontFamily || options.fontSize !== fontSize || options.lineHeight !== lineHeight
+      || (options.scrollback === 0) !== (scrollback === 0);
+    if (this.host && cellsChanged) this.fitToHost(true);
   }
 
   /** Select the next or previous match of `query` in the screen and scrollback and mark the others; false when there is none. A typed query
@@ -442,6 +465,7 @@ export class LiveTerminal {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.cancelPaintedFit();
     this.observer?.disconnect();
     this.observer = null;
     if (this.enterTimer !== null) clearTimeout(this.enterTimer);
@@ -449,6 +473,7 @@ export class LiveTerminal {
     for (const dispose of this.disposers) dispose();
     setTerminalAttended(this.tabId, false);
     setTerminalReplaying(this.tabId, false);
+    this.resizer.dispose();
     this.anchors.dispose();
     this.term.dispose();
     this.host = null;
@@ -504,18 +529,61 @@ export class LiveTerminal {
     if (!this.disposed) this.setState({ blockRevision: this.state.blockRevision + 1 });
   }
 
-  private fit(): { cols: number; rows: number } {
-    try {
-      this.fitAddon.fit();
-    } catch {
-      /* host not laid out yet — ResizeObserver retries */
-    }
-    return { cols: this.term.cols, rows: this.term.rows };
+  /**
+   * Size the terminal to its host. A host with no box (a hidden pane, a side panel set aside) proposes nothing, so the terminal and its shell keep the
+   * size they had: nobody sees the hidden one, and a shell resized to it would redraw for nothing. `immediate` is for a size that is not on its way
+   * anywhere (the first layout, a font change); otherwise the columns wait for the width to hold (see TerminalResizeDebouncer).
+   */
+  /**
+   * Measure the host once the frame that changed it has been painted. A size is reported between layout and paint, and other observers
+   * reported in the same step still re-render before the paint (a container hearing it crossed its narrow threshold moves a panel out of
+   * the row), so the layout at the moment of the report can be one that is never shown. The task queued here runs after the paint, when the
+   * layout is the one on screen; however many reports a frame makes, it measures once.
+   */
+  private fitOncePainted(): void {
+    if (this.paintedFit !== null) return;
+    this.paintedFit = setTimeout(() => {
+      this.paintedFit = null;
+      this.fitToHost();
+    }, 0);
   }
 
-  private fitToHost(): void {
-    const dims = this.fit();
-    if (this.liveRef && !this.exited) void this.api.resize(this.liveRef, dims.cols, dims.rows);
+  private cancelPaintedFit(): void {
+    if (this.paintedFit === null) return;
+    clearTimeout(this.paintedFit);
+    this.paintedFit = null;
+  }
+
+  private fitToHost(immediate = false): void {
+    const proposed = this.proposal();
+    if (proposed) this.resizer.resize(proposed.cols, proposed.rows, immediate);
+    // The host lost its box while a width was waiting: that width was measured in a host that is no longer shown.
+    else if (!this.box) this.resizer.cancel();
+  }
+
+  /** The host's proposal, when it has a box and its cells have been measured. */
+  private proposal(): { cols: number; rows: number } | null {
+    if (!this.box) return null;
+    // Rows from the addon; columns from the width of one cell, which the addon's own division is not (see terminalColumnsFor).
+    const proposed = this.fitAddon.proposeDimensions();
+    if (!proposed || !Number.isFinite(proposed.rows)) return null;
+    const cols = terminalColumnsFor(this.term);
+    return cols === null ? null : { cols, rows: proposed.rows };
+  }
+
+  /** Give the terminal a size and tell the shell, when it is a new one. */
+  private applySize(cols: number, rows: number): void {
+    if (cols !== this.term.cols || rows !== this.term.rows) this.term.resize(cols, rows);
+    this.tellShell();
+  }
+
+  /** The shell's size is this terminal's. Sent when it differs from the last size this shell was told. */
+  private tellShell(): void {
+    if (!this.liveRef || this.exited) return;
+    const { cols, rows } = this.term;
+    if (this.told && this.told.session === this.liveRef.terminalSessionId && this.told.cols === cols && this.told.rows === rows) return;
+    this.told = { session: this.liveRef.terminalSessionId, cols, rows };
+    void this.api.resize(this.liveRef, cols, rows);
   }
 
   private renderEvent(event: TerminalDataEvent | TerminalExitEvent): void {
@@ -568,7 +636,8 @@ export class LiveTerminal {
   }
 
   private async start(view: LiveTerminalView): Promise<void> {
-    const { cols, rows } = this.fit();
+    this.resizer.flush();
+    const { cols, rows } = this.term;
     setTerminalReplaying(this.tabId, true);
     try {
       const restored = takeRestoredTerminal(this.tabId);
@@ -602,7 +671,7 @@ export class LiveTerminal {
 
   /** The running shell is shown somewhere else (side panel ↔ pane): main records the new purpose. This xterm already holds the output, so none is replayed. */
   private async reattach(view: LiveTerminalView): Promise<void> {
-    const { cols, rows } = this.fit();
+    const { cols, rows } = this.term;
     try {
       const result = await this.spawn({ tabId: this.tabId, lane: "manual", purpose: view.purpose, cols, rows, replay: false });
       if (this.disposed) return;
@@ -653,6 +722,9 @@ export class LiveTerminal {
     this.blockMarkerToken = result.blockMarkerToken;
     this.setState({ session: result.session, ended: null, inputNotice: this.heldTooMuch ? "too-large" : null });
     this.heldTooMuch = false;
+    // The shell's size is this terminal's: a size the view took while the shell was starting was not sent, and a shell that was already running has
+    // the size of its last view.
+    this.tellShell();
     // The replay goes in before anything that can let a live chunk of this incarnation be written ahead of it.
     const waiting = this.pending;
     this.dropPending();

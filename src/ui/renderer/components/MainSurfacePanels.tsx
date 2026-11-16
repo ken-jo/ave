@@ -206,7 +206,7 @@ function SurfaceWorkPanel({
   );
   return createPortal(
     <DockedPanelColumn ref={columnRef} testId="pane-work-panel-motion" motion={motion} shouldOpen={open}
-      width={columns.panelWidth} mode={columns.panelLayout.mode} resizing={resizing}>
+      width={columns.panelWidth} mode={columns.panelLayout.mode} resizing={resizing} settledReserve>
       <WorkPanelCard testId="pane-work-panel" className="relative flex shrink-0" width={columns.panelWidth}
         minWidth={columns.panelLayout.min} maxWidth={columns.panelLayout.max} onWidthChange={onWidthChange} onWidthCommit={onWidthCommit}
         resizeElementRef={columnRef} splitterTestId="pane-work-panel-width-splitter">

@@ -122,6 +122,9 @@ SOFTWARE.
 - **Ave files that contain ported code:**
   - `src/tools/safe-env.ts` (`buildUserTerminalEnv`, from
     `src/vs/base/common/processes.ts`)
+  - `src/ui/renderer/components/terminal-resize-debouncer.ts`
+    (`TerminalResizeDebouncer`, from
+    `src/vs/workbench/contrib/terminal/browser/terminalResizeDebouncer.ts`)
 - **License:** MIT
 - **Copyright:** Copyright (c) 2015 - present Microsoft Corporation
 - **Repository:** https://github.com/microsoft/vscode
@@ -152,6 +155,40 @@ SOFTWARE.
 ```
 
 ---
+
+## xterm.js fit addon (`@xterm/addon-fit`)
+
+- **What is included:** the host-measuring part of the addon's
+  `proposeDimensions`, ported (in addition to the bundled package) and
+  changed to divide by the width of one cell.
+- **Ave files that contain ported code:**
+  - `src/ui/renderer/components/terminal-fit.ts` (`terminalColumnsFor`, from
+    `addons/addon-fit/src/FitAddon.ts`, package version 0.11.0)
+- **License:** MIT
+- **Repository:** https://github.com/xtermjs/xterm.js
+- **Full license text:** reproduced below.
+
+```text
+Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
 
 ## SheetJS Community Edition (`xlsx`)
 

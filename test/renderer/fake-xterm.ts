@@ -16,6 +16,7 @@ export class FakeXterm {
   parser = { registerOscHandler: () => disposable };
   _core = { coreService: { onUserInput: () => disposable } };
   unicode = { activeVersion: "6", register() {} };
+  buffer = { normal: { length: 0 } };
   constructor(options: Record<string, unknown> = {}) { this.options = { ...options }; }
   loadAddon() {}
   open(host: HTMLElement) {
@@ -24,6 +25,7 @@ export class FakeXterm {
   }
   onData() { return disposable; }
   onScroll() { return disposable; }
+  resize(cols: number, rows: number) { this.cols = cols; this.rows = rows; }
   onSelectionChange() { return disposable; }
   write(text: string) { fakeXtermWrites.push(text); }
   focus() {}

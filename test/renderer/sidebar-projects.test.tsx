@@ -13,7 +13,7 @@ import { isDarwin } from "../../src/ui/renderer/api-client.js";
 import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
 
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("./fake-xterm.js")).FakeXterm }));
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { proposeDimensions() { return undefined; } } }));
 
 afterEach(() => {
   clearActiveSurface();

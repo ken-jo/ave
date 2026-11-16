@@ -10,7 +10,7 @@ import { SurfacePane, webPanelTitle } from "../MainSurfacePanels.js";
 import { directoryName } from "../TerminalPaneHeader.js";
 import { chatColumnsLayout } from "../../preview/chat-columns-layout.js";
 import { DOCK_ENTER_WIDTH } from "../../../../shared/shell-geometry.js";
-import { SIDE_PANEL_MIN_RESERVE } from "../../../../shared/side-panel.js";
+import { SIDE_PANEL_DEFAULT_WIDTH, SIDE_PANEL_MIN_RESERVE } from "../../../../shared/side-panel.js";
 import type { SideChatRuntime } from "../SideChatView.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../../shared/processing-display-level.js";
 
@@ -38,7 +38,7 @@ const render = (ui: ReactElement) => renderUnwrapped(ui, {
 });
 
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../../../../test/renderer/fake-xterm.js")).FakeXterm }));
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { proposeDimensions() { return undefined; } } }));
 
 function terminalApi() {
   return {
@@ -228,6 +228,46 @@ describe("SurfacePane", () => {
     expect(chatColumnsLayout(DOCK_ENTER_WIDTH - 1, false, true, SIDE_PANEL_MIN_RESERVE, true).panelLayout.mode).toBe("overlay");
     expect(await modeAt(DOCK_ENTER_WIDTH)).toBe("docked");
     expect(await modeAt(DOCK_ENTER_WIDTH - 1)).toBe("overlay");
+  });
+
+  it("gives the terminal its final width in one step: the docked panel's room is reserved whole and the panel moves inside it", async () => {
+    const reserveAt = async (width: number, chatOpen: boolean) => {
+      vi.stubGlobal("ResizeObserver", class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(element: Element) {
+          this.callback([{ target: element, contentRect: { width }, contentBoxSize: [{ inlineSize: width }] } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        unobserve() {}
+        disconnect() {}
+      });
+      const { api } = makeMockAveApi();
+      const pane = (open: boolean) => (
+        <TooltipProvider>
+          <SurfacePane chatOpen={open} onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal: terminalApi() } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
+        </TooltipProvider>
+      );
+      // Opened first, so the panel is mounted; then in the state asked for.
+      const view = render(pane(true));
+      const column = await screen.findByTestId("pane-work-panel-motion");
+      view.rerender(pane(chatOpen));
+      const reserve = screen.getByTestId("pane-work-panel-motion-reserve");
+      const found = {
+        reserved: reserve.style.width,
+        // The animated width is the panel's own; it is out of the row, so it pushes nothing while it changes.
+        panelInRow: !column.className.split(" ").includes("absolute"),
+        panelInsideReserve: reserve.contains(column),
+        order: reserve.style.order,
+      };
+      view.unmount();
+      vi.unstubAllGlobals();
+      return found;
+    };
+    const docked = chatColumnsLayout(DOCK_ENTER_WIDTH, false, true, SIDE_PANEL_DEFAULT_WIDTH, false).panelWidth;
+    expect(await reserveAt(DOCK_ENTER_WIDTH, true)).toEqual({ reserved: `${docked}px`, panelInRow: false, panelInsideReserve: true, order: "2" });
+    // Closing gives the room back at once, while the panel is still shrinking over the terminal.
+    expect(await reserveAt(DOCK_ENTER_WIDTH, false)).toEqual({ reserved: "0px", panelInRow: false, panelInsideReserve: true, order: "2" });
+    // A panel that floats takes no room.
+    expect(await reserveAt(DOCK_ENTER_WIDTH - 1, true)).toEqual({ reserved: "0px", panelInRow: false, panelInsideReserve: true, order: "2" });
   });
 
   it("repeats the agent's control strip at the top of a work panel that floats over the terminal, and not beside a docked one", async () => {

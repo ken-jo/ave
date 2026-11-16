@@ -2513,7 +2513,7 @@ export function App() {
               <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
-                  className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-[var(--motion-normal)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
+                  className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background ${
                     !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-content-lead)" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
