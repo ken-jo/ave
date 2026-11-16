@@ -142,22 +142,78 @@ it("keeps every run when the board file was emptied, since no row id was issued 
   expect(await runIds()).toEqual(["run-1", "run-2"]);
 });
 
-it("removes the run record when the row write after it fails", async () => {
+/** Records each run the prune removes, with whether its record was settled at that point. */
+function watchRemovals(store: WorkBoardStore): { runId: string; settled: boolean }[] {
+  const removed: { runId: string; settled: boolean }[] = [];
+  const prune = store.runs.prune.bind(store.runs);
+  vi.spyOn(store.runs, "prune").mockImplementation(retain => prune(run => {
+    const next = retain(run);
+    if (next === null) removed.push({ runId: run.runId, settled: run.settled !== undefined });
+    return next;
+  }));
+  return removed;
+}
+/** The board write fails with EIO, after the real write when `landed`. */
+function failBoardWrite(landed: boolean): void {
+  const write = storage.writeFileAtomicAtPath;
+  vi.spyOn(storage, "writeFileAtomicAtPath").mockImplementation(async (path, data) => {
+    if (path !== boardPath) return write(path, data);
+    if (landed) await write(path, data);
+    throw Object.assign(new Error("EIO: i/o error, write"), { code: "EIO" });
+  });
+}
+
+it("settles and then removes the run record when the row write before the replacement fails", async () => {
   const store = new WorkBoardStore(boardPath);
   const id = await templateItem(store);
   await settled(store, id, "run-1");
-  const write = storage.writeFileAtomicAtPath;
-  vi.spyOn(storage, "writeFileAtomicAtPath").mockImplementation(async (path, data) => {
-    if (path === boardPath) throw Object.assign(new Error("EIO: i/o error, write"), { code: "EIO" });
-    return write(path, data);
-  });
+  const removed = watchRemovals(store);
+  failBoardWrite(false);
   await expect(store.beginRun(id, "run-orphan", "2026-01-01T00:00:00.000Z", start())).rejects.toMatchObject({ code: "EIO" });
   vi.restoreAllMocks();
 
+  expect(removed).toEqual([{ runId: "run-orphan", settled: true }]);
   expect(await runIds()).toEqual(["run-1"]);
   expect(await new WorkBoardStore(boardPath).getRun(id)).toMatchObject({ status: "found", run: { runId: "run-1" } });
   await begin(store, id, "run-retry");
   expect(await runIds()).toEqual(["run-1", "run-retry"]);
+});
+
+it("keeps the run record when the row write fails after the board was replaced", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  const removed = watchRemovals(store);
+  failBoardWrite(true);
+  await expect(store.beginRun(id, "run-landed", "2026-01-01T00:00:00.000Z", start())).rejects.toMatchObject({ code: "EIO" });
+  vi.restoreAllMocks();
+
+  expect(removed).toEqual([]);
+  const reopened = new WorkBoardStore(boardPath);
+  expect(await reopened.getRun(id)).toMatchObject({ status: "found", run: { runId: "run-landed" } });
+  expect(await reopened.runs.list()).toMatchObject({ status: "found", runs: [{ runId: "run-landed" }] });
+  expect((await reopened.runs.get("run-landed") as { run: object }).run).not.toHaveProperty("settled");
+});
+
+it("keeps the run record unsettled when the board cannot be read back after a failed row write", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  const write = storage.writeFileAtomicAtPath;
+  const read = homeTrust.readAveHomeInput;
+  let failed = false;
+  vi.spyOn(storage, "writeFileAtomicAtPath").mockImplementation(async (path, data) => {
+    if (path !== boardPath) return write(path, data);
+    failed = true;
+    throw Object.assign(new Error("EIO: i/o error, write"), { code: "EIO" });
+  });
+  vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path => {
+    if (failed && path === boardPath) throw Object.assign(new Error("EIO: i/o error, read"), { code: "EIO" });
+    return read(path);
+  });
+  await expect(store.beginRun(id, "run-unknown", "2026-01-01T00:00:00.000Z", start())).rejects.toMatchObject({ message: "EIO: i/o error, write" });
+  vi.restoreAllMocks();
+
+  expect(await store.runs.list()).toMatchObject({ status: "found", runs: [{ runId: "run-unknown" }] });
+  expect((await store.runs.get("run-unknown") as { run: object }).run).not.toHaveProperty("settled");
 });
 
 it("keeps a run record whose row write never happened until it is settled", async () => {

@@ -30,6 +30,7 @@ import { workBoardMoveRefusal } from "../shared/work-board-lifecycle.js";
 import { ChangeSignal } from "../lib/change-signal.js";
 import { WorkflowRunStore, type WorkflowRunRetention, type WorkflowRunView } from "./workflow-run-store.js";
 import { stripBoardRunFields } from "../work-board/template-run-fields.js";
+import { readAveHomeInput } from "../shared/ave-home-trust.js";
 import { isTemplateId, requireTemplate } from "../work-board/template-graph.js";
 import type { TemplateRunStart, WorkflowRunReadResult, WorkflowRunRecord, WorkflowRunWriteResult } from "../shared/workflow-template-types.js";
 
@@ -290,40 +291,51 @@ function emptyBoard(): BoardFile {
 
 // Back up corrupt JSON and seed empty; filter invalid rows and repair nextId above every surviving ID.
 function readFileOrEmpty(filePath: string): Promise<BoardFile> {
-  return readJsonFileOrEmpty(filePath, emptyBoard, (parsed) => {
-    const file = parsed as BoardFile;
-    if (!Array.isArray(file.items)) {
-      return emptyBoard();
-    }
-    // Run state lives in the run file. A row carrying run fields was edited by hand: they are dropped here, so nothing reads or shows them.
-    const valid = file.items.filter(isValidRecord).map(stripBoardRunFields).map((item) => {
-      if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
-      // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
-      log.warn("[work-board-store] dropped an unreadable plan approval on item %d", item.id);
-      const repaired = { ...item };
-      delete repaired.planApproval;
-      return repaired;
-    });
-    // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
-    // on every load and converges; nothing marks it done.
-    const { items, changed } = normalizeBoardDueDates(valid);
-    if (changed > 0) {
-      log.info(
-        { event: "work-board-due-at-localized", changed, total: items.length },
-        "[work-board-store] re-anchored due dates stamped as midnight in another zone",
-      );
-    }
-    const maxId = items.reduce((m, it) => Math.max(m, it.id), 0);
-    const nextId =
-      typeof file.nextId === "number" && Number.isInteger(file.nextId) && file.nextId > maxId
-        ? file.nextId
-        : maxId + 1;
-    return {
-      version: BOARD_VERSION,
-      nextId,
-      items,
-    };
+  return readJsonFileOrEmpty(filePath, emptyBoard, hydrateBoard);
+}
+
+// The board as it is on disk, or undefined when the file is absent, pending review or does not parse; never quarantines. Read errors throw.
+async function readBoardOnDisk(filePath: string): Promise<BoardFile | undefined> {
+  const input = await readAveHomeInput(filePath);
+  if (input.status !== "trusted") return undefined;
+  let parsed: unknown;
+  try { parsed = JSON.parse(input.bytes.toString("utf-8")); } catch { return undefined; }
+  return hydrateBoard(parsed);
+}
+
+function hydrateBoard(parsed: unknown): BoardFile {
+  const file = parsed as BoardFile;
+  if (!Array.isArray(file.items)) {
+    return emptyBoard();
+  }
+  // Run state lives in the run file. A row carrying run fields was edited by hand: they are dropped here, so nothing reads or shows them.
+  const valid = file.items.filter(isValidRecord).map(stripBoardRunFields).map((item) => {
+    if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
+    // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
+    log.warn("[work-board-store] dropped an unreadable plan approval on item %d", item.id);
+    const repaired = { ...item };
+    delete repaired.planApproval;
+    return repaired;
   });
+  // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
+  // on every load and converges; nothing marks it done.
+  const { items, changed } = normalizeBoardDueDates(valid);
+  if (changed > 0) {
+    log.info(
+      { event: "work-board-due-at-localized", changed, total: items.length },
+      "[work-board-store] re-anchored due dates stamped as midnight in another zone",
+    );
+  }
+  const maxId = items.reduce((m, it) => Math.max(m, it.id), 0);
+  const nextId =
+    typeof file.nextId === "number" && Number.isInteger(file.nextId) && file.nextId > maxId
+      ? file.nextId
+      : maxId + 1;
+  return {
+    version: BOARD_VERSION,
+    nextId,
+    items,
+  };
 }
 
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
@@ -444,6 +456,22 @@ export class WorkBoardStore {
       if (row.runId === run.runId) return run;
       return Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId) ? runSummary(run) : null;
     };
+  }
+
+  // A failed row write may still have replaced the board (a failed directory sync after the rename). The record goes only once the
+  // board on disk shows the row naming another run; while the row names it, or the board cannot be read, the record stays as it is.
+  private async settleUnstartedRun(id: number, runId: string): Promise<void> {
+    const onDisk = await readBoardOnDisk(this.filePath);
+    const row = onDisk?.items.find((item) => item.id === id);
+    if (!onDisk || !row) return;
+    if (row.runId === runId) {
+      this.cache = onDisk;
+      this.boardChanged.emit();
+      return;
+    }
+    const at = new Date(this.now()).toISOString();
+    const settledRun = await this.runs.update(runId, (run) => run.settled === undefined ? { ...run, settled: { status: "error", at } } : null);
+    if (settledRun.status === "stored") await this.pruneRuns(this.retention(onDisk));
   }
 
   // Cleanup never fails the board write it follows: whatever it leaves behind goes with the next prune.
@@ -833,8 +861,7 @@ export class WorkBoardStore {
       board.items[idx] = updated;
       try { await this.commit(board); }
       catch (error) {
-        // The row never came to name the run just stored and nothing started it, so that record goes with the same prune.
-        if (pin) await this.pruneRuns((run) => run.runId === runId ? null : retain(run));
+        if (pin) await this.settleUnstartedRun(id, runId).catch((cleanup: Error) => log.warn("[work-board-store] a failed run start was not settled: %s", cleanup.message));
         throw error;
       }
       // The run this row named until now is in its history only from this write on.
