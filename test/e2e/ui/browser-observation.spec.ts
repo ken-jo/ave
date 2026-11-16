@@ -5,6 +5,7 @@ import { writeFileSync } from "node:fs";
 import { TEST_IDS } from "../../../src/shared/test-ids.js";
 import type { AgentObservationEvent } from "../../../src/shared/agent-observation.js";
 import { buildLlmSettings, launchSeededElectron, setWindowSize, teardownSeededElectron } from "./seeded-electron.js";
+import { readWindowGeometry } from "./window-geometry.js";
 
 interface BrowserGuestGeometry {
   at: number;
@@ -144,8 +145,9 @@ for (const type of ['touchstart', 'touchend', 'touchcancel', 'click', 'mousedown
     writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: {
       reviewer: { interactive: { autoApprove: "off" } } } }));
     await setWindowSize(ctx.app, 1280, 860);
+    const nativeGeometry = await readWindowGeometry(ctx.app, page);
     await expect.poll(() => page.evaluate(() => ({ width: innerWidth, height: innerHeight })))
-      .toEqual({ width: 1280, height: 860 });
+      .toEqual({ width: nativeGeometry.ui.width, height: nativeGeometry.ui.height });
     await expect.poll(() => observationApp.evaluate(({ BaseWindow }) => {
       const window = BaseWindow.getAllWindows().find((candidate) => !candidate.isDestroyed());
       if (!window) throw new Error("Browser fixture window unavailable");

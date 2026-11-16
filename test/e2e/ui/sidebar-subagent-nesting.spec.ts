@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildLlmSettings, builtMainExists, launchSeededElectron, setWindowSize, teardownSeededElectron } from "./seeded-electron.js";
+import { readWindowGeometry } from "./window-geometry.js";
 
 // Seed the owning stores and read through real IPC; the renderer gets no replacement API.
 test("nests persisted sub-agent conversations at native window sizes and keeps orphans reachable", async ({ browserName: _browserName }, testInfo) => {
@@ -111,7 +112,9 @@ test("nests persisted sub-agent conversations at native window sizes and keeps o
         const controls = { glyphVisibility: getComputedStyle(glyph).visibility, glyphWidth: glyphRect.width, glyphRight: glyphRect.right, toggleX: toggleRect.x, toggleWidth: toggleRect.width };
         return { controls, viewport: { width: innerWidth, height: innerHeight }, parent: read(parentId), child: read(childId), orphan: read(orphanId), crossProject: read(crossProjectId) };
       }, { parentId, childId, orphanId, crossProjectId });
-      expect(layout.viewport.width).toBe(width);
+      const native = await readWindowGeometry(ctx.app, page);
+      expect(native.content.width).toBe(width);
+      expect(layout.viewport).toEqual({ width: native.ui.width, height: native.ui.height });
       expect(layout.controls.glyphVisibility).toBe("visible");
       expect(layout.controls.glyphWidth).toBeGreaterThan(0);
       expect(layout.controls.toggleWidth).toBeGreaterThan(0);

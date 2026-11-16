@@ -1,4 +1,6 @@
 import { test, expect } from "./fixtures";
+import { setWindowSize } from "./seeded-electron.js";
+import { MAIN_WINDOW_MIN_HEIGHT } from "../../../src/shared/shell-geometry.js";
 
 // Native command-menu geometry is outside the renderer; assert that fixed action controls stay visible.
 
@@ -8,22 +10,9 @@ const TRAILING = '[data-testid="iab-trailing"]';
 const STATUS_ROW = '[data-testid="iab-status-row"]';
 const PERMISSION = '[data-testid="iab-status-permission"]';
 
-async function resizeWindow(
-  app: { evaluate: (fn: (electron: typeof import("electron"), arg: { w: number; h: number }) => unknown, arg: { w: number; h: number }) => Promise<unknown> },
-  width: number,
-  height: number,
-) {
-  await app.evaluate(({ BrowserWindow }, { w, h }) => {
-    const wins = BrowserWindow.getAllWindows();
-    const main = wins.find((win) => !win.isDestroyed() && win.isVisible()) ?? wins[0];
-    if (!main) return;
-    main.setBounds({ x: 0, y: 0, width: w, height: h });
-  }, { w: width, h: height });
-}
-
 test("command button stays inside the action bar at narrow width", async ({ app, mainWindow }) => {
-  await resizeWindow(app as never, 460, 520);
-  await mainWindow.waitForTimeout(250);
+  await setWindowSize(app, 460, MAIN_WINDOW_MIN_HEIGHT, mainWindow);
+  await expect(mainWindow.getByTestId("app-shell")).toHaveAttribute("data-sidebar-state", "rail");
   await mainWindow.evaluate(() => {
     window.dispatchEvent(new CustomEvent("ave:permissions:mode-changed", {
       detail: { mode: "auto" },

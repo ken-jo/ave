@@ -68,7 +68,11 @@ export async function captureNativeWindow(app: ElectronApplication, page: Page, 
   assert(windowId, "Native capture requires an exact native window id");
   assert.equal(before.ownerPid, app.process().pid);
   const path = testInfo.outputPath(`${name}.png`);
-  const result = JSON.parse((await run(helper, [windowId, String(before.ownerPid), String(before.bounds.width), String(before.bounds.height), path])).stdout);
+  const captured = await run(helper, [windowId, String(before.ownerPid), String(before.bounds.width), String(before.bounds.height), path]).catch((error: unknown) => {
+    const detail = error instanceof Error && "stdout" in error ? String(error.stdout).trim() : "";
+    throw new Error(`Native window capture failed${detail ? `: ${detail}` : ""}`, { cause: error });
+  });
+  const result = JSON.parse(captured.stdout);
   const after = await inspect();
   const statePath = testInfo.outputPath(`${name}-native-state.json`);
   await fs.writeFile(statePath, `${JSON.stringify({ sourceRevision, before, ui, result, after }, null, 2)}\n`);
