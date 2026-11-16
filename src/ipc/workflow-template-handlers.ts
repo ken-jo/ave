@@ -87,7 +87,7 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     deps.auditLogger.log({ timestamp: result.confirmedAt, sessionId: `work-board:${id}`, type: "approval", output: JSON.stringify({ event: "template_confirmed", templateId: id, version: result.version, graphHash: result.graphHash, origin: "local-desktop" }) });
     return result;
   });
-  handle(WORK_BOARD.templateArchive, async (store, _event, id, ...args) => { requireTemplate(args.length === 0); const record = await load(id); await store.archive(record.template.id); return null; });
+  handle(WORK_BOARD.templateArchive, async (store, _event, id, ...args) => { requireTemplate(args.length === 0); const record = await load(id); await store.archive(record.template.id); await deps.workBoardStore?.removeTemplateRuns(record.template.id); return null; });
 }
 class TemplateGestureError extends Error { readonly code = "user-gesture-required"; }
 class TemplateFrameError extends Error { readonly code = "unauthorized-frame"; }

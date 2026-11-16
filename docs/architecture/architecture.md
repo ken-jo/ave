@@ -3673,7 +3673,11 @@ with its own owner rule:
   read limit, every board row stays listed, each template row that names a run
   is marked pending review on that read, and no template run is started or
   changed; an entry that does not parse is left in place and marks only its own
-  row. Marketplace MCP package files under `mcp/<name>/server/` are
+  row. A run record is removed once this process is not executing it and no
+  row lists it as its current run or in its run history: when its row is
+  deleted, and on every later template-run start. Archiving a template removes its settled runs.
+  Entries that do not parse are never removed, and nothing is removed by age.
+  Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry
   in `mcp/<name>/` besides `server` and the host's `sandbox` refuses the launch.

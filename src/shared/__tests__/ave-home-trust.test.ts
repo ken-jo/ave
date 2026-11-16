@@ -956,4 +956,30 @@ describe("workflow run file", () => {
     writeFileSync(path, trusted);
     expect(await marks()).toEqual([[started, undefined], [unstarted, undefined], [ordinary, undefined]]);
   });
+
+  it("stays under the size limit when rows with large settled runs are deleted one after another", async () => {
+    const dir = home(); expect(boot(dir).pending).toBe(false);
+    const { path } = await runStore(dir);
+    const { WorkBoardStore } = await import("../../main/work-board-store.js");
+    const board = new WorkBoardStore(join(dir, "work-board", "board.json"));
+    const stageRuns = Array.from({ length: 12 }, (_, index) => ({ stageId: `stage-${index}`, attempt: 1, status: "passed" as const, output: "x".repeat(48_000) }));
+    const cycle = async (runId: string): Promise<number> => {
+      const made = await board.create({ title: "Work", templateId: pin.templateId });
+      if (made.status !== "created") throw new Error("Missing item");
+      expect(await board.beginRun(made.itemId, runId, run.startedAt, { ...pin, source: run.runStartedBy, stageRuns: [] })).toMatchObject({ status: "updated" });
+      expect(await board.updateRun(made.itemId, runId, value => ({ ...value, stageRuns }))).toMatchObject({ status: "stored" });
+      expect(await board.setRunResult(made.itemId, { runStatus: "completed" })).toMatchObject({ status: "updated" });
+      return made.itemId;
+    };
+    const standing = await cycle("standing");
+    let largest = 0;
+    // Without cleanup the file passes 16 MiB after about 30 runs of this size and every later start is refused.
+    for (let round = 0; round < 34; round++) {
+      expect(await board.remove(await cycle(`run-${round}`))).toMatchObject({ status: "deleted" });
+      largest = Math.max(largest, readFileSync(path).length);
+    }
+    expect(largest).toBeLessThan(2 * 1024 * 1024);
+    expect(JSON.parse(readFileSync(path, "utf8")).runs.map((entry: { runId: string }) => entry.runId)).toEqual(["standing"]);
+    expect(await board.getRun(standing)).toMatchObject({ status: "found", run: { runId: "standing" } });
+  }, 240_000);
 });

@@ -123,6 +123,8 @@ const VALID_RUN_STATUSES: readonly WorkItemRunStatus[] = [
   "cancelled",
 ];
 
+const ACTIVE_RUN_STATUSES: ReadonlySet<WorkItemRunStatus> = new Set(["planning", "awaiting_approval", "executing"]);
+
 const UPDATABLE_FIELDS: ReadonlySet<string> = new Set<keyof WorkItemUpdateInput>(["title", "detail", "due_at", "priority"]);
 
 const PLAN_APPROVAL_STATUSES: readonly WorkPlanApprovalStatus[] = ["pending", "approved", "rejected", "changes_requested"];
@@ -402,6 +404,8 @@ export class WorkBoardStore {
   private readonly now: () => number;
   /** Template-run state, keyed by runId, in the covered run file beside `board.json`. */
   readonly runs: WorkflowRunStore;
+  // Template runs this process started and has not seen end. Empty after a restart, when no run is still executing.
+  private readonly liveRuns = new Set<string>();
 
   /**
    * @param filePath absolute path to `board.json`. Defaults to the
@@ -420,7 +424,49 @@ export class WorkBoardStore {
   private async commit(board: BoardFile): Promise<void> {
     await writeFileAtomic(this.filePath, board);
     this.cache = board;
+    for (const item of board.items) {
+      if (item.runId !== undefined && item.runStatus !== undefined && TERMINAL_RUN_STATUSES.has(item.runStatus)) this.liveRuns.delete(item.runId);
+    }
     this.boardChanged.emit();
+  }
+
+  // A stored run may go once nothing can use it: this process is not executing it and the board no longer lists it. A row lists its
+  // current run and its run history. A row id this board never issued (an emptied or replaced board file) proves nothing, so that run stays.
+  private unlisted(board: BoardFile): (run: WorkflowRunRecord) => boolean {
+    const rows = new Map(board.items.map((item) => [item.id, item]));
+    const issued = board.nextId;
+    return (run) => {
+      if (this.liveRuns.has(run.runId)) return false;
+      const row = rows.get(run.itemId);
+      if (!row) return run.itemId < issued;
+      return row.runId !== run.runId && !(Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId));
+    };
+  }
+
+  // Cleanup never fails the board write it follows: whatever it leaves behind goes with the next prune.
+  private async pruneRuns(drop: (run: WorkflowRunRecord) => boolean): Promise<void> {
+    try { await this.runs.prune(drop); }
+    catch (error) { log.warn("[work-board-store] run records were not pruned: %s", (error as Error).message); }
+  }
+
+  /** For the engine: a run it started has ended while no row showed it (the row was deleted or names a newer run). Its record goes now. */
+  async releaseRun(runId: string): Promise<void> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      this.liveRuns.delete(runId);
+      await this.pruneRuns(this.unlisted(await readFileOrEmpty(this.filePath)));
+    });
+  }
+
+  /** A removed template takes its settled runs with it. A run still executing, or one its row still waits on, stays. */
+  async removeTemplateRuns(templateId: string): Promise<void> {
+    await this.ensureLoaded();
+    return withInProcessFileQueue(this.filePath, async () => {
+      const board = await readFileOrEmpty(this.filePath);
+      const unlisted = this.unlisted(board);
+      const open = new Set(board.items.filter((item) => item.runStatus !== undefined && ACTIVE_RUN_STATUSES.has(item.runStatus)).map((item) => item.runId));
+      await this.pruneRuns((run) => unlisted(run) || (run.pin.templateId === templateId && !this.liveRuns.has(run.runId) && !open.has(run.runId)));
+    });
   }
 
   async load(): Promise<void> {
@@ -763,11 +809,13 @@ export class WorkBoardStore {
         this.cache = board;
         return { status: "invalid" as const, itemId: id, reason: "work-item-completed" };
       }
+      // Judged against the board as it is on disk until the row write below lands.
+      const unlisted = this.unlisted(board);
       if (pin) {
         const stored = await this.runs.put(structuredClone({
           runId, itemId: id, pin: { templateId: pin.templateId, version: pin.version, graphHash: pin.graphHash },
           runStartedBy: pin.source, startedAt, stageRuns: pin.stageRuns,
-        }));
+        }), unlisted);
         if (stored.status !== "stored") {
           this.cache = board;
           return { status: "invalid" as const, itemId: id, reason: stored.status === "pending-review" ? "template-runs-pending-review" : "invalid-template-run" };
@@ -792,6 +840,7 @@ export class WorkBoardStore {
       delete updated.planApproval;
       board.items[idx] = updated;
       await this.commit(board);
+      if (pin) this.liveRuns.add(runId);
       await appendActivity(this.activity, {
         kind: "run-planned",
         itemId: id,
@@ -1016,6 +1065,7 @@ export class WorkBoardStore {
       }
       board.items = board.items.filter((i) => i.id !== id);
       await this.commit(board);
+      if (item.templateId !== undefined) await this.pruneRuns(this.unlisted(board));
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,

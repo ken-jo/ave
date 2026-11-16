@@ -23,6 +23,21 @@ function lookup(file: RunsFile, runId: string): { result: WorkflowRunReadResult;
   return { result: { status: "found", run: structuredClone(entry) }, index };
 }
 
+// Entries a write may remove: readable ones `drop` accepts. An unreadable or repeated entry is never offered and always stays.
+function dropRuns(file: RunsFile, drop: (run: WorkflowRunRecord) => boolean): boolean {
+  const count = new Map<unknown, number>();
+  for (const entry of file.runs) if (isRecord(entry)) count.set(entry.runId, (count.get(entry.runId) ?? 0) + 1);
+  const kept = file.runs.filter(entry => {
+    if (!isRecord(entry) || count.get(entry.runId) !== 1) return true;
+    try { assertWorkflowRunRecord(entry); }
+    catch (error) { if (error instanceof WorkflowTemplateError) return true; throw error; }
+    return !drop(entry);
+  });
+  const changed = kept.length !== file.runs.length;
+  file.runs = kept;
+  return changed;
+}
+
 // Which item a run belongs to and what authorised it never change after the first write.
 function bindingOf(run: WorkflowRunRecord): string {
   return canonicalWorkflowJson({ runId: run.runId, itemId: run.itemId, pin: run.pin, runStartedBy: run.runStartedBy });
@@ -55,10 +70,18 @@ export class WorkflowRunStore {
     return (await this.view()).get(runId);
   }
 
-  /** Store a new run, or replace one whose item, pin and start authority are unchanged. */
-  async put(record: WorkflowRunRecord): Promise<WorkflowRunWriteResult> {
+  /** Store a new run, or replace one whose item, pin and start authority are unchanged. The same write removes the other runs `drop` accepts. */
+  async put(record: WorkflowRunRecord, drop?: (run: WorkflowRunRecord) => boolean): Promise<WorkflowRunWriteResult> {
     assertWorkflowRunRecord(record);
-    return this.write(record.runId, prior => prior ?? record, () => record);
+    return this.write(record.runId, prior => prior ?? record, () => record, drop && (run => run.runId !== record.runId && drop(run)));
+  }
+
+  /** Remove the readable runs `drop` accepts. Nothing is written while the file awaits review or when no run goes. */
+  async prune(drop: (run: WorkflowRunRecord) => boolean): Promise<void> {
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.read();
+      if (file !== undefined && dropRuns(file, drop)) await this.commit(file);
+    });
   }
 
   /** Change a stored run under the file lock. `mutate` returns null to refuse; it never runs for a missing or unreadable run. */
@@ -70,10 +93,12 @@ export class WorkflowRunStore {
     runId: string,
     base: (prior: WorkflowRunRecord | undefined) => WorkflowRunRecord | undefined,
     next: (run: WorkflowRunRecord) => WorkflowRunRecord | null,
+    drop?: (run: WorkflowRunRecord) => boolean,
   ): Promise<WorkflowRunWriteResult> {
     return withInProcessFileQueue(this.filePath, async (): Promise<WorkflowRunWriteResult> => {
       const file = await this.read();
       if (file === undefined) return { status: "pending-review" };
+      if (drop) dropRuns(file, drop);
       const { result, index } = lookup(file, runId);
       if (result.status === "invalid" || result.status === "pending-review") return result;
       const prior = base(result.status === "found" ? result.run : undefined);
@@ -83,8 +108,12 @@ export class WorkflowRunStore {
       assertWorkflowRunRecord(run);
       requireTemplate(bindingOf(run) === bindingOf(prior), "invalid-template-run");
       if (index === -1) file.runs.push(run); else file.runs[index] = run;
-      await writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
+      await this.commit(file);
       return { status: "stored", run: structuredClone(run) };
     });
+  }
+
+  private commit(file: RunsFile): Promise<void> {
+    return writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
   }
 }

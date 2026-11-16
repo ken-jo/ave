@@ -54,6 +54,16 @@ it("broadcasts changed for successful draft, confirmation and archive writes", a
   expect(vi.mocked(broadcastToAppWindows).mock.calls.map(c => c[1])).toEqual([WORK_BOARD.templatesChanged, WORK_BOARD.templatesChanged, WORK_BOARD.templatesChanged]);
 });
 
+it("removes an archived template's settled runs after the archive is stored", async () => {
+  const order: string[] = [];
+  const board = { removeTemplateRuns: vi.fn(async () => { order.push("runs"); }) };
+  const { event, store } = setup({ workBoardStore: board } as unknown as Partial<IpcDeps>);
+  store.archive.mockImplementationOnce(async () => { order.push("archive"); });
+  expect(await handler(WORK_BOARD.templateArchive)(event, "t")).toEqual({ ok: true, value: null });
+  expect(board.removeTemplateRuns).toHaveBeenCalledWith("t");
+  expect(order).toEqual(["archive", "runs"]);
+});
+
 it("hides unauthorized project templates and refuses project drafts", async () => {
   const { event, store } = setup();
   store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "project", projectRoot: "/private" } } } as never);
