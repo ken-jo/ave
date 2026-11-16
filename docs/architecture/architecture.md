@@ -1333,7 +1333,11 @@ A template run has the same boundary for its stages:
 `ave:work-board:retry-stage` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carry the run id, the stage or join id,
 the attempt and the hash the card showed, never the output; the stage scheduler
-checks each against the stored run before anything changes.
+checks each against the stored run before anything changes. The scheduler
+reads the pin, the source, the stage runs, the joins and the gates of a run
+only through its run-state seam (`src/work-board/workflow/run-state.ts`), keyed
+by run id; a board row names its run by id and nothing on the row is read as
+run state.
 `ave:work-board:decide-plan` (internal, sender-validated board-window main
 frame, `CHANNEL_GESTURE: "required"`) carries the run id, the hash of the plan
 the card showed and the decision, never the plan text. The store checks all of
