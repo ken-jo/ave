@@ -89,11 +89,12 @@ export class BrowserWorkspaceStore {
     if (!parsed) return;
     await this.update((value) => ({ ...value, history: [{ url: parsed.url, title: parsed.title, at: this.now(), by }, ...value.history.filter((entry) => entry.url !== parsed.url || entry.by !== by)].slice(0, BROWSER_WORKSPACE_LIMITS.history) }));
   }
-  async updateHistoryTitle(url: string, title: string): Promise<void> {
+  /** A page's new title belongs to the visit of whoever is on the page: the other visitor's entry for the same address keeps its own. */
+  async updateHistoryTitle(url: string, title: string, by: BrowserVisitor): Promise<void> {
     const parsed = parseBrowserWorkspaceRequest("setBookmark", { url, title: title.slice(0, BROWSER_WORKSPACE_LIMITS.titleLength), bookmarked: true });
     if (!parsed) return;
-    await this.update((value) => value.history.some((entry) => entry.url === parsed.url && entry.title !== parsed.title)
-      ? { ...value, history: value.history.map((entry) => entry.url === parsed.url ? { ...entry, title: parsed.title } : entry) }
+    await this.update((value) => value.history.some((entry) => entry.url === parsed.url && entry.by === by && entry.title !== parsed.title)
+      ? { ...value, history: value.history.map((entry) => entry.url === parsed.url && entry.by === by ? { ...entry, title: parsed.title } : entry) }
       : value);
   }
   async deleteHistory(target: BrowserHistoryTarget): Promise<void> {

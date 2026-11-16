@@ -1,5 +1,5 @@
 /** The one address row every browser host draws: a user tab in the side panel, a web pane, and a tab the agent opened. */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, ExternalLink, Globe, RotateCw, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
@@ -11,6 +11,7 @@ import { loadBrowserPageUrl, navigateBrowserPageAsUser, stopBrowserPageLoad, use
 import { BrowserPagePrompts } from "./BrowserPagePrompts.js";
 import { BrowserSiteInfo } from "./BrowserSiteInfo.js";
 import { resolveAddressSubmission } from "../preview/url-safety.js";
+import { browserAddressSuggestions } from "../preview/browser-address-suggestions.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 
 /** The zoom levels the row offers; a level set elsewhere is listed as its own option. */
@@ -61,7 +62,10 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
   // An empty bootstrap page has no address a person would recognise or retype.
   const currentAddress = reported === "about:blank" ? "" : reported;
   const [siteInfoOpen, setSiteInfoOpen] = useState(false);
-  const zoomTab = useBrowserWorkspaceSnapshot()?.tabs.find((candidate) => candidate.tabId === tabId);
+  const snapshot = useBrowserWorkspaceSnapshot();
+  const zoomTab = snapshot?.tabs.find((candidate) => candidate.tabId === tabId);
+  const [suggestionIndex, setSuggestionIndex] = useState<number | null>(null);
+  const suggestionListId = useId();
   const [draft, setDraft] = useState(currentAddress);
   const [error, setError] = useState<string | null>(null);
   const draftEditedForTab = useRef<string | null>(null);
@@ -92,21 +96,28 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
     discardDraft();
     navigateBrowserPageAsUser(api, tabId, () => navigateBrowserSurface(surface, action));
   };
+  const open = (url: string) => {
+    draftEditedForTab.current = null;
+    setDraft(url);
+    setError(null);
+    setSuggestionIndex(null);
+    navigateBrowserPageAsUser(api, tabId, () => {
+      onNavigate(url);
+      // Entering the address the tab is already pointed at changes nothing for the host, so the page is loaded directly.
+      if (url === fallbackUrl) loadBrowserPageUrl(tabId, url);
+    });
+  };
   const submit = async () => {
     const target = await resolveAddressSubmission(api, draft);
     if (!target) {
       setError(t("chatPreviewRail.browserInvalidUrl"));
       return;
     }
-    draftEditedForTab.current = null;
-    setDraft(target.url);
-    setError(null);
-    navigateBrowserPageAsUser(api, tabId, () => {
-      onNavigate(target.url);
-      // Entering the address the tab is already pointed at changes nothing for the host, so the page is loaded directly.
-      if (target.url === fallbackUrl) loadBrowserPageUrl(tabId, target.url);
-    });
+    open(target.url);
   };
+  // Suggestions exist only while the user is editing this tab's address; they come from this device's own library.
+  const suggestions = draftEditedForTab.current === tabId ? browserAddressSuggestions(snapshot, draft) : [];
+  const chosen = suggestionIndex !== null ? suggestions[suggestionIndex] : undefined;
   // Only an address the page actually reported, or the host set, as a complete http(s) URL leaves the app: no scheme is
   // guessed for the system browser.
   const checked = validateExternalUrl(currentAddress);
@@ -145,7 +156,7 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
         }}
         onSubmit={(event) => {
           event.preventDefault();
-          void submit();
+          if (chosen) open(chosen.url); else void submit();
         }}
       >
         {iconButton(t("mainPanels.back"), testIds.back, <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />, () => act("back"), !navigation.canGoBack)}
@@ -171,11 +182,24 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
           onChange={(event) => {
             draftEditedForTab.current = tabId;
             setDraft(event.target.value);
+            setSuggestionIndex(null);
             if (error) setError(null);
           }}
           onKeyDown={(event) => {
-            if (event.key === "Escape") discardDraft();
+            if (event.key === "Escape") { setSuggestionIndex(null); discardDraft(); return; }
+            if (suggestions.length === 0 || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
+            // The arrows walk the list and step off either end back to the typed text.
+            event.preventDefault();
+            const step = event.key === "ArrowDown" ? 1 : -1;
+            const next = suggestionIndex === null ? (step === 1 ? 0 : suggestions.length - 1) : suggestionIndex + step;
+            setSuggestionIndex(next < 0 || next >= suggestions.length ? null : next);
           }}
+          role="combobox"
+          aria-expanded={suggestions.length > 0}
+          aria-controls={suggestionListId}
+          aria-autocomplete="list"
+          aria-activedescendant={chosen ? `${suggestionListId}-${suggestionIndex}` : undefined}
+          autoComplete="off"
           placeholder={t("chatPreviewRail.browserAddressPlaceholder")}
           className="h-7 min-w-0 flex-1 text-xs"
         />
@@ -213,6 +237,22 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
       {error ? (
         <div role="alert" className="shrink-0 border-b px-3 py-1.5 text-dense text-destructive" data-native-page-chrome="background" data-testid={testIds.error}>
           {error}
+        </div>
+      ) : null}
+      {suggestions.length > 0 ? (
+        <div id={suggestionListId} role="listbox" aria-label={t("browserAddressRow.suggestions")} className="shrink-0 border-b py-1 text-xs" data-native-page-chrome={chrome} data-testid="browser-address-suggestions">
+          {suggestions.map((suggestion, index) => (
+            // biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard reaches an option through the field that owns this list (arrow keys and Enter there); an option never holds focus itself.
+            <div key={suggestion.url} id={`${suggestionListId}-${index}`} role="option" tabIndex={-1} aria-selected={index === suggestionIndex} data-testid="browser-address-suggestion" data-source={suggestion.source}
+              className={`flex cursor-pointer items-baseline gap-2 px-3 py-1 ${index === suggestionIndex ? "bg-accent text-accent-foreground" : "hover:bg-accent"}`}
+              // Pressing on a suggestion must not take focus from the field first: losing focus drops the draft and the list with it.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => open(suggestion.url)}>
+              <span className="min-w-0 truncate">{suggestion.title || suggestion.url}</span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">{suggestion.url}</span>
+              <span className="shrink-0 text-muted-foreground">{t(suggestion.source === "bookmark" ? "browserAddressRow.suggestionBookmark" : "browserAddressRow.suggestionHistory")}</span>
+            </div>
+          ))}
         </div>
       ) : null}
       <BrowserPagePrompts tabId={tabId} />

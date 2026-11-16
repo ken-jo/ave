@@ -279,3 +279,42 @@ describe("zoom in the address row", () => {
     expect(api.browserWorkspace?.zoom).toHaveBeenCalledWith({ tabId: TAB, documentGeneration: 2, factor: 1.25 });
   });
 });
+
+describe("address suggestions in the row", () => {
+  const library = (): BrowserWorkspaceState => ({ ...pageState(false),
+    bookmarks: [{ url: "https://docs.example/guide", title: "Guide", at: 1 }],
+    history: [{ url: "https://shop.example/cart", title: "Cart", at: 2, by: "user" }, { url: "https://shop.example/agent-only", title: "Agent", at: 3, by: "agent" }] });
+  it("offers the user's own matching pages only while the address is being edited, and opens the one chosen with the arrow keys", async () => {
+    const { address, onNavigate } = mount(SIDE_PANEL_ADDRESS_ROW_TEST_IDS);
+    act(() => __setBrowserPageStatusForTest(library()));
+    expect(screen.queryByTestId("browser-address-suggestions")).toBeNull();
+    fireEvent.change(address(), { target: { value: "shop" } });
+    const rows = screen.getAllByTestId("browser-address-suggestion");
+    expect(rows.map((row) => row.textContent)).toEqual([expect.stringContaining("https://shop.example/cart")]);
+    expect(address().getAttribute("aria-expanded")).toBe("true");
+    fireEvent.keyDown(address(), { key: "ArrowDown" });
+    expect(rows[0]?.getAttribute("aria-selected")).toBe("true");
+    // Stepping past the end returns to the typed text.
+    fireEvent.keyDown(address(), { key: "ArrowDown" });
+    expect(rows[0]?.getAttribute("aria-selected")).toBe("false");
+    fireEvent.keyDown(address(), { key: "ArrowUp" });
+    await act(async () => { fireEvent.submit(address()); });
+    expect(onNavigate).toHaveBeenCalledWith("https://shop.example/cart");
+    expect(address().value).toBe("https://shop.example/cart");
+    expect(screen.queryByTestId("browser-address-suggestions")).toBeNull();
+  });
+  it("opens a suggestion that is pressed without the field losing its draft first, and Escape closes the list", async () => {
+    const { address, onNavigate } = mount(SIDE_PANEL_ADDRESS_ROW_TEST_IDS);
+    act(() => __setBrowserPageStatusForTest(library()));
+    fireEvent.change(address(), { target: { value: "guide" } });
+    const row = screen.getByTestId("browser-address-suggestion");
+    expect(row.getAttribute("data-source")).toBe("bookmark");
+    expect(fireEvent.mouseDown(row)).toBe(false);
+    await act(async () => { fireEvent.click(row); });
+    expect(onNavigate).toHaveBeenCalledWith("https://docs.example/guide");
+    fireEvent.change(address(), { target: { value: "guide" } });
+    fireEvent.keyDown(address(), { key: "Escape" });
+    expect(screen.queryByTestId("browser-address-suggestions")).toBeNull();
+    expect(address().value).toBe("https://a.example/start");
+  });
+});

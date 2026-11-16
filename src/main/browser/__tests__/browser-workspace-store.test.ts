@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserWorkspaceStore } from "../browser-workspace-store.js";
 import { openFeatureNamespace, type FeatureNamespaceHandle } from "../../storage/feature-namespace.js";
 import { BROWSER_WORKSPACE_LIMITS } from "../../../shared/browser-workspace.js";
+import { browserAddressSuggestions } from "../../../ui/renderer/preview/browser-address-suggestions.js";
 
 const directories: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
@@ -19,7 +20,7 @@ describe("browser workspace storage", () => {
     const store = new BrowserWorkspaceStore(ns, () => 123);
     await store.setBookmark({ url: "https://site.example", title: "Site", bookmarked: true });
     await store.recordVisit("https://site.example/", "Visited", "user");
-    await store.updateHistoryTitle("https://site.example/", "Loaded title");
+    await store.updateHistoryTitle("https://site.example/", "Loaded title", "user");
     await store.setSitePermission({ origin: "https://site.example", permission: "camera", decision: "allow" });
     const reloaded = new BrowserWorkspaceStore(ns);
     expect(await reloaded.snapshot()).toEqual({ bookmarks: [{ url: "https://site.example/", title: "Site", at: 123 }], history: [{ url: "https://site.example/", title: "Loaded title", at: 123, by: "user" }], sitePermissions: [{ origin: "https://site.example", permission: "camera", decision: "allow" }], storageStatus: "ready" });
@@ -124,5 +125,16 @@ describe("browser workspace storage", () => {
     await store.deleteHistory({ url: "https://site.example/", by: "agent" });
     expect((await store.snapshot()).history.map((entry) => entry.by)).toEqual(["user"]);
     await expect(store.deleteHistory({ url: "javascript:alert(1)", by: "user" })).rejects.toThrow("bad-request");
+  });
+  it("gives a page's new title only to the visit of whoever is on the page, so the agent's titles never reach the user's history or suggestions", async () => {
+    const store = new BrowserWorkspaceStore(await namespace(), () => 3);
+    await store.recordVisit("https://site.example/", "Site", "user");
+    await store.recordVisit("https://site.example/", "Site", "agent");
+    await store.updateHistoryTitle("https://site.example/", "Agent confidential title", "agent");
+    const snapshot = await store.snapshot();
+    expect(snapshot.history).toEqual([{ url: "https://site.example/", title: "Agent confidential title", at: 3, by: "agent" }, { url: "https://site.example/", title: "Site", at: 3, by: "user" }]);
+    expect(browserAddressSuggestions(snapshot, "confidential")).toEqual([]);
+    await store.updateHistoryTitle("https://site.example/", "Mine", "user");
+    expect((await store.snapshot()).history.map((entry) => entry.title)).toEqual(["Agent confidential title", "Mine"]);
   });
 });
