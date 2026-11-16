@@ -26,7 +26,7 @@ import { PtyTerminalView } from "./PtyTerminalView.js";
 import { useTerminalAttention } from "../preview/terminal-attention.js";
 import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
-import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
+import { navigateBrowserTabAsUser, useBrowserControlState } from "../preview/agent-browser-bridge.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
 import { BrowserObservationLiveStrip } from "../preview/BrowserObservationLiveStrip.js";
 import { directoryName } from "./TerminalPaneHeader.js";
@@ -58,13 +58,18 @@ function WebPanelBody({
 }) {
   const { t } = useTranslation();
   const navigateAsUser = (navigate: () => void) => void navigateBrowserTabAsUser(api, surface.tabId, navigate);
+  // A page only the user browses has no observation band. A page an agent opened or owns keeps the band's place from the start;
+  // a user's page an agent borrows gets it between actions, never while an action holds the tab.
+  const control = useBrowserControlState().tabs.find((tab) => tab.rendererTabId === surface.tabId);
+  const agentTab = surface.agentRequestId !== undefined || (control !== undefined && control.owner !== null);
+  const actionInFlight = control !== undefined && (control.lease !== null || control.mode === "agent-active");
 
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col" data-testid="web-panel" data-tab-id={surface.tabId}>
       <BrowserAddressRow api={api} tabId={surface.tabId} chrome="card" testIds={WEB_PANEL_ADDRESS_ROW_TEST_IDS}
         fallbackUrl={surface.url ?? null} onNavigate={onNavigate} />
       <BrowserSurfaceTools api={api} tabId={surface.tabId} onOpenUrl={(url) => navigateAsUser(() => onNavigate(url))} />
-      <BrowserObservationLiveStrip tabId={surface.tabId} />
+      <BrowserObservationLiveStrip tabId={surface.tabId} reserve={agentTab} actionInFlight={actionInFlight} />
       {surface.url ? (
         <WebSurfaceSlot tabId={surface.tabId} url={surface.url} location={`pane:${paneId}`}
           {...(surface.agentRequestId === undefined ? {} : { bindRequestId: surface.agentRequestId })} />

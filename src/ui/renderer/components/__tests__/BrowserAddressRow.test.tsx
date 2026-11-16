@@ -28,7 +28,7 @@ function mount(testIds: BrowserAddressRowTestIds, options: { fallbackUrl?: strin
     getSettings: vi.fn(async () => ({ webView: { addressSearchEngine: "duckduckgo" } })),
     openExternalUrl: vi.fn(async () => ({ ok: true })),
     browserTabs: { stop: vi.fn(async () => ({ ok: options.stopOk ?? true })) },
-    browserWorkspace: { stopLoad: vi.fn(async () => ({ ok: true, value: null })), load: vi.fn(async () => ({ ok: true, value: null })), answerPrompt: vi.fn(async () => ({ ok: true, value: null })), userNavigation: vi.fn(async () => ({ ok: true, value: null })) },
+    browserWorkspace: { stopLoad: vi.fn(async () => ({ ok: true, value: null })), load: vi.fn(async () => ({ ok: true, value: null })), answerPrompt: vi.fn(async () => ({ ok: true, value: null })), userNavigation: vi.fn(async () => ({ ok: true, value: null })), zoom: vi.fn(async () => ({ ok: true, value: null })) },
   } as unknown as AveApi;
   render(<TooltipProvider><BrowserAddressRow api={api} tabId={TAB} chrome="card" testIds={testIds}
     fallbackUrl={options.fallbackUrl === undefined ? "https://a.example/start" : options.fallbackUrl} onNavigate={onNavigate} /></TooltipProvider>);
@@ -261,5 +261,21 @@ describe.each([
     expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-2", answer: { kind: "dialog", accept: false, block: false } });
     fireEvent.click(screen.getByTestId("browser-page-prompt-block-dialogs"));
     expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-2", answer: { kind: "dialog", accept: false, block: true } });
+  });
+});
+
+describe("zoom in the address row", () => {
+  it("shows the page's zoom, lists a level outside the presets as itself, and changes it with the document's proof", async () => {
+    const { api } = mount(SIDE_PANEL_ADDRESS_ROW_TEST_IDS);
+    expect(screen.queryByTestId("browser-zoom")).toBeNull();
+    const state = pageState(false);
+    const tab = state.tabs[0];
+    if (!tab) throw new Error("the fixture has no tab");
+    act(() => __setBrowserPageStatusForTest({ ...state, tabs: [{ ...tab, zoomFactor: 1.728 }] }));
+    const select = screen.getByTestId("browser-zoom") as HTMLSelectElement;
+    expect(select.value).toBe("1.728");
+    expect(select.selectedOptions[0]?.textContent).toBe("173%");
+    await act(async () => { fireEvent.change(select, { target: { value: "1.25" } }); });
+    expect(api.browserWorkspace?.zoom).toHaveBeenCalledWith({ tabId: TAB, documentGeneration: 2, factor: 1.25 });
   });
 });

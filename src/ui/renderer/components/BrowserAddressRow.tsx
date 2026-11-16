@@ -7,11 +7,14 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/
 import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
 import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../hooks/use-browser-navigation.js";
-import { loadBrowserPageUrl, navigateBrowserPageAsUser, stopBrowserPageLoad, useBrowserPageStatus } from "../preview/browser-page-status.js";
+import { loadBrowserPageUrl, navigateBrowserPageAsUser, stopBrowserPageLoad, useBrowserPageStatus, useBrowserWorkspaceSnapshot } from "../preview/browser-page-status.js";
 import { BrowserPagePrompts } from "./BrowserPagePrompts.js";
 import { BrowserSiteInfo } from "./BrowserSiteInfo.js";
 import { resolveAddressSubmission } from "../preview/url-safety.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
+
+/** The zoom levels the row offers; a level set elsewhere is listed as its own option. */
+const BROWSER_ZOOM_FACTORS: readonly number[] = [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 export interface BrowserAddressRowTestIds {
   readonly back: string; readonly forward: string; readonly reload: string; readonly stop: string; readonly address: string;
@@ -58,6 +61,7 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
   // An empty bootstrap page has no address a person would recognise or retype.
   const currentAddress = reported === "about:blank" ? "" : reported;
   const [siteInfoOpen, setSiteInfoOpen] = useState(false);
+  const zoomTab = useBrowserWorkspaceSnapshot()?.tabs.find((candidate) => candidate.tabId === tabId);
   const [draft, setDraft] = useState(currentAddress);
   const [error, setError] = useState<string | null>(null);
   const draftEditedForTab = useRef<string | null>(null);
@@ -175,6 +179,19 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
           placeholder={t("chatPreviewRail.browserAddressPlaceholder")}
           className="h-7 min-w-0 flex-1 text-xs"
         />
+        {api.browserWorkspace && zoomTab ? (
+          <select
+            aria-label={t("browserWorkspace.zoom")}
+            title={t("browserWorkspace.zoom")}
+            data-testid="browser-zoom"
+            className="h-7 shrink-0 rounded-md border bg-background px-1 text-xs tabular-nums"
+            value={zoomTab.zoomFactor}
+            onChange={(event) => { void api.browserWorkspace?.zoom({ tabId, documentGeneration: zoomTab.documentGeneration, factor: Number(event.target.value) }).then((result) => setError(result.ok ? null : t("browserWorkspace.failed"))); }}
+          >
+            {BROWSER_ZOOM_FACTORS.includes(zoomTab.zoomFactor) ? null : <option value={zoomTab.zoomFactor}>{Math.round(zoomTab.zoomFactor * 100)}%</option>}
+            {BROWSER_ZOOM_FACTORS.map((factor) => <option key={factor} value={factor}>{Math.round(factor * 100)}%</option>)}
+          </select>
+        ) : null}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button type="submit" size="icon" variant="ghost" className="h-7 w-7 shrink-0" ref={goRef}

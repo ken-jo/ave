@@ -15,6 +15,9 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   service.onChanged((windowId, state) => {
     sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.changed, state, log);
   });
+  service.onFindResult((windowId, result) => {
+    sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.findResult, result, log);
+  });
   service.onOpenTab((windowId, request) => {
     sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.openTab, request, log);
   });

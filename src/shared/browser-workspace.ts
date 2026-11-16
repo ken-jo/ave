@@ -166,10 +166,20 @@ export interface BrowserWorkspaceApi {
   /** Main refused a page guest before it attached; `src` is the address the refused element carried. */
   onAttachBlocked(handler: (blocked: BrowserAttachBlocked) => void): () => void;
   onOpenTab(handler: (request: BrowserOpenTab) => void): () => void;
+  /** The final count of each find, named by the request id `find` returned. */
+  onFindResult(handler: (result: BrowserFindResult) => void): () => void;
 }
 export interface BrowserAttachBlocked { readonly src: string }
 /** A page asked for a link in a new tab: the tab opens beside the tab that asked. `active` is false for a background tab. */
 export interface BrowserOpenTab { readonly openerTabId: string; readonly url: string; readonly active: boolean }
+/** How a find in a tab's page ended: how many matches the page has and which one is selected (0 when there are none). */
+export interface BrowserFindResult { readonly tabId: string; readonly requestId: number; readonly matches: number; readonly activeMatch: number }
+export function parseBrowserFindResult(value: unknown): BrowserFindResult | null {
+  if (!isRecord(value) || !keys(value, ["tabId", "requestId", "matches", "activeMatch"]) || typeof value.tabId !== "string" || value.tabId.length === 0 || value.tabId.length > 512) return null;
+  const count = (item: unknown): item is number => Number.isSafeInteger(item) && Number(item) >= 0;
+  if (!count(value.requestId) || !count(value.matches) || !count(value.activeMatch) || value.activeMatch > value.matches) return null;
+  return { tabId: value.tabId, requestId: value.requestId, matches: value.matches, activeMatch: value.activeMatch };
+}
 export function parseBrowserOpenTab(value: unknown): BrowserOpenTab | null {
   if (!isRecord(value) || !keys(value, ["openerTabId", "url", "active"]) || typeof value.active !== "boolean") return null;
   if (typeof value.openerTabId !== "string" || value.openerTabId.length === 0 || value.openerTabId.length > 512) return null;

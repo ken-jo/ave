@@ -1,7 +1,7 @@
 /** The address row's site information states the host's facts about the open site and changes only that site. */
 import { expect, test } from "@playwright/test";
 import { teardownSeededElectron, type SeededElectronContext } from "./seeded-electron.js";
-import { launchReviewApp, openUserBrowserTab, reviewGuestTitle, reviewPage, startReviewSite, typeAddress, type ReviewSite } from "./browser-review-fixture.js";
+import { launchReviewApp, openUserBrowserTab, reviewCookieNames, reviewGuestTitle, reviewPage, startReviewSite, typeAddress, type ReviewSite } from "./browser-review-fixture.js";
 
 let context: SeededElectronContext;
 let site: ReviewSite;
@@ -19,14 +19,13 @@ test.afterAll(async () => {
   site.server.close();
 });
 
-const cookies = (app: SeededElectronContext["app"], url: string) => app.evaluate(async ({ session }, target) => (await session.fromPartition("persist:ave-side-browser").cookies.get({ url: target })).map((cookie) => cookie.name), url);
 
 test("site information names the site and its connection, keeps a rule for it, and clears its data", async () => {
   const { app, page } = context;
   await openUserBrowserTab(page);
   await typeAddress(page, `${site.base}/info`);
   await expect.poll(() => reviewGuestTitle(app)).toBe("Info");
-  await expect.poll(() => cookies(app, site.base)).toEqual(["visit"]);
+  await expect.poll(() => reviewCookieNames(app, site.base)).toEqual(["visit"]);
 
   await expect(page.getByTestId("browser-site-info")).toHaveCount(0);
   await page.getByTestId("browser-site-info-toggle").click();
@@ -55,5 +54,5 @@ test("site information names the site and its connection, keeps a rule for it, a
 
   await page.getByTestId("browser-site-info-clear").click();
   await expect(page.getByTestId("browser-site-info-cleared")).toBeVisible();
-  expect(await cookies(app, site.base)).toEqual([]);
+  expect(await reviewCookieNames(app, site.base)).toEqual([]);
 });

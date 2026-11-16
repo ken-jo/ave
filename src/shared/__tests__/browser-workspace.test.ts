@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserOpenTab, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState, parseBrowserAgentSiteGrant } from "../browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserOpenTab, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState, parseBrowserAgentSiteGrant, parseBrowserFindResult } from "../browser-workspace.js";
 
 const TARGET = { tabId: "browser:one", documentGeneration: 4 };
 const STATE = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
@@ -178,5 +178,11 @@ describe("browser workspace wire validation", () => {
     for (const grant of ["this-site", "any-site", null]) expect(parseBrowserAgentSiteGrant({ grant })).toEqual({ grant });
     for (const bad of [{}, { grant: "always" }, { grant: null, origin: "https://site.example" }, null]) expect(parseBrowserAgentSiteGrant(bad)).toBeNull();
     expect(parseBrowserWorkspaceRequest("revokeAgentSiteGrant", { ...TARGET, origin: "https://site.example/path" })).toBeNull();
+  });
+  it("accepts a find result only with whole, consistent counts", () => {
+    const result = { tabId: "browser:one", requestId: 4, matches: 3, activeMatch: 1 };
+    expect(parseBrowserFindResult(result)).toEqual(result);
+    expect(parseBrowserFindResult({ ...result, matches: 0, activeMatch: 0 })).not.toBeNull();
+    for (const bad of [{ ...result, activeMatch: 4 }, { ...result, matches: -1 }, { ...result, matches: 1.5 }, { ...result, tabId: "" }, { ...result, text: "x" }, null]) expect(parseBrowserFindResult(bad)).toBeNull();
   });
 });

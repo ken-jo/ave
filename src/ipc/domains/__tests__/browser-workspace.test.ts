@@ -3,11 +3,12 @@ import type { BrowserWorkspaceService } from "../../../main/browser/browser-work
 import type { IpcDeps } from "../../types.js";
 
 const openTab: { handler?: (windowId: number, request: unknown) => void } = {};
+const findResult: { handler?: (windowId: number, result: unknown) => void } = {};
 const { handlers, authorize, mainWindow, send, changed } = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, payload?: unknown) => Promise<unknown>>(), authorize: vi.fn(() => true), mainWindow: vi.fn(() => ({ id: 1, isDestroyed: () => false })), send: vi.fn(), changed: { handler: null as null | ((windowId: number, state: unknown) => void) },
 }));
 vi.mock("electron", () => ({ ipcMain: { handle: (channel: string, callback: (event: unknown, payload?: unknown) => Promise<unknown>) => handlers.set(channel, callback) } }));
-vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "capture", "retryLoad", "stopLoad", "load", "answerPrompt", "userNavigation", "showDownload", "cancelDownload", "clearData", "clearSiteData", "deleteHistory", "agentSiteGrant", "revokeAgentSiteGrant", "changed", "openTab"].map((key) => [key, `workspace:${key}`])) } }));
+vi.mock("../../../contract/app-contract.js", () => ({ CHANNELS: { browserWorkspace: Object.fromEntries(["getState", "setBookmark", "clearHistory", "setSitePermission", "find", "stopFind", "zoom", "preview", "capture", "retryLoad", "stopLoad", "load", "answerPrompt", "userNavigation", "showDownload", "cancelDownload", "clearData", "clearSiteData", "deleteHistory", "agentSiteGrant", "revokeAgentSiteGrant", "changed", "openTab", "findResult"].map((key) => [key, `workspace:${key}`])) } }));
 vi.mock("../../gated.js", () => ({ validateHostRendererSender: authorize, auditUnauthorized: vi.fn() }));
 vi.mock("../../../main/app-state.js", () => ({ mainWindowForContents: mainWindow, getMainWindows: () => [{ id: 1 }, { id: 2 }] }));
 vi.mock("../../safe-send.js", () => ({ sendToWindow: send }));
@@ -15,7 +16,7 @@ import { registerBrowserWorkspaceHandlers } from "../browser-workspace.js";
 import { BrowserSitePermissions } from "../../../permissions/browser-site-permissions.js";
 
 function setup() {
-  const service = { onChanged: vi.fn((handler: (windowId: number, state: unknown) => void) => { changed.handler = handler; }), onOpenTab: vi.fn((handler: (windowId: number, request: unknown) => void) => { openTab.handler = handler; }), getState: vi.fn(async () => ({ revision: 1 })), setBookmark: vi.fn(), clearHistory: vi.fn(), setSitePermission: vi.fn(), find: vi.fn(), stopFind: vi.fn(), zoom: vi.fn(), preview: vi.fn(), capture: vi.fn() };
+  const service = { onFindResult: vi.fn((handler: (windowId: number, result: unknown) => void) => { findResult.handler = handler; }), onChanged: vi.fn((handler: (windowId: number, state: unknown) => void) => { changed.handler = handler; }), onOpenTab: vi.fn((handler: (windowId: number, request: unknown) => void) => { openTab.handler = handler; }), getState: vi.fn(async () => ({ revision: 1 })), setBookmark: vi.fn(), clearHistory: vi.fn(), setSitePermission: vi.fn(), find: vi.fn(), stopFind: vi.fn(), zoom: vi.fn(), preview: vi.fn(), capture: vi.fn() };
   registerBrowserWorkspaceHandlers({ auditLogger: {} } as IpcDeps, service as unknown as BrowserWorkspaceService);
   return service;
 }
@@ -83,7 +84,7 @@ describe("private browser workspace IPC", () => {
     browserSites.allow("session-1", "https://site.example/", "this-site");
     const agentSessionForSite = vi.fn((): string | null => "session-1");
     registerBrowserWorkspaceHandlers({ auditLogger: {}, conversationLoop: { permissionManager: { browserSites } } } as unknown as IpcDeps,
-      { onChanged: vi.fn(), onOpenTab: vi.fn(), agentSessionForSite } as unknown as BrowserWorkspaceService);
+      { onChanged: vi.fn(), onOpenTab: vi.fn(), onFindResult: vi.fn(), agentSessionForSite } as unknown as BrowserWorkspaceService);
     const request = { tabId: "browser:one", documentGeneration: 1, origin: "https://site.example" };
     expect(await invoke("agentSiteGrant", request)).toEqual({ ok: true, value: { grant: "this-site" } });
     expect(agentSessionForSite).toHaveBeenCalledWith(1, request);
@@ -97,5 +98,12 @@ describe("private browser workspace IPC", () => {
     await invoke("revokeAgentSiteGrant", request);
     expect(browserSites.allows("session-1", "https://site.example/")).toBe(true);
     expect(await invoke("agentSiteGrant", { ...request, origin: "https://site.example/path" })).toMatchObject({ ok: false });
+  });
+  it("sends a find's count only to the window whose tab was searched", () => {
+    setup();
+    const result = { tabId: "browser:one", requestId: 4, matches: 3, activeMatch: 1 };
+    findResult.handler?.(2, result);
+    expect(send).toHaveBeenCalledWith({ id: 2 }, "workspace:findResult", result, expect.anything());
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

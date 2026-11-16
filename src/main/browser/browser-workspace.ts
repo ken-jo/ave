@@ -8,7 +8,7 @@ import { BrowserPagePrompts } from "./browser-page-prompts.js";
 
 /** The runtime's request to show a page dialog: (details, respond). */
 const RUN_DIALOG = "-run-dialog";
-import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserClearDataRequest, type BrowserClearSiteDataRequest, type BrowserDownloadBlockReason, type BrowserHistoryTarget, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserClearDataRequest, type BrowserClearSiteDataRequest, type BrowserDownloadBlockReason, type BrowserFindResult, type BrowserHistoryTarget, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -69,6 +69,7 @@ export class BrowserWorkspaceService {
   private readonly listeners = new Set<(windowId: number, state: BrowserWorkspaceState) => void>();
   private readonly activeDownloads = new Map<string, ObservedDownload>();
   private readonly downloadPaths = new Map<string, string>();
+  private readonly findResultListeners = new Set<(windowId: number, result: BrowserFindResult) => void>();
   private readonly openTabListeners = new Set<(windowId: number, request: BrowserOpenTab) => void>();
   private readonly windows = new Set<number>();
   private readonly publishedTabs = new Map<number, string>();
@@ -95,6 +96,7 @@ export class BrowserWorkspaceService {
       return entry && !entry.guest.isDestroyed() ? { guestId, windowId: entry.windowId, documentGeneration: entry.generation, url: entry.guest.getURL() } : null;
     } });
   }
+  onFindResult(handler: (windowId: number, result: BrowserFindResult) => void): () => void { this.findResultListeners.add(handler); return () => this.findResultListeners.delete(handler); }
   onOpenTab(handler: (windowId: number, request: BrowserOpenTab) => void): () => void { this.openTabListeners.add(handler); return () => this.openTabListeners.delete(handler); }
   /**
    * A page asked for a link in a new tab. The tab opens in the panel beside the tab that asked, with the same address
@@ -435,7 +437,14 @@ export class BrowserWorkspaceService {
     };
     const navigatedInPage = (_event: unknown, _url: string, mainFrame: boolean) => { if (mainFrame) { invalidateView(); visit(); } };
     let unsubscribe = () => {};
-    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener(RUN_DIALOG as never, pageDialog as never); guest.removeListener("-cancel-dialogs" as never, cancelDialogs as never); for (const listener of runtimeDialogs) guest.on(RUN_DIALOG as never, listener as never); dismissedPageDialogs.forget(guestId); guest.removeListener("login", signIn); guest.removeListener("will-navigate", pageNavigation); guest.removeListener("did-navigate", committed); guest.removeListener("will-prevent-unload", preventUnload); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.releaseLeave(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    // The page reports a find's count as it scans; only the final report is the answer.
+    const found = (_event: unknown, result: { requestId: number; matches: number; activeMatchOrdinal: number; finalUpdate: boolean }) => {
+      const tabId = this.tabIdForGuest(windowId, guestId);
+      if (!result.finalUpdate || tabId === null) return;
+      for (const listener of this.findResultListeners) listener(windowId, { tabId, requestId: result.requestId, matches: result.matches, activeMatch: result.activeMatchOrdinal });
+    };
+    guest.on("found-in-page", found);
+    const dispose = () => { guest.removeListener("found-in-page", found); guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener(RUN_DIALOG as never, pageDialog as never); guest.removeListener("-cancel-dialogs" as never, cancelDialogs as never); for (const listener of runtimeDialogs) guest.on(RUN_DIALOG as never, listener as never); dismissedPageDialogs.forget(guestId); guest.removeListener("login", signIn); guest.removeListener("will-navigate", pageNavigation); guest.removeListener("did-navigate", committed); guest.removeListener("will-prevent-unload", preventUnload); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.releaseLeave(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const titleChanged = () => { if (!guest.isDestroyed()) void this.store.updateHistoryTitle(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
     this.guests.set(guestId, { guest, windowId, generation: 1, loading: guest.isLoadingMainFrame(), loadError: null, userNavigation: "none", unloadHeld: false, dialogs: 0, dialogsBlocked: false, dispose });
     guest.on("login", signIn); guest.on("will-navigate", pageNavigation); guest.on("did-navigate", committed); guest.on("will-prevent-unload", preventUnload);
@@ -507,6 +516,6 @@ export class BrowserWorkspaceService {
     this.downloadDisposers.delete(windowId);
     for (const entry of this.guests.values()) if (entry.windowId === windowId) entry.dispose();
   }
-  dispose(): void { for (const windowId of [...this.windows]) this.disposeWindow(windowId); for (const entry of this.guests.values()) entry.dispose(); this.listeners.clear(); this.openTabListeners.clear(); }
+  dispose(): void { for (const windowId of [...this.windows]) this.disposeWindow(windowId); for (const entry of this.guests.values()) entry.dispose(); this.listeners.clear(); this.openTabListeners.clear(); this.findResultListeners.clear(); }
 }
 export function createBrowserWorkspaceService(deps: BrowserWorkspaceServiceDeps): BrowserWorkspaceService { return new BrowserWorkspaceService(deps); }

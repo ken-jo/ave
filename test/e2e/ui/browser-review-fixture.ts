@@ -64,3 +64,8 @@ export async function typeAddress(window: Page, text: string): Promise<void> {
 export function reviewGuestTitle(app: SeededElectronContext["app"]): Promise<string | undefined> {
   return app.evaluate(({ webContents }) => webContents.getAllWebContents().find((contents) => contents.getType() === "webview")?.getTitle());
 }
+
+/** The names of the cookies the browser profile holds for an address. */
+export function reviewCookieNames(app: SeededElectronContext["app"], url: string): Promise<string[]> {
+  return app.evaluate(async ({ session }, target) => (await session.fromPartition("persist:ave-side-browser").cookies.get({ url: target })).map((cookie) => cookie.name), url);
+}

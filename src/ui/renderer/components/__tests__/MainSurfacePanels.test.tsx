@@ -367,6 +367,8 @@ describe("SurfacePane", () => {
     );
     expect(screen.getByTestId("web-panel-empty")).toBeTruthy();
     expect(screen.queryByTestId("web-surface-slot")).toBeNull();
+    // A pane only the user browses has no empty observation band above its page.
+    expect(screen.queryByTestId("browser-observation-slot")).toBeNull();
     const address = screen.getByTestId("web-panel-address");
     fireEvent.change(address, { target: { value: "javascript:alert(1)" } });
     await act(async () => { fireEvent.submit(address.closest("form")!); });
@@ -407,13 +409,22 @@ describe("SurfacePane", () => {
       const address = screen.getByTestId("web-panel-address");
       // The badge is only a mirror: navigation always asks main to revoke control.
       expect(screen.queryByTestId("agent-browser-control-badge")).toBeNull();
+      expect(screen.queryByTestId("browser-observation-slot")).toBeNull();
       fireEvent.change(address, { target: { value: "https://b.example/" } });
       await act(async () => { fireEvent.submit(address.closest("form")!); });
       expect(onNavigate).toHaveBeenLastCalledWith(page.tabId, "https://b.example/");
       expect(stop).toHaveBeenCalledWith(page.tabId);
 
-      act(() => emitControl(browserControlFixture([page.tabId])));
+      // An action borrowing the user's page is badged, and does not add the band while it holds the tab.
+      const borrowed = browserControlFixture([page.tabId]);
+      act(() => emitControl({ ...borrowed, tabs: borrowed.tabs.map((tab) => ({ ...tab, owner: null, lease: tab.lease && { ...tab.lease, lifetime: "borrowed" as const } })) }));
       expect(screen.getByTestId("web-panel")).toContainElement(screen.getByTestId("agent-browser-control-badge"));
+      expect(screen.queryByTestId("browser-observation-slot")).toBeNull();
+      // A page an agent owns holds the band's place above the page from the start, so the page does not move during an action.
+      act(() => emitControl(browserControlFixture([page.tabId], "agent-active", 2)));
+      const band = screen.getByTestId("browser-observation-slot");
+      expect(band.className).toContain("h-7");
+      expect(band.compareDocumentPosition(screen.getByTestId("web-surface-slot")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       fireEvent.click(screen.getByTestId("agent-browser-control-stop"));
       expect(stop).toHaveBeenLastCalledWith(page.tabId);
 

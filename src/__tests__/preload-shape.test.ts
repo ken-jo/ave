@@ -374,6 +374,7 @@ describe("preload contextBridge world shape lock", () => {
             "load",
             "onAttachBlocked",
             "onChanged",
+            "onFindResult",
             "onOpenTab",
             "preview",
             "retryLoad",

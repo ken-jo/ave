@@ -784,6 +784,7 @@ export const CHANNELS = {
     answerPrompt: "ave:browser-workspace:answer-prompt",
     userNavigation: "ave:browser-workspace:user-navigation",
     changed: "ave:browser-workspace:changed",
+    findResult: "ave:browser-workspace:find-result", // event main→renderer  a find in a page finished counting
     openTab: "ave:browser-workspace:open-tab", // event main→renderer  a page asked for a link in a new tab
     attachBlocked: "ave:browser-workspace:attach-blocked", // event main→renderer  a page guest was refused before it attached
   },

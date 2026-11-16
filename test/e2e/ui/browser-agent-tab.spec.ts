@@ -117,7 +117,7 @@ test("keeps an agent page mounted through blank bootstrap and first navigation",
       const state = await window.aveApi.browserWorkspace!.getState();
       return state.ok ? state.value.bookmarks.map((entry) => entry.url) : [];
     })).toContain(url);
-    await workspace.getByRole("combobox", { name: /^(Zoom|확대)$/ }).selectOption("1.25");
+    await ctx.page.getByTestId("browser-zoom").selectOption("1.25");
     await expect.poll(() => ctx!.app.evaluate(({ webContents }, id) => webContents.fromId(id)?.getZoomFactor(), guestId)).toBe(1.25);
     await workspace.getByRole("textbox", { name: /^(Find|찾기)$/ }).fill("Ready");
     await workspace.getByRole("button", { name: /^(Find|찾기)$/ }).click();

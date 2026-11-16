@@ -692,4 +692,17 @@ describe("browser workspace service", () => {
     expect(() => service.agentSessionForSite(2, { ...TARGET, origin: "https://site.example" })).toThrow();
     expect(() => service.agentSessionForSite(1, { ...TARGET, documentGeneration: 9, origin: "https://site.example" })).toThrow();
   });
+  it("reports a find's final count for the tab it ran in, and nothing for a partial count or a window that is no tab", async () => {
+    const { service, guest, events, setLive } = await setup();
+    const results: unknown[] = [];
+    service.onFindResult((windowId, result) => results.push([windowId, result]));
+    service.observeGuest(1, guest);
+    events.emit("found-in-page", {}, { requestId: 42, matches: 2, activeMatchOrdinal: 1, finalUpdate: false });
+    expect(results).toEqual([]);
+    events.emit("found-in-page", {}, { requestId: 42, matches: 5, activeMatchOrdinal: 2, finalUpdate: true });
+    expect(results).toEqual([[1, { tabId: "browser:one", requestId: 42, matches: 5, activeMatch: 2 }]]);
+    setLive(false);
+    events.emit("found-in-page", {}, { requestId: 43, matches: 1, activeMatchOrdinal: 1, finalUpdate: true });
+    expect(results).toHaveLength(1);
+  });
 });

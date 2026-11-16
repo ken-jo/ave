@@ -4,6 +4,7 @@ import {
   BROWSER_WORKSPACE_ERRORS,
   parseBrowserAgentSiteGrant,
   parseBrowserAttachBlocked,
+  parseBrowserFindResult,
   type BrowserAgentSiteGrant,
   parseBrowserOpenTab,
   parseBrowserWorkspacePreview,
@@ -76,6 +77,15 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
       };
       ipcRenderer.on(CHANNELS.browserWorkspace.changed, listener);
       return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.changed, listener);
+    },
+    onFindResult: (handler) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const parsed = parseBrowserFindResult(payload);
+        if (!parsed) throw new Error("invalid-browser-find-result");
+        handler(parsed);
+      };
+      ipcRenderer.on(CHANNELS.browserWorkspace.findResult, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.findResult, listener);
     },
     onOpenTab: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {
