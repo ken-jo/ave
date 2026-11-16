@@ -250,6 +250,22 @@ it. Side-work-panel host terminals have no agent read/write access.
 
 <a id="agent-commands-in-your-terminal"></a>
 
+### Working in the terminal
+
+A terminal you open from the launcher or the new-tab menu takes the keyboard
+at once. Its screen and scrollback stay exactly as they were when you switch
+tabs or move it between the side panel and a pane.
+
+Web addresses in the output, and hyperlinks a program prints (OSC 8), are
+links. Hovering one shows where it really goes. Hold Cmd (macOS) or Ctrl
+(Windows and Linux) and click to open it in an Ave browser tab: beside the
+terminal in the main area, or as a new tab in the side panel. Only `http` and
+`https` links open, and never one that carries a user name or password.
+
+When the shell exits, the terminal says **Ended** with the exit code and
+offers **Restart shell** and **Close tab**. Pressing Enter also starts a new
+shell, in the directory the old one was in, with the earlier output kept.
+
 ### Agent commands in your terminal
 
 The chat in a workspace terminal's own pane can ask to run a command in that

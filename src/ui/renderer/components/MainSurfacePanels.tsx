@@ -248,6 +248,7 @@ export function SurfacePane({
   frame,
   onNavigate,
   onAttachText,
+  onOpenLink,
   chatRuntime,
   chatOpen,
   onChatOpenChange,
@@ -268,6 +269,8 @@ export function SurfacePane({
   onNavigate: (tabId: string, url: string) => void;
   /** Hand a terminal block's text to a chat composer; false when it is full. */
   onAttachText?: (text: string) => AttachTextResult;
+  /** Open a web link the user modifier-clicked in this pane's terminal. */
+  onOpenLink?: (url: string) => void;
 }) {
   const { t } = useTranslation();
   const view = surface.kind === "terminal" ? "terminal" : "web";
@@ -346,6 +349,7 @@ export function SurfacePane({
             headerSlot={terminalHeader}
             onCwd={setLiveCwd}
             {...(frame.onClose ? { onCloseTab: frame.onClose } : {})}
+            {...(onOpenLink ? { onOpenLink } : {})}
             {...(onAttachText ? { onAttachText } : {})}
           />
         ) : (

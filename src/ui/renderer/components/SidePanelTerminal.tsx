@@ -12,7 +12,7 @@ import { useTerminalFileReviewState } from "../preview/terminal-file-review.js";
 import { PtyTerminalView } from "./PtyTerminalView.js";
 import { TerminalChangesView } from "./TerminalChangesView.js";
 
-export function SidePanelTerminal({ api, tabId, tabLabel, visible, showChanges, onShowChanges, onAttachText, onCloseTab }: {
+export function SidePanelTerminal({ api, tabId, tabLabel, visible, showChanges, onShowChanges, onAttachText, onCloseTab, onOpenLink }: {
   api: AveApi;
   tabId: string;
   tabLabel: string;
@@ -22,6 +22,8 @@ export function SidePanelTerminal({ api, tabId, tabLabel, visible, showChanges, 
   onAttachText?: (text: string) => AttachTextResult;
   /** Close this terminal's tab; offered once its shell has ended. */
   onCloseTab?: () => void;
+  /** Open a web link from the terminal in a browser tab of this panel. */
+  onOpenLink?: (url: string) => void;
 }) {
   const { t } = useTranslation();
   const revealToken = useTerminalFileReviewState(tabId)?.reveal?.token ?? null;
@@ -43,5 +45,5 @@ export function SidePanelTerminal({ api, tabId, tabLabel, visible, showChanges, 
       </div>
     );
   }
-  return <PtyTerminalView api={api} location="side-panel" tabId={tabId} tabLabel={tabLabel} {...(onAttachText ? { onAttachText } : {})} {...(onCloseTab ? { onCloseTab } : {})} />;
+  return <PtyTerminalView api={api} location="side-panel" tabId={tabId} tabLabel={tabLabel} {...(onAttachText ? { onAttachText } : {})} {...(onCloseTab ? { onCloseTab } : {})} {...(onOpenLink ? { onOpenLink } : {})} />;
 }

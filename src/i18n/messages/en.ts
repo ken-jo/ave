@@ -4351,6 +4351,8 @@ export const en = {
   "ptyTerminal.endedNotStarted": "No shell is running in this tab.",
   "ptyTerminal.restartShell": "Restart shell",
   "ptyTerminal.closeTab": "Close tab",
+  "ptyTerminal.linkOpenHint": "{modifier}+click to open in an Ave browser tab",
+  "ptyTerminal.linkBlocked": "Only http and https links open from the terminal.",
   "ptyTerminal.capacity": "Terminal capacity reached. Close another terminal and retry.",
   "ptyTerminal.stillClosing": "The previous shell is still closing. Retry shortly.",
   "ptyTerminal.hostBadgeWorkspace": "My terminal (host) · Agent access follows this conversation's permissions",

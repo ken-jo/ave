@@ -6,6 +6,9 @@
  */
 import { Terminal, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { validateExternalUrl } from "../../../shared/external-url.js";
+import { isDarwin } from "../api-client.js";
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { setTerminalAttended, setTerminalExited, setTerminalReplaying } from "../preview/terminal-attention.js";
 import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
@@ -41,6 +44,8 @@ export interface LiveTerminalView {
   readonly t: Translate;
   /** Whether the user is looking at this view when it has a box. */
   readonly attended: () => boolean;
+  /** Open a web link from the terminal in an Ave browser tab. Absent where the view has no place to open one. */
+  readonly openLink?: (url: string) => void;
 }
 
 /** Dim-yellow ANSI wrapper for host-emitted diagnostic lines in the buffer. */
@@ -74,6 +79,7 @@ export class LiveTerminal {
   private disposed = false;
   private box = false;
   private t: Translate;
+  private linkTip: HTMLElement | null = null;
   /** Spawn and re-attach requests run one at a time, each against the view mounted when it runs. */
   private chain: Promise<void> = Promise.resolve();
 
@@ -87,8 +93,19 @@ export class LiveTerminal {
       theme: style.terminalPalette,
       scrollback: 5000,
       allowProposedApi: true,
+      // OSC 8 hyperlinks take the same path as detected URLs; without this xterm asks through a native confirm() and opens the system browser.
+      linkHandler: {
+        activate: (event, target) => this.activateLink(event, target),
+        hover: (event, target) => this.showLinkTip(event, target),
+        leave: () => this.hideLinkTip(),
+        allowNonHttpProtocols: false,
+      },
     });
     this.term.loadAddon(this.fitAddon);
+    this.term.loadAddon(new WebLinksAddon((event, target) => this.activateLink(event, target), {
+      hover: (event, target) => this.showLinkTip(event, target),
+      leave: () => this.hideLinkTip(),
+    }));
     this.anchors = new XtermBlockAnchors(this.term);
     // OSC 133 A (prompt) and D (command finished) end a block; C starts one. Returning false leaves the sequence to xterm's
     // default handling.
@@ -184,6 +201,7 @@ export class LiveTerminal {
     this.host = null;
     this.view = null;
     this.box = false;
+    this.hideLinkTip();
     if (!this.disposed) {
       this.term.element?.remove();
       setTerminalAttended(this.tabId, false);
@@ -228,6 +246,7 @@ export class LiveTerminal {
     this.observer?.disconnect();
     this.observer = null;
     if (this.enterTimer !== null) clearTimeout(this.enterTimer);
+    this.hideLinkTip();
     for (const dispose of this.disposers) dispose();
     setTerminalAttended(this.tabId, false);
     setTerminalReplaying(this.tabId, false);
@@ -236,6 +255,45 @@ export class LiveTerminal {
     this.host = null;
     this.view = null;
     this.listeners.clear();
+  }
+
+  /** A link opens only on a modifier-click (Cmd on macOS, Ctrl elsewhere), so selecting or clicking terminal text never navigates, and only to http or https. */
+  private activateLink(event: MouseEvent, target: string): void {
+    if (!(isDarwin() ? event.metaKey : event.ctrlKey)) return;
+    const validated = validateExternalUrl(target);
+    if (validated.ok) this.view?.openLink?.(validated.url);
+  }
+
+  /** Name the link's real target (an OSC 8 link's text can say anything) and how it opens. */
+  private showLinkTip(event: MouseEvent, target: string): void {
+    const host = this.host;
+    if (!host) return;
+    const tip = this.linkTip ?? document.createElement("div");
+    this.linkTip = tip;
+    tip.setAttribute("role", "tooltip");
+    tip.dataset.testid = "terminal-link-tooltip";
+    tip.className = "pointer-events-none absolute z-10 max-w-[min(32rem,calc(100%-0.5rem))] rounded border border-border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md";
+    const url = document.createElement("div");
+    url.className = "break-all font-mono";
+    url.textContent = target;
+    const hint = document.createElement("div");
+    hint.className = "text-muted-foreground";
+    const openable = validateExternalUrl(target).ok && this.view?.openLink !== undefined;
+    tip.dataset.openable = String(openable);
+    hint.textContent = openable ? this.t("ptyTerminal.linkOpenHint", { modifier: isDarwin() ? "⌘" : "Ctrl" }) : this.t("ptyTerminal.linkBlocked");
+    tip.replaceChildren(url, hint);
+    host.appendChild(tip);
+    // Below the pointer, or above it when the row is near the bottom edge; always inside the terminal's box.
+    const box = host.getBoundingClientRect();
+    const size = tip.getBoundingClientRect();
+    const left = Math.max(4, Math.min(event.clientX - box.left, box.width - size.width - 4));
+    const below = event.clientY - box.top + 18;
+    tip.style.left = `${left}px`;
+    tip.style.top = `${below + size.height > box.height ? Math.max(4, event.clientY - box.top - size.height - 8) : below}px`;
+  }
+
+  private hideLinkTip(): void {
+    this.linkTip?.remove();
   }
 
   private setState(change: Partial<LiveTerminalState>): void {

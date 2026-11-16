@@ -26,7 +26,7 @@ const render = (ui: ReactElement) => renderUnwrapped(ui, { wrapper: ({ children 
 
 interface FakeMarker { line: number; isDisposed: boolean; onDispose: () => { dispose(): void }; dispose(): void }
 interface FakeTerminal {
-  options: { theme?: unknown };
+  options: { theme?: unknown; linkHandler?: { activate: LinkCallback; hover: LinkCallback; leave: LinkCallback; allowNonHttpProtocols?: boolean } };
   commandRow: string;
   oscHandlers: Map<number, (data: string) => boolean>;
   dataHandler: ((data: string) => void) | null;
@@ -105,6 +105,11 @@ vi.mock("@xterm/xterm", () => ({
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+type LinkCallback = (event: MouseEvent, target: string) => void;
+const { webLinks } = vi.hoisted(() => ({ webLinks: [] as Array<{ activate: LinkCallback; hover: LinkCallback; leave: LinkCallback }> }));
+vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {
+  constructor(activate: LinkCallback, options: { hover: LinkCallback; leave: LinkCallback }) { webLinks.push({ activate, hover: options.hover, leave: options.leave }); }
+} }));
 
 /** The fake xterm of the n-th terminal this test created. */
 function fakeTerm(index = 0): FakeTerminal {
@@ -131,6 +136,7 @@ function offerKey(xterm: FakeTerminal, event: KeyboardEvent): boolean {
 
 afterEach(() => {
   terminals.length = 0;
+  webLinks.length = 0;
 });
 
 function terminalApi() {
@@ -874,5 +880,74 @@ describe("a terminal whose shell ended", () => {
     fireEvent.click(screen.getByTestId("terminal-restart"));
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+});
+
+describe("terminal links", () => {
+  async function terminalWithLinks(onOpenLink?: (url: string) => void) {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId="terminal:61" tabLabel="Terminal" {...(onOpenLink ? { onOpenLink } : {})} />);
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+    return { detected: webLinks[0]!, osc8: fakeTerm().options.linkHandler! };
+  }
+  const click = (init: MouseEventInit = {}) => new MouseEvent("click", { clientX: 40, clientY: 30, ...init });
+
+  it("opens a detected URL and an OSC 8 link the same way, on a modifier-click only", async () => {
+    const open = vi.fn();
+    const { detected, osc8 } = await terminalWithLinks(open);
+    // A plain click selects or places the cursor; it never navigates.
+    detected.activate(click(), "https://example.test/docs");
+    osc8.activate(click(), "https://example.test/osc");
+    expect(open).not.toHaveBeenCalled();
+    // The test platform is not macOS: Ctrl is the modifier, Cmd is not.
+    detected.activate(click({ metaKey: true }), "https://example.test/docs");
+    expect(open).not.toHaveBeenCalled();
+    detected.activate(click({ ctrlKey: true }), "https://example.test/docs");
+    osc8.activate(click({ ctrlKey: true }), "https://example.test/osc");
+    expect(open.mock.calls).toEqual([["https://example.test/docs"], ["https://example.test/osc"]]);
+  });
+
+  it("opens http and https only, and never a URL carrying credentials", async () => {
+    const open = vi.fn();
+    const { detected, osc8 } = await terminalWithLinks(open);
+    expect(osc8.allowNonHttpProtocols).toBe(false);
+    for (const target of ["file:///etc/passwd", "javascript:alert(1)", "ave://settings", "https://user:secret@example.test/", "not a url"]) {
+      detected.activate(click({ ctrlKey: true }), target);
+      osc8.activate(click({ ctrlKey: true }), target);
+    }
+    expect(open).not.toHaveBeenCalled();
+    osc8.activate(click({ ctrlKey: true }), "http://localhost:3000/");
+    expect(open).toHaveBeenCalledExactlyOnceWith("http://localhost:3000/");
+  });
+
+  it("shows the real target and how it opens in the terminal's own tooltip, and removes it on leave", async () => {
+    const { detected, osc8 } = await terminalWithLinks(vi.fn());
+    // An OSC 8 link's visible text can claim any address: the tooltip names where it really goes.
+    act(() => osc8.hover(click(), "https://tracker.example.test/redirect?to=evil"));
+    const tip = screen.getByTestId("terminal-link-tooltip");
+    expect(screen.getByTestId("terminal-xterm-host").contains(tip)).toBe(true);
+    expect(tip).toHaveTextContent("https://tracker.example.test/redirect?to=evil");
+    expect(tip).toHaveTextContent(t("ptyTerminal.linkOpenHint", { modifier: "Ctrl" }));
+    act(() => osc8.leave(click(), "https://tracker.example.test/redirect?to=evil"));
+    expect(screen.queryByTestId("terminal-link-tooltip")).toBeNull();
+    act(() => detected.hover(click(), "file:///etc/passwd"));
+    expect(screen.getByTestId("terminal-link-tooltip")).toHaveTextContent(t("ptyTerminal.linkBlocked"));
+    expect(screen.getByTestId("terminal-link-tooltip").dataset.openable).toBe("false");
+  });
+});
+
+describe("a link opens as a browser tab of the side panel", () => {
+  it("adds an active browser tab at the link, and refuses what is not a web address", () => {
+    const tabs = renderHook(() => useWorkspaceTabs());
+    let id: string | null = null;
+    act(() => { id = tabs.result.current.openBrowserTab("https://example.test/docs"); });
+    expect(id).not.toBeNull();
+    expect(tabs.result.current.activeTabId).toBe(id);
+    expect(tabs.result.current.tabs.find((tab) => tab.id === id)).toMatchObject({ kind: "browser", mode: "pinned" });
+    expect(tabs.result.current.browserUrlByTab[id!]).toBe("https://example.test/docs");
+    act(() => { id = tabs.result.current.openBrowserTab("file:///etc/passwd"); });
+    expect(id).toBeNull();
+    expect(tabs.result.current.tabs).toHaveLength(1);
   });
 });

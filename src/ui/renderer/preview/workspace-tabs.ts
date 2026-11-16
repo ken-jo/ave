@@ -99,6 +99,8 @@ export interface WorkspaceTabsStore {
   /** Open a NEW pinned browser tab for the agent (`browser_tab_new`) and activate it. Never reuses a tab showing the same
    * url: the agent gets a tab of its own. Returns the new tab's id, or null for an unsafe url. */
   openAgentBrowserTab: (url: string, agentRequestId: string, active: boolean, owner: string) => string | null;
+  /** A new browser tab the user opened at `url` (a link clicked in the terminal), made the active tab. Null for a URL that is not http or https. */
+  openBrowserTab: (url: string) => string | null;
 }
 
 function contentKey(ref: WorkspaceTabContentRef): string {
@@ -342,6 +344,16 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
     return id;
   }, []);
 
+  const openBrowserTab = useCallback((rawUrl: string): string | null => {
+    const url = normalizeBrowserNavigationUrl(rawUrl);
+    if (!url) return null;
+    // Taken in the user's event, outside the updater (see openAgentBrowserTab).
+    const id = mintTabId("browser");
+    const tab: WorkspaceTab = { id, kind: "browser", ordinal: nextOrdinalRef.current.browser++, mode: "pinned", content: null };
+    setState((prev) => ({ ...prev, tabs: [...prev.tabs, tab], activeTabId: id, browserUrlByTab: { ...prev.browserUrlByTab, [id]: url } }));
+    return id;
+  }, []);
+
   const setBrowserTabUrl = useCallback((tabId: string, url: string | null) => {
     setState((prev) => {
       if (url == null) {
@@ -399,7 +411,8 @@ export function useWorkspaceTabs(): WorkspaceTabsStore {
       adoptTab,
       hasTab,
       openAgentBrowserTab,
+      openBrowserTab,
     }),
-    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, releaseTab, adoptTab, hasTab, openAgentBrowserTab],
+    [state, setActiveTabId, addTab, ensureContainerTab, openInEphemeral, openPinned, promoteToPinned, pruneContentTabs, closeTab, setBrowserTabUrl, releaseTab, adoptTab, hasTab, openAgentBrowserTab, openBrowserTab],
   );
 }

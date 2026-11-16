@@ -4353,6 +4353,8 @@ export const ko: Record<MessageCatalogKey, string> = {
   "ptyTerminal.endedNotStarted": "이 탭에서 실행 중인 셸이 없습니다.",
   "ptyTerminal.restartShell": "셸 다시 시작",
   "ptyTerminal.closeTab": "탭 닫기",
+  "ptyTerminal.linkOpenHint": "{modifier}+클릭하면 Ave 브라우저 탭에서 엽니다",
+  "ptyTerminal.linkBlocked": "터미널에서는 http·https 링크만 열 수 있습니다.",
   "ptyTerminal.capacity": "터미널 수 제한에 도달했습니다. 다른 터미널을 닫고 다시 시도하세요.",
   "ptyTerminal.stillClosing": "이전 셸이 종료되는 중입니다. 잠시 후 다시 시도하세요.",
   "ptyTerminal.hostBadgeWorkspace": "내 터미널 (호스트) · 에이전트 접근은 대화별 권한 적용",

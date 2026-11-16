@@ -1351,6 +1351,7 @@ export function ChatSidePanel({
               showChanges={terminalChangesTabId === activeTab.id}
               onShowChanges={(show) => setTerminalChangesTabId(show ? activeTab.id : null)}
               onCloseTab={() => closeWorkspaceTab(activeTab.id)}
+              onOpenLink={workspaceTabs.openBrowserTab}
               {...(onAttachText ? { onAttachText } : {})}
             />
           ) : activeTab.kind === "subagent" ? (

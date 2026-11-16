@@ -2273,6 +2273,14 @@ export function App() {
           onNavigate={mainSurfaces.setUrl}
           // Main-terminal blocks attach to the last composer the user typed in.
           onAttachText={(text) => attachToComposer(text, { focusedGroupId: chatGroups.focusedId })}
+          // A link the user modifier-clicks in the terminal opens as a new page beside it when the canvas has room, else in its place.
+          onOpenLink={(url) => {
+            const page = mainSurfaces.create("browser", { url, projectRoot: surface.projectRoot });
+            const location: ViewLocation = { view: "web", surface: page.tabId };
+            const beside = chatGroups.canSplit && chatGroups.splitFits(paneId, "row", measuredCanvasSize(chatGroupCanvasRef.current))
+              ? chatGroups.placeOnEdge(paneId, "right", location) : null;
+            if (beside === null) chatGroups.setPaneContent(paneId, location);
+          }}
         />
       ));
     }

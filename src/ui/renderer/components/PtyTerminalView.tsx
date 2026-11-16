@@ -44,6 +44,8 @@ interface PtyTerminalViewProps {
   onCwd?: (cwd: string) => void;
   /** Close this terminal's tab; offered once its shell has ended. */
   onCloseTab?: () => void;
+  /** Open a web link the user modifier-clicked in the terminal, in an Ave browser tab. */
+  onOpenLink?: (url: string) => void;
 }
 
 /**
@@ -97,7 +99,7 @@ function focusAttendedTerminal(term: Terminal, tabId: string): void {
   if (active === null || active === document.body || activatedHere) term.focus();
 }
 
-function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, onCwd, onCloseTab, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
+function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, onCwd, onCloseTab, onOpenLink, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
   const { t } = useTranslation();
   const [live, setLive] = useState<LiveTerminal | null>(null);
   const { session, control, blockRevision, ended } = useSyncExternalStore(live ? live.subscribe : subscribeNothing, live ? live.getState : noLiveState);
@@ -110,6 +112,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   attendedRef.current = attended;
   const translateRef = useRef(t);
   translateRef.current = t;
+  const openLinkRef = useRef(onOpenLink);
+  openLinkRef.current = onOpenLink;
   // Changes after the applied theme's values were written to :root — another theme or the same one updated in place.
   const themeContext = useTheme();
   const appliedRevision = themeContext.appliedRevision;
@@ -129,7 +133,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     if (!host || !terminalApi) return;
     const terminal = liveTerminalFor(tabId, () => new LiveTerminal(terminalApi, tabId, terminalStyleRef.current, translateRef.current));
     terminal.applyStyle(terminalStyleRef.current);
-    terminal.attach(host, { purpose, initialCwd: initialCwdRef.current, t: translateRef.current, attended: () => attendedRef.current });
+    terminal.attach(host, { purpose, initialCwd: initialCwdRef.current, t: translateRef.current, attended: () => attendedRef.current,
+      openLink: (url) => openLinkRef.current?.(url) });
     setLive(terminal);
     return () => {
       terminal.detach(host);
@@ -246,7 +251,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       {/* Warnings are xterm decorations on their command's row; only the review side panel overlays this area, so the
           xterm host stays its only in-flow child and no rows are taken. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area">
-        <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
+        <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
         {api.terminal && session ? <TerminalChangeAnnotations key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={live?.anchors ?? null} /> : null}
       </div>
     </div>

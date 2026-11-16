@@ -13,5 +13,10 @@
     "packageName": "@dnd-kit/accessibility",
     "noticeFile": "dnd-kit-accessibility-LICENSE",
     "sha256": "537607e3f1533ad2c5b12978967f5ab27f34ffb7e626e321017a7ccca6cc24ff"
+  },
+  {
+    "packageName": "@xterm/addon-web-links",
+    "noticeFile": "xterm-addon-web-links-LICENSE",
+    "sha256": "689ceb10716bd7a87a804c14951d7c2b818cbd60aab83d540902470ce3b13444"
   }
 ]
