@@ -40,12 +40,11 @@ function joins(value: unknown): boolean {
     && optional(join, "conflict", conflict) && (join.status !== "conflict" || join.conflict !== undefined) && optional(join, "decidedAt", timestamp))
     && new Set(value.map(join => (join as { joinId: string }).joinId)).size === value.length;
 }
-function validStage(value: unknown, summary: boolean): boolean {
+function validStage(value: unknown): boolean {
   if (!isRecord(value) || !isStageId(value.stageId) || !Number.isInteger(value.attempt) || (value.attempt as number) < 1 || (value.attempt as number) > 3 || !STAGE_STATUSES.includes(value.status as string)) return false;
   for (const key of ["startedAt", "endedAt", "childSessionId", "output"]) if (value[key] !== undefined && typeof value[key] !== "string") return false;
   if (typeof value.output === "string" && value.output.length > 48_000) throw new WorkflowTemplateError("invalid-template-run", "Stage output exceeds 48000 characters");
   if (!optional(value, "resultHash", isGraphHash) || !optional(value, "outputHash", isGraphHash)) return false;
-  if (summary && ["output", "gate", "childSessionId", "failure", "taint", "workspace", "blocked", "requestedOutputs", "outputExecutions", "usage"].some(key => value[key] !== undefined)) return false;
   if (!optional(value, "failure", v => ["error", "gate", "interrupted", "denied-tool", "workspace-lost", "workspace-revoked", "budget", "seed"].includes(v as string))
     || !optional(value, "taint", v => v === "file-content" || v === "agent-message") || !optional(value, "workspace", v => workspace(v, false))
     || !optional(value, "blocked", v => isRecord(v) && ["envelope-missing", "isolation-unproven", "lane-unavailable"].includes(v.code as string) && timestamp(v.at))
@@ -60,34 +59,14 @@ function validStage(value: unknown, summary: boolean): boolean {
     && Number.isInteger(g.revision) && (g.revision as number) >= 0
     && (g.note === undefined || typeof g.note === "string") && (g.decidedAt === undefined || typeof g.decidedAt === "string");
 }
-function stages(value: unknown, summary: boolean): boolean {
-  return Array.isArray(value) && value.length <= 12 && value.every(v => validStage(v, summary)) && new Set(value.map(v => v.stageId)).size === value.length;
+function stages(value: unknown): boolean {
+  return Array.isArray(value) && value.length <= 12 && value.every(validStage) && new Set(value.map(v => v.stageId)).size === value.length;
 }
-function authority(value: unknown, raw: Record<string, unknown>): boolean {
+function authority(value: unknown, pin: Record<string, unknown>): boolean {
   if (!isRecord(value) || !isRecord(value.pin)) return false;
-  const pin = value.pin;
-  if (pin.templateId !== raw.templateId || pin.version !== raw.runTemplateVersion || pin.graphHash !== raw.runTemplateGraphHash) return false;
+  if (value.pin.templateId !== pin.templateId || value.pin.version !== pin.version || value.pin.graphHash !== pin.graphHash) return false;
   return (value.kind === "local-create-and-run" && optional(value, "projectRoot", text)) || (value.kind === "schedule-attachment" && isTemplateId(value.attachmentId) && timestamp(value.firedAt));
 }
-/** Optional additive fields keep legacy boards readable; partial authority pins are never repaired. */
-export function assertTemplateRunFields(raw: unknown): void {
-  if (!isRecord(raw)) return;
-  const check = (condition: unknown): void => requireTemplate(condition, "invalid-template-run");
-  if (raw.templateId !== undefined) check(isTemplateId(raw.templateId));
-  const pinned = ["runTemplateVersion", "runTemplateGraphHash", "stageRuns", "runStartedBy", "runWorkspace", "stageJoins"].some(key => raw[key] !== undefined);
-  if (pinned) check(isTemplateId(raw.templateId) && text(raw.runId, 256) && isTemplateVersion(raw.runTemplateVersion) && isGraphHash(raw.runTemplateGraphHash) && stages(raw.stageRuns, false));
-  if (raw.runStartedBy !== undefined) check(authority(raw.runStartedBy, raw));
-  if (raw.runWorkspace !== undefined) check(workspace(raw.runWorkspace, true));
-  if (raw.stageJoins !== undefined) { check(joins(raw.stageJoins)); const stageIds = new Set((raw.stageRuns as { stageId: string }[]).map(s => s.stageId)); check((raw.stageJoins as { stageIds: string[] }[]).every(j => j.stageIds.every(id => stageIds.has(id)))); }
-  if (Array.isArray(raw.runHistory)) for (const h of raw.runHistory) {
-    if (!isRecord(h)) continue;
-    if (h.templateVersion !== undefined || h.templateGraphHash !== undefined || h.stageRuns !== undefined) {
-      check(isTemplateId(raw.templateId) && isTemplateVersion(h.templateVersion) && isGraphHash(h.templateGraphHash) && stages(h.stageRuns, true));
-    }
-  }
-  if (isRecord(raw.planApproval) && raw.planApproval.templateGraphHash !== undefined) check(isGraphHash(raw.planApproval.templateGraphHash) && raw.planApproval.templateGraphHash === raw.runTemplateGraphHash);
-}
-
 /** One entry of the covered run file. Unknown keys are refused, so an entry is either fully understood or left untouched. */
 export function assertWorkflowRunRecord(raw: unknown): asserts raw is WorkflowRunRecord {
   const check = (condition: unknown): void => requireTemplate(condition, "invalid-template-run");
@@ -96,8 +75,8 @@ export function assertWorkflowRunRecord(raw: unknown): asserts raw is WorkflowRu
   check(text(run.runId, 256) && Number.isSafeInteger(run.itemId) && (run.itemId as number) > 0 && timestamp(run.startedAt));
   const pin = run.pin;
   check(hasTemplateKeys(pin, ["templateId", "version", "graphHash"]) && isTemplateId(pin.templateId) && isTemplateVersion(pin.version) && isGraphHash(pin.graphHash));
-  check(stages(run.stageRuns, false));
-  check(authority(run.runStartedBy, { templateId: pin.templateId, runTemplateVersion: pin.version, runTemplateGraphHash: pin.graphHash }));
+  check(stages(run.stageRuns));
+  check(authority(run.runStartedBy, pin as Record<string, unknown>));
   check(optional(run, "runWorkspace", value => workspace(value, true)));
   if (run.stageJoins !== undefined) {
     check(joins(run.stageJoins));
@@ -106,19 +85,23 @@ export function assertWorkflowRunRecord(raw: unknown): asserts raw is WorkflowRu
   }
 }
 
-/** Legacy boards predate template authority; retain ordinary item and run history fields only. */
+const BOARD_RUN_FIELDS = ["runTemplateVersion", "runTemplateGraphHash", "runStartedBy", "pin", "stageRuns", "stageJoins", "runWorkspace", "gate", "resultHash", "outputHash", "templateRunError"];
+function without(value: unknown, fields: readonly string[]): unknown {
+  if (!isRecord(value)) return value;
+  const clean = { ...value };
+  for (const field of fields) delete clean[field];
+  return clean;
+}
+/** A board row names its run by runId only: every run field is removed from the row, its run history and its plan approval. */
+export function stripBoardRunFields<T>(row: T): T {
+  if (!isRecord(row)) return row;
+  const clean = without(row, BOARD_RUN_FIELDS) as Record<string, unknown>;
+  if (Array.isArray(clean.runHistory)) clean.runHistory = clean.runHistory.map(entry => without(entry, ["templateVersion", "templateGraphHash", "stageRuns"]));
+  if (isRecord(clean.planApproval)) clean.planApproval = without(clean.planApproval, ["templateGraphHash"]);
+  return clean as T;
+}
+
+/** Legacy boards predate templates: their rows keep ordinary item and run history fields only. */
 export function stripLegacyBoardTemplateRunFields<T extends { items: unknown[] }>(board: T): T {
-  const strip = (value: unknown, fields: readonly string[]): unknown => {
-    if (!isRecord(value)) return value;
-    const clean = { ...value };
-    for (const field of fields) delete clean[field];
-    return clean;
-  };
-  return { ...board, items: board.items.map(value => {
-    if (!isRecord(value)) return value;
-    const row = strip(value, ["templateId", "runTemplateVersion", "runTemplateGraphHash", "runStartedBy", "pin", "stageRuns", "stageJoins", "runWorkspace", "templateRunError"]) as Record<string, unknown>;
-    if (Array.isArray(row.runHistory)) row.runHistory = row.runHistory.map(entry => strip(entry, ["templateVersion", "templateGraphHash", "stageRuns"]));
-    if (isRecord(row.planApproval)) row.planApproval = strip(row.planApproval, ["templateGraphHash"]);
-    return row;
-  }) };
+  return { ...board, items: board.items.map(row => without(stripBoardRunFields(row), ["templateId"])) };
 }

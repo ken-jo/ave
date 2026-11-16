@@ -1,5 +1,3 @@
-import type { WorkItemStageRun, WorkItemStageRunSummary, RunAuthoritySource, RunWorkspace, StageJoin } from "./workflow-template-types.js";
-
 /** Keep board contracts renderer-safe. Overdue is derived on read for incomplete items past due, never persisted. */
 
 export type WorkItemStatusStored = "planned" | "in_progress" | "completed";
@@ -30,13 +28,8 @@ export type WorkItemRunStatus =
 
 /** Persist ISO timestamps; unset optional fields are omitted rather than null. */
 export interface WorkItem {
+  /** The template this item was created from. Run state is never stored on the row: a template run is named by `runId` only. */
   templateId?: string;
-  runTemplateVersion?: number;
-  runTemplateGraphHash?: string;
-  stageRuns?: WorkItemStageRun[];
-  runStartedBy?: RunAuthoritySource;
-  runWorkspace?: RunWorkspace;
-  stageJoins?: StageJoin[];
   id: number;
   title: string;
   detail?: string;
@@ -73,7 +66,6 @@ export interface WorkPlanApproval {
   runId: string;
   /** sha256 of the stored plan, computed by the host. A decision binds to exactly this plan. */
   planHash: string;
-  templateGraphHash?: string;
   /** sha256 of the item's title, detail and projectRoot when the plan was made; a changed item makes the plan stale. */
   itemDigest: string;
   requestedAt: string;
@@ -122,6 +114,7 @@ export type WorkPlanDecideIpcResult =
   | { ok: false; reason: WorkPlanDecideRefusal | "user-gesture-required" | "invalid-input" };
 
 export interface WorkItemResolved extends WorkItem {
+  /** The run this row names cannot be used: its stored entry is unreadable, belongs to another row, or the run file awaits review. Never persisted. */
   templateRunError?: "invalid-template-run";
   /** Host-issued snapshot revision for conditional lifecycle mutations; never persisted. */
   mutationRevision?: string;
@@ -332,9 +325,6 @@ export interface RunTranscriptEvent {
 
 /** Keep prior run transcript pointers on rerun instead of discarding history. */
 interface WorkItemRunHistoryEntry {
-  templateVersion?: number;
-  templateGraphHash?: string;
-  stageRuns?: WorkItemStageRunSummary[];
   runId: string;
   startedAt: string;
   endedAt?: string;

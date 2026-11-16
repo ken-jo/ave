@@ -6,7 +6,7 @@ import { WorkflowTemplateStore } from "../workflow-template-store.js";
 import { WorkBoardStore } from "../work-board-store.js";
 import { resultHashOf } from "../../shared/workflow-template-output.js";
 import { graphHashOf } from "../../work-board/template-graph.js";
-import { assertTemplateRunFields } from "../../work-board/template-run-fields.js";
+import { assertWorkflowRunRecord } from "../../work-board/template-run-fields.js";
 import type { WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../../shared/workflow-template-types.js";
 const graph = (): WorkflowTemplateDraftInput => ({ name: "Read", scope: { kind: "all" }, stages: [{ id: "a", name: "A", goal: "Read", inputs: [], toolScope: "read", allowSubAgents: false, gate: { type: "human" } }], edges: [] });
 const actor = { who: "user", origin: "local-desktop" } as const;
@@ -55,27 +55,10 @@ it("pins the legacy golden hash and omits empty optional graph collections", () 
   expect(graphHashOf(empty)).toBe(graphHashOf(base));
 });
 it("validates the stage result hash independently of requested-output approvals", () => {
-  const row = { templateId: "template", runId: "run", runTemplateVersion: 1, runTemplateGraphHash: "a".repeat(64), stageRuns: [{ stageId: "a", attempt: 1, status: "passed", resultHash: "bad" }] };
-  expect(() => assertTemplateRunFields(row)).toThrow(expect.objectContaining({ code: "invalid-template-run" }));
-  row.stageRuns[0].resultHash = resultHashOf("stored stage output"); expect(() => assertTemplateRunFields(row)).not.toThrow();
-});
-it.each([ { attempt: 4 }, { status: "future" }, { gate: { type: "human", status: "cancelled", revision: 0 } } ])("keeps an unreadable row untouched while other items work %j", async patch => {
-  const file = join(dir, "board.json");
-  const ordinary = { id: 1, title: "Ordinary", status: "planned", priority: "medium", created_at: "2026-01-01", updated_at: "2026-01-01" };
-  const unreadable = { ...ordinary, id: 2, templateId: "template", runId: "run", runStatus: "executing", runTemplateVersion: 1, runTemplateGraphHash: "a".repeat(64), stageRuns: [{ stageId: "a", attempt: 1, status: "running", ...patch }], future: { preserve: true }, due_at: "2026-01-01T00:00:00+09:00" };
-  await writeFile(file, JSON.stringify({ version: 1, nextId: 3, items: [ordinary, unreadable] }));
-  const store = new WorkBoardStore(file); await expect(store.load()).resolves.toBeUndefined();
-  expect(await store.list()).toMatchObject({ status: "ok", items: [expect.objectContaining({ id: 2, templateRunError: "invalid-template-run" }), expect.objectContaining({ id: 1 })] });
-  expect(await store.get(2)).toMatchObject({ status: "found", item: { templateRunError: "invalid-template-run" } });
-  await expect(store.beginRun(2, "new-run", "2026-01-01")).rejects.toMatchObject({ code: "invalid-template-run" });
-  const mutate = vi.fn(value => value); await expect(store.updateStageRun(2, "run", mutate)).rejects.toMatchObject({ code: "invalid-template-run" }); expect(mutate).not.toHaveBeenCalled();
-  await expect(store.decidePlan(2, { runId: "run", planHash: "a".repeat(64), status: "approved" })).rejects.toMatchObject({ code: "invalid-template-run" });
-  expect(await store.update(1, { title: "Working" })).toMatchObject({ status: "updated" });
-  expect(await store.create({ title: "New" })).toMatchObject({ status: "created" });
-  expect(await store.beginRun(1, "ordinary-run", "2026-01-01")).toMatchObject({ status: "updated" });
-  await store.reconcileInterruptedRuns();
-  const persisted = JSON.parse(await readFile(file, "utf8")); expect(persisted.items.find((value: { id: number }) => value.id === 2)).toEqual(unreadable);
-  expect(await new WorkBoardStore(file).get(2)).toMatchObject({ status: "found", item: { templateRunError: "invalid-template-run" } });
+  const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) };
+  const run = { runId: "run", itemId: 1, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01", stageRuns: [{ stageId: "a", attempt: 1, status: "passed", resultHash: "bad" }] };
+  expect(() => assertWorkflowRunRecord(run)).toThrow(expect.objectContaining({ code: "invalid-template-run" }));
+  run.stageRuns[0].resultHash = resultHashOf("stored stage output"); expect(() => assertWorkflowRunRecord(run)).not.toThrow();
 });
 
 it("provides nullable template readers while retaining pinned history", async () => {
@@ -95,23 +78,12 @@ it.each(["generate", "fetch"] as const)("accepts declared %s tools with an expli
   expect(await store.confirmDraft(draft.template.id, shown(draft), actor)).toMatchObject({ stages: [{ envelope: input.stages[0].envelope }] });
 });
 
-it("persists the stage result hash in the run summary", async () => {
+it("persists the stage result hash in the run record", async () => {
   const store = new WorkBoardStore(join(dir, "board.json"));
   const created = await store.create({ title: "Template", templateId: "template" });
   if (created.status !== "created") throw new Error("Missing item");
   const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) };
   const output = "stored stage output"; const resultHash = resultHashOf(output);
-  expect(await store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin }, stageRuns: [{ stageId: "a", attempt: 1, status: "awaiting_gate", output, resultHash }] })).toMatchObject({ status: "updated", item: { stageRuns: [{ resultHash }], runHistory: [{ stageRuns: [{ resultHash }] }] } });
-});
-
-it.each(["update", "transition", "complete", "setRunStatus", "setRunResult", "setRunSessionId"] as const)("refuses %s on a quarantined row without changing file bytes and permits removal", async operation => {
-  const file = join(dir, "board.json");
-  const row = { id: 1, title: "Unreadable", status: "planned", priority: "medium", created_at: "2026-01-01", updated_at: "2026-01-01", templateId: "template", runId: "run", runTemplateVersion: 1, runTemplateGraphHash: "a".repeat(64), stageRuns: [{ stageId: "a", attempt: 4, status: "running" }] };
-  await writeFile(file, JSON.stringify({ version: 1, nextId: 2, items: [row] })); const before = await readFile(file, "utf8");
-  const store = new WorkBoardStore(file);
-  const writes = { update: () => store.update(1, { title: "Changed" }), transition: () => store.transition(1, "in_progress"), complete: () => store.complete(1), setRunStatus: () => store.setRunStatus(1, "executing"), setRunResult: () => store.setRunResult(1, { runStatus: "completed", output: "Done" }), setRunSessionId: () => store.setRunSessionId(1, "child") };
-  await expect(writes[operation]()).rejects.toMatchObject({ code: "invalid-template-run" });
-  expect(await readFile(file, "utf8")).toBe(before);
-  expect(await store.remove(1)).toMatchObject({ status: "deleted", itemId: 1 });
-  expect(JSON.parse(await readFile(file, "utf8")).items).toEqual([]);
+  expect(await store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin }, stageRuns: [{ stageId: "a", attempt: 1, status: "awaiting_gate", output, resultHash }] })).toMatchObject({ status: "updated", item: { runId: "run" } });
+  expect(await store.getRun(created.itemId)).toMatchObject({ status: "found", run: { stageRuns: [{ output, resultHash }] } });
 });

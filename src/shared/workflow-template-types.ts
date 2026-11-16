@@ -100,7 +100,7 @@ export type WorkflowTemplateErrorCode =
   | "invalid-template-file" | "invalid-template-run" | "schedule-requires-read-only";
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; refusals?: EnvelopeRefusal[]; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "storage-error" };
 
-export interface WorkItemStageRun {
+interface WorkItemStageRun {
   stageId: string;
   attempt: number;
   status: "waiting" | "running" | "awaiting_gate" | "passed" | "failed" | "cancelled" | "rejected";
@@ -121,20 +121,19 @@ export interface WorkItemStageRun {
   gate?: { type: "human"; status: "pending" | "approved" | "changes_requested" | "rejected"; note?: string; decidedAt?: string; revision: number; judgedBy?: "host" | "model" }
     | { type: "auto"; passed: boolean; evidence: string; evaluatedAt: string; judgedBy?: "host" | "model" };
 }
-export type WorkItemStageRunSummary = Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "startedAt" | "endedAt" | "resultHash">;
 
 export type EnvelopeRefusal = "tools-broader-than-scope" | "host-shell" | "floor-target" | "secret-path" | "user-owned-surface"
   | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
 type RunPin = TemplateVersionPin;
-export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; projectRoot?: string }
+type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin; projectRoot?: string }
   | { kind: "schedule-attachment"; attachmentId: string; pin: RunPin; firedAt: string };
-export interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
+interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
 type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
 interface OutputFile { path: string; sha256: string; size: number }
 export interface RequestedOutput { id: string; decl: RequestedOutputDecl; args: string; files?: OutputFile[]; summary: string }
 interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
-export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }
+interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }
 export interface TemplateRunStart extends RunPin { source: RunAuthoritySource; stageRuns: WorkItemStageRun[] }
 /** Template-run state. It is stored only in the covered run file, keyed by runId; a board row names its run by runId alone. */
 export interface WorkflowRunRecord {

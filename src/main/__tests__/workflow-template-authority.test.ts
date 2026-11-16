@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { requiredValue } from "../../__tests__/support/required-value.js";
 import * as graph from "../../work-board/template-graph.js";
 import { canonicalWorkflowJson } from "../../shared/workflow-template-output.js";
-import { assertTemplateRunFields } from "../../work-board/template-run-fields.js";
+import { assertWorkflowRunRecord } from "../../work-board/template-run-fields.js";
 import { WorkflowTemplateStore } from "../workflow-template-store.js";
 import { WorkBoardStore } from "../work-board-store.js";
 import { mintHostDecisionProof } from "../workflow-template-decision.js";
@@ -65,10 +65,11 @@ it("requires a human gate for output entries even without an envelope", async ()
   const store = new WorkflowTemplateStore(join(dir, "templates.json"));
   await expect(confirmVersion(store, value)).rejects.toMatchObject({ code: "envelope-refused", refusals: ["outputs-need-human-gate"] });
 });
-it("validates the same exact output declaration shape on the board", () => {
-  const row = { templateId: "template", runId: "run", runTemplateVersion: 1, runTemplateGraphHash: "a".repeat(64), stageRuns: [{ stageId: "a", attempt: 1, status: "waiting", requestedOutputs: [{ id: "out", decl: output(), args: "{}", summary: "Deliver" }] }] };
-  expect(() => assertTemplateRunFields(row)).not.toThrow(); row.stageRuns[0].requestedOutputs[0].decl.ownerId = "host:git";
-  expect(() => assertTemplateRunFields(row)).toThrow(expect.objectContaining({ code: "invalid-template-run" }));
+it("validates the same exact output declaration shape in the run record", () => {
+  const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) };
+  const run = { runId: "run", itemId: 1, pin, runStartedBy: { kind: "local-create-and-run", pin }, startedAt: "2026-01-01", stageRuns: [{ stageId: "a", attempt: 1, status: "waiting", requestedOutputs: [{ id: "out", decl: output(), args: "{}", summary: "Deliver" }] }] };
+  expect(() => assertWorkflowRunRecord(run)).not.toThrow(); run.stageRuns[0].requestedOutputs[0].decl.ownerId = "host:git";
+  expect(() => assertWorkflowRunRecord(run)).toThrow(expect.objectContaining({ code: "invalid-template-run" }));
 });
 it.each([{ kind: "all" }, { kind: "project", projectRoot: "/projects/a" }] as TemplateScope[])("records the approved scope snapshot %j", async approvedScope => {
   const store = new WorkflowTemplateStore(join(dir, "templates.json")); const value = input(); value.scope = approvedScope; const version = await confirmVersion(store, value);
@@ -95,8 +96,9 @@ it("refuses a create-and-run project different from the approved project before 
   const file = join(dir, "board.json"); const store = new WorkBoardStore(file); const created = await store.create({ title: "Work", projectRoot: "/projects/a", templateId: "template" }); if (created.status !== "created") throw new Error("Missing item");
   const pin = { templateId: "template", version: 1, graphHash: "a".repeat(64) }; const before = await readFile(file, "utf8");
   for (const projectRoot of ["/projects/b", undefined]) await expect(store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin, projectRoot }, stageRuns: [] })).rejects.toMatchObject({ code: "project-mismatch" });
-  expect(await readFile(file, "utf8")).toBe(before);
-  expect(await store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin, projectRoot: "/projects/a" }, stageRuns: [] })).toMatchObject({ status: "updated", item: { runStartedBy: { projectRoot: "/projects/a" } } });
+  expect(await readFile(file, "utf8")).toBe(before); await expect(readFile(join(dir, "workflow-runs.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin, projectRoot: "/projects/a" }, stageRuns: [] })).toMatchObject({ status: "updated", item: { runId: "run" } });
+  expect(await store.getRun(created.itemId)).toMatchObject({ status: "found", run: { runStartedBy: { projectRoot: "/projects/a" } } });
 });
 it.each(["scope-changed", "project-mismatch", "scope-not-authorised", "output-not-declared"] as const)("has bilingual refusal text for %s", code => {
   for (const catalog of [en, ko]) expect(Reflect.get(catalog, `reasonCodes.${code}`)).toEqual(expect.stringMatching(/\S/));

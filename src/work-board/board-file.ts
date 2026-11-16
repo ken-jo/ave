@@ -33,7 +33,6 @@ export interface BoardFile {
   items: WorkItem[];
 }
 
-// Template pins and stage state are optional additive fields; legacy rows retain their shipped meaning.
 export const BOARD_VERSION = 1;
 
 export function resolveWorkItemStatus(
