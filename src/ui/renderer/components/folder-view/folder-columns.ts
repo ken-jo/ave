@@ -13,6 +13,8 @@ export interface FolderColumn {
   status: "loading" | "ok" | "error";
   entries: readonly FolderEntry[];
   truncated: boolean;
+  /** Entries past the listing cap, which main counts after sorting; the column says how many are not shown. */
+  omitted: number;
   /** Entries the sensitive-path floor left out; the empty copy says "no hidden files" only when this is 0. */
   hidden: number;
   error?: FolderListError;
@@ -36,17 +38,17 @@ export type FolderAction =
   | { type: "truncate"; column: number };
 
 function loadingColumn(dir: string): FolderColumn {
-  return { dir, status: "loading", entries: [], truncated: false, hidden: 0 };
+  return { dir, status: "loading", entries: [], truncated: false, omitted: 0, hidden: 0 };
 }
 
 function listedColumn(dir: string, result: WorkspaceListDirResult): FolderColumn {
   return result.ok
-    ? { dir, status: "ok", entries: result.entries ?? [], truncated: result.truncated === true, hidden: result.hidden ?? 0 }
-    : { dir, status: "error", entries: [], truncated: false, hidden: 0, error: result.error ?? "read-failed" };
+    ? { dir, status: "ok", entries: result.entries ?? [], truncated: result.truncated === true, omitted: result.omitted ?? 0, hidden: result.hidden ?? 0 }
+    : { dir, status: "error", entries: [], truncated: false, omitted: 0, hidden: 0, error: result.error ?? "read-failed" };
 }
 
 function sameListing(a: FolderColumn, b: FolderColumn): boolean {
-  return a.status === b.status && a.error === b.error && a.truncated === b.truncated && a.hidden === b.hidden
+  return a.status === b.status && a.error === b.error && a.truncated === b.truncated && a.omitted === b.omitted && a.hidden === b.hidden
     && a.entries.length === b.entries.length
     && a.entries.every((entry, at) => {
       const other = b.entries[at];

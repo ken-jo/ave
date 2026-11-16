@@ -53,7 +53,7 @@ function chainTo(root: string, path: string): string[] {
 }
 
 export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSideChat, initialLocation, onLocationChange }: FolderViewProps) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const [state, dispatch] = useReducer(folderReducer, projectRoot, initialFolderState);
   const [focusedPath, setFocusedPath] = useState<string | undefined>(undefined);
   const [width, setWidth] = useState<number | null>(null);
@@ -318,7 +318,8 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
     ? relativeToRoot(projectRoot, viewing.path)
     : `${relativeToRoot(projectRoot, folder) || pathSegments(projectRoot, projectRoot)[0]}${lastColumn?.status === "error"
       ? ` · ${t("folderView.statusUnreadable")}`
-      : counts ? ` · ${t("folderView.statusCounts", { folders: counts.folders, files: counts.files })}` : ""}`;
+      : counts ? ` · ${t("folderView.statusCounts", { folders: counts.folders, files: counts.files })}${lastColumn.omitted > 0
+        ? ` · ${t("folderView.statusOmitted", { count: lastColumn.omitted.toLocaleString(locale) })}` : ""}` : ""}`;
   const parentName = viewing ? (pathSegments(projectRoot, viewing.path).slice(-2, -1)[0] ?? "") : "";
 
   const crumb = (each: { dir: string; name: string }, last: boolean) => (

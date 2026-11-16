@@ -236,6 +236,21 @@ describe("FolderView", () => {
     });
   });
 
+  it("says how many items a capped listing leaves out, in the column and in the status line", async () => {
+    const MANY = `${ROOT}/data`;
+    const before = listings[MANY];
+    listings[MANY] = { ok: true, entries: [dir(`${MANY}/zz-folder`), file(`${MANY}/f0000.txt`)], truncated: true, omitted: 101, hidden: 0 };
+    try {
+      await openView();
+      fireEvent.click(row(MANY));
+      const note = await screen.findByTestId("folder-column-truncated");
+      expect(note.textContent).toBe("처음 2개만 표시합니다. 101개가 더 있습니다.");
+      expect(screen.getByTestId("folder-status").textContent).toContain("폴더 1 · 파일 1 · 101개 더 있음");
+    } finally {
+      listings[MANY] = before;
+    }
+  });
+
   it("reopens on a restored location and reports where it is", async () => {
     const onLocationChange = vi.fn();
     render(<FolderView projectRoot={ROOT} initialLocation={{ path: `${ROOT}/src`, selection: `${ROOT}/src/index.ts` }}

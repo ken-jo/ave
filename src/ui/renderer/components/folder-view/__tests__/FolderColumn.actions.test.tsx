@@ -8,7 +8,7 @@ import type { FolderColumnProps } from "../FolderColumn.js";
 
 function failed(error: string) {
   const props: FolderColumnProps = {
-    column: { dir: "/w/broken", status: "error", entries: [], truncated: false, hidden: 0, error } as FolderColumnProps["column"],
+    column: { dir: "/w/broken", status: "error", entries: [], truncated: false, omitted: 0, hidden: 0, error } as FolderColumnProps["column"],
     index: 1,
     selectedPath: undefined,
     isCurrent: true,

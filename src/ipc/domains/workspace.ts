@@ -1,6 +1,6 @@
 import { dialog, ipcMain, shell } from "electron";
 import { t } from "../../i18n/index.js";
-import { promises as fs } from "node:fs";
+import { promises as fs, type Dirent } from "node:fs";
 import { isAbsolute as isAbsolutePath, join, resolve as resolvePath } from "node:path";
 import { randomBytes } from "node:crypto";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
@@ -145,6 +145,8 @@ export interface WorkspaceListDirResult {
   path?: string;
   entries?: WorkspaceDirEntry[];
   truncated?: boolean;
+  /** How many listable entries the cap left out, counted after sorting (folders first). */
+  omitted?: number;
   /** How many entries the sensitive-path floor left out, so an empty folder can say whether anything was hidden. */
   hidden?: number;
   error?: "unauthorized" | "path-not-allowed" | "sensitive-path" | "not-a-dir" | "permission-denied" | "not-found" | "read-failed";
@@ -301,6 +303,22 @@ async function linkPointsOutside(realDir: string, linkName: string, realRoot: st
 }
 
 /** Map a filesystem failure to the folder view's stable codes. */
+/** A listing row's kind from its directory entry; a filesystem that does not report the kind there costs one lstat. Sockets,
+ * pipes and devices are not listed. */
+async function listedEntryType(ent: Dirent, full: string): Promise<WorkspaceDirEntry["type"] | null> {
+  if (ent.isSymbolicLink()) return "link";
+  if (ent.isFile()) return "file";
+  if (ent.isDirectory()) return "directory";
+  if (ent.isFIFO() || ent.isSocket() || ent.isCharacterDevice() || ent.isBlockDevice()) return null;
+  try {
+    const info = await fs.lstat(full);
+    return info.isSymbolicLink() ? "link" : info.isFile() ? "file" : info.isDirectory() ? "directory" : null;
+  } catch {
+    // Removed between readdir and lstat; it is no longer there to show.
+    return null;
+  }
+}
+
 function listDirFailure(err: unknown): "permission-denied" | "not-found" | "read-failed" {
   const code = err && typeof err === "object" && "code" in err ? (err as { code?: unknown }).code : undefined;
   if (code === "EACCES" || code === "EPERM") return "permission-denied";
@@ -952,8 +970,9 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         // The listed folder's and its root's own physical paths, so link targets resolve against where the link really is.
         const realDir = root === null ? null : await fs.realpath(dir).catch(() => null);
         const realRoot = root === null ? null : await fs.realpath(root.path).catch(() => null);
-        const entries: WorkspaceDirEntry[] = [];
-        let truncated = false;
+        // Classify from the directory entries alone, sort, then cap: the cap keeps the first rows of the sorted listing
+        // (folders first), and only the kept rows cost an lstat.
+        const candidates: Array<{ name: string; type: WorkspaceDirEntry["type"] }> = [];
         let hidden = 0;
         for (const ent of dirents) {
           const full = join(dir, ent.name);
@@ -968,10 +987,17 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
             hidden += 1;
             continue;
           }
-          if (entries.length >= MAX_DIR_ENTRIES) {
-            truncated = true;
-            break;
-          }
+          const type = await listedEntryType(ent, full);
+          if (type !== null) candidates.push({ name: ent.name, type });
+        }
+        candidates.sort((a, b) => {
+          if ((a.type === "directory") !== (b.type === "directory")) return a.type === "directory" ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+        const omitted = Math.max(0, candidates.length - MAX_DIR_ENTRIES);
+        const entries: WorkspaceDirEntry[] = [];
+        for (const candidate of candidates.slice(0, MAX_DIR_ENTRIES)) {
+          const full = join(dir, candidate.name);
           let info: Awaited<ReturnType<typeof fs.lstat>>;
           try {
             info = await fs.lstat(full);
@@ -980,25 +1006,24 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
             continue;
           }
           const times = { size: info.size, mtimeMs: info.mtimeMs, birthtimeMs: info.birthtimeMs };
-          if (info.isSymbolicLink()) {
+          if (candidate.type === "link") {
+            // Replaced by something else since readdir; the next listing shows what it became.
+            if (!info.isSymbolicLink()) continue;
             // Listed for display only; the target is resolved here solely to decide `outside` and never leaves main. A target
             // that names a network or device location is outside without being touched: resolving `\\host\share` would make
             // Windows authenticate to that host (NTLM) and a hung mount would stall the whole listing.
             let outside = true;
             try {
-              outside = realDir === null || realRoot === null || await linkPointsOutside(realDir, ent.name, realRoot);
+              outside = realDir === null || realRoot === null || await linkPointsOutside(realDir, candidate.name, realRoot);
             } catch {
               outside = true;
             }
-            entries.push({ name: ent.name, path: full, type: "link", outside, ...times });
-          } else if (info.isFile()) entries.push({ name: ent.name, path: full, type: "file", ...times });
-          else if (info.isDirectory()) entries.push({ name: ent.name, path: full, type: "directory", ...times });
+            entries.push({ name: candidate.name, path: full, type: "link", outside, ...times });
+          } else if (candidate.type === "file" ? info.isFile() : info.isDirectory()) {
+            entries.push({ name: candidate.name, path: full, type: candidate.type, ...times });
+          }
         }
-        entries.sort((a, b) => {
-          if ((a.type === "directory") !== (b.type === "directory")) return a.type === "directory" ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-        return { ok: true, path: dir, entries, truncated, hidden };
+        return { ok: true, path: dir, entries, truncated: omitted > 0, omitted, hidden };
       } catch (err) {
         return {
           ok: false,

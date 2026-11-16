@@ -56,7 +56,7 @@ export interface FolderColumnProps {
 export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(function FolderColumn({
   column, index, selectedPath, isCurrent, focusedPath, locked, onSelect, onFocusRow, onKey, onRetry, onReveal, onOpenTerminal, registerRow,
 }, ref) {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const name = column.dir.split(/[\\/]/).filter(Boolean).pop() ?? column.dir;
   const body = (() => {
     if (column.status === "loading") {
@@ -140,7 +140,9 @@ export const FolderColumn = forwardRef<HTMLDivElement, FolderColumnProps>(functi
           );
         })}
         {column.truncated ? (
-          <div className="px-3 py-2 text-dense text-muted-foreground" data-testid="folder-column-truncated">{t("folderView.truncated")}</div>
+          <div className="px-3 py-2 text-dense text-muted-foreground" data-testid="folder-column-truncated">
+            {t("folderView.truncated", { shown: column.entries.length.toLocaleString(locale), omitted: column.omitted.toLocaleString(locale) })}
+          </div>
         ) : null}
       </>
     );

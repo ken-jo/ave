@@ -151,6 +151,31 @@ describe("workspace.searchFiles in one folder", () => {
 });
 
 describe("workspace.listDir folder-view entries", () => {
+  it("sorts before it caps, so a folder past the first 1,000 names is still listed, and counts what the cap left out", async () => {
+    const many = join(root, "many");
+    mkdirSync(many);
+    try {
+      for (let i = 0; i < 1_100; i += 1) writeFileSync(join(many, `f${String(i).padStart(4, "0")}.txt`), "x");
+      mkdirSync(join(many, "zz-folder"));
+      const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), many)) as ListResult & { omitted?: number };
+      expect(res.ok).toBe(true);
+      expect(res.entries).toHaveLength(1_000);
+      expect(res.entries?.[0]).toMatchObject({ name: "zz-folder", type: "directory" });
+      expect(res.entries?.[1]?.name).toBe("f0000.txt");
+      expect(res.entries?.[999]?.name).toBe("f0998.txt");
+      expect(res.truncated).toBe(true);
+      expect(res.omitted).toBe(101);
+    } finally {
+      rmSync(many, { recursive: true, force: true });
+    }
+  });
+
+  it("reports nothing omitted for a folder under the cap", async () => {
+    const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), join(root, "src"))) as ListResult & { omitted?: number };
+    expect(res.truncated).toBe(false);
+    expect(res.omitted).toBe(0);
+  });
+
   it("adds size, modified and created times from one lstat per entry", async () => {
     const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), root)) as ListResult;
     expect(res.ok).toBe(true);
