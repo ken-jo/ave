@@ -8,19 +8,23 @@ import { MemoryMapScopeSchema, MemoryRetrievalSchema, MemoryEmbeddingSettingsSch
 import { LocalModelManager, MemoryModelError } from '../../main/memory-map/model-manager.js';
 import { MemoryMapHost, MemoryMapHostError } from '../../main/memory-map/host.js';
 import { readGraphCatalog, memoryFacets } from '../../main/memory-map/catalog.js';
-import { LOCAL_NAMESPACE } from '../../main/memory-map/graph.js';
+import { MEMORY_EMBEDDING_CONSENT_VERSION } from '../../shared/memory-embedding-config.js';
+import { ProviderEmbeddings } from '../../main/memory-map/provider-embeddings.js';
 import { defaultWorkspaceProject } from '../../main/project-root-authorization.js';
 import { sendToWebContents } from '../safe-send.js';
 import type { ProjectScopedMemoryOptions } from '../../memory/memory-manager.js';
 type ScopeResolver = (raw: unknown) => { ok: true; options: ProjectScopedMemoryOptions } | { ok: false; error: string };
 export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeResolver): void {
+  const provider = new ProviderEmbeddings(deps.settingsService, deps.singleHopNetworkFetch);
+  let settingsGeneration = 0;
+  let settingsWrite: Promise<unknown> = Promise.resolve();
   let buildEvent: IpcMainInvokeEvent | undefined; let modelEvent: IpcMainInvokeEvent | undefined;
   const model = new LocalModelManager({
     readPath: () => deps.settingsService.get('memoryEmbedding')?.localModelPath,
-    savePath: path => deps.settingsService.set('memoryEmbedding', { localModelPath: path }),
+    savePath: path => deps.settingsService.set('memoryEmbedding', { ...deps.settingsService.get('memoryEmbedding'), localModelPath: path }),
     onProgress: status => { if (modelEvent && validateHostRendererSender(modelEvent)) sendToWebContents(modelEvent.sender, CHANNELS.memoryMap.modelProgress, status); },
   });
-  const host = new MemoryMapHost({ validatedModelPath: () => { if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured'); return model.validatedPath(); }, onProgress: progress => {
+  const host = new MemoryMapHost({ provider, validatedModelPath: () => { if (!deps.settingsService.get('memoryEmbedding')?.localModelPath) throw new MemoryMapHostError('model-unconfigured'); return model.validatedPath(); }, onProgress: progress => {
     if (buildEvent && validateHostRendererSender(buildEvent)) sendToWebContents(buildEvent.sender, CHANNELS.memoryMap.progress, progress);
   } });
   const catalog = (scope?: MemoryMapScope) => () => {
@@ -28,7 +32,12 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
     if (!result.ok) { host.cancel(); throw new MemoryMapHostError('project-not-allowed'); }
     return readGraphCatalog(deps.memoryManager, result.options, defaultWorkspaceProject().projectRoot);
   };
-  const settings = (): MemoryEmbeddingSettings => ({ source: 'local', namespace: LOCAL_NAMESPACE, providerAvailable: false });
+  const settings = async (): Promise<MemoryEmbeddingSettings> => {
+    const config = deps.settingsService.get('memoryEmbedding');
+    const providers = await provider.providers();
+    const namespace = provider.namespace();
+    return { source: namespace.source, namespace, providers, providerAvailable: providers.some(value => value.models.length > 0), ...(config?.consent ? { consent: config.consent } : {}) };
+  };
   function handle<T>(channel: string, schema: z.ZodType<T>, action: (value: T, event: IpcMainInvokeEvent) => unknown) {
     ipcMain.handle(channel, async (event, raw: unknown, ...extra: unknown[]) => {
       if (!validateHostRendererSender(event)) { auditUnauthorized(deps.auditLogger, channel, event); return UNAUTHORIZED_FRAME; }
@@ -39,9 +48,7 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
       try { return { ok: true, value: await action(parsed.data, event) }; }
       catch (error) {
         if (error instanceof MemoryModelError || error instanceof MemoryMapHostError) return { ok: false, error: error.code };
-        const filesystem = error as NodeJS.ErrnoException;
-        if (filesystem.code || (error instanceof Error && /Memory worker/.test(error.message))) return { ok: false, error: 'graph-build-failed' satisfies MemoryMapError };
-        throw error;
+        return { ok: false, error: 'graph-build-failed' satisfies MemoryMapError };
       }
     });
   }
@@ -59,8 +66,30 @@ export function registerMemoryMapHandlers(deps: IpcDeps, resolveScope: ScopeReso
     host.cancel(); modelEvent = event; return model.useExisting(selection.filePaths[0]);
   });
   handle(CHANNELS.memoryMap.settingsGet, z.undefined(), settings);
-  handle(CHANNELS.memoryMap.settingsSet, MemoryEmbeddingSettingsSchema, input => {
-    if (input.source !== 'local') throw new MemoryMapHostError('provider-unavailable');
-    host.cancel(); return settings();
+  handle(CHANNELS.memoryMap.settingsSet, MemoryEmbeddingSettingsSchema, async input => {
+    const generation = ++settingsGeneration;
+    provider.suspend(); host.cancel();
+    const pending = settingsWrite.catch(() => {}).then(async () => {
+      if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
+      if (input.source === 'provider') {
+        if (!input.consent) throw new MemoryMapHostError('provider-consent-required');
+        await provider.validate(input.providerId, input.modelId);
+      }
+      if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
+      const previous = deps.settingsService.get('memoryEmbedding');
+      await deps.settingsService.set('memoryEmbedding', {
+        ...(previous?.localModelPath ? { localModelPath: previous.localModelPath } : {}),
+        ...input.source === 'local' ? { source: 'local' as const } : {
+          source: 'provider' as const, providerId: input.providerId, modelId: input.modelId,
+          consent: { version: MEMORY_EMBEDDING_CONSENT_VERSION, providerId: input.providerId, modelId: input.modelId, timestamp: new Date().toISOString() },
+        },
+      });
+      if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
+      await host.invalidate();
+      if (generation !== settingsGeneration) throw new MemoryMapHostError('request-stale');
+      provider.resume(); return settings();
+    });
+    settingsWrite = pending;
+    return pending;
   });
 }

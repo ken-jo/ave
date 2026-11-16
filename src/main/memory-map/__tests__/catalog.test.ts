@@ -23,6 +23,9 @@ describe('memory map catalog boundary', () => {
     expect(normalizeMemoryEmbeddingConfig({ localModelPath: '/example/model' })).toEqual({ localModelPath: '/example/model' });
     expect(normalizeMemoryEmbeddingConfig({ localModelPath: '/example/model', source: 'provider' })).toBeUndefined();
     expect(normalizeMemoryEmbeddingConfig({ localModelPath: 5 })).toBeUndefined();
+    const selected = { source: 'provider', providerId: 'configured', modelId: 'embed', consent: { version: 1, providerId: 'configured', modelId: 'embed', timestamp: '2026-11-16T00:00:00.000Z' } };
+    expect(normalizeMemoryEmbeddingConfig(selected)).toEqual(selected);
+    expect(normalizeMemoryEmbeddingConfig({ ...selected, consent: { ...selected.consent, version: 0 } })).toBeUndefined();
     for (const key of Object.values(MEMORY_MAP_ERROR_KEYS)) { expect(en[key]).toBeTruthy(); expect(ko[key]).toBeTruthy(); }
   });
 });

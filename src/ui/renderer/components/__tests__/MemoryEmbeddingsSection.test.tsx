@@ -7,6 +7,38 @@ import { en } from '../../../../i18n/messages/en.js';
 import { ko } from '../../../../i18n/messages/ko.js';
 
 describe('memory embeddings settings', () => {
+  it('requires explicit provider and model consent, resets it on changes, and opts out immediately', async () => {
+    const api = createMemoryMapApi();
+    const initial = await api.settingsGet();
+    if (!initial?.ok) throw new Error('Missing settings');
+    api.settingsGet.mockClear();
+    api.settingsGet.mockResolvedValue({ ok: true, value: { ...initial.value, providers: [{ id: 'configured', models: ['embed-a', 'embed-b'] }, { id: 'no-embedding', models: [], reason: 'provider-no-embedding-model' }] } });
+    api.settingsSet.mockImplementation(async selection => ({ ok: true, value: { ...initial.value, source: selection.source, namespace: { ...initial.value.namespace, source: selection.source } } }));
+    render(<MemoryEmbeddingsSection api={api} />);
+    await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('radio', { name: '제공자' }));
+    const save = screen.getByRole('button', { name: '저장' }); expect(save).toBeDisabled();
+    const provider = screen.getByRole('combobox', { name: '제공자' }); const model = screen.getByRole('combobox', { name: '임베딩 모델' });
+    fireEvent.change(provider, { target: { value: 'configured' } }); fireEvent.change(model, { target: { value: 'embed-a' } });
+    expect(save).toBeDisabled(); expect(api.settingsSet).not.toHaveBeenCalled();
+    const consent = screen.getByRole('checkbox'); expect(consent).toHaveAccessibleName(/configured/); expect(consent).toHaveAccessibleName(/질문/);
+    fireEvent.click(consent); expect(save).toBeEnabled();
+    fireEvent.change(model, { target: { value: 'embed-b' } }); expect(consent).not.toBeChecked(); expect(save).toBeDisabled();
+    fireEvent.click(consent); fireEvent.click(save);
+    await waitFor(() => expect(api.settingsSet).toHaveBeenCalledWith({ source: 'provider', providerId: 'configured', modelId: 'embed-b', consent: true }));
+    await waitFor(() => expect(screen.getByRole('radio', { name: '로컬' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('radio', { name: '로컬' }));
+    await waitFor(() => expect(api.settingsSet).toHaveBeenLastCalledWith({ source: 'local' }));
+  });
+  it('shows translated refusal for a configured provider without embeddings', async () => {
+    const api = createMemoryMapApi(); const result = await api.settingsGet(); if (!result.ok) throw new Error('Missing settings');
+    api.settingsGet.mockResolvedValue({ ok: true, value: { ...result.value, providers: [{ id: 'no-embedding', models: [], reason: 'provider-no-embedding-model' }] } });
+    render(<MemoryEmbeddingsSection api={api} />);
+    await waitFor(() => expect(screen.getByRole('radio', { name: '제공자' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('radio', { name: '제공자' })); fireEvent.change(screen.getByRole('combobox', { name: '제공자' }), { target: { value: 'no-embedding' } });
+    expect(screen.getByText(ko['memoryMap.error.provider-no-embedding-model'])).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: '임베딩 모델' })).toBeDisabled(); expect(screen.getByRole('button', { name: '저장' })).toBeDisabled();
+  });
   it('keeps setup explicit and reports failed folder validation and retry', async () => {
     const api = createMemoryMapApi();
     render(<MemoryEmbeddingsSection api={api} />);

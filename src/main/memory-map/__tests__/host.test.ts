@@ -48,7 +48,7 @@ describe('memory graph publication', () => {
     const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });
     let started!: () => void; const start = new Promise<void>(resolve => { started = resolve; });
     const runner: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal) => {
-      if (task.kind === 'build') return f.runWorker<T>(folder, task, signal);
+      if (task.kind !== 'embed') return f.runWorker<T>(folder, task, signal);
       if (task.text === 'first') { started(); await wait; }
       return [1, ...Array<number>(383).fill(0)] as T;
     };

@@ -723,6 +723,19 @@ export class VercelUnifiedProvider implements LLMProvider {
       || usesOpenAIResponsesWire(this.vendorSlot, modelId, reasoning, baseUrl);
   }
 
+  embeddingModel(modelId: string) {
+    const slot = this.protocolVendor();
+    const baseURL = this.providerMetadata?.baseUrl ?? this.baseUrl;
+    if (!this.customFetch) throw new Error('Embedding transport is required');
+    assertCredentialedBaseUrlUsesHttps(slot, baseURL, this.apiKey, this.customFetch);
+    const options = { apiKey: this.apiKey, fetch: this.customFetch, ...(baseURL ? { baseURL } : {}) };
+    if (slot === "openai") return createOpenAI(options).embeddingModel(modelId);
+    if (slot === "gemini") return createGoogleGenerativeAI(options).embeddingModel(modelId);
+    if (slot === "azure-foundry" && baseURL) return createAzure({ ...options, baseURL: normalizeAzureFoundryBaseURL(baseURL) }).embeddingModel(modelId);
+    if (isOpenAICompatibleVendor(slot) && baseURL) return createOpenAICompatible({ ...options, baseURL, name: OPENAI_COMPAT_PROVIDER_NAME }).embeddingModel(modelId);
+    throw new Error('Provider has no embedding factory');
+  }
+
   private resolveModel(
     modelId: string,
     openAIResponsesWire: boolean,

@@ -10,8 +10,8 @@ export const digest = (value: string): string => createHash('sha256').update(val
 export const vectorKey = (record: MemoryMapRecord, namespace: EmbeddingNamespace): string => digest(JSON.stringify([record.memoryId, record.contentRevision, namespace]));
 export const catalogRevision = (records: MemoryMapRecord[]): string => digest(JSON.stringify(records));
 export function cosine(a: number[], b: number[]): number {
-  if (a.length !== 384 || b.length !== 384) throw new Error('Expected 384 embedding dimensions');
-  let value = 0; for (let i = 0; i < 384; i++) value += a[i]! * b[i]!;
+  if (!a.length || a.length !== b.length) throw new Error('Embedding dimensions differ');
+  let value = 0; for (let i = 0; i < a.length; i++) value += a[i]! * b[i]!;
   if (!Number.isFinite(value)) throw new Error('Non-finite similarity');
   return Math.max(-1, Math.min(1, value));
 }
@@ -51,14 +51,14 @@ function seededRandom(seed: number): () => number {
 }
 export interface GraphBuildInput { records: MemoryMapRecord[]; authorizationScopeId: string; excluded: number; cache: VectorCache; namespace: EmbeddingNamespace; jobId: string }
 export async function buildGraph(input: GraphBuildInput, embedder: Embedder, onProgress: (progress: MemoryMapProgress) => void): Promise<{ snapshot: GraphSnapshot; cache: VectorCache }> {
-  if (input.namespace.dimensions !== 384) throw new Error('Expected 384-dimensional namespace');
+  if (!Number.isSafeInteger(input.namespace.dimensions) || input.namespace.dimensions < 1) throw new Error('Invalid embedding dimensions');
   const records = [...input.records].sort((a, b) => a.memoryId.localeCompare(b.memoryId));
   if (new Set(records.map(r => r.memoryId)).size !== records.length) throw new Error('Duplicate memory identity');
   const cache: VectorCache = {}; const vectors: number[][] = [];
   for (const record of records) {
     const key = vectorKey(record, input.namespace);
     const vector = input.cache[key] ?? await embedder.embed(record.title + '\n' + record.text);
-    if (vector.length !== 384 || vector.some(n => !Number.isFinite(n)) || Math.abs(Math.hypot(...vector) - 1) > 0.001) throw new Error('Invalid normalized embedding');
+    if (vector.length !== input.namespace.dimensions || vector.some(n => !Number.isFinite(n)) || Math.abs(Math.hypot(...vector) - 1) > 0.001) throw new Error('Invalid normalized embedding');
     cache[key] = vector; vectors.push(vector);
     onProgress({ jobId: input.jobId, phase: 'embedding', completed: vectors.length, total: records.length, memoryId: record.memoryId });
   }
@@ -73,7 +73,7 @@ export async function buildGraph(input: GraphBuildInput, embedder: Embedder, onP
   const revision = catalogRevision(records);
   return { cache, snapshot: {
     snapshotId: digest(JSON.stringify([input.authorizationScopeId, revision, input.namespace, PROJECTION_SEED])), catalogRevision: revision, authorizationScopeId: input.authorizationScopeId,
-    model: { id: input.namespace.modelId, revision: input.namespace.modelRevision, dimensions: 384, preprocessingRevision: input.namespace.preprocessingRevision, namespace: input.namespace },
+    model: { id: input.namespace.modelId, revision: input.namespace.modelRevision, dimensions: input.namespace.dimensions, preprocessingRevision: input.namespace.preprocessingRevision, namespace: input.namespace },
     projection: { algorithm: 'umap', dimensions: 2, version: '1.4.0', seed: PROJECTION_SEED, parameters }, status: 'ready',
     coverage: { eligible: records.length, embedded: records.length, pending: 0, excluded: input.excluded },
     points: records.map(({ text: _text, ...record }, i) => ({ ...record, x: coordinates[i]![0]!, y: coordinates[i]![1]! })), edges,

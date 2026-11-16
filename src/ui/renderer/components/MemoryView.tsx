@@ -46,16 +46,17 @@ export function MemoryView(props: MemorySearchPanelProps & { onOpenEmbeddingSett
     setState('loading'); setSnapshot(null); setFilters({}); setSelected(null); setProgress(null); setError(null);
     setResumedBuild(false);
     const stop = api.memoryMap.onProgress(value => { if (active) { setProgress(value); setState('building'); } });
-    void Promise.all([api.memoryMap.get(scope), api.memoryMap.facets(scope), api.memoryMap.modelStatus()]).then(([graph, counts, model]) => {
+    void Promise.all([api.memoryMap.get(scope), api.memoryMap.facets(scope), api.memoryMap.modelStatus(), api.memoryMap.settingsGet()]).then(([graph, counts, model, settings]) => {
       if (!active || generation.current !== current) return;
       if (!graph.ok) { setState(graph.error === 'graph-stale' ? 'stale' : 'failed'); setError(graph.error); return; }
       if (!counts.ok) { setState('failed'); setError(counts.error); return; }
-      if (!model.ok) { setState('failed'); setError(model.error); return; }
+      if (!settings.ok) { setState('failed'); setError(settings.error); return; }
+      if (!model.ok && settings.value.source === 'local') { setState('failed'); setError(model.error); return; }
       setFacets(counts.value);
       setSnapshot(graph.value);
       setResumedBuild(graph.value?.status === 'building');
       if (graph.value?.status === 'ready') hadSnapshot.current = true;
-      setState(graph.value ? graph.value.status === 'ready' && graph.value.points.length === 0 ? 'empty' : graph.value.status : model.value.status === 'ready' ? hadSnapshot.current ? 'stale' : 'empty' : 'unconfigured');
+      setState(graph.value ? graph.value.status === 'ready' && graph.value.points.length === 0 ? 'empty' : graph.value.status : (settings.value.source === 'provider' ? settings.value.providerAvailable : model.ok && model.value.status === 'ready') ? hadSnapshot.current ? 'stale' : 'empty' : 'unconfigured');
     }).catch(() => { if (active && generation.current === current) { setState('failed'); setError('graph-unavailable'); } });
     return () => { active = false; generation.current++; stop(); };
   }, [api, scope, reload]);

@@ -1,4 +1,4 @@
-import type { MemoryMapFilters, MemoryMapRecord, RetrievalAnswer } from '../../shared/memory-map.js';
+import type { EmbeddingNamespace, MemoryMapFilters, MemoryMapRecord, RetrievalAnswer } from '../../shared/memory-map.js';
 import { cosine, vectorKey, LOCAL_NAMESPACE, type VectorCache } from './graph.js';
 const RETRIEVAL_SIMILARITY_CUTOFF = 0.85;
 export function matchesFilters(record: MemoryMapRecord, filters: MemoryMapFilters): boolean {
@@ -7,9 +7,9 @@ export function matchesFilters(record: MemoryMapRecord, filters: MemoryMapFilter
   if (filters.playbookIds?.length) return false;
   return !filters.text?.trim() || (record.title + '\n' + record.text).toLocaleLowerCase().includes(filters.text.trim().toLocaleLowerCase());
 }
-export function retrieveMatches(records: MemoryMapRecord[], cache: VectorCache, questionVector: number[], filters: MemoryMapFilters, identity: Pick<RetrievalAnswer, 'snapshotId' | 'catalogRevision' | 'queryId'>): RetrievalAnswer {
+export function retrieveMatches(records: MemoryMapRecord[], cache: VectorCache, questionVector: number[], filters: MemoryMapFilters, identity: Pick<RetrievalAnswer, 'snapshotId' | 'catalogRevision' | 'queryId'>, namespace: EmbeddingNamespace = LOCAL_NAMESPACE): RetrievalAnswer {
   const candidates = records.filter(record => matchesFilters(record, filters)).map(record => {
-    const vector = cache[vectorKey(record, LOCAL_NAMESPACE)];
+    const vector = cache[vectorKey(record, namespace)];
     if (!vector) throw new Error('Current memory vector is missing');
     return { record, score: cosine(questionVector, vector) };
   }).filter(row => row.score >= RETRIEVAL_SIMILARITY_CUTOFF && row.record.text.trim()).sort((a, b) => b.score - a.score || a.record.memoryId.localeCompare(b.record.memoryId));

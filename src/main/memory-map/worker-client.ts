@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { mainDir } from '../main-paths.js';
 import type { MemoryMapProgress } from '../../shared/memory-map.js';
 import type { GraphBuildInput } from './graph.js';
-export type MemoryWorkerTask = { kind: 'build'; input: GraphBuildInput } | { kind: 'embed'; text: string };
+export type MemoryWorkerTask = { kind: 'build' | 'project'; input: GraphBuildInput } | { kind: 'embed'; text: string };
 export type MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void) => Promise<T>;
 export const runMemoryWorker: MemoryWorkerRunner = <T>(folder: string, task: MemoryWorkerTask, signal: AbortSignal, onProgress?: (progress: MemoryMapProgress) => void): Promise<T> => {
   signal.throwIfAborted();

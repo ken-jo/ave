@@ -1,7 +1,14 @@
-export interface MemoryEmbeddingConfig { localModelPath: string }
+import { z } from 'zod';
+export const MEMORY_EMBEDDING_CONSENT_VERSION = 1;
+export const MemoryEmbeddingConsentSchema = z.object({ version: z.literal(MEMORY_EMBEDDING_CONSENT_VERSION), providerId: z.string().min(1).max(128), modelId: z.string().min(1).max(256), timestamp: z.string().datetime() }).strict();
+export type MemoryEmbeddingConsent = z.infer<typeof MemoryEmbeddingConsentSchema>;
+const ConfigSchema = z.object({
+  localModelPath: z.string().min(1).max(32768).refine(value => !value.includes('\0')).optional(),
+  source: z.enum(['local', 'provider']).optional(), providerId: z.string().min(1).max(128).optional(), modelId: z.string().min(1).max(256).optional(),
+  consent: MemoryEmbeddingConsentSchema.optional(),
+}).strict().refine(value => value.source !== 'provider' || Boolean(value.providerId && value.modelId), 'Provider selection is incomplete');
+export type MemoryEmbeddingConfig = z.infer<typeof ConfigSchema>;
 export function normalizeMemoryEmbeddingConfig(value: unknown): MemoryEmbeddingConfig | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const record = value as Record<string, unknown>;
-  if (Object.keys(record).some(key => key !== 'localModelPath') || typeof record.localModelPath !== 'string' || !record.localModelPath || record.localModelPath.length > 32768 || record.localModelPath.includes('\0')) return undefined;
-  return { localModelPath: record.localModelPath };
+  const parsed = ConfigSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }

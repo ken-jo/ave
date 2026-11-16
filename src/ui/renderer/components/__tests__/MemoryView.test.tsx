@@ -38,6 +38,14 @@ function selectTab(name: string) { fireEvent.mouseDown(screen.getByRole('tab', {
 async function ready() { await screen.findByText('메모리 3 · 연결 2'); }
 
 describe('memory map view', () => {
+  it('allows building a provider map without a local model installed', async () => {
+    const { map, props } = setup(); map.get.mockResolvedValue({ ok: true, value: null });
+    map.settingsGet.mockResolvedValue({ ok: true, value: { source: 'provider', providerAvailable: true, providers: [], namespace: { ...SNAPSHOT.model.namespace, source: 'provider', providerId: 'configured' } } });
+    render(<MemoryView {...props} />);
+    await screen.findByText('아직 지도가 없습니다. 사용 가능한 메모리로 지도를 만드세요.');
+    fireEvent.click(screen.getAllByRole('button', { name: '지도 다시 만들기' })[0]!);
+    await waitFor(() => expect(map.build).toHaveBeenCalledOnce());
+  });
   it('uses OR within facets, AND across them and counts only induced links', async () => {
     const { props } = setup(); render(<MemoryView {...props} />); await ready();
     const filters = screen.getByRole('complementary', { name: '메모리 필터' });
