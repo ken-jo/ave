@@ -1,6 +1,7 @@
-import { test, expect } from "./fixtures";
+import { test, expect } from "./fixtures.js";
 import { setWindowSize } from "./seeded-electron.js";
 import { MAIN_WINDOW_MIN_HEIGHT } from "../../../src/shared/shell-geometry.js";
+import { writeFileSync } from "node:fs";
 
 // Native command-menu geometry is outside the renderer; assert that fixed action controls stay visible.
 
@@ -10,7 +11,7 @@ const TRAILING = '[data-testid="iab-trailing"]';
 const STATUS_ROW = '[data-testid="iab-status-row"]';
 const PERMISSION = '[data-testid="iab-status-permission"]';
 
-test("command button stays inside the action bar at narrow width", async ({ app, mainWindow }) => {
+test("command button stays inside the action bar at narrow width", async ({ app, mainWindow }, testInfo) => {
   await setWindowSize(app, 460, MAIN_WINDOW_MIN_HEIGHT, mainWindow);
   await expect(mainWindow.getByTestId("app-shell")).toHaveAttribute("data-sidebar-state", "rail");
   await mainWindow.evaluate(() => {
@@ -50,6 +51,10 @@ test("command button stays inside the action bar at narrow width", async ({ app,
       statusRight: statusRect.right,
       statusParentRight: statusParentRect.right,
       statusOverflow: status.scrollWidth - status.clientWidth,
+      statusChildren: Array.from(status.children, child => {
+        const rect = child.getBoundingClientRect();
+        return { text: child.textContent, left: rect.left, top: rect.top, right: rect.right, width: rect.width };
+      }),
       permissionWidth: permissionRect.width,
       trailingOverflowX: trailStyle.overflowX,
       permissionOverflowX: permissionStyle.overflowX,
@@ -62,6 +67,8 @@ test("command button stays inside the action bar at narrow width", async ({ app,
     permission: PERMISSION,
   });
 
+  writeFileSync(testInfo.outputPath("narrow-composer-geometry.json"), JSON.stringify(geometry, null, 2));
+  await mainWindow.screenshot({ path: testInfo.outputPath("narrow-composer.png") });
   expect(geometry.ok).toBe(true);
   if (!geometry.ok) return;
 
