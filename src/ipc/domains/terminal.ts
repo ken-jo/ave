@@ -39,6 +39,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     if (!authorized(event, CHANNELS.terminal.spawn)) return { ok: false, reason: "unauthorized-frame", message: "sender frame is not authorized" };
     if (!payload || typeof payload.tabId !== "string" || payload.lane !== "manual" || !isTerminalPurpose(payload.purpose)
       || (payload.cwd !== undefined && typeof payload.cwd !== "string")
+      || (payload.replay !== undefined && typeof payload.replay !== "boolean")
       || (payload.cols !== undefined && (typeof payload.cols !== "number" || !Number.isFinite(payload.cols)))
       || (payload.rows !== undefined && (typeof payload.rows !== "number" || !Number.isFinite(payload.rows)))) {
       return { ok: false, reason: "bad-request", message: "invalid terminal spawn request" };
@@ -55,6 +56,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     updateApprovalSurface({ kind: "attach-terminal", tabId: payload.tabId, surface: event.sender });
     return spawnTerminal({ tabId: payload.tabId, lane: payload.lane, ownerWindowId, purpose: payload.purpose,
       ...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
+      ...(payload.replay !== undefined ? { replay: payload.replay } : {}),
       ...(payload.cols !== undefined ? { cols: payload.cols } : {}),
       ...(payload.rows !== undefined ? { rows: payload.rows } : {}),
     });

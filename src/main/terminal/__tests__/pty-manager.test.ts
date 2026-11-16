@@ -2477,6 +2477,44 @@ describe("host tabs and conversation-owned isolation", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it("replays a host ring that lost its front from a whole line, and nothing to a view that kept its terminal", async () => {
+    gateActive = false;
+    vi.stubEnv("SHELL", process.execPath);
+    try {
+      const first = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, cwd: tmpdir() });
+      if (!first.ok) throw new Error("expected host terminal");
+      const replayOf = async (replay?: boolean): Promise<string> => {
+        emitted = [];
+        expect(await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, ...(replay === undefined ? {} : { replay }) })).toMatchObject({ ok: true, replayed: true });
+        return emitted.map((entry) => (entry.payload as { chunk?: string }).chunk ?? "").join("");
+      };
+      // Nothing dropped yet: the replay is the output as written, first partial line included.
+      lastPty?.emitData("partial-");
+      lastPty?.emitData("line\r\nnext\r\n");
+      expect(await replayOf()).toBe("partial-line\r\nnext\r\n");
+      // Enough output to push the first chunks out of the ring; lines are numbered so a cut one is recognisable.
+      const line = (index: number): string => `row-${String(index).padStart(6, "0")}-${"x".repeat(100)}\r\n`;
+      let index = 0;
+      for (let chunk = 0; chunk < 400; chunk++) {
+        let text = "";
+        for (let rows = 0; rows < 37; rows++) text += line(index++);
+        // Chunk boundaries fall mid-line, as PTY reads do.
+        lastPty?.emitData(text.slice(0, -50));
+        lastPty?.emitData(text.slice(-50));
+      }
+      const replay = await replayOf();
+      expect(Buffer.byteLength(replay)).toBeLessThanOrEqual(1024 * 1024);
+      expect(Buffer.byteLength(replay)).toBeGreaterThan(512 * 1024);
+      const rows = replay.split("\r\n");
+      expect(rows.at(-1)).toBe("");
+      for (const row of rows.slice(0, -1)) expect(row).toMatch(/^row-\d{6}-x{100}$/);
+      expect(rows.at(-2)).toBe(line(index - 1).trimEnd());
+      // A view that kept its xterm re-attaches without a second copy of that output.
+      expect(await replayOf(false)).toBe("");
+      expect(ptySpawnMock).toHaveBeenCalledTimes(1);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("reserves host ownership after interpreter failure without granting an isolated companion", async () => {
     vi.stubEnv("SHELL", "/missing/interactive-shell");
     try {

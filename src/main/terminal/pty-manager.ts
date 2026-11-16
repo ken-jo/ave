@@ -58,14 +58,14 @@ import { prepareHostShellIntegration } from "./host-shell-integration.js";
 import { resolveManualShell } from "./manual-shell.js";
 import { prepareTerminalGitPolicyCheck, terminalSandboxWindowNotice } from "./terminal-sandbox-policy.js";
 import { t } from "../../i18n/index.js";
-import { isTerminalLane, isTerminalPurpose, sameTerminalSession, terminalLaneKey, type HostTerminalAgentInput, type HostTerminalControlState, type TerminalControlAction, type TerminalControlEvent, type TerminalControlResult, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
+import { isTerminalLane, isTerminalPurpose, sameTerminalSession, terminalLaneKey, TERMINAL_REPLAY_MAX_BYTES, type HostTerminalAgentInput, type HostTerminalControlState, type TerminalControlAction, type TerminalControlEvent, type TerminalControlResult, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalSpawnRequest, type TerminalSpawnResult, type TerminalMutationResult, type TerminalDataEvent, type TerminalExitEvent } from "../../shared/terminal-session.js";
 import { HostTerminalControl, type HostAgentLease, type HostTerminalDisclosure } from "./host-terminal-control.js";
 import type { HostTerminalTurn } from "../../tools/host-terminal-turn.js";
 
 const log = createLogger("ave");
 
-/** Scrollback ring cap per session (bytes). Bounds main-process memory + the replay payload sent to a remounting renderer. */
-const RING_MAX_BYTES = 256 * 1024;
+/** Scrollback ring cap per session (bytes). Bounds main-process memory + the replay payload sent to a renderer that has no live view of the tab (a reloaded window). */
+const RING_MAX_BYTES = TERMINAL_REPLAY_MAX_BYTES;
 /** Hard bounds on the PTY geometry a renderer may request (anti-DoS). */
 const MIN_DIM = 1;
 const MAX_COLS = 1000;
@@ -132,6 +132,8 @@ interface TerminalSession {
   /** FIFO scrollback chunks, capped to {@link RING_MAX_BYTES}. */
   ring: string[];
   ringBytes: number;
+  /** Output has been dropped from the ring's front, so its first chunk no longer starts on a line boundary. */
+  ringCut: boolean;
   /** Host policy notices survive bounded terminal scrollback eviction. */
   hostNotices: readonly string[];
   disposeData: () => void;
@@ -328,13 +330,23 @@ function buildShellCommand(
 function pushRing(session: TerminalSession, chunk: string): void {
   if (Buffer.byteLength(chunk, "utf-8") > RING_MAX_BYTES) {
     chunk = Buffer.from(chunk, "utf-8").subarray(-(RING_MAX_BYTES - 3)).toString("utf-8");
+    session.ringCut = true;
   }
   session.ring.push(chunk);
   session.ringBytes += Buffer.byteLength(chunk, "utf-8");
   while (session.ringBytes > RING_MAX_BYTES && session.ring.length > 1) {
     const dropped = session.ring.shift();
     if (dropped !== undefined) session.ringBytes -= Buffer.byteLength(dropped, "utf-8");
+    session.ringCut = true;
   }
+}
+
+/** The ring as one replay. Once output has been dropped from its front the ring starts mid-line, so the replay begins at the first whole line instead of with a cut one. */
+function ringReplay(session: TerminalSession): string {
+  const text = session.ring.join("");
+  if (!session.ringCut) return text;
+  const lineEnd = text.indexOf("\n");
+  return lineEnd === -1 ? text : text.slice(lineEnd + 1);
 }
 
 /** Spawn or replay one interactive terminal lane. A renderer remount with the same tab and
@@ -413,8 +425,9 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
       || !isActiveSandboxShellContained() || existing.info.sandboxGeneration !== getSandboxGeneration())) {
       return Promise.resolve({ ok: false, reason: "not-shell-contained", message: "agent terminal containment changed; close and reopen the tab" });
     }
-    if (existing.ring.length > 0 || existing.hostNotices.length > 0) {
-      emitTerminal("data", { ...existing.info, chunk: `${existing.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${existing.ring.join("")}` }, existing.ownerWindowId);
+    // A view that kept this tab's xterm alive already holds the output; it re-attaches (to declare its purpose) without a second copy.
+    if (options.replay !== false && (existing.ring.length > 0 || existing.hostNotices.length > 0)) {
+      emitTerminal("data", { ...existing.info, chunk: `${existing.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${ringReplay(existing)}` }, existing.ownerWindowId);
     }
     return Promise.resolve({ ok: true, tabId, replayed: true, session: sessionInfo(existing), blockMarkerToken: existing.blocks.viewToken });
   }
@@ -710,6 +723,7 @@ async function spawnNewTerminal(
       resizeForward: { running: false, again: false },
       ring: [],
       ringBytes: 0,
+      ringCut: false,
       hostNotices: [...(wrapped.notices ?? []), ...(sandboxWindowNotice === undefined ? [] : [sandboxWindowNotice])],
       disposeData: () => {},
       disposeExit: () => {},
@@ -794,7 +808,7 @@ async function spawnNewTerminal(
     if (sandboxGeneration !== getSandboxGeneration() || !isShellSandboxActive() || !isActiveSandboxShellContained()) throw new Error("terminal sandbox changed during launch");
     sessions.set(key, session);
     registerTerminalBlockTracker(session.info, session.blocks, options.ownerWindowId ?? null);
-    if (session.ring.length > 0 || session.hostNotices.length > 0) emitTerminal("data", { ...session.info, chunk: `${session.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${session.ring.join("")}` }, session.ownerWindowId);
+    if (session.ring.length > 0 || session.hostNotices.length > 0) emitTerminal("data", { ...session.info, chunk: `${session.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${ringReplay(session)}` }, session.ownerWindowId);
     // The session now owns its wrap, HOME and subscriptions until exit.
     owner.cleanupResources = undefined;
     cleanups.length = 0;
@@ -866,7 +880,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
       pty, ownerWindowId: options.ownerWindowId ?? null,
       blocks: new TerminalBlockTracker({ nonce: integration.nonce, marksPromptEnd: integration.marksPromptEnd }),
       shellName: basename(launch.command), innerPty: false,
-      resizeForward: { running: false, again: false }, ring: [], ringBytes: 0, hostNotices: [],
+      resizeForward: { running: false, again: false }, ring: [], ringBytes: 0, ringCut: false, hostNotices: [],
       disposeData: () => {}, disposeExit: () => {},
       cleanupIntegration: integration.cleanup,
       // Agent typing needs an integrated zsh or bash (bracketed paste); any other host shell says so on its strip.
@@ -899,7 +913,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     owner.abort.signal.throwIfAborted();
     sessions.set(key, session);
     registerTerminalBlockTracker(session.info, session.blocks, session.ownerWindowId);
-    if (session.ring.length > 0) emitTerminal("data", { ...session.info, chunk: session.ring.join("") }, session.ownerWindowId);
+    if (session.ring.length > 0) emitTerminal("data", { ...session.info, chunk: ringReplay(session) }, session.ownerWindowId);
     const logical = logicalTabs.get(tabId);
     if (logical && logical.ownerWindowId === session.ownerWindowId) logical.initialCwd = cwd;
     registered = true;

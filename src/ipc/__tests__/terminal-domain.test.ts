@@ -39,9 +39,13 @@ vi.mock("../../main/terminal/terminal-blocks.js", async (importOriginal) => {
       ? terminalSessionFixture("terminal:0000000a-1", "manual") : actual.getWindowTerminalBlockSession(...args),
   };
 });
+const { spawnRequests } = vi.hoisted(() => ({ spawnRequests: [] as Array<Record<string, unknown>> }));
 vi.mock("../../main/terminal/pty-manager.js", () => ({
   setTerminalEmitter: (fn: TerminalEmit) => { emitter = fn; },
-  spawnTerminal: vi.fn(async ({ tabId, lane }: { tabId: string; lane: "manual" | "agent" }) => ({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" })),
+  spawnTerminal: vi.fn(async ({ tabId, lane, ...rest }: { tabId: string; lane: "manual" | "agent"; replay?: boolean }) => {
+    spawnRequests.push({ tabId, lane, ...rest });
+    return { ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, lane), blockMarkerToken: "view-token" };
+  }),
   writeTerminal,
   resizeTerminal: vi.fn(() => ({ ok: true })),
   killTerminal,
@@ -130,6 +134,18 @@ describe("terminal IPC between two windows", () => {
 
 
 describe("terminal IPC lane validation", () => {
+  it("forwards a no-replay re-attach and refuses a replay flag that is not a boolean", async () => {
+    const spawn = handlers.get(CHANNELS.terminal.spawn);
+    if (!spawn) throw new Error("the terminal domain registered no spawn handler");
+    const tabId = "terminal:0000000a-7";
+    spawnRequests.length = 0;
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace", replay: false })).toMatchObject({ ok: true });
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace" })).toMatchObject({ ok: true });
+    expect(spawnRequests.map((request) => request.replay)).toEqual([false, undefined]);
+    expect(await spawn(from(windowOne), { tabId, lane: "manual", purpose: "workspace", replay: "no" })).toMatchObject({ ok: false, reason: "bad-request" });
+    expect(spawnRequests).toHaveLength(2);
+  });
+
   it("requires explicit lane on spawn and incarnation on mutations and block reads", async () => {
     expect(await handlers.get(CHANNELS.terminal.spawn)!(from(windowOne), { tabId: "terminal:0000000a-1" })).toMatchObject({ ok: false, reason: "bad-request" });
     for (const channel of [CHANNELS.terminal.input, CHANNELS.terminal.resize, CHANNELS.terminal.blocks, CHANNELS.terminal.block, CHANNELS.terminal.fileReviews]) {

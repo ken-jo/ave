@@ -1,35 +1,28 @@
-/** One host shell per tab. Unmount detaches the view; tab close owns the PTY. */
-import { useEffect, useRef, useState } from "react";
+/** One host shell per tab. Unmount detaches the view; tab close owns the PTY and the live xterm (live-terminal.ts). */
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
+import type { Terminal } from "@xterm/xterm";
 import type { AveApi } from "../types.js";
 import { useTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
 import { TerminalChangeAnnotations } from "./TerminalChangeAnnotations.js";
 import { TerminalPaneHeader, type TerminalPaneAccess } from "./TerminalPaneHeader.js";
-import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
+import { LiveTerminal, type LiveTerminalState } from "./live-terminal.js";
+import { liveTerminalFor } from "../preview/live-terminal-registry.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
-import { setTerminalAttended, setTerminalExited, setTerminalReplaying } from "../preview/terminal-attention.js";
-import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
-import { sameTerminalSession, type HostTerminalControlState, type TerminalControlAction, type TerminalPurpose, type TerminalSessionRef, type TerminalSessionInfo, type TerminalDataEvent, type TerminalExitEvent } from "../../../shared/terminal-session.js";
+import type { TerminalControlAction, TerminalPurpose } from "../../../shared/terminal-session.js";
 import type { AttachTextResult } from "../preview/composer-targets.js";
 
-/** Delay before re-listing blocks after an Enter, so the shell has echoed. */
-const ENTER_RELIST_DELAY_MS = 150;
-const PENDING_OUTPUT_BYTES = 256 * 1024;
+const NO_LIVE_STATE: LiveTerminalState = { session: null, control: null, blockRevision: 0 };
+const noLiveState = (): LiveTerminalState => NO_LIVE_STATE;
+const subscribeNothing = (): (() => void) => () => {};
 const INTEGRATION_UNAVAILABLE_KEYS = {
   "unsupported-shell": "ptyTerminal.integrationUnsupportedShell",
   "missing-home": "ptyTerminal.integrationMissingHome",
   "custom-launch": "ptyTerminal.integrationCustomLaunch",
   "setup-failed": "ptyTerminal.integrationSetupFailed",
 } as const;
-
-/** Dim-yellow ANSI wrapper for host-emitted diagnostic lines in the buffer. */
-function diagnostic(text: string): string {
-  return `\r\n\x1b[33m${text}\x1b[0m\r\n`;
-}
 
 interface PtyTerminalViewProps {
   api: AveApi;
@@ -104,21 +97,17 @@ function focusAttendedTerminal(term: Terminal, tabId: string): void {
 
 function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, onCwd, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
   const { t } = useTranslation();
-  const [session, setSession] = useState<TerminalSessionInfo | null>(null);
-  const [control, setControl] = useState<HostTerminalControlState | null>(null);
+  const [live, setLive] = useState<LiveTerminal | null>(null);
+  const { session, control, blockRevision } = useSyncExternalStore(live ? live.subscribe : subscribeNothing, live ? live.getState : noLiveState);
   const [controlNotice, setControlNotice] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Read once, at the spawn: a later report must not respawn anything.
   const initialCwdRef = useRef(initialCwd ?? null);
-  // Attention is "seen" only while the terminal is both attended and on screen; the box is measured by the resize observer
-  // below.
+  // Attention is "seen" only while the terminal is both attended and on screen; the live terminal measures the box.
   const attendedRef = useRef(attended);
   attendedRef.current = attended;
-  const hasBoxRef = useRef(false);
-  const [blockRevision, setBlockRevision] = useState(0);
-  const termRef = useRef<Terminal | null>(null);
-  const fitTerminalRef = useRef<(() => void) | null>(null);
-  const [anchors, setAnchors] = useState<XtermBlockAnchors | null>(null);
+  const translateRef = useRef(t);
+  translateRef.current = t;
   // Changes after the applied theme's values were written to :root — another theme or the same one updated in place.
   const themeContext = useTheme();
   const appliedRevision = themeContext.appliedRevision;
@@ -128,184 +117,28 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   const terminalStyleRef = useRef({ terminalPalette, terminalFont });
   terminalStyleRef.current = { terminalPalette, terminalFont };
 
+  // Attach the tab's live terminal to this view's host. Unmount detaches the view; the xterm and its shell stay until the
+  // tab closes (closeWorkspaceTab → terminal.kill + disposeLiveTerminal).
   useEffect(() => {
     const host = hostRef.current;
     const terminalApi = api.terminal;
     // `terminal` is only ever undefined in test fixtures that cast a partial object to AveApi — production preload always
     // defines it.
     if (!host || !terminalApi) return;
-
-    let disposed = false;
-    let liveRef: TerminalSessionRef | null = null;
-    let blockMarkerToken: string | null = null;
-    setSession(null);
-    const term = new Terminal({
-      cursorBlink: true,
-      fontSize: terminalStyleRef.current.terminalFont.size,
-      fontFamily: terminalStyleRef.current.terminalFont.family,
-      lineHeight: terminalStyleRef.current.terminalFont.lineHeight,
-      theme: terminalStyleRef.current.terminalPalette,
-      scrollback: 5000,
-      allowProposedApi: true,
-    });
-    termRef.current = term;
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(host);
-    const blockAnchors = new XtermBlockAnchors(term);
-    setAnchors(blockAnchors);
-
-    const safeFit = (): { cols: number; rows: number } => {
-      try {
-        fit.fit();
-      } catch {
-        /* host not laid out yet — ResizeObserver retries */
-      }
-      return { cols: term.cols, rows: term.rows };
-    };
-
-    fitTerminalRef.current = () => {
-      const dims = safeFit();
-      if (liveRef) void terminalApi.resize(liveRef, dims.cols, dims.rows);
-    };
-    const { cols, rows } = safeFit();
-
-    const bumpBlocks = (): void => {
-      if (!disposed) setBlockRevision((value) => value + 1);
-    };
-    // OSC 133 A (prompt) and D (command finished) end a block; C starts one. Returning false leaves the sequence to xterm's
-    // default handling.
-    const markerSub = term.parser.registerOscHandler(133, (data) => {
-      const marker = data.charAt(0);
-      if (marker === "C") {
-        const blockId = viewBlockId(data, blockMarkerToken);
-        if (blockId !== null) blockAnchors.noteCommandStart(blockId);
-      }
-      if (marker === "A" || marker === "C" || marker === "D") bumpBlocks();
-      return false;
-    });
-    let enterTimer: ReturnType<typeof setTimeout> | null = null;
-
-    // Forward keystrokes → PTY stdin.
-    const inputSub = term.onData((data) => {
-      if (!liveRef) return;
-      void terminalApi.input(liveRef, data);
-      if (data.includes("\r")) {
-        if (enterTimer !== null) clearTimeout(enterTimer);
-        enterTimer = setTimeout(() => {
-          enterTimer = null;
-          bumpBlocks();
-        }, ENTER_RELIST_DELAY_MS);
-      }
-    });
-
-    // Replay precedes spawn's reply. Buffer by incarnation until the host confirms it.
-    let pending: Array<TerminalDataEvent | TerminalExitEvent> = [];
-    let pendingBytes = 0;
-    const renderEvent = (event: TerminalDataEvent | TerminalExitEvent): void => {
-      if ("chunk" in event) term.write(event.chunk);
-      else {
-        term.write(diagnostic(t("ptyTerminal.exited", { code: event.exitCode })));
-        bumpBlocks();
-        setTerminalExited(tabId, true);
-      }
-    };
-    const acceptEvent = (event: TerminalDataEvent | TerminalExitEvent): void => {
-      if (disposed || event.tabId !== tabId || event.lane !== "manual") return;
-      if (liveRef) {
-        if (sameTerminalSession(liveRef, event)) renderEvent(event);
-        return;
-      }
-      const bytes = "chunk" in event ? new TextEncoder().encode(event.chunk).length : 0;
-      // Both a chunk and the whole waiting queue stay within the replay ring ceiling.
-      if (bytes > PENDING_OUTPUT_BYTES) return;
-      pending.push(event);
-      pendingBytes += bytes;
-      while (pendingBytes > PENDING_OUTPUT_BYTES || pending.length > 1024) {
-        const dropped = pending.shift();
-        if (dropped && "chunk" in dropped) pendingBytes -= new TextEncoder().encode(dropped.chunk).length;
-      }
-    };
-    const offData = terminalApi.onData(acceptEvent);
-    const offExit = terminalApi.onExit(acceptEvent);
-    // Main owns control; the strip only shows the latest state for this incarnation.
-    const offControl = terminalApi.onControl((event) => {
-      if (!disposed && liveRef && sameTerminalSession(liveRef, event)) {
-        setControl(event.control);
-        // A notice answered the previous state; it no longer applies once control changes.
-        setControlNotice(null);
-      }
-    });
-
-    setTerminalReplaying(tabId, true);
-    const restored = takeRestoredTerminal(tabId);
-    if (restored) term.write(diagnostic(t("ptyTerminal.restored")));
-    const startCwd = restored ? restored.cwd : initialCwdRef.current;
-    const spawnAt = (cwd: string | null) =>
-      terminalApi.spawn({ tabId, lane: "manual", purpose, cols, rows, ...(cwd ? { cwd } : {}) });
-    const start = async () => {
-      let result = await spawnAt(startCwd);
-      if (!result.ok && restored && startCwd && !disposed && (result.reason === "bad-request" || result.reason === "spawn-failed")) {
-        term.write(diagnostic(t("ptyTerminal.restoredRoot")));
-        result = await spawnAt(null);
-      }
-      if (disposed) return;
-      if (!result.ok) {
-        pending = [];
-        term.write(diagnostic(t(result.reason === "too-many-terminals" ? "ptyTerminal.capacity" : result.reason === "still-closing" ? "ptyTerminal.stillClosing" : "ptyTerminal.manualUnavailable")));
-        return;
-      }
-      liveRef = result.session;
-      setTerminalExited(tabId, false);
-      blockMarkerToken = result.blockMarkerToken;
-      setSession(result.session);
-      const current = await terminalApi.control(result.session, "get");
-      if (!disposed && current.ok && liveRef && sameTerminalSession(liveRef, result.session)) setControl(current.control);
-      for (const event of pending) if (sameTerminalSession(result.session, event)) renderEvent(event);
-      pending = [];
-      pendingBytes = 0;
-      bumpBlocks();
-    };
-    void start().catch(() => {
-      if (!disposed) term.write(diagnostic(t("ptyTerminal.startFailed")));
-    }).finally(() => { if (!disposed) setTerminalReplaying(tabId, false); });
-
-    // The user is looking at this terminal while its host has a box: a hidden pane or a side panel set aside lays it out at
-    // zero size.
-    const reportAttended = () => {
-      hasBoxRef.current = host.offsetWidth > 0 && host.offsetHeight > 0;
-      setTerminalAttended(tabId, attendedRef.current && hasBoxRef.current);
-    };
-    reportAttended();
-
-    // Resize the PTY when the pane changes size.
-    const resizeObserver = new ResizeObserver(() => {
-      reportAttended();
-      const dims = safeFit();
-      if (liveRef) void terminalApi.resize(liveRef, dims.cols, dims.rows);
-    });
-    resizeObserver.observe(host);
-
+    const terminal = liveTerminalFor(tabId, () => new LiveTerminal(terminalApi, tabId, terminalStyleRef.current, translateRef.current));
+    terminal.applyStyle(terminalStyleRef.current);
+    terminal.attach(host, { purpose, initialCwd: initialCwdRef.current, t: translateRef.current, attended: () => attendedRef.current });
+    setLive(terminal);
     return () => {
-      disposed = true;
-      setTerminalAttended(tabId, false);
-      resizeObserver.disconnect();
-      fitTerminalRef.current = null;
-      if (enterTimer !== null) clearTimeout(enterTimer);
-      markerSub.dispose();
-      inputSub.dispose();
-      offData();
-      offExit();
-      offControl();
-      setControl(null);
-      termRef.current = null;
-      blockAnchors.dispose();
-      setAnchors(null);
-      term.dispose();
-      // NOTE: PTY is intentionally NOT killed here — it survives unmount and is torn down on tab close (closeWorkspaceTab →
-      // terminal.kill).
+      terminal.detach(host);
+      setLive(null);
     };
   }, [api, tabId, purpose]);
+
+  // A notice answered the previous control state; it no longer applies once control changes.
+  useEffect(() => {
+    setControlNotice(null);
+  }, [control]);
 
   // Only a workspace mount of a shell that takes agent typing can receive approved commands; every other mount says it has no agent access.
   const workspaceTyping = purpose === "workspace" && (control === null || control.agentInput === "supported");
@@ -325,33 +158,27 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     if (!terminalApi || !session) return;
     setControlNotice(null);
     void terminalApi.control(session, action).then((result) => {
-      if (result.ok) setControl(result.control);
+      if (result.ok) live?.acceptControl(session, result.control);
       else setControlNotice(t(HAND_BACK_REFUSAL_KEYS[result.error] ?? "ptyTerminal.controlFailed"));
     }, () => setControlNotice(t("ptyTerminal.controlFailed")));
   };
 
   // Focus moving to or from this terminal's pane.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `attended` is the trigger; the live terminal reads its value through the view it is attached to.
   useEffect(() => {
-    if (termRef.current) setTerminalAttended(tabId, attended && hasBoxRef.current);
-  }, [tabId, attended]);
+    live?.reportAttended();
+  }, [live, attended]);
 
-  // On open (each new xterm publishes its anchors) and whenever the tab or pane becomes attended.
+  // On attach and whenever the tab or pane becomes attended.
   useEffect(() => {
-    if (attended && anchors && termRef.current) focusAttendedTerminal(termRef.current, tabId);
-  }, [attended, anchors, tabId]);
+    if (attended && live) focusAttendedTerminal(live.term, tabId);
+  }, [attended, live, tabId]);
 
   // Re-tint the live terminal when the applied theme changes: its options take a new theme in place, so the shell,
   // scrollback and cursor are kept.
   useEffect(() => {
-    const term = termRef.current;
-    const host = hostRef.current;
-    if (!term || !host) return;
-    term.options.theme = terminalPalette;
-    term.options.fontFamily = terminalFont.family;
-    term.options.fontSize = terminalFont.size;
-    term.options.lineHeight = terminalFont.lineHeight;
-    fitTerminalRef.current?.();
-  }, [appliedRevision, terminalPalette, terminalFont]);
+    live?.applyStyle({ terminalPalette, terminalFont });
+  }, [live, appliedRevision, terminalPalette, terminalFont]);
 
   // Only a directory the shell reported is the current one; the launch directory is not evidence of it.
   const reportedCwd = session?.currentCwd ?? null;
@@ -367,7 +194,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       tabLabel={`${tabLabel} · ${session.terminalSessionId}`}
       revision={blockRevision}
       {...(onAttachText ? { onAttachText } : {})}
-      onSession={setSession}
+      {...(live ? { onSession: live.setSession } : {})}
     />
   ) : null;
 
@@ -405,7 +232,7 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
           xterm host stays its only in-flow child and no rows are taken. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area">
         <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
-        {api.terminal && session ? <TerminalChangeAnnotations key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={anchors} /> : null}
+        {api.terminal && session ? <TerminalChangeAnnotations key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={live?.anchors ?? null} /> : null}
       </div>
     </div>
   );

@@ -7,6 +7,7 @@ import { clickSidebarNavRow, deferred, emitAgentTabNew, splitIntoTwoTiles, submi
 import * as mainSurfaceStore from "../../src/ui/renderer/preview/main-surfaces.js";
 import { SURFACE_DRAG_TYPE, getSideTabsSink } from "../../src/ui/renderer/preview/surface-moves.js";
 import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/preview/terminal-attention.js";
+import { resetLiveTerminalsForTest } from "../../src/ui/renderer/preview/live-terminal-registry.js";
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
 import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
 import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
@@ -1038,6 +1039,8 @@ describe("main-area terminal and web panels", () => {
     expect(Object.values(saved.sideTabs).flat()[0]!.cwd).toBeNull();
     const persisted = await first.api.getSettings();
     first.unmount();
+    // The next launch is a new window: no terminal of the first one is alive in it.
+    resetLiveTerminalsForTest();
     resetMainLayoutRestoreForTest();
     xtermWrites.length = 0;
 

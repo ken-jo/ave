@@ -3,6 +3,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExt
 import { useTranslation } from "../../i18n/react.js";
 import { MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
+import { disposeLiveTerminal } from "./preview/live-terminal-registry.js";
 import { TooltipProvider } from "../../components/ui/tooltip.js";
 import { ThemeProvider } from "./theme/index.js";
 import { OverlayContextProvider, type OverlayItem } from "./context/OverlayContext.js";
@@ -660,7 +661,10 @@ export function App() {
     }
     surfaces.close(tabId);
     forgetActiveSurface(tabId);
-    if (surface.kind === "terminal") void api.terminal?.kill(tabId);
+    if (surface.kind === "terminal") {
+      void api.terminal?.kill(tabId);
+      disposeLiveTerminal(tabId);
+    }
   }, [api]);
 
   /** 옆에 분할로 열기 (case 20) for a terminal or page: a new pane beside the focused one, or its own pane if it has one. */

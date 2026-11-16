@@ -15,6 +15,7 @@ import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { t } from "../../../../i18n/index.js";
 import { terminalCwd } from "../../preview/main-layout-restore.js";
 import { surfaceMountLocation } from "../../preview/surface-mounts.js";
+import { disposeLiveTerminal } from "../../preview/live-terminal-registry.js";
 import { ThemeProvider, useTheme } from "../../theme/ThemeProvider.js";
 import { DEFAULT_APPEARANCE } from "../../../../shared/appearance-settings.js";
 import { requireScheme } from "../../theme/schemes/index.js";
@@ -33,6 +34,8 @@ interface FakeTerminal {
   focusCount: number;
   markers: { offset: number; marker: FakeMarker }[];
   decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[];
+  element: HTMLElement | null;
+  disposed: boolean;
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
 
@@ -81,7 +84,13 @@ vi.mock("@xterm/xterm", () => ({
         onDispose: () => ({ dispose() {} }), dispose: () => element.remove() };
     }
     loadAddon() {}
-    open(host: HTMLElement) { this.host = host; }
+    element: HTMLElement | null = null;
+    open(host: HTMLElement) {
+      this.host = host;
+      this.element = document.createElement("div");
+      this.element.className = "xterm";
+      host.appendChild(this.element);
+    }
     onData(handler: (data: string) => void) {
       this.dataHandler = handler;
       return { dispose: () => { this.dataHandler = null; } };
@@ -90,10 +99,34 @@ vi.mock("@xterm/xterm", () => ({
     write(text: string) {
       this.written.push(text);
     }
-    dispose() {}
+    disposed = false;
+    dispose() { this.disposed = true; }
   },
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
+
+/** The fake xterm of the n-th terminal this test created. */
+function fakeTerm(index = 0): FakeTerminal {
+  const found = terminals[index];
+  if (!found) throw new Error(`the test created no terminal ${index}`);
+  return found;
+}
+/** Deliver an OSC 133 marker as xterm's parser would. */
+function osc133(xterm: FakeTerminal, data: string): boolean {
+  const handler = xterm.oscHandlers.get(133);
+  if (!handler) throw new Error("the terminal registered no OSC 133 handler");
+  return handler(data);
+}
+/** Type into the terminal as the keyboard does. */
+function typeInto(xterm: FakeTerminal, data: string): void {
+  if (!xterm.dataHandler) throw new Error("the terminal takes no input");
+  xterm.dataHandler(data);
+}
+/** Offer a key event to the terminal's custom key handler; false means the terminal kept the key from xterm. */
+function offerKey(xterm: FakeTerminal, event: KeyboardEvent): boolean {
+  if (!xterm.keyHandler) throw new Error("the terminal registered no key handler");
+  return xterm.keyHandler(event);
+}
 
 afterEach(() => {
   terminals.length = 0;
@@ -127,11 +160,11 @@ describe("PtyTerminalView theme", () => {
     function Picker() { const theme = useTheme(); switchMode = () => theme.setMode("dark"); return null; }
     render(<ThemeProvider api={api as never} initialAppearance={{ ...DEFAULT_APPEARANCE, mode: "light" }}><Picker /><PtyTerminalView api={ave as never} location="side-panel" tabId="tab-1" tabLabel="Terminal 1" /></ThemeProvider>);
     await waitFor(() => expect(terminals).toHaveLength(1));
-    expect(terminals[0]!.options.theme).toEqual(requireScheme("github-light").terminal);
+    expect(fakeTerm().options.theme).toEqual(requireScheme("github-light").terminal);
     await act(async () => { switchMode!(); });
-    expect(terminals[0]!.options.theme).toEqual(requireScheme("github-dark").terminal);
+    expect(fakeTerm().options.theme).toEqual(requireScheme("github-dark").terminal);
     await act(async () => { await api.updateSettings({ appearance: { terminalFont: { family: "Example Mono", size: 16, lineHeight: 1.5 } } }); });
-    expect(terminals[0]!.options).toEqual(expect.objectContaining({ fontFamily: "Example Mono", fontSize: 16, lineHeight: 1.5 }));
+    expect(fakeTerm().options).toEqual(expect.objectContaining({ fontFamily: "Example Mono", fontSize: 16, lineHeight: 1.5 }));
     expect(terminals).toHaveLength(1);
     expect(ave.terminal.spawn).toHaveBeenCalledTimes(1);
   });
@@ -172,7 +205,7 @@ describe("PtyTerminalView command blocks", () => {
   it("re-lists blocks when the shell reports a command boundary", async () => {
     const terminal = renderView();
     await waitFor(() => expect(terminal.listBlocks).toHaveBeenCalledTimes(1));
-    const handler = terminals[0]!.oscHandlers.get(133)!;
+    const handler = fakeTerm().oscHandlers.get(133)!;
     // Prompt-end markers do not end a block; the finish marker does.
     let handled = true;
     act(() => { handled = handler("B"); });
@@ -302,7 +335,7 @@ describe("PtyTerminalView environment and session boundaries", () => {
     const terminal = terminalApi();
     terminal.spawn.mockResolvedValueOnce({ ok: false, reason: "spawn-failed", message: "missing directory" } as never);
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:12" tabLabel="Terminal 12" initialCwd="/elsewhere" />);
-    await waitFor(() => expect(terminals[0]!.written.join("")).toContain(t("ptyTerminal.manualUnavailable")));
+    await waitFor(() => expect(fakeTerm().written.join("")).toContain(t("ptyTerminal.manualUnavailable")));
     expect(terminal.spawn).toHaveBeenCalledTimes(1);
   });
 
@@ -311,7 +344,7 @@ describe("PtyTerminalView environment and session boundaries", () => {
     const terminal = terminalApi();
     terminal.spawn.mockResolvedValueOnce({ ok: false, reason: "still-closing", message: "still closing" } as never);
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:13" tabLabel="Terminal 13" initialCwd="/repo/app" />);
-    await waitFor(() => expect(terminals[0]!.written.join("")).toContain(t("ptyTerminal.stillClosing")));
+    await waitFor(() => expect(fakeTerm().written.join("")).toContain(t("ptyTerminal.stillClosing")));
     expect(terminal.spawn).toHaveBeenCalledTimes(1);
   });
 
@@ -328,10 +361,10 @@ describe("PtyTerminalView environment and session boundaries", () => {
       return { ok: true, tabId, replayed: true, session: manual, blockMarkerToken: "view-token" };
     });
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={tabId} tabLabel="Terminal 14" />);
-    await waitFor(() => expect(terminals[0]!.written.join("")).toBe("MANUAL"));
+    await waitFor(() => expect(fakeTerm().written.join("")).toBe("MANUAL"));
     act(() => terminal.onData.mock.calls.at(-1)![0]({ ...manual, terminalSessionId: "old-manual", chunk: "LATE" }));
-    expect(terminals[0]!.written.join("")).toBe("MANUAL");
-    act(() => terminals[0]!.dataHandler!("user"));
+    expect(fakeTerm().written.join("")).toBe("MANUAL");
+    act(() => typeInto(fakeTerm(), "user"));
     expect(terminal.input).toHaveBeenCalledWith(manual, "user");
   });
 
@@ -342,7 +375,7 @@ describe("PtyTerminalView environment and session boundaries", () => {
     terminal.spawn.mockResolvedValue({ ok: true, tabId: session.tabId, replayed: false, session, blockMarkerToken: "view-token" });
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId={session.tabId} tabLabel="Terminal 16" />);
     expect(await screen.findByTestId("terminal-integration-unavailable")).toHaveTextContent(t("ptyTerminal.integrationUnsupportedShell"));
-    act(() => terminals[0]!.dataHandler!("user-command\r"));
+    act(() => typeInto(fakeTerm(), "user-command\r"));
     expect(terminal.input).toHaveBeenCalledWith(session, "user-command\r");
     expect(terminal.spawn).toHaveBeenCalledTimes(1);
   });
@@ -447,15 +480,15 @@ describe("PtyTerminalView changed-file annotation", () => {
     } } as never);
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:banner" tabLabel="Terminal 1" />);
     await waitFor(() => expect(terminals).toHaveLength(1));
-    const term = terminals[0]!;
+    const term = fakeTerm();
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
     await act(async () => {});
     // Main forwards an authenticated C with its block id and this incarnation's view token while the cursor sits just
     // below the entered command. Copies without the token, as a program could print, are ignored.
     act(() => {
-      term.oscHandlers.get(133)!("C;ave-block=1;ave-view=forged");
-      term.oscHandlers.get(133)!("C;ave-block=1");
-      term.oscHandlers.get(133)!("C;ave-block=1;ave-view=view-token");
+      osc133(term, "C;ave-block=1;ave-view=forged");
+      osc133(term, "C;ave-block=1");
+      osc133(term, "C;ave-block=1;ave-view=view-token");
     });
     expect(term.markers).toEqual([{ offset: -1, marker: expect.objectContaining({ line: 3 }) }]);
     const annotation = await screen.findByTestId("terminal-file-warning");
@@ -486,11 +519,11 @@ describe("PtyTerminalView changed-file annotation", () => {
     } } as never);
     render(<PtyTerminalView api={{ ...api, terminal } as never} location="side-panel" tabId="terminal:long" tabLabel="Terminal 1" />);
     await waitFor(() => expect(terminals).toHaveLength(1));
-    const term = terminals[0]!;
+    const term = fakeTerm();
     term.commandRow = `~/demo ❯ make build ${"VERBOSE=1 ".repeat(4)}`.trimEnd();
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalled());
     await act(async () => {});
-    act(() => { term.oscHandlers.get(133)!("C;ave-block=1;ave-view=view-token"); });
+    act(() => { osc133(term, "C;ave-block=1;ave-view=view-token"); });
     const annotation = await screen.findByTestId("terminal-file-warning");
     const start = term.commandRow.length + 2;
     expect(term.decorations[0]!.options).toMatchObject({ x: start, width: 80 - start });
@@ -504,9 +537,9 @@ describe("PtyTerminalView changed-file annotation", () => {
     await waitFor(() => expect(terminals).toHaveLength(1));
     await act(async () => {});
     act(() => {
-      for (const data of ["C", "C;ave-block=x;ave-view=view-token", "C;ave-block=3", "C;ave-block=3;ave-view=other"]) terminals[0]!.oscHandlers.get(133)!(data);
+      for (const data of ["C", "C;ave-block=x;ave-view=view-token", "C;ave-block=3", "C;ave-block=3;ave-view=other"]) osc133(fakeTerm(), data);
     });
-    expect(terminals[0]!.markers).toEqual([]);
+    expect(fakeTerm().markers).toEqual([]);
   });
 });
 
@@ -515,7 +548,7 @@ describe("PtyTerminalView keyboard focus", () => {
     const { api } = makeMockAveApi();
     render(<PtyTerminalView api={{ ...api, terminal: terminalApi() } as never} location="side-panel" tabId="terminal:focus" tabLabel="Terminal 1" />);
     await waitFor(() => expect(terminals).toHaveLength(1));
-    expect(terminals[0]!.focusCount).toBe(1);
+    expect(fakeTerm().focusCount).toBe(1);
   });
 
   it("focuses when its pane becomes attended, and not while unattended", async () => {
@@ -523,9 +556,9 @@ describe("PtyTerminalView keyboard focus", () => {
     const ave = { ...api, terminal: terminalApi() };
     const view = render(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:pane" tabLabel="Terminal 1" attended={false} />);
     await waitFor(() => expect(terminals).toHaveLength(1));
-    expect(terminals[0]!.focusCount).toBe(0);
+    expect(fakeTerm().focusCount).toBe(0);
     view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:pane" tabLabel="Terminal 1" attended />);
-    expect(terminals[0]!.focusCount).toBe(1);
+    expect(fakeTerm().focusCount).toBe(1);
   });
 
   it("never takes focus from the chat composer the user is typing in", async () => {
@@ -539,7 +572,7 @@ describe("PtyTerminalView keyboard focus", () => {
       await waitFor(() => expect(terminals).toHaveLength(1));
       view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:typing" tabLabel="Terminal 1" attended={false} />);
       view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:typing" tabLabel="Terminal 1" attended />);
-      expect(terminals[0]!.focusCount).toBe(0);
+      expect(fakeTerm().focusCount).toBe(0);
       expect(document.activeElement).toBe(composer);
     } finally { composer.remove(); }
   });
@@ -560,7 +593,7 @@ describe("PtyTerminalView keyboard focus", () => {
       await act(async () => {});
       view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:approval" tabLabel="Terminal 1" attended={false} />);
       view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:approval" tabLabel="Terminal 1" attended />);
-      expect(terminals[0]!.focusCount).toBe(0);
+      expect(fakeTerm().focusCount).toBe(0);
       expect(document.activeElement).toBe(allow);
     } finally { card.remove(); }
   });
@@ -590,22 +623,22 @@ describe("PtyTerminalView keyboard focus", () => {
       const view = render(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended={false} />);
       await waitFor(() => expect(terminals).toHaveLength(1));
       view.rerender(<PtyTerminalView api={ave as never} location="side-panel" tabId="terminal:tab" tabLabel="Terminal 1" attended />);
-      expect(terminals[0]!.focusCount).toBe(1);
+      expect(fakeTerm().focusCount).toBe(1);
       // A selected tab in another area is not an activation of this terminal.
       other.button.focus();
       cycle(view);
-      expect(terminals[0]!.focusCount).toBe(1);
+      expect(fakeTerm().focusCount).toBe(1);
       expect(document.activeElement).toBe(other.button);
       // Nor is a tab that is no longer selected.
       own.button.setAttribute("aria-selected", "false");
       own.button.focus();
       cycle(view);
-      expect(terminals[0]!.focusCount).toBe(1);
+      expect(fakeTerm().focusCount).toBe(1);
       // A control inside the terminal keeps focus too.
       const chip = view.getByTestId("terminal-pane-host-chip");
       chip.focus();
       cycle(view);
-      expect(terminals[0]!.focusCount).toBe(1);
+      expect(fakeTerm().focusCount).toBe(1);
       expect(document.activeElement).toBe(chip);
     } finally { own.remove(); other.remove(); }
   });
@@ -620,7 +653,7 @@ describe("PtyTerminalView keyboard focus", () => {
     view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:quiet" tabLabel="Terminal 1" attended={false} />);
     view.rerender(<PtyTerminalView api={ave as never} location="pane:a" tabId="terminal:quiet" tabLabel="Terminal 1" attended />);
     await act(async () => {});
-    expect(terminals[0]!.focusCount).toBe(2);
+    expect(fakeTerm().focusCount).toBe(2);
     expect(terminal.input).not.toHaveBeenCalled();
   });
 });
@@ -652,5 +685,63 @@ describe("SidePanelTerminal", () => {
       (window as unknown as { ave: unknown }).ave = previousAve;
       forgetTerminalFileReview("terminal:side");
     }
+  });
+});
+
+describe("a terminal tab keeps its xterm across views", () => {
+  it("re-parents the same xterm on a tab switch: no second shell request, no replay, and output written while hidden is kept", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const tabId = "terminal:31";
+    const session = terminalSessionFixture(tabId, "manual");
+    const ave = { ...api, terminal } as never;
+    const first = render(<PtyTerminalView api={ave} location="pane:a" tabId={tabId} tabLabel="Terminal 31" />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ tabId }), "get"));
+    const deliver = terminal.onData.mock.calls.at(-1)![0];
+    act(() => deliver({ ...session, chunk: "line-1\r\n" }));
+    const xterm = fakeTerm();
+    expect(xterm.element!.isConnected).toBe(true);
+
+    // Another tab is shown in the pane: the view unmounts, the xterm does not.
+    first.unmount();
+    expect(xterm.disposed).toBe(false);
+    expect(xterm.element!.isConnected).toBe(false);
+    act(() => deliver({ ...session, chunk: "while-hidden\r\n" }));
+    expect(xterm.written.join("")).toBe("line-1\r\nwhile-hidden\r\n");
+
+    render(<PtyTerminalView api={ave} location="pane:a" tabId={tabId} tabLabel="Terminal 31" />);
+    await waitFor(() => expect(xterm.element!.isConnected).toBe(true));
+    expect(screen.getByTestId("terminal-xterm-host").contains(xterm.element)).toBe(true);
+    // The same instance, and nothing asked main to replay into it.
+    expect(terminals).toHaveLength(1);
+    expect(terminal.spawn).toHaveBeenCalledTimes(1);
+    expect(xterm.written.join("")).toBe("line-1\r\nwhile-hidden\r\n");
+    await waitFor(() => expect(screen.getByTestId("terminal-pane-host-chip")).toBeTruthy());
+    act(() => typeInto(xterm, "typed"));
+    expect(terminal.input).toHaveBeenCalledWith(expect.objectContaining({ tabId, terminalSessionId: session.terminalSessionId }), "typed");
+  });
+
+  it("declares a move between the side panel and a pane without asking for a replay", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const ave = { ...api, terminal } as never;
+    const view = (location: string) => <PtyTerminalView key={location} api={ave} location={location} tabId="terminal:32" tabLabel="Terminal 32" />;
+    const shown = render(view("side-panel"));
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+    expect(terminal.spawn.mock.calls[0]![0]).not.toHaveProperty("replay");
+    shown.rerender(view("pane:main"));
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
+    expect(terminal.spawn).toHaveBeenLastCalledWith(expect.objectContaining({ tabId: "terminal:32", purpose: "workspace", replay: false }));
+    expect(terminals).toHaveLength(1);
+  });
+
+  it("releases the xterm when the tab closes", async () => {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const shown = render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId="terminal:33" tabLabel="Terminal 33" />);
+    await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(1));
+    disposeLiveTerminal("terminal:33");
+    expect(fakeTerm().disposed).toBe(true);
+    shown.unmount();
   });
 });

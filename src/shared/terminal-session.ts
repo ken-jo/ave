@@ -25,10 +25,14 @@ export type TerminalPurpose = "workspace" | "side-panel";
 export function isTerminalPurpose(value: unknown): value is TerminalPurpose {
   return value === "workspace" || value === "side-panel";
 }
+/** The most replayed output one spawn reply carries: main's per-session ring holds this much, and a view waiting for its spawn reply buffers as much. */
+export const TERMINAL_REPLAY_MAX_BYTES = 1024 * 1024;
 export interface TerminalSpawnRequest extends TerminalRef {
   readonly cwd?: string;
   readonly cols?: number;
   readonly rows?: number;
+  /** False when the view kept this tab's terminal alive and already holds its output: the running shell is re-attached without replaying it. */
+  readonly replay?: boolean;
   /** Required for a host (manual) spawn or replay. */
   readonly purpose?: TerminalPurpose;
 }
