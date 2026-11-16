@@ -283,7 +283,9 @@ principal/taint or exfiltration floors. Every command still targets the exact
 terminal, turn, shell and physical directory; a changed binding or terminal
 state during a card prevents typing.
 While the agent types or runs the command, a strip above the terminal shows it
-with **Take over** and **Stop** (typing takes over too). Typing anything,
+with **Take over** and **Stop** (typing takes over too). In a narrow pane,
+where the chat floats over the terminal, the same strip is repeated at the top
+of the chat. Typing anything,
 pressing Take over or Stop, moving the terminal to the side panel, closing the
 pane's chat binding or the end of that chat turn ends the agent's control
 immediately; Stop also interrupts the agent's command once, even if it has not

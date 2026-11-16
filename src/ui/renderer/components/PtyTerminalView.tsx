@@ -1,5 +1,5 @@
 /** One host shell per tab. Unmount detaches the view; tab close owns the PTY and the live xterm (live-terminal.ts). */
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { Terminal } from "@xterm/xterm";
 import type { AveApi } from "../types.js";
@@ -40,6 +40,8 @@ interface PtyTerminalViewProps {
   /** A pane's header, where the terminal's identity and block controls go as one row instead of rows over the output.
    * Absent: they are drawn above the output (a side panel's tab). Null: the pane header has not committed yet. */
   headerSlot?: HTMLElement | null;
+  /** Where a work panel that floats over this terminal wants the control strip repeated; null while nothing covers the terminal. */
+  controlMirrorSlot?: HTMLElement | null;
   /** The directory the shell last reported (never the launch directory), for a header that shows it. */
   onCwd?: (cwd: string) => void;
   /** Close this terminal's tab; offered once its shell has ended. */
@@ -99,7 +101,7 @@ function focusAttendedTerminal(term: Terminal, tabId: string): void {
   if (active === null || active === document.body || activatedHere) term.focus();
 }
 
-function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, onCwd, onCloseTab, onOpenLink, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
+function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, attended = true, headerSlot, controlMirrorSlot, onCwd, onCloseTab, onOpenLink, purpose }: PtyTerminalViewProps & { purpose: TerminalPurpose }) {
   const { t } = useTranslation();
   const [live, setLive] = useState<LiveTerminal | null>(null);
   const { session, control, blockRevision, ended } = useSyncExternalStore(live ? live.subscribe : subscribeNothing, live ? live.getState : noLiveState);
@@ -209,6 +211,24 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     />
   ) : null;
 
+  // Who controls the terminal, with the way to take it back. Drawn over the output, and again (under `prefix`) at the top of a work panel
+  // that floats over this terminal: the controls a running agent command promises stay on screen whatever covers the output.
+  const controlStrip = (prefix: "terminal" | "pane-chat-terminal"): ReactNode => control?.mode === "agent" ? (
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-warning border-border bg-warning/(--opacity-subtle) px-2 py-1 text-xs" data-testid={`${prefix}-agent-control`} role="status">
+      <span className="min-w-0 flex-1 truncate font-medium" title={control.command}>
+        {t(control.typed ? "ptyTerminal.agentRunning" : "ptyTerminal.agentTyping", { command: control.command ?? "" })}
+      </span>
+      {prefix === "terminal" ? <span className="text-muted-foreground" data-testid="terminal-take-over-hint">{t("ptyTerminal.typingTakesOver")}</span> : null}
+      <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid={`${prefix}-take-over`} onClick={() => changeControl("take-over")}>{t("ptyTerminal.takeOver")}</button>
+      <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid={`${prefix}-stop-agent`} onClick={() => changeControl("stop")}>{t("ptyTerminal.stop")}</button>
+    </div>
+  ) : control?.mode === "taken-over" && purpose === "workspace" ? (
+    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid={`${prefix}-user-control`} role="status">
+      <span className="min-w-0 flex-1">{t("ptyTerminal.takenOver")}</span>
+      <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid={`${prefix}-hand-back`} onClick={() => changeControl("hand-back")}>{t("ptyTerminal.handBack")}</button>
+    </div>
+  ) : null;
+
   return (
     <div
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
@@ -220,21 +240,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
           {...(inlineChrome ? { inline: { cwd: session?.currentCwd ?? null } } : {})} />;
         return inlineChrome ? header : createPortal(header, headerSlot!);
       })() : null}
-      {control?.mode === "agent" ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-warning border-border bg-warning/(--opacity-subtle) px-2 py-1 text-xs" data-testid="terminal-agent-control" role="status">
-          <span className="min-w-0 flex-1 truncate font-medium" title={control.command}>
-            {t(control.typed ? "ptyTerminal.agentRunning" : "ptyTerminal.agentTyping", { command: control.command ?? "" })}
-          </span>
-          <span className="text-muted-foreground" data-testid="terminal-take-over-hint">{t("ptyTerminal.typingTakesOver")}</span>
-          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-take-over" onClick={() => changeControl("take-over")}>{t("ptyTerminal.takeOver")}</button>
-          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-stop-agent" onClick={() => changeControl("stop")}>{t("ptyTerminal.stop")}</button>
-        </div>
-      ) : control?.mode === "taken-over" && purpose === "workspace" ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-primary border-border px-2 py-1 text-xs" data-testid="terminal-user-control" role="status">
-          <span className="min-w-0 flex-1">{t("ptyTerminal.takenOver")}</span>
-          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-muted" data-testid="terminal-hand-back" onClick={() => changeControl("hand-back")}>{t("ptyTerminal.handBack")}</button>
-        </div>
-      ) : null}
+      {controlStrip("terminal")}
+      {controlMirrorSlot ? createPortal(controlStrip("pane-chat-terminal"), controlMirrorSlot) : null}
       {ended ? (
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-l-4 border-l-muted-foreground border-border px-2 py-1 text-xs" data-testid="terminal-ended" role="status">
           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-medium" data-testid="terminal-ended-chip">{t("ptyTerminal.endedChip")}</span>

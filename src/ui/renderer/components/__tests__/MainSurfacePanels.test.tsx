@@ -25,6 +25,7 @@ import { useMainSurfaces, type MainSurface } from "../../preview/main-surfaces.j
 import { getWebSurfaces, noteWebSurfaceLocation, setWebSurfaceElement } from "../../preview/web-surfaces.js";
 import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/renderer/mock-ave-api.js";
 import { __resetBrowserTabBridgeForTest, registerBrowserTabHost } from "../../preview/agent-browser-bridge.js";
+import { resetLiveTerminalsForTest } from "../../preview/live-terminal-registry.js";
 import { browserControlFixture } from "../../../../__tests__/support/browser-control-fixture.js";
 import { terminalSessionFixture } from "../../../../__tests__/support/terminal-session-fixtures.js";
 import type { BrowserTabControlState } from "../../../../shared/browser-surface.js";
@@ -227,6 +228,51 @@ describe("SurfacePane", () => {
     expect(chatColumnsLayout(DOCK_ENTER_WIDTH - 1, false, true, SIDE_PANEL_MIN_RESERVE, true).panelLayout.mode).toBe("overlay");
     expect(await modeAt(DOCK_ENTER_WIDTH)).toBe("docked");
     expect(await modeAt(DOCK_ENTER_WIDTH - 1)).toBe("overlay");
+  });
+
+  it("repeats the agent's control strip at the top of a work panel that floats over the terminal, and not beside a docked one", async () => {
+    const stripAt = async (width: number) => {
+      vi.stubGlobal("ResizeObserver", class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(element: Element) {
+          this.callback([{ target: element, contentRect: { width }, contentBoxSize: [{ inlineSize: width }] } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver);
+        }
+        unobserve() {}
+        disconnect() {}
+      });
+      const { api } = makeMockAveApi();
+      const terminal = terminalApi();
+      const running = { mode: "agent" as const, generation: 1, agentInput: "supported" as const, command: "npm test", typed: true };
+      terminal.control.mockImplementation((async (_session: unknown, action: string) => ({
+        ok: true as const, control: action === "get" ? running : { mode: "taken-over" as const, generation: 2, agentInput: "supported" as const },
+      })) as never);
+      const view = render(
+        <TooltipProvider>
+          <SurfacePane chatOpen onChatOpenChange={() => {}} chatRuntime={CHAT_RUNTIME} api={{ ...api, terminal } as never} surface={surface("terminal")} paneId="group-2" frame={{}} onNavigate={() => {}} />
+        </TooltipProvider>,
+      );
+      // The terminal's own strip is always there; what differs is whether the panel that may cover it repeats it.
+      await screen.findByTestId("terminal-agent-control");
+      const chat = await screen.findByTestId("pane-chat");
+      const mirrored = within(chat).queryByTestId("pane-chat-terminal-agent-control");
+      const result = { mirrored: mirrored !== null, text: mirrored?.textContent ?? "", first: chat.firstElementChild?.nextElementSibling?.getAttribute("data-testid") ?? null, afterTakeOver: null as boolean | null };
+      if (mirrored) {
+        expect(within(mirrored).getByTestId("pane-chat-terminal-stop-agent")).toBeEnabled();
+        await act(async () => { fireEvent.click(within(mirrored).getByTestId("pane-chat-terminal-take-over")); });
+        expect(terminal.control).toHaveBeenCalledWith(expect.objectContaining({ tabId: "terminal:908" }), "take-over");
+        // The strip follows the terminal's control state: taken over, it offers the way to hand back.
+        await waitFor(() => expect(within(chat).getByTestId("pane-chat-terminal-hand-back")).toBeTruthy());
+        result.afterTakeOver = within(chat).queryByTestId("pane-chat-terminal-agent-control") === null;
+      }
+      view.unmount();
+      resetLiveTerminalsForTest();
+      vi.unstubAllGlobals();
+      return result;
+    };
+    const overlay = await stripAt(DOCK_ENTER_WIDTH - 1);
+    expect(overlay).toMatchObject({ mirrored: true, first: "pane-chat-terminal-control", afterTakeOver: true });
+    expect(overlay.text).toContain("npm test");
+    expect((await stripAt(DOCK_ENTER_WIDTH)).mirrored).toBe(false);
   });
 
   it("opens the terminal's work panel on 변경 파일 from the badge: a docked panel beside the terminal, as a chat pane has", async () => {
