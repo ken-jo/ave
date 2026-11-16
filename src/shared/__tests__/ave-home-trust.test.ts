@@ -3,15 +3,6 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
-const fileReads = vi.hoisted(() => ({ onOpen: undefined as undefined | ((path: unknown) => void) }));
-vi.mock("node:fs", async (original) => {
-  const actual = await original<typeof import("node:fs")>();
-  return { ...actual, openSync: (...args: Parameters<typeof actual.openSync>) => {
-    fileReads.onOpen?.(args[0]);
-    return actual.openSync(...args);
-  } };
-});
-
 const dacls = vi.hoisted(() => ({
   override: undefined as undefined | ((paths: readonly string[], actual: (paths: readonly string[]) => unknown[]) => unknown[]),
 }));
@@ -29,7 +20,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
-import * as atomicFile from "../../lib/atomic-file.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { _resetAveHomePrivacyForTest, AveHomeConfigurationRefusedWriteError, ensureAveHomePrivate, setAveHomeConfigurationRefusedAtBoot } from "../ave-home.js";
 import * as configurationAccess from "../ave-home-configuration-access.js";
@@ -107,7 +97,7 @@ function manifestKey(rel: string): string {
   return process.platform === "win32" ? rel.toLowerCase() : rel;
 }
 
-function manifest(dir: string): { state: string; coveredFiles?: string[]; adoptedFiles?: string[]; entries: Record<string, { current?: string; pendingWrite?: string }> } {
+function manifest(dir: string): { state: string; entries: Record<string, { current?: string; pendingWrite?: string }> } {
   return JSON.parse(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8"));
 }
 
@@ -569,7 +559,7 @@ describe("approve all stays closed", () => {
     boot(dir);
     rmSync(join(dir, "config", ".ave-trust-manifest.json"));
     expect(boot(dir)).toEqual({ pending: true, state: "bootstrapped:false" });
-    expect(manifest(dir)).toEqual({ version: 1, state: "bootstrapped:false", coveredFiles: expect.arrayContaining(["work-board/board.json"]), entries: {} });
+    expect(manifest(dir)).toEqual({ version: 1, state: "bootstrapped:false", entries: {} });
     const review = getAveHomeTrustReview()!;
     expect(review.approveAllOffered).toBe(true);
     expect(approveAveHomeTrustItems(review.snapshotId)).toBe(1);
@@ -578,8 +568,8 @@ describe("approve all stays closed", () => {
 
   it("writes the one-by-one flag only when the commit saw a moved configuration", () => {
     const dir = home();
-    expect(JSON.parse(initialAveHomeTrustManifest(dir, true))).toEqual({ version: 1, state: "bootstrapped:false", coveredFiles: expect.arrayContaining(["work-board/board.json"]), entries: {} });
-    expect(JSON.parse(initialAveHomeTrustManifest(dir, true, true))).toEqual({ version: 1, state: "bootstrapped:false", oneByOne: true, coveredFiles: expect.arrayContaining(["work-board/board.json"]), entries: {} });
+    expect(JSON.parse(initialAveHomeTrustManifest(dir, true))).toEqual({ version: 1, state: "bootstrapped:false", entries: {} });
+    expect(JSON.parse(initialAveHomeTrustManifest(dir, true, true))).toEqual({ version: 1, state: "bootstrapped:false", oneByOne: true, entries: {} });
   });
 });
 
@@ -668,15 +658,6 @@ describe("Windows owner and ACL overlay", () => {
     } as unknown as WindowsDaclFacts;
   }
 
-  it.each(["null DACL", "unsupported ACE"])("classifies %s as refusing evidence without a read failure", (shape) => {
-    const facts = row(user, [{ sid: user, allow: true }]);
-    if (!facts.dacl) throw new Error("Missing DACL fixture");
-    if (shape === "null DACL") facts.dacl.nullDacl = true;
-    else facts.dacl.aces[0]!.type = 2;
-    expect(classifyWindowsHomeEvidence([facts], ["work-board/board.json"])).toEqual({
-      withdrawn: new Map([["work-board/board.json", "foreign-access"]]), clean: false,
-    });
-  });
   it("withdraws trust from an item another account owns", () => {
     const result = classifyWindowsHomeEvidence([row(other, [{ sid: user, allow: true }])], ["AGENTS.md"]);
     expect(result.withdrawn.get("AGENTS.md")).toBe("foreign-owner");
@@ -857,7 +838,7 @@ describe.runIf(process.platform !== "win32")("POSIX home protection", () => {
   });
 });
 
-it.each(["templates.json", "board.json"])("covers work-board %s authority and refuses foreign edits and overwrite", name => {
+it.each(["templates.json"])("covers work-board %s authority and refuses foreign edits and overwrite", name => {
   const dir = home(); expect(boot(dir).pending).toBe(false);
   const path = join(dir, "work-board", name);
   const original = JSON.stringify(name === "templates.json" ? { version: 1, templates: [] } : { version: 1, nextId: 1, items: [] });
@@ -880,362 +861,4 @@ it("refuses a foreign edit through the covered template store without rewriting 
   await expect(store.resolveVersion({ templateId: record.template.id, version: 1, graphHash: version.graphHash })).rejects.toMatchObject({ code: "invalid-template-file" });
   await expect(store.archive(record.template.id)).rejects.toMatchObject({ code: "invalid-template-file" });
   expect(readFileSync(path, "utf8")).toBe(edited);
-});
-it("withholds a hand-edited board gate and refuses overwriting its file", async () => {
-  const { WorkBoardStore } = await import("../../main/work-board-store.js");
-  const dir = home(); expect(boot(dir).pending).toBe(false);
-  const path = join(dir, "work-board", "board.json"); const store = new WorkBoardStore(path);
-  const created = await store.create({ title: "Read", templateId: "template" }); if (created.status !== "created") throw new Error("Missing item");
-  const graphHash = "a".repeat(64); const pin = { templateId: "template", version: 1, graphHash };
-  await store.beginRun(created.itemId, "run", "2026-01-01", { ...pin, source: { kind: "local-create-and-run", pin }, stageRuns: [{ stageId: "a", attempt: 1, status: "awaiting_gate", gate: { type: "human", status: "pending", revision: 0 } }] });
-  const raw = JSON.parse(readFileSync(path, "utf8")); raw.items[0].stageRuns[0].gate.status = "approved";
-  const edited = JSON.stringify(raw); writeFileSync(path, edited);
-  const restarted = new WorkBoardStore(path);
-  expect(await restarted.list()).toEqual({ status: "pending-review" });
-  await expect(restarted.create({ title: "Replacement" })).rejects.toThrow();
-  expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
-  expect(readFileSync(path, "utf8")).toBe(edited);
-});
-
-describe("board coverage adoption", () => {
-  function priorHome(): string {
-    const dir = home();
-    put(dir, "AGENTS.md", "# instructions");
-    boot(dir);
-    const review = getAveHomeTrustReview();
-    if (!review) throw new Error("Missing review");
-    approveAveHomeTrustItems(review.snapshotId);
-    const prior = manifest(dir); delete prior.coveredFiles;
-    writeFileSync(join(dir, "config", ".ave-trust-manifest.json"), JSON.stringify(prior));
-    return dir;
-  }
-  const row = { id: 1, title: "Existing task", status: "planned", priority: "medium", created_at: "2026-01-01", updated_at: "2026-01-01" };
-  function board(dir: string, items: unknown[] = [row]): string {
-    return put(dir, "work-board/board.json", JSON.stringify({ version: 1, nextId: 2, items }));
-  }
-  it("adopts an existing board only without recorded coverage, with no pending boot", async () => {
-    const { WorkBoardStore } = await import("../../main/work-board-store.js");
-    const dir = priorHome(); const path = board(dir);
-    expect(boot(dir)).toEqual({ pending: false, state: "bootstrapped:true" });
-    expect(isAveHomeTrustPendingAtBoot()).toBe(false);
-    expect(await new WorkBoardStore(path).list()).toMatchObject({ status: "ok", items: [row] });
-    expect(await new WorkBoardStore(path).create({ title: "Next task" })).toMatchObject({ status: "created" });
-    expect(manifest(dir)).toMatchObject({ adoptedFiles: ["work-board/board.json"], entries: { "work-board/board.json": { current: sha256Hex(readFileSync(path)) } } });
-  });
-  it("never re-adopts on a second boot even if the entry and earlier coverage are restored", () => {
-    const dir = priorHome(); const path = board(dir); boot(dir);
-    const adopted = manifest(dir);
-    expect(adopted).toMatchObject({ adoptedFiles: ["work-board/board.json"] });
-    delete adopted.entries["work-board/board.json"];
-    writeFileSync(join(dir, "config", ".ave-trust-manifest.json"), JSON.stringify({ ...adopted, coveredFiles: [manifestKey("AGENTS.md")] }));
-    expect(boot(dir).pending).toBe(true);
-    expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
-  });
-  it("strips forged template-run fields from every adopted row before recording trust", async () => {
-    const { WorkBoardStore } = await import("../../main/work-board-store.js");
-    const dir = priorHome();
-    const path = board(dir, [1, 2].map(id => ({ ...row, id, templateId: "template", runTemplateVersion: 1, runTemplateGraphHash: "a".repeat(64),
-      runStartedBy: { kind: "schedule-attachment", pin: {} }, pin: {}, stageRuns: [{ gate: { status: "approved" } }],
-      stageJoins: [{ status: "integrated" }], runWorkspace: {},
-      runHistory: [{ runId: "old", status: "completed", templateVersion: 1, templateGraphHash: "a".repeat(64), stageRuns: [] }],
-      planApproval: { status: "approved", templateGraphHash: "a".repeat(64) },
-    })));
-    expect(boot(dir).pending).toBe(false);
-    expect(JSON.parse(readFileSync(path, "utf8")).items).toEqual([1, 2].map(id => ({ ...row, id,
-      runHistory: [{ runId: "old", status: "completed" }], planApproval: { status: "approved" },
-    })));
-    expect(manifest(dir).entries["work-board/board.json"]).toEqual({ current: sha256Hex(readFileSync(path)) });
-    expect(await new WorkBoardStore(path).list()).toMatchObject({ status: "ok", items: [expect.not.objectContaining({ templateId: "template" }), expect.not.objectContaining({ templateId: "template" })] });
-  });
-  it("refuses a hand edit after adoption and preserves the untrusted bytes", async () => {
-    const { WorkBoardStore } = await import("../../main/work-board-store.js");
-    const dir = priorHome(); const path = board(dir); boot(dir);
-    const store = new WorkBoardStore(path); await store.list();
-    const edited = `${readFileSync(path, "utf8")} `; writeFileSync(path, edited);
-    expect(await store.list()).toEqual({ status: "pending-review" });
-    expect(boot(dir).pending).toBe(true);
-    expect(await new WorkBoardStore(path).list()).toEqual({ status: "pending-review" });
-    await expect(new WorkBoardStore(path).create({ title: "Overwrite" })).rejects.toThrow();
-    expect(readFileSync(path, "utf8")).toBe(edited);
-  });
-  it.each([false, true])("never adopts a manifest with recorded coverage even when board coverage is %s", async (covered) => {
-    const { WorkBoardStore } = await import("../../main/work-board-store.js");
-    const dir = priorHome();
-    writeFileSync(join(dir, "config", ".ave-trust-manifest.json"), JSON.stringify({ ...manifest(dir), coveredFiles: [manifestKey("AGENTS.md"), ...(covered ? ["work-board/board.json"] : [])] }));
-    const path = board(dir); const bytes = readFileSync(path, "utf8");
-    expect(boot(dir).pending).toBe(true);
-    expect(await new WorkBoardStore(path).list()).toEqual({ status: "pending-review" });
-    expect(readFileSync(path, "utf8")).toBe(bytes);
-    expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-  });
-  it("does not adopt or strip bytes without the owner lock", () => {
-    const dir = priorHome(); const path = board(dir, [{ ...row, templateId: "forged" }]);
-    const before = readFileSync(path, "utf8"); const manifestBefore = readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8");
-    _resetAveHomeTrustForTest();
-    setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => false });
-    expect(evaluateAveHomeTrustAtBoot(dir).pending).toBe(true);
-    expect(readFileSync(path, "utf8")).toBe(before);
-    expect(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8")).toBe(manifestBefore);
-  });
-  it.runIf(process.platform === "win32").each([
-    ["null DACL", false], ["unsupported ACE", false], ["foreign owner", false],
-    ["null DACL", true], ["unsupported ACE", true], ["foreign owner", true],
-  ] as const)("consumes %s board evidence even with an unrelated read failure: %s", (shape, unrelatedFailure) => {
-    const dir = priorHome(); const path = board(dir, [{ ...row, templateId: "forged" }]);
-    const before = readFileSync(path, "utf8");
-    const platform = process.platform;
-    const user = "S-1-5-21-1-2-3-1001";
-    dacls.override = (paths, actual) => !paths.some(path => path.endsWith("board.json")) ? actual(paths) : paths.map((path) => ({
-      exists: !(unrelatedFailure && path.endsWith("AGENTS.md")), directory: false, currentUserSid: user, elevated: false,
-      dacl: { owner: path.endsWith("board.json") && shape === "foreign owner" ? "S-1-5-21-1-2-3-1002" : user,
-        protected: true, nullDacl: path.endsWith("board.json") && shape === "null DACL",
-        aces: [{ sid: user, type: path.endsWith("board.json") && shape === "unsupported ACE" ? 2 : 0, mask: 0x1f01ff, flags: 0 }] },
-    }));
-    try {
-      setProcessPlatform("win32");
-      _resetAveHomeTrustForTest();
-      expect(evaluateAveHomeTrustAtBoot(dir).pending).toBe(true);
-      expect(manifest(dir).coveredFiles).toContain("work-board/board.json");
-      expect(manifest(dir).adoptedFiles).toBeUndefined();
-      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-      expect(readFileSync(path, "utf8")).toBe(before);
-    } finally { setProcessPlatform(platform); dacls.override = undefined; }
-    expect(boot(dir).pending).toBe(true);
-    expect(readFileSync(path, "utf8")).toBe(before);
-    expect(manifest(dir).adoptedFiles).toBeUndefined();
-    expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-    expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted", reason: "new" });
-  });
-  it.runIf(process.platform === "win32")("leaves adoption open after an ownership-evidence read error and adopts on a later boot", () => {
-    const dir = priorHome(); const path = board(dir);
-    const read = vi.fn(() => { throw Object.assign(new Error("Evidence read failed"), { code: "EIO" }); });
-    dacls.override = (paths, actual) => paths.some(path => path.endsWith("board.json")) ? read() : actual(paths);
-    try {
-      expect(boot(dir)).toEqual({ pending: true, state: "bootstrapped:true" });
-      expect(isAveHomeTrustPendingAtBoot()).toBe(true);
-      expect(read).toHaveBeenCalledTimes(1);
-      expect(manifest(dir).coveredFiles).toBeUndefined();
-      expect(manifest(dir).adoptedFiles).toBeUndefined();
-      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-      expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
-    } finally { dacls.override = undefined; }
-    expect(boot(dir).pending).toBe(false);
-    expect(manifest(dir)).toMatchObject({ coveredFiles: expect.arrayContaining(["work-board/board.json"]), adoptedFiles: ["work-board/board.json"] });
-    expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
-  });
-  it("leaves adoption open and logs only the code when the strip write fails", async () => {
-    const { WorkBoardStore } = await import("../../main/work-board-store.js");
-    const dir = priorHome(); const path = board(dir, [{ ...row, templateId: "forged" }]);
-    const before = readFileSync(path, "utf8");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const write = vi.spyOn(atomicFile, "replaceUtf8FileAtomicSyncIf").mockImplementation(() => {
-      throw Object.assign(new Error("Sensitive board write details"), { code: "EBUSY" });
-    });
-    try {
-      expect(boot(dir)).toEqual({ pending: true, state: "bootstrapped:true" });
-      expect(isAveHomeTrustPendingAtBoot()).toBe(true);
-      expect(write).toHaveBeenCalledTimes(1);
-      expect(warn.mock.calls).toEqual([["[home-trust] Board adoption deferred: EBUSY"]]);
-      expect(await new WorkBoardStore(path).list()).toEqual({ status: "pending-review" });
-      expect(readFileSync(path, "utf8")).toBe(before);
-      expect(manifest(dir).coveredFiles).toBeUndefined();
-      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-      expect(manifest(dir).adoptedFiles).toBeUndefined();
-      expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted", reason: "new" });
-    } finally { write.mockRestore(); warn.mockRestore(); }
-    expect(boot(dir).pending).toBe(false);
-    expect(JSON.parse(readFileSync(path, "utf8")).items).toEqual([row]);
-    expect(manifest(dir)).toMatchObject({ coveredFiles: expect.arrayContaining(["work-board/board.json"]), adoptedFiles: ["work-board/board.json"] });
-    expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
-  });
-  it.each([1, 2, 3])("defers adoption when strict board read %s fails and adopts on a later boot", (failedRead) => {
-    const dir = priorHome(); const path = board(dir, [{ ...row, templateId: "forged" }]);
-    const before = readFileSync(path, "utf8");
-    let opens = 0;
-    fileReads.onOpen = (input) => {
-      if (String(input) === path && ++opens === failedRead) {
-        throw Object.assign(new Error("Private board content and path"), { code: "EIO" });
-      }
-    };
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      expect(boot(dir)).toEqual({ pending: true, state: "bootstrapped:true" });
-      expect(isAveHomeTrustPendingAtBoot()).toBe(true);
-      expect(opens).toBe(failedRead);
-      expect(manifest(dir).coveredFiles).toBeUndefined();
-      expect(manifest(dir).adoptedFiles).toBeUndefined();
-      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-      if (failedRead < 3) expect(readFileSync(path, "utf8")).toBe(before);
-      else expect(JSON.parse(readFileSync(path, "utf8")).items).toEqual([row]);
-      expect(warn.mock.calls).toEqual([["[home-trust] Board adoption deferred: EIO"]]);
-    } finally { fileReads.onOpen = undefined; warn.mockRestore(); }
-    expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
-    expect(boot(dir).pending).toBe(false);
-    expect(manifest(dir)).toMatchObject({
-      coveredFiles: expect.arrayContaining(["work-board/board.json"]), adoptedFiles: ["work-board/board.json"],
-      entries: { "work-board/board.json": { current: sha256Hex(readFileSync(path)) } },
-    });
-    expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
-  });
-  it.each(["missing", "corrupt", "covered intent"])("propagates a %s manifest write failure without a board-adoption log", (state) => {
-    const dir = priorHome();
-    const manifestPath = join(dir, "config", ".ave-trust-manifest.json");
-    if (state === "missing") rmSync(manifestPath);
-    else if (state === "corrupt") writeFileSync(manifestPath, "invalid");
-    else {
-      const prior = manifest(dir);
-      prior.coveredFiles = [];
-      prior.entries[manifestKey("AGENTS.md")] = { pendingWrite: sha256Hex("# instructions") };
-      writeFileSync(manifestPath, JSON.stringify(prior));
-    }
-    const error = Object.assign(new Error("Manifest write failed"), { code: "EIO" });
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const write = vi.spyOn(configurationAccess, "writeAveHomeTrustManifestSync").mockImplementation(() => { throw error; });
-    try {
-      _resetAveHomeTrustForTest();
-      expect(() => evaluateAveHomeTrustAtBoot(dir)).toThrow(error);
-      expect(write).toHaveBeenCalledTimes(1);
-      expect(warn).not.toHaveBeenCalled();
-    } finally { write.mockRestore(); warn.mockRestore(); }
-  });
-  it("leaves adoption open and logs only the code when refusal coverage cannot be written", () => {
-    const dir = priorHome(); put(dir, "work-board/board.json", JSON.stringify({ items: "invalid" }));
-    const before = manifest(dir);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const write = vi.spyOn(configurationAccess, "writeAveHomeTrustManifestSync").mockImplementation(() => {
-      throw Object.assign(new Error("Private board content and path"), { code: "EIO" });
-    });
-    try {
-      expect(boot(dir).pending).toBe(true);
-      expect(manifest(dir)).toEqual(before);
-      expect(manifest(dir).coveredFiles).toBeUndefined();
-      expect(manifest(dir).adoptedFiles).toBeUndefined();
-      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-      expect(write).toHaveBeenCalledTimes(1);
-      expect(warn.mock.calls).toEqual([["[home-trust] Board adoption deferred: EIO"]]);
-    } finally { write.mockRestore(); warn.mockRestore(); }
-    board(dir);
-    expect(boot(dir).pending).toBe(false);
-  });
-  it("persists collapsed and dropped write intents while board adoption is deferred", () => {
-    const dir = priorHome(); const path = board(dir, [{ ...row, templateId: "forged" }]);
-    const before = readFileSync(path, "utf8");
-    put(dir, "AGENTS.md", "# landed");
-    put(dir, "user-preferences.md", "# actual");
-    const prior = manifest(dir);
-    prior.entries[manifestKey("AGENTS.md")] = { pendingWrite: sha256Hex("# landed") };
-    prior.entries["user-preferences.md"] = { pendingWrite: sha256Hex("# not written") };
-    writeFileSync(join(dir, "config", ".ave-trust-manifest.json"), JSON.stringify(prior));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const strip = vi.spyOn(atomicFile, "replaceUtf8FileAtomicSyncIf").mockImplementation(() => {
-      throw Object.assign(new Error("Strip write failed"), { code: "EIO" });
-    });
-    try {
-      expect(boot(dir)).toEqual({ pending: true, state: "bootstrapped:true" });
-      expect(manifest(dir)).toEqual({ ...prior, entries: { [manifestKey("AGENTS.md")]: { current: sha256Hex("# landed") } } });
-      expect(manifest(dir).coveredFiles).toBeUndefined();
-      expect(manifest(dir).adoptedFiles).toBeUndefined();
-      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-      expect(readFileSync(path, "utf8")).toBe(before);
-      expect(warn.mock.calls).toEqual([["[home-trust] Board adoption deferred: EIO"]]);
-    } finally { strip.mockRestore(); warn.mockRestore(); }
-  });
-  it("consumes adoption for a board exceeding the input size limit", () => {
-    const dir = priorHome();
-    const bytes = JSON.stringify({ items: [row], padding: " ".repeat(16 * 1024 * 1024) });
-    const path = put(dir, "work-board/board.json", bytes);
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      expect(boot(dir).pending).toBe(true);
-      expect(manifest(dir).coveredFiles).toContain("work-board/board.json");
-      expect(manifest(dir).adoptedFiles).toBeUndefined();
-      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-      expect(readFileSync(path, "utf8")).toBe(bytes);
-      expect(warn).not.toHaveBeenCalled();
-    } finally { warn.mockRestore(); }
-    board(dir);
-    expect(boot(dir).pending).toBe(true);
-    expect(manifest(dir).adoptedFiles).toBeUndefined();
-    expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-  });
-  it("consumes adoption after a definite validation refusal without re-evaluating on a later boot", () => {
-    const dir = priorHome(); const path = put(dir, "work-board/board.json", JSON.stringify({ items: "invalid" }));
-    expect(boot(dir).pending).toBe(true);
-    expect(manifest(dir).coveredFiles).toContain("work-board/board.json");
-    expect(manifest(dir).adoptedFiles).toBeUndefined();
-    expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-    board(dir, [{ ...row, templateId: "forged" }]);
-    const before = readFileSync(path, "utf8");
-    expect(boot(dir).pending).toBe(true);
-    expect(readFileSync(path, "utf8")).toBe(before);
-    expect(manifest(dir).adoptedFiles).toBeUndefined();
-    expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
-  });
-  it("records the adopted hash and marker together and grants no in-memory trust if persistence fails", () => {
-    const dir = priorHome(); const path = board(dir, [{ ...row, templateId: "forged" }]);
-    const prior = readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8");
-    const write = vi.spyOn(configurationAccess, "writeAveHomeTrustManifestSync").mockImplementation((_home, body) => {
-      const candidate = JSON.parse(body);
-      expect(candidate.adoptedFiles).toContain("work-board/board.json");
-      expect(candidate.coveredFiles).toContain("work-board/board.json");
-      expect(candidate.entries["work-board/board.json"]).toEqual({ current: sha256Hex(readFileSync(path)) });
-      expect(JSON.parse(readFileSync(path, "utf8")).items).toEqual([row]);
-      throw Object.assign(new Error("Manifest write failed"), { code: "EIO" });
-    });
-    try {
-      expect(boot(dir)).toEqual({ pending: true, state: "bootstrapped:true" });
-      expect(isAveHomeTrustPendingAtBoot()).toBe(true);
-      expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
-      expect(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8")).toBe(prior);
-      expect(write).toHaveBeenCalledTimes(1);
-    } finally { write.mockRestore(); }
-    expect(boot(dir).pending).toBe(false);
-  });
-  it("adopts an approved version 1 manifest without a coverage record on its first boot", async () => {
-    const { WorkBoardStore } = await import("../../main/work-board-store.js");
-    const dir = priorHome();
-    const prior = manifest(dir);
-    writeFileSync(join(dir, "config", ".ave-trust-manifest.json"), JSON.stringify({ version: 1, state: "bootstrapped:true", entries: prior.entries }));
-    const path = board(dir);
-    const write = vi.spyOn(configurationAccess, "writeAveHomeTrustManifestSync");
-    try {
-      expect(boot(dir)).toEqual({ pending: false, state: "bootstrapped:true" });
-      expect(isAveHomeTrustPendingAtBoot()).toBe(false);
-      expect(await new WorkBoardStore(path).list()).toMatchObject({ status: "ok", items: [row] });
-      expect(write).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(write.mock.calls[0]?.[1] ?? "")).toMatchObject({
-        coveredFiles: expect.arrayContaining(["work-board/board.json"]), adoptedFiles: ["work-board/board.json"],
-        entries: { "work-board/board.json": { current: sha256Hex(readFileSync(path)) } },
-      });
-      expect(manifest(dir)).toMatchObject({ coveredFiles: expect.arrayContaining(["work-board/board.json"]), adoptedFiles: ["work-board/board.json"] });
-    } finally { write.mockRestore(); }
-    expect(await new WorkBoardStore(path).create({ title: "Next task" })).toMatchObject({ status: "created" });
-  });
-  it("records every covered single-file key in both initial and boot-written manifests", () => {
-    const source = readFileSync(new URL("../ave-home-trust.ts", import.meta.url), "utf8");
-    const table = source.match(/const COVERED_FILES:[\s\S]*?Object\.freeze\(\[([\s\S]*?)\]\);/)?.[1];
-    if (table === undefined) throw new Error("Missing coverage table");
-    const keys = [...table.matchAll(/"([^"\n]+)"/g)].map(match => manifestKey(match[1] ?? ""));
-    expect(keys.length).toBeGreaterThan(0);
-    const dir = priorHome();
-    expect(JSON.parse(initialAveHomeTrustManifest(dir, false)).coveredFiles).toEqual(keys);
-    board(dir);
-    boot(dir);
-    expect(manifest(dir).coveredFiles).toEqual(keys);
-  });
-  it.each(["missing", "corrupt"])("never adopts a board when rebuilding a %s manifest", (state) => {
-    const dir = priorHome(); const path = board(dir);
-    const manifestPath = join(dir, "config", ".ave-trust-manifest.json");
-    if (state === "missing") rmSync(manifestPath);
-    else writeFileSync(manifestPath, "invalid");
-    expect(boot(dir).pending).toBe(true);
-    expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted", reason: "new" });
-    expect(manifest(dir).adoptedFiles).toBeUndefined();
-  });
-  it("consumes the coverage transition even when no board exists at that boot", () => {
-    const dir = priorHome(); expect(boot(dir).pending).toBe(false);
-    const path = board(dir);
-    expect(boot(dir).pending).toBe(true);
-    expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted", reason: "new" });
-  });
 });

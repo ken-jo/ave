@@ -11,12 +11,10 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, read
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
-import { isMissingPathError, replaceUtf8FileAtomicSyncIf, setAtomicWriteGuard, type AtomicWriteTicket } from "../lib/atomic-file.js";
+import { isMissingPathError, setAtomicWriteGuard, type AtomicWriteTicket } from "../lib/atomic-file.js";
 import { AveHomeConfigurationRefusedWriteError, aveHomeRefusalReason, isAveHomeConfigurationRefused, isInRefusedAveHome, removeWindowsItemNoFollow, type AveHomeRefusalReason } from "./ave-home.js";
 import { AveHomeConfigurationNotOwnerError, isAveHomeConfigurationOwner, readAveHomeTrustManifestBytes, writeAveHomeTrustManifestSync } from "./ave-home-configuration-access.js";
 import { readWindowsDacls, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
-import { stripLegacyBoardTemplateRunFields } from "../work-board/template-run-fields.js";
-import { isRecord } from "./is-record.js";
 import { WINDOWS_WORKSPACE_TRUSTED_WRITERS } from "./windows-home-boundary.js";
 
 export type AveHomeTrustState = "fresh" | "bootstrapped:false" | "bootstrapped:true";
@@ -36,9 +34,6 @@ interface TrustManifest {
    * (D3①), or the manifest was missing or unreadable and recreated. "Approve all" is never offered; each item is reviewed.
    */
   oneByOne?: true;
-  /** Absent in manifests written before board coverage was introduced. */
-  coveredFiles?: string[];
-  adoptedFiles?: string[];
   entries: Record<string, ManifestEntry>;
 }
 
@@ -93,7 +88,6 @@ const COVERED_FILES: readonly string[] = Object.freeze([
   "skill-approvals.json",
   "routine/routines.json",
   "work-board/templates.json",
-  "work-board/board.json",
   "marketplaces/sources.json",
   "AGENTS.md",
   "agents.custom.md",
@@ -151,8 +145,6 @@ function gateFor(path: string): { trust: ActiveTrust; key: string; kind: "file" 
   return covered === undefined ? undefined : { trust: active, ...covered };
 }
 
-class InputSizeLimitError extends Error {}
-
 class LinkedInputError extends Error {
   constructor(path: string) {
     super(`${path} is a link or not a regular file`);
@@ -190,7 +182,7 @@ function readRegularFile(path: string, pinned: Stats): { bytes: Buffer; uid: num
   try {
     const opened = fstatSync(descriptor);
     if (!opened.isFile() || opened.ino !== pinned.ino || opened.dev !== pinned.dev) throw new Error(`${path} changed while it was opened`);
-    if (opened.size > MAX_INPUT_BYTES) throw new InputSizeLimitError(`${path} exceeds the size limit`);
+    if (opened.size > MAX_INPUT_BYTES) throw new Error(`${path} exceeds the size limit`);
     const bytes = Buffer.alloc(opened.size);
     let filled = 0;
     while (filled < bytes.length) {
@@ -621,7 +613,7 @@ export function listAveHomeCoveredInputs(home: string): CoveredInput[] {
  */
 export function initialAveHomeTrustManifest(home: string, legacyRootConfiguration: boolean, movedConfiguration = false): string {
   const state: AveHomeTrustState = legacyRootConfiguration || listAveHomeCoveredInputs(home).some((input) => !isEmptyFile(input.path)) ? "bootstrapped:false" : "fresh";
-  return `${JSON.stringify({ version: 1, state, coveredFiles: [...COVERED_FILE_KEYS], ...(movedConfiguration ? { oneByOne: true } : {}), entries: {} } satisfies TrustManifest, null, 2)}\n`;
+  return `${JSON.stringify({ version: 1, state, ...(movedConfiguration ? { oneByOne: true } : {}), entries: {} } satisfies TrustManifest, null, 2)}\n`;
 }
 
 function parseManifest(bytes: Buffer): TrustManifest | undefined {
@@ -629,12 +621,9 @@ function parseManifest(bytes: Buffer): TrustManifest | undefined {
   try { parsed = JSON.parse(bytes.toString("utf8")); }
   catch { return undefined; }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
-  const { version, state, entries, oneByOne, coveredFiles, adoptedFiles } = parsed as Partial<TrustManifest>;
+  const { version, state, entries, oneByOne } = parsed as Partial<TrustManifest>;
   if (version !== 1 || (state !== "fresh" && state !== "bootstrapped:false" && state !== "bootstrapped:true")) return undefined;
   if (oneByOne !== undefined && oneByOne !== true) return undefined;
-  for (const keys of [coveredFiles, adoptedFiles]) {
-    if (keys !== undefined && (!Array.isArray(keys) || keys.some(key => typeof key !== "string" || key.length === 0 || foldKey(key) !== key) || new Set(keys).size !== keys.length)) return undefined;
-  }
   if (!entries || typeof entries !== "object" || Array.isArray(entries)) return undefined;
   const clean: Record<string, ManifestEntry> = {};
   for (const [key, value] of Object.entries(entries)) {
@@ -644,11 +633,11 @@ function parseManifest(bytes: Buffer): TrustManifest | undefined {
     if (current === undefined && pendingWrite === undefined) continue;
     clean[key] = { ...(current !== undefined ? { current } : {}), ...(pendingWrite !== undefined ? { pendingWrite } : {}) };
   }
-  return { version: 1, state, ...(oneByOne ? { oneByOne } : {}), ...(coveredFiles === undefined ? {} : { coveredFiles }), ...(adoptedFiles === undefined ? {} : { adoptedFiles }), entries: clean };
+  return { version: 1, state, ...(oneByOne ? { oneByOne } : {}), entries: clean };
 }
 
 /** The hash of an input as it is on disk now, or undefined when it is absent, a link or unreadable. */
-function currentHash(input: Omit<CoveredInput, "name">, home: string, propagateErrors = false): { hash: string; uids: number[]; bytes?: Buffer; files?: readonly string[] } | undefined {
+function currentHash(input: Omit<CoveredInput, "name">, home: string): { hash: string; uids: number[]; bytes?: Buffer; files?: readonly string[] } | undefined {
   try {
     const pinned = assertNoLinkBelow(home, input.path);
     if (pinned === undefined) return undefined;
@@ -658,8 +647,7 @@ function currentHash(input: Omit<CoveredInput, "name">, home: string, propagateE
     }
     const read = readRegularFile(input.path, pinned);
     return { hash: input.kind === "entry" ? entryFileDigestOf(read.bytes) : sha256Hex(read.bytes), uids: [read.uid], bytes: read.bytes };
-  } catch (error) {
-    if (propagateErrors) throw error;
+  } catch {
     return undefined;
   }
 }
@@ -667,7 +655,7 @@ function currentHash(input: Omit<CoveredInput, "name">, home: string, propagateE
 const WINDOWS_TRUSTED_OWNERS = new Set(["S-1-5-18", "S-1-5-32-544"]);
 
 /** The Windows owner/ACL overlay: owner or ACE evidence of another principal withdraws an item's trust for this run (R1). */
-function windowsEvidence(home: string, inputs: readonly CoveredInput[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean; readFailed?: true } {
+function windowsEvidence(home: string, inputs: readonly CoveredInput[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean } {
   if (process.platform !== "win32" || inputs.length === 0) return { withdrawn: new Map(), clean: true };
   const paths: string[] = [];
   const keys: string[] = [];
@@ -687,7 +675,7 @@ function windowsEvidence(home: string, inputs: readonly CoveredInput[]): { withd
   }
   let facts: readonly WindowsDaclFacts[];
   try { facts = readWindowsDacls(paths); }
-  catch { return { withdrawn: new Map(), clean: false, readFailed: true }; }
+  catch { return { withdrawn: new Map(), clean: false }; }
   return classifyWindowsHomeEvidence(facts, keys);
 }
 
@@ -695,13 +683,12 @@ function windowsEvidence(home: string, inputs: readonly CoveredInput[]): { withd
  * Classify the owner and DACL facts read for each covered key (one row per path, `keys[i]` naming the item `facts[i]` belongs
  * to). Pure, so the Windows overlay is tested on every platform.
  */
-export function classifyWindowsHomeEvidence(facts: readonly WindowsDaclFacts[], keys: readonly string[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean; readFailed?: true } {
+export function classifyWindowsHomeEvidence(facts: readonly WindowsDaclFacts[], keys: readonly string[]): { withdrawn: Map<string, "foreign-owner" | "foreign-access">; clean: boolean } {
   const withdrawn = new Map<string, "foreign-owner" | "foreign-access">();
   let clean = facts.length === keys.length;
-  let readFailed = !clean;
   facts.forEach((row, index) => {
     const key = keys[index]!;
-    if (row.exists !== true || !row.dacl) { clean = false; readFailed = true; return; }
+    if (row.exists !== true || !row.dacl) { clean = false; return; }
     const user = row.currentUserSid;
     if (row.dacl.owner !== user && !WINDOWS_TRUSTED_OWNERS.has(row.dacl.owner ?? "")) {
       withdrawn.set(key, "foreign-owner");
@@ -716,47 +703,7 @@ export function classifyWindowsHomeEvidence(facts: readonly WindowsDaclFacts[], 
       clean = false;
     }
   });
-  return { withdrawn, clean, ...(readFailed ? { readFailed: true as const } : {}) };
-}
-
-type BoardAdoptionResult = "adopted" | "refused" | "deferred";
-
-function reportBoardAdoptionError(error: unknown): void {
-  const code = isRecord(error) && typeof error.code === "string" && /^[A-Z][A-Z0-9_]*$/.test(error.code) ? error.code : "UNKNOWN";
-  console.warn(`[home-trust] Board adoption deferred: ${code}`);
-}
-
-/** Missing coverage identifies a pre-coverage manifest; recorded coverage is authoritative. */
-function adoptPreCoverageBoard(trust: ActiveTrust, inputs: readonly CoveredInput[], evidenceReadFailed: boolean): BoardAdoptionResult {
-  const key = "work-board/board.json";
-  const manifest = trust.manifest;
-  if (manifest.coveredFiles !== undefined || manifest.adoptedFiles?.includes(key) || manifest.entries[key] !== undefined) return "refused";
-  const input = inputs.find(input => input.key === key);
-  if (input === undefined || input.blocked !== undefined) return "refused";
-  if (trust.withdrawn.has(key)) return "refused";
-  if (evidenceReadFailed) return "deferred";
-  if (!isAveHomeConfigurationOwner() || !trust.evidenceClean) return "refused";
-  try {
-    const current = currentHash(input, trust.home, true);
-    if (current?.bytes === undefined || posixForeign(current.uids)) return "refused";
-    let parsed: unknown;
-    try { parsed = JSON.parse(current.bytes.toString("utf8")); } catch { return "refused"; }
-    if (!isRecord(parsed) || !Array.isArray(parsed.items)) return "refused";
-    const stripped = stripLegacyBoardTemplateRunFields({ ...parsed, items: parsed.items });
-    const body = JSON.stringify(stripped) === JSON.stringify(parsed) ? current.bytes.toString("utf8") : `${JSON.stringify(stripped, null, 2)}\n`;
-    const unchanged = (): boolean => isAveHomeConfigurationOwner() && currentHash(input, trust.home, true)?.hash === current.hash;
-    if (body !== current.bytes.toString("utf8") && !replaceUtf8FileAtomicSyncIf(input.path, body, unchanged)) return "refused";
-    if (!isAveHomeConfigurationOwner() || currentHash(input, trust.home, true)?.hash !== sha256Hex(body)) return "refused";
-    const adopted: TrustManifest = { ...manifest, coveredFiles: [...COVERED_FILE_KEYS], adoptedFiles: [...(manifest.adoptedFiles ?? []), key], entries: { ...manifest.entries, [key]: { current: sha256Hex(body) } } };
-    // The hash and the permanent per-key marker land in the same atomic manifest replacement.
-    persist({ ...trust, manifest: adopted });
-    trust.manifest = adopted;
-    return "adopted";
-  } catch (error) {
-    if (error instanceof LinkedInputError || error instanceof AmbiguousInputError || error instanceof InputSizeLimitError) return "refused";
-    reportBoardAdoptionError(error);
-    return "deferred";
-  }
+  return { withdrawn, clean };
 }
 
 export interface AveHomeTrustVerdict {
@@ -788,8 +735,8 @@ export function evaluateAveHomeTrustAtBoot(home: string): AveHomeTrustVerdict {
     // config/ was committed before the manifest existed, so it keeps "approve all" (D1, still gated on clean evidence and every
     // row approvable). Bytes that are present but do not parse are damage: those items are reviewed one by one.
     const corrupt = bytes !== undefined;
-    manifest = inputs.length === 0 ? { version: 1, state: "fresh", coveredFiles: [...COVERED_FILE_KEYS], entries: {} }
-      : { version: 1, state: "bootstrapped:false", coveredFiles: [...COVERED_FILE_KEYS], ...(corrupt ? { oneByOne: true as const } : {}), entries: {} };
+    manifest = inputs.length === 0 ? { version: 1, state: "fresh", entries: {} }
+      : { version: 1, state: "bootstrapped:false", ...(corrupt ? { oneByOne: true as const } : {}), entries: {} };
     changed = true;
   }
   const byKey = new Map(inputs.map((input) => [input.key, input]));
@@ -804,28 +751,8 @@ export function evaluateAveHomeTrustAtBoot(home: string): AveHomeTrustVerdict {
   }
   const evidence = windowsEvidence(root, inputs);
   active = { home: root, manifest, withdrawn: evidence.withdrawn, evidenceClean: evidence.clean, pendingAtBoot: false };
-  let adoption: BoardAdoptionResult = "refused";
-  if (isAveHomeConfigurationOwner()) {
-    adoption = adoptPreCoverageBoard(active, inputs, evidence.readFailed === true);
-    if (adoption === "adopted") manifest = active.manifest;
-    else if (adoption === "refused" && manifest.coveredFiles !== undefined) {
-      if (changed || JSON.stringify(manifest.coveredFiles) !== JSON.stringify([...COVERED_FILE_KEYS])) {
-        const covered = { ...manifest, coveredFiles: [...COVERED_FILE_KEYS] };
-        persist({ ...active, manifest: covered });
-        active.manifest = manifest = covered;
-      }
-    } else if (adoption === "refused" || changed) {
-      const covered = adoption === "deferred" ? manifest : { ...manifest, coveredFiles: [...COVERED_FILE_KEYS] };
-      try {
-        persist({ ...active, manifest: covered });
-        active.manifest = manifest = covered;
-      } catch (error) {
-        reportBoardAdoptionError(error);
-        adoption = "deferred";
-      }
-    }
-  }
-  const pending = adoption === "deferred" || reviewRows(active).length > 0;
+  if (changed && isAveHomeConfigurationOwner()) persist(active);
+  const pending = reviewRows(active).length > 0;
   active = { ...active, pendingAtBoot: pending };
   setAtomicWriteGuard(guardWrite);
   return { pending, state: manifest.state };
