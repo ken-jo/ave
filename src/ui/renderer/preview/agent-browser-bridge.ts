@@ -285,9 +285,6 @@ function subscribeControl(listener: () => void): () => void {
   return () => controlListeners.delete(listener);
 }
 
-/** Bind retries while main has not yet seen the guest attach. */
-const BIND_RETRY_LIMIT = 20;
-const BIND_RETRY_MS = 100;
 const acceptedBindings = new WeakMap<HTMLElement, number>();
 
 /** A live guest stays visible until main has blocked parked input and returned native focus. */
@@ -302,7 +299,10 @@ export async function reportGuestParking(api: AveApi, webview: HTMLElement, tabI
   } catch { return false; }
 }
 
-/** Bind on attach and first dom-ready; retry guest-not-live because renderer attach can precede main's guest registration. */
+/**
+ * Bind on attach and first dom-ready. Main answers a bind for a guest it has not yet seen attach, or a new tab's guest
+ * that has not yet committed its first page, once that has happened, so nothing here waits or tries again on a timer.
+ */
 export function bindGuestToTab(
   api: AveApi,
   webview: HTMLElement,
@@ -312,7 +312,6 @@ export function bindGuestToTab(
   const browserTabs = api.browserTabs;
   if (!browserTabs) return () => undefined;
   let cancelled = false;
-  let retry: ReturnType<typeof setTimeout> | undefined;
   /** The latest requested guest, pending or accepted; rejection allows another dom-ready attempt. */
   let sentFor: number | undefined;
   let bindSequence = 0;
@@ -325,13 +324,17 @@ export function bindGuestToTab(
       return undefined;
     }
   };
-  const onAttach = (attempt = 0) => {
+  const onAttach = (afterMain = false) => {
     if (cancelled) return;
     const webContentsId = guestId();
-    if (webContentsId === undefined) return;
-    if (retry !== undefined) {
-      clearTimeout(retry);
-      retry = undefined;
+    if (webContentsId === undefined) {
+      // The guest gets its name from main's answer to the element's own attach request, and nothing announces that
+      // answer: the attach event can arrive first, and a first load the server holds (it asks for a password) sends
+      // no later event. Main answers requests in the order it received them, so the answer to a request sent now
+      // arrives after the answer that names the guest. One such round trip, then the guest is bound.
+      const isGuestElement = typeof (webview as HTMLElement & { getWebContentsId?: unknown }).getWebContentsId === "function";
+      if (!afterMain && isGuestElement) void browserTabs.getState().then(() => { if (guestId() !== sentFor) onAttach(true); });
+      return;
     }
     const sequence = ++bindSequence;
     sentFor = webContentsId;
@@ -348,9 +351,6 @@ export function bindGuestToTab(
         return;
       }
       sentFor = undefined;
-      if (result.error === "guest-not-live" && attempt < BIND_RETRY_LIMIT) {
-        retry = setTimeout(() => onAttach(attempt + 1), BIND_RETRY_MS);
-      }
     }, () => {
       if (!cancelled && sequence === bindSequence) sentFor = undefined;
     });
@@ -378,7 +378,6 @@ export function bindGuestToTab(
   return () => {
     acceptedBindings.delete(webview);
     cancelled = true;
-    if (retry !== undefined) clearTimeout(retry);
     webview.removeEventListener("did-attach", onAttachEvent);
     webview.removeEventListener("dom-ready", onReady);
     webview.removeEventListener("did-navigate", onNavigate);

@@ -221,4 +221,23 @@ describe.each([
     fireEvent.click(screen.getByTestId("browser-page-prompt-dismiss"));
     expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-3", answer: { kind: "external", open: false } });
   });
+
+  it("collects a user name and password for the origin main named, and forgets them with the prompt", () => {
+    const { api } = mount(ids);
+    const show = (id: string) => act(() => __setBrowserPageStatusForTest({ ...pageState(false), pages: [{ tabId: TAB, loading: false, loadError: null,
+      prompts: [{ id, kind: "signIn", origin: "https://files.example:8443", realm: "<i>Staff</i>" }] }] }, api));
+    show("prompt-6");
+    expect(screen.getByTestId("browser-page-prompt-origin").textContent).toBe("https://files.example:8443");
+    expect(screen.getByTestId("browser-page-prompt-realm").textContent).toContain("<i>Staff</i>");
+    const password = screen.getByTestId("browser-page-prompt-password") as HTMLInputElement;
+    expect(password.type).toBe("password");
+    fireEvent.change(screen.getByTestId("browser-page-prompt-username"), { target: { value: "ken" } });
+    fireEvent.change(password, { target: { value: "secret" } });
+    fireEvent.submit(screen.getByTestId("browser-page-prompt-sign-in"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenCalledWith({ tabId: TAB, promptId: "prompt-6", answer: { kind: "signIn", credentials: { username: "ken", password: "secret" } } });
+    show("prompt-7");
+    expect((screen.getByTestId("browser-page-prompt-password") as HTMLInputElement).value).toBe("");
+    fireEvent.click(screen.getByTestId("browser-page-prompt-sign-in-cancel"));
+    expect(api.browserWorkspace?.answerPrompt).toHaveBeenLastCalledWith({ tabId: TAB, promptId: "prompt-7", answer: { kind: "signIn", credentials: null } });
+  });
 });

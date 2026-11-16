@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../../contract/app-contract.js";
@@ -10,7 +11,11 @@ vi.mock("../../../main/browser/browser-workspace-desktop.js", () => ({
   disposeBrowserWorkspaceService: vi.fn(),
 }));
 
+const liveContents = new Map<number, unknown>();
+const browserProfile = vi.hoisted(() => ({ profile: "browser" }));
 vi.mock("electron", () => ({
+  webContents: { fromId: (id: number) => liveContents.get(id) },
+  session: { fromPartition: () => browserProfile },
   ipcMain: {
     on: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
@@ -53,7 +58,17 @@ beforeEach(() => {
 
 afterEach(() => {
   browserTabRegistry.__reset();
+  liveContents.clear();
+  vi.useRealTimers();
 });
+
+/** A page guest of the sender window that main may not have registered yet. */
+function hostedGuest(id: number, url: string) {
+  const guest = Object.assign(new EventEmitter(), { id, url, destroyed: false, hostWebContents: windowSender, session: browserProfile, getType: () => "webview",
+    isDestroyed() { return this.destroyed; }, getURL() { return this.url; }, getTitle: () => "Page" });
+  liveContents.set(id, guest);
+  return guest;
+}
 
 describe("browser IPC", () => {
   it("routes private pointer input only from the owning top-level UI with a validated envelope", () => {
@@ -120,6 +135,54 @@ describe("browser IPC", () => {
     expect(invoke(CHANNELS.browser.bindTab, hostFrameEvent(), { tabId: "browser:1", webContentsId: 41 }))
       .toEqual({ ok: false, error: "bad-request" });
     expect(browserTabRegistry.listTabs(7).map((tab) => tab.url)).toEqual(["https://a.example/"]);
+  });
+
+  it("answers a bind for a guest main has not yet seen attach once it attaches, with no timer", async () => {
+    vi.useFakeTimers();
+    const guest = hostedGuest(51, "https://a.example/");
+    const bound = invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "browser:early", webContentsId: 51 });
+    expect(bound).toBeInstanceOf(Promise);
+    expect(vi.getTimerCount()).toBe(0);
+    browserTabRegistry.guestAttached(guest as never, 7);
+    await expect(bound).resolves.toEqual({ ok: true });
+    expect(browserTabRegistry.listTabs(7).map((tab) => tab.url)).toEqual(["https://a.example/"]);
+    // A guest that ends before it attaches is answered as not live.
+    const gone = hostedGuest(52, "https://b.example/");
+    const refused = invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "browser:gone", webContentsId: 52 });
+    gone.destroyed = true;
+    gone.emit("destroyed");
+    await expect(refused).resolves.toEqual({ ok: false, error: "guest-not-live" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("answers at once for a guest main never registers: another profile's page or a guest that is not a page", () => {
+    const otherProfile = Object.assign(hostedGuest(54, "https://a.example/"), { session: { profile: "other" } });
+    const notPage = Object.assign(hostedGuest(55, "https://a.example/"), { getType: () => "window" });
+    for (const guest of [otherProfile, notPage]) {
+      expect(invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "browser:x", webContentsId: guest.id })).toEqual({ ok: false, error: "guest-not-live" });
+    }
+  });
+
+  it("answers a bind refused while the guest has no page yet once it commits its first page", async () => {
+    vi.useFakeTimers();
+    const guest = hostedGuest(53, "");
+    browserTabRegistry.guestAttached(guest as never, 7);
+    const bindTab = vi.spyOn(browserTabRegistry, "bindTab").mockReturnValueOnce({ ok: false, error: "guest-not-live" }).mockReturnValueOnce({ ok: true });
+    try {
+      const bound = invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "browser:new", webContentsId: 53, requestId: "browser-op-1" });
+      expect(bound).toBeInstanceOf(Promise);
+      // A subframe's failure is not the page committing.
+      guest.emit("did-fail-load", {}, -2, "FAILED", "https://frame.example/", false);
+      expect(bindTab).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+      guest.url = "about:blank";
+      guest.emit("did-navigate", {}, "about:blank");
+      await expect(bound).resolves.toEqual({ ok: true });
+      expect(bindTab).toHaveBeenCalledTimes(2);
+      expect(guest.listenerCount("did-navigate")).toBe(0);
+    } finally {
+      bindTab.mockRestore();
+    }
   });
 
   it("accepts focus receipts only from the matching host window", () => {

@@ -1,5 +1,5 @@
 // Browser bindings require a host renderer and a guest attached to that sender's own main window.
-import { ipcMain } from "electron";
+import { ipcMain, webContents, type WebContents } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
 import { sendToWindow } from "../safe-send.js";
@@ -10,13 +10,15 @@ import { disposeBrowserWorkspaceService, getBrowserWorkspaceService, refreshBrow
 import { registerShutdownHook } from "../../main/app-shutdown.js";
 import { registerBrowserWorkspaceHandlers } from "./browser-workspace.js";
 import { BrowserNativeSurfaceHost } from "../../main/browser/browser-native-surfaces.js";
-import { attachSideBrowserWebview } from "../../main/side-browser-webview.js";
+import { attachSideBrowserWebview, isSideBrowserContents } from "../../main/side-browser-webview.js";
 import { trackBrowserGuest } from "../../main/browser/browser-guest-tracking.js";
+import { subscribeBrowserGuestDestroyed } from "../../main/browser/browser-guest-lifecycle.js";
 import { parseBrowserNativeSurfaceRequest, type BrowserNativeSurfaceResult } from "../../shared/browser-native-surface.js";
 import { parseBrowserNativeInput } from "../../shared/browser-native-input.js";
 import type {
   BrowserTabStopRequest,
   ActiveWorkspaceSurface,
+  BrowserTabBindRequest,
   BrowserTabBindResult,
 } from "../../shared/browser-surface.js";
 import type { IpcDeps } from "../types.js";
@@ -38,6 +40,38 @@ export function parseActiveSurface(value: unknown): ActiveWorkspaceSurface | nul
   const tabId = asTabId(record.tabId);
   if ((record.kind !== "browser" && record.kind !== "terminal") || tabId === null) return undefined;
   return { kind: record.kind, tabId };
+}
+
+/** Settles when `subscribe`'s event fires or the guest ends, whichever comes first. */
+function untilGuestEvent(guest: WebContents, subscribe: (fire: () => void) => () => void): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let stops: (() => void)[] = [];
+    const fire = () => { if (settled) return; settled = true; for (const stop of stops) stop(); resolve(); };
+    stops = [subscribeBrowserGuestDestroyed(guest, fire), subscribe(fire)];
+    if (settled) for (const stop of stops) stop();
+  });
+}
+
+/**
+ * The renderer can name its guest before main has seen that guest attach, and a new tab's guest before it has committed
+ * its first page. Binding waits for the event that ends each of these, or for the guest's end; nothing is polled. Only a
+ * browser page this sender hosts is waited for, since main registers exactly those as they attach; any other guest is
+ * answered at once by the registry.
+ */
+function bindWhenReady(sender: WebContents, windowId: number, request: BrowserTabBindRequest): BrowserTabBindResult | Promise<BrowserTabBindResult> {
+  const bind = () => browserTabRegistry.bindTab(windowId, request);
+  const guest = webContents.fromId(request.webContentsId);
+  if (!guest || guest.isDestroyed() || guest.hostWebContents !== sender || guest.getType() !== "webview" || !isSideBrowserContents(guest)) return bind();
+  const committed = (result: BrowserTabBindResult) => result.ok || result.error !== "guest-not-live" || guest.isDestroyed() || guest.getURL() !== ""
+    ? result
+    : untilGuestEvent(guest, (fire) => {
+      const failed = (_event: unknown, _code: number, _description: string, _url: string, mainFrame: boolean) => { if (mainFrame) fire(); };
+      guest.on("did-navigate", fire); guest.on("did-fail-load", failed);
+      return () => { guest.removeListener("did-navigate", fire); guest.removeListener("did-fail-load", failed); };
+    }).then(bind);
+  if (browserTabRegistry.guestWindowId(request.webContentsId) !== null) return committed(bind());
+  return untilGuestEvent(guest, (fire) => browserTabRegistry.onceGuestAttached(request.webContentsId, fire)).then(() => committed(bind()));
 }
 
 export function registerBrowserHandlers(deps: IpcDeps): void {
@@ -125,7 +159,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
     },
   });
 
-  ipcMain.handle(CHANNELS.browser.bindTab, (e, payload: unknown): BrowserTabBindResult => {
+  ipcMain.handle(CHANNELS.browser.bindTab, (e, payload: unknown): BrowserTabBindResult | Promise<BrowserTabBindResult> => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.browser.bindTab, e);
       return { ok: false, error: "unauthorized-frame" };
@@ -145,7 +179,7 @@ export function registerBrowserHandlers(deps: IpcDeps): void {
       return { ok: false, error: "bad-request" };
     }
     if (browserTabRegistry.isIndependentGuest(webContentsId)) return { ok: false, error: "guest-not-hosted" };
-    return browserTabRegistry.bindTab(win.id, {
+    return bindWhenReady(e.sender, win.id, {
       tabId,
       webContentsId,
       ...(typeof record.requestId === "string" ? { requestId: record.requestId } : {}),

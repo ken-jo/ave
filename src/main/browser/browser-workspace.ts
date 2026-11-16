@@ -3,7 +3,7 @@ import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 import type { DownloadItem, WebContents } from "electron";
 import { describeLoadFailure, describePageCrash } from "./browser-load-failure.js";
 import { BrowserPagePrompts } from "./browser-page-prompts.js";
-import { BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserLoadError, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -131,7 +131,9 @@ export class BrowserWorkspaceService {
       if (!live || live.guest.isDestroyed() || live.documentGeneration !== tab.documentGeneration) return [];
       const page = this.guests.get(live.guest.id);
       pages.push({ tabId: tab.tabId, loading: page?.loading ?? false, loadError: page?.loadError ?? null, prompts: this.prompts.list(live.guest.id) });
-      return [{ ...tab, title: tab.title.slice(0, BROWSER_WORKSPACE_LIMITS.titleLength), zoomFactor: live.guest.getZoomFactor() }];
+      // A tab whose first load has not committed has no address yet. It is listed as the blank document it shows, so its
+      // page status (a load in progress, a question from the server) reaches the tab instead of voiding the snapshot.
+      return [{ ...tab, url: tab.url === "" ? "about:blank" : tab.url, title: tab.title.slice(0, BROWSER_WORKSPACE_LIMITS.titleLength), zoomFactor: live.guest.getZoomFactor() }];
     });
     this.publishedTabs.set(windowId, tabs.map((tab) => `${tab.tabId}:${tab.documentGeneration}`).join("\n"));
     return { ...snapshot, revision, tabs, pages, downloads: structuredClone(this.downloads.get(windowId) ?? []), capabilities: { fullscreen: this.deps.fullscreenAvailable(windowId) } };
@@ -247,6 +249,21 @@ export class BrowserWorkspaceService {
         if (answer?.open && openable) void this.deps.openExternal(url).catch(this.deps.onError);
       });
     };
+    // The server asks for a user name and password. Unhandled, the request is cancelled and the page just fails. A user's
+    // own tab asks in its panel, naming the origin of the request as main computed it; the answer goes to that one
+    // request and is kept nowhere. A proxy, and a page the agent is driving in its own view, are refused as before.
+    // A new tab's first request can arrive before the tab is listed; the question waits in the queue and shows once it is.
+    const signIn = (event: { preventDefault(): void }, details: { url?: string }, auth: { isProxy?: boolean; realm?: string }, respond: (username?: string, password?: string) => void) => {
+      const origin = browserWorkspaceUrl(details.url);
+      if (auth.isProxy || origin === null || guest.getType() !== "webview") return;
+      if (this.prompts.list(guestId).some((prompt) => prompt.kind === "signIn")) return;
+      event.preventDefault();
+      const realm = browserPlainText(typeof auth.realm === "string" ? auth.realm : "").slice(0, BROWSER_REALM_LIMIT);
+      void this.prompts.ask(guestId, "signIn", { origin: new URL(origin).origin, realm }).then((answer) => {
+        if (answer?.credentials) respond(answer.credentials.username, answer.credentials.password);
+        else respond();
+      });
+    };
     const pageNavigation = (event: { preventDefault(): void; url?: string; isMainFrame?: boolean }, legacyUrl?: string) => {
       const entry = this.guests.get(guestId);
       const requested = typeof event.url === "string" ? event.url : legacyUrl;
@@ -298,10 +315,10 @@ export class BrowserWorkspaceService {
     };
     const navigatedInPage = (_event: unknown, _url: string, mainFrame: boolean) => { if (mainFrame) { invalidate(); visit(); } };
     let unsubscribe = () => {};
-    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener("will-navigate", pageNavigation); guest.removeListener("did-navigate", committed); guest.removeListener("will-prevent-unload", preventUnload); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.releaseLeave(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    const dispose = () => { guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener("login", signIn); guest.removeListener("will-navigate", pageNavigation); guest.removeListener("did-navigate", committed); guest.removeListener("will-prevent-unload", preventUnload); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.releaseLeave(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const titleChanged = () => { if (!guest.isDestroyed()) void this.store.updateHistoryTitle(guest.getURL(), guest.getTitle()).then(() => this.changed()).catch(this.deps.onError); };
     this.guests.set(guestId, { guest, windowId, generation: 1, loading: guest.isLoadingMainFrame(), loadError: null, userNavigation: "none", unloadHeld: false, dispose });
-    guest.on("will-navigate", pageNavigation); guest.on("did-navigate", committed); guest.on("will-prevent-unload", preventUnload);
+    guest.on("login", signIn); guest.on("will-navigate", pageNavigation); guest.on("did-navigate", committed); guest.on("will-prevent-unload", preventUnload);
     guest.on("did-fail-load", failed); guest.on("render-process-gone", gone);
     guest.on("did-start-loading", loadStarted); guest.on("did-stop-loading", loadStopped);
     guest.on("did-start-navigation", started); guest.on("did-navigate", visit); guest.on("did-navigate-in-page", navigatedInPage); guest.on("page-title-updated", titleChanged);

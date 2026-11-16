@@ -32,6 +32,8 @@ export interface BrowserLoadError {
 /** Pending prompts one tab may hold; a page that raises more is answered as dismissed. */
 export const BROWSER_PAGE_PROMPT_LIMIT = 8;
 export const BROWSER_EXTERNAL_TARGET_LIMIT = 200;
+export const BROWSER_REALM_LIMIT = 100;
+export const BROWSER_CREDENTIAL_LIMIT = 256;
 /** Text with every control character removed, for a page-supplied string the host shows on one line. */
 export function browserPlainText(text: string): string {
   return Array.from(text).filter((character) => { const code = character.codePointAt(0) ?? 0; return code > 0x1f && code !== 0x7f; }).join("");
@@ -48,11 +50,15 @@ export type BrowserPagePrompt =
   /** The page asked to confirm before a navigation it started itself unloads it. */
   | { readonly id: string; readonly kind: "leave"; readonly origin: string }
   /** The page followed a link that is not a web page. `openable` links can be handed to the system's own app for them. */
-  | { readonly id: string; readonly kind: "external"; readonly origin: string; readonly scheme: string; readonly target: string; readonly openable: boolean };
+  | { readonly id: string; readonly kind: "external"; readonly origin: string; readonly scheme: string; readonly target: string; readonly openable: boolean }
+  /** The server asked for a user name and password (HTTP authentication). `realm` is the server's own label, as plain text. */
+  | { readonly id: string; readonly kind: "signIn"; readonly origin: string; readonly realm: string };
 export type BrowserPromptAnswer =
   | { readonly kind: "permission"; readonly choice: BrowserPermissionChoice }
   | { readonly kind: "leave"; readonly leave: boolean }
-  | { readonly kind: "external"; readonly open: boolean };
+  | { readonly kind: "external"; readonly open: boolean }
+  /** Null cancels the request. The credentials are passed to the one request that asked and are stored nowhere. */
+  | { readonly kind: "signIn"; readonly credentials: { readonly username: string; readonly password: string } | null };
 export interface BrowserPromptAnswerRequest { readonly tabId: string; readonly promptId: string; readonly answer: BrowserPromptAnswer }
 /** What the host knows about one tab's page beyond its address. One entry per listed tab. */
 export interface BrowserPageStatus {
@@ -152,6 +158,12 @@ function validPromptAnswer(value: unknown): boolean {
   if (value.kind === "permission") return keys(value, ["kind", "choice"]) && PERMISSION_CHOICES.includes(value.choice as string);
   if (value.kind === "leave") return keys(value, ["kind", "leave"]) && typeof value.leave === "boolean";
   if (value.kind === "external") return keys(value, ["kind", "open"]) && typeof value.open === "boolean";
+  if (value.kind === "signIn") {
+    if (!keys(value, ["kind", "credentials"])) return false;
+    const credentials = value.credentials;
+    return credentials === null || (isRecord(credentials) && keys(credentials, ["username", "password"])
+      && [credentials.username, credentials.password].every((item) => typeof item === "string" && item.length <= BROWSER_CREDENTIAL_LIMIT));
+  }
   return false;
 }
 function validPrompt(value: unknown): boolean {
@@ -161,6 +173,9 @@ function validPrompt(value: unknown): boolean {
       && value.permissions.length <= BROWSER_SITE_PERMISSIONS.length && value.permissions.every((item) => BROWSER_SITE_PERMISSIONS.includes(item as BrowserSitePermission));
   }
   if (value.kind === "leave") return keys(value, ["id", "kind", "origin"]);
+  if (value.kind === "signIn") {
+    return keys(value, ["id", "kind", "origin", "realm"]) && typeof value.realm === "string" && value.realm.length <= BROWSER_REALM_LIMIT && value.realm === browserPlainText(value.realm);
+  }
   if (value.kind === "external") {
     return keys(value, ["id", "kind", "origin", "scheme", "target", "openable"]) && typeof value.openable === "boolean"
       && typeof value.scheme === "string" && /^[a-z][a-z0-9+.-]{0,31}$/.test(value.scheme)

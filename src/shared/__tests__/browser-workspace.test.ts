@@ -118,4 +118,16 @@ describe("browser workspace wire validation", () => {
     expect(parseBrowserWorkspaceRequest("answerPrompt", answer)).toEqual(answer);
     expect(parseBrowserWorkspaceRequest("answerPrompt", { ...answer, answer: { kind: "external", open: "yes" } })).toBeNull();
   });
+  it("accepts a sign-in prompt with a bounded plain realm, and an answer that is null or two bounded strings", () => {
+    const tab = { ...TARGET, url: "https://site.example/", title: "Site", zoomFactor: 1 };
+    const prompt = { id: "prompt-1", kind: "signIn", origin: "https://site.example", realm: "Staff area" };
+    const withPrompt = (value: unknown) => ({ ...STATE, tabs: [tab], pages: [{ tabId: TARGET.tabId, loading: false, loadError: null, prompts: [value] }] });
+    expect(parseBrowserWorkspaceState(withPrompt(prompt))).not.toBeNull();
+    for (const bad of [{ ...prompt, realm: "x".repeat(101) }, { ...prompt, realm: "a\tb" }, { ...prompt, origin: "site.example" }, { ...prompt, username: "ken" }]) expect(parseBrowserWorkspaceState(withPrompt(bad))).toBeNull();
+    const answer = (credentials: unknown) => ({ tabId: "browser:one", promptId: "prompt-1", answer: { kind: "signIn", credentials } });
+    for (const good of [null, { username: "", password: "" }, { username: "ken", password: "p".repeat(256) }]) expect(parseBrowserWorkspaceRequest("answerPrompt", answer(good))).toEqual(answer(good));
+    for (const bad of [undefined, "ken:secret", { username: "ken" }, { username: "ken", password: "p".repeat(257) }, { username: 1, password: "p" }, { username: "ken", password: "p", save: true }]) {
+      expect(parseBrowserWorkspaceRequest("answerPrompt", answer(bad))).toBeNull();
+    }
+  });
 });

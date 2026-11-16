@@ -67,7 +67,7 @@ function Harness({ where }: { where: "side" | "pane" | "none" }) {
 }
 
 const bindTab = vi.fn(async (_request: { tabId: string; webContentsId: number; requestId?: string }) => ({ ok: true as const }));
-const layerApi = { browserTabs: { bindTab, getSessionBindings: async () => ({ revision: 0, bindings: [], nativeBrowserTabIds: [] }), onSessionBindingsChanged: () => () => {}, onNativeSurfaceChanged: () => () => {} } } as unknown as AveApi;
+const layerApi = { browserTabs: { bindTab, getState: async () => ({ revision: 0, tabs: [] }), getSessionBindings: async () => ({ revision: 0, bindings: [], nativeBrowserTabIds: [] }), onSessionBindingsChanged: () => () => {}, onNativeSurfaceChanged: () => () => {} } } as unknown as AveApi;
 
 function refusalApi(): { api: AveApi; block(src: string): void } {
   let handler: (event: { src: string }) => void = () => {};

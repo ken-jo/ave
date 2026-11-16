@@ -1,3 +1,4 @@
+import { parseBrowserWorkspaceState } from "../../../shared/browser-workspace.js";
 import { refuseNamespaceFileCreation } from "../../../__tests__/support/feature-namespace.js";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -22,7 +23,8 @@ async function setup() {
   const events = new EventEmitter();
   const loadURL = vi.fn(async (_url: string) => {}); const reload = vi.fn(); const stop = vi.fn();
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
-  const guest = Object.assign(events, { id: 7, session: {}, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
+  let hostType = "webview";
+  const guest = Object.assign(events, { id: 7, session: {}, getType: () => hostType, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
   const onError = vi.fn(); const promptPermission = vi.fn(async () => true); const openExternal = vi.fn(async () => undefined);
   let requestHold: BrowserPageRequestHold | null = null;
   const holdPageRequests = vi.fn((hold: BrowserPageRequestHold | null) => { requestHold = hold; });
@@ -30,7 +32,7 @@ async function setup() {
   const pageRequest = (request: BrowserPageRequest) => requestHold === null ? Promise.resolve("unheld" as const) : new Promise<boolean>((resolve) => requestHold?.(request, resolve));
   const service = new BrowserWorkspaceService({ openExternal, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 
@@ -349,5 +351,65 @@ describe("browser workspace service", () => {
     follow("mailto:popup@example.com");
     setLive(true);
     expect(await prompt()).toBeUndefined();
+  });
+  it("asks a user's tab for the credentials a server requests and answers only the request that asked", async () => {
+    const { service, guest, events, setHostType } = await setup();
+    service.observeGuest(1, guest);
+    const request = (details: object, auth: object) => {
+      const event = { preventDefault: vi.fn() }; const respond = vi.fn();
+      events.emit("login", event, details, auth, respond);
+      return { event, respond };
+    };
+    const prompts = async () => (await service.getState(1)).pages[0]?.prompts ?? [];
+    const answer = async (credentials: { username: string; password: string } | null) =>
+      service.answerPrompt(1, { tabId: "browser:one", promptId: String((await prompts())[0]?.id), answer: { kind: "signIn", credentials } });
+
+    // A proxy, an address that is not a web page, and a page in the agent's own view are left to be cancelled.
+    for (const [details, auth] of [[{ url: "https://site.example/" }, { isProxy: true }], [{ url: "file:///etc/passwd" }, {}]] as const) {
+      expect(request(details, auth).event.preventDefault).not.toHaveBeenCalled();
+    }
+    setHostType("window");
+    expect(request({ url: "https://site.example/" }, {}).event.preventDefault).not.toHaveBeenCalled();
+    setHostType("webview");
+    expect(await prompts()).toEqual([]);
+
+    const first = request({ url: "https://files.example:8443/private?token=1" }, { isProxy: false, realm: `Staff\u0007 area ${"x".repeat(200)}` });
+    expect(first.event.preventDefault).toHaveBeenCalledOnce();
+    const shown = await prompts();
+    expect(shown).toEqual([{ id: shown[0]?.id, kind: "signIn", origin: "https://files.example:8443", realm: `Staff area ${"x".repeat(89)}` }]);
+    // A second request while one is shown is not queued behind it.
+    expect(request({ url: "https://files.example:8443/other" }, {}).event.preventDefault).not.toHaveBeenCalled();
+    await answer({ username: "ken", password: "secret" });
+    await vi.waitFor(() => expect(first.respond).toHaveBeenCalledWith("ken", "secret"));
+
+    const cancelled = request({ url: "https://files.example:8443/private" }, {});
+    await answer(null);
+    await vi.waitFor(() => expect(cancelled.respond).toHaveBeenCalledWith());
+    const abandoned = request({ url: "https://files.example:8443/private" }, {});
+    events.emit("did-start-navigation", {}, "https://site.example/next", false, true);
+    await vi.waitFor(() => expect(abandoned.respond).toHaveBeenCalledWith());
+    expect(await prompts()).toEqual([]);
+  });
+  it("publishes a valid snapshot for a tab whose first load has not committed, carrying the server's question", async () => {
+    const { service, guest, events, setUrl } = await setup();
+    setUrl("");
+    service.observeGuest(1, guest);
+    events.emit("login", { preventDefault: () => {} }, { url: "https://files.example/private" }, { realm: "Staff" }, () => {});
+    const state = await service.getState(1);
+    expect(state.tabs[0]?.url).toBe("about:blank");
+    expect(state.pages[0]?.prompts).toHaveLength(1);
+    expect(parseBrowserWorkspaceState(state)).not.toBeNull();
+  });
+  it("keeps a sign-in question the server asked before the tab was bound, and shows it as soon as the tab is listed", async () => {
+    const { service, guest, events, setLive } = await setup();
+    // The guest is held from attach; its tab is not bound yet when the server's challenge arrives.
+    setLive(false);
+    service.observeGuest(1, guest);
+    const answered = vi.fn();
+    events.emit("login", { preventDefault: vi.fn() }, { url: "https://site.example/private" }, { isProxy: false, scheme: "basic", host: "site.example", port: 443, realm: "Staff" }, answered);
+    expect((await service.getState(1)).pages).toEqual([]);
+    expect(answered).not.toHaveBeenCalled();
+    setLive(true);
+    expect((await service.getState(1)).pages[0]?.prompts).toMatchObject([{ kind: "signIn", realm: "Staff" }]);
   });
 });
