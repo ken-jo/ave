@@ -3,6 +3,15 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 
 useConfigurationOwner();
 
+const fileReads = vi.hoisted(() => ({ onOpen: undefined as undefined | ((path: unknown) => void) }));
+vi.mock("node:fs", async (original) => {
+  const actual = await original<typeof import("node:fs")>();
+  return { ...actual, openSync: (...args: Parameters<typeof actual.openSync>) => {
+    fileReads.onOpen?.(args[0]);
+    return actual.openSync(...args);
+  } };
+});
+
 const dacls = vi.hoisted(() => ({
   override: undefined as undefined | ((paths: readonly string[], actual: (paths: readonly string[]) => unknown[]) => unknown[]),
 }));
@@ -659,6 +668,15 @@ describe("Windows owner and ACL overlay", () => {
     } as unknown as WindowsDaclFacts;
   }
 
+  it.each(["null DACL", "unsupported ACE"])("classifies %s as refusing evidence without a read failure", (shape) => {
+    const facts = row(user, [{ sid: user, allow: true }]);
+    if (!facts.dacl) throw new Error("Missing DACL fixture");
+    if (shape === "null DACL") facts.dacl.nullDacl = true;
+    else facts.dacl.aces[0]!.type = 2;
+    expect(classifyWindowsHomeEvidence([facts], ["work-board/board.json"])).toEqual({
+      withdrawn: new Map([["work-board/board.json", "foreign-access"]]), clean: false,
+    });
+  });
   it("withdraws trust from an item another account owns", () => {
     const result = classifyWindowsHomeEvidence([row(other, [{ sid: user, allow: true }])], ["AGENTS.md"]);
     expect(result.withdrawn.get("AGENTS.md")).toBe("foreign-owner");
@@ -959,6 +977,35 @@ describe("board coverage adoption", () => {
     expect(readFileSync(path, "utf8")).toBe(before);
     expect(readFileSync(join(dir, "config", ".ave-trust-manifest.json"), "utf8")).toBe(manifestBefore);
   });
+  it.runIf(process.platform === "win32").each([
+    ["null DACL", false], ["unsupported ACE", false], ["foreign owner", false],
+    ["null DACL", true], ["unsupported ACE", true], ["foreign owner", true],
+  ] as const)("consumes %s board evidence even with an unrelated read failure: %s", (shape, unrelatedFailure) => {
+    const dir = priorHome(); const path = board(dir, [{ ...row, templateId: "forged" }]);
+    const before = readFileSync(path, "utf8");
+    const platform = process.platform;
+    const user = "S-1-5-21-1-2-3-1001";
+    dacls.override = (paths, actual) => !paths.some(path => path.endsWith("board.json")) ? actual(paths) : paths.map((path) => ({
+      exists: !(unrelatedFailure && path.endsWith("AGENTS.md")), directory: false, currentUserSid: user, elevated: false,
+      dacl: { owner: path.endsWith("board.json") && shape === "foreign owner" ? "S-1-5-21-1-2-3-1002" : user,
+        protected: true, nullDacl: path.endsWith("board.json") && shape === "null DACL",
+        aces: [{ sid: user, type: path.endsWith("board.json") && shape === "unsupported ACE" ? 2 : 0, mask: 0x1f01ff, flags: 0 }] },
+    }));
+    try {
+      setProcessPlatform("win32");
+      _resetAveHomeTrustForTest();
+      expect(evaluateAveHomeTrustAtBoot(dir).pending).toBe(true);
+      expect(manifest(dir).coveredFiles).toContain("work-board/board.json");
+      expect(manifest(dir).adoptedFiles).toBeUndefined();
+      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally { setProcessPlatform(platform); dacls.override = undefined; }
+    expect(boot(dir).pending).toBe(true);
+    expect(readFileSync(path, "utf8")).toBe(before);
+    expect(manifest(dir).adoptedFiles).toBeUndefined();
+    expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
+    expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted", reason: "new" });
+  });
   it.runIf(process.platform === "win32")("leaves adoption open after an ownership-evidence read error and adopts on a later boot", () => {
     const dir = priorHome(); const path = board(dir);
     const read = vi.fn(() => { throw Object.assign(new Error("Evidence read failed"), { code: "EIO" }); });
@@ -1000,6 +1047,116 @@ describe("board coverage adoption", () => {
     expect(JSON.parse(readFileSync(path, "utf8")).items).toEqual([row]);
     expect(manifest(dir)).toMatchObject({ coveredFiles: expect.arrayContaining(["work-board/board.json"]), adoptedFiles: ["work-board/board.json"] });
     expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
+  });
+  it.each([1, 2, 3])("defers adoption when strict board read %s fails and adopts on a later boot", (failedRead) => {
+    const dir = priorHome(); const path = board(dir, [{ ...row, templateId: "forged" }]);
+    const before = readFileSync(path, "utf8");
+    let opens = 0;
+    fileReads.onOpen = (input) => {
+      if (String(input) === path && ++opens === failedRead) {
+        throw Object.assign(new Error("Private board content and path"), { code: "EIO" });
+      }
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(boot(dir)).toEqual({ pending: true, state: "bootstrapped:true" });
+      expect(isAveHomeTrustPendingAtBoot()).toBe(true);
+      expect(opens).toBe(failedRead);
+      expect(manifest(dir).coveredFiles).toBeUndefined();
+      expect(manifest(dir).adoptedFiles).toBeUndefined();
+      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
+      if (failedRead < 3) expect(readFileSync(path, "utf8")).toBe(before);
+      else expect(JSON.parse(readFileSync(path, "utf8")).items).toEqual([row]);
+      expect(warn.mock.calls).toEqual([["[home-trust] Board adoption deferred: EIO"]]);
+    } finally { fileReads.onOpen = undefined; warn.mockRestore(); }
+    expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
+    expect(boot(dir).pending).toBe(false);
+    expect(manifest(dir)).toMatchObject({
+      coveredFiles: expect.arrayContaining(["work-board/board.json"]), adoptedFiles: ["work-board/board.json"],
+      entries: { "work-board/board.json": { current: sha256Hex(readFileSync(path)) } },
+    });
+    expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
+  });
+  it.each(["missing", "corrupt", "covered intent"])("propagates a %s manifest write failure without a board-adoption log", (state) => {
+    const dir = priorHome();
+    const manifestPath = join(dir, "config", ".ave-trust-manifest.json");
+    if (state === "missing") rmSync(manifestPath);
+    else if (state === "corrupt") writeFileSync(manifestPath, "invalid");
+    else {
+      const prior = manifest(dir);
+      prior.coveredFiles = [];
+      prior.entries[manifestKey("AGENTS.md")] = { pendingWrite: sha256Hex("# instructions") };
+      writeFileSync(manifestPath, JSON.stringify(prior));
+    }
+    const error = Object.assign(new Error("Manifest write failed"), { code: "EIO" });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const write = vi.spyOn(configurationAccess, "writeAveHomeTrustManifestSync").mockImplementation(() => { throw error; });
+    try {
+      _resetAveHomeTrustForTest();
+      expect(() => evaluateAveHomeTrustAtBoot(dir)).toThrow(error);
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally { write.mockRestore(); warn.mockRestore(); }
+  });
+  it("leaves adoption open and logs only the code when refusal coverage cannot be written", () => {
+    const dir = priorHome(); put(dir, "work-board/board.json", JSON.stringify({ items: "invalid" }));
+    const before = manifest(dir);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const write = vi.spyOn(configurationAccess, "writeAveHomeTrustManifestSync").mockImplementation(() => {
+      throw Object.assign(new Error("Private board content and path"), { code: "EIO" });
+    });
+    try {
+      expect(boot(dir).pending).toBe(true);
+      expect(manifest(dir)).toEqual(before);
+      expect(manifest(dir).coveredFiles).toBeUndefined();
+      expect(manifest(dir).adoptedFiles).toBeUndefined();
+      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls).toEqual([["[home-trust] Board adoption deferred: EIO"]]);
+    } finally { write.mockRestore(); warn.mockRestore(); }
+    board(dir);
+    expect(boot(dir).pending).toBe(false);
+  });
+  it("persists collapsed and dropped write intents while board adoption is deferred", () => {
+    const dir = priorHome(); const path = board(dir, [{ ...row, templateId: "forged" }]);
+    const before = readFileSync(path, "utf8");
+    put(dir, "AGENTS.md", "# landed");
+    put(dir, "user-preferences.md", "# actual");
+    const prior = manifest(dir);
+    prior.entries[manifestKey("AGENTS.md")] = { pendingWrite: sha256Hex("# landed") };
+    prior.entries["user-preferences.md"] = { pendingWrite: sha256Hex("# not written") };
+    writeFileSync(join(dir, "config", ".ave-trust-manifest.json"), JSON.stringify(prior));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const strip = vi.spyOn(atomicFile, "replaceUtf8FileAtomicSyncIf").mockImplementation(() => {
+      throw Object.assign(new Error("Strip write failed"), { code: "EIO" });
+    });
+    try {
+      expect(boot(dir)).toEqual({ pending: true, state: "bootstrapped:true" });
+      expect(manifest(dir)).toEqual({ ...prior, entries: { [manifestKey("AGENTS.md")]: { current: sha256Hex("# landed") } } });
+      expect(manifest(dir).coveredFiles).toBeUndefined();
+      expect(manifest(dir).adoptedFiles).toBeUndefined();
+      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
+      expect(readFileSync(path, "utf8")).toBe(before);
+      expect(warn.mock.calls).toEqual([["[home-trust] Board adoption deferred: EIO"]]);
+    } finally { strip.mockRestore(); warn.mockRestore(); }
+  });
+  it("consumes adoption for a board exceeding the input size limit", () => {
+    const dir = priorHome();
+    const bytes = JSON.stringify({ items: [row], padding: " ".repeat(16 * 1024 * 1024) });
+    const path = put(dir, "work-board/board.json", bytes);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(boot(dir).pending).toBe(true);
+      expect(manifest(dir).coveredFiles).toContain("work-board/board.json");
+      expect(manifest(dir).adoptedFiles).toBeUndefined();
+      expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
+      expect(readFileSync(path, "utf8")).toBe(bytes);
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+    board(dir);
+    expect(boot(dir).pending).toBe(true);
+    expect(manifest(dir).adoptedFiles).toBeUndefined();
+    expect(manifest(dir).entries["work-board/board.json"]).toBeUndefined();
   });
   it("consumes adoption after a definite validation refusal without re-evaluating on a later boot", () => {
     const dir = priorHome(); const path = put(dir, "work-board/board.json", JSON.stringify({ items: "invalid" }));

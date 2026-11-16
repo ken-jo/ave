@@ -151,6 +151,8 @@ function gateFor(path: string): { trust: ActiveTrust; key: string; kind: "file" 
   return covered === undefined ? undefined : { trust: active, ...covered };
 }
 
+class InputSizeLimitError extends Error {}
+
 class LinkedInputError extends Error {
   constructor(path: string) {
     super(`${path} is a link or not a regular file`);
@@ -188,7 +190,7 @@ function readRegularFile(path: string, pinned: Stats): { bytes: Buffer; uid: num
   try {
     const opened = fstatSync(descriptor);
     if (!opened.isFile() || opened.ino !== pinned.ino || opened.dev !== pinned.dev) throw new Error(`${path} changed while it was opened`);
-    if (opened.size > MAX_INPUT_BYTES) throw new Error(`${path} exceeds the size limit`);
+    if (opened.size > MAX_INPUT_BYTES) throw new InputSizeLimitError(`${path} exceeds the size limit`);
     const bytes = Buffer.alloc(opened.size);
     let filled = 0;
     while (filled < bytes.length) {
@@ -708,7 +710,7 @@ export function classifyWindowsHomeEvidence(facts: readonly WindowsDaclFacts[], 
     }
     let rules;
     try { rules = windowsOwnerRules(row.dacl); }
-    catch { withdrawn.set(key, "foreign-access"); clean = false; readFailed = true; return; }
+    catch { withdrawn.set(key, "foreign-access"); clean = false; return; }
     if (rules.some((rule) => rule.accessControlType === 0 && rule.sid !== user && !WINDOWS_WORKSPACE_TRUSTED_WRITERS.has(rule.sid))) {
       if (!withdrawn.has(key)) withdrawn.set(key, "foreign-access");
       clean = false;
@@ -731,8 +733,9 @@ function adoptPreCoverageBoard(trust: ActiveTrust, inputs: readonly CoveredInput
   if (manifest.coveredFiles !== undefined || manifest.adoptedFiles?.includes(key) || manifest.entries[key] !== undefined) return "refused";
   const input = inputs.find(input => input.key === key);
   if (input === undefined || input.blocked !== undefined) return "refused";
+  if (trust.withdrawn.has(key)) return "refused";
   if (evidenceReadFailed) return "deferred";
-  if (!isAveHomeConfigurationOwner() || !trust.evidenceClean || trust.withdrawn.has(key)) return "refused";
+  if (!isAveHomeConfigurationOwner() || !trust.evidenceClean) return "refused";
   try {
     const current = currentHash(input, trust.home, true);
     if (current?.bytes === undefined || posixForeign(current.uids)) return "refused";
@@ -750,7 +753,7 @@ function adoptPreCoverageBoard(trust: ActiveTrust, inputs: readonly CoveredInput
     trust.manifest = adopted;
     return "adopted";
   } catch (error) {
-    if (error instanceof LinkedInputError || error instanceof AmbiguousInputError) return "refused";
+    if (error instanceof LinkedInputError || error instanceof AmbiguousInputError || error instanceof InputSizeLimitError) return "refused";
     reportBoardAdoptionError(error);
     return "deferred";
   }
@@ -805,8 +808,14 @@ export function evaluateAveHomeTrustAtBoot(home: string): AveHomeTrustVerdict {
   if (isAveHomeConfigurationOwner()) {
     adoption = adoptPreCoverageBoard(active, inputs, evidence.readFailed === true);
     if (adoption === "adopted") manifest = active.manifest;
-    else if (adoption === "refused" && (changed || JSON.stringify(manifest.coveredFiles) !== JSON.stringify([...COVERED_FILE_KEYS]))) {
-      const covered = { ...manifest, coveredFiles: [...COVERED_FILE_KEYS] };
+    else if (adoption === "refused" && manifest.coveredFiles !== undefined) {
+      if (changed || JSON.stringify(manifest.coveredFiles) !== JSON.stringify([...COVERED_FILE_KEYS])) {
+        const covered = { ...manifest, coveredFiles: [...COVERED_FILE_KEYS] };
+        persist({ ...active, manifest: covered });
+        active.manifest = manifest = covered;
+      }
+    } else if (adoption === "refused" || changed) {
+      const covered = adoption === "deferred" ? manifest : { ...manifest, coveredFiles: [...COVERED_FILE_KEYS] };
       try {
         persist({ ...active, manifest: covered });
         active.manifest = manifest = covered;
