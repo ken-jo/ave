@@ -739,6 +739,8 @@ export type AvePreloadApi = {
    */
   chatRewindTo: (messageId: string, mode?: RewindMode) => Promise<RewindResult>;
   chatGetTurnReview: (expectedSessionId: string) => Promise<TurnReviewResult>;
+  /** Keep or undo the latest turn's changes for a hunk, a file or the whole turn; resolves with the review afterwards. */
+  chatDecideTurnReview: (expectedSessionId: string, decision: import("../../shared/turn-change-review.js").TurnReviewDecisionRequest) => Promise<TurnReviewResult>;
   /** Branch into a new session up to and including `messageId`; omit it to branch the whole conversation. */
   chatFork: (messageId?: string) => Promise<{ ok: boolean; sessionId: string | null; error?: string }>;
   chatContinueLastUser: (sessionId: string, authority?: import("../../shared/chat-origin.js").ContinueAuthority) => Promise<{ ok: boolean; error?: string }>;

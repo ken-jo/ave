@@ -340,6 +340,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:chat:compact",
         "ave:chat:continue-last-user",
         "ave:chat:control-shell-task",
+        "ave:chat:decide-turn-review",
         "ave:chat:edit-resend",
         "ave:chat:enter-checkpoint-view",
         "ave:chat:exit-checkpoint-view",

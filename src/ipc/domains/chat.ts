@@ -1,6 +1,6 @@
 import { readMemoryDetail, readMemorySummaries } from "../../memory/memory-detail.js";
-import { getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
-import type { TurnReviewResult } from "../../shared/turn-change-review.js";
+import { decideTurnChange, getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { parseTurnReviewDecision, type TurnReviewError, type TurnReviewResult } from "../../shared/turn-change-review.js";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
 import {
@@ -1329,10 +1329,15 @@ export function registerChatHandlers(deps: IpcDeps): void {
     return turn ?? { ok: false, error: STREAMING_ACTIVE };
   });
 
-  ipcMain.handle(CHANNELS.chat.getTurnReview, async (e, expectedSessionId: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
+  /**
+   * The checks a turn-review request must pass, and keep passing while it runs: the same window group, an idle
+   * conversation, the same session, working directory and extra directories, and the same latest turn.
+   */
+  const turnReviewScope = (e: Electron.IpcMainInvokeEvent, expectedSessionId: unknown, chatGroupId: unknown, channel: string):
+    | { ok: false; error: TurnReviewError }
+    | { ok: true; sessionId: string; turnId: string; context: () => { cwd: string; extraAllowedDirectories: string[] }; settled: () => boolean } => {
     if (typeof expectedSessionId !== "string" || !isValidSessionId(expectedSessionId)) return { ok: false, error: "invalid-input" };
-    const group = groupOf(e, chatGroupId, CHANNELS.chat.getTurnReview);
+    const group = groupOf(e, chatGroupId, channel);
     const loop = group.loop;
     if (group.surfaceRuntime.activity.isBusy()) return { ok: false, error: STREAMING_ACTIVE };
     if (expectedSessionId !== loop.getSessionId()) return { ok: false, error: "turn-review-stale" };
@@ -1354,15 +1359,40 @@ export function registerChatHandlers(deps: IpcDeps): void {
         && currentExtraAllowedDirectories.every((directory, index) => directory === extraAllowedDirectories[index])
         && latestReviewTurnId(loop) === turnId;
     };
-    const review = await getTurnChangeReview(expectedSessionId, turnId, () => {
-      if (!isCurrent()) {
-        contextChanged = true;
-        throw new Error("turn-review-context-changed");
-      }
-      return { cwd, extraAllowedDirectories };
-    }, { currentDetails: true });
-    if (contextChanged || !isCurrent()) return { ok: false, error: "turn-review-stale" };
+    return {
+      ok: true,
+      sessionId: expectedSessionId,
+      turnId,
+      context: () => {
+        if (!isCurrent()) {
+          contextChanged = true;
+          throw new Error("turn-review-context-changed");
+        }
+        return { cwd, extraAllowedDirectories };
+      },
+      settled: () => !contextChanged && isCurrent(),
+    };
+  };
+
+  ipcMain.handle(CHANNELS.chat.getTurnReview, async (e, expectedSessionId: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
+    const scope = turnReviewScope(e, expectedSessionId, chatGroupId, CHANNELS.chat.getTurnReview);
+    if (!scope.ok) return scope;
+    const review = await getTurnChangeReview(scope.sessionId, scope.turnId, scope.context, { currentDetails: true });
+    if (!scope.settled()) return { ok: false, error: "turn-review-stale" };
     return review;
+  });
+
+  // Keep or undo is the person's own action on their files: the host window sends it, and no card is shown.
+  ipcMain.handle(CHANNELS.chat.decideTurnReview, async (e, expectedSessionId: unknown, decision: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.decideTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
+    const parsed = parseTurnReviewDecision(decision);
+    if (!parsed) return { ok: false, error: "invalid-input" };
+    const scope = turnReviewScope(e, expectedSessionId, chatGroupId, CHANNELS.chat.decideTurnReview);
+    if (!scope.ok) return scope;
+    // The decision was made on one turn's review; if a later turn has become the latest since, nothing is written.
+    if (parsed.turnId !== scope.turnId) return { ok: false, error: "turn-review-stale" };
+    return decideTurnChange(scope.sessionId, parsed.turnId, scope.context, parsed);
   });
 
   // Restore code before history mutation; code-only restore leaves history intact and rewind persists its own truncation.

@@ -2739,8 +2739,8 @@ describe("ChatSidePanel", () => {
     const files: WorkspaceFileItem[] = [{ id: "changed-file", path: target.path, label: target.title, detail: target.path,
       sourceLabel: "search", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
     const changes = deriveWorkspaceChanges({ files, targets: [target], workspaceRoot: "/ws", review: { sessionId: "indexed", turnId: "latest",
-      files: [{ path: "readme.md", bytes: 6, lineCount: 1, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: true,
-        hunks: [{ id: "latest-hunk", oldText: "before\n", newText: "after\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1 }] }] } });
+      files: [{ path: "readme.md", bytes: 6, lineCount: 1, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: true, decidable: true,
+        hunks: [{ id: "latest-hunk", oldText: "before\n", newText: "after\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1, kept: false }] }] } });
     renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="indexed" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
     expect(await screen.findByTestId("turn-change-detail")).toHaveTextContent("after");
     expect(screen.queryByText("Older indexed preview")).toBeNull();
@@ -2752,7 +2752,7 @@ describe("ChatSidePanel", () => {
     vi.stubGlobal("ave", { ...window.ave, preview: { ...makeMockAveNamespace().ns.preview, ...window.ave.preview, readFile } });
     const changes = deriveWorkspaceChanges({ files: [], targets: [], workspaceRoot: "/ws", review: {
       sessionId: "image-session", turnId: "latest", files: [{ path: "source.png", bytes: 8, lineCount: 0,
-        added: 8, removed: 2, operation: "modify", countsKnown: true, referenceable: false, hunks: [] }],
+        added: 8, removed: 2, operation: "modify", countsKnown: true, referenceable: false, decidable: true, hunks: [] }],
     } });
     renderPanel(<FileBrowserWorkspace visible api={api()} sessionId="image-session" files={[]} changes={changes} targetById={new Map()} selectedId={null} onSelect={vi.fn()} revealRequest={{ token: 1, path: "/ws/source.png" }} />);
     expect(await screen.findByTestId("file-preview-image")).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");

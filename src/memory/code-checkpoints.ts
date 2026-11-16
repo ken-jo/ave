@@ -6,11 +6,11 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { z } from "zod";
 import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
 import { sameFileIdentity } from "../lib/file-identity.js";
-import { renameFile, retryOnFileLock } from "../lib/transient-fs-lock-retry.js";
+import { renameFile, renameFileOnce, retryOnFileLock } from "../lib/transient-fs-lock-retry.js";
 import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
 import { FILE_MENTION_REFERENCE_POLICY } from "../shared/file-mention-reference.js";
 import { countFileChangeLines } from "../shared/file-change-counts.js";
-import type { TurnChangeReview, TurnReviewError, TurnReviewResult } from "../shared/turn-change-review.js";
+import type { TurnChangeReview, TurnReviewDecision, TurnReviewError, TurnReviewResult } from "../shared/turn-change-review.js";
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
@@ -19,7 +19,7 @@ import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.j
 import { currentAgentObservationIdentity, observeAgentDocumentMutation } from "../tools/agent-observation-context.js";
 import type { ToolExecutionContext } from "../tools/types.js";
 import { createLogger } from "../lib/logger.js";
-import { countTurnReviewLines, createTurnReviewHunks } from "./turn-review-diff.js";
+import { countTurnReviewLines, planTurnReviewHunks, type TurnReviewHunkPlan } from "./turn-review-diff.js";
 
 const log = createLogger("code-checkpoints");
 const namespace = openFeatureNamespace("code-checkpoints");
@@ -35,12 +35,16 @@ const ChangeSchema = z.object({
   mode: z.number().int().min(0).max(0o777),
   afterHash: HashSchema,
 });
+/** Kept-hunk keys are small, but a turn's list is still bounded so the ledger cannot grow without limit. */
+const MAX_KEPT_HUNKS = 5_000;
 const TurnSchema = z.object({
   sessionId: z.string(),
   messageId: z.string(),
   unavailable: z.boolean(),
   consumed: z.boolean(),
   changes: z.array(ChangeSchema),
+  /** Keys of the hunks the person kept in this turn's review; absent until the first keep. */
+  kept: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(MAX_KEPT_HUNKS).optional(),
 });
 const LedgerSchema = z.array(TurnSchema).max(CODE_CHECKPOINT_POLICY.maxTurns);
 const StoredChangeSchema = ChangeSchema.omit({ before: true }).extend({
@@ -717,81 +721,332 @@ function turnReviewPath(path: string, context: () => RestoreContext): string {
   return local;
 }
 
+type TurnReviewOptions = { currentDetails?: true; selectedPaths?: readonly string[] };
+
+function turnReviewUnavailable(sessionId: string): boolean {
+  return liveChildren.has(childKey(sessionId)) || pendingUnavailable.has(childKey(sessionId))
+    || [...inFlight].some((active) => active.dir === namespace.dir && active.sessionId === sessionId);
+}
+
+/** The session's latest turn when it can be reviewed; anything else is "unavailable", never a guess. */
+function reviewableTurn(turns: Turn[], sessionId: string, turnId: string): Turn {
+  if (turnReviewUnavailable(sessionId)) throw new TurnReviewReadError("turn-review-unavailable");
+  const turn = turns.filter((item) => item.sessionId === sessionId).at(-1);
+  if (!turn || turn.messageId !== turnId || turn.unavailable || turn.consumed) {
+    throw new TurnReviewReadError("turn-review-unavailable");
+  }
+  return turn;
+}
+
+function turnReviewIdentity(sessionId: string, turnId: string, local: string): string {
+  return JSON.stringify([sessionId, turnId, local]);
+}
+
+/** Read the review of `turn` from its captures and the files on disk. Callers hold the exclusive section. */
+async function readTurnChangeReview(
+  turn: Turn,
+  sessionId: string,
+  turnId: string,
+  context: () => RestoreContext,
+  options?: TurnReviewOptions,
+): Promise<TurnChangeReview> {
+  const workspaceRoot = resolve(context().cwd);
+  // Reference sends validate only their selected files; the ordinary review still checks the complete turn.
+  const selectedPaths = options?.selectedPaths === undefined ? undefined
+    : new Set(options.selectedPaths.map((path) => resolve(workspaceRoot, path)));
+  const plan = new Map<string, { first: StoredChange; last: StoredChange; local: string }>();
+  for (const change of turn.changes) {
+    if (selectedPaths && !selectedPaths.has(change.path)) continue;
+    const local = turnReviewPath(change.path, context);
+    const previous = plan.get(change.path);
+    if (previous && previous.last.afterHash !== change.beforeHash) throw new TurnReviewReadError("turn-review-stale");
+    plan.set(change.path, { first: previous?.first ?? change, last: change, local });
+  }
+  if (selectedPaths && (selectedPaths.size === 0 || [...selectedPaths].some((path) => !plan.has(path)))) {
+    throw new TurnReviewReadError("turn-review-unavailable");
+  }
+  const currentFile = async (path: string, expectedHash: string | null, requireMatch = true) => {
+    turnReviewPath(path, context);
+    const current = await snapshot(path).catch(() => { throw new TurnReviewReadError("turn-review-stale"); });
+    turnReviewPath(path, context);
+    if (requireMatch && hash(current.bytes) !== expectedHash) throw new TurnReviewReadError("turn-review-stale");
+    return current;
+  };
+  const kept = new Set(turn.kept ?? []);
+  const files: TurnChangeReview["files"] = [];
+  const disclosedHashes = new Map<string, string | null>();
+  for (const [path, { first, last, local }] of plan) {
+    const current = await currentFile(path, last.afterHash, !options?.currentDetails);
+    const currentMatches = hash(current.bytes) === last.afterHash;
+    disclosedHashes.set(path, hash(current.bytes));
+    const before = (await hydrate(first)).before;
+    const original = turnReviewText(before === null ? null : Buffer.from(before, "base64"));
+    let text: string | undefined;
+    try { text = turnReviewText(current.bytes); }
+    catch (error) { if (!options?.currentDetails) throw error; }
+    if (first.beforeHash === last.afterHash) continue;
+    const lineCount = text === undefined ? 0 : countTurnReviewLines(text);
+    const hunks = text === undefined ? [] : planTurnReviewHunks(original, text, first.beforeHash === null || current.bytes === null,
+      turnReviewIdentity(sessionId, turnId, local)).map((item) => ({ ...item.hunk, kept: kept.has(item.keepKey) }));
+    const currentCounts = currentMatches && text !== undefined ? countFileChangeLines(original, text) : undefined;
+    const countsKnown = currentCounts?.exact === true || (last.addedLines !== undefined && last.removedLines !== undefined);
+    files.push({
+      path: local, bytes: current.bytes?.length ?? 0, lineCount,
+      added: currentCounts?.exact ? currentCounts.added : last.addedLines ?? 0,
+      removed: currentCounts?.exact ? currentCounts.removed : last.removedLines ?? 0,
+      operation: first.beforeHash === null ? "create" : last.afterHash === null ? "delete" : "modify",
+      countsKnown,
+      referenceable: currentMatches && current.bytes !== null && lineCount > 0,
+      hunks,
+      // A decision rewrites or annotates exactly what is shown, so it needs the turn's own result on disk.
+      decidable: currentMatches && text !== undefined,
+    });
+  }
+  // Originals and other files may take asynchronous reads; recheck every final capture before disclosure.
+  for (const [path, { last, local }] of plan) {
+    if (turnReviewPath(path, context) !== local) throw new TurnReviewReadError("turn-review-stale");
+    await currentFile(path, options?.currentDetails ? disclosedHashes.get(path)! : last.afterHash);
+  }
+  if (turnReviewUnavailable(sessionId)) throw new TurnReviewReadError("turn-review-unavailable");
+  if (resolve(context().cwd) !== workspaceRoot) throw new TurnReviewReadError("turn-review-stale");
+  return { sessionId, turnId, workspaceRoot, files };
+}
+
 /** Build the latest settled turn's review from existing captures without storing review state. */
 export async function getTurnChangeReview(
   sessionId: string,
   turnId: string,
   context: () => RestoreContext,
-  options?: { currentDetails?: true; selectedPaths?: readonly string[] },
+  options?: TurnReviewOptions,
 ): Promise<TurnReviewResult> {
   return exclusive(async () => {
     try {
-      const unavailable = () => liveChildren.has(childKey(sessionId)) || pendingUnavailable.has(childKey(sessionId))
-        || [...inFlight].some((active) => active.dir === namespace.dir && active.sessionId === sessionId);
-      if (unavailable()) throw new TurnReviewReadError("turn-review-unavailable");
-      const turns = await loadLedger(true);
-      const turn = turns.filter((item) => item.sessionId === sessionId).at(-1);
-      if (!turn || turn.messageId !== turnId || turn.unavailable || turn.consumed) {
-        throw new TurnReviewReadError("turn-review-unavailable");
+      if (turnReviewUnavailable(sessionId)) throw new TurnReviewReadError("turn-review-unavailable");
+      const turn = reviewableTurn(await loadLedger(true), sessionId, turnId);
+      return { ok: true, review: await readTurnChangeReview(turn, sessionId, turnId, context, options) };
+    } catch (error) {
+      return { ok: false, error: error instanceof TurnReviewReadError ? error.code : "turn-review-failed" };
+    }
+  });
+}
+
+/** One file a person's own action rewrites: its expected current content and what replaces it (null removes the file). */
+interface UserFileWrite {
+  path: string;
+  expectedHash: string | null;
+  next: Buffer | null;
+  mode: number;
+}
+
+/**
+ * Write files on the person's behalf and keep every checkpoint that describes them truthful.
+ * All targets are validated and staged before the first one changes. In each session the most recent
+ * capture of a written path moves its after-hash to the new content, so the turn's review, its keep/undo
+ * controls and a later rewind all still describe the file that is really on disk.
+ * `accessDenied` is asked again at every check, the last one immediately before each file is replaced, so it must read
+ * the grant and the conversation as they are at that moment, not a copy taken when the action started.
+ * Callers hold the exclusive section and pass the loaded ledger. `effects.applied` counts the files actually replaced or
+ * removed, as each one is, so a caller still knows after any later failure whether files changed.
+ */
+async function applyUserFileWrites(
+  turns: Turn[],
+  writes: readonly UserFileWrite[],
+  accessDenied: (path: string) => boolean,
+  effects: { applied: number },
+): Promise<void> {
+  const check = async (write: UserFileWrite) => {
+    if (accessDenied(write.path)) throw new TurnReviewReadError("turn-review-write-denied");
+    const file = await snapshot(write.path).catch(() => { throw new TurnReviewReadError("turn-review-stale"); });
+    if (hash(file.bytes) !== write.expectedHash) throw new TurnReviewReadError("turn-review-stale");
+    if (write.next !== null && !await lstat(dirname(write.path)).then((info) => info.isDirectory(), () => false)) {
+      throw new TurnReviewReadError("turn-review-stale");
+    }
+  };
+  for (const write of writes) await check(write);
+  const staged = new Map<string, string>();
+  try {
+    for (const write of writes) {
+      if (write.next === null) continue;
+      const temporary = join(dirname(write.path), `.ave-restore-${randomUUID()}`);
+      const handle = await open(temporary, "wx", 0o600);
+      staged.set(write.path, temporary);
+      try {
+        await handle.writeFile(write.next);
+        await handle.chmod(write.mode);
+        await handle.sync();
+      } finally { await handle.close(); }
+    }
+    // Recheck after staging, before the first destructive operation.
+    for (const write of writes) await check(write);
+    // Write ahead: the ledger describes the new content before the file holds it, so a crash in between
+    // leaves a mismatch that review and rewind refuse, never a checkpoint that silently describes other bytes.
+    const moved: Array<{ change: StoredChange; afterHash: string | null; addedLines?: number; removedLines?: number }> = [];
+    for (const write of writes) {
+      const nextHash = hash(write.next);
+      for (const sessionId of new Set(turns.map((turn) => turn.sessionId))) {
+        const last = turns.filter((turn) => turn.sessionId === sessionId && !turn.consumed)
+          .flatMap((turn) => turn.changes).filter((change) => change.path === write.path).at(-1);
+        if (!last || last.afterHash !== write.expectedHash) continue;
+        moved.push({ change: last, afterHash: last.afterHash, addedLines: last.addedLines, removedLines: last.removedLines });
+        last.afterHash = nextHash;
+        // The recorded counts described the old content; the review recomputes them from the files.
+        delete last.addedLines;
+        delete last.removedLines;
       }
+    }
+    if (moved.length > 0) await save(turns);
+    try {
+      for (const write of writes) {
+        // Saving the ledger took time. The file, the person's grant and the conversation are judged again here, at the
+        // effect itself: a file another program saved meanwhile is not overwritten, and a grant withdrawn meanwhile is
+        // not used. The effect is attempted once; a failure is reported, never retried against this now-old check.
+        // What remains is the instant between this check and the rename: the platform has no compare-and-swap for a
+        // whole file, so a write landing in that instant is still replaced.
+        await check(write);
+        const temporary = staged.get(write.path);
+        if (write.next !== null && temporary === undefined) throw new Error("User file write was not staged");
+        // Reading the file for that check took time too, so the grant and the conversation are asked once more here,
+        // with nothing awaited between the answer and the call that changes the file.
+        if (accessDenied(write.path)) throw new TurnReviewReadError("turn-review-write-denied");
+        if (temporary !== undefined) {
+          await renameFileOnce(temporary, write.path);
+          effects.applied += 1;
+        } else if (write.expectedHash !== null) {
+          await unlink(write.path);
+          effects.applied += 1;
+        }
+      }
+    } catch (error) {
+      // Describe again whatever is on disk now: each capture keeps the hash its file really has.
+      for (const entry of moved) {
+        const current = await snapshot(entry.change.path).catch(() => undefined);
+        if (current && hash(current.bytes) === entry.change.afterHash) continue;
+        entry.change.afterHash = entry.afterHash;
+        if (entry.addedLines !== undefined) entry.change.addedLines = entry.addedLines;
+        if (entry.removedLines !== undefined) entry.change.removedLines = entry.removedLines;
+      }
+      // Files are replaced one at a time. When an earlier one was already replaced, the action was neither done nor
+      // refused, and its answer says so instead of reading like a refusal that changed nothing; that holds even when
+      // putting the ledger right fails too, which is then reported in the log beside the first failure.
+      if (effects.applied === 0) {
+        if (moved.length > 0) {
+          await save(turns).catch((saveError: unknown) => {
+            log.warn("the ledger could not be put right after a refused write: %s", (error as Error).message);
+            throw saveError;
+          });
+        }
+        throw error;
+      }
+      if (!(error instanceof TurnReviewReadError)) log.warn("user file writes stopped part-way: %s", (error as Error).message);
+      if (moved.length > 0) {
+        await save(turns).catch((saveError: unknown) => {
+          log.warn("the ledger could not be put right after a partial write: %s", (saveError as Error).message);
+        });
+      }
+      throw new TurnReviewReadError("turn-review-partial");
+    }
+  } finally {
+    for (const temporary of staged.values()) {
+      await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return;
+        // A staged copy that cannot be removed is left in its folder and named in the log. Once a file was replaced
+        // the answer must still say so, so this never becomes the outcome then.
+        if (effects.applied === 0) throw error;
+        log.warn("a staged copy could not be removed: %s (%s)", temporary, error.code ?? error.message);
+      });
+    }
+  }
+}
+
+/**
+ * Keep or undo the latest turn's changes for one hunk, one file or the whole turn.
+ * Keep records the hunk as reviewed and writes nothing. Undo writes the earlier text back for exactly the
+ * chosen change and leaves every other change, and the turn's rewind images, as they were.
+ * Returns the review as it is afterwards, so the caller replaces what it shows instead of patching it.
+ */
+export async function decideTurnChange(
+  sessionId: string,
+  turnId: string,
+  context: () => RestoreContext,
+  decision: TurnReviewDecision,
+): Promise<TurnReviewResult> {
+  return exclusive(async () => {
+    const effects = { applied: 0 };
+    try {
+      const turns = await load();
+      const turn = reviewableTurn(turns, sessionId, turnId);
       const workspaceRoot = resolve(context().cwd);
-      // Reference sends validate only their selected files; the ordinary review still checks the complete turn.
-      const selectedPaths = options?.selectedPaths === undefined ? undefined
-        : new Set(options.selectedPaths.map((path) => resolve(workspaceRoot, path)));
+      const wanted = decision.scope === "turn" ? undefined : resolve(workspaceRoot, decision.path);
       const plan = new Map<string, { first: StoredChange; last: StoredChange; local: string }>();
       for (const change of turn.changes) {
-        if (selectedPaths && !selectedPaths.has(change.path)) continue;
+        if (wanted !== undefined && change.path !== wanted) continue;
         const local = turnReviewPath(change.path, context);
         const previous = plan.get(change.path);
         if (previous && previous.last.afterHash !== change.beforeHash) throw new TurnReviewReadError("turn-review-stale");
         plan.set(change.path, { first: previous?.first ?? change, last: change, local });
       }
-      if (selectedPaths && (selectedPaths.size === 0 || [...selectedPaths].some((path) => !plan.has(path)))) {
-        throw new TurnReviewReadError("turn-review-unavailable");
-      }
-      const currentFile = async (path: string, expectedHash: string | null, requireMatch = true) => {
-        turnReviewPath(path, context);
-        const current = await snapshot(path).catch(() => { throw new TurnReviewReadError("turn-review-stale"); });
-        turnReviewPath(path, context);
-        if (requireMatch && hash(current.bytes) !== expectedHash) throw new TurnReviewReadError("turn-review-stale");
-        return current;
-      };
-      const files: TurnChangeReview["files"] = [];
-      const disclosedHashes = new Map<string, string | null>();
+      if (wanted !== undefined && !plan.has(wanted)) throw new TurnReviewReadError("turn-review-stale");
+      const keptKeys: string[] = [];
+      const writes: UserFileWrite[] = [];
       for (const [path, { first, last, local }] of plan) {
-        const current = await currentFile(path, last.afterHash, !options?.currentDetails);
-        const currentMatches = hash(current.bytes) === last.afterHash;
-        disclosedHashes.set(path, hash(current.bytes));
+        if (first.beforeHash === last.afterHash) {
+          // Nothing of this file is left to decide; naming it for a single decision means the view is out of date.
+          if (wanted !== undefined) throw new TurnReviewReadError("turn-review-stale");
+          continue;
+        }
+        const current = await snapshot(path).catch(() => { throw new TurnReviewReadError("turn-review-stale"); });
+        if (hash(current.bytes) !== last.afterHash) throw new TurnReviewReadError("turn-review-stale");
         const before = (await hydrate(first)).before;
-        const original = turnReviewText(before === null ? null : Buffer.from(before, "base64"));
-        let text: string | undefined;
-        try { text = turnReviewText(current.bytes); }
-        catch (error) { if (!options?.currentDetails) throw error; }
-        if (first.beforeHash === last.afterHash) continue;
-        const lineCount = text === undefined ? 0 : countTurnReviewLines(text);
-        const hunks = text === undefined ? [] : createTurnReviewHunks(original, text, first.beforeHash === null || current.bytes === null,
-          JSON.stringify([sessionId, turnId, local]));
-        const currentCounts = currentMatches && text !== undefined ? countFileChangeLines(original, text) : undefined;
-        const countsKnown = currentCounts?.exact === true || (last.addedLines !== undefined && last.removedLines !== undefined);
-        files.push({
-          path: local, bytes: current.bytes?.length ?? 0, lineCount,
-          added: currentCounts?.exact ? currentCounts.added : last.addedLines ?? 0,
-          removed: currentCounts?.exact ? currentCounts.removed : last.removedLines ?? 0,
-          operation: first.beforeHash === null ? "create" : last.afterHash === null ? "delete" : "modify",
-          countsKnown,
-          referenceable: currentMatches && current.bytes !== null && lineCount > 0,
-          hunks,
+        const originalBytes = before === null ? null : Buffer.from(before, "base64");
+        let hunks: TurnReviewHunkPlan[] | undefined;
+        let text = "";
+        try {
+          text = turnReviewText(current.bytes);
+          hunks = planTurnReviewHunks(turnReviewText(originalBytes), text, first.beforeHash === null || current.bytes === null,
+            turnReviewIdentity(sessionId, turnId, local));
+        } catch (error) {
+          // A file that is not text has no hunks; it can still be undone as a whole from its stored image.
+          if (!(error instanceof TurnReviewReadError) || decision.scope === "hunk" || decision.action === "keep") throw error;
+        }
+        const chosen = decision.scope === "hunk" ? hunks?.find((item) => item.hunk.id === decision.hunkId) : undefined;
+        if (decision.scope === "hunk" && !chosen) throw new TurnReviewReadError("turn-review-stale");
+        if (decision.action === "keep") {
+          keptKeys.push(...(chosen ? [chosen] : hunks ?? []).map((item) => item.keepKey));
+          continue;
+        }
+        // A file that the turn created or deleted exists or not as a whole; its single hunk is that decision.
+        const wholeFile = !chosen || first.beforeHash === null || current.bytes === null;
+        writes.push({
+          path,
+          expectedHash: last.afterHash,
+          next: wholeFile ? originalBytes : Buffer.from(text.slice(0, chosen.newOffset) + chosen.hunk.oldText + text.slice(chosen.newEnd)),
+          mode: wholeFile ? first.mode : current.mode,
         });
       }
-      // Originals and other files may take asynchronous reads; recheck every final capture before disclosure.
-      for (const [path, { last, local }] of plan) {
-        if (turnReviewPath(path, context) !== local) throw new TurnReviewReadError("turn-review-stale");
-        await currentFile(path, options?.currentDetails ? disclosedHashes.get(path)! : last.afterHash);
+      if (decision.action === "keep") {
+        const kept = [...new Set([...(turn.kept ?? []), ...keptKeys])];
+        if (kept.length > MAX_KEPT_HUNKS) throw new Error("Kept hunk limit exceeded");
+        turn.kept = kept;
+        await save(turns, turn);
+      } else if (writes.length > 0) {
+        await applyUserFileWrites(turns, writes, (path) => {
+          // Read live: a session, folder set or latest turn that changed since the decision makes it stale.
+          let access: RestoreContext;
+          try { access = context(); }
+          catch { throw new TurnReviewReadError("turn-review-stale"); }
+          return ensureFileAccess(path, { ...access, metadata: {} }, "write") !== null;
+        }, effects);
       }
-      if (unavailable()) throw new TurnReviewReadError("turn-review-unavailable");
-      if (resolve(context().cwd) !== workspaceRoot) throw new TurnReviewReadError("turn-review-stale");
-      return { ok: true, review: { sessionId, turnId, workspaceRoot, files } };
+      return { ok: true, review: await readTurnChangeReview(turn, sessionId, turnId, context, { currentDetails: true }) };
     } catch (error) {
+      if (!(error instanceof TurnReviewReadError)) log.warn("turn change decision failed: %s", (error as Error).message);
+      if (error instanceof TurnReviewReadError && error.code === "turn-review-partial") return { ok: false, error: error.code };
+      // Every file was put back, but what followed (reading the review to answer with) failed: the answer says the undo
+      // happened instead of reading like a refusal that changed nothing.
+      if (effects.applied > 0) {
+        if (error instanceof TurnReviewReadError) log.warn("the review after an undo could not be read: %s", error.code);
+        return { ok: false, error: "turn-review-applied" };
+      }
       return { ok: false, error: error instanceof TurnReviewReadError ? error.code : "turn-review-failed" };
     }
   });
@@ -865,6 +1120,8 @@ export async function restoreCodeCheckpoint(
         for (const turn of suffix) {
           turn.changes = [];
           turn.consumed = turn !== turns[index];
+          // Kept marks described changes that no longer exist.
+          delete turn.kept;
         }
         turns[index].changes = [...plan.values()].map((change) => ({
           ...change,

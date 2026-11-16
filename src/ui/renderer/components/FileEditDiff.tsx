@@ -6,7 +6,8 @@ import type { FileDiffHunk, FileDiffView, WriteDiffRecord } from "../../../share
 import { getApi } from "../api-client.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
-import type { TurnReviewHunk } from "../../../shared/turn-change-review.js";
+import type { TurnReviewDecision, TurnReviewHunk } from "../../../shared/turn-change-review.js";
+import { TurnDecisionButtons } from "./TurnDecisionButtons.js";
 import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
 
 const REVIEW_PREVIEW_MAX_LINES = 100;
@@ -24,6 +25,10 @@ export interface FileEditDiffReview {
   turnId: string;
   referenceable: boolean;
   onReference?: (reference: FileMentionReference) => void;
+  /** Keep or undo one hunk; absent where the review is read-only. */
+  onDecide?: (decision: TurnReviewDecision) => void;
+  /** False while the file cannot be decided: it changed since the turn, or a decision is still being applied. */
+  decidable?: boolean;
 }
 
 /** Identifies the tool call whose host-computed diff the card loads. */
@@ -210,26 +215,37 @@ function ReviewHunk({
   let newLine = reviewHunk.newStartLine;
   {
     const disabled = !review.referenceable || !review.onReference;
+    const onDecide = review.onDecide;
     return (
-      <button type="button" disabled={disabled} data-hunk-id={reviewHunk.id}
-        aria-label={t("fileEditDiff.reviewReferenceHunk", { number: hunkNumber, path, start: reviewHunk.startLine, end: reviewHunk.endLine })}
-        onClick={() => review.onReference?.({ path, startLine: reviewHunk.startLine, endLine: reviewHunk.endLine,
-          turnId: review.turnId, hunkId: reviewHunk.id })}
-        className="group block w-full min-w-0 overflow-hidden rounded-[10px] border border-border bg-background text-left outline-none enabled:hover:border-(--file-reference-fg) focus-visible:border-(--file-reference-fg) focus-visible:ring-2 focus-visible:ring-(--file-reference-fg) disabled:cursor-default">
-        <span className="flex min-w-0 items-center gap-2 bg-muted/(--opacity-muted) px-2.5 py-1.5 font-mono text-dense text-muted-foreground">
-          <span className="min-w-0 flex-1 truncate">@@ -{reviewHunk.oldStartLine},{preview.oldCount} +{reviewHunk.newStartLine},{preview.newCount} @@</span>
-          {!disabled && <span className="shrink-0 font-sans font-medium text-(--file-reference-fg) opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none">
-            {t("fileEditDiff.hunkReferenceCue", { start: reviewHunk.startLine, end: reviewHunk.endLine })}
-          </span>}
-        </span>
-        <span className="block font-mono text-xs leading-5">
-          {removed.map((text, index) => <DiffLine key={`r-${index}`} kind="removed" lineNo={oldLine++} text={text} columns />)}
-          {added.map((text, index) => <DiffLine key={`a-${index}`} kind="added" lineNo={newLine++} text={text} columns />)}
-        </span>
-        {(oldPreview.truncated || newPreview.truncated) && (
-          <span className="block px-2.5 py-1 font-sans text-dense text-muted-foreground">{t("fileEditDiff.reviewPreviewTruncated")}</span>
+      <div className={reviewHunk.kept ? "min-w-0 opacity-70" : "min-w-0"} data-testid="turn-review-hunk" data-kept={reviewHunk.kept ? "true" : "false"}>
+        {onDecide && (
+          <div className="mb-1 flex min-w-0 justify-end">
+            <TurnDecisionButtons scope="hunk" kept={reviewHunk.kept} disabled={review.decidable !== true}
+              keepLabel={t("fileEditDiff.keepHunkAria", { number: hunkNumber, path })} undoLabel={t("fileEditDiff.undoHunkAria", { number: hunkNumber, path })}
+              onKeep={() => onDecide({ action: "keep", scope: "hunk", path, hunkId: reviewHunk.id })}
+              onUndo={() => onDecide({ action: "undo", scope: "hunk", path, hunkId: reviewHunk.id })} />
+          </div>
         )}
-      </button>
+        <button type="button" disabled={disabled} data-hunk-id={reviewHunk.id}
+          aria-label={t("fileEditDiff.reviewReferenceHunk", { number: hunkNumber, path, start: reviewHunk.startLine, end: reviewHunk.endLine })}
+          onClick={() => review.onReference?.({ path, startLine: reviewHunk.startLine, endLine: reviewHunk.endLine,
+            turnId: review.turnId, hunkId: reviewHunk.id })}
+          className="group block w-full min-w-0 overflow-hidden rounded-[10px] border border-border bg-background text-left outline-none enabled:hover:border-(--file-reference-fg) focus-visible:border-(--file-reference-fg) focus-visible:ring-2 focus-visible:ring-(--file-reference-fg) disabled:cursor-default">
+          <span className="flex min-w-0 items-center gap-2 bg-muted/(--opacity-muted) px-2.5 py-1.5 font-mono text-dense text-muted-foreground">
+            <span className="min-w-0 flex-1 truncate">@@ -{reviewHunk.oldStartLine},{preview.oldCount} +{reviewHunk.newStartLine},{preview.newCount} @@</span>
+            {!disabled && <span className="shrink-0 font-sans font-medium text-(--file-reference-fg) opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none">
+              {t("fileEditDiff.hunkReferenceCue", { start: reviewHunk.startLine, end: reviewHunk.endLine })}
+            </span>}
+          </span>
+          <span className="block font-mono text-xs leading-5">
+            {removed.map((text, index) => <DiffLine key={`r-${index}`} kind="removed" lineNo={oldLine++} text={text} columns />)}
+            {added.map((text, index) => <DiffLine key={`a-${index}`} kind="added" lineNo={newLine++} text={text} columns />)}
+          </span>
+          {(oldPreview.truncated || newPreview.truncated) && (
+            <span className="block px-2.5 py-1 font-sans text-dense text-muted-foreground">{t("fileEditDiff.reviewPreviewTruncated")}</span>
+          )}
+        </button>
+      </div>
     );
   }
 }

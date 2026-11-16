@@ -10,7 +10,7 @@ async function summaryApp() {
       messages: [{ index: 0, role: "user", content: "Update the source." }, { index: 1, role: "assistant", content: "Done." }] },
     turnReview: (sessionId) => ({ ok: true, review: { sessionId, turnId: "latest-turn", files: Array.from({ length: 9 }, (_, i) => ({
       path: `src/source-${i}.ts`, added: 1, removed: 1, operation: "modify", countsKnown: true, bytes: 4, lineCount: 1,
-      referenceable: true, hunks: [{ id: `hunk-${i}`, oldText: "old\n", newText: "new\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1 }],
+      referenceable: true, decidable: true, hunks: [{ id: `hunk-${i}`, oldText: "old\n", newText: "new\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1, kept: false }],
     })) } }),
   });
 }

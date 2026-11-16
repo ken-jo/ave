@@ -380,6 +380,7 @@ describe("preload contextBridge world shape lock", () => {
           "chatCompact": "function",
           "chatContinueLastUser": "function",
           "chatControlShellTask": "function",
+          "chatDecideTurnReview": "function",
           "chatEditResend": "function",
           "chatEnterCheckpointView": "function",
           "chatExitCheckpointView": "function",

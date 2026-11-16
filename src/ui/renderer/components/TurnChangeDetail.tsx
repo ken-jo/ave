@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Link2 } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
-import type { TurnReviewFile } from "../../../shared/turn-change-review.js";
+import type { TurnReviewDecision, TurnReviewError, TurnReviewFile } from "../../../shared/turn-change-review.js";
 import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
 import { FileEditDiff } from "./FileEditDiff.js";
+import { TurnDecisionButtons, TurnDecisionError } from "./TurnDecisionButtons.js";
 import { FILE_CHANGE_ADDED_CLASS, FILE_CHANGE_REMOVED_CLASS, fileChangeBadgeClass } from "./file-change-style.js";
 
 const HUNKS_PER_PAGE = 5;
@@ -13,9 +14,13 @@ export interface TurnChangeDetailProps {
   turnId: string;
   onReference?: (reference: FileMentionReference) => void;
   onFileReference?: (path: string) => void;
+  /** Keep or undo this file's changes; absent where the review is read-only. */
+  onDecide?: (decision: TurnReviewDecision) => void;
+  deciding?: boolean;
+  decisionError?: TurnReviewError | null;
 }
 
-export function TurnChangeDetail({ file, turnId, onReference, onFileReference }: TurnChangeDetailProps) {
+export function TurnChangeDetail({ file, turnId, onReference, onFileReference, onDecide, deciding = false, decisionError }: TurnChangeDetailProps) {
   const { t } = useTranslation();
   const [pagination, setPagination] = useState({ path: file.path, turnId, page: 0 });
   const lastPage = Math.max(0, Math.ceil(file.hunks.length / HUNKS_PER_PAGE) - 1);
@@ -47,12 +52,18 @@ export function TurnChangeDetail({ file, turnId, onReference, onFileReference }:
           className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg border border-border px-2 text-dense hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
           <Link2 aria-hidden="true" className="h-3 w-3" />{t("fileEditDiff.fileReference")}
         </button>
+        {onDecide && <TurnDecisionButtons scope="file" kept={file.hunks.length > 0 && file.hunks.every((hunk) => hunk.kept)} disabled={!file.decidable || deciding}
+          keepLabel={t("fileEditDiff.keepFileAria", { path: file.path })} undoLabel={t("fileEditDiff.undoFileAria", { path: file.path })}
+          onKeep={() => onDecide({ action: "keep", scope: "file", path: file.path })}
+          onUndo={() => onDecide({ action: "undo", scope: "file", path: file.path })} />}
       </header>
+      <TurnDecisionError error={decisionError} />
       <div className="min-h-0 min-w-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain px-3 py-3">
         <p className="text-xs text-muted-foreground">{t("fileEditDiff.latestTurnCaption")}</p>
         <FileEditDiff data={{ tool: "edit_file", path: file.path, isNewFile: operation === "create", truncated: false,
           hunks: hunks.map((hunk) => ({ oldText: hunk.oldText, newText: hunk.newText })) }}
-          review={{ hunks, hunkOffset, turnId, referenceable: file.referenceable, onReference }} />
+          review={{ hunks, hunkOffset, turnId, referenceable: file.referenceable, onReference,
+            ...(onDecide ? { onDecide, decidable: file.decidable && !deciding } : {}) }} />
         {lastPage > 0 && (
           <nav aria-label={t("fileEditDiff.hunkPages")} className="flex flex-wrap items-center justify-between gap-2 text-dense">
             <button type="button" disabled={page === 0} onClick={() => setPagination({ path: file.path, turnId, page: page - 1 })}

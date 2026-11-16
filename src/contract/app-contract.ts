@@ -107,6 +107,7 @@ export const CHANNELS = {
     // input. INTERNAL (mutating; destructive by intent).
     rewindTo: "ave:chat:rewind-to",
     getTurnReview: "ave:chat:get-turn-review",
+    decideTurnReview: "ave:chat:decide-turn-review",
     fork: "ave:chat:fork",
     continueLastUser: "ave:chat:continue-last-user",
     retryEffort: "ave:chat:retry-effort",

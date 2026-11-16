@@ -868,7 +868,8 @@ export function FileBrowserWorkspace({
         if (event.key === "F6") { event.preventDefault(); narrow ? goBack() : focusTree(); }
       }}>
       {narrow ? <button type="button" className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3 text-left text-xs text-primary" onClick={goBack} data-testid="chat-side-panel-file-back"><ArrowLeft className="h-3.5 w-3.5" />{t("chatPreviewRail.fileTreeBack")}</button> : null}
-      {selectedChange?.review && selectedChange.turnId && (selectedChange.review.referenceable || selectedChange.review.hunks.length > 0 || selectedChange.review.operation === "delete") ? <TurnChangeDetail file={selectedChange.review} turnId={selectedChange.turnId} onReference={onReference} onFileReference={onFileReference} />
+      {selectedChange?.review && selectedChange.turnId && (selectedChange.review.referenceable || selectedChange.review.hunks.length > 0 || selectedChange.review.operation === "delete") ? <TurnChangeDetail file={selectedChange.review} turnId={selectedChange.turnId} onReference={onReference} onFileReference={onFileReference}
+        onDecide={changes.onDecide} deciding={changes.deciding} decisionError={changes.decisionError} />
         : emptyDetail !== undefined ? <EmptyState title={selectedPath ? emptyDetail : t("chatPreviewRail.emptyState")} />
           : previewTarget ? <div className={cn("min-h-0 flex-1 overflow-auto p-3", previewFillsPanel(previewTarget) && "flex flex-col")}><PreviewDetail api={api} sessionId={sessionId} target={previewTarget} visible={visible} /></div>
           : <EmptyState title={t("chatPreviewRail.emptyState")} />}
