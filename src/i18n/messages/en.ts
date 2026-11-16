@@ -16,6 +16,7 @@ export const en = {
   "reasonCodes.gate-check-unsupported": "A gate that checks a command's exit status is not available. Use a review gate or the stage result.",
   "reasonCodes.template-runs-too-large": "The workflow run file is too large to store another run. Remove old template-run items, then try again.",
   "reasonCodes.invalid-template-run": "This item's template run cannot be read.",
+  "reasonCodes.template-runs-pending-review": "Template runs are paused until you review the changed workflow run file.",
   "be_mcpGovernance.reservedHostOwner": "Server ids cannot use the reserved host: prefix.",
 
   "notificationCenter.title": "Notifications",

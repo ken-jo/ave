@@ -162,7 +162,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   const { store, templates, workspace, emit } = deps;
   const records = deps.runs;
   const runs = new Map<number, RunState>();
-  let adoption: Promise<void> | null = null;
+  let adoption: Promise<boolean> | null = null;
   const unattendedAllowed = deps.unattendedAllowed
     ?? ((version: TemplateVersion): UnattendedQualification => isAllReadOnlyVersion(version) ? { ok: true } : { ok: false, code: "unattended-not-read-only" });
 
@@ -707,7 +707,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
   async function start(itemId: number, item: WorkItem, a: { source: RunAuthoritySource; approvalSurface: WebContents | null }): Promise<WorkItemRunResult> {
     try {
       // A run a restart left unsettled is taken over first: a start never races its adoption, and never replaces such a run.
-      await adopted();
+      if (!(await adopted())) return { status: "error", reason: "template-runs-pending-review", reasonCode: "template-runs-pending-review" };
       if (runs.has(itemId)) return { status: "already_running", reason: `Work item #${itemId} is already running a template run.` };
       return await startRun(itemId, item, a);
     } finally {
@@ -783,7 +783,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   /** A user action on an unsettled run: refused before any write unless `precheck` passes and the pin still resolves. */
   async function decide<R extends string>(itemId: number, runId: string, surface: WebContents | null, event: RunEvent, precheck: Precheck<R>): Promise<R | PinRefusal | "run_mismatch" | "not_found" | "not_pending" | null> {
-    await adopted();
+    if (!(await adopted())) return "run_mismatch";
     const got = await store.get(itemId);
     if (got.status !== "found") return "not_found";
     if (got.item.runId !== runId) return "run_mismatch";
@@ -940,9 +940,10 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
     return true;
   }
 
-  /** Once per process; an attempt that failed, or found the run file awaiting review, is tried again by the next caller. */
-  const adopted = (): Promise<void> => adoption ??= adoptRuns().then(
-    (done) => { if (!done) adoption = null; },
+  /** Once per process. An attempt that failed, or found the run file awaiting review, is tried again by the next caller, which is refused
+   * until one succeeds. */
+  const adopted = (): Promise<boolean> => adoption ??= adoptRuns().then(
+    (done) => { if (!done) adoption = null; return done; },
     (error: unknown) => { adoption = null; throw error; },
   );
 
@@ -971,7 +972,7 @@ export function createStageRunEngine(deps: StageRunEngineDeps): StageRunEngine {
 
   return {
     start, decideGate, decideJoin, retryStage, continueRun, projectRootRevoked, steer, stop, projectRuns,
-    adoptParkedRuns: adopted,
+    adoptParkedRuns: async () => { await adopted(); },
     liveStageSessions: itemId => new Map(runs.get(itemId)?.live ?? []),
     whenIdle: async (itemId) => { const state = runs.get(itemId); if (state) await idle(state); },
   };

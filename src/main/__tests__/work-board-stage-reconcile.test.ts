@@ -137,13 +137,14 @@ function deleteRowOffline(h: Harness, id: number): void {
   writeFileSync(h.boardPath, JSON.stringify(file));
 }
 
-async function parkedRun(h: Harness): Promise<{ id: number; runId: string }> {
+async function parkedRun(h: Harness) {
   const version = await h.confirm([stageOf("a"), stageOf("b", { inputs: ["a"] })]);
   const id = await h.addItem(version);
   void h.start(id, h.local(version));
   (await h.untilLive(1))[0].finish();
   const runId = (await h.untilStage(id, "a", "awaiting_gate")).runId ?? "";
-  return { id, runId };
+  const gate = await h.stageRun(id, "a");
+  return { id, runId, version, gate };
 }
 
 it("a run whose row was deleted while the app was down is cancelled at boot and its record pruned", async () => {
@@ -189,7 +190,8 @@ it("a run whose row names another run is cancelled at boot and kept only as that
 it("a boot that finds the run file awaiting review settles, sweeps and takes over nothing, and a later reader takes the run over", async () => {
   const h = await stageRunHarness();
   try {
-    const { id, runId } = await parkedRun(h);
+    const { id, runId, version, gate } = await parkedRun(h);
+    const other = await h.addItem(version);
     const runsPath = join(dirname(h.boardPath), "workflow-runs.json");
     const read = homeTrust.readAveHomeInput;
     const held = vi.spyOn(homeTrust, "readAveHomeInput").mockImplementation(async path =>
@@ -198,6 +200,13 @@ it("a boot that finds the run file awaiting review settles, sweeps and takes ove
     const engine = await restarted(h);
     expect(h.sweeps).toHaveLength(swept);
     expect(engine.cancelRun(id)).toEqual({ ok: false, reason: "not-executing" });
+    // Until the takeover has happened nothing starts and nothing is decided.
+    const begin = vi.spyOn(h.board, "beginRun");
+    expect(await engine.runItem(other, { templateSource: h.local(version) })).toMatchObject({ status: "error", reasonCode: "template-runs-pending-review" });
+    expect(begin).not.toHaveBeenCalled();
+    const decision = { runId, stageId: "a", attempt: gate.attempt, resultHash: gate.resultHash ?? "", decision: "approve" as const };
+    expect(await engine.decideStageGate(id, decision)).toMatchObject({ ok: false });
+    expect(h.sweeps).toHaveLength(swept);
 
     held.mockRestore();
     expect((await h.runOf(runId))?.settled).toBeUndefined();
