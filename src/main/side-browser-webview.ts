@@ -223,6 +223,9 @@ export function configureSideBrowserWebviewAttach(input: {
 
   hardenRemoteWebPreferences(input.webPreferences);
   input.webPreferences.partition = AVE_SIDE_BROWSER_PARTITION;
+  // A web page that sets no background is drawn on white. An embedded guest is see-through unless told otherwise, which
+  // put such a page on the app's own background and made its captured thumbnail black.
+  input.webPreferences.transparent = false;
   return "accepted";
 }
 

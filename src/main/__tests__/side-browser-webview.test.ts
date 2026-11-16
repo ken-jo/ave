@@ -146,6 +146,12 @@ describe("side browser webview attach policy", () => {
     expect(prefs.preload).toBeUndefined();
   });
 
+  it("makes an accepted guest opaque even when the embedder asked for a see-through one", () => {
+    const prefs: Record<string, unknown> = { transparent: true };
+    expect(configureSideBrowserWebviewAttach({ event: event(), webPreferences: prefs, params: { partition: AVE_SIDE_BROWSER_PARTITION, src: "https://example.com/" } })).toBe("accepted");
+    expect(prefs.transparent).toBe(false);
+  });
+
   it("blocks credentialed side-browser URLs", () => {
     const attachEvent = event();
 
