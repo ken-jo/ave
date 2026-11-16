@@ -1,6 +1,6 @@
 import { assertTemplateRunFields } from "../work-board/template-run-fields.js";
 import type { TemplateRunStart } from "../shared/workflow-template-types.js";
-import { requireTemplate, isTemplateId } from "../work-board/template-graph.js";
+import { requireTemplate, isTemplateId, WorkflowTemplateError } from "../work-board/template-graph.js";
 // Serialize mutations within this process only and append activity for report reconstruction. IPC owns change broadcasts; compute overdue on read rather
 // than persisting or duplicating that projection in consumers.
 import { createHash } from "node:crypto";
@@ -288,14 +288,20 @@ function emptyBoard(): BoardFile {
 }
 
 // Back up corrupt JSON and seed empty; filter invalid rows and repair nextId above every surviving ID.
-function readFileOrEmpty(filePath: string): Promise<BoardFile> {
+const unreadableTemplateRows = new WeakMap<WorkItem, string>();
+function templateRunError(item: WorkItem): "invalid-template-run" | undefined {
+  try { assertTemplateRunFields(item); return undefined; }
+  catch (error) { if (error instanceof WorkflowTemplateError) return "invalid-template-run"; throw error; }
+}
+
+function readFileOrEmpty(filePath: string, onUnreadable: (item: WorkItem) => void): Promise<BoardFile> {
   return readJsonFileOrEmpty(filePath, emptyBoard, (parsed) => {
     const file = parsed as BoardFile;
     if (!Array.isArray(file.items)) {
       return emptyBoard();
     }
-    file.items.forEach(assertTemplateRunFields);
     const valid = file.items.filter(isValidRecord).map((item) => {
+      if (templateRunError(item)) { unreadableTemplateRows.set(item, JSON.stringify(item)); onUnreadable(item); return item; }
       if (item.planApproval === undefined || isValidPlanApproval(item.planApproval)) return item;
       // Keep the item; drop only the unreadable decision. A run left awaiting approval without one reconciles to error at boot.
       log.warn("[work-board-store] dropped an unreadable plan approval on item %d", item.id);
@@ -305,7 +311,11 @@ function readFileOrEmpty(filePath: string): Promise<BoardFile> {
     });
     // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
     // on every load and converges; nothing marks it done.
-    const { items, changed } = normalizeBoardDueDates(valid);
+    const readable = valid.filter(item => !unreadableTemplateRows.has(item));
+    const normalized = normalizeBoardDueDates(readable);
+    const replacements = new Map(readable.map((item, index) => [item, normalized.items[index]]));
+    const items = valid.map(item => replacements.get(item) ?? item);
+    const changed = normalized.changed;
     if (changed > 0) {
       log.info(
         { event: "work-board-due-at-localized", changed, total: items.length },
@@ -343,11 +353,13 @@ function mutationRevision(item: WorkItem): string {
 // A pending plan also carries whether the item changed since the plan was made; main judges it once, here, for every reader.
 function decorate(item: WorkItem, nowMs: number): WorkItemResolved {
   const approval = item.planApproval;
+  const error = templateRunError(item);
   return {
     ...cloneItem(item),
     mutationRevision: mutationRevision(item),
+    ...(error ? { templateRunError: error } : {}),
     status_resolved: resolveWorkItemStatus(item, nowMs),
-    ...(approval?.status === "pending" ? { planStale: approval.itemDigest !== itemDigestOf(item) } : {}),
+    ...(!error && approval?.status === "pending" ? { planStale: approval.itemDigest !== itemDigestOf(item) } : {}),
   };
 }
 
@@ -383,6 +395,14 @@ export class WorkBoardStore {
   readonly boardChanged = new ChangeSignal((err) => log.warn("[work-board] change listener threw: %s", (err as Error).message));
   private cache: BoardFile = emptyBoard();
   private loaded = false;
+  private readonly warnedTemplateRows = new Set<number>();
+  private readBoard(): Promise<BoardFile> {
+    return readFileOrEmpty(this.filePath, item => {
+      if (this.warnedTemplateRows.has(item.id)) return;
+      this.warnedTemplateRows.add(item.id);
+      log.warn("[work-board-store] unreadable template state on item %d; execution refused", item.id);
+    });
+  }
   private readonly filePath: string;
   // Activity-log storage rooted in the same directory as `board.json`.
   private readonly activity: WorkBoardStorage;
@@ -401,14 +421,17 @@ export class WorkBoardStore {
 
   // The one board write: the cache takes the board only after it is on disk, then listeners hear about it.
   private async commit(board: BoardFile): Promise<void> {
-    board.items.forEach(assertTemplateRunFields);
+    for (const item of board.items) {
+      const original = unreadableTemplateRows.get(item);
+      if (original === undefined || JSON.stringify(item) !== original) assertTemplateRunFields(item);
+    }
     await writeFileAtomic(this.filePath, board);
     this.cache = board;
     this.boardChanged.emit();
   }
 
   async load(): Promise<void> {
-    this.cache = await readFileOrEmpty(this.filePath);
+    this.cache = await this.readBoard();
     this.loaded = true;
   }
 
@@ -485,7 +508,7 @@ export class WorkBoardStore {
     const projectName = normalizeOptionalString(input.projectName, MAX_PROJECT_NAME_LENGTH);
 
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
       const status: WorkItemStatusStored = input.status ?? "planned";
@@ -553,7 +576,7 @@ export class WorkBoardStore {
     }
 
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -600,7 +623,7 @@ export class WorkBoardStore {
     }
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -609,6 +632,7 @@ export class WorkBoardStore {
       const nowMs = this.now();
       const iso = new Date(nowMs).toISOString();
       const current = board.items[idx];
+      assertTemplateRunFields(current);
       if (expectedRevision !== undefined && expectedRevision !== mutationRevision(current)) {
         this.cache = board;
         return { status: "invalid" as const, itemId: id, reason: "work-item-changed" };
@@ -669,7 +693,7 @@ export class WorkBoardStore {
   ): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -703,13 +727,14 @@ export class WorkBoardStore {
   async beginRun(id: number, runId: string, startedAt: string, pin?: TemplateRunStart): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
         return { status: "not_found" as const, itemId: id };
       }
       const prior = board.items[idx];
+      assertTemplateRunFields(prior);
       if (prior.templateId !== undefined && !pin) return { status: "invalid" as const, itemId: id, reason: "template-run-unavailable" };
       if (pin) requireTemplate(prior.templateId === pin.templateId && pin.source !== undefined, "invalid-template-run");
       if (prior.status === "completed") {
@@ -718,7 +743,7 @@ export class WorkBoardStore {
       }
       const history = [
         ...(prior.runHistory ?? []),
-        { runId, startedAt, status: "planning" as WorkItemRunStatus, ...(pin ? { templateVersion: pin.version, templateGraphHash: pin.graphHash, stageRuns: pin.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, outputHash }) => ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(outputHash === undefined ? {} : { outputHash }) })) } : {}) },
+        { runId, startedAt, status: "planning" as WorkItemRunStatus, ...(pin ? { templateVersion: pin.version, templateGraphHash: pin.graphHash, stageRuns: pin.stageRuns.map(({ stageId, attempt, status, startedAt, endedAt, resultHash }) => ({ stageId, attempt, status, ...(startedAt === undefined ? {} : { startedAt }), ...(endedAt === undefined ? {} : { endedAt }), ...(resultHash === undefined ? {} : { resultHash }) })) } : {}) },
       ];
       const capped =
         history.length > RUN_HISTORY_CAP ? history.slice(history.length - RUN_HISTORY_CAP) : history;
@@ -756,10 +781,11 @@ export class WorkBoardStore {
   async updateStageRun(id: number, runId: string, mutate: (item: WorkItem) => WorkItem | null): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex(item => item.id === id);
       if (idx === -1) return { status: "not_found", itemId: id };
       const prior = board.items[idx];
+      assertTemplateRunFields(prior);
       if (prior.runId !== runId) return { status: "invalid", itemId: id, reason: "run-mismatch" };
       const updated = mutate(cloneItem(prior));
       if (updated === null) return { status: "invalid", itemId: id, reason: "mutation-refused" };
@@ -775,11 +801,12 @@ export class WorkBoardStore {
   async reconcileInterruptedRuns(): Promise<number> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const iso = new Date(this.now()).toISOString();
       let count = 0;
       for (let i = 0; i < board.items.length; i++) {
         const it = board.items[i];
+        if (unreadableTemplateRows.has(it)) continue;
         // A plan waiting for the user's decision belongs to no process: it stays, with its stored decision object, as long as that
         // object is whole and still matches the stored plan. Anything less cannot be decided safely and becomes error like the rest.
         if (it.runStatus === "awaiting_approval" && isDecidablePlan(it)) continue;
@@ -812,7 +839,7 @@ export class WorkBoardStore {
   async setRunSessionId(id: number, runSessionId: string): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -839,7 +866,7 @@ export class WorkBoardStore {
   async setRunResult(id: number, result: RunResultPatch): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
@@ -874,13 +901,14 @@ export class WorkBoardStore {
   ): Promise<WorkItemUpdateResult | null> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) {
         this.cache = board;
         return { status: "not_found" as const, itemId: id };
       }
       const current = board.items[idx];
+      assertTemplateRunFields(current);
       if (current.runId !== input.runId || current.runStatus !== "planning") {
         this.cache = board;
         return null;
@@ -916,7 +944,7 @@ export class WorkBoardStore {
   async decidePlan(id: number, input: PlanDecisionInput): Promise<PlanDecisionResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       // The board is mutated below, so the cache takes it only after the write lands; a refusal caches the board as read.
       const refuse = (reason: Extract<PlanDecisionResult, { status: "refused" }>["reason"]): PlanDecisionResult => {
         this.cache = board;
@@ -925,6 +953,7 @@ export class WorkBoardStore {
       const idx = board.items.findIndex((i) => i.id === id);
       if (idx === -1) return refuse("not_found");
       const current = board.items[idx];
+      assertTemplateRunFields(current);
       const approval = current.planApproval;
       if (
         current.runStatus !== "awaiting_approval" ||
@@ -971,7 +1000,7 @@ export class WorkBoardStore {
   async remove(id: number): Promise<WorkItemDeleteResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
+      const board = await this.readBoard();
       const item = board.items.find((i) => i.id === id);
       if (!item) {
         this.cache = board;

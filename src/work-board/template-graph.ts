@@ -14,7 +14,7 @@ export function isTemplateId(value: unknown): value is string { return typeof va
 export function isGraphHash(value: unknown): value is string { return typeof value === "string" && /^[a-f0-9]{64}$/.test(value); }
 export function isTemplateVersion(value: unknown): value is number { return Number.isSafeInteger(value) && (value as number) > 0; }
 export function isStageId(value: unknown): value is string { return typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,31}$/.test(value); }
-export function isWorkspaceGlob(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 2048 && !/[\x00-\x1f]/.test(value) && !/^(?:[a-z]:|[/\\])/i.test(value) && !value.split(/[/\\]/).includes(".."); }
+export function isWorkspaceGlob(value: unknown): value is string { return typeof value === "string" && value.length > 0 && value.length <= 2048 && ![...value].some(character => character.charCodeAt(0) < 32) && !/^(?:[a-z]:|[/\\])/i.test(value) && !value.split(/[/\\]/).includes(".."); }
 function text(value: unknown, max: number): value is string { return typeof value === "string" && value.trim().length > 0 && value.length <= max; }
 export function hasTemplateKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
   return isPlainRecord(value) && hasOnlyKeys(value, keys);
@@ -83,6 +83,7 @@ export function isAllReadOnlyVersion(graph: TemplateGraph): boolean {
   return !graph.setupCommands?.length && graph.stages.every(stage => stage.toolScope === "read" && !stage.allowSubAgents && !stage.requestedOutputs?.length && (!stage.envelope || (stage.envelope.mcpReadOnlyTools.length === 0 && stage.envelope.outputs.length === 0 && stage.envelope.network.length === 0 && stage.envelope.writePaths.length === 0 && stage.envelope.commands.length === 0 && stage.envelope.mcpGenerationTools.length === 0 && stage.envelope.pluginGenerationTools.length === 0)));
 }
 
+// Absent or empty optional collections are omitted; required members retain their canonical defaults.
 export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
   requireTemplate(isRecord(raw) && Array.isArray(raw.stages) && raw.stages.length > 0 && raw.stages.length <= 12 && Array.isArray(raw.edges) && raw.edges.length <= 132);
   const stages = raw.stages.map((s: unknown): TemplateStage => {
@@ -111,7 +112,7 @@ export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
         else requireTemplate(entry.from === "stage" && isStageId(entry.stageId));
       }
     }
-    return { id: s.id, name: s.name, goal: s.goal, inputs: [...s.inputs].sort(compare), toolScope: s.toolScope, ...(s.agentName !== undefined ? { agentName: s.agentName as string } : {}), allowSubAgents: s.allowSubAgents === true, gate: structuredClone(g) as TemplateStage["gate"], ...(s.inputFiles !== undefined ? { inputFiles: structuredClone(s.inputFiles) as StageInputDecl[] } : {}), ...(s.outputs !== undefined ? { outputs: workspaceGlobs(s.outputs, 32) } : {}), ...(s.envelope !== undefined ? { envelope: canonicalEnvelope(s.envelope) } : {}), ...(s.requestedOutputs !== undefined ? { requestedOutputs: requestedOutputs(s.requestedOutputs) } : {}) };
+    return { id: s.id, name: s.name, goal: s.goal, inputs: [...s.inputs].sort(compare), toolScope: s.toolScope, ...(s.agentName !== undefined ? { agentName: s.agentName as string } : {}), allowSubAgents: s.allowSubAgents === true, gate: structuredClone(g) as TemplateStage["gate"], ...(Array.isArray(s.inputFiles) && s.inputFiles.length > 0 ? { inputFiles: structuredClone(s.inputFiles) as StageInputDecl[] } : {}), ...(Array.isArray(s.outputs) && s.outputs.length > 0 ? { outputs: workspaceGlobs(s.outputs, 32) } : {}), ...(s.envelope !== undefined ? { envelope: canonicalEnvelope(s.envelope) } : {}), ...(Array.isArray(s.requestedOutputs) && s.requestedOutputs.length > 0 ? { requestedOutputs: requestedOutputs(s.requestedOutputs) } : {}) };
   }).sort((a, b) => compare(a.id, b.id));
   const ids = new Set(stages.map(s => s.id)); requireTemplate(ids.size === stages.length);
   const edgeKeys = new Set<string>();
@@ -130,7 +131,7 @@ export function canonicalTemplateGraph(raw: unknown): TemplateGraph {
   if (roots.length === 1 && roots[0].toolScope === "read" && roots[0].gate.type === "human") roots[0].kind = "plan";
   for (const rawStage of raw.stages) requireTemplate(rawStage.kind === undefined || rawStage.kind === stages.find(s => s.id === rawStage.id)?.kind);
   if (raw.setupCommands !== undefined) requireTemplate(Array.isArray(raw.setupCommands) && raw.setupCommands.length <= 256 && raw.setupCommands.every(command => text(command, 8192)));
-  return { stages, edges, ...(raw.setupCommands !== undefined ? { setupCommands: [...raw.setupCommands as string[]] } : {}) };
+  return { stages, edges, ...(Array.isArray(raw.setupCommands) && raw.setupCommands.length > 0 ? { setupCommands: [...raw.setupCommands as string[]] } : {}) };
 }
 export function graphHashOf(graph: unknown): string {
   return createHash("sha256").update(canonicalWorkflowJson(canonicalTemplateGraph(graph)), "utf8").digest("hex");
@@ -163,7 +164,7 @@ export function validateStageForConfirm(stage: TemplateStage, template: Template
     } else throw error;
   }
   if (envelope.outputs.some(kind => kind !== "branch") && stage.gate.type !== "human") refusals.push("outputs-need-human-gate");
-  if ((template.setupCommands ?? []).some(command => !envelope.commands.some(prefix => command === prefix || command.startsWith(prefix + " ") || command.startsWith(prefix + "\t")))) refusals.push("setup-outside-commands");
+  if ((template.setupCommands ?? []).some(command => !envelope.commands.some(prefix => command === prefix || command.startsWith(`${prefix} `) || command.startsWith(`${prefix}\t`)))) refusals.push("setup-outside-commands");
   if (stage.toolScope === "read" && (envelope.tools.some(tool => !READ_ENVELOPE_TOOLS.has(tool)) || envelope.mcpGenerationTools.length > 0 || envelope.pluginGenerationTools.length > 0)) refusals.push("tools-broader-than-scope");
   if (envelope.tools.some(tool => ["host_shell", "host_bash", "host_powershell"].includes(tool))) refusals.push("host-shell");
   if (envelope.tools.some(tool => tool.startsWith("browser_") || tool.startsWith("terminal_"))) refusals.push("user-owned-surface");

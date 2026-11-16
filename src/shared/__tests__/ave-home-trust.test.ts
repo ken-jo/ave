@@ -837,3 +837,15 @@ describe.runIf(process.platform !== "win32")("POSIX home protection", () => {
     }
   });
 });
+
+it("covers template authority and refuses foreign edits and overwrite", () => {
+  const dir = home(); expect(boot(dir).pending).toBe(false);
+  const path = join(dir, "work-board", "templates.json");
+  const original = JSON.stringify({ version: 1, templates: [] });
+  writeUtf8FileAtomicSync(path, original);
+  expect(manifest(dir).entries["work-board/templates.json"]).toEqual({ current: sha256Hex(original) });
+  expect(readAveHomeInputSync(path)).toMatchObject({ status: "trusted" });
+  writeFileSync(path, `${original} `);
+  expect(readAveHomeInputSync(path)).toMatchObject({ status: "untrusted" });
+  expect(() => writeUtf8FileAtomicSync(path, original)).toThrow();
+});

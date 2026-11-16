@@ -1,3 +1,4 @@
+import { requiredValue } from "./support/required-value.js";
 import { DEFAULT_APPEARANCE } from "../shared/appearance-settings.js";
 /**
  * Preload contextBridge shape lock.
@@ -103,7 +104,7 @@ describe("preload contextBridge world shape lock", () => {
     mockUserActivation.isActive = false; await api.detachWorkflowTemplateSchedule("attachment");
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateDetachSchedule, "attachment", { inputOrigin: "user-keyboard", userActivation: false });
     const handler = vi.fn(); const unsubscribe = api.onWorkflowTemplatesChanged(handler);
-    const listener = mockOn.mock.calls.at(-1)![1]; listener(); expect(handler).toHaveBeenCalledOnce();
+    const listener = requiredValue(mockOn.mock.calls.at(-1))[1]; listener(); expect(handler).toHaveBeenCalledOnce();
     unsubscribe(); expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.templatesChanged, listener);
   });
   it("attaches fresh click intent to an internal relaunch request", async () => {

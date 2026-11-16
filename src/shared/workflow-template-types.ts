@@ -1,6 +1,6 @@
 export type TemplateConfirmationOrigin = "local-desktop" | "tailnet-surface";
 export type TemplateScope = { kind: "all" } | { kind: "project"; projectRoot: string };
-export type StageGate = { type: "human" } | {
+type StageGate = { type: "human" } | {
   type: "auto";
   pass: { kind: "stage_ok" } | { kind: "check_exit_zero"; command: string }
     // Scheduler predicate labelled as a model judgement; never answers, skips or pre-fills a permission card (D9).
@@ -40,7 +40,7 @@ export interface TemplateStage {
   inputFiles?: StageInputDecl[];
   outputs?: string[];
 }
-export interface TemplateEdge { from: string; to: string }
+interface TemplateEdge { from: string; to: string }
 export interface TemplateGraph { stages: TemplateStage[]; edges: TemplateEdge[]; setupCommands?: string[] }
 export interface WorkflowTemplate {
   id: string;
@@ -53,7 +53,7 @@ export interface WorkflowTemplate {
   archivedAt?: string;
 }
 export interface TemplateVersionPin { templateId: string; version: number; graphHash: string }
-export interface TemplateConfirmation extends TemplateVersionPin {
+interface TemplateConfirmation extends TemplateVersionPin {
   who: string;
   at: string;
   origin: TemplateConfirmationOrigin;
@@ -69,8 +69,9 @@ export interface WorkflowTemplateDraftInput extends TemplateGraph {
   description?: string;
   basedOn?: number;
 }
-export interface WorkflowTemplateDraft extends WorkflowTemplateDraftInput {
+interface WorkflowTemplateDraft extends WorkflowTemplateDraftInput {
   graphHash: string;
+  revision: string;
   updatedAt: string;
 }
 export interface ScheduleAttachmentInput extends TemplateVersionPin { scheduleId: string }
@@ -87,7 +88,7 @@ export interface WorkflowTemplateRecord {
   scheduleAttachments?: ScheduleAttachment[];
   draft?: WorkflowTemplateDraft;
 }
-export interface WorkflowTemplateConfirmInput { expectedGraphHash: string }
+export interface WorkflowTemplateConfirmInput { expectedGraphHash: string; expectedDraftRevision: string }
 export type WorkflowTemplateErrorCode =
   | "invalid-input" | "template-not-found" | "unknown-version" | "graph-hash-mismatch"
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
@@ -111,23 +112,23 @@ export interface WorkItemStageRun {
   endedAt?: string;
   /** At most 48,000 characters; the engine truncates before storing. */
   output?: string;
-  outputHash?: string;
+  resultHash?: string;
   gate?: { type: "human"; status: "pending" | "approved" | "changes_requested" | "rejected"; note?: string; decidedAt?: string; revision: number; judgedBy?: "host" | "model" }
     | { type: "auto"; passed: boolean; evidence: string; evaluatedAt: string; judgedBy?: "host" | "model" };
 }
-export type WorkItemStageRunSummary = Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "startedAt" | "endedAt" | "outputHash">;
+export type WorkItemStageRunSummary = Pick<WorkItemStageRun, "stageId" | "attempt" | "status" | "startedAt" | "endedAt" | "resultHash">;
 
 export type EnvelopeRefusal = "tools-broader-than-scope" | "host-shell" | "floor-target" | "secret-path" | "user-owned-surface"
   | "outward-tool-declared" | "outputs-need-human-gate" | "setup-outside-commands" | "bad-stage-id" | "too-many-entries";
-export type RunPin = TemplateVersionPin;
+type RunPin = TemplateVersionPin;
 export type RunAuthoritySource = { kind: "local-create-and-run"; pin: RunPin }
   | { kind: "schedule-attachment"; attachmentId: string; pin: RunPin; firedAt: string };
 export interface RunWorkspace { kind: "git" | "folder"; runRoot: string; branch?: string; baseCommit?: string; outputDir?: string }
-export type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
-export type OutputKindDecl = { kind: "git-push"; remote: string; branch: "run" } | { kind: "tool"; tool: string };
-export interface OutputFile { path: string; sha256: string; size: number }
+type LaneBlockCode = "envelope-missing" | "isolation-unproven" | "lane-unavailable";
+type OutputKindDecl = { kind: "git-push"; remote: string; branch: "run" } | { kind: "tool"; tool: string };
+interface OutputFile { path: string; sha256: string; size: number }
 export interface RequestedOutput { id: string; decl: OutputKindDecl; args: string; files?: OutputFile[]; summary: string }
-export interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
-export interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
+interface OutputExecution { id: string; status: "pending" | "done" | "failed" | "denied"; at?: string; detail?: string }
+interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "same-path" | "identity-missing" | "interrupted"; files: { path: string; stageIds: string[] }[]; excerpt?: string }
 export interface StageJoin { joinId: string; stageIds: string[]; status: "integrating" | "integrated" | "conflict" | "rejected"; conflict?: JoinConflict; decidedAt?: string }
 export interface TemplateRunStart extends RunPin { source: RunAuthoritySource; stageRuns: WorkItemStageRun[] }

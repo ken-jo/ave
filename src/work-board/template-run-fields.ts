@@ -44,7 +44,7 @@ function validStage(value: unknown, summary: boolean): boolean {
   if (!isRecord(value) || !isStageId(value.stageId) || !Number.isInteger(value.attempt) || (value.attempt as number) < 1 || (value.attempt as number) > 3 || !STAGE_STATUSES.includes(value.status as string)) return false;
   for (const key of ["startedAt", "endedAt", "childSessionId", "output"]) if (value[key] !== undefined && typeof value[key] !== "string") return false;
   if (typeof value.output === "string" && value.output.length > 48_000) throw new WorkflowTemplateError("invalid-template-run", "Stage output exceeds 48000 characters");
-  if (value.outputHash !== undefined && !isGraphHash(value.outputHash)) return false;
+  if (value.resultHash !== undefined && !isGraphHash(value.resultHash)) return false;
   if (summary && ["output", "gate", "childSessionId", "failure", "taint", "workspace", "blocked", "requestedOutputs", "outputExecutions", "usage"].some(key => value[key] !== undefined)) return false;
   if (!optional(value, "failure", v => ["error", "gate", "interrupted", "denied-tool", "workspace-lost", "workspace-revoked", "budget", "seed"].includes(v as string))
     || !optional(value, "taint", v => v === "file-content" || v === "agent-message") || !optional(value, "workspace", v => workspace(v, false))

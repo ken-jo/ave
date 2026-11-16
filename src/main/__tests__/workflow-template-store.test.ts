@@ -1,3 +1,4 @@
+import { requiredValue } from "../../__tests__/support/required-value.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), "templates-")); path
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
 async function confirmed() {
   const record = await store.draft(null, input());
-  const version = await store.confirm(record.template.id, { expectedGraphHash: record.draft!.graphHash }, actor);
+  const version = await store.confirmDraft(record.template.id, { expectedGraphHash: requiredValue(record.draft).graphHash, expectedDraftRevision: requiredValue(record.draft).revision }, actor);
   return { id: record.template.id, version };
 }
 describe("workflow template store", () => {
@@ -37,7 +38,7 @@ describe("workflow template store", () => {
     const draft = await store.draft(id, next);
     expect(draft.draft).not.toHaveProperty("version");
     expect(await store.resolveVersion({ templateId: id, version: 1, graphHash: version.graphHash })).toEqual(version);
-    const v2 = await store.confirm(id, { expectedGraphHash: draft.draft!.graphHash }, actor);
+    const v2 = await store.confirmDraft(id, { expectedGraphHash: requiredValue(draft.draft).graphHash, expectedDraftRevision: requiredValue(draft.draft).revision }, actor);
     expect(v2.version).toBe(2); expect(v2.basedOn).toBe(1);
     const returned = await store.get(id); returned.versions[0].stages[0].goal = "forged";
     expect((await store.get(id)).versions[0]).toEqual(version);
@@ -47,7 +48,7 @@ describe("workflow template store", () => {
     const { id, version } = await confirmed();
     const first = await store.draft(id, input()); const edited = input(); edited.stages[0].goal = "Changed";
     await store.draft(id, edited);
-    await expect(store.confirm(id, { expectedGraphHash: first.draft!.graphHash }, actor)).rejects.toMatchObject({ code: "stale-draft" });
+    await expect(store.confirmDraft(id, { expectedGraphHash: requiredValue(first.draft).graphHash, expectedDraftRevision: requiredValue(first.draft).revision }, actor)).rejects.toMatchObject({ code: "stale-draft" });
     await expect(store.resolveVersion({ templateId: id, version: 99, graphHash: version.graphHash })).rejects.toMatchObject({ code: "unknown-version" });
     await expect(store.resolveVersion({ templateId: id, version: 1, graphHash: "a".repeat(64) })).rejects.toMatchObject({ code: "graph-hash-mismatch" });
   });
@@ -62,11 +63,11 @@ describe("workflow template store", () => {
     const { id } = await confirmed(); await store.archive(id); expect(changes).toBe(3); unsubscribe();
   });
   it("serializes concurrent confirmations and rejects reserved remote provenance", async () => {
-    const r = await store.draft(null, input()); const request = { expectedGraphHash: r.draft!.graphHash };
-    const results = await Promise.allSettled([store.confirm(r.template.id, request, actor), store.confirm(r.template.id, request, actor)]);
+    const r = await store.draft(null, input()); const request = { expectedGraphHash: requiredValue(r.draft).graphHash, expectedDraftRevision: requiredValue(r.draft).revision };
+    const results = await Promise.allSettled([store.confirmDraft(r.template.id, request, actor), store.confirmDraft(r.template.id, request, actor)]);
     expect(results.filter(r => r.status === "fulfilled")).toHaveLength(1);
     const d = await store.draft(r.template.id, input());
-    await expect(store.confirm(r.template.id, { expectedGraphHash: d.draft!.graphHash }, { who: "user", origin: "tailnet-surface" })).rejects.toMatchObject({ code: "invalid-input" });
+    await expect(store.confirmDraft(r.template.id, { expectedGraphHash: requiredValue(d.draft).graphHash, expectedDraftRevision: requiredValue(d.draft).revision }, { who: "user", origin: "tailnet-surface" })).rejects.toMatchObject({ code: "invalid-input" });
   });
   it("refuses tampered confirmed bytes rather than inventing a valid hash", async () => {
     await confirmed(); const data = JSON.parse(await readFile(path, "utf8")); data.templates[0].versions[0].stages[0].goal = "tampered";
@@ -77,12 +78,12 @@ describe("canonical graph hash", () => {
   it("accepts and hashes the model verdict pass kind distinctly from stage success", async () => {
     const graph = input();
     graph.stages[1].gate = { type: "auto", pass: { kind: "model_verdict" } };
-    expect(canonicalTemplateGraph(graph).stages.find(stage => stage.id === "build")!.gate).toEqual(graph.stages[1].gate);
+    expect(canonicalTemplateGraph(graph).stages.find(stage => stage.id === "build")?.gate).toEqual(graph.stages[1].gate);
     const hash = graphHashOf(graph);
     expect(hash).toMatch(/^[a-f0-9]{64}$/);
     expect(hash).not.toBe(graphHashOf(input()));
     const draft = await store.draft(null, graph);
-    const version = await store.confirm(draft.template.id, { expectedGraphHash: hash }, actor);
+    const version = await store.confirmDraft(draft.template.id, { expectedGraphHash: hash, expectedDraftRevision: requiredValue(draft.draft).revision }, actor);
     expect(version.graphHash).toBe(hash);
     expect((await new WorkflowTemplateStore(path).get(draft.template.id)).versions[0]).toEqual(version);
   });
