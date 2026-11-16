@@ -13,6 +13,8 @@ export interface BrowserWorkspacePanelProps {
   readonly activeTabId: string | null;
   readonly visible: boolean;
   readonly onOpenUrl: (url: string) => void;
+  /** Rises each time the find field should take the caret. */
+  readonly findFocus?: number;
 }
 
 /** The library shows one kind of thing at a time. */
@@ -20,7 +22,9 @@ const LIBRARY_SECTIONS = ["tabs", "bookmarks", "history", "downloads", "data"] a
 type LibrarySection = typeof LIBRARY_SECTIONS[number];
 const ROW_BUTTON = "h-6 px-2 text-xs";
 
-export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, onOpenUrl }: BrowserWorkspacePanelProps) {
+export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, onOpenUrl, findFocus = 0 }: BrowserWorkspacePanelProps) {
+  const findInput = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (findFocus > 0 && visible) { findInput.current?.focus(); findInput.current?.select(); } }, [findFocus, visible]);
   const { t } = useTranslation();
   const { state, control, failed } = useBrowserWorkspace(api, browserTabs);
   const [expanded, setExpanded] = useState(false);
@@ -62,7 +66,7 @@ export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, 
       <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{t("browserWorkspace.library")}</Button>
       <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} disabled={!url || !active} aria-pressed={bookmarked} onClick={() => { if (url && active) void run(api.setBookmark({ url, title: active.title.slice(0, BROWSER_WORKSPACE_LIMITS.titleLength), bookmarked: !bookmarked })); }}>{t(bookmarked ? "browserWorkspace.removeBookmark" : "browserWorkspace.bookmark")}</Button>
       <form className="flex min-w-0 items-center gap-1" onSubmit={(event) => { event.preventDefault(); void findText(true, true); }}>
-        <Input aria-label={t("browserWorkspace.find")} placeholder={t("browserWorkspace.find")} className="h-6 w-32 min-w-0 px-2 text-xs" maxLength={BROWSER_WORKSPACE_LIMITS.findLength} value={text} onChange={(event) => { setText(event.target.value); setFindRequest(null); }} onKeyDown={(event) => { if (event.key === "Escape") clearFind(); }} data-testid="browser-find-input" />
+        <Input ref={findInput} aria-label={t("browserWorkspace.find")} placeholder={t("browserWorkspace.find")} className="h-6 w-32 min-w-0 px-2 text-xs" maxLength={BROWSER_WORKSPACE_LIMITS.findLength} value={text} onChange={(event) => { setText(event.target.value); setFindRequest(null); }} onKeyDown={(event) => { if (event.key === "Escape") clearFind(); }} data-testid="browser-find-input" />
         {counted ? <span role="status" className="shrink-0 tabular-nums text-muted-foreground" data-testid="browser-find-count" data-matches={counted.matches}>{counted.matches === 0 ? t("browserWorkspace.findNone") : t("browserWorkspace.findCount", { current: String(counted.activeMatch), total: String(counted.matches) })}</span> : null}
         <Button type="submit" variant="outline" size="sm" className={ROW_BUTTON} disabled={!target || !text.trim()}>{t("browserWorkspace.find")}</Button>
         <Button type="button" variant="outline" size="sm" className={ROW_BUTTON} disabled={!target || !text.trim()} onClick={() => void findText(false, false)}>{t("browserWorkspace.previous")}</Button>

@@ -784,6 +784,8 @@ export const CHANNELS = {
     answerPrompt: "ave:browser-workspace:answer-prompt",
     userNavigation: "ave:browser-workspace:user-navigation",
     changed: "ave:browser-workspace:changed",
+    setPageShortcuts: "ave:browser-workspace:set-page-shortcuts",
+    pageShortcut: "ave:browser-workspace:page-shortcut", // event main→renderer  a browser key was pressed in a tab's page
     findResult: "ave:browser-workspace:find-result", // event main→renderer  a find in a page finished counting
     openTab: "ave:browser-workspace:open-tab", // event main→renderer  a page asked for a link in a new tab
     attachBlocked: "ave:browser-workspace:attach-blocked", // event main→renderer  a page guest was refused before it attached

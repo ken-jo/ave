@@ -33,7 +33,7 @@ async function setup() {
   const holdPageRequests = vi.fn((hold: BrowserPageRequestHold | null) => { requestHold = hold; });
   /** A request reaching the browser profile: how the hold answered it, or "unheld" when nothing holds requests. */
   const pageRequest = (request: BrowserPageRequest) => requestHold === null ? Promise.resolve("unheld" as const) : new Promise<boolean>((resolve) => requestHold?.(request, resolve));
-  const service = new BrowserWorkspaceService({ openExternal, clearSiteData, clearCache, allowDownloads, showItemInFolder, agentSessionOf: (windowId, tabId) => windowId === 1 && tabId === "browser:one" ? agentSession : null, agentDrives: () => agentDriving, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
+  const service = new BrowserWorkspaceService({ openExternal, clearSiteData, clearCache, allowDownloads, showItemInFolder, platform: "darwin", agentSessionOf: (windowId, tabId) => windowId === 1 && tabId === "browser:one" ? agentSession : null, agentDrives: () => agentDriving, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
   return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, clearSiteData, clearCache, allowDownloads, showItemInFolder, runtimeDialog, setAgentDriving: (next: boolean) => { agentDriving = next; }, setAgentSession: (next: string | null) => { agentSession = next; }, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
@@ -704,5 +704,32 @@ describe("browser workspace service", () => {
     setLive(false);
     events.emit("found-in-page", {}, { requestId: 43, matches: 1, activeMatchOrdinal: 1, finalUpdate: true });
     expect(results).toHaveLength(1);
+  });
+  it("takes a browser key pressed in a user's page for the tab, and leaves every other key and every agent-driven page alone", async () => {
+    const { service, guest, events, setAgentDriving, setLive } = await setup();
+    const pressed: unknown[] = [];
+    service.onPageShortcut((windowId, shortcut) => pressed.push([windowId, shortcut]));
+    service.observeGuest(1, guest);
+    const press = (key: string, modifiers: Partial<{ meta: boolean; control: boolean; alt: boolean; shift: boolean }> = { meta: true }, type = "keyDown") => {
+      const event = { preventDefault: vi.fn() };
+      events.emit("before-input-event", event, { type, key, code: `Key${key.toUpperCase()}`, meta: false, control: false, alt: false, shift: false, ...modifiers });
+      return event.preventDefault.mock.calls.length > 0;
+    };
+    // Until the window says which keys are the browser's, the page keeps every key.
+    expect(press("r")).toBe(false);
+    service.setPageShortcuts(1, { focusAddress: "CommandOrControl+L", find: "CommandOrControl+F", reload: "CommandOrControl+R", back: "CommandOrControl+[", forward: null });
+    expect(press("r")).toBe(true);
+    expect(press("l")).toBe(true);
+    expect(pressed).toEqual([[1, { tabId: "browser:one", action: "reload" }], [1, { tabId: "browser:one", action: "focusAddress" }]]);
+    expect(press("r", { meta: true }, "keyUp")).toBe(false);
+    expect(press("r", {})).toBe(false);
+    expect(press("r", { meta: true, shift: true })).toBe(false);
+    expect(press("x")).toBe(false);
+    setAgentDriving(true);
+    expect(press("r")).toBe(false);
+    setAgentDriving(false); setLive(false);
+    expect(press("r")).toBe(false);
+    expect(pressed).toHaveLength(2);
+    expect(() => service.setPageShortcuts(1, { focusAddress: "cmd+l", find: null, reload: null, back: null, forward: null })).toThrow("bad-request");
   });
 });

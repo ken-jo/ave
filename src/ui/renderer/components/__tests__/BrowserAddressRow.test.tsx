@@ -7,7 +7,7 @@ import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import type { AveApi } from "../../types.js";
 import { setWebSurfaceElement } from "../../preview/web-surfaces.js";
 import { __setBrowserPageStatusForTest } from "../../preview/browser-page-status.js";
-import type { BrowserWorkspaceState } from "../../../../shared/browser-workspace.js";
+import type { BrowserPageShortcut, BrowserWorkspaceState } from "../../../../shared/browser-workspace.js";
 import { BrowserAddressRow, SIDE_PANEL_ADDRESS_ROW_TEST_IDS, WEB_PANEL_ADDRESS_ROW_TEST_IDS, type BrowserAddressRowTestIds } from "../BrowserAddressRow.js";
 
 const TAB = "browser:row";
@@ -22,13 +22,14 @@ function guest(initialUrl: string) {
   return { element, move(next: string) { url = next; element.dispatchEvent(new Event("did-navigate")); } };
 }
 
+let pageShortcut: (shortcut: BrowserPageShortcut) => void = () => undefined;
 function mount(testIds: BrowserAddressRowTestIds, options: { fallbackUrl?: string | null; stopOk?: boolean } = {}) {
   const onNavigate = vi.fn();
   const api = {
     getSettings: vi.fn(async () => ({ webView: { addressSearchEngine: "duckduckgo" } })),
     openExternalUrl: vi.fn(async () => ({ ok: true })),
     browserTabs: { stop: vi.fn(async () => ({ ok: options.stopOk ?? true })) },
-    browserWorkspace: { stopLoad: vi.fn(async () => ({ ok: true, value: null })), load: vi.fn(async () => ({ ok: true, value: null })), answerPrompt: vi.fn(async () => ({ ok: true, value: null })), userNavigation: vi.fn(async () => ({ ok: true, value: null })), zoom: vi.fn(async () => ({ ok: true, value: null })) },
+    browserWorkspace: { stopLoad: vi.fn(async () => ({ ok: true, value: null })), load: vi.fn(async () => ({ ok: true, value: null })), answerPrompt: vi.fn(async () => ({ ok: true, value: null })), userNavigation: vi.fn(async () => ({ ok: true, value: null })), zoom: vi.fn(async () => ({ ok: true, value: null })), setPageShortcuts: vi.fn(async () => ({ ok: true, value: null })), onPageShortcut: vi.fn((handler: (shortcut: BrowserPageShortcut) => void) => { pageShortcut = handler; return () => undefined; }) },
   } as unknown as AveApi;
   render(<TooltipProvider><BrowserAddressRow api={api} tabId={TAB} chrome="card" testIds={testIds}
     fallbackUrl={options.fallbackUrl === undefined ? "https://a.example/start" : options.fallbackUrl} onNavigate={onNavigate} /></TooltipProvider>);
@@ -316,5 +317,16 @@ describe("address suggestions in the row", () => {
     fireEvent.keyDown(address(), { key: "Escape" });
     expect(screen.queryByTestId("browser-address-suggestions")).toBeNull();
     expect(address().value).toBe("https://a.example/start");
+  });
+});
+
+describe("browser keys pressed in the page", () => {
+  it("tells the host the resolved keys, focuses the address for this tab's key and ignores another tab's", () => {
+    const { api, address } = mount(SIDE_PANEL_ADDRESS_ROW_TEST_IDS);
+    expect(api.browserWorkspace?.setPageShortcuts).toHaveBeenCalledWith({ focusAddress: "CommandOrControl+L", find: "CommandOrControl+F", reload: "CommandOrControl+R", back: expect.any(String), forward: expect.any(String) });
+    act(() => pageShortcut({ tabId: "another-tab", action: "focusAddress" }));
+    expect(document.activeElement).not.toBe(address());
+    act(() => pageShortcut({ tabId: TAB, action: "focusAddress" }));
+    expect(document.activeElement).toBe(address());
   });
 });

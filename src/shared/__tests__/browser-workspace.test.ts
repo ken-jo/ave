@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserOpenTab, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState, parseBrowserAgentSiteGrant, parseBrowserFindResult } from "../browser-workspace.js";
+import { BROWSER_WORKSPACE_LIMITS, browserDialogText, parseBrowserOpenTab, parseBrowserWorkspaceCapture, parseBrowserWorkspacePreview, parseBrowserWorkspaceRequest, parseBrowserWorkspaceState, parseBrowserAgentSiteGrant, parseBrowserFindResult, parseBrowserPageShortcut } from "../browser-workspace.js";
 
 const TARGET = { tabId: "browser:one", documentGeneration: 4 };
 const STATE = { revision: 1, bookmarks: [], history: [], sitePermissions: [], downloads: [], tabs: [], pages: [], storageStatus: "ready", capabilities: { fullscreen: false } };
@@ -184,5 +184,12 @@ describe("browser workspace wire validation", () => {
     expect(parseBrowserFindResult(result)).toEqual(result);
     expect(parseBrowserFindResult({ ...result, matches: 0, activeMatch: 0 })).not.toBeNull();
     for (const bad of [{ ...result, activeMatch: 4 }, { ...result, matches: -1 }, { ...result, matches: 1.5 }, { ...result, tabId: "" }, { ...result, text: "x" }, null]) expect(parseBrowserFindResult(bad)).toBeNull();
+  });
+  it("accepts browser keys only in the registry's canonical spelling, and a page shortcut only for a known action", () => {
+    const keys = { focusAddress: "CommandOrControl+L", find: "CommandOrControl+F", reload: null, back: "Alt+Left", forward: null };
+    expect(parseBrowserWorkspaceRequest("setPageShortcuts", keys)).toEqual(keys);
+    for (const bad of [{ ...keys, find: "cmd+f" }, { ...keys, reload: 5 }, { focusAddress: null }, { ...keys, extra: null }]) expect(parseBrowserWorkspaceRequest("setPageShortcuts", bad)).toBeNull();
+    expect(parseBrowserPageShortcut({ tabId: "browser:one", action: "find" })).toEqual({ tabId: "browser:one", action: "find" });
+    for (const bad of [{ tabId: "browser:one", action: "close" }, { tabId: "", action: "find" }, { tabId: "browser:one" }]) expect(parseBrowserPageShortcut(bad)).toBeNull();
   });
 });

@@ -12,6 +12,9 @@ import { BrowserPagePrompts } from "./BrowserPagePrompts.js";
 import { BrowserSiteInfo } from "./BrowserSiteInfo.js";
 import { resolveAddressSubmission } from "../preview/url-safety.js";
 import { browserAddressSuggestions } from "../preview/browser-address-suggestions.js";
+import { resolveBrowserPageShortcuts } from "../preview/browser-page-shortcuts.js";
+import { rendererShortcutPlatform, useShortcutSettings } from "../hooks/use-shortcuts.js";
+import type { BrowserPageShortcutAction } from "../../../shared/browser-workspace.js";
 import { validateExternalUrl } from "../../../shared/external-url.js";
 
 /** The zoom levels the row offers; a level set elsewhere is listed as its own option. */
@@ -96,6 +99,19 @@ export function BrowserAddressRow({ api, tabId, fallbackUrl, onNavigate, chrome,
     discardDraft();
     navigateBrowserPageAsUser(api, tabId, () => navigateBrowserSurface(surface, action));
   };
+  // The window tells the host which keys act on a page, and acts on this tab when one is pressed in its page. Find is
+  // answered by the tools row, which owns the find field.
+  const shortcutSettings = useShortcutSettings();
+  const workspaceApi = api.browserWorkspace;
+  useEffect(() => {
+    void workspaceApi?.setPageShortcuts(resolveBrowserPageShortcuts(shortcutSettings, rendererShortcutPlatform()));
+  }, [workspaceApi, shortcutSettings]);
+  const pageKey = useRef<(action: BrowserPageShortcutAction) => void>(() => undefined);
+  pageKey.current = (action) => {
+    if (action === "focusAddress") { inputRef.current?.focus(); inputRef.current?.select(); }
+    else if (action !== "find") act(action);
+  };
+  useEffect(() => workspaceApi?.onPageShortcut((shortcut) => { if (shortcut.tabId === tabId) pageKey.current(shortcut.action); }), [workspaceApi, tabId]);
   const open = (url: string) => {
     draftEditedForTab.current = null;
     setDraft(url);

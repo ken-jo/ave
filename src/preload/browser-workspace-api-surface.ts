@@ -5,6 +5,7 @@ import {
   parseBrowserAgentSiteGrant,
   parseBrowserAttachBlocked,
   parseBrowserFindResult,
+  parseBrowserPageShortcut,
   type BrowserAgentSiteGrant,
   parseBrowserOpenTab,
   parseBrowserWorkspacePreview,
@@ -77,6 +78,16 @@ export function buildBrowserWorkspaceApiSurface(): BrowserWorkspaceApi {
       };
       ipcRenderer.on(CHANNELS.browserWorkspace.changed, listener);
       return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.changed, listener);
+    },
+    setPageShortcuts: async (request) => result(await ipcRenderer.invoke(CHANNELS.browserWorkspace.setPageShortcuts, request), (value): value is null => value === null),
+    onPageShortcut: (handler) => {
+      const listener = (_event: unknown, payload: unknown) => {
+        const parsed = parseBrowserPageShortcut(payload);
+        if (!parsed) throw new Error("invalid-browser-page-shortcut");
+        handler(parsed);
+      };
+      ipcRenderer.on(CHANNELS.browserWorkspace.pageShortcut, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.browserWorkspace.pageShortcut, listener);
     },
     onFindResult: (handler) => {
       const listener = (_event: unknown, payload: unknown) => {

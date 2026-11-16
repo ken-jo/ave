@@ -16,7 +16,7 @@ function mount() {
   let emit!: (state: BrowserTabControlState) => void;
   const pause = vi.fn(async (): Promise<{ ok: true } | { ok: false; error: string }> => ({ ok: true }));
   const resume = vi.fn(async () => ({ ok: true }));
-  const api = { browserWorkspace: {}, browserTabs: { pause, resume,
+  const api = { browserWorkspace: { onPageShortcut: vi.fn((handler: (shortcut: { tabId: string; action: string }) => void) => { pageShortcut = handler; return () => undefined; }), onFindResult: () => () => undefined, onChanged: () => () => undefined, getState: async () => ({ ok: false, error: "operation-failed" }) }, browserTabs: { pause, resume,
     getState: vi.fn(async () => ({ revision: 0, tabs: [] })),
     onTabOp: vi.fn(() => () => {}),
     onControl: (handler: typeof emit) => { emit = handler; return () => {}; },
@@ -27,6 +27,7 @@ function mount() {
   return { ...view, emit, pause, resume };
 }
 
+let pageShortcut: (shortcut: { tabId: string; action: string }) => void = () => undefined;
 describe("persistent browser control toolbar", () => {
   it("keeps Stop and Resume inside the same toolbar through human, active and paused state", async () => {
     const { emit, pause, resume, container } = mount();
@@ -64,5 +65,15 @@ describe("persistent browser control toolbar", () => {
     expect(error.title).toBe(error.textContent);
     expect(error.textContent).toBe("브라우저 제어 상태를 변경하지 못했습니다.");
     expect(toolbar.parentElement!.children).toHaveLength(1);
+  });
+  it("opens the tools and puts the caret in the find field when the find key is pressed in this tab's page", async () => {
+    mount();
+    expect(screen.queryByTestId("browser-find-input")).toBeNull();
+    await act(async () => { pageShortcut({ tabId: "another-tab", action: "find" }); });
+    expect(screen.queryByTestId("browser-find-input")).toBeNull();
+    await act(async () => { pageShortcut({ tabId: TAB, action: "reload" }); });
+    expect(screen.queryByTestId("browser-find-input")).toBeNull();
+    await act(async () => { pageShortcut({ tabId: TAB, action: "find" }); });
+    expect(document.activeElement).toBe(screen.getByTestId("browser-find-input"));
   });
 });

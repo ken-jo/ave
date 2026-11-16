@@ -1,3 +1,4 @@
+import { canonicalAccelerator } from "./shortcuts.js";
 import { validateExternalUrl } from "./external-url.js";
 import { isRecord } from "./is-record.js";
 import { BROWSER_CAPTURE_LIMITS, parseBrowserCaptureClip, type BrowserCaptureClip, type BrowserScreenshot } from "./browser-capture.js";
@@ -166,12 +167,27 @@ export interface BrowserWorkspaceApi {
   /** Main refused a page guest before it attached; `src` is the address the refused element carried. */
   onAttachBlocked(handler: (blocked: BrowserAttachBlocked) => void): () => void;
   onOpenTab(handler: (request: BrowserOpenTab) => void): () => void;
+  /** Tell the host which keys act on a page while that page has the keyboard. */
+  setPageShortcuts(request: BrowserPageShortcuts): Promise<BrowserWorkspaceResult<null>>;
+  /** One of those keys was pressed in a tab's page. */
+  onPageShortcut(handler: (shortcut: BrowserPageShortcut) => void): () => void;
   /** The final count of each find, named by the request id `find` returned. */
   onFindResult(handler: (result: BrowserFindResult) => void): () => void;
 }
 export interface BrowserAttachBlocked { readonly src: string }
 /** A page asked for a link in a new tab: the tab opens beside the tab that asked. `active` is false for a background tab. */
 export interface BrowserOpenTab { readonly openerTabId: string; readonly url: string; readonly active: boolean }
+/** What a key pressed while a tab's page has the keyboard asks of that tab. */
+export const BROWSER_PAGE_SHORTCUT_ACTIONS = ["focusAddress", "find", "reload", "back", "forward"] as const;
+export type BrowserPageShortcutAction = typeof BROWSER_PAGE_SHORTCUT_ACTIONS[number];
+/** The key each action answers to right now, as the window resolved it from the user's bindings; null when it has none. */
+export type BrowserPageShortcuts = Readonly<Record<BrowserPageShortcutAction, string | null>>;
+export interface BrowserPageShortcut { readonly tabId: string; readonly action: BrowserPageShortcutAction }
+export function parseBrowserPageShortcut(value: unknown): BrowserPageShortcut | null {
+  if (!isRecord(value) || !keys(value, ["tabId", "action"]) || typeof value.tabId !== "string" || value.tabId.length === 0 || value.tabId.length > 512) return null;
+  const action = BROWSER_PAGE_SHORTCUT_ACTIONS.find((candidate) => candidate === value.action);
+  return action ? { tabId: value.tabId, action } : null;
+}
 /** How a find in a tab's page ended: how many matches the page has and which one is selected (0 when there are none). */
 export interface BrowserFindResult { readonly tabId: string; readonly requestId: number; readonly matches: number; readonly activeMatch: number }
 export function parseBrowserFindResult(value: unknown): BrowserFindResult | null {
@@ -193,7 +209,7 @@ export function parseBrowserAttachBlocked(value: unknown): BrowserAttachBlocked 
 export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
-  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest; showDownload: BrowserDownloadTarget; cancelDownload: BrowserDownloadTarget; clearData: BrowserClearDataRequest; deleteHistory: BrowserHistoryTarget; agentSiteGrant: BrowserClearSiteDataRequest; revokeAgentSiteGrant: BrowserClearSiteDataRequest; clearSiteData: BrowserClearSiteDataRequest;
+  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest; showDownload: BrowserDownloadTarget; cancelDownload: BrowserDownloadTarget; clearData: BrowserClearDataRequest; deleteHistory: BrowserHistoryTarget; setPageShortcuts: BrowserPageShortcuts; agentSiteGrant: BrowserClearSiteDataRequest; revokeAgentSiteGrant: BrowserClearSiteDataRequest; clearSiteData: BrowserClearSiteDataRequest;
   answerPrompt: BrowserPromptAnswerRequest; userNavigation: BrowserWorkspaceTarget;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
@@ -266,6 +282,12 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
   if (!isRecord(record)) return null;
   if (operation === "showDownload" || operation === "cancelDownload") {
     return isRecord(value) && keys(value, ["id"]) && typeof value.id === "string" && value.id.length > 0 && value.id.length <= 200 ? { id: value.id } as BrowserWorkspaceRequests[K] : null;
+  }
+  if (operation === "setPageShortcuts") {
+    if (!isRecord(value) || !keys(value, [...BROWSER_PAGE_SHORTCUT_ACTIONS])) return null;
+    // Each key is the registry's own canonical spelling, so the host matches exactly what the window shows.
+    for (const action of BROWSER_PAGE_SHORTCUT_ACTIONS) if (value[action] !== null && (typeof value[action] !== "string" || canonicalAccelerator(value[action]) !== value[action])) return null;
+    return { ...value } as BrowserWorkspaceRequests[K];
   }
   if (operation === "deleteHistory") {
     if (!isRecord(value) || !keys(value, ["url", "by"]) || browserWorkspaceUrl(value.url) !== value.url || !BROWSER_VISITORS.includes(value.by as BrowserVisitor)) return null;

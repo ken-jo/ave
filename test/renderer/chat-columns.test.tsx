@@ -58,7 +58,7 @@ describe("chat columns", () => {
     const workspaceListeners = new Set<(state: BrowserWorkspaceState) => void>();
     browserTabs.getState.mockResolvedValue({ revision: 1, tabs: tabs.map((tab) => ({ ...tab, rendererTabId: tab.tabId,
       owner: { sessionId: MOCK_DEFAULT_SESSION_ID }, lease: null, generation: 1, kind: "embedded", openerTabId: null, mode: "human-paused" })) });
-    Object.assign(view.api, { browserWorkspace: {
+    Object.assign(view.api, { browserWorkspace: { setPageShortcuts: async () => ({ ok: true, value: null }), onPageShortcut: () => () => undefined,
       getState: vi.fn(async () => ({ ok: true, value: workspaceState })),
       onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { workspaceListeners.add(handler); return () => { workspaceListeners.delete(handler); }; }), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })),
       onAttachBlocked: vi.fn(() => () => {}),

@@ -1,3 +1,4 @@
+import { shortcutPlatformOf } from "../../shared/shortcuts.js";
 import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
 import { clipboard, dialog, Menu, session, shell, type BrowserWindow, type MenuItemConstructorOptions, type WebContents } from "electron";
 import type { ObservedDownload } from "./browser-download-staging.js";
@@ -61,6 +62,7 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
       downloadAllowance(origin);
     },
     showItemInFolder: (path) => shell.showItemInFolder(path),
+    platform: shortcutPlatformOf(process.platform),
     agentSessionOf: (windowId, tabId) => browserTabRegistry.liveRendererTab(windowId, tabId)?.owner?.sessionId ?? null,
     agentDrives: (guestId) => browserTabRegistry.isAgentActiveGuest(guestId),
     openExternal: (url) => shell.openExternal(url),

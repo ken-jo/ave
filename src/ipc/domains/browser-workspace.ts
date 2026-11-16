@@ -15,6 +15,9 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   service.onChanged((windowId, state) => {
     sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.changed, state, log);
   });
+  service.onPageShortcut((windowId, shortcut) => {
+    sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.pageShortcut, shortcut, log);
+  });
   service.onFindResult((windowId, result) => {
     sendToWindow(getMainWindows().find((window) => window.id === windowId), CHANNELS.browserWorkspace.findResult, result, log);
   });
@@ -51,6 +54,7 @@ export function registerBrowserWorkspaceHandlers(deps: IpcDeps, service: Browser
   register("load", (windowId, request) => service.load(windowId, request));
   register("userNavigation", (windowId, request) => service.userNavigation(windowId, request));
   register("answerPrompt", (windowId, request) => service.answerPrompt(windowId, request));
+  register("setPageShortcuts", (windowId, request) => service.setPageShortcuts(windowId, request));
   register("deleteHistory", (windowId, request) => service.deleteHistory(windowId, request));
   // The agent's site access lives in the permission manager's session memory. These two only read it and take it back for
   // the site a tab shows; granting stays with the approval card.

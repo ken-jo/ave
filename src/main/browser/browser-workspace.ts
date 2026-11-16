@@ -1,3 +1,4 @@
+import { matchesAccelerator, type ShortcutPlatform } from "../../shared/shortcuts.js";
 import { setBrowserGuestZoomFactor } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 import type { WebContents } from "electron";
@@ -8,7 +9,7 @@ import { BrowserPagePrompts } from "./browser-page-prompts.js";
 
 /** The runtime's request to show a page dialog: (details, respond). */
 const RUN_DIALOG = "-run-dialog";
-import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserClearDataRequest, type BrowserClearSiteDataRequest, type BrowserDownloadBlockReason, type BrowserFindResult, type BrowserHistoryTarget, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserClearDataRequest, type BrowserClearSiteDataRequest, BROWSER_PAGE_SHORTCUT_ACTIONS, type BrowserDownloadBlockReason, type BrowserFindResult, type BrowserPageShortcut, type BrowserPageShortcutAction, type BrowserPageShortcuts, type BrowserHistoryTarget, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -35,6 +36,8 @@ export interface BrowserWorkspaceServiceDeps {
   /** Lifts the site's download limit after the user asked for that in the tab. */
   allowDownloads(origin: string): void;
   showItemInFolder(path: string): void;
+  /** The platform whose key names the registry's accelerators are read with. */
+  platform: ShortcutPlatform;
   /** The conversation whose agent owns the tab, or null when no agent does. */
   agentSessionOf(windowId: number, tabId: string): string | null;
   /** Whether the agent is driving this page right now: its dialogs are dismissed and reported, never shown. */
@@ -69,6 +72,8 @@ export class BrowserWorkspaceService {
   private readonly listeners = new Set<(windowId: number, state: BrowserWorkspaceState) => void>();
   private readonly activeDownloads = new Map<string, ObservedDownload>();
   private readonly downloadPaths = new Map<string, string>();
+  private readonly pageShortcutListeners = new Set<(windowId: number, shortcut: BrowserPageShortcut) => void>();
+  private readonly pageShortcuts = new Map<number, BrowserPageShortcuts>();
   private readonly findResultListeners = new Set<(windowId: number, result: BrowserFindResult) => void>();
   private readonly openTabListeners = new Set<(windowId: number, request: BrowserOpenTab) => void>();
   private readonly windows = new Set<number>();
@@ -95,6 +100,21 @@ export class BrowserWorkspaceService {
       const entry = this.guests.get(guestId);
       return entry && !entry.guest.isDestroyed() ? { guestId, windowId: entry.windowId, documentGeneration: entry.generation, url: entry.guest.getURL() } : null;
     } });
+  }
+  onPageShortcut(handler: (windowId: number, shortcut: BrowserPageShortcut) => void): () => void { this.pageShortcutListeners.add(handler); return () => this.pageShortcutListeners.delete(handler); }
+  /** The keys a window's pages answer to. Until the window says, its pages take no key from the app. */
+  setPageShortcuts(windowId: number, request: BrowserPageShortcuts): null {
+    const parsed = parseBrowserWorkspaceRequest("setPageShortcuts", request);
+    if (!parsed) throw new Error("bad-request");
+    this.pageShortcuts.set(windowId, parsed);
+    return null;
+  }
+  /** The action a key pressed in a tab's page asks for, or null when the key is the page's own. */
+  private pageShortcutFor(windowId: number, input: { type: string; key: string; code: string; meta: boolean; control: boolean; alt: boolean; shift: boolean }): BrowserPageShortcutAction | null {
+    const shortcuts = this.pageShortcuts.get(windowId);
+    if (!shortcuts || input.type !== "keyDown") return null;
+    const event = { key: input.key, code: input.code, metaKey: input.meta, ctrlKey: input.control, altKey: input.alt, shiftKey: input.shift };
+    return BROWSER_PAGE_SHORTCUT_ACTIONS.find((action) => matchesAccelerator(shortcuts[action], event, this.deps.platform)) ?? null;
   }
   onFindResult(handler: (windowId: number, result: BrowserFindResult) => void): () => void { this.findResultListeners.add(handler); return () => this.findResultListeners.delete(handler); }
   onOpenTab(handler: (windowId: number, request: BrowserOpenTab) => void): () => void { this.openTabListeners.add(handler); return () => this.openTabListeners.delete(handler); }
@@ -443,8 +463,19 @@ export class BrowserWorkspaceService {
       if (!result.finalUpdate || tabId === null) return;
       for (const listener of this.findResultListeners) listener(windowId, { tabId, requestId: result.requestId, matches: result.matches, activeMatch: result.activeMatchOrdinal });
     };
+    // A browser key pressed in a page the user is using goes to the tab, not to the page and not to the app's own
+    // meaning of that key.
+    const pageKey = (event: { preventDefault(): void }, input: Parameters<BrowserWorkspaceService["pageShortcutFor"]>[1]) => {
+      const tabId = this.tabIdForGuest(windowId, guestId);
+      if (tabId === null || this.deps.agentDrives(guestId)) return;
+      const action = this.pageShortcutFor(windowId, input);
+      if (action === null) return;
+      event.preventDefault();
+      for (const listener of this.pageShortcutListeners) listener(windowId, { tabId, action });
+    };
+    guest.on("before-input-event", pageKey);
     guest.on("found-in-page", found);
-    const dispose = () => { guest.removeListener("found-in-page", found); guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener(RUN_DIALOG as never, pageDialog as never); guest.removeListener("-cancel-dialogs" as never, cancelDialogs as never); for (const listener of runtimeDialogs) guest.on(RUN_DIALOG as never, listener as never); dismissedPageDialogs.forget(guestId); guest.removeListener("login", signIn); guest.removeListener("will-navigate", pageNavigation); guest.removeListener("did-navigate", committed); guest.removeListener("will-prevent-unload", preventUnload); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.releaseLeave(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
+    const dispose = () => { guest.removeListener("before-input-event", pageKey); guest.removeListener("found-in-page", found); guest.removeListener("did-start-navigation", started); guest.removeListener("did-fail-load", failed); guest.removeListener("render-process-gone", gone); guest.removeListener(RUN_DIALOG as never, pageDialog as never); guest.removeListener("-cancel-dialogs" as never, cancelDialogs as never); for (const listener of runtimeDialogs) guest.on(RUN_DIALOG as never, listener as never); dismissedPageDialogs.forget(guestId); guest.removeListener("login", signIn); guest.removeListener("will-navigate", pageNavigation); guest.removeListener("did-navigate", committed); guest.removeListener("will-prevent-unload", preventUnload); guest.removeListener("did-start-loading", loadStarted); guest.removeListener("did-stop-loading", loadStopped); guest.removeListener("did-navigate", visit); guest.removeListener("did-navigate-in-page", navigatedInPage); guest.removeListener("page-title-updated", titleChanged); unsubscribe(); this.guests.delete(guestId); this.releaseLeave(guestId); this.prompts.dismissGuest(guestId); this.permissions.invalidateGuest(guestId); this.previews.invalidateGuest(guestId); this.captures.invalidateGuest(guestId); this.notify(); };
     const titleChanged = () => { if (!guest.isDestroyed()) void this.store.updateHistoryTitle(guest.getURL(), guest.getTitle(), this.deps.agentDrives(guestId) ? "agent" : "user").then(() => this.changed()).catch(this.deps.onError); };
     this.guests.set(guestId, { guest, windowId, generation: 1, loading: guest.isLoadingMainFrame(), loadError: null, userNavigation: "none", unloadHeld: false, dialogs: 0, dialogsBlocked: false, dispose });
     guest.on("login", signIn); guest.on("will-navigate", pageNavigation); guest.on("did-navigate", committed); guest.on("will-prevent-unload", preventUnload);
@@ -516,6 +547,6 @@ export class BrowserWorkspaceService {
     this.downloadDisposers.delete(windowId);
     for (const entry of this.guests.values()) if (entry.windowId === windowId) entry.dispose();
   }
-  dispose(): void { for (const windowId of [...this.windows]) this.disposeWindow(windowId); for (const entry of this.guests.values()) entry.dispose(); this.listeners.clear(); this.openTabListeners.clear(); this.findResultListeners.clear(); }
+  dispose(): void { for (const windowId of [...this.windows]) this.disposeWindow(windowId); for (const entry of this.guests.values()) entry.dispose(); this.listeners.clear(); this.openTabListeners.clear(); this.findResultListeners.clear(); this.pageShortcutListeners.clear(); this.pageShortcuts.clear(); }
 }
 export function createBrowserWorkspaceService(deps: BrowserWorkspaceServiceDeps): BrowserWorkspaceService { return new BrowserWorkspaceService(deps); }
