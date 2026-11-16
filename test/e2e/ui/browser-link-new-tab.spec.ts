@@ -43,6 +43,9 @@ test("a new-tab link becomes a panel tab with the address row, and only a sized 
   // The new tab is the selected one and shows the same row as any tab, pointed at the link.
   await expect(page.getByTestId("chat-side-panel-browser-address")).toHaveValue(`${site.base}/other`);
   await expect(page.getByTestId("browser-back")).toBeVisible();
+  // Each tab is named by its page, so two browser tabs can be told apart.
+  await expect(tabs.nth(0)).toHaveText("Opener");
+  await expect(tabs.nth(1)).toHaveText("Other");
 
   // A page that asks for a window of its own, with a size, still gets one.
   await tabs.first().click();

@@ -3,7 +3,8 @@ import { BrowserAddressRow, SIDE_PANEL_ADDRESS_ROW_TEST_IDS } from "./BrowserAdd
 import { TerminalFileReviewBadge } from "./TerminalFileReviewBadge.js";
 import { forgetTerminalFileReview } from "../preview/terminal-file-review.js";
 import { disposeLiveTerminal } from "../preview/live-terminal-registry.js";
-import { subscribeWebSurfaceLocations, webSurfaceLocation, webSurfaceTitle } from "../preview/web-surfaces.js";
+import { subscribeWebSurfaceLocations, subscribeWebSurfaces, webSurfaceLocation, webSurfaceTitle } from "../preview/web-surfaces.js";
+import { browserTabFavicon, browserTabLabel } from "../preview/browser-tab-label.js";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { cn } from "../../../lib/utils.js";
 import { useBrowserControlState } from "../preview/agent-browser-bridge.js";
@@ -487,7 +488,9 @@ function tabLabel(
 ): string {
   if (!tab.content) {
     const base = t(tabLabelKey(tab.kind));
-    return showOrdinal ? `${base} ${tab.ordinal}` : base;
+    const numbered = showOrdinal ? `${base} ${tab.ordinal}` : base;
+    // A browser tab is named by the page it shows; "Browser" is only the name of a tab with no page yet.
+    return tab.kind === "browser" ? browserTabLabel(tab.id, numbered) : numbered;
   }
   if (tab.content.source === "browser") {
     const title = webSurfaceTitle(tab.id)?.trim();
@@ -1005,6 +1008,8 @@ export function ChatSidePanel({
   } = workspaceTabs;
   const [, setBrowserMetadataRevision] = useState(0);
   useEffect(() => subscribeWebSurfaceLocations(() => setBrowserMetadataRevision((revision) => revision + 1)), []);
+  // Titles and icons arrive through the surface registry's own notifications.
+  useEffect(() => subscribeWebSurfaces(() => setBrowserMetadataRevision((revision) => revision + 1)), []);
   const browserControl = useBrowserControlState();
   const visibleOwners = browserTabOwners(sessionId, browserControl.tabs.map((tab) => tab.owner));
   const tabs = allTabs.filter((tab) => tabVisibleTo(tab, sessionId, visibleOwners));
@@ -1203,6 +1208,8 @@ export function ChatSidePanel({
                         workingTestId="chat-side-panel-tab-side-chat-working"
                         badgeTestId="chat-side-panel-tab-side-chat-pending-answer"
                       />
+                    ) : tab.kind === "browser" && browserTabFavicon(tab.id) !== null ? (
+                      <img src={browserTabFavicon(tab.id) ?? undefined} alt="" className="h-3.5 w-3.5 shrink-0 rounded-sm" data-testid="chat-side-panel-tab-favicon" />
                     ) : (
                       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     )}
