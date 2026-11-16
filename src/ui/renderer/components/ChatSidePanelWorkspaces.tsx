@@ -21,7 +21,7 @@ import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
 import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation } from "../hooks/use-browser-navigation.js";
 import type { AveApi } from "../types.js";
 import { type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
-import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
+import { normalizeBrowserNavigationUrl, resolveAddressSubmission } from "../preview/url-safety.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { useFileTreeWidth } from "../hooks/use-file-tree-width.js";
 import { useEdgeResize, useMeasuredSize } from "../hooks/use-edge-resize.js";
@@ -1058,16 +1058,17 @@ export function BrowserWorkspace({
   const displayedTarget = manualTarget ?? latestTarget;
   const shownUrl = navigation.url ?? (displayedTarget?.kind === "url" ? displayedTarget.url : null);
 
-  const submitAddress = () => {
-    const normalized = normalizeBrowserNavigationUrl(addressDraft);
-    if (!normalized) {
+  const submitAddress = async () => {
+    const submitted = addressDraft;
+    const target = await resolveAddressSubmission(api, submitted);
+    if (!target) {
       setAddressError(t("chatPreviewRail.browserInvalidUrl"));
       return;
     }
     draftEditedForTab.current = null;
-    setAddressDraft(normalized);
+    setAddressDraft(target.url);
     setAddressError(null);
-    void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, normalized));
+    void navigateBrowserTabAsUser(api, tabId, () => onManualUrlChange(tabId, target.url));
   };
 
   return (
@@ -1093,7 +1094,7 @@ export function BrowserWorkspace({
         }}
         onSubmit={(event) => {
           event.preventDefault();
-          submitAddress();
+          void submitAddress();
         }}
       >
         <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0"

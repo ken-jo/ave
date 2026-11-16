@@ -8,6 +8,7 @@ import { SettingsEditorProvider, _unregisteredSettingsControlsForTest, useSettin
 import { ThemeProvider } from "../../theme/ThemeProvider.js";
 import { AppearanceTab } from "../AppearanceTab.js";
 import { ChatTab } from "../ChatTab.js";
+import { WebTab } from "../WebTab.js";
 
 function ChatControls() {
   const editor = useSettingsEditor();
@@ -26,12 +27,14 @@ function ChatControls() {
   />;
 }
 
-function setup(settings: typeof DEFAULT_SETTINGS, content: "appearance" | "chat", modifiedOnly = false) {
+function setup(settings: typeof DEFAULT_SETTINGS, content: "appearance" | "chat" | "web", modifiedOnly = false) {
   const { api } = makeMockAveApi({ settings });
   window.aveApi = api as never;
   const view = render(<ThemeProvider api={api as never} initialAppearance={settings.appearance}>
     <SettingsEditorProvider api={api as never} modifiedOnly={modifiedOnly}>
-      {content === "appearance" ? <AppearanceTab /> : <ChatControls />}
+      {content === "appearance" ? <AppearanceTab /> : content === "chat" ? <ChatControls /> : <WebTab api={api as never}
+        webProvider="duckduckgo" setWebProvider={vi.fn()} hasWebKey={false} setHasWebKey={vi.fn()}
+        webKeyInput="" setWebKeyInput={vi.fn()} onSaved={vi.fn()} onSaveKey={async () => true} saving={false} />}
     </SettingsEditorProvider>
   </ThemeProvider>);
   return { ...view, api };
@@ -43,6 +46,21 @@ afterEach(() => {
 });
 
 describe("rendered settings control registration", () => {
+  it("registers the address search choice and redraws it after its canonical reset", async () => {
+    const settings = structuredClone(DEFAULT_SETTINGS);
+    settings.webView.addressSearchEngine = "bing";
+    const view = setup(settings, "web", true);
+    const row = '[data-setting-id="webView.addressSearchEngine"]:not([data-setting-registered])';
+    await waitFor(() => expect(view.container.querySelector(row)).toBeTruthy());
+    await waitFor(() => expect(_unregisteredSettingsControlsForTest(view.container)).toEqual([]));
+    const reset = await waitFor(() => requiredFixture(view.container.querySelector<HTMLButtonElement>('[data-settings-actions="web-address-search"] [data-setting-id="webView.addressSearchEngine"] button')));
+    expect(view.container.querySelector<HTMLInputElement>(`${row} input[value="bing"]`)).toBeChecked();
+    fireEvent.click(reset);
+    await waitFor(() => expect(view.api.updateSettings).toHaveBeenCalledWith({ webView: { addressSearchEngine: DEFAULT_SETTINGS.webView.addressSearchEngine } }));
+    await waitFor(() => expect(view.container.querySelector<HTMLInputElement>(`${row} input[value="${DEFAULT_SETTINGS.webView.addressSearchEngine}"]`)).toBeChecked());
+    expect(view.container.querySelector('[data-settings-actions="web-address-search"] [data-setting-id="webView.addressSearchEngine"]')).toBeNull();
+  });
+
   it("registers every appearance input including both font editors, material tint and zoom", async () => {
     document.documentElement.setAttribute("data-glass-capable", "true");
     document.documentElement.setAttribute("data-glass", "true");

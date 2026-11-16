@@ -1,12 +1,13 @@
 /** Keep testid and data-value stable for the browser toggle contract. */
 import "../../../../../test/renderer/setup.js";
 import { assert, describe, it, expect, vi } from "vitest";
-import { fireEvent, render, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, within } from "@testing-library/react";
 import { t } from "../../../../i18n/runtime.js";
 import { WEB_PROVIDERS } from "../../constants.js";
 import { WebTab } from "../WebTab.js";
 import { ko } from "../../../../i18n/messages/ko.js";
-import type { AveApi } from "../../types.js";
+import type { AppSettings, AveApi } from "../../types.js";
+import { deferred } from "../../../../__tests__/support/deferred.js";
 import { makeMockAveApi, MOCK_DEFAULT_SETTINGS } from "../../../../../test/renderer/mock-ave-api.js";
 
 const WEB_SETTINGS = {
@@ -100,4 +101,61 @@ it("localizes the current browsing flow instead of exposing its persisted enum",
   const header = container.querySelector('[data-settings-section="web-view-flow"] header');
   expect(header?.textContent).toContain(ko["appearanceTab.webViewInApp"]);
   expect(header?.textContent).not.toContain("in-app");
+});
+
+describe("WebTab address bar search section", () => {
+  it("keeps a newer broadcast when the initial address-search read returns later", async () => {
+    const api = installApi({ ...WEB_SETTINGS, webView: { preferredFlow: "in-app", addressSearchEngine: "google" } });
+    const initial = await api.getSettings();
+    const read = deferred<AppSettings>();
+    vi.spyOn(api, "getSettings").mockReturnValue(read.promise);
+    const view = renderWebTab(api);
+    const group = view.getByTestId("web-address-search-engine");
+    const latest: AppSettings = { ...initial, webView: { ...initial.webView, addressSearchEngine: "naver" } };
+    await act(async () => { for (const [handler] of vi.mocked(api.onSettingsUpdated).mock.calls) handler(latest); });
+    expect(group.querySelector('input[value="naver"]')).toBeChecked();
+    await act(async () => { read.resolve(initial); });
+    expect(group.querySelector('input[value="naver"]')).toBeChecked();
+  });
+
+  it("rolls a refused address-search save back to the newest broadcast", async () => {
+    const api = installApi({ ...WEB_SETTINGS, webView: { preferredFlow: "in-app", addressSearchEngine: "google" } });
+    const initial = await api.getSettings();
+    const save = deferred<Awaited<ReturnType<AveApi["updateSettings"]>>>();
+    vi.spyOn(api, "updateSettings").mockReturnValue(save.promise);
+    const view = renderWebTab(api);
+    const group = view.getByTestId("web-address-search-engine");
+    await waitFor(() => expect(group).not.toBeDisabled());
+    fireEvent.click(group.querySelector('input[value="bing"]') as Element);
+    expect(group.querySelector('input[value="bing"]')).toBeChecked();
+    const latest: AppSettings = { ...initial, webView: { ...initial.webView, addressSearchEngine: "naver" } };
+    await act(async () => { for (const [handler] of vi.mocked(api.onSettingsUpdated).mock.calls) handler(latest); });
+    expect(group.querySelector('input[value="naver"]')).toBeChecked();
+    await act(async () => { save.resolve({ ok: false, error: "invalid-args" }); });
+    expect(await view.findByRole("alert")).toBeTruthy();
+    expect(group.querySelector('input[value="naver"]')).toBeChecked();
+  });
+
+  it("shows the stored engine and saves the one the user picks", async () => {
+    const api = installApi({ ...WEB_SETTINGS, webView: { preferredFlow: "in-app", addressSearchEngine: "naver" } });
+    const update = vi.spyOn(api, "updateSettings");
+    const { getByTestId } = renderWebTab(api);
+    const group = getByTestId("web-address-search-engine");
+    const radio = (id: string) => group.querySelector<HTMLInputElement>(`input[value="${id}"]`);
+    await waitFor(() => expect(radio("naver")?.checked).toBe(true));
+    await act(async () => { fireEvent.click(radio("duckduckgo") as Element); });
+    expect(update).toHaveBeenCalledWith({ webView: { addressSearchEngine: "duckduckgo" } });
+    expect(radio("duckduckgo")?.checked).toBe(true);
+  });
+
+  it("restores the stored engine and says so when the save fails", async () => {
+    const api = installApi({ ...WEB_SETTINGS, webView: { preferredFlow: "in-app", addressSearchEngine: "google" } });
+    vi.spyOn(api, "updateSettings").mockRejectedValue(new Error("disk full"));
+    const { getByTestId, findByRole } = renderWebTab(api);
+    const group = getByTestId("web-address-search-engine");
+    await waitFor(() => expect(group).not.toBeDisabled());
+    await act(async () => { fireEvent.click(group.querySelector('input[value="bing"]') as Element); });
+    expect((await findByRole("alert")).textContent).toBeTruthy();
+    expect(group.querySelector<HTMLInputElement>('input[value="google"]')?.checked).toBe(true);
+  });
 });

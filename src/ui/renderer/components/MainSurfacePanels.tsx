@@ -10,7 +10,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/
 import { useTranslation } from "../../../i18n/react.js";
 import type { AveApi } from "../types.js";
 import { BUILTIN_VIEW_ICONS, BUILTIN_LABEL_KEYS } from "../utils/view-location.js";
-import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
+import { normalizeBrowserNavigationUrl, resolveAddressSubmission } from "../preview/url-safety.js";
 import { navigateBrowserSurface, useBrowserSurface, useGuestNavigation, type BrowserSurface, type GuestNavigation } from "../hooks/use-browser-navigation.js";
 import type { MainSurface } from "../preview/main-surfaces.js";
 import { HEADER_BUTTON_CLASS, PaneFrame, usePanePanelSlot } from "./PaneFrame.js";
@@ -71,14 +71,14 @@ function WebPanelBody({
     setError(null);
   }, [shownUrl]);
 
-  const submit = () => {
-    const normalized = normalizeBrowserNavigationUrl(draft);
-    if (!normalized) {
+  const submit = async () => {
+    const target = await resolveAddressSubmission(api, draft);
+    if (!target) {
       setError(t("chatPreviewRail.browserInvalidUrl"));
       return;
     }
     setError(null);
-    navigateAsUser(() => onNavigate(normalized));
+    navigateAsUser(() => onNavigate(target.url));
   };
 
   const navButton = (label: string, icon: ReactNode, onClick: () => void, disabled: boolean, testId: string) => (
@@ -99,7 +99,7 @@ function WebPanelBody({
         className="flex shrink-0 items-center gap-1 border-b border-border/(--opacity-half) px-2 py-1"
         onSubmit={(event) => {
           event.preventDefault();
-          submit();
+          void submit();
         }}
       >
         {navButton(t("mainPanels.back"), <ArrowLeft className="h-3.5 w-3.5" />, () => navigateAsUser(() => navigateBrowserSurface(guest, "back")), !navigation.canGoBack, "web-panel-back")}

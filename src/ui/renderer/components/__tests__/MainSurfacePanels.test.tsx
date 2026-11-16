@@ -369,7 +369,7 @@ describe("SurfacePane", () => {
     expect(screen.queryByTestId("web-surface-slot")).toBeNull();
     const address = screen.getByTestId("web-panel-address");
     fireEvent.change(address, { target: { value: "javascript:alert(1)" } });
-    fireEvent.submit(address.closest("form")!);
+    await act(async () => { fireEvent.submit(address.closest("form")!); });
     expect(onNavigate).not.toHaveBeenCalled();
     expect(screen.getByTestId("web-panel-address-error")).toBeTruthy();
     fireEvent.change(address, { target: { value: "example.com/docs" } });

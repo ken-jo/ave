@@ -49,3 +49,27 @@ test("the main process reports a guest it refused to the document that mounted i
   }, refused);
   expect(received).toBe(refused);
 });
+
+test("a local host without a scheme opens over http, and words go to the configured search engine", async () => {
+  const { app, page } = context;
+  await typeAddress(page, `localhost:${site.port}/`);
+  await expect(page.getByTestId("chat-side-panel-browser-address")).toHaveValue(`http://localhost:${site.port}/`);
+  await expect.poll(() => app.evaluate(({ webContents }) => webContents.getAllWebContents()
+    .filter((contents) => contents.getType() === "webview").map((contents) => contents.getTitle()))).toEqual(["Fixture home"]);
+
+  // The search request is recorded and cancelled in the app's own session, so the spec never leaves this machine.
+  await app.evaluate(({ session }) => {
+    const seen: string[] = [];
+    (globalThis as unknown as { reviewSearchRequests: string[] }).reviewSearchRequests = seen;
+    session.fromPartition("persist:ave-side-browser").webRequest.onBeforeRequest({ urls: ["https://duckduckgo.com/*"] }, (details, respond) => {
+      seen.push(details.url);
+      respond({ cancel: true });
+    });
+  });
+  await page.evaluate(() => (window as unknown as { aveApi: { updateSettings(patch: unknown): Promise<unknown> } }).aveApi
+    .updateSettings({ webView: { addressSearchEngine: "duckduckgo" } }));
+  await typeAddress(page, "ave browser review");
+  await expect.poll(() => app.evaluate(() => (globalThis as unknown as { reviewSearchRequests: string[] }).reviewSearchRequests))
+    .toEqual(["https://duckduckgo.com/?q=ave%20browser%20review"]);
+  await expect(page.getByTestId("chat-side-panel-browser-address-error")).toHaveCount(0);
+});
