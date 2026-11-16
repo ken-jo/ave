@@ -1,6 +1,6 @@
 /**
  * What a page does while the agent drives it reaches the model with the tool result: a dialog is dismissed and reported,
- * and no window-blocking box opens.
+ * a download is named, and no window-blocking box opens.
  */
 import { expect, test } from "@playwright/test";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -43,11 +43,24 @@ function plannedModel(plan: readonly Plan[], results: string[]) {
 }
 
 const PAGE = `<h1>Agent page</h1>
-<button onclick="alert('Pay 100 now?'); document.title = 'after-alert'">Show alert</button>`;
+<button onclick="alert('Pay 100 now?'); document.title = 'after-alert'">Show alert</button>
+<a href="/file.bin">Download file</a>
+<button onclick="fetch('/held').then((r) => r.text()).then(() => { const a = document.createElement('a'); a.href = '/late.bin'; a.download = 'late.bin'; document.body.append(a); a.click(); })">Fetch report</button>`;
 
-test("an agent click that opens a dialog says so in its tool result, and opens no native box", async () => {
+test("an agent click that opens a dialog or starts a download says so in its tool result, and opens no native box", async () => {
   test.setTimeout(180_000);
-  const site = await startReviewSite((_request, response, url) => url.pathname === "/agent" && reviewPage(response, PAGE, "Agent page"));
+  // The server holds this response until the click's result has reached the model, so the download starts after it.
+  let held: ServerResponse | null = null;
+  let releaseRequested = false;
+  const release = () => { releaseRequested = true; held?.writeHead(200, { "content-type": "text/plain" }).end("ready"); held = null; };
+  const site = await startReviewSite((_request, response, url) => {
+    if (url.pathname === "/agent") return reviewPage(response, PAGE, "Agent page");
+    if (url.pathname === "/held") { held = response; if (releaseRequested) release(); return true; }
+    if (url.pathname !== "/file.bin" && url.pathname !== "/late.bin") return false;
+    response.writeHead(200, { "content-type": "application/octet-stream", "content-disposition": `attachment; filename="${url.pathname === "/late.bin" ? "late.bin" : "report.bin"}"` });
+    response.end("data");
+    return true;
+  });
   const results: string[] = [];
   const tab = (all: readonly string[]) => /"tabId"\s*:\s*"(tab-\d+)"/.exec(all.join("\n"))?.[1];
   const ref = (outline: string, label: string) => new RegExp(`"${label}"[^\\n]*\\[ref=(e\\d+)\\]`).exec(outline)?.[1] ?? "missing";
@@ -57,6 +70,10 @@ test("an agent click that opens a dialog says so in its tool result, and opens n
     snapshot,
     (previous, all) => ({ name: "browser_click", args: { tabId: tab(all), ref: ref(previous, "Show alert") } }),
     snapshot,
+    (previous, all) => ({ name: "browser_click", args: { tabId: tab(all), ref: ref(previous, "Download file") } }),
+    snapshot,
+    (previous, all) => ({ name: "browser_click", args: { tabId: tab(all), ref: ref(previous, "Fetch report") } }),
+    (_previous, all) => { release(); return { name: "browser_wait", args: { tabId: tab(all), download: true, timeMs: 20_000 } }; },
   ];
   const answer = plannedModel(plan, results);
   const llm = createServer((request, response) => { void answer(request, response); });
@@ -102,6 +119,15 @@ test("an agent click that opens a dialog says so in its tool result, and opens n
     expect(withDialog).toContain('<browser-content trust="untrusted-web-data">');
     expect(withDialog).toMatch(/"type"\s*:\s*"alert"/);
     expect(withDialog).toContain("Pay 100 now?");
+    // The click on the download link reports the download in its own result.
+    expect(results[4]).toContain('"downloads"');
+    expect(results[4]).toContain('<browser-content trust="untrusted-web-data">');
+    expect(results[4]).toContain("report.bin");
+    // A download that starts after the click's result is not in that result; waiting for it reports it, with how it ended.
+    expect(results[6]).not.toContain("late.bin");
+    expect(results[7]).toContain('<browser-content trust="untrusted-web-data">');
+    expect(results[7]).toMatch(/"found"\s*:\s*true/);
+    expect(results[7]).toMatch(/"name"\s*:\s*"late\.bin"\s*,\s*"state"\s*:\s*"cancelled"/);
     expect(await app.evaluate(() => (globalThis as unknown as { reviewDialogs: number }).reviewDialogs)).toBe(0);
   } finally {
     await teardownSeededElectron(context);

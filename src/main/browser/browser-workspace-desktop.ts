@@ -11,6 +11,7 @@ import type { MainWindow } from "../main-window-host.js";
 import { observeAgentBrowserDownload } from "../browser-observation.js";
 import { trackBrowserGuest } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
+import { dismissedPageDialogs } from "./browser-page-dialogs.js";
 import { pageContextMenu, type PageContextMenuParams } from "./browser-page-context-menu.js";
 import { browserTabRegistry } from "./browser-tab-registry.js";
 import { createBrowserWorkspaceService, type BrowserWorkspaceService } from "./browser-workspace.js";
@@ -145,8 +146,9 @@ let downloadAllowance: ((origin: string) => void) | null = null;
 /** The download policy hands over how to lift a site's limit; the service calls it when the user asks in the tab. */
 export function registerBrowserDownloadAllowance(allow: (origin: string) => void): void { downloadAllowance = allow; }
 /** The download policy refused a download of this guest before it started. */
-export function reportBrowserWorkspaceBlockedDownload(guestId: number, name: string, reason: BrowserDownloadBlockReason): void {
+export function reportBrowserWorkspaceBlockedDownload(guestId: number, name: string, urlChain: readonly string[], reason: BrowserDownloadBlockReason): void {
   const entry = guests.get(guestId);
+  if (browserTabRegistry.isAgentActiveGuest(guestId)) dismissedPageDialogs.noteDownload(guestId, name, "blocked", urlChain);
   if (entry && !entry.owner.isDestroyed()) getBrowserWorkspaceService().blockedDownload(entry.owner.id, guestId, name, reason);
 }
 
@@ -156,6 +158,11 @@ export function observeBrowserWorkspaceDownload(contents: WebContents, item: Obs
   if (windowId !== null) {
     getBrowserWorkspaceService().observeDownload(windowId, item);
     observeAgentBrowserDownload(contents, item);
+    // A click that starts a download tells the model which file and how it went, not only that the click was done.
+    if (browserTabRegistry.isAgentActiveGuest(contents.id)) {
+      const update = dismissedPageDialogs.noteDownload(contents.id, item.getFilename(), "started", item.getURLChain());
+      item.once("done", (_event, state) => update(state));
+    }
   }
 }
 

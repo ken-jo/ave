@@ -450,7 +450,8 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         );
         const browserPreview = await previewOf(actions, pageTarget(ctx, fresh));
         const render = input.maxChars === undefined ? fenceBrowserReadContent : fenceBrowserContent;
-        return withPreview({ output: render({
+        // A download begins after the click that asked for it has already returned, so the page's next reading carries it.
+        return withPreview({ output: render(withDismissedDialogs(target.resolved.tab.guest?.id, {
           tabId: target.resolved.tab.handle,
           url: shot.url,
           title: shot.title,
@@ -458,7 +459,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           ...(shot.challenge ? { challenge: shot.challenge } : {}),
           ...(shot.delta ? { delta: true } : {}),
           ...(shot.truncated ? { truncated: true } : {}),
-        }, shot.text), isError: false }, browserPreview);
+        }), shot.text), isError: false }, browserPreview);
       }), ctx.abortSignal);
     },
 
@@ -473,8 +474,8 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
         const changed = unchangedSinceApproval(ctx, fresh.resolved);
         if (changed) return changed;
         const page = await actions.readText(pageTarget(ctx, fresh));
-        return { output: fenceBrowserReadContent({ tabId: fresh.resolved.tab.handle, url: page.url, title: page.title,
-          ...(page.truncated ? { truncated: true } : {}), ...(page.challenge ? { challenge: page.challenge } : {}) }, page.text), isError: false };
+        return { output: fenceBrowserReadContent(withDismissedDialogs(fresh.resolved.tab.guest?.id, { tabId: fresh.resolved.tab.handle, url: page.url, title: page.title,
+          ...(page.truncated ? { truncated: true } : {}), ...(page.challenge ? { challenge: page.challenge } : {}) }), page.text), isError: false };
       }), ctx.abortSignal);
     },
 
@@ -513,6 +514,8 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
       if (input.timeMs !== undefined && (!Number.isInteger(input.timeMs) || (input.timeMs as number) < 1 || (input.timeMs as number) > MAX_WAIT_MS)) {
         return failure(`timeMs must be an integer from 1 to ${MAX_WAIT_MS}`);
       }
+      if (input.download !== undefined && typeof input.download !== "boolean") return failure("download must be true or false");
+      if (input.download === true && (input.text !== undefined || input.timeMs === undefined)) return failure("download waits only with timeMs, the most to wait, and without text");
       if (input.text === undefined && input.timeMs === undefined) return failure("give text to wait for, timeMs, or both");
       const target = live(input, ctx);
       if (!target.ok) return target.result;
@@ -528,6 +531,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
           {
             ...(typeof input.text === "string" ? { text: input.text } : {}),
             ...(typeof input.timeMs === "number" ? { timeMs: input.timeMs } : {}),
+            ...(input.download === true ? { download: true } : {}),
           },
         );
         const completed = recheck(input, ctx, fresh);
@@ -649,7 +653,7 @@ export function createBrowserToolExecutors<G extends BrowserGuest>(
     [BROWSER_TOOL.snapshot]: ["tabId", "interactive", "delta", "maxChars"],
     [BROWSER_TOOL.readText]: ["tabId"],
     [BROWSER_TOOL.screenshot]: ["tabId", "fullPage", "ref", "clip"],
-    [BROWSER_TOOL.wait]: ["tabId", "text", "timeMs"],
+    [BROWSER_TOOL.wait]: ["tabId", "text", "timeMs", "download"],
     [BROWSER_TOOL.navigate]: ["tabId", "url"],
     [BROWSER_TOOL.click]: ["tabId", "ref"],
     [BROWSER_TOOL.hover]: ["tabId", "ref"],

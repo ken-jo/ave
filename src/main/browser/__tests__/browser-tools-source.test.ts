@@ -80,8 +80,16 @@ describe("browser tool CDP surface", () => {
       "src/main/browser/browser-workspace-capture.ts",
     ]);
     const selectionMethods = new Set(["Page.createIsolatedWorld", "DOM.resolveNode", "Runtime.callFunctionOn", "Runtime.releaseObject"]);
+    // An action's navigation watch reads its own document request's response headers to tell a saved response from a shown one. It enables
+    // the domain with no body buffers at all and names nothing else in it: no body, cookie, header-override or interception method.
+    const navigationWatch = path === "src/main/browser/browser-actions.ts";
+    const navigationMethods = new Set(["Network.enable", "Network.responseReceived", "Network.loadingFailed"]);
+    if (navigationWatch) {
+      expect(source.match(/["']Network\.enable["']/g)).toHaveLength(1);
+      expect(source).toContain('cdp.send("Network.enable", { maxTotalBufferSize: 0, maxResourceBufferSize: 0 })');
+    }
     expect(named.filter((method) => !ALLOWED_CDP_METHODS.has(method) && !(siteNavigation && siteMethods.has(method))
-      && !(selection && selectionMethods.has(method)) && !(path === "src/main/browser/browser-actions.ts" && method === "Emulation.setFocusEmulationEnabled")
+      && !(selection && selectionMethods.has(method)) && !(navigationWatch && navigationMethods.has(method)) && !(path === "src/main/browser/browser-actions.ts" && method === "Emulation.setFocusEmulationEnabled")
       && !(layoutProbe && method === "Runtime.evaluate")
       && !(captureScroll.has(path) && ["Page.createIsolatedWorld", "Runtime.callFunctionOn"].includes(method)))).toEqual([]);
     for (const forbidden of [
@@ -97,6 +105,7 @@ describe("browser tool CDP surface", () => {
       if (layoutProbe && forbidden.source === "\\bRuntime\\.") continue;
       if (siteNavigation && forbidden.source === "\\bFetch\\.") continue;
       let checked = selection ? source.replace(/(["'])Runtime\.(?:callFunctionOn|releaseObject)\1/g, '""') : source;
+      if (navigationWatch) checked = checked.replace(/(["'])Network\.(?:enable|responseReceived|loadingFailed)\1/g, '""');
       if (captureScroll.has(path)) {
         expect(source).toContain("captureScrollParameters(");
         checked = checked.replace(/(["'])Runtime\.callFunctionOn\1/g, '""');

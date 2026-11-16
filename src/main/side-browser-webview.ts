@@ -96,7 +96,7 @@ export async function installSideBrowserPartitionPolicy(resourcePath: string): P
     stagingRoot = null;
   }
   const downloadPolicy = createSideBrowserDownloadPolicy({
-    onBlocked: (contents, item, reason) => reportBrowserWorkspaceBlockedDownload(contents.id, item.getFilename(), reason),
+    onBlocked: (contents, item, reason) => reportBrowserWorkspaceBlockedDownload(contents.id, item.getFilename(), item.getURLChain(), reason),
     stage: (item, contents, turn, onOverLimit) => {
       if (stagingRoot === null) throw new BrowserDownloadStagingError("the download staging folder is unavailable");
       return stageBrowserDownload(item, { root: stagingRoot, askSavePath: (name) => askSavePath(contents, name), onOverLimit }, turn);
