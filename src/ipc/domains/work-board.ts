@@ -539,6 +539,22 @@ export function registerWorkBoardHandlers(deps: IpcDeps): void {
     },
   );
 
+  // After a restart nothing of a template run starts by itself: the user continues it, through the same boundary as a retry.
+  handle(
+    WORK_BOARD.continueRun,
+    async (e, id: unknown, input: unknown, intent?: unknown): Promise<StageRetryIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
+      const refusal = await stageDecisionRefusal(WORK_BOARD.continueRun, e, id, intent);
+      if (refusal !== null) return refusal;
+      const record = exactRecord(input, ["runId"]);
+      if (!record || !workBoardEngine || typeof record.runId !== "string" || !RUN_ID_PATTERN.test(record.runId)) return { ok: false, reason: "invalid-input" };
+      const result = await workBoardEngine.continueRun(id as number, { runId: record.runId }, { approvalSurface: e.sender });
+      if (!result.ok) return result;
+      auditStageDecision(id as number, { runId: record.runId, decision: "continue" });
+      broadcastItemChanged(id as number, "updated");
+      return result;
+    },
+  );
+
   // Stop a running execution through the ordinary sub-agent interrupt; the run settles as `cancelled`. Same gate as steer.
   handle(WORK_BOARD.cancelRun, async (e, id: number, intent?: unknown): Promise<WorkBoardCancelIpcResult | typeof UNAUTHORIZED_FRAME | typeof NO_ENGINE> => {
     if (!validateHostRendererSender(e)) {

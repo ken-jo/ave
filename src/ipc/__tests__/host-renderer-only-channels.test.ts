@@ -219,6 +219,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["work-board", WORK_BOARD.decideStage, [{}]],
   ["work-board", WORK_BOARD.decideJoin, [{}]],
   ["work-board", WORK_BOARD.retryStage, [{}]],
+  ["work-board", WORK_BOARD.continueRun, [{}]],
   // Work-level decisions (확인 필요): proposals and routine attention.
   ["work-approvals", WORK_APPROVALS.list, [{}]],
   // Closing an alert card keeps its identity closed; the staged cards carry
