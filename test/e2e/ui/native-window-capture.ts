@@ -42,9 +42,12 @@ export async function captureNativeWindow(app: ElectronApplication, page: Page, 
     const owner = BaseWindow.fromId(identity.windowId);
     const chrome = webContents.fromId(identity.chromeId);
     if (!owner || owner.isDestroyed() || !chrome || chrome.isDestroyed()) throw new Error("Native capture owner is unavailable");
+    const uiView = owner.contentView.children.find(view => "webContents" in view && view.webContents === chrome);
+    const uiBounds = uiView?.getBounds();
     return {
       ...identity, mediaSourceId: owner.getMediaSourceId(), ownerPid: process.pid,
       bounds: owner.getBounds(), content: owner.getContentBounds(), zoom: chrome.getZoomFactor(),
+      uiOrigin: { x: uiBounds?.x ?? 0, y: uiBounds?.y ?? 0 },
       focused: owner.isFocused(), focusedContentsId: webContents.getFocusedWebContents()?.id ?? null,
     };
   }, identity);
@@ -90,8 +93,8 @@ export async function sampleNativeWindow(app: ElectronApplication, capture: Awai
     const size = image.getSize();
     const bitmap = image.toBitmap();
     return input.points.map(point => {
-      const x = Math.floor(input.content.x - input.bounds.x + point.x * input.zoom);
-      const y = Math.floor(input.content.y - input.bounds.y + point.y * input.zoom);
+      const x = Math.floor(input.content.x - input.bounds.x + input.uiOrigin.x + point.x * input.zoom);
+      const y = Math.floor(input.content.y - input.bounds.y + input.uiOrigin.y + point.y * input.zoom);
       if (x < 0 || y < 0 || x >= size.width || y >= size.height) throw new Error("Native sample lies outside the target window");
       const offset = (y * size.width + x) * 4;
       return [bitmap[offset + 2], bitmap[offset + 1], bitmap[offset], bitmap[offset + 3]];

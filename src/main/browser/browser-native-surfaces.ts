@@ -15,7 +15,7 @@ import type { BrowserTabBindRequest, BrowserTabBindResult } from "../../shared/b
 import { validateExternalUrl } from "../../shared/external-url.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
 import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
-import { attachMainWindowPage, type MainWindow } from "../main-window-host.js";
+import { attachMainWindowPage, mainWindowUiOrigin, type MainWindow } from "../main-window-host.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
 
 export interface BrowserNativeSurfaceDependencies {
@@ -126,8 +126,9 @@ export class BrowserNativeSurfaceHost {
     if (input.type === "mouseMove" && heldButton && !gesture) return this.rejectInput(windowId, input);
     const zoom = entry.owner.webContents.getZoomFactor();
     if (!Number.isFinite(zoom) || zoom <= 0) return this.rejectInput(windowId, input);
-    const x = Math.round(input.x * zoom);
-    const y = Math.round(input.y * zoom);
+    const uiOrigin = mainWindowUiOrigin(entry.owner);
+    const x = Math.round(input.x * zoom) + uiOrigin.x;
+    const y = Math.round(input.y * zoom) + uiOrigin.y;
     const clip = entry.container.getBounds();
     const page = entry.view.getBounds();
     const origin = { x: clip.x + page.x, y: clip.y + page.y };
@@ -395,8 +396,9 @@ export class BrowserNativeSurfaceHost {
     } else {
       const zoom = entry.owner.webContents.getZoomFactor();
       if (!Number.isFinite(zoom) || zoom <= 0) return false;
+      const uiOrigin = mainWindowUiOrigin(entry.owner);
       const toDip = (bounds: BrowserNativeBounds) => ({
-        x: Math.round(bounds.x * zoom), y: Math.round(bounds.y * zoom),
+        x: Math.round(bounds.x * zoom) + uiOrigin.x, y: Math.round(bounds.y * zoom) + uiOrigin.y,
         width: Math.max(1, Math.round(bounds.width * zoom)), height: Math.max(1, Math.round(bounds.height * zoom)),
       });
       const bounds = toDip(placement.bounds);
@@ -449,6 +451,7 @@ export class BrowserNativeSurfaceHost {
     if (this.owners.has(owner.id)) return;
     const windowId = owner.id;
     const ownerContents = owner.webContents;
+    let uiOrigin = mainWindowUiOrigin(owner);
     const park = (invalidate: boolean) => {
       for (const entry of this.surfaces.values()) {
         if (entry.owner !== owner) continue;
@@ -474,7 +477,12 @@ export class BrowserNativeSurfaceHost {
       if (mainFrame && !inPlace) reloaded();
     };
     const shown = () => {
+      uiOrigin = mainWindowUiOrigin(owner);
       for (const entry of this.surfaces.values()) if (entry.owner === owner && entry.bound && entry.placement) this.place(entry, entry.placement);
+    };
+    const layoutChanged = () => {
+      const origin = mainWindowUiOrigin(owner);
+      if (origin.x !== uiOrigin.x || origin.y !== uiOrigin.y) shown();
     };
     const closed = () => this.disposeWindow(windowId);
     owner.on("hide", hidden);
@@ -483,6 +491,11 @@ export class BrowserNativeSurfaceHost {
     owner.on("minimize", hidden);
     owner.on("show", shown);
     owner.on("restore", shown);
+    owner.on("resize", layoutChanged);
+    owner.on("maximize", layoutChanged);
+    owner.on("unmaximize", layoutChanged);
+    owner.on("enter-full-screen", layoutChanged);
+    owner.on("leave-full-screen", layoutChanged);
     owner.once("closed", closed);
     ownerContents.on("render-process-gone", reloaded);
     ownerContents.on("did-start-navigation", navigating);
@@ -493,6 +506,11 @@ export class BrowserNativeSurfaceHost {
       owner.removeListener("minimize", hidden);
       owner.removeListener("show", shown);
       owner.removeListener("restore", shown);
+      owner.removeListener("resize", layoutChanged);
+      owner.removeListener("maximize", layoutChanged);
+      owner.removeListener("unmaximize", layoutChanged);
+      owner.removeListener("enter-full-screen", layoutChanged);
+      owner.removeListener("leave-full-screen", layoutChanged);
       owner.removeListener("closed", closed);
       ownerContents.removeListener("render-process-gone", reloaded);
       ownerContents.removeListener("did-start-navigation", navigating);

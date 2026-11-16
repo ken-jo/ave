@@ -1,5 +1,7 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { writeFileSync } from "node:fs";
+import { MAIN_WINDOW_RESIZE_INSET } from "../../../src/shared/shell-geometry.js";
+import { withPageWindow } from "./renderer-events.js";
 import {
   buildLlmSettings,
   launchSeededElectron,
@@ -15,10 +17,13 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
     (animation) => !(animation instanceof CSSTransition) || animation.playState !== "running",
   ))).toBe(true);
   const geometry = await page.evaluate(() => {
+    const nativeInset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--native-window-inset")) || 0;
     const box = (element: Element) => {
       const { top, right, bottom, left, width, height } = element.getBoundingClientRect();
-      return { top, right, bottom, left, width, height };
+      return { top: top + nativeInset, right: right + nativeInset, bottom: bottom + nativeInset,
+        left: left + nativeInset, width, height };
     };
+    const leadingEdge = (element: Element | null | undefined) => element ? element.getBoundingClientRect().left + nativeInset : null;
     const hit = (element: Element) => {
       const rect = element.getBoundingClientRect();
       return [0.15, 0.5, 0.85].every((fraction) => {
@@ -33,12 +38,17 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
     const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
     const panes = [...document.querySelectorAll('[data-testid="pane"]')]
       .filter((pane) => pane.getBoundingClientRect().width > 0);
+    const shell = document.querySelector('[data-testid="app-shell"]');
+    if (!shell) throw new Error("Expected app shell");
     return {
-      viewport: { width: innerWidth, height: innerHeight },
+      viewport: { width: innerWidth + nativeInset * 2, height: innerHeight + nativeInset * 2 },
+      rawViewport: { width: innerWidth, height: innerHeight },
+      nativeOrigin: { x: nativeInset, y: nativeInset },
+      shell: box(shell),
       inset: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-inset")),
       cardGap: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-gap")),
       // Where the band's path row starts: its content edge, past the padding CustomTitleBar computes.
-      bandLead: band ? band.getBoundingClientRect().left + parseFloat(getComputedStyle(band).paddingLeft) : null,
+      bandLead: band ? band.getBoundingClientRect().left + nativeInset + parseFloat(getComputedStyle(band).paddingLeft) : null,
       strip: strip ? box(strip) : null,
       card: card ? box(card) : null,
       rail: rail ? box(rail) : null,
@@ -46,8 +56,8 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
       panes: panes.map((pane) => ({
         ...box(pane),
         // The header row's leading edge: its glyph, then the h2 (DESIGN.md, header band). The band path starts on this line.
-        titleLeft: pane.querySelector('[data-testid="pane-header"] > :first-child')?.getBoundingClientRect().left ?? null,
-        h2Left: pane.querySelector('[data-testid="pane-header"] h2')?.getBoundingClientRect().left ?? null,
+        titleLeft: leadingEdge(pane.querySelector('[data-testid="pane-header"] > :first-child')),
+        h2Left: leadingEdge(pane.querySelector('[data-testid="pane-header"] h2')),
         buttons: [...pane.querySelectorAll('[data-testid="pane-header"] button')]
           .filter((button) => button.getBoundingClientRect().width > 0)
           .map((button) => ({ id: button.getAttribute("data-testid"), hit: hit(button) })),
@@ -78,6 +88,8 @@ for (const [width, height] of [[950, 734], [1440, 900], [360, 734]]) {
           }, gap);
           const geometry = await measureShell(context.page, test.info(), `outside-${width}-${state}-${gap}`);
           expect(geometry.viewport).toEqual({ width, height });
+          expect(geometry.shell).toEqual({ left: 0, top: 0, right: width, bottom: height, width, height });
+          expect(geometry.rawViewport).toEqual({ width: width - geometry.nativeOrigin.x * 2, height: height - geometry.nativeOrigin.y * 2 });
           const pane = geometry.panes[0];
           expect((geometry.rail ?? pane).left).toBe(geometry.inset);
           expect(width - pane.right).toBe(geometry.inset);
@@ -146,11 +158,19 @@ test("native resize edges stay outside the titlebar drag rectangle", async () =>
   try {
     for (const [width, height] of [[950, 734], [1440, 900]]) {
       await setWindowSize(context.app, width, height);
+      const nativeFrame = await withPageWindow(context.app, context.page, target => {
+        const view = target.contentView.children.find(child => "webContents" in child && child.webContents === target.webContents);
+        if (!view) throw new Error("Expected main UI child view");
+        return { content: target.getContentSize(), view: view.getBounds(), fullscreen: target.isFullScreen() };
+      });
       const regions = await context.page.evaluate(() => {
         const band = document.querySelector('[data-testid^="custom-titlebar"]');
         const drag = document.querySelector('[data-testid="titlebar-drag-region"]');
         if (!band || !drag) throw new Error("Expected titlebar regions");
         const bounds = drag.getBoundingClientRect();
+        const nativeInset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--native-window-inset")) || 0;
+        const width = innerWidth + nativeInset * 2;
+        const height = innerHeight + nativeInset * 2;
         // Regions compose in document order; later no-drag boxes exclude earlier drag boxes.
         // Include pointer-transparent boxes, which still participate in native drag-region collection.
         const regions = [...document.querySelectorAll("*")].flatMap(element => {
@@ -162,6 +182,8 @@ test("native resize edges stay outside the titlebar drag rectangle", async () =>
         });
         const canDrag = (x: number, y: number) => regions.reduce((active, region) =>
           x >= region.left && x < region.right && y >= region.top && y < region.bottom ? region.mode === "drag" : active, false);
+        const viewportPoint = ([x, y]: number[]) => [x - nativeInset, y - nativeInset];
+        const containsPoint = ([x, y]: number[]) => x >= 0 && x < innerWidth && y >= 0 && y < innerHeight;
         const spacer = document.querySelector('[data-testid="main-toolbar-drag-band"]')?.getBoundingClientRect();
         const button = band.querySelector("button")?.getBoundingClientRect();
         if (!spacer || !button) throw new Error("Expected titlebar spacer and control");
@@ -169,16 +191,25 @@ test("native resize edges stay outside the titlebar drag rectangle", async () =>
           band: getComputedStyle(band).getPropertyValue("-webkit-app-region"),
           drag: getComputedStyle(drag).getPropertyValue("-webkit-app-region"),
           inset: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--chrome-gap-tight")),
-          bounds: { left: bounds.left, top: bounds.top, right: bounds.right },
+          nativeInset,
+          viewport: { width: innerWidth, height: innerHeight },
+          bounds: { left: bounds.left + nativeInset, top: bounds.top + nativeInset, right: bounds.right + nativeInset },
           interiorDrags: canDrag(spacer.left + spacer.width / 2, spacer.top + spacer.height / 2),
           controlDrags: canDrag(button.left + button.width / 2, button.top + button.height / 2),
-          nativeEdgeDrags: [[1, 1], [innerWidth / 2, 1], [innerWidth - 1, 1], [1, 18], [innerWidth - 1, 18]]
-            .map(([x, y]) => canDrag(x, y)),
-          edges: [[1, 1], [innerWidth / 2, 1], [innerWidth - 1, 1], [1, 18], [innerWidth - 1, 18],
-            [1, innerHeight / 2], [innerWidth - 1, innerHeight / 2], [innerWidth / 2, innerHeight - 1]]
-            .map(([x, y]) => document.elementsFromPoint(x, y).map(element => getComputedStyle(element).getPropertyValue("-webkit-app-region"))),
+          nativeEdgeDrags: [[1, 1], [width / 2, 1], [width - 1, 1], [1, 18], [width - 1, 18]]
+            .map(viewportPoint).map(point => containsPoint(point) && canDrag(point[0], point[1])),
+          edges: [[1, 1], [width / 2, 1], [width - 1, 1], [1, 18], [width - 1, 18],
+            [1, height / 2], [width - 1, height / 2], [width / 2, height - 1]]
+            .map(viewportPoint).map(point => containsPoint(point)
+              ? document.elementsFromPoint(point[0], point[1]).map(element => getComputedStyle(element).getPropertyValue("-webkit-app-region")) : []),
         };
       });
+      expect(nativeFrame.fullscreen).toBe(false);
+      expect(nativeFrame.content).toEqual([width, height]);
+      expect(regions.nativeInset).toBe(process.platform === "darwin" ? MAIN_WINDOW_RESIZE_INSET : 0);
+      expect(nativeFrame.view).toEqual({ x: regions.nativeInset, y: regions.nativeInset,
+        width: width - regions.nativeInset * 2, height: height - regions.nativeInset * 2 });
+      expect(regions.viewport).toEqual({ width: nativeFrame.view.width, height: nativeFrame.view.height });
       expect(regions.band).toBe("none");
       expect(regions.drag).toBe("drag");
       expect(regions.bounds).toEqual({ left: regions.inset, top: regions.inset, right: width - regions.inset });
@@ -186,7 +217,7 @@ test("native resize edges stay outside the titlebar drag rectangle", async () =>
       expect(regions.interiorDrags).toBe(true);
       expect(regions.controlDrags).toBe(false);
       expect(regions.nativeEdgeDrags).toEqual([false, false, false, false, false]);
-      await test.info().attach(`resize-regions-${width}.json`, { body: JSON.stringify(regions, null, 2), contentType: "application/json" });
+      await test.info().attach(`resize-regions-${width}.json`, { body: JSON.stringify({ nativeFrame, ...regions }, null, 2), contentType: "application/json" });
     }
   } finally {
     await teardownSeededElectron(context, { terminate: true });
@@ -254,9 +285,11 @@ for (const width of [1243, 360]) {
         if (geometry.handle && geometry.card && !geometry.overlay) {
           const handle = page.getByTestId("sidebar-resize-handle");
           const before = geometry.card.width;
-          await page.mouse.move(geometry.handle.left + geometry.handle.width / 2, geometry.handle.top + geometry.handle.height / 2);
+          const x = geometry.handle.left + geometry.handle.width / 2 - geometry.nativeOrigin.x;
+          const y = geometry.handle.top + geometry.handle.height / 2 - geometry.nativeOrigin.y;
+          await page.mouse.move(x, y);
           await page.mouse.down();
-          await page.mouse.move(geometry.handle.left + geometry.handle.width / 2 + 20, geometry.handle.top + geometry.handle.height / 2, { steps: 5 });
+          await page.mouse.move(x + 20, y, { steps: 5 });
           await page.mouse.up();
           await expect(handle).toHaveAttribute("aria-valuenow", String(before + 20));
           const resized = await measureShell(page, testInfo, `shell-${width}-${state}-resized`);

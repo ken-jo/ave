@@ -24,6 +24,7 @@ const electronMock = vi.hoisted(() => {
     readonly showInactive = vi.fn(() => { this.visible = true; });
     readonly focus = vi.fn();
     readonly setBackgroundColor = vi.fn();
+    readonly setVibrancy = vi.fn();
     readonly moveTop = vi.fn();
     readonly restore = vi.fn();
     readonly loadFile = vi.fn(async () => undefined);
@@ -74,8 +75,13 @@ const electronMock = vi.hoisted(() => {
       return true;
     }
   }
-  const nativeTheme = { prefersReducedTransparency: false, shouldUseDarkColors: false, themeSource: "system", on: vi.fn() };
-  return { ipcListeners: new Map<string, Listener>(), savedAppearance: undefined as unknown, FakeBrowserWindow, nativeTheme, app: { name: "Ave", isPackaged: false, getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
+  const themeListeners = new Set<() => void>();
+  const nativeTheme = {
+    prefersReducedTransparency: false, shouldUseDarkColors: false, themeSource: "system",
+    on: vi.fn((_event: string, listener: () => void) => { themeListeners.add(listener); }),
+    removeListener: vi.fn((_event: string, listener: () => void) => { themeListeners.delete(listener); }),
+  };
+  return { themeListeners, ipcListeners: new Map<string, Listener>(), savedAppearance: undefined as unknown, FakeBrowserWindow, nativeTheme, app: { name: "Ave", isPackaged: false, getPath: vi.fn(() => "/tmp/ave-test"), quit: vi.fn() } };
 });
 
 vi.mock("electron", () => ({
@@ -90,6 +96,7 @@ vi.mock("electron", () => ({
   Tray: class {},
 }));
 vi.mock("../main-window-host.js", () => ({
+  refreshMainWindowUiLayout: vi.fn(),
   createMainWindowHost: (options: Record<string, unknown>, webPreferences: unknown) => new electronMock.FakeBrowserWindow({ ...options, webPreferences: { contextIsolation: true, nodeIntegration: false, ...(webPreferences as object) } }),
   closeMainWindowUi: (window: InstanceType<typeof electronMock.FakeBrowserWindow>) => { window.destroyed = true; window.emit("closed"); },
 }));
@@ -177,6 +184,7 @@ describe("main windows", () => {
     appState.setTray({ setContextMenu: vi.fn() } as never);
     appState.setServices(null);
     electronMock.savedAppearance = undefined;
+    electronMock.themeListeners.clear();
     electronMock.app.quit.mockClear();
   });
 
@@ -242,6 +250,32 @@ describe("main windows", () => {
     window.setBackgroundColor.mockClear();
     emitEvent("host.theme.changed", { shell: "light", tokens: { "--ave-bg": "#ffffff" } });
     expect(window.setBackgroundColor).not.toHaveBeenCalled();
+  });
+
+  it("paints the native strip with the current ground during reduced transparency and restores its material", async () => {
+    const realPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const { emitEvent } = await import("../../boot/types.js");
+    try {
+      const window = open();
+      emitEvent("host.theme.changed", { shell: "light", tokens: { "--ave-bg": "#fafafa" } });
+      expect(window.setBackgroundColor).not.toHaveBeenCalled();
+      electronMock.nativeTheme.prefersReducedTransparency = true;
+      for (const listener of electronMock.themeListeners) listener();
+      expect(window.setVibrancy).toHaveBeenLastCalledWith(null);
+      expect(window.setBackgroundColor).toHaveBeenLastCalledWith("#fafafa");
+      emitEvent("host.theme.changed", { shell: "dark", tokens: { "--ave-bg": "#161616" } });
+      expect(window.setBackgroundColor).toHaveBeenLastCalledWith("#161616");
+      electronMock.nativeTheme.prefersReducedTransparency = false;
+      for (const listener of electronMock.themeListeners) listener();
+      expect(window.setVibrancy).toHaveBeenLastCalledWith("under-window");
+      expect(window.setBackgroundColor).toHaveBeenLastCalledWith("#00000000");
+      window.emit("closed");
+      expect(electronMock.themeListeners.size).toBe(0);
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform, configurable: true });
+      electronMock.nativeTheme.prefersReducedTransparency = false;
+    }
   });
 
   it("opens a centered responsive window without stale appearance arguments", () => {

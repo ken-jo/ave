@@ -736,6 +736,8 @@
    * chat group's split arithmetic. */
   :root {
     --chrome-band-height: 36px;
+    /* Main injects the native view inset in document pixels; other documents have no strip. */
+    --native-window-inset: 0px;
     --chrome-control-height: 28px;
     --chrome-icon-button: 24px;
     --chrome-gap: 8px;

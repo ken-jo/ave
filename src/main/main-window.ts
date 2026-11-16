@@ -76,12 +76,8 @@ function readCurrentAppearance() {
   return normalizeAppearance(stored);
 }
 
-// Main windows created with the system material (macOS vibrancy, Windows Mica), by renderer. Main reads the OS reduce-transparency switch ONCE, at creation, and
-// the renderer's `data-glass` follows that reading. Main does not follow the switch afterwards: the v45.2.1 docs list no
-// `nativeTheme` event for `prefersReducedTransparency` (https://github.com/electron/electron/blob/v45.2.1/docs/api/native-theme.md#event-updated
-// names only the dark-colours, high-contrast and inverted-scheme values). A live change is honoured by the renderer alone:
-// `@media (prefers-reduced-transparency: reduce)` in styles.css paints the whole shell opaque over the material. Turning the
-// switch back off restores glass in that window; a window created with it on stays opaque until a new window is opened.
+// Initial glass availability is stable for each document. Native gaps also follow live reduced-transparency changes;
+// a window created opaque stays opaque until a new window is opened.
 const glassStates = new WeakMap<WebContents, InitialGlassState>();
 
 function initialGlassState(contents: WebContents): InitialGlassState {
@@ -160,11 +156,26 @@ export function createWindow(
   registerMainWindow(win, nextMainWindowRole());
   bindAppWindowZoom(win);
   // Native gaps use the same resolved ground as the app document; the UI view stays transparent.
+  let ground = resolveAppearanceScheme(appearance, nativeTheme.shouldUseDarkColors).terminal.background;
+  let reduced = false;
   const unsubscribeTheme = onEvent("host.theme.changed", (payload) => {
     const background = (payload as SafeThemePayload).tokens?.["--ave-bg"];
-    if (!glass && background && !win.isDestroyed()) win.setBackgroundColor(background);
+    if (!background || win.isDestroyed()) return;
+    ground = background;
+    if (!glass || reduced) win.setBackgroundColor(ground);
   });
-  win.once("closed", unsubscribeTheme);
+  const syncTransparency = (): void => {
+    if (win.isDestroyed() || reduced === nativeTheme.prefersReducedTransparency) return;
+    reduced = nativeTheme.prefersReducedTransparency;
+    // The uncovered strip shares the document's opaque ground when the native material is disabled.
+    win.setVibrancy(reduced ? null : "under-window");
+    win.setBackgroundColor(reduced ? ground : "#00000000");
+  };
+  if (glass && glassMaterial === "vibrancy") nativeTheme.on("updated", syncTransparency);
+  win.once("closed", () => {
+    unsubscribeTheme();
+    if (glass && glassMaterial === "vibrancy") nativeTheme.removeListener("updated", syncTransparency);
+  });
   // Read now: a closed window's id is what its terminals are recorded under.
   const windowId = win.id;
   // Point-to-point sends (menu actions, dialogs) follow the window in use.

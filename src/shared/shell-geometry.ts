@@ -6,6 +6,9 @@ export const MAIN_WINDOW_HEIGHT = 768;
 export const MAIN_WINDOW_MIN_WIDTH = 360;
 export const MAIN_WINDOW_MIN_HEIGHT = 600;
 
+/** Native space around the main app document that preserves edge resize cursors on macOS. */
+export const MAIN_WINDOW_RESIZE_INSET = 4;
+
 /** The window band every Ave window draws at its top; px, mirrored by `--chrome-band-height`. */
 export const CHROME_BAND_HEIGHT = 36;
 

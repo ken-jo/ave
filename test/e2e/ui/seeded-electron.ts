@@ -448,8 +448,8 @@ export async function setWindowSize(
     const workAreaContentLimit = [size.workArea.width - (bounds.width - content.width), size.workArea.height - (bounds.height - content.height)];
     return { workAreaContentLimit };
   }, { w, h, workArea });
-  let actual: { content: number[]; renderer: { width: number; height: number } } | undefined;
-  // Renderer CSS pixels and native content pixels agree only at zoom factor 1.
+  let actual: { content: number[]; renderer: { width: number; height: number; viewportWidth: number; viewportHeight: number; inset: number } } | undefined;
+  // Logical renderer pixels include the native strip outside the UI view, at zoom factor 1.
   try {
     await expect.poll(async () => {
       actual = undefined;
@@ -459,7 +459,11 @@ export async function setWindowSize(
         const content = target.getContentSize();
         let timer: ReturnType<typeof setTimeout> | undefined;
         const renderer = await Promise.race([
-          chrome.executeJavaScript("({ width: window.innerWidth, height: window.innerHeight })") as Promise<{ width: number; height: number }>,
+          chrome.executeJavaScript(`(() => {
+            const inset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--native-window-inset")) || 0;
+            return { width: innerWidth + inset * 2, height: innerHeight + inset * 2,
+              viewportWidth: innerWidth, viewportHeight: innerHeight, inset };
+          })()`) as Promise<{ width: number; height: number; viewportWidth: number; viewportHeight: number; inset: number }>,
           new Promise<never>((_resolve, reject) => {
             timer = setTimeout(() => reject(new Error("Renderer size probe timed out")), 1_000);
           }),

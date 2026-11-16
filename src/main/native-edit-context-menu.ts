@@ -1,6 +1,7 @@
 import { getMainWindows, mainWindowForContents } from "./app-state.js";
 import { BrowserWindow, Menu, type MenuItemConstructorOptions, type Point, type View, type WebContents } from "electron";
 import { browserTabRegistry } from "./browser/browser-tab-registry.js";
+import { mainWindowUiOrigin } from "./main-window-host.js";
 
 function contentsOrigin(view: View, contents: WebContents, origin: Point = { x: 0, y: 0 }): Point | null {
   if ("webContents" in view && view.webContents === contents) return origin;
@@ -20,9 +21,15 @@ export function installNativeEditContextMenu(contents: WebContents): void {
     if (!params.isEditable && !hasSelection) return;
     event.preventDefault();
 
-    let window = mainWindowForContents(contents) ?? BrowserWindow.fromWebContents(contents);
+    const mainWindow = mainWindowForContents(contents);
+    let window = mainWindow ?? BrowserWindow.fromWebContents(contents);
     let x = params.x;
     let y = params.y;
+    if (mainWindow) {
+      const origin = mainWindowUiOrigin(mainWindow);
+      x += origin.x;
+      y += origin.y;
+    }
     if (browserTabRegistry.isIndependentGuest(contents.id)) {
       if (!browserTabRegistry.allowsNativeContextMenu(contents.id)) return;
       const windowId = browserTabRegistry.guestWindowId(contents.id);

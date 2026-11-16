@@ -118,6 +118,15 @@ helper through `sendRendererEvent`. Native visibility and window-list
 order do not establish the intended recipient. Stream injection also requires
 the page explicitly, preserving its existing chat-group envelope.
 
+`setWindowSize` requests native content dimensions. The main UI can occupy an
+inset child view, so the helper checks the renderer's logical dimensions after
+adding the native strip and records the raw viewport in resize diagnostics.
+The shell alignment spec checks the child view's actual native bounds, then
+reports card positions in window-content coordinates using that view's origin.
+Its hit tests and pointer input retain renderer viewport coordinates. The
+background suite checks frame geometry and drag regions; native resize cursors
+still require a real pointer check.
+
 Forced seeded-fixture termination targets the owned process group on POSIX and
 waits for runtime pipes to close. On Windows, native tree termination requires
 the root process to remain alive. A parent exit alone does not establish
