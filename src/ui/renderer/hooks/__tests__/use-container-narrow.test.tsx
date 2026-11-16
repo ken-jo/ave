@@ -123,7 +123,7 @@ describe("sidePanelLayout", () => {
     // once. Without this the `min` assertions would be identities — the
     // implementation returns SIDE_PANEL_MIN_RESERVE, so comparing against it
     // holds whatever it becomes.
-    expect(SIDE_PANEL_MIN_RESERVE).toBe(464);
+    expect(SIDE_PANEL_MIN_RESERVE).toBe(456);
     expect(MIN_DOCKED_TRANSCRIPT_WIDTH).toBe(320);
   });
 

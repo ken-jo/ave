@@ -37,14 +37,14 @@ describe("responsive shell thresholds", () => {
     expect(SINGLE_TILE_EXIT_WIDTH - SINGLE_TILE_ENTER_WIDTH).toBe(60);
     expect(DOCK_EXIT_WIDTH - DOCK_ENTER_WIDTH).toBe(24);
     // The rail's reserve, the list and the narrowest readable transcript.
-    expect(sidebarPushThreshold(232)).toBe(68 + 232 + 320);
+    expect(sidebarPushThreshold(232)).toBe(64 + 232 + 320);
   });
 });
 
 /** Tie the source-readable rail reserve literal to title and band geometry. */
 describe("shell geometry: collapsed rail reserve", () => {
   it("makes the rail card 52px wide between the card inset and one gutter", () => {
-    expect(COLLAPSED_RAIL_RESERVE - SHELL_GUTTER * 2).toBe(52);
+    expect(COLLAPSED_RAIL_RESERVE - SHELL_GUTTER - CHROME_GAP_TIGHT).toBe(52);
   });
 
   it("starts the rail-only band on the content title's line past the rail", () => {
@@ -58,7 +58,7 @@ describe("shell geometry: collapsed rail reserve", () => {
   it("leaves the rail card room for its widest control at the largest font scale", () => {
     // The widest rail control must fit at the largest font scale; a merely positive width is insufficient.
     const widestRailControlPx = RAIL_CONTROL_REM * 16 * Math.max(...FONT_SIZE_SCALE_VALUES);
-    expect(COLLAPSED_RAIL_RESERVE - SHELL_GUTTER * 2).toBeGreaterThanOrEqual(widestRailControlPx);
+    expect(COLLAPSED_RAIL_RESERVE - SHELL_GUTTER - CHROME_GAP_TIGHT).toBeGreaterThanOrEqual(widestRailControlPx);
   });
 });
 
@@ -71,8 +71,8 @@ describe("window controls placement", () => {
     expect(Math.max(bandFloor, RAIL_BAND_LEAD)).toBe(railBandStart);
     expect(COLLAPSED_RAIL_EDGE + CONTENT_TITLE_INSET + 1).toBe(73);
     // The default expanded list is 232px wide; only its rendered content includes the card's 1px border.
-    expect(Math.max(bandFloor, COLLAPSED_RAIL_RESERVE + 232 + CONTENT_TITLE_INSET)).toBe(312);
-    expect(COLLAPSED_RAIL_RESERVE + 232 + CONTENT_TITLE_INSET + 1).toBe(313);
+    expect(Math.max(bandFloor, COLLAPSED_RAIL_RESERVE + 232 + CONTENT_TITLE_INSET)).toBe(308);
+    expect(COLLAPSED_RAIL_RESERVE + 232 + CONTENT_TITLE_INSET + 1).toBe(309);
   });
 
   it("leaves macOS its lights, trails on Windows and leads on Linux", () => {
@@ -102,7 +102,9 @@ describe("shell card top (styles.css)", () => {
     if (literal) return Number(literal[1]);
     const alias = /^var\((--[\w-]+)\)$/.exec(value);
     if (alias) return px(alias[1]);
-    // calc() of var() terms joined by + or -, the only shape the shell tokens use.
+    const half = /^calc\(var\((--[\w-]+)\) \/ 2\)$/.exec(value);
+    if (half) return px(half[1]) / 2;
+    // Resolve sums and differences after the half-gap alias.
     const calculation = /^calc\((.*)\)$/.exec(value);
     if (!calculation) throw new Error(`${name}: unsupported value ${value}`);
     const terms = /^\s*var\((--[\w-]+)\)((?:\s*[+-]\s*var\(--[\w-]+\))*)\s*$/.exec(calculation[1]);
@@ -124,7 +126,7 @@ describe("shell card top (styles.css)", () => {
   });
 
   it("derives the canvas origin from the shared card top and the cell half-gutter", () => {
-    expect(px("--shell-canvas-top") + px("--chrome-gap-tight")).toBe(px("--shell-card-top"));
+    expect(px("--shell-canvas-top") + px("--shell-card-half-gap")).toBe(px("--shell-card-top"));
     expect(px("--shell-canvas-top")).toBeGreaterThanOrEqual(px("--chrome-band-height"));
   });
 });

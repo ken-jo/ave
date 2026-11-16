@@ -486,14 +486,14 @@ describe("useChatGroups", () => {
     expect(result.current.splitFits("main", "row", { width: 1000, height: 1000 })).toBe(true);
     expect(result.current.splitFits("main", "column", { width: 1000, height: 1000 })).toBe(true);
     // Use literal split thresholds to detect inset regressions; derived expectations would move with the implementation.
-    expect(result.current.splitFits("main", "row", { width: 916, height: 1000 })).toBe(true);
-    expect(result.current.splitFits("main", "row", { width: 915, height: 1000 })).toBe(false);
-    expect(result.current.splitFits("main", "column", { width: 1000, height: 580 })).toBe(true);
-    expect(result.current.splitFits("main", "column", { width: 1000, height: 579 })).toBe(false);
+    expect(result.current.splitFits("main", "row", { width: 908, height: 1000 })).toBe(true);
+    expect(result.current.splitFits("main", "row", { width: 907, height: 1000 })).toBe(false);
+    expect(result.current.splitFits("main", "column", { width: 1000, height: 572 })).toBe(true);
+    expect(result.current.splitFits("main", "column", { width: 1000, height: 571 })).toBe(false);
     // The same two boundaries derived from the constants, so the anchors above are readable as arithmetic rather than as magic
     // numbers.
-    expect(2 * (PANE_MIN_WIDTH + PANE_CELL_INSET)).toBe(916);
-    expect(2 * (PANE_MIN_HEIGHT + PANE_CELL_INSET)).toBe(580);
+    expect(2 * (PANE_MIN_WIDTH + PANE_CELL_INSET)).toBe(908);
+    expect(2 * (PANE_MIN_HEIGHT + PANE_CELL_INSET)).toBe(572);
     // A canvas under BOTH floors fails on either axis.
     expect(result.current.splitFits("main", "row", { width: 800, height: 400 })).toBe(false);
     expect(result.current.splitFits("main", "column", { width: 800, height: 400 })).toBe(false);

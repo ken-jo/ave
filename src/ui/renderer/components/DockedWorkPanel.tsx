@@ -83,9 +83,8 @@ export const DockedPanelColumn = forwardRef<HTMLDivElement, {
         ...(motion.present ? {} : { display: "none" }),
       }}
       className={[
-        // Use the sidebar's pixel inset tokens for both floating-card edges and transcript reserve; font scaling must not change
-        // the host's pixel reserve.
-        "z-40 flex min-w-0 shrink-0 origin-right justify-end pt-(--shell-card-inset) pr-(--shell-card-inset) pb-(--shell-card-inset-bottom) pl-(--shell-card-inset) will-change-[width,opacity,transform]",
+        // This card is inside a pane; its surrounding air uses the inter-card gap rather than the window inset.
+        "z-40 flex min-w-0 shrink-0 origin-right justify-end p-(--shell-card-gap) will-change-[width,opacity,transform]",
         mode === "overlay" ? "absolute inset-y-0 right-0" : "relative self-stretch",
         resizing
           ? "transition-none"

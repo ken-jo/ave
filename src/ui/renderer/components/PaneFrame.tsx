@@ -60,12 +60,11 @@ const PANE_FRAME_BORDER = 1;
 
 /**
  * What a cell's frame loses to the air around it: the half-gutter it carries on
- * each side — two adjacent halves making the gap between tiles, which is why
- * the cell pads by `--chrome-gap-tight` rather than a full gap — plus its own
+ * each side — two adjacent halves making `--shell-card-gap` between tiles — plus its own
  * border. The tile floors above are on the frame's CONTENT, not on the cell, so
  * a split has to subtract this before comparing.
  */
-export const PANE_CELL_INSET = 2 * CHROME_GAP_TIGHT + 2 * PANE_FRAME_BORDER;
+export const PANE_CELL_INSET = CHROME_GAP_TIGHT + 2 * PANE_FRAME_BORDER;
 
 /** Which way a tile is halved: `row` puts the new tile beside it, `column` under it. */
 export type PaneSplitAxis = SplitAxis;

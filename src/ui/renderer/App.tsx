@@ -2502,10 +2502,10 @@ export function App() {
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
                   className={`ave-glass-clear relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-[var(--motion-normal)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
-                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-edge)" : ""
+                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-content-lead)" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
-                  style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${COLLAPSED_RAIL_RESERVE + sidebarWidth}px` }}
+                  style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `calc(${COLLAPSED_RAIL_RESERVE + sidebarWidth}px + var(--shell-card-half-gap))` }}
                 >
                   {/* Persistent banners reserve space and also register in the notification centre. */}
                   <div
@@ -2669,8 +2669,8 @@ export function App() {
                                 return (
                                 <div
                                   key={group.id}
-                                  /** Use pixel half-gutters so adjacent tiles make an 8px gap and stay aligned with sidebar chrome at every font scale. */
-                                  className="absolute flex p-(--chrome-gap-tight)"
+                                  /** Adjacent half-gutters make the same gap as navigation cards, independent of font scale. */
+                                  className="absolute flex p-(--shell-card-half-gap)"
                                   /** Keep hidden tiles mounted to preserve running turns, stream subscriptions and stop controls. */
                                   style={{ ...areaStyle(group.box), ...(group.hidden ? { display: "none" } : {}) }}
                                   data-testid={`pane-cell:${group.id}`}
