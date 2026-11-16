@@ -147,6 +147,6 @@ export interface WorkflowRunRecord {
   stageJoins?: StageJoin[];
   runWorkspace?: RunWorkspace;
 }
-/** invalid: the stored entry is unreadable and stays untouched. pending-review: the run file awaits home content review. */
+/** invalid: the stored entry is unreadable and stays untouched. pending-review: the run file awaits home content review. too-large: the write would grow the run file past its read limit. */
 export type WorkflowRunReadResult = { status: "found"; run: WorkflowRunRecord } | { status: "not-found" | "invalid" | "pending-review" };
-export type WorkflowRunWriteResult = { status: "stored"; run: WorkflowRunRecord } | { status: "not-found" | "invalid" | "pending-review" | "refused" };
+export type WorkflowRunWriteResult = { status: "stored"; run: WorkflowRunRecord } | { status: "not-found" | "invalid" | "pending-review" | "refused" | "too-large" };

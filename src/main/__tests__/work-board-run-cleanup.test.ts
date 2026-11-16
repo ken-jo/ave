@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { WorkBoardStore } from "../work-board-store.js";
@@ -201,4 +201,32 @@ it("keeps the run of a row deleted while its run was active, whichever process s
   expect(await runIds()).toEqual(["run-1"]);
   await restarted.releaseRun("run-1");
   expect(await runIds()).toEqual([]);
+});
+
+it("refuses a run write that would pass the read limit, so deleting a row still makes room", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const stageRuns = Array.from({ length: 12 }, (_, index) => ({ stageId: `stage-${index}`, attempt: 1, status: "passed" as const, output: "가".repeat(48_000) }));
+  const fill = async (id: number, runId: string) => (await store.updateRun(id, runId, value => ({ ...value, stageRuns }))).status;
+  const first = await templateItem(store);
+  const second = await templateItem(store);
+  const filled: string[] = [];
+  // No row is deleted: ten runs of this size, all still listed by their rows, do not fit.
+  for (let run = 1; run <= 5; run++) for (const id of [first, second]) {
+    await settled(store, id, `run-${id}-${run}`);
+    filled.push(await fill(id, `run-${id}-${run}`));
+  }
+  expect(filled).toEqual([...Array<string>(9).fill("stored"), "too-large"]);
+  expect((await stat(runsPath)).size).toBeLessThanOrEqual(16 * 1024 * 1024);
+  expect(await store.getRun(first)).toMatchObject({ status: "found" });
+
+  expect(await store.remove(first)).toMatchObject({ status: "deleted" });
+  expect(await fill(second, `run-${second}-5`)).toBe("stored");
+}, 120_000);
+
+it("reports a template start the run file has no room for", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  vi.spyOn(store.runs, "put").mockResolvedValue({ status: "too-large" });
+  expect(await store.beginRun(id, "run-1", "2026-01-01T00:00:00.000Z", start())).toMatchObject({ status: "invalid", reason: "template-runs-too-large" });
+  expect((await store.get(id) as { item: object }).item).not.toHaveProperty("runId");
 });

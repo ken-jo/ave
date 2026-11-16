@@ -3678,6 +3678,8 @@ with its own owner rule:
   deleted, when the row write that should have named it failed, and on every
   later template-run start. Archiving a template removes its settled runs.
   Entries that do not parse are never removed, and nothing is removed by age.
+  A write that would grow the run file past the read limit is refused, so the
+  file stays readable and deleting rows makes room again.
   Marketplace MCP package files under `mcp/<name>/server/` are
   checked before every stdio launch against the tree digest of the verified
   archive held by their install record; a mismatch, a link, or any other entry

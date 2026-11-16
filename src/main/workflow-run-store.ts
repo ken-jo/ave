@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { openFeatureNamespace, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
-import { AveHomeInputSizeLimitError, readAveHomeInput } from "../shared/ave-home-trust.js";
+import { AVE_HOME_INPUT_MAX_BYTES, AveHomeInputSizeLimitError, readAveHomeInput } from "../shared/ave-home-trust.js";
 import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { isRecord } from "../shared/is-record.js";
 import { canonicalWorkflowJson } from "../shared/workflow-template-output.js";
@@ -108,12 +108,16 @@ export class WorkflowRunStore {
       assertWorkflowRunRecord(run);
       requireTemplate(bindingOf(run) === bindingOf(prior), "invalid-template-run");
       if (index === -1) file.runs.push(run); else file.runs[index] = run;
-      await this.commit(file);
+      if (!(await this.commit(file))) return { status: "too-large" };
       return { status: "stored", run: structuredClone(run) };
     });
   }
 
-  private commit(file: RunsFile): Promise<void> {
-    return writeFileAtomicAtPath(this.filePath, `${JSON.stringify(file, null, 2)}\n`);
+  // A file past the read limit could not be read again, so nothing could shrink it afterwards: such a write is refused and the file stays as it is.
+  private async commit(file: RunsFile): Promise<boolean> {
+    const text = `${JSON.stringify(file, null, 2)}\n`;
+    if (Buffer.byteLength(text, "utf8") > AVE_HOME_INPUT_MAX_BYTES) return false;
+    await writeFileAtomicAtPath(this.filePath, text);
+    return true;
   }
 }

@@ -67,7 +67,8 @@ let inputWriteBatchDepth = 0;
 const completedInputWrites = new Set<ActiveTrust>();
 let reviewSnapshot: { id: string; rows: readonly AveHomeTrustRow[] } | undefined;
 
-const MAX_INPUT_BYTES = 16 * 1024 * 1024;
+/** The largest covered input that is read. A larger file is refused, so a writer must not grow its own file past this. */
+export const AVE_HOME_INPUT_MAX_BYTES = 16 * 1024 * 1024;
 const MAX_TREE_FILES = 4096;
 const MAX_TREE_BYTES = 64 * 1024 * 1024;
 
@@ -186,7 +187,7 @@ function readRegularFile(path: string, pinned: Stats): { bytes: Buffer; uid: num
   try {
     const opened = fstatSync(descriptor);
     if (!opened.isFile() || opened.ino !== pinned.ino || opened.dev !== pinned.dev) throw new Error(`${path} changed while it was opened`);
-    if (opened.size > MAX_INPUT_BYTES) throw new AveHomeInputSizeLimitError(`${path} exceeds the size limit`);
+    if (opened.size > AVE_HOME_INPUT_MAX_BYTES) throw new AveHomeInputSizeLimitError(`${path} exceeds the size limit`);
     const bytes = Buffer.alloc(opened.size);
     let filled = 0;
     while (filled < bytes.length) {

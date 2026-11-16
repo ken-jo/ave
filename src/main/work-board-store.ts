@@ -819,7 +819,7 @@ export class WorkBoardStore {
         }), unlisted);
         if (stored.status !== "stored") {
           this.cache = board;
-          return { status: "invalid" as const, itemId: id, reason: stored.status === "pending-review" ? "template-runs-pending-review" : "invalid-template-run" };
+          return { status: "invalid" as const, itemId: id, reason: stored.status === "pending-review" ? "template-runs-pending-review" : stored.status === "too-large" ? "template-runs-too-large" : "invalid-template-run" };
         }
       }
       const history = [
