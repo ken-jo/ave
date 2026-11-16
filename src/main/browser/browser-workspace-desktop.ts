@@ -1,5 +1,5 @@
 import { isBackgroundE2eRuntime, whenFocusEmulated } from "../e2e-window-presentation.js";
-import { dialog, Menu, session, shell, type BrowserWindow, type DownloadItem, type WebContents } from "electron";
+import { clipboard, dialog, Menu, session, shell, type BrowserWindow, type DownloadItem, type MenuItemConstructorOptions, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
 import { browserWorkspaceUrl } from "../../shared/browser-workspace.js";
@@ -10,6 +10,7 @@ import type { MainWindow } from "../main-window-host.js";
 import { observeAgentBrowserDownload } from "../browser-observation.js";
 import { trackBrowserGuest } from "./browser-guest-tracking.js";
 import { subscribeBrowserGuestDestroyed } from "./browser-guest-lifecycle.js";
+import { pageContextMenu, type PageContextMenuParams } from "./browser-page-context-menu.js";
 import { browserTabRegistry } from "./browser-tab-registry.js";
 import { createBrowserWorkspaceService, type BrowserWorkspaceService } from "./browser-workspace.js";
 
@@ -73,6 +74,20 @@ export function browserWorkspaceGuestWindowId(contents: WebContents | null): num
   return entry?.contents === contents && !entry.owner.isDestroyed() && mainWindow(entry.owner.id) === entry.owner ? entry.owner.id : null;
 }
 
+/** The browser's menu for this page, with navigation as the user's. A popup has no tab beside which to open a link. */
+export function browserPageMenuItems(contents: WebContents, windowId: number, params: PageContextMenuParams, opensTabs: boolean): MenuItemConstructorOptions[] {
+  const workspace = getBrowserWorkspaceService();
+  const asUser = (navigate: () => void) => () => { if (!contents.isDestroyed()) { workspace.userNavigatesGuest(contents.id); navigate(); } };
+  return pageContextMenu(params, {
+    pageUrl: browserWorkspaceUrl(contents.getURL()),
+    canGoBack: contents.navigationHistory.canGoBack(), canGoForward: contents.navigationHistory.canGoForward(),
+    back: asUser(() => contents.navigationHistory.goBack()), forward: asUser(() => contents.navigationHistory.goForward()), reload: asUser(() => contents.reload()),
+    ...(opensTabs ? { openLinkInNewTab: (url: string) => { if (!contents.isDestroyed()) workspace.openLinkTab(windowId, contents.id, url, true); } } : {}),
+    copyText: (text) => clipboard.writeText(text),
+    openInSystemBrowser: (url) => { void shell.openExternal(url).catch((error: unknown) => log.warn({ error }, "browser page could not be opened in the system browser")); },
+  });
+}
+
 export function observeBrowserWorkspaceGuest(contents: WebContents, owner: MainWindow): void {
   if (contents.isDestroyed() || owner.isDestroyed() || mainWindow(owner.id) !== owner
     || contents.session !== session.fromPartition(AVE_SIDE_BROWSER_PARTITION)) throw new Error("browser-guest-owner-mismatch");
@@ -100,9 +115,19 @@ export function observeBrowserWorkspaceGuest(contents: WebContents, owner: MainW
     owner.once("closed", dispose);
   }
   const stopObserving = getBrowserWorkspaceService().observeGuest(windowId, contents);
+  // A user's tab shows the browser's page menu. The agent's own view shows the same menu once the user has taken it
+  // over, and a popup window shows it with the pause control; their hosts install those menus.
+  const contextMenu = (event: { preventDefault(): void }, params: PageContextMenuParams) => {
+    event.preventDefault();
+    if (contents.isDestroyed() || owner.isDestroyed()) return;
+    Menu.buildFromTemplate(browserPageMenuItems(contents, windowId, params, true)).popup({ window: owner });
+  };
+  const hasPageMenu = contents.getType() === "webview";
+  if (hasPageMenu) contents.on("context-menu", contextMenu);
   let unsubscribe = () => {};
   const dispose = () => {
     unsubscribe();
+    if (hasPageMenu && !contents.isDestroyed()) contents.removeListener("context-menu", contextMenu);
     stopObserving();
     guests.delete(guestId);
   };
@@ -196,7 +221,7 @@ export function registerBrowserWorkspacePopup(openerGuestId: number, child: Brow
     if (popup) popup.title = nativeTitle(title);
     refreshBrowserPopupControl(owner.id, browserTabRegistry.controlState(owner.id));
   };
-  const contextMenu = (event: { preventDefault(): void }, params: { x: number; y: number }) => {
+  const contextMenu = (event: { preventDefault(): void }, params: PageContextMenuParams & { x: number; y: number }) => {
     event.preventDefault();
     const tab = browserTabRegistry.liveTabInWindow(handle, owner.id);
     if (child.isDestroyed() || !tab || tab.guest !== contents) return;
@@ -211,7 +236,7 @@ export function registerBrowserWorkspacePopup(openerGuestId: number, child: Brow
         else browserTabRegistry.pausePopup(owner.id, handle);
         refreshBrowserPopupControl(owner.id, browserTabRegistry.controlState(owner.id));
       },
-    }]);
+    }, { type: "separator" }, ...browserPageMenuItems(contents, owner.id, params, false)]);
     menu.popup({ window: child, x: params.x, y: params.y });
   };
   const navigated = () => refreshBrowserPopupControl(owner.id, browserTabRegistry.controlState(owner.id));

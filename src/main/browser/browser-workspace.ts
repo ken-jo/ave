@@ -233,6 +233,12 @@ export class BrowserWorkspaceService {
     this.releaseLeave(entry.guest.id);
     return null;
   }
+  /** The same mark for a navigation the user starts from the host's own page menu, which knows the guest, not the tab. */
+  userNavigatesGuest(guestId: number): void {
+    const entry = this.guests.get(guestId);
+    if (entry) entry.userNavigation = "marked";
+    this.releaseLeave(guestId);
+  }
   answerPrompt(windowId: number, request: BrowserPromptAnswerRequest): null {
     const parsed = parseBrowserWorkspaceRequest("answerPrompt", request);
     if (!parsed) throw new Error("bad-request");

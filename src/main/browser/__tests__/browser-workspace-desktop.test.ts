@@ -6,13 +6,13 @@ import type { BrowserWorkspaceServiceDeps } from "../browser-workspace.js";
 
 const native = vi.hoisted(() => ({
   windows: [] as unknown[], session: {}, deps: null as BrowserWorkspaceServiceDeps | null,
-  template: [] as Array<{ label?: string; enabled?: boolean; click?: () => void }>,
+  template: [] as Array<{ id?: string; label?: string; enabled?: boolean; type?: string; click?: () => void }>,
   showMessageBox: vi.fn(async (_window: unknown, _options: unknown) => ({ response: 1 })),
   popup: vi.fn(),
 }));
 const workspace = vi.hoisted(() => ({
   observeGuest: vi.fn((_windowId: number, _guest: unknown) => vi.fn()), observeDownload: vi.fn(),
-  invalidateWindow: vi.fn(), disposeWindow: vi.fn(), dispose: vi.fn(),
+  invalidateWindow: vi.fn(), disposeWindow: vi.fn(), dispose: vi.fn(), userNavigatesGuest: vi.fn(), openLinkTab: vi.fn(),
 }));
 const observeAgentDownload = vi.hoisted(() => vi.fn());
 vi.mock("../../browser-observation.js", () => ({ observeAgentBrowserDownload: observeAgentDownload }));
@@ -39,6 +39,8 @@ class Guest extends EventEmitter {
   destroyed = false;
   focused = false;
   constructor(private readonly guestId: number, public url = "https://site.example/", public title = "Site") { super(); }
+  hostType = "webview";
+  getType() { return this.hostType; }
   get id() {
     if (this.destroyed) throw new TypeError("Object has been destroyed");
     return this.guestId;
@@ -47,6 +49,8 @@ class Guest extends EventEmitter {
   getURL() { return this.url; }
   getZoomFactor() { return 1; }
   setZoomFactor() {}
+  readonly navigationHistory = { canGoBack: () => true, canGoForward: () => false, goBack: vi.fn(), goForward: vi.fn() };
+  readonly reload = vi.fn();
   getTitle() { return this.title; }
   isFocused() { return this.focused; }
   focus() { this.focused = true; this.emit("focus"); }
@@ -195,6 +199,7 @@ describe("native popup desktop controls", () => {
     const window = owner();
     const opener = await ownedPage(window);
     const popup = new Window(2, new Guest(72));
+    popup.webContents.hostType = "window";
     const handle = registerBrowserWorkspacePopup(opener.id, asWindow(popup), asMainWindow(window))!;
     observeBrowserWorkspaceGuest(asGuest(popup.webContents), asMainWindow(window));
     expect(browserTabRegistry.liveTab(handle)).toMatchObject({ rendererTabId: null, windowId: 1, targetKind: "popup" });
@@ -210,12 +215,20 @@ describe("native popup desktop controls", () => {
     expect(popup.setTitle).toHaveBeenLastCalledWith("https://elsewhere.example · Ave · browserWorkspace.mode.human · UnsafeTitle");
     const tab = browserTabRegistry.liveTab(handle)!;
     browserTabRegistry.acquireControl(tab, { sessionId: "parent" });
-    popup.webContents.emit("context-menu", { preventDefault: vi.fn() }, { x: 3, y: 4 });
+    const menuParams = { x: 3, y: 4, linkURL: "https://site.example/next", selectionText: "", isEditable: false, editFlags: { canCut: false, canCopy: false, canPaste: false, canSelectAll: true } };
+    popup.webContents.emit("context-menu", { preventDefault: vi.fn() }, menuParams);
     expect(native.template[0]).toMatchObject({ label: "agentBrowser.stop", enabled: true });
+    // The popup's page has the browser's page menu too, without a tab to open a link beside.
+    expect(native.template.map((item) => item.id).filter(Boolean)).toEqual(["copy-link", "back", "forward", "reload", "open-in-system-browser"]);
+    const back = native.template.find((item) => item.id === "back");
+    expect(back?.click).toBeTypeOf("function");
+    back?.click?.();
+    expect(popup.webContents.navigationHistory.goBack).toHaveBeenCalledOnce();
+    expect(workspace.userNavigatesGuest).toHaveBeenCalledWith(72);
     native.template[0]!.click!();
     expect(tab.controlMode).toBe("human-paused");
     expect(popup.setTitle.mock.calls.at(-1)![0]).toContain("browserWorkspace.mode.human-paused");
-    popup.webContents.emit("context-menu", { preventDefault: vi.fn() }, { x: 3, y: 4 });
+    popup.webContents.emit("context-menu", { preventDefault: vi.fn() }, menuParams);
     expect(native.template[0]!.label).toBe("agentBrowser.resume");
     native.template[0]!.click!();
     expect(tab.controlMode).toBe("agent-active");

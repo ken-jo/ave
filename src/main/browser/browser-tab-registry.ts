@@ -501,6 +501,10 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return this.attached.get(guestId)?.kind === "native-view";
   }
 
+  isPopupGuest(guestId: number): boolean {
+    return [...this.tabs.values()].some((tab) => tab.targetKind === "popup" && tab.guest !== null && !tab.guest.isDestroyed() && tab.guest.id === guestId);
+  }
+
   allowsNativeContextMenu(guestId: number): boolean {
     const entry = this.attached.get(guestId);
     if (entry?.kind !== "native-view" || entry.parked !== false || entry.guest.isDestroyed()) return false;

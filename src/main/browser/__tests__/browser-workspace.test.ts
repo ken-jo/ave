@@ -391,6 +391,9 @@ describe("browser workspace service", () => {
     attempt();
     expect(holding()).toBe(true);
     expect(navigation.preventDefault).not.toHaveBeenCalled();
+    // A navigation the user starts from the page's own menu also ends the hold.
+    service.userNavigatesGuest(7);
+    expect(holding()).toBe(false);
   });
   it("offers a mail link to the system's app only after the user agrees, and only says so for other schemes", async () => {
     const { service, guest, events, openExternal, setLive } = await setup();
