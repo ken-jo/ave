@@ -75,16 +75,17 @@ export function AccessibilitySignalsSettings() {
       title={t("accessibilitySignals.title")}
       description={t("accessibilitySignals.description")}
     >
-      <div className="space-y-2" data-testid="accessibility-signals">
+      <div className="@container space-y-2" data-testid="accessibility-signals">
         {ACCESSIBILITY_SIGNAL_IDS.map((id) => {
           const label = t(SIGNAL_LABEL_KEYS[id].label);
           return (
-            <div key={id} className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-3" data-testid={`accessibility-signal:${id}`}>
+            <div key={id} className="flex flex-col items-stretch gap-3 rounded-md border px-3 py-3 @min-[30rem]:flex-row @min-[30rem]:items-center" data-testid={`accessibility-signal:${id}`}>
               <div className="min-w-0 flex-1 space-y-0.5">
                 <p className="text-sm font-medium">{label}</p>
                 <p className="text-dense text-muted-foreground">{t(SIGNAL_LABEL_KEYS[id].hint)}</p>
                 {playFailed === id && <p role="alert" className="text-dense text-destructive">{t("accessibilitySignals.playFailed")}</p>}
               </div>
+              <div className="flex shrink-0 flex-wrap items-center gap-3">
               <NativeSelect
                 size="sm"
                 value={modes?.[id] ?? ""}
@@ -111,6 +112,7 @@ export function AccessibilitySignalsSettings() {
                 <Play className="size-3.5" aria-hidden="true" />
                 {t("accessibilitySignals.play")}
               </Button>
+              </div>
             </div>
           );
         })}
