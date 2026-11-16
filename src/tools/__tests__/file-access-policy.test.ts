@@ -56,6 +56,16 @@ describe("shared execute-time file gate", () => {
     }
   });
 
+  it("denies a host terminal tab's kept output to file tools and to a shell command that names it, even with an admitted directory", async () => {
+    const path = join(context.cwd, ".ave", "terminal-state", "0123456789abcdef0123456789abcdef.scrollback");
+    const sensitive = admissionDeniedFilePattern(path);
+    expect(sensitive).not.toBeNull();
+    for (const effect of ["read", "write"] as const) {
+      expect(ensureFileAccess(path, { ...context, extraAllowedDirectories: [join(context.cwd, ".ave")] }, effect)).toEqual({ output: `Sensitive path: ${path} matches ${sensitive}`, isError: true });
+      expect(findResolvedShellPathViolation(path, path, context.cwd, [join(context.cwd, ".ave")], effect, false)).toMatchObject({ kind: "sensitive-path" });
+    }
+  });
+
   it.skipIf(!canCreateSymlinks())("reuses canonical ancestor and sensitive-target policy", async () => {
     const alias = join(root, "alias");
     await symlink(context.cwd, alias);

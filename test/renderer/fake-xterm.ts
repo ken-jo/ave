@@ -27,7 +27,7 @@ export class FakeXterm {
   onScroll() { return disposable; }
   resize(cols: number, rows: number) { this.cols = cols; this.rows = rows; }
   onSelectionChange() { return disposable; }
-  write(text: string) { fakeXtermWrites.push(text); }
+  write(text: string, done?: () => void) { fakeXtermWrites.push(text); done?.(); }
   focus() {}
   dispose() {}
   attachCustomKeyEventHandler() {}

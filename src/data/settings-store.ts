@@ -770,6 +770,26 @@ function withProviderPresetsFrom(
   };
 }
 
+/**
+ * The window layout as this run's settings load found it in the settings file, before anything was written. `read`: the file was read and holds
+ * settings, and this is their layout, or none when they hold no layout. `unknown`: what the file holds is not known, so the run started on
+ * defaults: no settings file (a fresh install), a file that could not be read or parsed or does not hold settings, or a stored layout (or the
+ * system block that holds it) this build refused. Deleting what the saved layout does not name is safe on a `read` layout only.
+ */
+export type LoadedMainLayout =
+  | { readonly kind: "read"; readonly layout: MainLayoutSnapshot | undefined }
+  | { readonly kind: "unknown"; readonly reason: "no-file" | "unreadable" | "layout-refused" };
+
+/** What a read settings file holds of the layout: the stored system block and layout against what normalization kept of them. */
+function mainLayoutAsStored(holdsSettings: boolean, storedSystem: unknown, normalized: MainLayoutSnapshot | undefined): LoadedMainLayout {
+  if (!holdsSettings) return { kind: "unknown", reason: "unreadable" };
+  if (storedSystem === undefined) return { kind: "read", layout: undefined };
+  if (storedSystem === null || typeof storedSystem !== "object" || Array.isArray(storedSystem)) return { kind: "unknown", reason: "layout-refused" };
+  const storedLayout = (storedSystem as { mainLayout?: unknown }).mainLayout;
+  if (storedLayout === undefined) return { kind: "read", layout: undefined };
+  return normalized === undefined ? { kind: "unknown", reason: "layout-refused" } : { kind: "read", layout: normalized };
+}
+
 export class SettingsService {
   private readonly changeListeners = new Map<keyof AppSettings, Set<() => void>>();
   private providerConfigRevision = 0;
@@ -835,6 +855,8 @@ export class SettingsService {
   private settings: AppSettings;
   /** The settings last written to disk (or loaded): what memory returns to when a save fails. */
   private saved: AppSettings;
+  /** What the load found of the window layout on disk; later writes do not change it. */
+  private readonly mainLayoutAsLoaded: LoadedMainLayout;
   /** Writes whose change is in memory but not yet on disk (see `commit`). */
   private unsaved: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
   private saving = false;
@@ -873,9 +895,10 @@ export class SettingsService {
         this.secretStatesChanged(changed);
       },
     });
-    const { settings: loaded, writeBack: needsWriteBack } = this.loadSettings(options.appVersion, options.systemLocale);
+    const { settings: loaded, writeBack: needsWriteBack, mainLayout } = this.loadSettings(options.appVersion, options.systemLocale);
     this.settings = loaded;
     this.saved = structuredClone(loaded);
+    this.mainLayoutAsLoaded = structuredClone(mainLayout);
     // Migration write-back (appearance schema, one-time markers): persist so the next load is clean.
     if (needsWriteBack) {
       void this.commit().catch(() => { /* best-effort — next load re-migrates */ });
@@ -901,6 +924,11 @@ export class SettingsService {
 
   getAll(): AppSettings {
     return structuredClone(this.settings);
+  }
+
+  /** The window layout as the settings file held it when this run loaded it ({@link LoadedMainLayout}), whatever has been written since. */
+  loadedMainLayout(): LoadedMainLayout {
+    return structuredClone(this.mainLayoutAsLoaded);
   }
 
   get<K extends keyof AppSettings>(key: K): AppSettings[K] {
@@ -1619,18 +1647,22 @@ export class SettingsService {
   // Historical note: hasApiKey() only checked the single `llm.apiKey` key, while the IPC handler uses vendor-specific `llm.apiKey.<vendor>`
   // secrets. Presence checks name the exact vendor key through `hasStoredSecret(...)` so they cannot return false for configured credentials.
 
-  private loadSettings(appVersion: string | undefined, systemLocale: string | undefined): { settings: AppSettings; writeBack: boolean } {
+  private loadSettings(
+    appVersion: string | undefined,
+    systemLocale: string | undefined,
+  ): { settings: AppSettings; writeBack: boolean; mainLayout: LoadedMainLayout } {
     if (!existsSync(this.settingsPath)) {
       const defaults = structuredClone(DEFAULT_SETTINGS);
       const locale = normalizeLocale(systemLocale);
       defaults.appearance.language = isDefaultVisibleLocale(locale) ? locale : DEFAULT_LOCALE;
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
-      return { settings: defaults, writeBack: false };
+      return { settings: defaults, writeBack: false, mainLayout: { kind: "unknown", reason: "no-file" } };
     }
     try {
       const raw = readFileSync(this.settingsPath, "utf-8");
       const rawParsed = JSON.parse(raw) as unknown;
-      const stored = rawParsed !== null && typeof rawParsed === "object" && !Array.isArray(rawParsed)
+      const holdsSettings = rawParsed !== null && typeof rawParsed === "object" && !Array.isArray(rawParsed);
+      const stored = holdsSettings
         ? rawParsed as Record<string, any>
         : {};
       const appliedMigrations = Array.isArray(stored.appliedMigrations)
@@ -1773,12 +1805,16 @@ export class SettingsService {
         features: { ...DEFAULT_SETTINGS.features, ...normalizedFeatures },
         appliedMigrations,
       };
-      return { settings: result, writeBack: needsAppearanceWriteBack || migrationWriteBack };
+      return {
+        settings: result,
+        writeBack: needsAppearanceWriteBack || migrationWriteBack,
+        mainLayout: mainLayoutAsStored(holdsSettings, parsed.system, result.system.mainLayout),
+      };
     } catch (error) {
       if (error instanceof LlmProviderSettingsError) throw error;
       const defaults = structuredClone(DEFAULT_SETTINGS);
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
-      return { settings: defaults, writeBack: false };
+      return { settings: defaults, writeBack: false, mainLayout: { kind: "unknown", reason: "unreadable" } };
     }
   }
 

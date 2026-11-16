@@ -572,6 +572,57 @@ describe("file native tools", () => {
     }
   });
 
+  it.each([".ave", "custom-profile"])("refuses every file tool the host terminal output kept in %s, by its own path, through a link, and as a search root", async (profileName) => {
+    const profile = join(workDir, profileName);
+    const store = join(profile, "terminal-state");
+    const target = join(store, "0123456789abcdef0123456789abcdef.scrollback");
+    const kept = "export TOKEN=inert-terminal-sentinel\r\n";
+    mkdirSync(store, { recursive: true });
+    writeFileSync(target, kept, "utf8");
+    vi.stubEnv("AVE_HOME", profile);
+    try {
+      // The tool's own execution, which is what runs once a mode, a saved rule, a remembered grant or an approval has let the call through:
+      // none of those opens this file. The working directory holds it, so no directory fence is what refuses.
+      const read = await new ReadFileTool().execute({ path: target }, ctx());
+      expect(read.isError).toBe(true);
+      expect(read.output).toContain("Sensitive path:");
+      expect(read.output).not.toContain("inert-terminal-sentinel");
+      for (const write of [
+        await new WriteFileTool().execute({ path: target, content: "replaced" }, ctx()),
+        await new EditFileTool().execute({ path: target, oldText: "TOKEN", newText: "X" }, ctx()),
+      ]) {
+        expect(write.isError).toBe(true);
+        expect(write.output).toContain("Sensitive path:");
+      }
+      expect(readFileSync(target, "utf8")).toBe(kept);
+      // A search that names the store, or the file, as where to look.
+      for (const path of [store, target]) {
+        const searched = await new GrepFilesTool().execute({ path, pattern: "inert-terminal-sentinel", limit: 50 }, ctx());
+        expect(searched.output).not.toContain("inert-terminal-sentinel");
+        expect(searched.isError, searched.output).toBe(true);
+      }
+      // A search of everything above it.
+      const scanned = await new GrepFilesTool().execute({ path: ".", pattern: "inert-terminal-sentinel", limit: 50 }, ctx());
+      expect(scanned.isError, scanned.output).toBe(false);
+      expect(scanned.output).toContain("No matches found.");
+      const listed = await new ListFilesTool().execute({ path: store, depth: 2, limit: 20 }, ctx());
+      expect(listed.output).not.toContain(".scrollback");
+      if (canCreateSymlinks()) {
+        const alias = join(workDir, "notes.txt");
+        symlinkSync(target, alias);
+        const aliased = await new ReadFileTool().execute({ path: alias }, ctx());
+        expect(aliased.isError).toBe(true);
+        expect(aliased.output).not.toContain("inert-terminal-sentinel");
+        const linkedStore = join(workDir, "linked-store");
+        symlinkSync(store, linkedStore);
+        const throughLink = await new GrepFilesTool().execute({ path: linkedStore, pattern: "inert-terminal-sentinel", limit: 50 }, ctx());
+        expect(throughLink.output).not.toContain("inert-terminal-sentinel");
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("write-capable file tools scope approval cache keys to canonical paths", () => {
     expect(new WriteFileTool().approvalCacheKey({ path: "src/a.ts" }, { cwd: workDir })).toBe(
       `path:${join(workDir, "src", "a.ts")}`,

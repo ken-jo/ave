@@ -289,6 +289,14 @@ vi.mock("../steps/alerts-setup.js", () => ({
   }),
 }));
 
+vi.mock("../steps/terminal-scrollback-setup.js", () => ({
+  setupTerminalScrollback: vi.fn((ctx: { settingsService: unknown; notificationService: unknown }) => {
+    h.rec("terminalScrollback");
+    // What the step reads its layout from and tells the user through, as it stands when the step runs.
+    h.captured.terminalScrollbackInputs = { settingsService: ctx.settingsService, notificationService: ctx.notificationService };
+  }),
+}));
+
 vi.mock("../steps/work-board-migration.js", () => ({
   migrateLegacyPluginBoardToWorkBoard: vi.fn(async () => false),
 }));
@@ -888,6 +896,14 @@ describe("bootstrap() integration lock", () => {
     assertBefore("sandboxGateDecided", "startPlugins");
     // Spawns are refused from the start of boot until that decision.
     assertBefore("sandboxGatePending", "sandboxGateDecided");
+    // Kept terminal output is swept once, inside boot, against the layout settings loaded: IPC, and with it any window's layout save, comes after
+    // boot returns. The step tells the user of a failed sweep through the notification service, which exists by then.
+    assertBefore("core", "terminalScrollback");
+    expect(h.order.filter((label) => label === "terminalScrollback")).toHaveLength(1);
+    const inputs = h.captured.terminalScrollbackInputs as { settingsService: unknown; notificationService: unknown };
+    expect(inputs.settingsService).toBe(services.settingsService);
+    expect(inputs.notificationService).toBe(services.notificationService);
+    expect(inputs.notificationService).toBeDefined();
   });
 
   // Drive the actual boot closures and require emitHostEvent on every uninstall path; an omitted optional callback silently loses uninstall events.

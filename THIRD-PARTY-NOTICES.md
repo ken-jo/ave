@@ -190,6 +190,42 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
+## xterm.js serialize addon (`@xterm/addon-serialize`)
+
+- **What is included:** the string serializer of `@xterm/addon-serialize`
+  0.14.0 (`addons/addon-serialize/src/SerializeAddon.ts`), ported into the
+  renderer: a host terminal tab serializes what its terminal shows, to be
+  restored after a restart. Changed to write each cell's hyperlink and to
+  end after the last row with content. The package itself is not bundled.
+- **Ave files that contain ported code:**
+  - `src/ui/renderer/components/terminal-serialize.ts`
+- **Ave files that use the ported code:** `src/ui/renderer/components/live-terminal.ts`
+- **License:** MIT (the package's `package.json` `license` field)
+- **Repository:** https://github.com/xtermjs/xterm.js
+- **Full license text:** reproduced below.
+
+```text
+Copyright (c) 2019, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
 ## SheetJS Community Edition (`xlsx`)
 
 - **Version:** 0.20.3 (pinned, exact; installed from the official tarball

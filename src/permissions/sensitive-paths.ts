@@ -273,6 +273,7 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "ave-home", segments: ["sessions"], kind: "dir", access: "read-only", why: "saved conversation integrity" },
   { anchor: "ave-home", segments: ["host-runtime"], kind: "dir", why: "process ownership lock (replacement creates a second writer)" },
   { anchor: "ave-home", segments: ["routine"], kind: "dir", why: "routine session history" },
+  { anchor: "ave-home", segments: ["terminal-state"], kind: "dir", why: "host terminal output kept for restoring a tab: the user's own screen, never an agent's to read" },
   {
     anchor: "ave-home",
     segments: ["plugins", "auth-partitions.json"],
@@ -401,11 +402,12 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
   "**/.config/Ave/**",
 ]);
 
-// Credential stores and the process ownership lock retain an unconditional admission deny.
+// Credential stores, the process ownership lock and kept host terminal output retain an unconditional admission deny.
 // User-authored secret files and configuration are classified separately.
 function isAdmissionEntry(entry: SensitiveEntry): boolean {
   const [first, second, third] = entry.segments;
-  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime"].includes(first!)
+  // `terminal-state` is the user's own terminal screen kept for restoring a tab: no rule, remembered grant, reviewer or mode opens it to a tool.
+  if (entry.anchor === "ave-home") return ["secrets", "keys", "subscription-runtimes", "ave-secrets.json", "auth-partitions.json", "host-runtime", "terminal-state"].includes(first!)
     || (first === "plugins" && second === "auth-partitions.json");
   if (entry.anchor === "root") return second === "shadow";
   if (["Library", "AppData", ".mozilla", ".thunderbird", "snap", ".var", ".password-store"].includes(first!)) return true;

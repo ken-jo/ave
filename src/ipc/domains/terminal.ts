@@ -5,7 +5,7 @@ import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } fro
 import { fanOutToAllWindows } from "../window-fanout.js";
 import { createLogger } from "../../lib/logger.js";
 import {
-  setManualShellPreference, setTerminalEmitter, spawnTerminal, writeTerminal, resizeTerminal, killTerminal,
+  forgetTerminalScrollback, keepTerminalOutput, setManualShellPreference, setTerminalEmitter, spawnTerminal, writeTerminal, resizeTerminal, killTerminal,
   terminalOwnedBy, controlTerminal,
 } from "../../main/terminal/pty-manager.js";
 import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession, listTerminalBlockTabs } from "../../main/terminal/terminal-blocks.js";
@@ -19,6 +19,8 @@ const log = createLogger("terminal-ipc");
 export function registerTerminalHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
   setManualShellPreference(() => deps.settingsService.get("appearance").terminal.shell);
+  // Host tabs' kept output is boot's: it installs the store with the run's sweep of closed tabs' output queued first
+  // (boot/steps/terminal-scrollback-setup.ts). Registering the handlers reads no settings and touches no disk.
   setTerminalEmitter((event, payload, ownerWindowId) => {
     if (payload.lane !== "manual") return;
     const channel = event === "data" ? CHANNELS.terminal.data : event === "exit" ? CHANNELS.terminal.exit : CHANNELS.terminal.controlChanged;
@@ -41,6 +43,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     if (!payload || typeof payload.tabId !== "string" || payload.lane !== "manual" || !isTerminalPurpose(payload.purpose)
       || (payload.cwd !== undefined && typeof payload.cwd !== "string")
       || (payload.replay !== undefined && typeof payload.replay !== "boolean")
+      || (payload.restore !== undefined && typeof payload.restore !== "boolean")
       || (payload.cols !== undefined && (typeof payload.cols !== "number" || !Number.isFinite(payload.cols)))
       || (payload.rows !== undefined && (typeof payload.rows !== "number" || !Number.isFinite(payload.rows)))) {
       return { ok: false, reason: "bad-request", message: "invalid terminal spawn request" };
@@ -58,6 +61,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     return spawnTerminal({ tabId: payload.tabId, lane: payload.lane, ownerWindowId, purpose: payload.purpose,
       ...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
       ...(payload.replay !== undefined ? { replay: payload.replay } : {}),
+      ...(payload.restore !== undefined ? { restore: payload.restore } : {}),
       ...(payload.cols !== undefined ? { cols: payload.cols } : {}),
       ...(payload.rows !== undefined ? { rows: payload.rows } : {}),
     });
@@ -76,6 +80,16 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       return resizeTerminal(payload, payload.cols, payload.rows);
     });
   }
+  // What the owning window's view of a host tab shows, kept for the tab to come back with after a restart.
+  ipcMain.handle(CHANNELS.terminal.keep, async (event, payload) => {
+    if (!authorized(event, CHANNELS.terminal.keep)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
+    if (!payload || typeof payload.tabId !== "string" || !payload.tabId || (payload.shown !== null && typeof payload.shown !== "string")) {
+      return { ok: false, error: "invalid-params" };
+    }
+    const ownerWindowId = senderWindowId(event);
+    if (ownerWindowId === null || !terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, error: "not-owner" };
+    return keepTerminalOutput(payload.tabId, ownerWindowId, payload.shown);
+  });
   // The user's visible control buttons. Only the owning window's host renderer may take over, stop or hand back its own host terminal.
   ipcMain.handle(CHANNELS.terminal.control, async (event, payload) => {
     if (!authorized(event, CHANNELS.terminal.control)) return { ok: false, error: UNAUTHORIZED_FRAME.error };
@@ -91,6 +105,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
     if (!payload || typeof payload.tabId !== "string" || !payload.tabId || (payload.lane !== undefined && payload.lane !== "manual")) return { ok: false, error: "invalid-params" };
     if (!terminalOwnedBy(payload.tabId, senderWindowId(event))) return { ok: false, error: "not-owner" };
     killTerminal(payload.tabId);
+    forgetTerminalScrollback(payload.tabId);
     return { ok: true };
   });
   ipcMain.handle(CHANNELS.terminal.preview, async (event, payload) => {

@@ -2,6 +2,7 @@ import { refreshRemoteControllerBoundToSession, isRemoteControllerBoundToSession
 import { currentEffectGateContext } from "../../permissions/effect-enforcement.js";
 /** Host terminals belong to visible tabs; confined terminals belong to conversations. */
 import { killPty } from "./pty-kill.js";
+import type { TerminalScrollbackStore } from "./terminal-scrollback-store.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { randomBytes } from "node:crypto";
 import { beginAgentTerminalObservation, type AgentTerminalObservationLease } from "../../tools/agent-terminal-observation.js";
@@ -107,6 +108,67 @@ export function _setTerminalInspectionForTest(inspect: TerminalEmit): void {
 
 /** Register the main→renderer output sink (called once at IPC registration). */
 let manualShellPreference: () => string = () => "";
+
+/** Where host tabs' output is kept across a restart. Unset (the default) keeps nothing; boot installs the store under the Ave home, with its sweep of
+ * closed tabs' output already queued (boot/steps/terminal-scrollback-setup.ts). */
+let scrollbackStore: TerminalScrollbackStore | null = null;
+/** Told the first time a tab's output could not be kept, and not again while the app runs: one failure says what every later one would. */
+let scrollbackNotKept: (() => void) | null = null;
+let scrollbackNotKeptTold = false;
+export function setTerminalScrollbackStore(store: TerminalScrollbackStore | null, onNotKept: (() => void) | null = null): void {
+  scrollbackStore = store;
+  scrollbackNotKept = onNotKept;
+  scrollbackNotKeptTold = false;
+}
+
+/** Told once that a tab's output was not kept. */
+function tellNotKept(): void {
+  if (scrollbackNotKeptTold) return;
+  scrollbackNotKeptTold = true;
+  scrollbackNotKept?.();
+}
+
+/**
+ * Keep what an open host tab's view shows, as the view serialized it from its own emulator (as its window's document goes: a quit, a closed window, a
+ * reload), for the tab to come back with. `null`: the view could not serialize it; what was kept before goes too, and the user is told once. Not for a
+ * tab that is closed: its output went with it.
+ */
+export function keepTerminalOutput(tabId: string, ownerWindowId: number | null, shown: string | null): TerminalMutationResult {
+  const tab = logicalTabs.get(tabId);
+  if (!tab || tab.ownerWindowId !== ownerWindowId) return { ok: false, error: "no-terminal" };
+  if (shown !== null && Buffer.byteLength(shown, "utf-8") > TERMINAL_REPLAY_MAX_BYTES) return { ok: false, error: "invalid-params" };
+  if (scrollbackStore === null) return { ok: false, error: "no-terminal" };
+  if (shown === null) {
+    log.warn({ tabId }, "terminal: the view could not serialize what it shows");
+    tellNotKept();
+  }
+  // The write takes its place in order at once, and shutdown waits for it (see forceKillAllTerminalsForShutdown).
+  scrollbackStore.save(tabId, shown ?? "").catch((err: unknown) => {
+    // The disk or the directory refused. The tab comes back without its output.
+    log.warn({ tabId, err: errorMessage(err) }, "terminal: output not kept for restore");
+    tellNotKept();
+  });
+  return { ok: true };
+}
+
+/** A tab's kept output, for its next shell to continue from. An unreadable file is reported, the user is told once, and the shell starts without it. */
+async function keptScrollback(tabId: string): Promise<string | null> {
+  if (scrollbackStore === null) return null;
+  try {
+    return await scrollbackStore.read(tabId);
+  } catch (err) {
+    log.warn({ tabId, err: errorMessage(err) }, "terminal: kept output not readable");
+    tellNotKept();
+    return null;
+  }
+}
+
+/** The user closed the tab: what it showed goes with it. */
+export function forgetTerminalScrollback(tabId: string): void {
+  scrollbackStore?.forget(tabId).catch((err: unknown) => {
+    log.warn({ tabId, err: errorMessage(err) }, "terminal: kept output not removed");
+  });
+}
 
 /** Where a new host terminal reads the shell the user set for their terminals (empty: the login shell). Read at each start, so a change applies to the next terminal. */
 export function setManualShellPreference(read: () => string): void {
@@ -430,10 +492,15 @@ function spawnTerminalBefore(options: SpawnTerminalOptions, deadline: number): P
       return Promise.resolve({ ok: false, reason: "not-shell-contained", message: "agent terminal containment changed; close and reopen the tab" });
     }
     // A view that kept this tab's xterm alive already holds the output; it re-attaches (to declare its purpose) without a second copy.
+    const reply = { ok: true, tabId, replayed: true, session: sessionInfo(existing), blockMarkerToken: existing.blocks.viewToken } as const;
     if (options.replay !== false && (existing.ring.length > 0 || existing.hostNotices.length > 0)) {
-      emitTerminal("data", { ...existing.info, chunk: `${existing.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${ringReplay(existing)}` }, existing.ownerWindowId);
+      const shown = `${existing.hostNotices.map(notice => `\r\n${notice}\r\n`).join("")}${ringReplay(existing)}`;
+      // A host tab's view is handed the output as history, with the reply: it holds terminal queries programs asked long ago (and, in a restored
+      // tab, a previous shell's), and as ordinary output the view would answer every one of them into the shell that is running now.
+      if (existing.info.lane === "manual") return Promise.resolve({ ...reply, scrollback: shown });
+      emitTerminal("data", { ...existing.info, chunk: shown }, existing.ownerWindowId);
     }
-    return Promise.resolve({ ok: true, tabId, replayed: true, session: sessionInfo(existing), blockMarkerToken: existing.blocks.viewToken });
+    return Promise.resolve(reply);
   }
 
   // Reserve the tab before the first async boundary. Concurrent renderer IPC calls for one tab must share the
@@ -862,6 +929,9 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
   };
   owner.cleanupResources = cleanup;
   try {
+    // Read before the shell exists: once it does, its output and this must reach the ring in order, with nothing awaited in between.
+    const kept = await keptScrollback(tabId);
+    owner.abort.signal.throwIfAborted();
     const requestedCwd = options.cwd ?? process.cwd();
     if (!isAbsolute(requestedCwd) || !statSync(requestedCwd).isDirectory()) throw new Error("terminal cwd must be an existing absolute directory");
     const cwd = realpathSync(requestedCwd);
@@ -902,6 +972,7 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     });
     disposeData = session.disposeData = () => dataSub.dispose();
     const exitSub = pty.onExit(({ exitCode, signal }) => {
+      // An ended shell's tab stays open with its output; a restart of the shell, or of the app, continues from it.
       session.exited = true;
       session.control?.revoke("closed");
       session.blocks.recordExit();
@@ -918,11 +989,16 @@ async function spawnManualTerminal(options: SpawnTerminalOptions, owner: Termina
     sessions.set(key, session);
     registerTerminalBlockTracker(session.info, session.blocks, session.ownerWindowId);
     if (session.ring.length > 0) emitTerminal("data", { ...session.info, chunk: ringReplay(session) }, session.ownerWindowId);
+    // The tab's earlier shell (before a restart of the app, or one that ended) left its output: this session's replay continues from it. A view
+    // that kept the tab's terminal alive already shows it; a restored tab's empty view is handed it with the reply. It goes to the ring and the
+    // view only — never through the block tracker, so no tool reads it.
+    if (kept !== null) pushRing(session, kept);
     const logical = logicalTabs.get(tabId);
     if (logical && logical.ownerWindowId === session.ownerWindowId) logical.initialCwd = cwd;
     registered = true;
     owner.cleanupResources = undefined;
-    return { ok: true, tabId, replayed: false, session: sessionInfo(session), blockMarkerToken: session.blocks.viewToken };
+    return { ok: true, tabId, replayed: false, session: sessionInfo(session), blockMarkerToken: session.blocks.viewToken,
+      ...(kept !== null && options.restore === true ? { scrollback: kept } : {}) };
   } catch (error) {
     cleanup();
     return { ok: false, reason: "spawn-failed", message: errorMessage(error) };
@@ -1892,6 +1968,7 @@ function waitOutClosing(
 /** Close every terminal a window owns; the window is gone (macOS keeps the app running when its last window closes, so nothing else would). Returns how many were closed. */
 export function killTerminalsOwnedBy(ownerWindowId: number): number {
   const ids = [...logicalTabs.entries()].filter(([, tab]) => tab.ownerWindowId === ownerWindowId).map(([id]) => id);
+  // The window is going, not the tabs: its layout is saved, and each tab comes back with what it showed, which its view kept as its document went.
   for (const id of ids) killTerminal(id);
   const conversations = [...conversationTerminals.entries()].filter(([, owner]) => owner.ownerWindowId === ownerWindowId).map(([id]) => id);
   releaseConversationTerminals((id) => conversations.includes(id));
@@ -1960,6 +2037,7 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
     ? Math.max(timeoutMs, TOOL_TIMEOUT_POLICY.windowsPtyShutdownMs)
     : timeoutMs;
   terminalShutdownStarted = true;
+  // What the open tabs show was kept by their views as the windows' documents closed, before this (see app-shutdown.ts).
   logicalTabs.clear();
   conversationTerminals.clear();
   retiringConversationTerminals.clear();
@@ -1992,7 +2070,11 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
       );
     }
   }
-  if (sessionsToKill.length === 0 && inFlight.length === 0) return 0;
+  if (sessionsToKill.length === 0 && inFlight.length === 0) {
+    // A window that closed just before this left its tabs' output on its way to disk.
+    await scrollbackStore?.settled();
+    return 0;
+  }
 
   let inFlightSettled = inFlight.length === 0;
   if (!inFlightSettled) {
@@ -2029,6 +2111,8 @@ export async function forceKillAllTerminalsForShutdown(timeoutMs = 1_000): Promi
     };
     poll();
   });
+  // What the tabs showed is on disk before the process goes.
+  await scrollbackStore?.settled();
   return sessionsToKill.length;
 }
 
@@ -2053,6 +2137,7 @@ export function _reserveConversationTerminalForTest(sessionId: string, tabId: st
 /** Test-only: reset module state between tests. */
 export function __resetTerminalsForTest(): void {
   manualShellPreference = () => "";
+  setTerminalScrollbackStore(null);
   for (const session of sessions.values()) {
     session.cleanupIntegration?.();
     stopTerminalObservation(session);

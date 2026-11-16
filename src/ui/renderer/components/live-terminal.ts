@@ -16,6 +16,7 @@ import type { TerminalBehaviorSettings } from "../../../shared/appearance-settin
 import { terminalClipboardAction, terminalCommandJump, terminalPlatform } from "./terminal-keys.js";
 import { terminalColumnsFor } from "./terminal-fit.js";
 import { onTerminalUserInput } from "./terminal-user-input.js";
+import { keptTerminalOutput } from "./terminal-serialize.js";
 import { TerminalResizeDebouncer } from "./terminal-resize-debouncer.js";
 import { XtermBlockAnchors, viewBlockId } from "./terminal-block-anchors.js";
 import { setTerminalAttended, setTerminalExited, setTerminalReplaying } from "../preview/terminal-attention.js";
@@ -26,8 +27,16 @@ import {
   type TerminalPurpose, type TerminalSessionInfo, type TerminalSessionRef, type TerminalSpawnResult,
 } from "../../../shared/terminal-session.js";
 
+/** Run `listener` as the window's document goes. */
+function onPageHide(listener: () => void): () => void {
+  window.addEventListener("pagehide", listener);
+  return () => window.removeEventListener("pagehide", listener);
+}
+
 /** Delay before re-listing blocks after an Enter, so the shell has echoed. */
 const ENTER_RELIST_DELAY_MS = 150;
+/** A private-use control string number for the marks around output drawn as history. */
+const HISTORY_MARK_OSC = 7373;
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
 
@@ -108,6 +117,10 @@ export class LiveTerminal {
   private exited = false;
   /** Set just before a data event the user caused (see onTerminalUserInput), and taken by that event. */
   private userInput = false;
+  /** Above zero while the parser is inside output drawn as history. */
+  private historyDepth = 0;
+  /** Names this terminal's history marks; output cannot forge a mark it has never seen. */
+  private readonly historyMark = crypto.randomUUID();
   /** What the user typed before the shell was there to take it. */
   private typedAhead = "";
   private typedAheadBytes = 0;
@@ -119,6 +132,9 @@ export class LiveTerminal {
   private observer: ResizeObserver | null = null;
   private opened = false;
   private disposed = false;
+  /** Whether what this terminal shows is the tab's to keep for a restart: once a shell started and the output the tab came back with is drawn. Until
+   * then the screen lacks it, and keeping that would lose what was kept. */
+  private keepable = false;
   private box = false;
   private t: Translate;
   private linkTip: HTMLElement | null = null;
@@ -192,12 +208,21 @@ export class LiveTerminal {
     });
     // Forward keystrokes → PTY stdin.
     const userInputSub = onTerminalUserInput(this.term, () => { this.userInput = true; });
+    // History is written between two marks that only this terminal knows (see drawHistory). The parser reaches them in stream order, so the
+    // count is above zero exactly while it is working through history, however the bytes around it are chunked.
+    const historySub = this.term.parser.registerOscHandler(HISTORY_MARK_OSC, (data) => {
+      if (data === `${this.historyMark};begin`) this.historyDepth += 1;
+      else if (data === `${this.historyMark};end`) this.historyDepth -= 1;
+      else return false;
+      return true;
+    });
     const inputSub = this.term.onData((data) => {
       const fromUser = this.userInput;
       this.userInput = false;
       if (!fromUser) {
-        // The terminal answering a program's question: owed to the running shell and to nothing else.
-        if (this.liveRef && this.state.ended === null) this.send(this.liveRef, data);
+        // The terminal answering a program's question: owed to the running shell and to nothing else. A question in output that is being drawn
+        // again as history was asked by a program long gone; its answer, typed into the shell that is there now, would be input nobody sent.
+        if (this.liveRef && this.state.ended === null && this.historyDepth === 0) this.send(this.liveRef, data);
         return;
       }
       // No shell is running: nothing takes the keys, and Enter starts a new one.
@@ -233,8 +258,11 @@ export class LiveTerminal {
       () => markerSub.dispose(),
       () => inputSub.dispose(),
       () => userInputSub.dispose(),
+      () => historySub.dispose(),
       api.onData((event) => this.acceptEvent(event)),
       api.onExit((event) => this.acceptEvent(event)),
+      // The window's document is going (a quit, a closed window, a reload): what this tab shows is kept for it to come back with.
+      onPageHide(() => this.keep()),
       // Main owns control; the strip only shows the latest state for this incarnation.
       api.onControl((event) => {
         if (!this.disposed && this.liveRef && sameTerminalSession(this.liveRef, event)) this.setState({ control: event.control });
@@ -405,6 +433,24 @@ export class LiveTerminal {
   /** Drop the scrollback and everything above the cursor's line. The shell is not told: its prompt line stays. */
   clear(): void {
     this.term.clear();
+    // Kept at once, so a cleared tab does not come back with what it showed before, even if the window does not close in order.
+    this.term.write("", () => this.keep());
+  }
+
+  /**
+   * Keep what this terminal shows now for the tab to come back with after a restart: its screen and scrollback, serialized from this terminal, so
+   * what comes back is what was here, at its size, cleared or not. What it could not serialize is reported to main, which drops what was kept
+   * before and tells the user; it is not kept in some other form.
+   */
+  private keep(): void {
+    if (this.disposed || !this.keepable) return;
+    let shown: string | null;
+    try {
+      shown = keptTerminalOutput(this.term);
+    } catch {
+      shown = null;
+    }
+    void this.api.keep(this.tabId, shown);
   }
 
   /** The command block drawn at viewport height `clientY`, for a menu opened on that row. */
@@ -593,7 +639,8 @@ export class LiveTerminal {
     }
     this.exited = true;
     // A dead shell has no cursor: hide it (DECTCEM) so the tab does not look like it is waiting for input.
-    this.term.write(`${diagnostic(`${this.t("ptyTerminal.exited", { code: event.exitCode })} ${this.t("ptyTerminal.exitedRestartHint")}`)}\x1b[?25l`);
+    // Kept once that is drawn: the window may not close in order later (a renderer that crashes keeps nothing more).
+    this.term.write(`${diagnostic(`${this.t("ptyTerminal.exited", { code: event.exitCode })} ${this.t("ptyTerminal.exitedRestartHint")}`)}\x1b[?25l`, () => this.keep());
     this.setState({ ended: { kind: "exited", code: event.exitCode }, inputNotice: null });
     this.bumpBlocks();
     setTerminalExited(this.tabId, true);
@@ -641,15 +688,21 @@ export class LiveTerminal {
     setTerminalReplaying(this.tabId, true);
     try {
       const restored = takeRestoredTerminal(this.tabId);
-      if (restored) this.term.write(diagnostic(this.t("ptyTerminal.restored")));
+      // What a restored tab says about itself goes below the output it comes back with, where the new shell starts.
+      const notices = restored ? [this.t("ptyTerminal.restored")] : [];
       const startCwd = restored ? restored.cwd : this.restartCwd ?? view.initialCwd;
-      const spawnAt = (cwd: string | null) => this.spawn({ tabId: this.tabId, lane: "manual", purpose: view.purpose, cols, rows, ...(cwd ? { cwd } : {}) });
+      const spawnAt = (cwd: string | null) => this.spawn({ tabId: this.tabId, lane: "manual", purpose: view.purpose, cols, rows,
+        ...(cwd ? { cwd } : {}), ...(restored ? { restore: true } : {}) });
       let result = await spawnAt(startCwd);
       if (!result.ok && restored && startCwd && !this.disposed && (result.reason === "bad-request" || result.reason === "spawn-failed")) {
-        this.term.write(diagnostic(this.t("ptyTerminal.restoredRoot")));
+        notices.push(this.t("ptyTerminal.restoredRoot"));
         result = await spawnAt(null);
       }
       if (this.disposed) return;
+      // Output this view lacks: a restored tab's from before the restart, or a running shell's for a view that was reloaded. It is the user's
+      // own screen, drawn here and nowhere else.
+      if (result.ok) this.drawHistory(result.scrollback ?? "", () => { this.keepable = true; });
+      for (const notice of notices) this.term.write(diagnostic(notice));
       if (!result.ok) {
         this.dropPending();
         this.term.write(diagnostic(this.t(result.reason === "too-many-terminals" ? "ptyTerminal.capacity" : result.reason === "still-closing" ? "ptyTerminal.stillClosing" : "ptyTerminal.manualUnavailable")));
@@ -707,6 +760,15 @@ export class LiveTerminal {
     this.typedAhead = "";
     this.typedAheadBytes = 0;
     this.setState({ inputNotice: "not-delivered" });
+  }
+
+  /**
+   * Draw output from the past. Nothing waits for it: the terminal draws in the order it is written to, so the shell's own output, written
+   * after this, lands below it. The marks tell the input side which answers are to questions in here (see the data handler).
+   */
+  private drawHistory(output: string, drawn: () => void): void {
+    const mark = (edge: "begin" | "end"): string => `\x1b]${HISTORY_MARK_OSC};${this.historyMark};${edge}\x07`;
+    this.term.write(output === "" ? "" : `${mark("begin")}${output}${mark("end")}`, drawn);
   }
 
   private dropPending(): void {

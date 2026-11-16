@@ -7,7 +7,7 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 useConfigurationOwner();
 
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -4189,6 +4189,44 @@ describe("SettingsService system — main window layout", () => {
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("system").mainLayout).toBeUndefined();
+  });
+
+  it("records the layout as the file held it at load, whatever is written after", async () => {
+    const path = join(userDataPath, "ave-settings.json");
+    // A fresh install: no file, so nothing is known of a layout on disk.
+    const fresh = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(fresh.loadedMainLayout()).toEqual({ kind: "unknown", reason: "no-file" });
+    await fresh.patch({ system: { mainLayout: layout } } as never);
+    expect(fresh.loadedMainLayout()).toEqual({ kind: "unknown", reason: "no-file" });
+    // Read: the layout the file holds, and still that one after a later write.
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.loadedMainLayout()).toEqual({ kind: "read", layout });
+    await reloaded.patch({ system: { mainLayout: { ...layout, focusedId: "main" } } } as never);
+    expect(reloaded.get("system").mainLayout?.focusedId).toBe("main");
+    expect(reloaded.loadedMainLayout()).toEqual({ kind: "read", layout });
+    // Read: settings without a layout hold none, with or without a system block.
+    for (const settings of [{ system: { closeBehavior: "quit" } }, {}]) {
+      writeFileSync(path, currentSettingsJson(settings), "utf-8");
+      expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).loadedMainLayout()).toEqual({ kind: "read", layout: undefined });
+    }
+  });
+
+  it.each([
+    ["cannot be parsed", "{ \"system\": {", "unreadable"],
+    ["does not hold settings", "[]", "unreadable"],
+    ["holds a layout this build refuses", currentSettingsJson({ system: { mainLayout: { ...layout, version: 99 } } }), "layout-refused"],
+    ["holds a system block this build refuses", currentSettingsJson({ system: "quit" }), "layout-refused"],
+  ] as const)("does not vouch for a layout when the file %s", (_case, file, reason) => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), file, "utf-8");
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").mainLayout).toBeUndefined();
+    expect(service.loadedMainLayout()).toEqual({ kind: "unknown", reason });
+  });
+
+  it("does not vouch for a layout when the settings path cannot be read as a file", () => {
+    mkdirSync(join(userDataPath, "ave-settings.json"));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.loadedMainLayout()).toEqual({ kind: "unknown", reason: "unreadable" });
   });
 });
 

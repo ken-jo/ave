@@ -35,6 +35,8 @@ export interface TerminalSpawnRequest extends TerminalRef {
   readonly rows?: number;
   /** False when the view kept this tab's terminal alive and already holds its output: the running shell is re-attached without replaying it. */
   readonly replay?: boolean;
+  /** True when the tab was restored from a saved layout and its view is empty: the reply carries the output the tab showed before the restart. */
+  readonly restore?: boolean;
   /** Required for a host (manual) spawn or replay. */
   readonly purpose?: TerminalPurpose;
 }
@@ -65,7 +67,11 @@ export type TerminalControlResult =
 export type TerminalMutationResult = { readonly ok: true } | { readonly ok: false; readonly error: string };
 export type TerminalSpawnResult =
   /** `blockMarkerToken` authenticates block ids on forwarded C markers (see TERMINAL_VIEW_TOKEN_FIELD); renderer-only. */
-  | { readonly ok: true; readonly tabId: string; readonly replayed: boolean; readonly session: TerminalSessionInfo; readonly blockMarkerToken: string }
+  | { readonly ok: true; readonly tabId: string; readonly replayed: boolean; readonly session: TerminalSessionInfo; readonly blockMarkerToken: string;
+      /** Output the view lacks, for it to draw as history above whatever the shell prints next: a restored host tab's output from before the
+       * restart, or a running shell's output so far for a view that was reloaded. Display bytes only; it never reaches a tool, and the view
+       * answers none of the terminal queries in it. */
+      readonly scrollback?: string }
   | { readonly ok: false; readonly reason: "not-shell-contained" | "bad-request" | "spawn-failed" | "too-many-terminals" | "still-closing" | "no-terminal" | "unauthorized-frame"; readonly message: string };
 export type TerminalDataEvent = TerminalSessionRef & { readonly chunk: string };
 export type TerminalExitEvent = TerminalSessionRef & { readonly exitCode: number; readonly signal?: number };
@@ -76,6 +82,9 @@ export interface TerminalApi {
   /** Input, resize and block reads reject a replaced/closed incarnation. */
   input(ref: TerminalSessionRef, data: string): Promise<TerminalMutationResult>;
   resize(ref: TerminalSessionRef, cols: number, rows: number): Promise<TerminalMutationResult>;
+  /** Keep what a host tab's view shows for the tab to come back with after a restart, serialized from the view's own terminal; `null` when it
+   * could not be serialized. */
+  keep(tabId: string, shown: string | null): Promise<TerminalMutationResult>;
   /** Trusted tab closure cancels and terminates only the host terminal. */
   kill(tabId: string): Promise<TerminalMutationResult>;
   /** User display only; never grants model access to host terminal commands. */

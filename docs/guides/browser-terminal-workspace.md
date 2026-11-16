@@ -293,6 +293,24 @@ When the shell exits, the terminal says **Ended** with the exit code and
 offers **Restart shell** and **Close tab**. Pressing Enter also starts a new
 shell, in the directory the old one was in, with the earlier output kept.
 
+A host terminal tab that is open when you quit Ave comes back with the output
+it showed (up to the last megabyte), followed by a line saying the tab was
+restored and a new shell in the directory the old one was in. The programs that
+were running are not restarted. That output is yours alone: Ave keeps it in a
+private folder of its data directory that agents and sandboxed commands cannot
+read, readable only by your user account, and deletes it when you close the
+tab. Output kept for a tab that does not come back is deleted the next time
+Ave starts and reads its saved layout, whether or not you open a terminal
+then; when the saved layout cannot be read, nothing is deleted. Each app
+profile (`--user-data-dir` or `AVE_USER_DATA_DIR`) keeps and deletes only its
+own tabs' output, even when profiles share one Ave home. It is never added to a
+conversation, a session or memory. If the output cannot be saved, Ave says so
+once, when it happens, and if output it should delete at startup cannot be
+deleted, it says that once too. If Ave does not quit
+normally (a crash or a forced quit), the output of that run is lost, and the
+tab comes back as restored with what was last saved: when you last quit,
+cleared it, or its shell ended.
+
 ### Agent commands in your terminal
 
 The chat in a workspace terminal's own pane can ask to run a command in that

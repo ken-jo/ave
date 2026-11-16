@@ -178,7 +178,16 @@ import { makeDeepProxy } from "../../__tests__/support/deep-proxy.js";
 beforeAll(() => {
   channels.length = 0;
   setIsPackaged(false);
-  const services = makeDeepProxy(SERVICE_KEYS) as unknown as AppServices;
+  const stand = makeDeepProxy(SERVICE_KEYS) as unknown as AppServices;
+  // Every service is a stand-in that answers anything with itself, except the one piece of saved data a domain reads while it registers:
+  // this run has no saved window layout, which is what a first launch has.
+  const answering = <T extends object>(target: T, answers: (prop: string | symbol) => unknown): T =>
+    new Proxy(target, { get: (inner, prop, receiver) => answers(prop) ?? Reflect.get(inner, prop, receiver) });
+  const system = new Proxy(stand as object, { get: (inner, prop, receiver) => prop === "mainLayout" ? undefined : Reflect.get(inner, prop, receiver) });
+  const settingsService = answering(stand.settingsService, (prop) => prop === "get"
+    ? (key: string) => key === "system" ? system : (stand.settingsService.get as (key: string) => unknown)(key)
+    : undefined);
+  const services = answering(stand, (prop) => prop === "settingsService" ? settingsService : undefined);
   registerIpcHandlers(services, () => null);
 });
 
@@ -590,6 +599,7 @@ describe("IPC channel inventory (#1409 wire lock)", () => {
         "ave:terminal:control",
         "ave:terminal:file-reviews",
         "ave:terminal:input",
+        "ave:terminal:keep",
         "ave:terminal:kill",
         "ave:terminal:preview",
         "ave:terminal:resize",

@@ -2522,8 +2522,11 @@ describe("host tabs and conversation-owned isolation", () => {
       if (!first.ok) throw new Error("expected host terminal");
       const replayOf = async (replay?: boolean): Promise<string> => {
         emitted = [];
-        expect(await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, ...(replay === undefined ? {} : { replay }) })).toMatchObject({ ok: true, replayed: true });
-        return emitted.map((entry) => (entry.payload as { chunk?: string }).chunk ?? "").join("");
+        const reply = await spawnLane({ tabId, lane: "manual", purpose: "workspace", ownerWindowId: 8, ...(replay === undefined ? {} : { replay }) });
+        expect(reply).toMatchObject({ ok: true, replayed: true });
+        // The output comes with the reply, as history, and not as output of the running shell.
+        expect(emitted.filter((entry) => "chunk" in (entry.payload as object))).toEqual([]);
+        return reply.ok && reply.scrollback !== undefined ? reply.scrollback : "";
       };
       // Nothing dropped yet: the replay is the output as written, first partial line included.
       lastPty?.emitData("partial-");

@@ -13,7 +13,7 @@ import { makeMockAveApi, makeMockAveNamespace } from "../../../../../test/render
 import { useState, type ReactElement } from "react";
 import { useWorkspaceTabs } from "../../preview/workspace-tabs.js";
 import { t } from "../../../../i18n/index.js";
-import { terminalCwd } from "../../preview/main-layout-restore.js";
+import { resetMainLayoutRestoreForTest, stageRestoredLayout, terminalCwd } from "../../preview/main-layout-restore.js";
 import { surfaceMountLocation } from "../../preview/surface-mounts.js";
 import { disposeLiveTerminal, requestTerminalFocus } from "../../preview/live-terminal-registry.js";
 import { useMainSurfaces } from "../../preview/main-surfaces.js";
@@ -145,8 +145,9 @@ vi.mock("@xterm/xterm", () => ({
       return { dispose: () => { this.dataHandler = null; } };
     }
     written: string[] = [];
-    write(text: string) {
+    write(text: string, done?: () => void) {
       this.written.push(text);
+      done?.();
     }
     disposed = false;
     dispose() { this.disposed = true; }
@@ -225,6 +226,7 @@ function terminalApi() {
     spawn: vi.fn(async (payload: TerminalSpawnRequest) => ({ ok: true as const, tabId: payload.tabId, replayed: false, session: { ...terminalSessionFixture(payload.tabId, payload.lane), initialCwd: payload.cwd ?? "/workspace" }, blockMarkerToken: "view-token" })),
     input: vi.fn(async () => ({ ok: true as const })),
     resize: vi.fn(async () => ({ ok: true as const })),
+    keep: vi.fn(async () => ({ ok: true as const })),
     kill: vi.fn(async () => ({ ok: true as const })),
     onData: vi.fn((_handler: (event: TerminalDataEvent) => void) => () => {}),
     onExit: vi.fn((_handler: (event: TerminalExitEvent) => void) => () => {}),
@@ -965,6 +967,43 @@ describe("a terminal whose shell ended", () => {
     fireEvent.click(screen.getByTestId("terminal-restart"));
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+});
+
+describe("a restored tab's earlier output", () => {
+  afterEach(() => resetMainLayoutRestoreForTest());
+
+  it("asks for it, draws it first, and says below it that the shell is new", async () => {
+    const tabId = "terminal:51";
+    stageRestoredLayout({ sideTabs: {}, terminals: [{ kind: "terminal", tabId, ordinal: 1, cwd: "/work", url: null }] });
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const session = terminalSessionFixture(tabId, "manual", "restored-shell");
+    // The new shell's first bytes arrive while the reply is still on its way; they are drawn after the old output and the notice.
+    terminal.spawn.mockImplementationOnce(async () => {
+      const data = terminal.onData.mock.calls.at(-1)?.[0];
+      if (!data) throw new Error("the view is not listening for terminal output");
+      data({ ...session, chunk: "NEW-PROMPT" });
+      return { ok: true, tabId, replayed: false, session, blockMarkerToken: "view-token", scrollback: "OLD-OUTPUT\r\n" };
+    });
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    expect(terminal.spawn).toHaveBeenCalledWith(expect.objectContaining({ tabId, cwd: "/work", restore: true }));
+    const drawn = fakeTerm().written.join("");
+    const at = ["OLD-OUTPUT", t("ptyTerminal.restored"), "NEW-PROMPT"].map((text) => drawn.indexOf(text));
+    expect(at).toEqual([...at].sort((a, b) => a - b));
+    expect(at.every((index) => index >= 0)).toBe(true);
+  });
+
+  it("does not ask for it when the tab is new", async () => {
+    const tabId = "terminal:52";
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    terminal.spawn.mockResolvedValueOnce({ ok: true, tabId, replayed: false, session: terminalSessionFixture(tabId, "manual", "new-shell"), blockMarkerToken: "view-token" });
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal" />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    expect(terminal.spawn.mock.calls[0]?.[0]).not.toHaveProperty("restore");
+    expect(fakeTerm().written.join("")).toBe("");
   });
 });
 
