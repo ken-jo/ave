@@ -36,9 +36,9 @@ describe("useAttachmentPicker.attachImage", () => {
     const image = { ok: true, path: "/tmp/captured-image.png", width: 200, height: 100, bytes: 1024, mimeType: "image/png", dataUrl: "data:image/png;base64,aW1hZ2U=" };
     const saveClipboardImage = vi.fn(async () => image);
     const readImage = vi.fn(async () => image);
-    const discardClipboardImage = vi.fn(async () => ({ ok: true }));
-    (window as unknown as { ave: unknown }).ave = { attach: { saveClipboardImage, readImage, discardClipboardImage } };
-    return { saveClipboardImage, readImage, discardClipboardImage };
+    const release = vi.fn(async () => ({ ok: true }));
+    (window as unknown as { ave: unknown }).ave = { attach: { saveClipboardImage, readImage, release } };
+    return { saveClipboardImage, readImage, release };
   }
 
   it("saves a capture through the ordinary image path and commits its slot and marker", async () => {
@@ -64,13 +64,13 @@ describe("useAttachmentPicker.attachImage", () => {
   });
 
   it("releases the saved capture when the composer slots are already full", async () => {
-    const { discardClipboardImage } = imageApi();
+    const { release } = imageApi();
     const full: Attachment[] = Array.from({ length: ATTACH_MAX_COUNT }, (_, index) => ({ id: `paste-${index}`, n: index + 1, kind: "paste", text: "x", lines: 1, chars: 1 }));
     const { hook, insertAtCursor } = setup(full);
     let accepted = true;
     await act(async () => { accepted = await hook.result.current.picker.attachImage("aW1hZ2U="); });
     expect(accepted).toBe(false);
-    expect(discardClipboardImage).toHaveBeenCalledWith("/tmp/captured-image.png");
+    expect(release).toHaveBeenCalledWith(["/tmp/captured-image.png"]);
     expect(insertAtCursor).not.toHaveBeenCalled();
     expect(hook.result.current.attachments).toHaveLength(ATTACH_MAX_COUNT);
   });

@@ -659,7 +659,9 @@ export const CHANNELS = {
     openFile: "ave:attach:openFile",
     readImage: "ave:attach:readImage",
     saveClipboardImage: "ave:attach:saveClipboardImage",
-    discardClipboardImage: "ave:attach:discardClipboardImage",
+    // An attachment left the composer (removed or sent): give back its path
+    // authorization and delete the clipboard temp image this app wrote for it.
+    release: "ave:attach:release",
     openExternal: "ave:attach:openExternal",
     // Composer drag-drop, step 1. Invoked ONLY by the preload's
     // `aveDrop.prepareFileDrop`, which resolves OS-backed dropped `File`s via

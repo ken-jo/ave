@@ -1,6 +1,6 @@
 import "./setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { renderApp } from "./render-app.js";
 import { submitChatMessage } from "./helpers.js";
 import { fakeLlmSettings } from "../../src/shared/__tests__/fake-llm-settings.js";
@@ -180,6 +180,7 @@ describe("subscription runtime composer readiness", () => {
     });
 
     const nativeAttach = {
+      release: vi.fn(async () => ({ ok: true })),
       openFile: vi.fn(async () => ({
         canceled: false,
         rejected: [],
@@ -232,6 +233,7 @@ describe("subscription runtime composer readiness", () => {
     });
 
     const nativeAttach = {
+      release: vi.fn(async () => ({ ok: true })),
       openFile: vi.fn(async () => ({
         canceled: false,
         rejected: [],
@@ -399,5 +401,7 @@ describe("subscription runtime composer readiness", () => {
 });
 
 afterEach(() => {
+  // Unmount while the window bridge is still there: the composer gives its attachments back to main as it goes.
+  cleanup();
   vi.unstubAllGlobals();
 });

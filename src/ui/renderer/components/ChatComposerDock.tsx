@@ -442,7 +442,7 @@ export function ChatComposerDock({
           onAttachmentsChange={setAttachments}
           allocateN={allocateN}
           saveClipboardImage={(b64) => window.ave.attach.saveClipboardImage(b64)}
-          discardClipboardImage={(filePath) => window.ave.attach.discardClipboardImage(filePath)}
+          discardClipboardImage={(filePath) => window.ave.attach.release([filePath])}
           openExternal={(p) => window.ave.attach.openExternal(p)}
           imagesEnabled={imagesEnabled}
           filesEnabled={filesEnabled}

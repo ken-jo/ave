@@ -204,6 +204,9 @@ describe("composer drop token", () => {
     writeFileSync(join(root, "Other deck.key"), Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]));
     expect(isSensitivePath(realpathSync(join(root, "Other deck.key")), "read")).toBe("**/*.key");
     expect(isSensitivePath(realpathSync(join(root, "Quarterly review.key")), "read")).toBeNull();
+    // Giving the attachment back ends it.
+    await call(CHANNELS.attach.release, 7, redeemed.files.map((file) => file.path));
+    expect(isSensitivePath(realpathSync(join(root, "Quarterly review.key")), "read")).toBe("**/*.key");
   });
 
   it("judges an attached image's bytes as the model's read, though the person could attach the file", async () => {

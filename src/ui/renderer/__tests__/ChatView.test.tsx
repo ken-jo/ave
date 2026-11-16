@@ -1,7 +1,7 @@
 /** Render through App because ChatView requires its chat context. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { act, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import { deferred, submitChatMessage } from "../../../../test/renderer/helpers.js";
 import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
@@ -1413,9 +1413,11 @@ describe("ChatView", () => {
         readImage: ReturnType<typeof vi.fn>;
         saveClipboardImage: ReturnType<typeof vi.fn>;
         openExternal: ReturnType<typeof vi.fn>;
+        release: ReturnType<typeof vi.fn>;
       };
     };
     ave.attach = {
+      release: vi.fn(async () => ({ ok: true })),
       openFile: vi.fn(async () => ({
         canceled: false,
         rejected: [],
@@ -2896,7 +2898,7 @@ describe("ChatView composer — an image on a model that cannot read one", () =>
         bytes: 4,
       })),
       saveClipboardImage: vi.fn(async () => ({ ok: false })),
-      discardClipboardImage: vi.fn(async () => ({ ok: true })),
+      release: vi.fn(async () => ({ ok: true })),
       openExternal: vi.fn(async () => ({ ok: true })),
     };
 
@@ -2929,5 +2931,7 @@ afterEach(() => {
   __resetSuggestedRepliesStoreForTests();
   __teardownSuggestedRepliesIpcForTests();
   vi.restoreAllMocks();
+  // Unmount while the window bridge is still there: the composer gives its attachments back to main as it goes.
+  cleanup();
   vi.unstubAllGlobals();
 });

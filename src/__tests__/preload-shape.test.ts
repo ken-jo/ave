@@ -194,11 +194,11 @@ describe("preload contextBridge world shape lock", () => {
             "selectSentence",
           ],
           "attach": [
-            "discardClipboardImage",
             "openExternal",
             "openFile",
             "readImage",
             "redeemDrop",
+            "release",
             "saveClipboardImage",
           ],
           "documentEngine": [

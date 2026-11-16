@@ -18,6 +18,7 @@ import { useChatScroll } from "../hooks/use-chat-scroll.js";
 import { useMessageQueue } from "../hooks/use-message-queue.js";
 import type { ComposerSendOptions } from "../hooks/use-send-message.js";
 import { useAttachmentPicker } from "../hooks/use-attachment-picker.js";
+import { useAttachmentReclaim } from "../hooks/use-attachment-reclaim.js";
 import { computeComposerPlaceholder } from "../utils/composer-placeholder.js";
 import { composeOutgoing } from "../utils/compose.js";
 import { collectPromptHistory } from "../utils/prompt-history.js";
@@ -322,6 +323,8 @@ function SideChatSession({
   useEffect(() => () => publishSideChatSurface?.(null), [publishSideChatSurface]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // This side chat clears its composer when it sends and never puts a draft back, so nothing needs holding during a send.
+  useAttachmentReclaim(attachments);
   const attachmentNCounter = useRef(0);
   const composerRef = useRef<ComposerHandle | null>(null);
   // The whole side chat is the drop target, as the conversation column is for the main chat.
@@ -641,7 +644,7 @@ function SideChatSession({
             onAttachmentsChange={setAttachments}
             allocateN={allocateN}
             saveClipboardImage={(b64) => window.ave.attach.saveClipboardImage(b64)}
-            discardClipboardImage={(filePath) => window.ave.attach.discardClipboardImage(filePath)}
+            discardClipboardImage={(filePath) => window.ave.attach.release([filePath])}
             openExternal={(p) => window.ave.attach.openExternal(p)}
             imagesEnabled={imagesEnabled}
             filesEnabled={filesEnabled}

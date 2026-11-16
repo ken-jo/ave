@@ -425,7 +425,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // (#803 IPC convention). The snake_case shape is grandfathered until the
   // attach.ts handlers are rewritten (tracked in follow-up).
   "path_not_authorized": "formatIpcError.pathNotAuthorized",
-  "clipboard-image-not-owned": "formatIpcError.pathNotAuthorized",
   "not_image": "formatIpcError.notImage",
   "image_too_large": "formatIpcError.imageTooLarge",
   "clipboard_too_large": "formatIpcError.imageTooLarge",

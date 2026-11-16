@@ -160,8 +160,8 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.invoke(CHANNELS.attach.readImage, filePath),
     saveClipboardImage: (base64: string) =>
       ipcRenderer.invoke(CHANNELS.attach.saveClipboardImage, { base64 }),
-    discardClipboardImage: (filePath: string) =>
-      ipcRenderer.invoke(CHANNELS.attach.discardClipboardImage, filePath),
+    release: (paths: readonly string[]) =>
+      ipcRenderer.invoke(CHANNELS.attach.release, paths),
     openExternal: (filePath: string) =>
       ipcRenderer.invoke(CHANNELS.attach.openExternal, filePath),
     // Composer drop, step 2: echo the main-owned token; main authorizes the

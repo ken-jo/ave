@@ -11,10 +11,12 @@ const NOTES = { path: "/ws/notes.txt", name: "notes.txt", ext: "txt", bytes: 5, 
 
 const PNG = { path: "/ws/shot.png", name: "shot.png", ext: "png", bytes: 9, isImage: true, mimeType: "image/png" };
 
+const release = vi.fn(async (_paths: readonly string[]) => ({ ok: true }));
+
 function install(api: { prepareFileDrop?: unknown; redeemDrop?: unknown; openFile?: unknown; readImage?: unknown }) {
   (window as unknown as Record<string, unknown>).aveDrop = { prepareFileDrop: api.prepareFileDrop };
   (window as unknown as Record<string, unknown>).ave = {
-    attach: { redeemDrop: api.redeemDrop, openFile: api.openFile, readImage: api.readImage },
+    attach: { redeemDrop: api.redeemDrop, openFile: api.openFile, readImage: api.readImage, release },
   };
 }
 
@@ -32,6 +34,7 @@ function useHarness(onAttachmentRejected: (rejections: readonly AttachmentReject
 }
 
 afterEach(() => {
+  release.mockClear();
   delete (window as unknown as Record<string, unknown>).aveDrop;
   delete (window as unknown as Record<string, unknown>).ave;
 });
@@ -171,10 +174,21 @@ describe("useAttachmentPicker — picker", () => {
     await act(async () => { await result.current.handleAttach(); });
     expect(result.current.attachments).toHaveLength(5);
     expect(onRejected).toHaveBeenCalledWith([{ name: "extra.txt", reason: "too-many" }]);
+    // Main authorized both picked files; the one that did not fit gives its authorization back at once.
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledWith(["/ws/extra.txt"]);
+  });
+
+  it("releases nothing when every picked file was attached", async () => {
+    install({ openFile: vi.fn(async () => ({ canceled: false, files: [NOTES], rejected: [] })) });
+    const { result } = renderHook(() => useHarness(vi.fn()));
+    await act(async () => { await result.current.handleAttach(); });
+    expect(result.current.attachments).toHaveLength(1);
+    expect(release).not.toHaveBeenCalled();
   });
 });
 
-describe("attachment slots (F11)", () => {
+describe("attachment slots", () => {
   const file = (n: number): FileAttachment => ({ id: `f${n}`, n, kind: "file", path: `/ws/${n}.txt`, name: `${n}.txt`, ext: "txt", bytes: 1 });
   const resource = (n: number): Attachment => ({
     id: `r${n}`, n, kind: "resource", serverId: "docs", uri: `doc:${n}`, label: `doc-${n}`, text: "body", truncated: false,

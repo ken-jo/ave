@@ -40,6 +40,7 @@ import { isSecondaryMainWindow } from "../utils/main-window-role.js";
 import { useComposerDraft } from "../hooks/use-composer-draft.js";
 import { formatAppMessageEnvelope } from "../../../shared/mcp-app-message-source.js";
 import { useSendMessage, type HandleAskRefFn } from "../hooks/use-send-message.js";
+import { useAttachmentReclaim } from "../hooks/use-attachment-reclaim.js";
 import { useStatusNotices } from "../hooks/use-status-bar.js";
 import { DEFAULT_TOAST_TTL_MS } from "../constants.js";
 import { useWorkflowTools } from "../hooks/use-workflow-tools.js";
@@ -539,7 +540,7 @@ export function ChatGroupSession({
     turnSignalTracker.clearUserStop();
     unmarkLastAssistantInterrupted();
   }, [turnSignalTracker, unmarkLastAssistantInterrupted]);
-  const { handleAsk } = useSendMessage({
+  const { handleAsk: sendMessage } = useSendMessage({
     api, t, streaming, checkApiKey: env.checkApiKey, composeOutgoing,
     appendUserEntry, dropUserEntry, resetStreamAccumulators,
     beginStreamingRequest, finishStreamingRequest,
@@ -553,6 +554,13 @@ export function ChatGroupSession({
     subscriptionRuntimePolicy: env.subscriptionRuntimePolicy,
     onOpenSettings: env.onOpenSettings, setQuestion, handleAskRef,
   });
+  // A send empties the composer before main answers, and a refused one puts the draft back: what the attachments hold in
+  // main is given back only once the send has settled without them returning.
+  const { holdDuring: holdAttachmentsDuring } = useAttachmentReclaim(attachments);
+  const handleAsk = useCallback<typeof sendMessage>(
+    (...args) => holdAttachmentsDuring(sendMessage(...args)),
+    [holdAttachmentsDuring, sendMessage],
+  );
 
   useChatStatusIndicators({
     t, isCompacting, compactTriggerSource, isRecoveryExhausted,

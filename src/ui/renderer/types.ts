@@ -1839,12 +1839,9 @@ export interface AveAttachApi {
     dataUrl?: string;
     error?: string;
   }>;
-  discardClipboardImage: (filePath: string) => Promise<{
-    ok: boolean;
-    /** The app revoked this rejected image's capability without pathname deletion. */
-    retained?: true;
-    error?: string;
-  }>;
+  /** Give back the authorization each of `paths` holds in main: one per attachment that left the composer, because it was
+   * removed, sent or refused. A clipboard image this app wrote is deleted with it. Paths main does not hold are ignored. */
+  release: (paths: readonly string[]) => Promise<{ ok: boolean; error?: string }>;
   openExternal: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
   /**
    * Composer drop, step 2. Redeem the one-shot token from

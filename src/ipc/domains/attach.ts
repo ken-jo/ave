@@ -1,6 +1,7 @@
-import { dialog, ipcMain, nativeImage } from "electron";
+import { app, dialog, ipcMain, nativeImage } from "electron";
 import { t } from "../../i18n/index.js";
 import { promises as fs } from "node:fs";
+import * as nodeFs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { validateHostRendererSender, auditUnauthorized } from "../gated.js";
@@ -26,16 +27,32 @@ import {
   isSensitivePath,
   judgedPathNamesOpenedFile,
 } from "../../permissions/sensitive-paths.js";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import type { BigIntStats, Stats } from "node:fs";
+import { createLogger } from "../../lib/logger.js";
+import { writeUtf8FileAtomic } from "../../lib/atomic-file.js";
+import { renameFile } from "../../lib/transient-fs-lock-retry.js";
 import type { IpcMainInvokeEvent } from "electron";
 
 const DENY_EXTENSIONS = new Set<string>(DENY_LIST);
+const log = createLogger("attach");
 
-// Require picker or clipboard authorization before reading or opening paths; bound the app-lifetime allowlist.
+// Require picker, drop or clipboard authorization before reading or opening a path. The value counts the attachments that
+// hold the path: each picker selection, redeemed drop or saved clipboard image adds one, and `attach.release` gives one back
+// when its attachment is removed or sent. A file attached twice stays readable until both are gone. The size bound covers
+// holders that never release (a renderer that crashed).
 const ATTACH_ALLOWLIST_MAX = 10_000;
-const ATTACH_PATH_ALLOWLIST = new Set<string>();
-// Revoke generated-file capabilities without pathname deletion; replacement races could unlink a user-managed file.
-const CLIPBOARD_TEMP_IMAGE_PATHS = new Set<string>();
+const ATTACH_PATH_ALLOWLIST = new Map<string, number>();
+/** Most paths one `attach.release` call may name; a composer holds at most a handful. */
+const ATTACH_RELEASE_MAX = 64;
+
+/** A clipboard image file exactly as this process wrote it. Compared before deletion, so a file put at the same path later
+ * is never deleted in its place. */
+interface OwnedFile {
+  dev: bigint;
+  ino: bigint;
+}
+const CLIPBOARD_TEMP_IMAGES = new Map<string, OwnedFile>();
 
 /** The files the person picked, dropped or pasted, by canonical case-folded path: the ones a key-extension name may be
  * opened for (see `allowKeyMaterialInspection`). Kept in step with the allow-list; `BEING_CHOSEN` covers a file while it
@@ -56,22 +73,228 @@ function unauthorizePath(p: string): void {
 }
 
 function authorizePath(p: string): void {
-  if (ATTACH_PATH_ALLOWLIST.has(p)) ATTACH_PATH_ALLOWLIST.delete(p);
-  ATTACH_PATH_ALLOWLIST.add(p);
+  const held = ATTACH_PATH_ALLOWLIST.get(p) ?? 0;
+  // Re-inserted so the map's order stays oldest-authorization-first for the bound below.
+  ATTACH_PATH_ALLOWLIST.delete(p);
+  ATTACH_PATH_ALLOWLIST.set(p, held + 1);
   CHOSEN_FILES.set(p, chosenFileKey(p));
   while (ATTACH_PATH_ALLOWLIST.size > ATTACH_ALLOWLIST_MAX) {
-    const oldest = ATTACH_PATH_ALLOWLIST.values().next().value;
+    const oldest = ATTACH_PATH_ALLOWLIST.keys().next().value;
     if (oldest === undefined) break;
     unauthorizePath(oldest);
-    CLIPBOARD_TEMP_IMAGE_PATHS.delete(oldest);
+    // Its file, if this app wrote one, is left for the sweep at the next start.
+    CLIPBOARD_TEMP_IMAGES.delete(oldest);
   }
 }
 
-function authorizeClipboardTempImage(
-  filePath: string,
-): void {
+function authorizeClipboardTempImage(filePath: string, owned: OwnedFile): void {
   authorizePath(filePath);
-  CLIPBOARD_TEMP_IMAGE_PATHS.add(filePath);
+  CLIPBOARD_TEMP_IMAGES.set(filePath, owned);
+}
+
+const CLIPBOARD_DIR_PREFIX = "ave-clip-";
+/** `fs.mkdtemp` appends six characters to the prefix. */
+const CLIPBOARD_DIR_NAME = /^ave-clip-[A-Za-z0-9]{6}$/;
+/** The one file name a clipboard image is written under: `image.` and the sniffed format's extension. */
+const CLIPBOARD_FILE_NAME = /^image\.[a-z0-9]{1,5}$/;
+
+/**
+ * Where this profile's clipboard images live: one directory of its own under the OS temp directory, named after the
+ * profile. A profile is used by one running Ave process at a time (the single-instance lock), so whatever the directory
+ * holds at start was left by an earlier run of this same profile, and nothing outside it is ever swept.
+ */
+export function clipboardImageRoot(): string {
+  const profile = createHash("sha256").update(app.getPath("userData")).digest("hex").slice(0, 16);
+  return path.join(os.tmpdir(), `ave-clipboard-${profile}`);
+}
+
+/** A real directory (`lstat`: a link or junction is not one) that only this account can enter. Windows has no owner or mode
+ * to read here; its temp directory is already per account. */
+function isOwnPrivateDirectory(stat: Stats): boolean {
+  if (!stat.isDirectory()) return false;
+  if (typeof process.getuid !== "function") return true;
+  return stat.uid === process.getuid() && (stat.mode & 0o077) === 0;
+}
+
+async function ensureClipboardImageRoot(): Promise<string> {
+  const root = clipboardImageRoot();
+  try {
+    await fs.mkdir(root, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  // The name is predictable, and a shared temp directory lets another account create it first: refuse one this account does
+  // not own privately instead of writing a clipboard image into it.
+  if (!isOwnPrivateDirectory(await fs.lstat(root))) {
+    throw new Error("clipboard image directory is not a private directory of this account");
+  }
+  return root;
+}
+
+async function lstatIfPresent(target: string): Promise<BigIntStats | null> {
+  try {
+    return await fs.lstat(target, { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** The record of which clipboard images this app wrote, kept in the profile's clipboard directory so it outlives the
+ * process: the start sweep deletes only what a receipt names, by the identity the file had when it was written. */
+const CLIPBOARD_RECEIPTS_NAME = "written.json";
+type ClipboardReceipts = Map<string, { file: string; owned: OwnedFile }>;
+
+async function readClipboardReceipts(root: string): Promise<ClipboardReceipts> {
+  const receipts: ClipboardReceipts = new Map();
+  let parsed: unknown;
+  try {
+    const handle = await fs.open(path.join(root, CLIPBOARD_RECEIPTS_NAME), nodeFs.constants.O_RDONLY | (nodeFs.constants.O_NOFOLLOW ?? 0));
+    try {
+      if (!(await handle.stat()).isFile()) return receipts;
+      parsed = JSON.parse(await handle.readFile("utf8"));
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    // No record, or one that cannot be read: nothing is known to be this app's, so nothing will be deleted.
+    if (error instanceof SyntaxError || ["ENOENT", "ELOOP", "EISDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) return receipts;
+    throw error;
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return receipts;
+  for (const [directory, value] of Object.entries(parsed)) {
+    const { file, dev, ino } = (typeof value === "object" && value !== null ? value : {}) as Record<string, unknown>;
+    if (!CLIPBOARD_DIR_NAME.test(directory) || typeof file !== "string" || !CLIPBOARD_FILE_NAME.test(file)
+      || typeof dev !== "string" || typeof ino !== "string" || !/^\d+$/u.test(dev) || !/^\d+$/u.test(ino)) continue;
+    receipts.set(directory, { file, owned: { dev: BigInt(dev), ino: BigInt(ino) } });
+  }
+  return receipts;
+}
+
+async function writeClipboardReceipts(root: string, receipts: ClipboardReceipts): Promise<void> {
+  const target = path.join(root, CLIPBOARD_RECEIPTS_NAME);
+  if (receipts.size === 0) {
+    await fs.unlink(target).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+    return;
+  }
+  const body = JSON.stringify(Object.fromEntries([...receipts].map(([directory, { file, owned }]) =>
+    [directory, { file, dev: owned.dev.toString(), ino: owned.ino.toString() }])));
+  await writeUtf8FileAtomic(target, body);
+}
+
+/** Add or drop one directory's receipt. Called inside the clipboard-store queue. */
+async function recordClipboardReceipt(root: string, directory: string, receipt: { file: string; owned: OwnedFile } | null): Promise<void> {
+  const receipts = await readClipboardReceipts(root);
+  if (receipt === null) receipts.delete(directory);
+  else receipts.set(directory, receipt);
+  await writeClipboardReceipts(root, receipts);
+}
+
+/**
+ * Delete one clipboard image this app wrote, and its directory. Returns false, deleting nothing, when what is there is not
+ * exactly that: the directory is a link, it holds anything but the one image, or the file is not the one that was written.
+ *
+ * The image is first moved, inside its directory, to a fresh random name. A move takes whichever object is at the name at
+ * that instant, so the identity is then read from the object that was taken, not from a name another process can still
+ * re-point; only an object with the recorded identity is unlinked, and anything else is kept: given its name back by a
+ * hard link, or else left whole under the random name. The platform
+ * has no way to unlink through an open file, so one gap remains and is not hidden: between reading the identity under the
+ * random name and unlinking that name. It is a name nothing else was told. Never recursive: one file is unlinked and the
+ * directory is removed only if it is then empty.
+ */
+async function removeClipboardImageDirectory(directory: string, file: string, owned: OwnedFile): Promise<boolean> {
+  const directoryStat = await lstatIfPresent(directory);
+  if (directoryStat === null) return true;
+  if (!directoryStat.isDirectory()) return false;
+  const names = await fs.readdir(directory);
+  if (names.length === 0) {
+    await fs.rmdir(directory);
+    return true;
+  }
+  if (names.length !== 1 || names[0] !== file) return false;
+  const original = path.join(directory, file);
+  const taken = path.join(directory, `.reclaim-${randomBytes(12).toString("hex")}`);
+  await renameFile(original, taken);
+  const takenStat = await fs.lstat(taken, { bigint: true });
+  if (!takenStat.isFile() || takenStat.dev !== owned.dev || takenStat.ino !== owned.ino) {
+    // Not the file this app wrote. It goes back under its name unless something is there by now; it is never unlinked.
+    // A hard link gives the name back without replacing anything that arrived there meanwhile; it is the only way back
+    // that cannot overwrite. Where no link can be made (the name is taken again, the object is a directory, the volume
+    // has no hard links) the object stays, whole, under the random name, and the log says where. It is never moved back
+    // over a name that was only seen to be free a moment earlier.
+    const linkFailure = takenStat.isDirectory()
+      ? "a directory"
+      : await fs.link(taken, original).then(() => null, (error: NodeJS.ErrnoException) => error.code ?? error.message);
+    if (linkFailure === null) await fs.unlink(taken);
+    else log.warn("a file found in place of a clipboard image was kept as %s (no link back: %s)", taken, linkFailure);
+    return false;
+  }
+  await fs.unlink(taken);
+  try {
+    await fs.rmdir(directory);
+  } catch (error) {
+    // Something else arrived in the directory meanwhile; it stays, with the directory.
+    if ((error as NodeJS.ErrnoException).code === "ENOTEMPTY" || (error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+  return true;
+}
+
+/** Remove `root` once it holds nothing, so a profile that has no clipboard image leaves no directory behind. */
+async function removeClipboardImageRootIfEmpty(root: string): Promise<void> {
+  try {
+    await fs.rmdir(root);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOENT") throw error;
+  }
+}
+
+/**
+ * Remove the clipboard images an earlier run of this profile wrote and did not get to delete. Only `root` is read, and a
+ * directory is removed only when a receipt from that run names it and the file in it still has the identity the receipt
+ * recorded (see `removeClipboardImageDirectory`). A directory with no receipt, or with another file in it, is left exactly
+ * as it is: its name alone never shows that this app wrote it. A `root` that is missing, a link, or not private to this
+ * account is left untouched.
+ */
+export async function sweepLeftoverClipboardImages(root: string): Promise<{ removed: number; kept: number }> {
+  const counts = { removed: 0, kept: 0 };
+  let rootStat: Stats;
+  try {
+    rootStat = await fs.lstat(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return counts;
+    throw error;
+  }
+  if (!isOwnPrivateDirectory(rootStat)) return counts;
+  const receipts = await readClipboardReceipts(root);
+  for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !CLIPBOARD_DIR_NAME.test(entry.name)) continue;
+    const receipt = receipts.get(entry.name);
+    if (receipt !== undefined && await removeClipboardImageDirectory(path.join(root, entry.name), receipt.file, receipt.owned)) {
+      counts.removed += 1;
+      receipts.delete(entry.name);
+    } else {
+      counts.kept += 1;
+    }
+  }
+  // A receipt whose directory is gone describes nothing any more.
+  for (const directory of [...receipts.keys()]) {
+    if (await lstatIfPresent(path.join(root, directory)) === null) receipts.delete(directory);
+  }
+  await writeClipboardReceipts(root, receipts);
+  await removeClipboardImageRootIfEmpty(root);
+  return counts;
+}
+
+// One clipboard-store operation at a time: a save creates the root and a directory in it while a release or the start sweep
+// may be removing the root because it just became empty.
+let clipboardStoreTail: Promise<unknown> = Promise.resolve();
+function inClipboardStore<T>(work: () => Promise<T>): Promise<T> {
+  const run = clipboardStoreTail.then(work, work);
+  // The tail only orders the work; each caller gets its own result or error from `run`.
+  clipboardStoreTail = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 export const DROP_TOKEN_TTL_MS = 60_000;
@@ -220,17 +443,26 @@ export interface SaveClipboardImageResult {
   error?: string;
 }
 
-export interface DiscardClipboardImageResult {
-  ok: boolean;
-  retained?: true;
-  error?: "unauthorized" | "clipboard-image-not-owned";
-}
+export type ReleaseAttachmentsResult =
+  | { ok: true }
+  | { ok: false; error: "unauthorized" | "invalid-payload" };
 
 export function registerAttachHandlers(deps: IpcDeps): void {
   const { auditLogger, getMainWindow } = deps;
 
   withdrawChosenFileInspection?.();
   withdrawChosenFileInspection = allowKeyMaterialInspection(personChoseFile);
+
+  // Start-of-run cleanup of this profile's own clipboard image directory. It runs through the store queue, so a paste that
+  // arrives first waits for it instead of having its new directory swept.
+  void inClipboardStore(async () => sweepLeftoverClipboardImages(clipboardImageRoot())).then(
+    ({ removed, kept }) => {
+      if (removed > 0 || kept > 0) log.info("removed %d leftover clipboard image(s), kept %d unrecognized", removed, kept);
+    },
+    (error: unknown) => {
+      log.warn("leftover clipboard images were not removed (%s)", (error as NodeJS.ErrnoException).code ?? errorMessage(error));
+    },
+  );
 
   ipcMain.handle(CHANNELS.attach.openFile, async (e): Promise<OpenFileResult> => {
     if (!validateHostRendererSender(e)) {
@@ -441,12 +673,26 @@ export function registerAttachHandlers(deps: IpcDeps): void {
         const canonicalBase64 = buf.toString("base64");
         const img = nativeImage.createFromBuffer(buf);
         const { width, height } = img.getSize();
-        // Atomically reserve a private temp directory; random basenames in shared temp still permit races.
-        const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "ave-clip-"));
-        const target = path.join(targetDir, "image." + detected.extension);
-        // wx binds the capability to the exact file this process created.
-        await fs.writeFile(target, buf, { flag: "wx", mode: 0o600 });
-        authorizeClipboardTempImage(target);
+        const saved = await inClipboardStore(async () => {
+          const root = await ensureClipboardImageRoot();
+          // Atomically reserve a private directory for this one image.
+          const targetDir = await fs.mkdtemp(path.join(root, CLIPBOARD_DIR_PREFIX));
+          const filePath = path.join(targetDir, "image." + detected.extension);
+          // wx binds the capability to the exact file this process created; its identity is read from the same handle.
+          const handle = await fs.open(filePath, "wx", 0o600);
+          try {
+            await handle.writeFile(buf);
+            const stat = await handle.stat({ bigint: true });
+            const owned = { dev: stat.dev, ino: stat.ino };
+            // The receipt is what lets a later run delete this file; without one the file would be left alone.
+            await recordClipboardReceipt(root, path.basename(targetDir), { file: path.basename(filePath), owned });
+            return { filePath, owned };
+          } finally {
+            await handle.close();
+          }
+        });
+        const target = saved.filePath;
+        authorizeClipboardTempImage(target, saved.owned);
         const dataUrl = `data:${detected.mimeType};base64,${canonicalBase64}`;
         return {
           ok: true,
@@ -467,23 +713,46 @@ export function registerAttachHandlers(deps: IpcDeps): void {
   );
 
   ipcMain.handle(
-    CHANNELS.attach.discardClipboardImage,
-    async (e, filePath: unknown): Promise<DiscardClipboardImageResult> => {
+    CHANNELS.attach.release,
+    async (e, rawPaths: unknown): Promise<ReleaseAttachmentsResult> => {
       if (!validateHostRendererSender(e)) {
-        auditUnauthorized(auditLogger, CHANNELS.attach.discardClipboardImage, e);
+        auditUnauthorized(auditLogger, CHANNELS.attach.release, e);
         return { ok: false, error: "unauthorized" };
       }
-      if (typeof filePath !== "string") {
-        return { ok: false, error: "clipboard-image-not-owned" };
+      if (
+        !Array.isArray(rawPaths)
+        || rawPaths.length > ATTACH_RELEASE_MAX
+        || !rawPaths.every((p): p is string => typeof p === "string")
+      ) {
+        return { ok: false, error: "invalid-payload" };
       }
-      if (!CLIPBOARD_TEMP_IMAGE_PATHS.has(filePath)) {
-        return { ok: false, error: "clipboard-image-not-owned" };
+      for (const filePath of rawPaths) {
+        const held = ATTACH_PATH_ALLOWLIST.get(filePath);
+        // Never authorized, or already given back: nothing to do, and nothing a caller can learn from it.
+        if (held === undefined) continue;
+        if (held > 1) {
+          ATTACH_PATH_ALLOWLIST.set(filePath, held - 1);
+          continue;
+        }
+        unauthorizePath(filePath);
+        const owned = CLIPBOARD_TEMP_IMAGES.get(filePath);
+        if (owned === undefined) continue;
+        CLIPBOARD_TEMP_IMAGES.delete(filePath);
+        // The authorization is gone either way. A file that cannot be deleted now is left for the sweep at the next start.
+        try {
+          await inClipboardStore(async () => {
+            const directory = path.dirname(filePath);
+            const root = path.dirname(directory);
+            if (await removeClipboardImageDirectory(directory, path.basename(filePath), owned)) {
+              await recordClipboardReceipt(root, path.basename(directory), null);
+            }
+            await removeClipboardImageRootIfEmpty(root);
+          });
+        } catch (error) {
+          log.warn("clipboard image was not deleted on release (%s)", (error as NodeJS.ErrnoException).code ?? errorMessage(error));
+        }
       }
-
-      // Revoke instead of unlinking; no cross-platform compare-and-unlink protects against pathname replacement.
-      unauthorizePath(filePath);
-      CLIPBOARD_TEMP_IMAGE_PATHS.delete(filePath);
-      return { ok: true, retained: true };
+      return { ok: true };
     },
   );
   ipcMain.handle(

@@ -78,8 +78,8 @@ export interface UseAttachmentPickerResult {
   attachImage: (base64: string) => Promise<boolean>;
 }
 
-/** The names in `all` left after one occurrence of each name in `accounted` is taken out. File names repeat, so this is a
- * multiset difference. */
+/** The entries of `all` left after one occurrence of each entry of `accounted` is taken out. Names and paths repeat, so this
+ * is a multiset difference. */
 function unaccountedNames(all: readonly string[], accounted: readonly string[]): string[] {
   const remaining = [...all];
   for (const name of accounted) {
@@ -136,6 +136,15 @@ export function useAttachmentPicker({
     const rejections: AttachmentRejection[] = [...refusedEarlier];
     const reportRejections = () => {
       if (rejections.length > 0) onAttachmentRejected?.(rejections);
+    };
+    // Main authorized every file it returned. One that does not become an attachment gives its authorization straight back;
+    // the rest give theirs back when they leave the composer.
+    const releaseUnattached = (attached: readonly Attachment[]) => {
+      const unattached = unaccountedNames(
+        files.map((file) => file.path),
+        attached.flatMap((attachment) => (attachment.kind === "image" || attachment.kind === "file" ? [attachment.path] : [])),
+      );
+      if (unattached.length > 0) void window.ave.attach.release(unattached);
     };
     const candidateNames = new Map<string, string>();
     let unavailableAttachmentSkipped = false;
@@ -223,6 +232,7 @@ export function useAttachmentPicker({
       }
       if (unavailableAttachmentSkipped) onAttachmentUnavailable?.();
       reportRejections();
+      releaseUnattached([]);
       return false;
     }
     // The cap and the image budget are checked against the latest committed list, read just before the commit (see
@@ -282,6 +292,7 @@ export function useAttachmentPicker({
     }
     if (unavailableAttachmentSkipped || capabilityChangedBeforeCommit) onAttachmentUnavailable?.();
     reportRejections();
+    releaseUnattached(accepted);
     // Return focus to the composer textarea so the user can keep typing immediately after the file dialog closes.
     composerRef.current?.focus();
     return accepted.length > 0;
@@ -294,9 +305,8 @@ export function useAttachmentPicker({
     }
     const saved = await window.ave.attach.saveClipboardImage(base64);
     if (!saved.ok || !saved.path) return false;
-    const attached = await commitFiles([{ path: saved.path, name: "capture.png", ext: ".png", bytes: saved.bytes ?? 0, isImage: true }]);
-    if (!attached) await window.ave.attach.discardClipboardImage(saved.path);
-    return attached;
+    // A capture that is not attached is released, and so deleted, by commitFiles like any other unattached file.
+    return commitFiles([{ path: saved.path, name: "capture.png", ext: ".png", bytes: saved.bytes ?? 0, isImage: true }]);
   }, [commitFiles, onAttachmentUnavailable]);
 
   const handleAttach = useCallback(async () => {
