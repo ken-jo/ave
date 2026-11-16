@@ -103,6 +103,16 @@ export class XtermBlockAnchors implements TerminalBlockAnchors {
     return slot;
   }
 
+  /** The command whose block holds buffer line `line`: the last command that started at or above it. Null above the first command the view saw. */
+  blockAtLine(line: number): number | null {
+    let found: { blockId: number; line: number } | null = null;
+    for (const [blockId, marker] of this.markers) {
+      if (marker.isDisposed || marker.line > line) continue;
+      if (found === null || marker.line > found.line) found = { blockId, line: marker.line };
+    }
+    return found?.blockId ?? null;
+  }
+
   subscribe(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };

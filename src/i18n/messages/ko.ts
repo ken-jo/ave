@@ -4331,6 +4331,12 @@ export const ko: Record<MessageCatalogKey, string> = {
 
   // ptyTerminal
   "ptyTerminal.hostChip": "호스트",
+  "ptyTerminal.menuCopy": "복사",
+  "ptyTerminal.menuPaste": "붙여넣기",
+  "ptyTerminal.menuSelectAll": "모두 선택",
+  "ptyTerminal.menuClear": "지우기",
+  "ptyTerminal.menuCopyCommand": "명령 복사",
+  "ptyTerminal.menuCopyOutput": "출력 복사",
   "ptyTerminal.findLabel": "터미널에서 찾기",
   "ptyTerminal.findPlaceholder": "찾기",
   "ptyTerminal.findNoResults": "결과 없음",

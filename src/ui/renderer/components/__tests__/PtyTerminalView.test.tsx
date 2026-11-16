@@ -42,6 +42,8 @@ interface FakeTerminal {
   keyHandler: ((event: KeyboardEvent) => boolean) | null;
   selection: string;
   pasted: string[];
+  selectedAll: number;
+  clears: number;
   unicode: { activeVersion: string; providers: Map<string, { version: string; wcwidth(codepoint: number): number }> };
 }
 const { terminals } = vi.hoisted(() => ({ terminals: [] as FakeTerminal[] }));
@@ -71,7 +73,12 @@ vi.mock("@xterm/xterm", () => ({
     decorations: { options: { marker: FakeMarker; x?: number; width?: number; height?: number }; element: HTMLElement }[] = [];
     /** The text on the command row, as the shell echoed it. */
     commandRow = "~/demo ❯ make build";
-    buffer = { active: { getLine: (_line: number) => {
+    viewportY = 0;
+    selectedAll = 0;
+    clears = 0;
+    selectAll() { this.selectedAll++; this.selection = "everything"; }
+    clear() { this.clears++; }
+    buffer = { active: { viewportY: 0, getLine: (_line: number) => {
       const text = this.commandRow;
       return { length: this.cols, translateToString: () => text,
         getCell: (x: number) => ({ getChars: () => text[x] ?? "", getWidth: () => 1 }) };
@@ -102,6 +109,11 @@ vi.mock("@xterm/xterm", () => ({
       this.host = host;
       this.element = document.createElement("div");
       this.element.className = "xterm";
+      // The cell grid: 24 rows of 10px, as xterm's screen element measures.
+      const grid = document.createElement("div");
+      grid.className = "xterm-screen";
+      grid.getBoundingClientRect = () => ({ top: 100, bottom: 340, left: 0, right: 800, width: 800, height: 240, x: 0, y: 100, toJSON() {} });
+      this.element.appendChild(grid);
       host.appendChild(this.element);
     }
     /** As the terminal's core announces user input, just before its data event. */
@@ -927,6 +939,130 @@ describe("a terminal whose shell ended", () => {
     fireEvent.click(screen.getByTestId("terminal-restart"));
     await waitFor(() => expect(terminal.spawn).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.queryByTestId("terminal-ended")).toBeNull());
+  });
+});
+
+describe("the terminal's own context menu", () => {
+  function menuBridge() {
+    const previous = (window as unknown as { ave?: unknown }).ave;
+    let handler: ((action: { requestId: string; id: string }) => void) | null = null;
+    const showDynamicMenu = vi.fn(async (_payload: { requestId: string; x: number; y: number; sections: Array<{ items: Array<{ id: string; label: string; enabled?: boolean }> }> }) => ({ ok: true as const }));
+    (window as unknown as { ave?: unknown }).ave = { ui: { showDynamicMenu, onDynamicMenuAction: (cb: typeof handler) => { handler = cb; return () => { handler = null; }; } } };
+    return {
+      showDynamicMenu,
+      sections: () => showDynamicMenu.mock.calls.at(-1)![0].sections.map((section) => section.items),
+      choose: async (id: string) => { await act(async () => { handler!({ requestId: showDynamicMenu.mock.calls.at(-1)![0].requestId, id }); }); },
+      restore: () => { (window as unknown as { ave?: unknown }).ave = previous; },
+    };
+  }
+  async function terminalWithMenu(tabId: string, attach?: (text: string) => true | "full" | "no-composer") {
+    const { api } = makeMockAveApi();
+    const terminal = terminalApi();
+    const writeText = vi.fn(async (_text: string) => undefined);
+    const readText = vi.fn(async () => "pasted text");
+    vi.stubGlobal("navigator", { ...navigator, userAgent: navigator.userAgent, clipboard: { writeText, readText } });
+    render(<PtyTerminalView api={{ ...api, terminal } as never} location="pane:a" tabId={tabId} tabLabel="Terminal 7" {...(attach ? { onAttachText: attach } : {})} />);
+    await waitFor(() => expect(terminal.control).toHaveBeenCalled());
+    const xterm = fakeTerm();
+    const rightClick = async (clientY: number) => {
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY });
+      await act(async () => { screen.getByTestId("terminal-xterm-host").dispatchEvent(event); });
+      return event;
+    };
+    return { terminal, xterm, writeText, readText, rightClick };
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("offers Copy, Paste, Select All and Clear at the pointer, and nothing about blocks above the first command", async () => {
+    const bridge = menuBridge();
+    try {
+      const { xterm, writeText, rightClick } = await terminalWithMenu("terminal:71");
+      const event = await rightClick(120);
+      // The generic text menu is replaced, not added to.
+      expect(event.defaultPrevented).toBe(true);
+      expect(bridge.showDynamicMenu).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ x: 40, y: 120 }));
+      expect(bridge.sections()).toEqual([[
+        { id: "copy", label: t("ptyTerminal.menuCopy"), enabled: false },
+        { id: "paste", label: t("ptyTerminal.menuPaste"), enabled: true },
+        { id: "select-all", label: t("ptyTerminal.menuSelectAll") },
+        { id: "clear", label: t("ptyTerminal.menuClear") },
+      ]]);
+      await bridge.choose("select-all");
+      expect(xterm.selectedAll).toBe(1);
+      await rightClick(120);
+      expect(bridge.sections()[0]![0]).toMatchObject({ id: "copy", enabled: true });
+      await bridge.choose("copy");
+      expect(writeText).toHaveBeenCalledWith("everything");
+      await rightClick(120);
+      await bridge.choose("paste");
+      await waitFor(() => expect(xterm.pasted).toEqual(["pasted text"]));
+      await rightClick(120);
+      await bridge.choose("clear");
+      expect(xterm.clears).toBe(1);
+    } finally { bridge.restore(); }
+  });
+
+  it("adds the command block under the pointer: copy its command, copy its output, attach it", async () => {
+    const bridge = menuBridge();
+    try {
+      const attach = vi.fn((_text: string) => true as const);
+      const { terminal, xterm, writeText, rightClick } = await terminalWithMenu("terminal:72", attach);
+      terminal.getBlock.mockImplementation((async (_session: TerminalSessionInfo, id: number) => ({
+        ok: true as const,
+        block: { id, command: id === 1 ? "make build" : "make test", cwd: "/repo", exitCode: 0, startedAt: 1, endedAt: 2, status: "done", source: "osc133", outputChars: 9, truncated: false, output: id === 1 ? "built ok\n\n" : "2 passed\n" },
+      })) as never);
+      // Two commands: the first started on buffer line 3 (its marker is one above the cursor), the second on line 9.
+      xterm.cursorLine = 4;
+      act(() => { osc133(xterm, "C;ave-block=1;ave-view=view-token"); });
+      xterm.cursorLine = 10;
+      act(() => { osc133(xterm, "C;ave-block=2;ave-view=view-token"); });
+
+      // Row 2 (y 120..129) is above both; row 5 is inside the first block; row 9 and below are the second.
+      await rightClick(125);
+      expect(bridge.sections()).toHaveLength(1);
+      await rightClick(155);
+      expect(bridge.sections()[1]!.map((item) => item.id)).toEqual(["block-copy-command", "block-copy-output", "block-attach"]);
+      await bridge.choose("block-copy-command");
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("make build"));
+      expect(terminal.getBlock).toHaveBeenLastCalledWith(expect.objectContaining({ tabId: "terminal:72" }), 1);
+      await rightClick(155);
+      await bridge.choose("block-copy-output");
+      await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("built ok"));
+
+      await rightClick(300);
+      await bridge.choose("block-attach");
+      await waitFor(() => expect(attach).toHaveBeenCalledOnce());
+      expect(terminal.getBlock).toHaveBeenLastCalledWith(expect.anything(), 2);
+      expect(attach.mock.calls[0]![0]).toContain("make test");
+      expect(attach.mock.calls[0]![0]).toContain("2 passed");
+    } finally { bridge.restore(); }
+  });
+
+  it("says why when the block cannot be read or the chat cannot take it", async () => {
+    const bridge = menuBridge();
+    try {
+      const attach = vi.fn((_text: string) => "no-composer" as const);
+      const { terminal, xterm, rightClick } = await terminalWithMenu("terminal:73", attach);
+      act(() => { osc133(xterm, "C;ave-block=1;ave-view=view-token"); });
+      await rightClick(300);
+      await bridge.choose("block-copy-output");
+      expect((await screen.findByTestId("terminal-menu-notice")).textContent).toMatch(new RegExp(`^${t("terminalBlocks.loadFailed", { error: "(.+)" })}$`, "u"));
+      terminal.getBlock.mockResolvedValueOnce({ ok: true, block: { id: 1, command: "ls", cwd: "/repo", exitCode: 0, startedAt: 1, endedAt: 2, status: "done", source: "osc133", outputChars: 0, truncated: false, output: "" } } as never);
+      // Opening the menu again clears the old notice.
+      await rightClick(300);
+      expect(screen.queryByTestId("terminal-menu-notice")).toBeNull();
+      await bridge.choose("block-attach");
+      expect(await screen.findByTestId("terminal-menu-notice")).toHaveTextContent(t("terminalBlocks.attachNoComposer"));
+    } finally { bridge.restore(); }
+  });
+
+  it("leaves the platform's menu alone where the menu bridge is not available", async () => {
+    const previous = (window as unknown as { ave?: unknown }).ave;
+    (window as unknown as { ave?: unknown }).ave = undefined;
+    try {
+      const { rightClick } = await terminalWithMenu("terminal:74");
+      expect((await rightClick(120)).defaultPrevented).toBe(false);
+    } finally { (window as unknown as { ave?: unknown }).ave = previous; }
   });
 });
 

@@ -318,6 +318,29 @@ export class LiveTerminal {
     this.term.focus();
   }
 
+  hasSelection(): boolean {
+    return this.term.hasSelection();
+  }
+
+  selectAll(): void {
+    this.term.selectAll();
+  }
+
+  /** Drop the scrollback and everything above the cursor's line. The shell is not told: its prompt line stays. */
+  clear(): void {
+    this.term.clear();
+  }
+
+  /** The command block drawn at viewport height `clientY`, for a menu opened on that row. */
+  blockAt(clientY: number): number | null {
+    const screen = this.term.element?.querySelector(".xterm-screen");
+    if (!screen) return null;
+    const rect = screen.getBoundingClientRect();
+    if (rect.height <= 0 || clientY < rect.top || clientY >= rect.bottom) return null;
+    const row = Math.floor((clientY - rect.top) / (rect.height / this.term.rows));
+    return this.anchors.blockAtLine(this.term.buffer.active.viewportY + row);
+  }
+
   /** Copy the selected text. `clear` drops the selection afterwards, the convention where Ctrl+C both copies and interrupts, so the next Ctrl+C reaches the shell. */
   copySelection(clear = false): void {
     const text = this.term.getSelection();

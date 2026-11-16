@@ -1,5 +1,5 @@
 /** One host shell per tab. Unmount detaches the view; tab close owns the PTY and the live xterm (live-terminal.ts). */
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { Terminal } from "@xterm/xterm";
 import type { AveApi } from "../types.js";
@@ -9,6 +9,11 @@ import { TerminalChangeAnnotations } from "./TerminalChangeAnnotations.js";
 import { TerminalPaneHeader, type TerminalPaneAccess } from "./TerminalPaneHeader.js";
 import { LiveTerminal, type LiveTerminalState } from "./live-terminal.js";
 import { TerminalFindBar } from "./TerminalFindBar.js";
+import { useNativeMenu, type NativeMenuRow } from "../hooks/use-native-context-menu.js";
+import { formatBlockForChat } from "../utils/terminal-block-text.js";
+import { errorMessage } from "../../../shared/error-message.js";
+import { formatIpcError } from "../format-ipc-error.js";
+import type { TerminalBlock } from "../../../shared/terminal-blocks.js";
 import { liveTerminalFor, takeTerminalFocusRequest } from "../preview/live-terminal-registry.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
@@ -116,6 +121,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
   const translateRef = useRef(t);
   translateRef.current = t;
   const [findOpen, setFindOpen] = useState(false);
+  const [menuNotice, setMenuNotice] = useState<string | null>(null);
+  const openMenu = useNativeMenu();
   const openLinkRef = useRef(onOpenLink);
   openLinkRef.current = onOpenLink;
   // Changes after the applied theme's values were written to :root — another theme or the same one updated in place.
@@ -214,6 +221,41 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
     />
   ) : null;
 
+  // The terminal's own menu: its clipboard and buffer commands, and the command block under the pointer. Without it a right-click offers the
+  // generic text menu, which cannot clear the screen and knows nothing of blocks.
+  const onContextMenu = (event: ReactMouseEvent<HTMLDivElement>): void => {
+    if (!live || typeof window.ave?.ui?.showDynamicMenu !== "function") return;
+    event.preventDefault();
+    setMenuNotice(null);
+    const terminalApi = api.terminal;
+    const blockId = live.blockAt(event.clientY);
+    const withBlock = (use: (block: TerminalBlock) => void): void => {
+      if (!terminalApi || !session || blockId === null) return;
+      void terminalApi.getBlock(session, blockId).then((result) => {
+        if (result.ok) use(result.block);
+        else setMenuNotice(t("terminalBlocks.loadFailed", { error: formatIpcError(result.error, undefined) }));
+      }, (error: unknown) => setMenuNotice(t("terminalBlocks.loadFailed", { error: errorMessage(error) })));
+    };
+    const buffer: NativeMenuRow[] = [
+      { id: "copy", label: t("ptyTerminal.menuCopy"), enabled: live.hasSelection(), onSelect: () => live.copySelection() },
+      { id: "paste", label: t("ptyTerminal.menuPaste"), enabled: ended === null, onSelect: () => live.pasteClipboard() },
+      { id: "select-all", label: t("ptyTerminal.menuSelectAll"), onSelect: () => live.selectAll() },
+      { id: "clear", label: t("ptyTerminal.menuClear"), onSelect: () => live.clear() },
+    ];
+    const block: NativeMenuRow[] = blockId === null || !session ? [] : [
+      { id: "block-copy-command", label: t("ptyTerminal.menuCopyCommand"), onSelect: () => withBlock((found) => { void navigator.clipboard.writeText(found.command); }) },
+      { id: "block-copy-output", label: t("ptyTerminal.menuCopyOutput"), onSelect: () => withBlock((found) => { void navigator.clipboard.writeText(found.output.replace(/\n+$/u, "")); }) },
+      ...(onAttachText ? [{
+        id: "block-attach", label: t("terminalBlocks.attach"),
+        onSelect: () => withBlock((found) => {
+          const attached = onAttachText(formatBlockForChat(found, { label: tabLabel, id: tabId }, t));
+          if (attached !== true) setMenuNotice(t(attached === "no-composer" ? "terminalBlocks.attachNoComposer" : "terminalBlocks.attachFull"));
+        }),
+      }] : []),
+    ];
+    void openMenu({ x: event.clientX, y: event.clientY }, [{ items: buffer }, ...(block.length > 0 ? [{ items: block }] : [])]);
+  };
+
   // Who controls the terminal, with the way to take it back. Drawn over the output, and again (under `prefix`) at the top of a work panel
   // that floats over this terminal: the controls a running agent command promises stay on screen whatever covers the output.
   const controlStrip = (prefix: "terminal" | "pane-chat-terminal"): ReactNode => control?.mode === "agent" ? (
@@ -263,7 +305,9 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       </p> : null}
       {/* Warnings are xterm decorations on their command's row; only the review side panel overlays this area, so the
           xterm host stays its only in-flow child and no rows are taken. */}
-      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area">
+      {menuNotice ? <p className="shrink-0 border-b border-border px-2 py-1 text-xs text-destructive" data-testid="terminal-menu-notice" role="alert">{menuNotice}</p> : null}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: the menu is asked for on the terminal inside (pointer, or the menu key on its focused input); this wrapper only receives that event as it bubbles. */}
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="terminal-output-area" onContextMenu={onContextMenu}>
         <div ref={hostRef} className="relative min-h-0 flex-1 overflow-hidden p-1" data-testid="terminal-xterm-host" />
         {findOpen && live ? <TerminalFindBar live={live} onClose={() => setFindOpen(false)} /> : null}
         {api.terminal && session ? <TerminalChangeAnnotations key={session.terminalSessionId} terminalApi={api.terminal} session={session} revision={blockRevision} anchors={live?.anchors ?? null} /> : null}

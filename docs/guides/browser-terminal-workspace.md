@@ -267,6 +267,10 @@ to Search) pressed in a terminal opens a find bar over its output. It searches
 the screen and the scrollback as you type; Enter goes to the next match,
 Shift+Enter to the previous one, and Escape closes it.
 
+Right-click in a terminal for its own menu: Copy, Paste, Select All and Clear,
+and, on a row that belongs to a command, Copy Command, Copy Output and Attach
+to chat for that command's block.
+
 Copy and paste use the platform's terminal keys. On macOS, Cmd+C and Cmd+V.
 On Windows, Ctrl+C copies when text is selected (otherwise it interrupts, as
 usual) and Ctrl+V pastes; Ctrl+Shift+C and Ctrl+Shift+V also work. On Linux,
