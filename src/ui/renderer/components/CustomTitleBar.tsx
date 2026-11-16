@@ -1,4 +1,5 @@
-/** Empty title-bar space remains draggable; interactive controls opt out. Native controls stay on their platform side. */
+/** Empty title-bar space remains draggable; interactive controls opt out. Native controls stay on their platform side.
+ * The inset scopes window dragging; this component does not select native resize cursors. */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Copy, Minus, Square, X } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
