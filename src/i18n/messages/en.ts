@@ -6529,6 +6529,8 @@ export const en = {
   "pluginConfigSchemaForm.errorInteger": "Enter a whole number.",
   "pluginConfigSchemaForm.deleteSecret": "Delete secret",
   "pluginConfigSchemaForm.secretDeleted": "Secret deleted.",
+  "webTab.apiKeyStaticTitle": "Search API key",
+  "webTab.apiKeyNotRequired": "The selected search provider does not need an API key.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

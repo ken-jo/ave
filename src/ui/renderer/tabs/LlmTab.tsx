@@ -3200,7 +3200,7 @@ export function LlmTab(props: LlmTabProps) {
         description={t("llmTab.pageDescription")}
       />
 
-      <SettingsSection title={t("compactionSettings.title")} id="llm-compaction">
+      <SettingsSection title={t("compactionSettings.title")} id="llm-compaction" data-settings-section="llm-compaction">
         <div className="space-y-2">
           <Label htmlFor="compaction-model">{t("compactionSettings.model")}</Label>
           <SystemSubagentModelSelect

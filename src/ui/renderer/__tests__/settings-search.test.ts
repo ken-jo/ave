@@ -47,3 +47,17 @@ describe("settings search", () => {
     }
   });
 });
+
+it("finds common terms and returns the actual matched label without placeholders", () => {
+  const expected = {
+    compaction: "llm-compaction", proxy: "permissions-network", upstream: "permissions-network",
+    theme: "appearance-theme", plugin: "plugin-config-installed", openai: "llm-providers",
+    tavily: "web-search-engine", duckduckgo: "web-search-engine", download: "chat-documents", zoom: "appearance-zoom",
+    notification: "plugin-config-installed", update: "marketplace-maintenance",
+  };
+  for (const [query, section] of Object.entries(expected)) {
+    expect(searchSettings(query, translate(en)).map((entry) => entry.section), query).toContain(section);
+  }
+  expect(searchSettings("api key", translate(en)).every((entry) => !entry.matchedLabel?.includes("{"))).toBe(true);
+  expect(searchSettings("line height", translate(en)).find((entry) => entry.section === "appearance-terminal")?.matchedLabel).toBe(en["appearanceTab.terminalLineHeight"]);
+});

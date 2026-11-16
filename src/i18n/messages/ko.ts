@@ -6531,4 +6531,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "pluginConfigSchemaForm.errorInteger": "정수를 입력해 주세요.",
   "pluginConfigSchemaForm.deleteSecret": "비밀 값 삭제",
   "pluginConfigSchemaForm.secretDeleted": "비밀 값이 삭제되었습니다.",
+  "webTab.apiKeyStaticTitle": "검색 API 키",
+  "webTab.apiKeyNotRequired": "선택한 검색 제공업체는 API 키가 필요하지 않습니다.",
 };

@@ -434,10 +434,9 @@ export function AppearanceTab() {
       </SettingsSection>
 
       <TerminalFontSection {...terminal} />
-      <div className="space-y-2">
-        <div className="text-dense text-muted-foreground">{t("appearanceTab.zoom")}</div>
+      <SettingsSection data-settings-section="appearance-zoom" title={t("appearanceTab.zoom")}>
         <ZoomControls />
-      </div>
+      </SettingsSection>
 
     </div>
   );

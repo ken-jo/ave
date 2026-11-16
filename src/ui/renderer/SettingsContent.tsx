@@ -180,6 +180,8 @@ export function SettingsContent({
   const { t } = useTranslation();
   const appInfo = useAppInfo(api);
   const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const searchResultRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [searchSection, setSearchSection] = useState<string | null>(null);
   const searchResults = searchSettings(searchQuery, t);
   const [tab, setTab] = useState(() => normalizeSettingsTab(initialTab));
@@ -371,7 +373,10 @@ export function SettingsContent({
         )}
       >
       <div className="border-b border-border p-2">
-        <input type="search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)}
+        <input ref={searchInputRef} type="search" value={searchQuery} onKeyDown={(event) => {
+          if (event.key === "ArrowDown" && searchResults.length) { event.preventDefault(); searchResultRefs.current[0]?.focus(); }
+          if (event.key === "Escape") setSearchQuery("");
+        }} onChange={(event) => setSearchQuery(event.target.value)}
           aria-label={t("settingsContent.search")} placeholder={t("settingsContent.search")}
           className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs" />
         <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
@@ -379,7 +384,16 @@ export function SettingsContent({
         </span>
         {searchQuery.trim() && <ul aria-label={t("settingsContent.search")} className="mt-2 max-h-64 overflow-y-auto">
           {searchResults.length === 0 && <li className="p-2 text-xs text-muted-foreground">{t("settingsContent.searchEmpty")}</li>}
-          {searchResults.map((result) => <li key={result.section}><button type="button"
+          {searchResults.map((result, index) => <li key={result.section}><button type="button"
+            ref={(element) => { searchResultRefs.current[index] = element; }}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                event.preventDefault();
+                const next = (index + (event.key === "ArrowDown" ? 1 : -1) + searchResults.length) % searchResults.length;
+                searchResultRefs.current[next]?.focus();
+              }
+              if (event.key === "Escape") { setSearchQuery(""); searchInputRef.current?.focus(); }
+            }}
             className="block w-full rounded px-2 py-2 text-left text-xs hover:bg-accent"
             onClick={() => {
               selectTab(result.tab);
@@ -388,7 +402,7 @@ export function SettingsContent({
               setSearchQuery("");
             }}>
             <span className="block text-muted-foreground">{t(SETTINGS_TAB_LABEL_KEYS[result.tab])}</span>
-            {t(result.title)}
+            {result.matchedLabel ?? t(result.title)}
           </button></li>)}
         </ul>}
       </div>

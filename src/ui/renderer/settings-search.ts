@@ -1,14 +1,16 @@
 import { SETTINGS_TAB_LABEL_KEYS, type SettingsTab } from "../../shared/settings-tabs.js";
+import { matchSettingsText } from "./settings-text-match.js";
 import { SHORTCUTS } from "../../shared/shortcuts.js";
 
-interface SettingsSearchEntry {
+export interface SettingsSearchEntry {
   tab: SettingsTab;
   section: string;
   title: string;
   labels: readonly string[];
+  matchedLabel?: string;
 }
 
-const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
+export const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {"tab":"llm","section":"llm-providers","title":"llmTab.providerConfig","labels":[]},
   {"tab":"llm","section":"llm-thinking","title":"llmTab.thinkingTitle","labels":["llmTab.reasoningEffortLabel","llmTab.reasoningEffortAriaLabel"]},
   {"tab":"llm","section":"llm-fallback","title":"llmTab.fallbackTitle","labels":[]},
@@ -26,7 +28,7 @@ const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {"tab":"chat","section":"chat-signals","title":"accessibilitySignals.title","labels":["accessibilitySignals.keywords","accessibilitySignals.turnFinished","accessibilitySignals.approvalNeeded","accessibilitySignals.turnFailed","accessibilitySignals.modeUnfocused"]},
   {"tab":"chat","section":"chat-documents","title":"documentSettings.title","labels":["documentSettings.direct","documentSettings.link","documentEngine.title"]},
   {"tab":"web","section":"web-search-engine","title":"webTab.searchEngineTitle","labels":[]},
-  {"tab":"web","section":"web-api-key","title":"webTab.apiKeyTitle","labels":["webTab.apiKeyLabel"]},
+  {"tab":"web","section":"web-api-key","title":"webTab.apiKeyStaticTitle","labels":[]},
   {"tab":"web","section":"web-view-flow","title":"appearanceTab.webViewSectionTitle","labels":["appearanceTab.webViewCurrentLabel","appearanceTab.webViewRadioGroupLabel"]},
   {"tab":"startup","section":"startup-shortcut","title":"startupTab.shortcutSectionTitle","labels":["startupTab.shortcutEnabledLabel","startupTab.shortcutAcceleratorLabel"]},
   {"tab":"startup","section":"startup-launch","title":"startupTab.launchSectionTitle","labels":["startupTab.launchAtStartupLabel","startupTab.launchMinimizedLabel"]},
@@ -68,6 +70,8 @@ const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
   {"tab":"audit","section":"audit-results","title":"auditTab.resultsTitle","labels":[]},
   {"tab":"mcp","section":"mcp-servers","title":"mcpTab.pageTitle","labels":[]},
   {"tab":"marketplace","section":"marketplace-inventory","title":"gitMarketplace.title","labels":[]},
+  { tab: "llm", section: "llm-compaction", title: "compactionSettings.title", labels: ["compactionSettings.model", "compactionSettings.description"] },
+  { tab: "appearance", section: "appearance-zoom", title: "appearanceTab.zoom", labels: [] },
   // Every shortcut's label, so searching settings for a command finds the page that rebinds it.
   { tab: "shortcuts", section: "shortcuts-list", title: "shortcutsTab.listTitle", labels: SHORTCUTS.map((entry) => entry.labelKey) },
 ];
@@ -76,5 +80,21 @@ const SETTINGS_SEARCH_ENTRIES: readonly SettingsSearchEntry[] = [
 export function searchSettings(query: string, translate: (key: string) => string): readonly SettingsSearchEntry[] {
   const term = query.trim().toLocaleLowerCase();
   if (!term) return [];
-  return SETTINGS_SEARCH_ENTRIES.filter((entry) => [SETTINGS_TAB_LABEL_KEYS[entry.tab], entry.title, ...entry.labels].some((key) => translate(key).toLocaleLowerCase().includes(term)));
+  const aliases: Record<string, string> = {
+    "llm-providers": "model provider api openai anthropic google",
+    "llm-compaction": "compaction compact context",
+    "appearance-theme": "theme color dark light",
+    "appearance-zoom": "zoom scale",
+    "permissions-network": "proxy upstream network egress",
+    "plugin-config-installed": "plugin extension notification notifications",
+    "chat-documents": "download install documents",
+    "web-search-engine": "tavily serper duckduckgo search provider",
+    "marketplace-maintenance": "update upgrade extension plugin",
+  };
+  return SETTINGS_SEARCH_ENTRIES.flatMap((entry) => {
+    const keys = [...entry.labels, entry.title, SETTINGS_TAB_LABEL_KEYS[entry.tab]];
+    const matchedKey = keys.find((key) => matchSettingsText(term, translate(key)) !== null);
+    if (!matchedKey && matchSettingsText(term, entry.section + " " + (aliases[entry.section] ?? "")) === null) return [];
+    return [{ ...entry, matchedLabel: translate(matchedKey ?? entry.title) }];
+  });
 }

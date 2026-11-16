@@ -111,18 +111,19 @@ export function WebTab(props: WebTabProps) {
         </div>
       </SettingsSection>
 
-      {webInfo.needsKey && (
+      {(
         <SettingsSection
           data-settings-section="web-api-key"
-          title={t("webTab.apiKeyTitle", { label: webInfo.label })}
+          title={t("webTab.apiKeyStaticTitle")}
         >
           <div className="space-y-2">
+            {!webInfo.needsKey && <p className="text-sm text-muted-foreground">{t("webTab.apiKeyNotRequired")}</p>}
             <Label className="text-sm font-medium">{t("webTab.apiKeyLabel", { label: webInfo.label })}</Label>
             <div className="flex items-center gap-2">
               {hasWebKey ? <Badge variant="default" className="text-xs">{t("webTab.keySet")}</Badge> : <Badge variant="secondary" className="text-xs">{t("webTab.keyNotSet")}</Badge>}
               {hasWebKey && <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => void api.deleteWebApiKey(webProvider).then(() => { setHasWebKey(false); onSaved(); })}>{t("webTab.deleteButton")}</Button>}
             </div>
-            <Input type="password" placeholder={hasWebKey ? t("webTab.replaceKeyPlaceholder") : webInfo.placeholder} value={webKeyInput} onChange={(e) => setWebKeyInput(e.target.value)} />
+            <Input disabled={!webInfo.needsKey} aria-label={t("webTab.apiKeyStaticTitle")} type="password" placeholder={hasWebKey ? t("webTab.replaceKeyPlaceholder") : webInfo.placeholder} value={webKeyInput} onChange={(e) => setWebKeyInput(e.target.value)} />
           </div>
         </SettingsSection>
       )}
