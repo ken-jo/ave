@@ -29,7 +29,6 @@ import {
 } from "./folder-columns.js";
 
 const SEARCH_DEBOUNCE_MS = 200;
-const SEARCH_RESULT_LIMIT = 20;
 
 export interface FolderViewProps {
   /** The project root; the first column lists it and nothing outside it is offered. */
@@ -228,16 +227,16 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
     }
   }, [showViewerOnly, backToColumns, focusRow, viewing]);
 
-  // "Find in this folder": the workspace search, kept to the deepest open folder.
+  // "Find in this folder": main searches the deepest open folder itself and matches file names.
   const folder = currentFolder(state);
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed) { setMatches(null); return; }
     let cancelled = false;
     const timer = setTimeout(() => {
-      void window.ave.workspace.searchFiles(trimmed).then((result) => {
+      void window.ave.workspace.searchFiles(trimmed, { folder }).then((result) => {
         if (cancelled) return;
-        setMatches(result.ok ? result.matches.filter((match) => isInsideRoot(folder, match.path)).slice(0, SEARCH_RESULT_LIMIT) : []);
+        setMatches(result.ok ? result.matches : []);
       }, () => { if (!cancelled) setMatches([]); });
     }, SEARCH_DEBOUNCE_MS);
     return () => { cancelled = true; clearTimeout(timer); };
@@ -329,7 +328,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
                   <button key={match.path} type="button" role="option" aria-selected={false} onClick={() => reveal(match.path)}
                     className="flex w-full min-w-0 items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-muted">
                     <FileText aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="truncate" title={match.path}>{relativeToRoot(folder, match.path)}</span>
+                    <span className="truncate" title={match.path}>{match.relativePath}</span>
                   </button>
                 ))}
             </div>

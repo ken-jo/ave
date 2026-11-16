@@ -266,6 +266,8 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // Folder view (workspace.listDir / workspace.openPath).
   "permission-denied": "folderView.lockedBody",
   "root-not-registered": "folderView.openRefusedScope",
+  // Folder view search (workspace.searchFiles with a folder).
+  "folder-not-allowed": "folderView.readFailedNotAllowed",
   "type-not-allowed": "folderView.openRefusedType",
   "network-target": "folderView.openRefusedOutside",
   "executable": "folderView.openRefusedExecutable",

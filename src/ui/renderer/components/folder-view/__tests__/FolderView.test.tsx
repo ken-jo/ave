@@ -152,6 +152,21 @@ describe("FolderView", () => {
     await waitFor(() => expect(document.activeElement).toBe(within(card).getByTestId("folder-reveal")));
   });
 
+  it("asks main to search the deepest open folder and lists the matches it returns", async () => {
+    const searchFiles = vi.fn(async () => ({
+      ok: true, truncated: false,
+      matches: [{ path: `${ROOT}/src/payments/retry-policy.ts`, relativePath: "payments/retry-policy.ts", root: ROOT, bytes: 10 }],
+    }));
+    Object.assign(window.ave.workspace, { searchFiles });
+    await openView();
+    fireEvent.click(row(`${ROOT}/src`));
+    await waitFor(() => expect(columns()).toEqual([ROOT, `${ROOT}/src`]));
+    fireEvent.change(screen.getByTestId("folder-search"), { target: { value: "retry" } });
+    await waitFor(() => expect(searchFiles).toHaveBeenCalledWith("retry", { folder: `${ROOT}/src` }));
+    const results = await screen.findByTestId("folder-search-results");
+    expect(within(results).getByRole("option").textContent).toBe("payments/retry-policy.ts");
+  });
+
   it("reopens on a restored location and reports where it is", async () => {
     const onLocationChange = vi.fn();
     render(<FolderView projectRoot={ROOT} initialLocation={{ path: `${ROOT}/src`, selection: `${ROOT}/src/index.ts` }}

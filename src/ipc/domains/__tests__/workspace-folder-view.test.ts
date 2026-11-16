@@ -128,6 +128,28 @@ beforeEach(() => {
   auditLog.mockClear();
 });
 
+describe("workspace.searchFiles in one folder", () => {
+  type SearchResult = { ok: boolean; error?: string; matches?: Array<{ path: string; relativePath: string; root: string }> };
+  const search = (query: unknown, options?: unknown) => (options === undefined
+    ? invoke(CHANNELS.workspace.searchFiles, frameEvent(), query)
+    : invoke(CHANNELS.workspace.searchFiles, frameEvent(), query, options)) as Promise<SearchResult>;
+
+  it("searches the named folder of a registered root by file name", async () => {
+    const res = await search("notes", { folder: join(root, "src") });
+    expect(res.ok).toBe(true);
+    expect(res.matches).toEqual([expect.objectContaining({ path: join(root, "src", "notes.md"), relativePath: "notes.md", root })]);
+    // "src" is in every path under the folder but in no file name.
+    expect((await search("src", { folder: join(root, "src") })).matches).toEqual([]);
+  });
+
+  it("refuses a folder outside every registered root, a relative folder and a malformed option", async () => {
+    expect(await search("secret", { folder: outside })).toEqual({ ok: false, error: "folder-not-allowed" });
+    expect(await search("notes", { folder: "src" })).toEqual({ ok: false, error: "invalid-query" });
+    expect(await search("notes", { folder: 7 })).toEqual({ ok: false, error: "invalid-query" });
+    expect(await search("notes", "src")).toEqual({ ok: false, error: "invalid-query" });
+  });
+});
+
 describe("workspace.listDir folder-view entries", () => {
   it("adds size, modified and created times from one lstat per entry", async () => {
     const res = (await invoke(CHANNELS.workspace.listDir, frameEvent(), root)) as ListResult;

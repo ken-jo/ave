@@ -55,6 +55,17 @@ function isSubsequence(needle: string, hay: string): boolean {
   return i === needle.length;
 }
 
+/** File names only, for a search box scoped to one folder: a path-wide subsequence match would list files whose own name
+ * has nothing to do with the query. Lower is better; null = no match. */
+function rankByName(query: string, relativePath: string): number | null {
+  const rel = relativePath.toLowerCase();
+  const base = rel.slice(rel.lastIndexOf("/") + 1);
+  if (query.length === 0) return rel.split("/").length;
+  if (base.startsWith(query)) return 0;
+  if (base.includes(query)) return 1;
+  return null;
+}
+
 /** Lower is better; null = no match. */
 function rank(query: string, relativePath: string): number | null {
   const rel = relativePath.toLowerCase();
@@ -72,19 +83,37 @@ export async function searchWorkspaceFiles(args: {
   roots: readonly string[];
   cwd: string;
   extraAllowed: readonly string[];
+  /**
+   * Search one folder instead of every root. The caller has already proved it lies inside `root`. The folder itself is
+   * walked, fresh each time, so the walk limit and the match cap apply to that folder alone (a large sibling cannot use
+   * them up), a file created a moment ago is found, and only file names are matched.
+   */
+  folder?: { path: string; root: string };
   now?: number;
 }): Promise<{ matches: WorkspaceFileMatch[]; truncated: boolean }> {
   const query = args.query.trim().toLowerCase();
   const now = args.now ?? Date.now();
   const scored: Array<{ score: number; match: WorkspaceFileMatch }> = [];
   let truncated = false;
-  for (const root of args.roots) {
-    const listing = await listRoot(root, now);
-    truncated ||= listing.truncated;
-    for (const file of listing.files) {
-      const score = rank(query, file.relativePath);
-      if (score === null) continue;
-      scored.push({ score, match: { path: file.path, relativePath: file.relativePath, root, bytes: file.bytes } });
+  if (args.folder) {
+    const listed = await collectFiles(args.folder.path, MAX_FILES_PER_ROOT);
+    if (listed.ok) {
+      truncated = listed.value.truncated;
+      for (const file of listed.value.files) {
+        const score = rankByName(query, file.relativePath);
+        if (score === null) continue;
+        scored.push({ score, match: { path: file.path, relativePath: file.relativePath, root: args.folder.root, bytes: file.size ?? 0 } });
+      }
+    }
+  } else {
+    for (const root of args.roots) {
+      const listing = await listRoot(root, now);
+      truncated ||= listing.truncated;
+      for (const file of listing.files) {
+        const score = rank(query, file.relativePath);
+        if (score === null) continue;
+        scored.push({ score, match: { path: file.path, relativePath: file.relativePath, root, bytes: file.bytes } });
+      }
     }
   }
   scored.sort((a, b) =>

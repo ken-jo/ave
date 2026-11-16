@@ -201,7 +201,8 @@ export type WorkspacePreviewRemoveRootResult =
 
 type WorkspaceSearchFilesResult =
   | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
-  | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" };
+  | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" | "folder-not-allowed" };
+
 
 export interface WorkspaceRevealResult {
   ok: boolean;
@@ -1009,10 +1010,11 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
     },
   );
 
-  // Autocomplete accepts only a query; derive current roots in main and read-guard every returned path.
+  // Autocomplete accepts only a query; derive current roots in main and read-guard every returned path. The folder view
+  // also names the folder it searches: it must pass the read guard and lie inside a registered root.
   ipcMain.handle(
     CHANNELS.workspace.searchFiles,
-    async (e, rawQuery: unknown): Promise<WorkspaceSearchFilesResult> => {
+    async (e, rawQuery: unknown, rawOptions?: unknown): Promise<WorkspaceSearchFilesResult> => {
       if (!validateHostRendererSender(e)) {
         auditUnauthorized(auditLogger, CHANNELS.workspace.searchFiles, e);
         return { ok: false, error: "unauthorized" };
@@ -1031,11 +1033,21 @@ export function registerWorkspaceHandlers(deps: IpcDeps): void {
         }
         throw error;
       }
+      let folder: { path: string; root: string } | undefined;
+      if (rawOptions !== undefined) {
+        const rawFolder = typeof rawOptions === "object" && rawOptions !== null ? (rawOptions as { folder?: unknown }).folder : undefined;
+        if (typeof rawFolder !== "string" || !isAbsolutePath(rawFolder)) return { ok: false, error: "invalid-query" };
+        const verdict = assertReadableFilePath(rawFolder, scope.cwd, scope.extraAllowed);
+        const root = verdict.ok ? containingRoot(verdict.resolved) : null;
+        if (!verdict.ok || root === null) return { ok: false, error: "folder-not-allowed" };
+        folder = { path: verdict.resolved, root: root.path };
+      }
       const result = await searchWorkspaceFiles({
         query: rawQuery,
         roots: roots.map((root) => root.path),
         cwd: scope.cwd,
         extraAllowed: scope.extraAllowed,
+        ...(folder ? { folder } : {}),
       });
       return { ok: true, ...result };
     },

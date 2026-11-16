@@ -214,8 +214,10 @@ export function buildAveNamespaceExtras() {
     dropPrepare: (droppedPath: string) =>
       ipcRenderer.invoke(CHANNELS.workspace.dropPrepare, droppedPath),
     // Composer `@file` autocomplete over the current workspace roots.
-    searchFiles: (query: string) =>
-      ipcRenderer.invoke(CHANNELS.workspace.searchFiles, query),
+    searchFiles: (query: string, options?: { folder: string }) =>
+      options === undefined
+        ? ipcRenderer.invoke(CHANNELS.workspace.searchFiles, query)
+        : ipcRenderer.invoke(CHANNELS.workspace.searchFiles, query, options),
     // Folder view "open in default app"; the gesture flag is read here, inside the click or key handler's task.
     openPath: (projectRoot: string, targetPath: string) =>
       ipcRenderer.invoke(CHANNELS.workspace.openPath, { projectRoot, path: targetPath, intent: ipcUserKeyboardIntent() }),

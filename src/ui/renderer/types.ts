@@ -1990,11 +1990,12 @@ export interface AveWorkspaceApi {
   }>;
   /**
    * Composer `@file` autocomplete. Only the query crosses; main walks the
-   * current roots, applies the Layer-0 sensitive filter and the read-scope guard.
+   * current roots, applies the Layer-0 sensitive filter and the read-scope guard. With `folder` (the folder view's
+   * "find in this folder") main searches that one folder of a registered root and matches file names only.
    */
-  searchFiles: (query: string) => Promise<
+  searchFiles: (query: string, options?: { folder: string }) => Promise<
     | { ok: true; matches: WorkspaceFileMatch[]; truncated: boolean }
-    | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" }
+    | { ok: false; error: "unauthorized" | "invalid-query" | "settings-unreadable" | "folder-not-allowed" }
   >;
   /**
    * Open one file inside `projectRoot` with the OS default app. Call it only from a click or key handler: preload sends the
