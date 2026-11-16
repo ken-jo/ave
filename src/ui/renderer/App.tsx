@@ -2337,7 +2337,7 @@ export function App() {
             {/* `relative` makes THIS full-height shell column the positioning
                 context for the floating-card Sidebar, which starts one band down
                 (`--shell-card-top`) on the tiles' top line. */}
-            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="fixed grid min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[var(--shell-canvas-top)_minmax(0,1fr)] overflow-hidden" style={{ left: "calc(-1 * var(--native-window-inset))", top: "calc(-1 * var(--native-window-inset))", width: "calc(100vw + 2 * var(--native-window-inset))", height: "calc(100vh + 2 * var(--native-window-inset))" }}>
+            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative grid min-w-0 grid-cols-[minmax(0,1fr)] grid-rows-[var(--shell-canvas-top)_minmax(0,1fr)] overflow-hidden" style={{ left: "calc(-1 * var(--native-window-inset))", top: "calc(-1 * var(--native-window-inset))", width: "calc(100vw + 2 * var(--native-window-inset))", height: "calc(100vh + 2 * var(--native-window-inset))" }}>
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it
                   renders IN the band (no separate toolbar row below it). */}
