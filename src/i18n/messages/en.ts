@@ -6531,6 +6531,7 @@ export const en = {
   "pluginConfigSchemaForm.secretDeleted": "Secret deleted.",
   "webTab.apiKeyStaticTitle": "Search API key",
   "webTab.apiKeyNotRequired": "The selected search provider does not need an API key.",
+  "webTab.missingKeyFallback": "No API key saved: DuckDuckGo is used until you save a key.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

@@ -115,7 +115,6 @@ export const WEB_PROVIDERS: { id: AppSettings["webSearch"]["provider"]; label: s
   { id: "duckduckgo", label: "DuckDuckGo", get placeholder() { return t("constants.webProviderDuckDuckGoPlaceholder"); }, needsKey: false },
   { id: "tavily", label: "Tavily AI", placeholder: "tvly-...", needsKey: true },
   { id: "serper", label: "Serper.dev", get placeholder() { return t("constants.webProviderSerperPlaceholder"); }, needsKey: true },
-  { id: "google", label: "Google Search", get placeholder() { return t("constants.webProviderGooglePlaceholder"); }, needsKey: true },
 ];
 
 const REASONING_DEPTH_LABELS = {

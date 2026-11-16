@@ -6533,4 +6533,5 @@ export const ko: Record<MessageCatalogKey, string> = {
   "pluginConfigSchemaForm.secretDeleted": "비밀 값이 삭제되었습니다.",
   "webTab.apiKeyStaticTitle": "검색 API 키",
   "webTab.apiKeyNotRequired": "선택한 검색 제공업체는 API 키가 필요하지 않습니다.",
+  "webTab.missingKeyFallback": "저장된 API 키가 없어 DuckDuckGo를 사용합니다. 키를 저장하면 선택한 검색 엔진을 사용합니다.",
 };

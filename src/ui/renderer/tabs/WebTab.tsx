@@ -118,6 +118,7 @@ export function WebTab(props: WebTabProps) {
         >
           <div className="space-y-2">
             {!webInfo.needsKey && <p className="text-sm text-muted-foreground">{t("webTab.apiKeyNotRequired")}</p>}
+            {webInfo.needsKey && !hasWebKey && <p role="status" className="text-sm text-muted-foreground">{t("webTab.missingKeyFallback")}</p>}
             <Label className="text-sm font-medium">{t("webTab.apiKeyLabel", { label: webInfo.label })}</Label>
             <div className="flex items-center gap-2">
               {hasWebKey ? <Badge variant="default" className="text-xs">{t("webTab.keySet")}</Badge> : <Badge variant="secondary" className="text-xs">{t("webTab.keyNotSet")}</Badge>}

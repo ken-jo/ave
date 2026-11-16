@@ -685,7 +685,7 @@ export interface PrivacySettings {
 export type RoutineSettings = Record<string, unknown>;
 
 export interface WebSearchSettings {
-  provider: "duckduckgo" | "tavily" | "serper" | "google";
+  provider: "duckduckgo" | "tavily" | "serper";
 }
 
 /** The git marketplace's settings (design §16.2). Sources, pins and tokens live in
@@ -1771,6 +1771,10 @@ export class SettingsService {
       );
       if (appliedMigrations.length !== migrationsBeforeMarketDefaults) migrationWriteBack = true;
 
+      if ((parsed.webSearch?.provider as unknown) === "google") {
+        parsed = { ...parsed, webSearch: { provider: "duckduckgo" } };
+        migrationWriteBack = true;
+      }
       const result: AppSettings = {
         llm,
         chat: normalizeChat(parsed.chat),
