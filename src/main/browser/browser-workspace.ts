@@ -8,7 +8,7 @@ import { BrowserPagePrompts } from "./browser-page-prompts.js";
 
 /** The runtime's request to show a page dialog: (details, respond). */
 const RUN_DIALOG = "-run-dialog";
-import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserDownloadBlockReason, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
+import { BROWSER_DIALOG_DOCUMENT_LIMIT, BROWSER_PAGE_DIALOG_TYPES, browserDialogText, BROWSER_EXTERNAL_SCHEMES, BROWSER_EXTERNAL_TARGET_LIMIT, BROWSER_REALM_LIMIT, browserPlainText, BROWSER_WORKSPACE_LIMITS, browserWorkspaceUrl, parseBrowserWorkspaceRequest, type BrowserClearDataRequest, type BrowserClearSiteDataRequest, type BrowserDownloadBlockReason, type BrowserDownloadTarget, type BrowserLoadError, type BrowserOpenTab, type BrowserLoadRequest, type BrowserPageStatus, type BrowserPromptAnswerRequest, type BrowserBookmarkRequest, type BrowserCaptureRequest, type BrowserDownload, type BrowserPreview, type BrowserFindRequest, type BrowserSitePermissionRequest, type BrowserWorkspaceState, type BrowserWorkspaceTarget, type BrowserWorkspaceTab, type BrowserZoomRequest } from "../../shared/browser-workspace.js";
 import { BrowserWorkspacePreview } from "./browser-workspace-preview.js";
 import { BrowserWorkspaceCapture } from "./browser-workspace-capture.js";
 import { BrowserWorkspaceStore } from "./browser-workspace-store.js";
@@ -29,6 +29,9 @@ export interface BrowserWorkspaceServiceDeps {
   /** Asks in a native dialog, for a guest that has no tab panel to ask in (a popup window). */
   promptPermission(request: BrowserPermissionPrompt): Promise<boolean>;
   fullscreenAvailable(windowId: number): boolean;
+  /** Clears cookies and stored site data of the browser profile: of one origin, or of every site when null. */
+  clearSiteData(origin: string | null): Promise<void>;
+  clearCache(): Promise<void>;
   /** Lifts the site's download limit after the user asked for that in the tab. */
   allowDownloads(origin: string): void;
   showItemInFolder(path: string): void;
@@ -190,6 +193,25 @@ export class BrowserWorkspaceService {
   }
   async setBookmark(windowId: number, request: BrowserBookmarkRequest): Promise<BrowserWorkspaceState> { await this.store.setBookmark(request); await this.changed(); return this.getState(windowId); }
   async clearHistory(windowId: number): Promise<BrowserWorkspaceState> { await this.store.clearHistory(); await this.changed(); return this.getState(windowId); }
+  /** Clears what the user chose from the profile every tab shares. Site data ends sign-ins; the pages stay open. */
+  async clearData(windowId: number, request: BrowserClearDataRequest): Promise<BrowserWorkspaceState> {
+    const parsed = parseBrowserWorkspaceRequest("clearData", request);
+    if (!parsed) throw new Error("bad-request");
+    if (parsed.history) await this.store.clearHistory();
+    if (parsed.siteData) await this.deps.clearSiteData(null);
+    if (parsed.cache) await this.deps.clearCache();
+    await this.changed();
+    return this.getState(windowId);
+  }
+  /** Clears the cookies and stored data of the one site the tab shows; the request must name that site. */
+  async clearSiteData(windowId: number, request: BrowserClearSiteDataRequest): Promise<null> {
+    const parsed = parseBrowserWorkspaceRequest("clearSiteData", request);
+    if (!parsed) throw new Error("bad-request");
+    const url = browserWorkspaceUrl(this.target(windowId, parsed).guest.getURL());
+    if (!url || new URL(url).origin !== parsed.origin) throw new Error("origin-mismatch");
+    await this.deps.clearSiteData(parsed.origin);
+    return null;
+  }
   async setSitePermission(windowId: number, request: BrowserSitePermissionRequest): Promise<BrowserWorkspaceState> {
     if (!parseBrowserWorkspaceRequest("setSitePermission", request)) throw new Error("bad-request");
     if (request.permission === "fullscreen" && request.decision === "allow" && !this.deps.fullscreenAvailable(windowId)) throw new Error("operation-failed");

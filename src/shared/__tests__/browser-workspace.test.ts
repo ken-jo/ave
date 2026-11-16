@@ -150,4 +150,12 @@ describe("browser workspace wire validation", () => {
       expect(parseBrowserOpenTab(bad)).toBeNull();
     }
   });
+  it("accepts a clear-data request only with three booleans of which one is set, and a site request only with an origin", () => {
+    expect(parseBrowserWorkspaceRequest("clearData", { history: true, siteData: false, cache: false })).toEqual({ history: true, siteData: false, cache: false });
+    for (const bad of [{ history: false, siteData: false, cache: false }, { history: true, siteData: false }, { history: 1, siteData: false, cache: false }, { history: true, siteData: true, cache: true, passwords: true }]) {
+      expect(parseBrowserWorkspaceRequest("clearData", bad)).toBeNull();
+    }
+    expect(parseBrowserWorkspaceRequest("clearSiteData", { ...TARGET, origin: "https://site.example" })).toEqual({ ...TARGET, origin: "https://site.example" });
+    for (const bad of [{ ...TARGET, origin: "https://site.example/path" }, { ...TARGET }, { ...TARGET, origin: "https://site.example", windowId: 2 }]) expect(parseBrowserWorkspaceRequest("clearSiteData", bad)).toBeNull();
+  });
 });

@@ -19,6 +19,9 @@ export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, 
   const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
   const [operationFailed, setOperationFailed] = useState(false);
+  const [clearKinds, setClearKinds] = useState({ history: true, siteData: false, cache: false });
+  const [dataCleared, setDataCleared] = useState(false);
+  const [siteCleared, setSiteCleared] = useState<string | null>(null);
   const searchIdentity = useRef<Pick<BrowserFindRequest, "tabId" | "documentGeneration" | "text"> | null>(null);
   const zoomFactors = [0.5, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
   const active = state?.tabs.find((tab) => tab.tabId === activeTabId);
@@ -66,7 +69,17 @@ export function BrowserWorkspacePanel({ api, browserTabs, activeTabId, visible, 
       <div><h3 className="mb-1 font-semibold">{t("browserWorkspace.bookmarks")}</h3>{state.bookmarks.length === 0 && <EmptyState className="p-0" title={t("browserWorkspace.empty")} />}<ul>{state.bookmarks.map((entry) => <li key={entry.url}><button type="button" className="max-w-full truncate text-left underline" title={entry.url} onClick={() => onOpenUrl(entry.url)}>{entry.title || entry.url}</button></li>)}</ul></div>
       <div><h3 className="mb-1 font-semibold">{t("browserWorkspace.history")}</h3><button type="button" className="mb-1 rounded border px-2 py-1" disabled={state.history.length === 0} onClick={() => void run(api.clearHistory())}>{t("browserWorkspace.clearHistory")}</button><ul>{state.history.map((entry) => <li key={entry.url}><button type="button" className="max-w-full truncate text-left underline" title={entry.url} onClick={() => onOpenUrl(entry.url)}>{entry.title || entry.url}</button></li>)}</ul></div>
       <fieldset disabled={!target || !origin}><legend className="mb-1 font-semibold">{t("browserWorkspace.sitePermissions")}</legend><p className="mb-1 break-all text-muted-foreground">{origin ?? t("browserWorkspace.noSite")}</p>
+        <button type="button" className="mb-1 rounded border px-2 py-1" data-testid="browser-clear-site-data" onClick={() => { if (target && origin) void run(api.clearSiteData({ ...target, origin })).then((ok) => setSiteCleared(ok ? origin : null)); }}>{t("browserWorkspace.clearSiteData")}</button>
+        {siteCleared !== null && siteCleared === origin && <p role="status" className="mb-1 text-muted-foreground" data-testid="browser-site-data-cleared">{t("browserWorkspace.siteDataCleared")}</p>}
         <div className="grid grid-cols-2 gap-1">{BROWSER_SITE_PERMISSIONS.filter((permission) => permission !== "fullscreen" || state.capabilities.fullscreen).map((permission) => <label key={permission} className="flex items-center justify-between gap-2">{t(`browserWorkspace.permission.${permission}`)}<select className="rounded border bg-background p-1" aria-label={t(`browserWorkspace.permission.${permission}`)} value={state.sitePermissions.find((rule) => rule.origin === origin && rule.permission === permission)?.decision ?? "ask"} onChange={(event) => { const decision = BROWSER_SITE_DECISIONS.find((candidate) => candidate === event.target.value); if (target && origin && decision) void run(api.setSitePermission({ ...target, origin, permission, decision })); }}>{BROWSER_SITE_DECISIONS.map((decision) => <option key={decision} value={decision}>{t(`browserWorkspace.decision.${decision}`)}</option>)}</select></label>)}</div>
+      </fieldset>
+      <fieldset data-testid="browser-clear-data"><legend className="mb-1 font-semibold">{t("browserWorkspace.clearData")}</legend>
+        <div className="flex flex-wrap items-center gap-3">
+          {(["history", "siteData", "cache"] as const).map((kind) => <label key={kind} className="flex items-center gap-1"><input type="checkbox" checked={clearKinds[kind]} onChange={(event) => { setDataCleared(false); setClearKinds({ ...clearKinds, [kind]: event.target.checked }); }} data-testid={`browser-clear-data-${kind}`} />{t(`browserWorkspace.clearData.${kind}`)}</label>)}
+          <button type="button" className="rounded border px-2 py-1" disabled={!clearKinds.history && !clearKinds.siteData && !clearKinds.cache} data-testid="browser-clear-data-submit" onClick={() => void run(api.clearData(clearKinds)).then(setDataCleared)}>{t("browserWorkspace.clearData.submit")}</button>
+        </div>
+        <p className="mt-1 text-muted-foreground">{t("browserWorkspace.clearData.note")}</p>
+        {dataCleared && <p role="status" className="mt-1 text-muted-foreground" data-testid="browser-data-cleared">{t("browserWorkspace.clearData.done")}</p>}
       </fieldset>
       <div><h3 className="mb-1 font-semibold">{t("browserWorkspace.downloads")}</h3>{state.downloads.length === 0 && <EmptyState className="p-0" title={t("browserWorkspace.empty")} />}<ul>{state.downloads.map((download) => <li key={download.id} className="flex justify-between gap-2"><span className="truncate">{download.name}</span><span className="flex shrink-0 items-center gap-1" data-testid="browser-download-row" data-state={download.state}>{t(`browserWorkspace.download.${download.state}`)}{download.state === "blocked" ? null : <> · {Math.round(download.receivedBytes / 1024)} / {Math.round(download.totalBytes / 1024)} KB</>}
         {download.state === "completed" && <button type="button" className="rounded border px-1" onClick={() => void run(api.showDownload({ id: download.id }))} data-testid="browser-download-show">{t("browserWorkspace.download.show")}</button>}

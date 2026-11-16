@@ -774,6 +774,8 @@ export const CHANNELS = {
     retryLoad: "ave:browser-workspace:retry-load",
     stopLoad: "ave:browser-workspace:stop-load",
     showDownload: "ave:browser-workspace:show-download",
+    clearData: "ave:browser-workspace:clear-data",
+    clearSiteData: "ave:browser-workspace:clear-site-data",
     cancelDownload: "ave:browser-workspace:cancel-download",
     load: "ave:browser-workspace:load",
     answerPrompt: "ave:browser-workspace:answer-prompt",

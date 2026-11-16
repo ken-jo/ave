@@ -38,6 +38,10 @@ export const BROWSER_REALM_LIMIT = 100;
 const BROWSER_DOWNLOAD_BLOCK_REASONS = ["rate", "queue", "size", "staging"] as const;
 export type BrowserDownloadBlockReason = typeof BROWSER_DOWNLOAD_BLOCK_REASONS[number];
 export interface BrowserDownloadTarget { readonly id: string }
+/** What to clear from the browser profile every tab shares. `siteData` is cookies and each site's stored data. */
+export interface BrowserClearDataRequest { readonly history: boolean; readonly siteData: boolean; readonly cache: boolean }
+/** Clear the cookies and stored data of the site the tab shows; `origin` proves which site the user was looking at. */
+export interface BrowserClearSiteDataRequest extends BrowserWorkspaceTarget { readonly origin: string }
 const BROWSER_DIALOG_TEXT_LIMIT = 2_000;
 /** Dialogs one document may show before the rest end unanswered. */
 export const BROWSER_DIALOG_DOCUMENT_LIMIT = 20;
@@ -138,6 +142,8 @@ export interface BrowserWorkspaceApi {
   answerPrompt(request: BrowserPromptAnswerRequest): Promise<BrowserWorkspaceResult<null>>;
   /** Stop the tab's load in progress. */
   stopLoad(request: BrowserWorkspaceTarget): Promise<BrowserWorkspaceResult<null>>;
+  clearData(request: BrowserClearDataRequest): Promise<BrowserWorkspaceResult<BrowserWorkspaceState>>;
+  clearSiteData(request: BrowserClearSiteDataRequest): Promise<BrowserWorkspaceResult<null>>;
   /** Reveal a finished download in the system's file manager. The path never leaves main. */
   showDownload(request: BrowserDownloadTarget): Promise<BrowserWorkspaceResult<null>>;
   cancelDownload(request: BrowserDownloadTarget): Promise<BrowserWorkspaceResult<null>>;
@@ -162,7 +168,7 @@ export function parseBrowserAttachBlocked(value: unknown): BrowserAttachBlocked 
 export interface BrowserWorkspaceRequests {
   getState: undefined; setBookmark: BrowserBookmarkRequest; clearHistory: undefined; setSitePermission: BrowserSitePermissionRequest;
   find: BrowserFindRequest; stopFind: BrowserWorkspaceTarget; zoom: BrowserZoomRequest; preview: BrowserWorkspaceTarget;
-  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest; showDownload: BrowserDownloadTarget; cancelDownload: BrowserDownloadTarget;
+  capture: BrowserCaptureRequest; retryLoad: BrowserWorkspaceTarget; stopLoad: BrowserWorkspaceTarget; load: BrowserLoadRequest; showDownload: BrowserDownloadTarget; cancelDownload: BrowserDownloadTarget; clearData: BrowserClearDataRequest; clearSiteData: BrowserClearSiteDataRequest;
   answerPrompt: BrowserPromptAnswerRequest; userNavigation: BrowserWorkspaceTarget;
 }
 export const BROWSER_SITE_PERMISSIONS: readonly BrowserSitePermission[] = ["camera", "microphone", "geolocation", "notifications", "fullscreen"];
@@ -235,6 +241,16 @@ export function parseBrowserWorkspaceRequest<K extends keyof BrowserWorkspaceReq
   if (!isRecord(record)) return null;
   if (operation === "showDownload" || operation === "cancelDownload") {
     return isRecord(value) && keys(value, ["id"]) && typeof value.id === "string" && value.id.length > 0 && value.id.length <= 200 ? { id: value.id } as BrowserWorkspaceRequests[K] : null;
+  }
+  if (operation === "clearData") {
+    if (!isRecord(value) || !keys(value, ["history", "siteData", "cache"])) return null;
+    const { history, siteData, cache } = value;
+    if (typeof history !== "boolean" || typeof siteData !== "boolean" || typeof cache !== "boolean" || !(history || siteData || cache)) return null;
+    return { history, siteData, cache } as BrowserWorkspaceRequests[K];
+  }
+  if (operation === "clearSiteData") {
+    if (!isRecord(value) || !keys(value, ["tabId", "documentGeneration", "origin"]) || !target(value) || !browserWorkspaceOrigin(value.origin)) return null;
+    return { tabId: value.tabId, documentGeneration: value.documentGeneration, origin: value.origin } as BrowserWorkspaceRequests[K];
   }
   if (operation === "answerPrompt") {
     return keys(record, ["tabId", "promptId", "answer"]) && typeof record.tabId === "string" && record.tabId.length > 0 && record.tabId.length <= 200

@@ -28,14 +28,14 @@ async function setup() {
   const findInPage = vi.fn(() => 42); const stopFindInPage = vi.fn(); const setZoomFactor = vi.fn((next: number) => { factor = next; });
   let hostType = "webview";
   const guest = Object.assign(events, { id: 7, session: {}, mainFrame: { frameTreeNodeId: 1 }, getType: () => hostType, getURL: () => url, getTitle: () => "Site", isDestroyed: () => false, getZoomFactor: () => factor, setZoomFactor, findInPage, stopFindInPage, loadURL, reload, stop, isLoadingMainFrame: () => false }) as unknown as WebContents;
-  const onError = vi.fn(); const promptPermission = vi.fn(async () => true); const openExternal = vi.fn(async () => undefined); const allowDownloads = vi.fn(); const showItemInFolder = vi.fn();
+  const onError = vi.fn(); const clearSiteData = vi.fn(async () => undefined); const clearCache = vi.fn(async () => undefined); const promptPermission = vi.fn(async () => true); const openExternal = vi.fn(async () => undefined); const allowDownloads = vi.fn(); const showItemInFolder = vi.fn();
   let requestHold: BrowserPageRequestHold | null = null;
   const holdPageRequests = vi.fn((hold: BrowserPageRequestHold | null) => { requestHold = hold; });
   /** A request reaching the browser profile: how the hold answered it, or "unheld" when nothing holds requests. */
   const pageRequest = (request: BrowserPageRequest) => requestHold === null ? Promise.resolve("unheld" as const) : new Promise<boolean>((resolve) => requestHold?.(request, resolve));
-  const service = new BrowserWorkspaceService({ openExternal, allowDownloads, showItemInFolder, agentDrives: () => agentDriving, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
+  const service = new BrowserWorkspaceService({ openExternal, clearSiteData, clearCache, allowDownloads, showItemInFolder, agentDrives: () => agentDriving, holdPageRequests, store: new BrowserWorkspaceStore(namespace), liveTab: (windowId, tabId) => live && windowId === 1 && tabId === "browser:one" ? { guest, documentGeneration: generation } : null, listTabs: (windowId) => live && windowId === 1 ? [{ tabId: "browser:one", documentGeneration: generation, url, title: "Site" }] : [], isWindowVisible: () => true, promptPermission, fullscreenAvailable: () => false, onError });
   services.push(service);
-  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, allowDownloads, showItemInFolder, runtimeDialog, setAgentDriving: (next: boolean) => { agentDriving = next; }, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
+  return { service, guest, events, holdPageRequests, pageRequest, holding: () => requestHold !== null, promptPermission, openExternal, clearSiteData, clearCache, allowDownloads, showItemInFolder, runtimeDialog, setAgentDriving: (next: boolean) => { agentDriving = next; }, setHostType: (next: string) => { hostType = next; }, loadURL, reload, stop, findInPage, stopFindInPage, setZoomFactor, onError, setGeneration: (next: number) => { generation = next; }, setUrl: (next: string) => { url = next; }, setLive: (next: boolean) => { live = next; } };
 }
 const TARGET = { tabId: "browser:one", documentGeneration: 1 };
 const PAGE_FRAME = { origin: "https://site.example", detached: false, top: { frameTreeNodeId: 1 } };
@@ -654,5 +654,22 @@ describe("browser workspace service", () => {
     service.showDownload(1, { id });
     expect(showItemInFolder).toHaveBeenCalledWith("/Users/me/Downloads/report.txt");
     expect(JSON.stringify(await service.getState(1))).not.toContain("/Users/me");
+  });
+  it("clears only what the user chose from the shared profile, and one site's data only for the site the tab shows", async () => {
+    const { service, guest, clearSiteData, clearCache } = await setup();
+    service.observeGuest(1, guest);
+    await service.store.recordVisit("https://site.example/", "Site");
+    expect((await service.clearData(1, { history: false, siteData: true, cache: false })).history).toHaveLength(1);
+    expect(clearSiteData).toHaveBeenCalledWith(null);
+    expect(clearCache).not.toHaveBeenCalled();
+    expect((await service.clearData(1, { history: true, siteData: false, cache: true })).history).toEqual([]);
+    expect(clearCache).toHaveBeenCalledOnce();
+    expect(clearSiteData).toHaveBeenCalledOnce();
+    await expect(service.clearData(1, { history: false, siteData: false, cache: false })).rejects.toThrow("bad-request");
+
+    await expect(service.clearSiteData(1, { ...TARGET, origin: "https://other.example" })).rejects.toThrow("origin-mismatch");
+    await expect(service.clearSiteData(1, { ...TARGET, documentGeneration: 9, origin: "https://site.example" })).rejects.toThrow("stale-document");
+    expect(await service.clearSiteData(1, { ...TARGET, origin: "https://site.example" })).toBeNull();
+    expect(clearSiteData).toHaveBeenLastCalledWith("https://site.example");
   });
 });

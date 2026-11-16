@@ -12,7 +12,7 @@ function setup() {
   let stateChanged!: (state: BrowserWorkspaceState) => void;
   let controlChanged!: (state: BrowserTabControlState) => void;
   const unsubscribe = vi.fn();
-  const api = { getState: vi.fn(async () => ({ ok: true, value: STATE })), onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { stateChanged = handler; return unsubscribe; }), setBookmark: vi.fn(async () => ({ ok: true, value: STATE })), clearHistory: vi.fn(async () => ({ ok: true, value: STATE })), setSitePermission: vi.fn(async () => ({ ok: true, value: STATE })), find: vi.fn(async () => ({ ok: true, value: { requestId: 1 } })), stopFind: vi.fn(async () => ({ ok: true, value: null })), zoom: vi.fn(async () => ({ ok: true, value: { factor: 1.5 } })), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })) } as unknown as BrowserWorkspaceApi;
+  const api = { getState: vi.fn(async () => ({ ok: true, value: STATE })), onChanged: vi.fn((handler: (state: BrowserWorkspaceState) => void) => { stateChanged = handler; return unsubscribe; }), setBookmark: vi.fn(async () => ({ ok: true, value: STATE })), clearHistory: vi.fn(async () => ({ ok: true, value: STATE })), setSitePermission: vi.fn(async () => ({ ok: true, value: STATE })), find: vi.fn(async () => ({ ok: true, value: { requestId: 1 } })), stopFind: vi.fn(async () => ({ ok: true, value: null })), zoom: vi.fn(async () => ({ ok: true, value: { factor: 1.5 } })), preview: vi.fn(async () => ({ ok: false, error: "capture-unavailable" })), clearData: vi.fn(async () => ({ ok: true, value: STATE })), clearSiteData: vi.fn(async () => ({ ok: true, value: null })), showDownload: vi.fn(async () => ({ ok: true, value: null })), cancelDownload: vi.fn(async () => ({ ok: true, value: null })) } as unknown as BrowserWorkspaceApi;
   const control = { revision: 1, tabs: [] } as BrowserTabControlState;
   const browserTabs = { getState: vi.fn(async () => control), onControl: vi.fn((handler: (state: BrowserTabControlState) => void) => { controlChanged = handler; return unsubscribe; }) };
   const onOpenUrl = vi.fn();
@@ -190,6 +190,28 @@ describe("browser workspace panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "browserWorkspace.previous" }));
     expect(api.find).toHaveBeenNthCalledWith(3, expect.objectContaining({ text: "needle", findNext: false }));
   });
+});
+
+it("clears the chosen browsing data, and one site's data for the site the tab shows", async () => {
+  intersection();
+  const { props, api } = setup();
+  render(<BrowserWorkspacePanel {...props} />);
+  await act(async () => { await Promise.resolve(); });
+  fireEvent.click(screen.getByText("browserWorkspace.library"));
+  // History is preselected; signing out of every site is something the user must choose.
+  expect(screen.getByTestId("browser-clear-data-history")).toHaveProperty("checked", true);
+  expect(screen.getByTestId("browser-clear-data-siteData")).toHaveProperty("checked", false);
+  fireEvent.click(screen.getByTestId("browser-clear-data-siteData"));
+  fireEvent.click(screen.getByTestId("browser-clear-data-history"));
+  await act(async () => { fireEvent.click(screen.getByTestId("browser-clear-data-submit")); });
+  expect(api.clearData).toHaveBeenCalledWith({ history: false, siteData: true, cache: false });
+  expect(screen.getByTestId("browser-data-cleared")).toBeTruthy();
+  fireEvent.click(screen.getByTestId("browser-clear-data-siteData"));
+  expect(screen.getByTestId("browser-clear-data-submit")).toHaveProperty("disabled", true);
+
+  await act(async () => { fireEvent.click(screen.getByTestId("browser-clear-site-data")); });
+  expect(api.clearSiteData).toHaveBeenCalledWith({ tabId: "browser:one", documentGeneration: 4, origin: "https://site.example" });
+  expect(screen.getByTestId("browser-site-data-cleared")).toBeTruthy();
 });
 
 it("shows an actual option for a site factor outside the preset list", async () => {

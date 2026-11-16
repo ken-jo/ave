@@ -49,6 +49,13 @@ export function getBrowserWorkspaceService(): BrowserWorkspaceService {
       if (hold === null) requests.onBeforeRequest(null);
       else requests.onBeforeRequest((details, callback) => hold(details, (send) => callback(send ? {} : { cancel: true })));
     },
+    clearSiteData: async (origin) => {
+      const profile = session.fromPartition(AVE_SIDE_BROWSER_PARTITION);
+      await profile.clearStorageData({ ...(origin === null ? {} : { origin }), storages: [...BROWSER_SITE_DATA_STORAGES] });
+      // Clearing everything also ends remembered HTTP sign-ins; one site's cannot be cleared apart from the rest.
+      if (origin === null) await profile.clearAuthCache();
+    },
+    clearCache: () => session.fromPartition(AVE_SIDE_BROWSER_PARTITION).clearCache(),
     allowDownloads: (origin) => {
       if (!downloadAllowance) throw new Error("browser-download-policy-missing");
       downloadAllowance(origin);
@@ -142,6 +149,7 @@ export function observeBrowserWorkspaceGuest(contents: WebContents, owner: MainW
   unsubscribe = subscribeBrowserGuestDestroyed(contents, dispose);
 }
 
+const BROWSER_SITE_DATA_STORAGES = ["cookies", "filesystem", "indexdb", "localstorage", "shadercache", "serviceworkers", "cachestorage"] as const;
 let downloadAllowance: ((origin: string) => void) | null = null;
 /** The download policy hands over how to lift a site's limit; the service calls it when the user asks in the tab. */
 export function registerBrowserDownloadAllowance(allow: (origin: string) => void): void { downloadAllowance = allow; }
