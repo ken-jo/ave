@@ -130,6 +130,8 @@
     "@ai-sdk/otel": "^1.0.162",
     "@anthropic-ai/sandbox-runtime": "0.0.80",
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
+    "@cosmos.gl/graph": "3.6.0",
+    "@huggingface/tokenizers": "0.2.0",
     "@microsoft/mxc-sdk": "1.0.1",
     "@modelcontextprotocol/client": "2.4.0",
     "@modelcontextprotocol/ext-apps": "2.0.4",
@@ -154,6 +156,7 @@
     "jszip": "3.10.2",
     "mermaid": "^12.3.0",
     "node-pty": "^1.1.0",
+    "onnxruntime-node": "1.31.1",
     "papaparse": "5.7.0",
     "pdfjs-dist": "6.4.299",
     "pino": "^10.4.0",
@@ -163,6 +166,7 @@
     "sonic-boom": "^5.0.2",
     "tar": "7.5.22",
     "tldts": "7.4.19",
+    "umap-js": "1.4.0",
     "undici": "^8.12.3",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "^2.9.1",
@@ -311,9 +315,12 @@
       "node_modules/@img/**",
       "node_modules/@microsoft/mxc-sdk/**",
       "node_modules/koffi/**",
-      "node_modules/@koromix/koffi-win32-*/**"
+      "node_modules/@koromix/koffi-win32-*/**",
+      "node_modules/onnxruntime-node/bin/**"
     ],
-    "electronFuses": { "runAsNode": true },
+    "electronFuses": {
+      "runAsNode": true
+    },
     "directories": {
       "output": "release"
     },
@@ -413,7 +420,10 @@
       {
         "from": "dist/skill-scripts",
         "to": "skill-scripts",
-        "filter": ["*.cjs", "manifest.json"]
+        "filter": [
+          "*.cjs",
+          "manifest.json"
+        ]
       },
       {
         "from": "resources/prompts",
@@ -421,6 +431,10 @@
         "filter": [
           "*.md"
         ]
+      },
+      {
+        "from": "resources/licenses/memory",
+        "to": "licenses/memory"
       }
     ],
     "mac": {
@@ -497,7 +511,17 @@
       ]
     },
     "win": {
-      "signExts": ["!srt-win.exe", "!wxc-exec.exe", "!mxc_ffi.dll", "!wslcsdk.dll", "!koffi.node", "!OpenConsole.exe", "!winpty-agent.exe", "!conpty.dll", "!winpty.dll"],
+      "signExts": [
+        "!srt-win.exe",
+        "!wxc-exec.exe",
+        "!mxc_ffi.dll",
+        "!wslcsdk.dll",
+        "!koffi.node",
+        "!OpenConsole.exe",
+        "!winpty-agent.exe",
+        "!conpty.dll",
+        "!winpty.dll"
+      ],
       "target": [
         "nsis"
       ],
@@ -505,7 +529,9 @@
         {
           "from": "node_modules/@microsoft/mxc-sdk/node_modules/semver",
           "to": "app.asar.unpacked/node_modules/@microsoft/mxc-sdk/node_modules/semver",
-          "filter": ["**/*"]
+          "filter": [
+            "**/*"
+          ]
         },
         {
           "from": "resources/windows-job/${arch}/ave-job.exe",

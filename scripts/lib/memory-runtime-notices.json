@@ -1,0 +1,210 @@
+[
+  {
+    "packageName": "onnxruntime-node",
+    "version": "1.31.1",
+    "packageRoot": "node_modules/onnxruntime-node",
+    "source": "dist/backend.js",
+    "noticeFile": "onnxruntime-node-dist-backend-js",
+    "sha256": "d25deed12d803f6c973597348627b1939e2d19bbc28fda83c93ea0cde44702da"
+  },
+  {
+    "packageName": "adm-zip",
+    "version": "0.6.1",
+    "packageRoot": "node_modules/adm-zip",
+    "source": "LICENSE",
+    "noticeFile": "adm-zip-LICENSE",
+    "sha256": "6bb5b2d4c07d793ca928daa63a8899c6914fafb5ac3aa04ec10cae07f3d57dca"
+  },
+  {
+    "packageName": "global-agent",
+    "version": "4.1.7",
+    "packageRoot": "node_modules/global-agent",
+    "source": "LICENSE",
+    "noticeFile": "global-agent-LICENSE",
+    "sha256": "2aabdab5d0ce03a7314def8222988c2da4ba593ae82ae312439e5e306001dbae"
+  },
+  {
+    "packageName": "globalthis",
+    "version": "1.0.4",
+    "packageRoot": "node_modules/globalthis",
+    "source": "LICENSE",
+    "noticeFile": "globalthis-LICENSE",
+    "sha256": "acfaf437865d82f0fa9b9cdcae8b550bed8d011adaa5b42d973191caf99f62a8"
+  },
+  {
+    "packageName": "define-properties",
+    "version": "1.2.1",
+    "packageRoot": "node_modules/define-properties",
+    "source": "LICENSE",
+    "noticeFile": "define-properties-LICENSE",
+    "sha256": "210549bd75abec340599f291e5ecd95b9acd0d8a713543838ab42f6f462b16bc"
+  },
+  {
+    "packageName": "define-data-property",
+    "version": "1.1.4",
+    "packageRoot": "node_modules/define-data-property",
+    "source": "LICENSE",
+    "noticeFile": "define-data-property-LICENSE",
+    "sha256": "b41d08bc3624d8c436fc80237d73ebb361985a67f4504bbcd703e5ca2b27254c"
+  },
+  {
+    "packageName": "es-define-property",
+    "version": "1.0.1",
+    "packageRoot": "node_modules/es-define-property",
+    "source": "LICENSE",
+    "noticeFile": "es-define-property-LICENSE",
+    "sha256": "5e325595b4ea8cfec3802f545b1def5d7b73e4a5b8e9ba63e32a320f67732292"
+  },
+  {
+    "packageName": "es-errors",
+    "version": "1.3.0",
+    "packageRoot": "node_modules/es-errors",
+    "source": "LICENSE",
+    "noticeFile": "es-errors-LICENSE",
+    "sha256": "5e325595b4ea8cfec3802f545b1def5d7b73e4a5b8e9ba63e32a320f67732292"
+  },
+  {
+    "packageName": "gopd",
+    "version": "1.2.0",
+    "packageRoot": "node_modules/gopd",
+    "source": "LICENSE",
+    "noticeFile": "gopd-LICENSE",
+    "sha256": "d90bf0a089da4cf43d644ed240a0b3825dcdb705e64e38371d56995a4cc9e4c5"
+  },
+  {
+    "packageName": "has-property-descriptors",
+    "version": "1.0.2",
+    "packageRoot": "node_modules/has-property-descriptors",
+    "source": "LICENSE",
+    "noticeFile": "has-property-descriptors-LICENSE",
+    "sha256": "0f0ca96f50793990031ebc488a38f7292ff70bce8ab6a8e5eeda674abc32ccdf"
+  },
+  {
+    "packageName": "object-keys",
+    "version": "1.1.1",
+    "packageRoot": "node_modules/object-keys",
+    "source": "LICENSE",
+    "noticeFile": "object-keys-LICENSE",
+    "sha256": "61b723ee61d8544f2d998214ac9cc5e2a97deb8d717e9ac90aeb9e3b07964441"
+  },
+  {
+    "packageName": "matcher",
+    "version": "4.0.0",
+    "packageRoot": "node_modules/matcher",
+    "source": "license",
+    "noticeFile": "matcher-license",
+    "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+  },
+  {
+    "packageName": "escape-string-regexp",
+    "version": "4.0.0",
+    "packageRoot": "node_modules/escape-string-regexp",
+    "source": "license",
+    "noticeFile": "escape-string-regexp-license",
+    "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+  },
+  {
+    "packageName": "semver",
+    "version": "7.7.4",
+    "packageRoot": "node_modules/semver",
+    "source": "LICENSE",
+    "noticeFile": "semver-LICENSE",
+    "sha256": "4ec3d4c66cd87f5c8d8ad911b10f99bf27cb00cdfcff82621956e379186b016b"
+  },
+  {
+    "packageName": "serialize-error",
+    "version": "8.1.0",
+    "packageRoot": "node_modules/serialize-error",
+    "source": "license",
+    "noticeFile": "serialize-error-license",
+    "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+  },
+  {
+    "packageName": "type-fest",
+    "version": "4.41.0",
+    "packageRoot": "node_modules/type-fest",
+    "source": "license-cc0",
+    "noticeFile": "type-fest-license-cc0",
+    "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499"
+  },
+  {
+    "packageName": "type-fest",
+    "version": "4.41.0",
+    "packageRoot": "node_modules/type-fest",
+    "source": "license-mit",
+    "noticeFile": "type-fest-license-mit",
+    "sha256": "5c932d88256b4ab958f64a856fa48e8bd1f55bc1d96b8149c65689e0c61789d3"
+  },
+  {
+    "packageName": "onnxruntime-common",
+    "version": "1.31.1",
+    "packageRoot": "node_modules/onnxruntime-common",
+    "source": "dist/cjs/backend-impl.js",
+    "noticeFile": "onnxruntime-common-dist-cjs-backend-impl-js",
+    "sha256": "d25deed12d803f6c973597348627b1939e2d19bbc28fda83c93ea0cde44702da"
+  },
+  {
+    "packageName": "@huggingface/tokenizers",
+    "version": "0.2.0",
+    "packageRoot": "node_modules/@huggingface/tokenizers",
+    "source": "LICENSE",
+    "noticeFile": "huggingface-tokenizers-LICENSE",
+    "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  {
+    "packageName": "umap-js",
+    "version": "1.4.0",
+    "packageRoot": "node_modules/umap-js",
+    "source": "LICENSE",
+    "noticeFile": "umap-js-LICENSE",
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+  },
+  {
+    "packageName": "ml-levenberg-marquardt",
+    "version": "2.1.1",
+    "packageRoot": "node_modules/ml-levenberg-marquardt",
+    "source": "LICENSE",
+    "noticeFile": "ml-levenberg-marquardt-LICENSE",
+    "sha256": "6bb7b6ac7e3aaf5804ce6e632eec125e535cb8a70541e24752311c12ed8f0f72"
+  },
+  {
+    "packageName": "is-any-array",
+    "version": "0.1.1",
+    "packageRoot": "node_modules/is-any-array",
+    "source": "LICENSE",
+    "noticeFile": "is-any-array-LICENSE",
+    "sha256": "22ecd753de087c4ab9db906a518daf58a2c2e8a8336cebc43649b5587d4c6650"
+  },
+  {
+    "packageName": "ml-matrix",
+    "version": "6.15.1",
+    "packageRoot": "node_modules/ml-matrix",
+    "source": "LICENSE",
+    "noticeFile": "ml-matrix-LICENSE",
+    "sha256": "af5f3c49a13b8bd7dd7c5ac2ff3e8e80e63a346a6159738ec916f335b80b8476"
+  },
+  {
+    "packageName": "ml-array-rescale",
+    "version": "2.0.0",
+    "packageRoot": "node_modules/ml-array-rescale",
+    "source": "LICENSE",
+    "noticeFile": "ml-array-rescale-LICENSE",
+    "sha256": "b7c250e3df983b26576d03a86baeb2ce7432ce5bd4666553686a2ac33cade9e9"
+  },
+  {
+    "packageName": "ml-array-max",
+    "version": "2.0.0",
+    "packageRoot": "node_modules/ml-array-max",
+    "source": "LICENSE",
+    "noticeFile": "ml-array-max-LICENSE",
+    "sha256": "0103da9edf0666a0c855f75e6d661d19bad8e51bcdeb0eafac5c70ace30da838"
+  },
+  {
+    "packageName": "ml-array-min",
+    "version": "2.0.0",
+    "packageRoot": "node_modules/ml-array-min",
+    "source": "LICENSE",
+    "noticeFile": "ml-array-min-LICENSE",
+    "sha256": "b7c250e3df983b26576d03a86baeb2ce7432ce5bd4666553686a2ac33cade9e9"
+  }
+]
