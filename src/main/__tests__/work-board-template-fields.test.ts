@@ -190,7 +190,7 @@ it("keeps every row listed, marks only started template rows and starts no templ
   expect(await store.updateRun(ran, "run-1", mutate)).toEqual({ status: "pending-review" });
   expect(mutate).not.toHaveBeenCalled();
   await expect(store.load()).resolves.toBeUndefined();
-  await expect(store.reconcileInterruptedRuns()).resolves.toBe(1);
+  await expect(store.reconcileInterruptedRuns()).resolves.toBe(0);
   vi.restoreAllMocks();
   expect(await readFile(runsPath, "utf8")).toBe(runs);
   expect((await readJson(boardPath)).items.find((item: { id: number }) => item.id === id)).toEqual(JSON.parse(board).items.find((item: { id: number }) => item.id === id));

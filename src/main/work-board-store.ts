@@ -852,7 +852,8 @@ export class WorkBoardStore {
   }
 
   // At boot, active persisted phases belong to dead processes; mark them error and close history so items become runnable again.
-  // A crash is not a user stop, so it never becomes cancelled; terminal statuses (cancelled included) are left as they are.
+  // A crash is not a user stop, so it never becomes cancelled; terminal statuses (cancelled included) are left as they are. A row
+  // that names a template run is left to the engine, which adopts the run back from its record.
   async reconcileInterruptedRuns(): Promise<number> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -861,6 +862,7 @@ export class WorkBoardStore {
       let count = 0;
       for (let i = 0; i < board.items.length; i++) {
         const it = board.items[i];
+        if (namesTemplateRun(it)) continue;
         // A plan waiting for the user's decision belongs to no process: it stays, with its stored decision object, as long as that
         // object is whole and still matches the stored plan. Anything less cannot be decided safely and becomes error like the rest.
         if (it.runStatus === "awaiting_approval" && isDecidablePlan(it)) continue;

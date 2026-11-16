@@ -220,6 +220,21 @@ it("refuses a run write that would pass the read limit, so deleting a row still 
   expect(await fill(second, `run-${second}-5`)).toBe("stored");
 }, 120_000);
 
+it("leaves a row that names a template run to the engine at boot reconcile", async () => {
+  const store = new WorkBoardStore(boardPath);
+  const id = await templateItem(store);
+  await begin(store, id, "run-1");
+  const ordinary = await store.create({ title: "Ordinary" });
+  if (ordinary.status !== "created") throw new Error("Missing item");
+  expect(await store.beginRun(ordinary.itemId, "plain-1", "2026-01-01T00:00:00.000Z")).toMatchObject({ status: "updated" });
+  const row = async (itemId: number) => JSON.parse(await readFile(boardPath, "utf8")).items.find((item: { id: number }) => item.id === itemId);
+  const before = await row(id);
+
+  expect(await new WorkBoardStore(boardPath).reconcileInterruptedRuns()).toBe(1);
+  expect(await row(id)).toEqual(before);
+  expect(await row(ordinary.itemId)).toMatchObject({ runStatus: "error" });
+});
+
 it("reports a template start the run file has no room for", async () => {
   const store = new WorkBoardStore(boardPath);
   const id = await templateItem(store);
