@@ -1084,6 +1084,7 @@ export function ChatView({ api, appDraftSuggestion, onAsk, onRunMcpPrompt, onRun
         >
           <ChatSidePanel
             api={api}
+            pendingApprovals={pendingApprovals}
             visible={dockedPanelShouldOpen && !hidden}
             {...(chatGroupId !== undefined ? { chatGroupId } : {})}
             sessionId={currentSessionId}

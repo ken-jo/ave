@@ -5,7 +5,7 @@ import "../../../../../test/renderer/setup.js";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useLayoutEffect, useState, type ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AveApi } from "../../types.js";
+import type { ApprovalRequest, AveApi } from "../../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../../preview/preview-targets.js";
 import { TooltipProvider } from "../../../../components/ui/tooltip.js";
 import { ApprovalSurfaceProvider } from "../../hooks/use-approval.js";
@@ -156,6 +156,7 @@ function HarnessPanel({
   sideChatPendingAnswer,
   sideChatWorking,
   sideChatOpenRequest,
+  pendingApprovals,
 }: {
   api: AveApi;
   sessionId?: string;
@@ -171,6 +172,7 @@ function HarnessPanel({
   sideChatPendingAnswer?: boolean;
   sideChatWorking?: boolean;
   sideChatOpenRequest?: SideChatOpenRequest;
+  pendingApprovals?: readonly ApprovalRequest[];
 }) {
   const [selectedId, setSelectedId] = useState(initialSelectedId);
   const workspaceTabs = useWorkspaceTabs();
@@ -182,6 +184,7 @@ function HarnessPanel({
   return (
     <ChatSidePanel
       api={api}
+      {...(pendingApprovals === undefined ? {} : { pendingApprovals })}
       sessionId={sessionId}
       targets={targets}
       files={files}
@@ -794,6 +797,29 @@ describe("ChatSidePanel", () => {
     // A browser content tab, its page a web surface.
     expect(screen.queryByTestId("chat-side-panel-launcher")).toBeNull();
     expect(document.querySelector('[data-testid="chat-side-panel-browser-webview"]')?.getAttribute("src")).toBe("https://example.com/docs");
+  });
+
+  it("marks the page whose own tool call waits for its site approval, until the user answers it", () => {
+    const row = (toolUseId: string, path: string, status: "running" | "done" | "error"): ChatPreviewTarget => ({
+      id: `url-${toolUseId}`, kind: "url", title: `example.com/${path}`, subtitle: "browser_tab_new", sourceLabel: "builtin", createdOrder: toolUseId === "tool-1" ? 1 : 2,
+      toolUseId, toolName: "browser_tab_new", status, url: `https://example.com/${path}`, origin: "argument",
+    });
+    const request = { id: "approval-1", category: "tool", toolName: "browser_tab_new", browserSite: "https://example.com", toolUseId: "tool-1",
+      args: { url: "https://example.com/docs" }, reason: "", createdAt: 1, requireExplicit: true, sessionId: "session-1" } as ApprovalRequest;
+    // Two calls open the same site; only the first one's approval is still waiting.
+    const view = renderPanel(<HarnessPanel api={api()} sessionId="session-1" targets={[row("tool-1", "docs", "running"), row("tool-2", "other", "running")]} files={[]} initialSelectedId={null} pendingApprovals={[request]} />);
+    const rows = () => within(screen.getByTestId("chat-side-panel-browser-visited")).getAllByTestId("chat-side-panel-browser-row");
+    const marked = () => rows().map((each) => within(each).queryByTestId("target-row-awaiting-approval")?.textContent ?? null);
+    // Latest first.
+    expect(marked()).toEqual([null, "승인 대기 중"]);
+    // Approved: the request leaves the queue and the row shows the call's own status.
+    view.rerender(<HarnessPanel api={api()} sessionId="session-1" targets={[row("tool-1", "docs", "done"), row("tool-2", "other", "running")]} files={[]} initialSelectedId={null} pendingApprovals={[]} />);
+    expect(marked()).toEqual([null, null]);
+    expect(rows()[1]?.textContent).toContain("done");
+    // Denied: the call fails and the row says so.
+    view.rerender(<HarnessPanel api={api()} sessionId="session-1" targets={[row("tool-1", "docs", "error"), row("tool-2", "other", "running")]} files={[]} initialSelectedId={null} pendingApprovals={[]} />);
+    expect(marked()).toEqual([null, null]);
+    expect(rows()[1]?.textContent).toContain("error");
   });
 
   it("preserves added workspace tabs across a ChatSidePanel unmount (session switch)", () => {

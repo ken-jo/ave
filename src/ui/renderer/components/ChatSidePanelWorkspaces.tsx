@@ -13,7 +13,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/
 import { useTranslation } from "../../../i18n/react.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
-import type { AveApi } from "../types.js";
+import type { ApprovalRequest, AveApi } from "../types.js";
 import { type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
 import { BrowserAddressRow, SIDE_PANEL_ADDRESS_ROW_TEST_IDS } from "./BrowserAddressRow.js";
@@ -930,14 +930,22 @@ export function VisitedSites({
   api,
   targets,
   onOpen,
+  pendingApprovals = [],
 }: {
   api: AveApi;
   targets: ChatPreviewTarget[];
   /** Open the picked page (a url or an html document) in a tab. */
   onOpen: (target: ChatPreviewTarget) => void;
+  /** The approvals waiting for the user; a site approval marks the pages its tool call is waiting to open. */
+  pendingApprovals?: readonly ApprovalRequest[];
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  // A page waits for the site approval raised by its own tool call, and only while that call runs.
+  const awaitingApproval = useCallback((target: ChatPreviewTarget): boolean => {
+    if (target.kind !== "url" || target.status !== "running" || target.toolUseId === undefined) return false;
+    return pendingApprovals.some((request) => request.browserSite !== undefined && request.toolUseId === target.toolUseId);
+  }, [pendingApprovals]);
   const visitedTargets = useMemo(
     () => targets
       .filter((target) => matchesQuery(query, target.title, target.subtitle, target.sourceLabel, target.kind === "url" ? target.url : undefined))
@@ -957,6 +965,7 @@ export function VisitedSites({
           <TargetRows
             targets={visitedTargets}
             rowTestId="chat-side-panel-browser-row"
+            awaitingApproval={awaitingApproval}
             onSelect={(id) => {
               const target = visitedTargets.find((each) => each.id === id);
               if (target) onOpen(target);

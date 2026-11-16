@@ -32,7 +32,7 @@ import { useTranslation } from "../../../i18n/react.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../../shared/side-panel.js";
 import { ToolActivityBody, ToolActivityWorkspace, toolActivityTotal, type ToolActivityState } from "./ToolActivity.js";
 import { WorkPanelCard } from "./DockedWorkPanel.js";
-import type { AveApi } from "../types.js";
+import type { ApprovalRequest, AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
 import type { WorkspaceChanges, FileWorkspaceReveal } from "../preview/workspace-changes.js";
 import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
@@ -764,6 +764,8 @@ function WorkspaceLauncherMenu({ onOpen }: { onOpen: (kind: WorkspaceTabKind) =>
 
 export interface ChatSidePanelProps {
   api: AveApi;
+  /** The approvals waiting for the user, which mark the pages still waiting to open. */
+  pendingApprovals?: readonly ApprovalRequest[];
   /** Whether the column fits and is drawn, independent of retained tab state. */
   visible?: boolean;
   sessionId?: string;
@@ -836,6 +838,7 @@ export interface ChatSidePanelProps {
 
 export function ChatSidePanel({
   api,
+  pendingApprovals,
   visible = true,
   sessionId,
   targets,
@@ -1310,6 +1313,7 @@ export function ChatSidePanel({
                 <VisitedSites
                   api={api}
                   targets={browserTargets}
+                  {...(pendingApprovals === undefined ? {} : { pendingApprovals })}
                   onOpen={(target) => workspaceTabs.openInEphemeral(
                     target.kind === "url"
                       ? { source: "browser", url: target.url }
