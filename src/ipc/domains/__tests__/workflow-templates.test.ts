@@ -15,15 +15,15 @@ const gesture = { inputOrigin: "user-keyboard", userActivation: true };
 function setup() {
   const sender = { isDestroyed: () => false, mainFrame: {} }; const window = { isDestroyed: () => false, webContents: sender };
   const changed = new ChangeSignal(() => {});
-  const store = { list: vi.fn(async () => []), get: vi.fn(async (id: string) => ({ template: { id, scope: { kind: "all" } } })), draft: vi.fn(async () => { changed.emit(); return {}; }), confirm: vi.fn(async () => { changed.emit(); return {}; }), archive: vi.fn(async () => { changed.emit(); }), changed };
+  const store = { list: vi.fn(async () => []), get: vi.fn(async (id: string) => ({ template: { id, scope: { kind: "all" } } })), draft: vi.fn(async () => { changed.emit(); return {}; }), confirm: vi.fn(async () => { changed.emit(); return {}; }), archive: vi.fn(async () => { changed.emit(); }), attachSchedule: vi.fn(async () => { changed.emit(); return {}; }), changed };
   registerWorkBoardHandlers({ workflowTemplateStore: store, auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window] } as unknown as IpcDeps);
   return { store, event: { sender, senderFrame: sender.mainFrame } };
 }
 beforeEach(() => { h.clear(); vi.mocked(validateHostRendererSender).mockReturnValue(true); vi.mocked(broadcastToAppWindows).mockClear(); });
 it("guards every template handler before reading the store", async () => {
   const { event, store } = setup(); vi.mocked(validateHostRendererSender).mockReturnValue(false);
-  for (const channel of [WORK_BOARD.templateList, WORK_BOARD.templateGet, WORK_BOARD.templateDraft, WORK_BOARD.templateConfirm, WORK_BOARD.templateArchive]) expect(await h.get(channel)!(event)).toEqual({ ok: false, error: "unauthorized-frame" });
-  for (const fn of [store.list, store.get, store.draft, store.confirm, store.archive]) expect(fn).not.toHaveBeenCalled();
+  for (const channel of [WORK_BOARD.templateList, WORK_BOARD.templateGet, WORK_BOARD.templateDraft, WORK_BOARD.templateConfirm, WORK_BOARD.templateArchive, WORK_BOARD.templateAttachSchedule]) expect(await h.get(channel)!(event)).toEqual({ ok: false, error: "unauthorized-frame" });
+  for (const fn of [store.list, store.get, store.draft, store.confirm, store.archive, store.attachSchedule]) expect(fn).not.toHaveBeenCalled();
 });
 it("rejects malformed input and renderer supplied hashes or versions", async () => {
   const { event, store } = setup();
@@ -63,4 +63,20 @@ it("revalidates a draft project before confirmation", async () => {
   store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "all" } }, draft: { scope: { kind: "project", projectRoot: "/private" } } } as never);
   expect(await h.get(WORK_BOARD.templateConfirm)!(event, "t", { expectedGraphHash: "a".repeat(64) }, gesture)).toEqual({ ok: false, error: "invalid-input" });
   expect(store.confirm).not.toHaveBeenCalled();
+});
+
+it("requires local gesture and owner frame for schedule attachments and rejects remote origin", async () => {
+  const { event, store } = setup(); const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
+  expect(await h.get(WORK_BOARD.templateAttachSchedule)!(event, request)).toEqual({ ok: false, error: "user-gesture-required" });
+  expect(await h.get(WORK_BOARD.templateAttachSchedule)!(event, { ...request, origin: "tailnet-surface" }, gesture)).toEqual({ ok: false, error: "invalid-input" });
+  expect(await h.get(WORK_BOARD.templateAttachSchedule)!({ ...event, senderFrame: {} }, request, gesture)).toEqual({ ok: false, error: "unauthorized-frame" });
+  expect(store.attachSchedule).not.toHaveBeenCalled();
+  expect(await h.get(WORK_BOARD.templateAttachSchedule)!(event, request, gesture)).toEqual({ ok: true, value: {} });
+  expect(store.attachSchedule).toHaveBeenCalledWith(request, { who: "user", origin: "local-desktop" });
+});
+
+it("revalidates attachment project access and does not write on refusal", async () => {
+  const { event, store } = setup(); store.get.mockResolvedValueOnce({ template: { id: "t", scope: { kind: "project", projectRoot: "/private" } } } as never);
+  const request = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
+  expect(await h.get(WORK_BOARD.templateAttachSchedule)!(event, request, gesture)).toEqual({ ok: false, error: "template-not-found" }); expect(store.attachSchedule).not.toHaveBeenCalled();
 });

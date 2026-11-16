@@ -6,8 +6,8 @@ import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { ChangeSignal } from "../lib/change-signal.js";
 import { createLogger } from "../lib/logger.js";
 import { isRecord } from "../shared/is-record.js";
-import { hasTemplateKeys, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
-import type { TemplateConfirmationOrigin, TemplateVersion, TemplateVersionPin, WorkflowTemplate, WorkflowTemplateConfirmInput, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
+import { hasTemplateKeys, canonicalTemplateGraph, isReadOnlyScheduleTemplate, graphHashOf, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import type { ScheduleAttachment, ScheduleAttachmentInput, TemplateConfirmationOrigin, TemplateVersion, TemplateVersionPin, WorkflowTemplate, WorkflowTemplateConfirmInput, WorkflowTemplateDraftInput, WorkflowTemplateRecord } from "../shared/workflow-template-types.js";
 
 interface TemplatesFile { version: 1; templates: WorkflowTemplateRecord[] }
 const log = createLogger("workflow-templates");
@@ -17,6 +17,7 @@ const timestamp = (value: unknown): value is string => typeof value === "string"
 function validateFile(raw: unknown): TemplatesFile {
   requireTemplate(isRecord(raw) && raw.version === 1 && Array.isArray(raw.templates), "invalid-template-file");
   const seen = new Set<string>();
+  const schedules = new Set<string>();
   for (const record of raw.templates) {
     requireTemplate(isRecord(record) && isRecord(record.template) && Array.isArray(record.versions), "invalid-template-file");
     const t = record.template;
@@ -30,10 +31,19 @@ function validateFile(raw: unknown): TemplatesFile {
       const c = v.confirmation;
       requireTemplate(c.templateId === t.id && c.version === v.version && c.graphHash === v.graphHash && c.at === v.confirmedAt && typeof c.who === "string" && c.who.length > 0 && (c.origin === "local-desktop" || c.origin === "tailnet-surface"), "invalid-template-file");
     }
+    requireTemplate(record.scheduleAttachments === undefined || Array.isArray(record.scheduleAttachments), "invalid-template-file");
+    for (const attachment of record.scheduleAttachments ?? []) {
+      requireTemplate(hasTemplateKeys(attachment, ["scheduleId", "templateId", "version", "graphHash", "who", "at", "origin"]) && isTemplateId(attachment.scheduleId) && !schedules.has(attachment.scheduleId) && attachment.templateId === t.id && isTemplateVersion(attachment.version) && isGraphHash(attachment.graphHash) && timestamp(attachment.at) && typeof attachment.who === "string" && attachment.who.length > 0 && attachment.who.length <= 128 && (attachment.origin === "local-desktop" || attachment.origin === "tailnet-surface"), "invalid-template-file");
+      const version = record.versions.find((v: TemplateVersion) => v.version === attachment.version);
+      requireTemplate(version, "unknown-version");
+      requireTemplate(version.graphHash === attachment.graphHash, "graph-hash-mismatch");
+      requireTemplate(isReadOnlyScheduleTemplate(canonicalTemplateGraph(version)), "schedule-requires-read-only");
+      schedules.add(attachment.scheduleId);
+    }
     // Metadata uses the same bounds as draft intake, even when no draft remains.
     const graph = record.draft ?? record.versions[0];
     requireTemplate(isRecord(graph), "invalid-template-file");
-    parseTemplateDraft({ name: t.name, scope: t.scope, description: t.description, stages: graph.stages, edges: graph.edges });
+    parseTemplateDraft({ name: t.name, scope: t.scope, description: t.description, stages: graph.stages, edges: graph.edges, setupCommands: graph.setupCommands });
     if (record.draft !== undefined) {
       const d = record.draft;
       requireTemplate(isRecord(d) && timestamp(d.updatedAt), "invalid-template-file");
@@ -104,11 +114,27 @@ export class WorkflowTemplateStore {
       const draft = record.draft; requireTemplate(draft, "no-draft");
       const graphHash = graphHashOf(draft); requireTemplate(graphHash === input.expectedGraphHash, "stale-draft");
       const at = new Date(this.now()).toISOString(); const version = record.template.currentVersion + 1;
-      const confirmed: TemplateVersion = { templateId: id, version, graphHash, stages: structuredClone(draft.stages), edges: structuredClone(draft.edges), confirmedAt: at, ...(draft.basedOn !== undefined ? { basedOn: draft.basedOn } : {}), confirmation: { templateId: id, version, graphHash, who: actor.who, origin: actor.origin, at } };
+      const confirmed: TemplateVersion = { templateId: id, version, graphHash, stages: structuredClone(draft.stages), edges: structuredClone(draft.edges), ...(draft.setupCommands !== undefined ? { setupCommands: [...draft.setupCommands] } : {}), confirmedAt: at, ...(draft.basedOn !== undefined ? { basedOn: draft.basedOn } : {}), confirmation: { templateId: id, version, graphHash, who: actor.who, origin: actor.origin, at } };
       record.versions.push(confirmed);
       record.template = { ...record.template, name: draft.name, scope: structuredClone(draft.scope), currentVersion: version, updatedAt: at };
       if (draft.description === undefined) delete record.template.description; else record.template.description = draft.description;
       delete record.draft; await this.commit(file); return structuredClone(confirmed);
+    });
+  }
+  async attachSchedule(input: ScheduleAttachmentInput, actor: { who: string; origin: TemplateConfirmationOrigin }): Promise<ScheduleAttachment> {
+    requireTemplate(hasTemplateKeys(input, ["scheduleId", "templateId", "version", "graphHash"]) && isTemplateId(input.scheduleId) && isTemplateId(input.templateId) && isTemplateVersion(input.version) && isGraphHash(input.graphHash));
+    requireTemplate(actor?.origin === "local-desktop" && typeof actor.who === "string" && actor.who.length > 0 && actor.who.length <= 128);
+    return withInProcessFileQueue(this.filePath, async () => {
+      const file = await this.readFile(); const record = this.find(file, input.templateId);
+      requireTemplate(!record.template.archivedAt, "template-archived");
+      const version = record.versions.find(v => v.version === input.version);
+      requireTemplate(version, "unknown-version");
+      requireTemplate(version.graphHash === input.graphHash, "graph-hash-mismatch");
+      requireTemplate(isReadOnlyScheduleTemplate(canonicalTemplateGraph(version)), "schedule-requires-read-only");
+      const attachment: ScheduleAttachment = { ...input, who: actor.who, origin: actor.origin, at: new Date(this.now()).toISOString() };
+      for (const r of file.templates) if (r.scheduleAttachments) r.scheduleAttachments = r.scheduleAttachments.filter(a => a.scheduleId !== input.scheduleId);
+      (record.scheduleAttachments ??= []).push(attachment);
+      await this.commit(file); return structuredClone(attachment);
     });
   }
   async archive(id: string): Promise<void> {

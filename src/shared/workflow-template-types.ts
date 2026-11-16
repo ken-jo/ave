@@ -6,6 +6,24 @@ export type StageGate = { type: "human" } | {
     // Scheduler predicate labelled as a model judgement; never answers, skips or pre-fills a permission card (D9).
     | { kind: "model_verdict" };
 };
+export type RequestedOutputKind = "publish" | "upload" | "post" | "send" | "push" | "merge" | "purchase";
+export interface StageGenerationTool {
+  name: string;
+  effect: "generate" | "fetch";
+  dataSent: boolean;
+}
+export interface StageEnvelope {
+  tools: string[];
+  writePaths: string[];
+  readRoots: string[];
+  network: { host: string; port?: number }[];
+  commands: string[];
+  mcpReadOnlyTools: string[];
+  mcpGenerationTools: StageGenerationTool[];
+  pluginGenerationTools: StageGenerationTool[];
+  outputs: ("branch" | RequestedOutputKind)[];
+  budget: { rounds: number; minutes: number; costUsd: number };
+}
 export interface TemplateStage {
   id: string;
   name: string;
@@ -16,9 +34,11 @@ export interface TemplateStage {
   agentName?: string;
   allowSubAgents: boolean;
   gate: StageGate;
+  envelope?: StageEnvelope;
+  requestedOutputs?: RequestedOutputKind[];
 }
 export interface TemplateEdge { from: string; to: string }
-export interface TemplateGraph { stages: TemplateStage[]; edges: TemplateEdge[] }
+export interface TemplateGraph { stages: TemplateStage[]; edges: TemplateEdge[]; setupCommands?: string[] }
 export interface WorkflowTemplate {
   id: string;
   name: string;
@@ -50,16 +70,23 @@ export interface WorkflowTemplateDraft extends WorkflowTemplateDraftInput {
   graphHash: string;
   updatedAt: string;
 }
+export interface ScheduleAttachmentInput extends TemplateVersionPin { scheduleId: string }
+export interface ScheduleAttachment extends ScheduleAttachmentInput {
+  who: string;
+  at: string;
+  origin: TemplateConfirmationOrigin;
+}
 export interface WorkflowTemplateRecord {
   template: WorkflowTemplate;
   versions: TemplateVersion[];
+  scheduleAttachments?: ScheduleAttachment[];
   draft?: WorkflowTemplateDraft;
 }
 export interface WorkflowTemplateConfirmInput { expectedGraphHash: string }
 export type WorkflowTemplateErrorCode =
   | "invalid-input" | "template-not-found" | "unknown-version" | "graph-hash-mismatch"
   | "confirmed-version-immutable" | "stale-draft" | "no-draft" | "template-archived"
-  | "invalid-template-file" | "invalid-template-run";
+  | "invalid-template-file" | "invalid-template-run" | "forbidden-envelope-tool" | "schedule-requires-read-only";
 export type WorkflowTemplateIpcResult<T> = { ok: true; value: T } | { ok: false; error: WorkflowTemplateErrorCode | "unauthorized-frame" | "no-store" | "user-gesture-required" | "storage-error" };
 
 export interface WorkItemStageRun {

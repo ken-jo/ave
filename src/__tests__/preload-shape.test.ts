@@ -93,6 +93,11 @@ describe("preload contextBridge world shape lock", () => {
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: true });
     mockUserActivation.isActive = false; await api.confirmWorkflowTemplate("t", input);
     expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateConfirm, "t", input, { inputOrigin: "user-keyboard", userActivation: false });
+    const attachment = { templateId: "t", version: 1, graphHash: "a".repeat(64), scheduleId: "daily" };
+    mockUserActivation.isActive = true; await api.attachWorkflowTemplateSchedule(attachment);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: true });
+    mockUserActivation.isActive = false; await api.attachWorkflowTemplateSchedule(attachment);
+    expect(mockInvoke).toHaveBeenLastCalledWith(WORK_BOARD.templateAttachSchedule, attachment, { inputOrigin: "user-keyboard", userActivation: false });
     const handler = vi.fn(); const unsubscribe = api.onWorkflowTemplatesChanged(handler);
     const listener = mockOn.mock.calls.at(-1)![1]; listener(); expect(handler).toHaveBeenCalledOnce();
     unsubscribe(); expect(mockRemoveListener).toHaveBeenLastCalledWith(WORK_BOARD.templatesChanged, listener);
@@ -318,6 +323,7 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "applyClaudeDesktopMcpImport": "function",
           "archiveWorkflowTemplate": "function",
+          "attachWorkflowTemplateSchedule": "function",
           "audit": [
             "getStats",
             "search",

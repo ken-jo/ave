@@ -1,4 +1,4 @@
-import type { WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
+import type { ScheduleAttachmentInput, ScheduleAttachment, WorkflowTemplateIpcResult, WorkflowTemplate, WorkflowTemplateRecord, WorkflowTemplateDraftInput, WorkflowTemplateConfirmInput, TemplateVersion } from "../shared/workflow-template-types.js";
 import type { MemoryDetailResult, MemorySummariesResult } from "../shared/memory-detail.js";
 import type { HookTrustListResult, HookTrustReviewRequest, HookTrustReviewResult } from "../shared/hook-trust-review.js";
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
@@ -961,6 +961,7 @@ export function buildInternalApiSurface() {
   getWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateGet, id) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
   draftWorkflowTemplate: async (id: string | null, input: WorkflowTemplateDraftInput) => ipcRenderer.invoke(WORK_BOARD.templateDraft, id, input) as Promise<WorkflowTemplateIpcResult<WorkflowTemplateRecord>>,
   confirmWorkflowTemplate: async (id: string, input: WorkflowTemplateConfirmInput) => ipcRenderer.invoke(WORK_BOARD.templateConfirm, id, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<TemplateVersion>>,
+  attachWorkflowTemplateSchedule: async (input: ScheduleAttachmentInput) => ipcRenderer.invoke(WORK_BOARD.templateAttachSchedule, input, ipcUserKeyboardIntent()) as Promise<WorkflowTemplateIpcResult<ScheduleAttachment>>,
   archiveWorkflowTemplate: async (id: string) => ipcRenderer.invoke(WORK_BOARD.templateArchive, id) as Promise<WorkflowTemplateIpcResult<null>>,
   onWorkflowTemplatesChanged: (handler: () => void) => {
     const listener = () => handler();

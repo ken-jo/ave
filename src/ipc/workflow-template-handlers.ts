@@ -4,9 +4,9 @@ import { broadcastToAppWindows } from "./window-fanout.js";
 import type { IpcDeps } from "./types.js";
 import { WORK_BOARD } from "../shared/ipc-channels.js";
 import { hasUserKeyboardIntent } from "../shared/chat-origin.js";
-import { hasTemplateKeys, isGraphHash, isTemplateId, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
+import { hasTemplateKeys, isGraphHash, isTemplateId, isTemplateVersion, parseTemplateDraft, requireTemplate, WorkflowTemplateError } from "../work-board/template-graph.js";
 import { resolveAuthorizedWorkspaceProject } from "../main/project-root-authorization.js";
-import type { TemplateScope, WorkflowTemplateConfirmInput, WorkflowTemplateIpcResult } from "../shared/workflow-template-types.js";
+import type { ScheduleAttachmentInput, TemplateScope, WorkflowTemplateConfirmInput, WorkflowTemplateIpcResult } from "../shared/workflow-template-types.js";
 
 export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
   const store = deps.workflowTemplateStore;
@@ -39,14 +39,25 @@ export function registerWorkflowTemplateHandlers(deps: IpcDeps): void {
     if (id !== null) await load(id);
     return store!.draft(id as string | null, input);
   });
-  handle(WORK_BOARD.templateConfirm, async (event, id, raw, intent, ...args) => {
-    requireTemplate(args.length === 0 && isTemplateId(id) && hasTemplateKeys(raw, ["expectedGraphHash"]) && isGraphHash(raw.expectedGraphHash));
+  const requireLocalGesture = (event: IpcMainInvokeEvent, intent: unknown, channel: string) => {
     if (!hasUserKeyboardIntent(intent)) throw new TemplateGestureError();
     const sender = event.sender;
     const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
     if (!sender || sender.isDestroyed() || event.senderFrame !== sender.mainFrame || !windows.some(w => w && !w.isDestroyed() && w.webContents === sender)) {
-      auditUnauthorized(deps.auditLogger, WORK_BOARD.templateConfirm, event); throw new TemplateFrameError();
+      auditUnauthorized(deps.auditLogger, channel, event); throw new TemplateFrameError();
     }
+  };
+  handle(WORK_BOARD.templateAttachSchedule, async (event, raw, intent, ...args) => {
+    requireTemplate(args.length === 0 && hasTemplateKeys(raw, ["templateId", "version", "graphHash", "scheduleId"]) && isTemplateId(raw.templateId) && isTemplateVersion(raw.version) && isGraphHash(raw.graphHash) && isTemplateId(raw.scheduleId));
+    requireLocalGesture(event, intent, WORK_BOARD.templateAttachSchedule);
+    await load(raw.templateId);
+    const result = await store!.attachSchedule(raw as unknown as ScheduleAttachmentInput, { who: "user", origin: "local-desktop" });
+    deps.auditLogger.log({ timestamp: result.at, sessionId: "work-board:" + result.templateId, type: "approval", output: JSON.stringify({ event: "template_schedule_attached", ...result }) });
+    return result;
+  });
+  handle(WORK_BOARD.templateConfirm, async (event, id, raw, intent, ...args) => {
+    requireTemplate(args.length === 0 && isTemplateId(id) && hasTemplateKeys(raw, ["expectedGraphHash"]) && isGraphHash(raw.expectedGraphHash));
+    requireLocalGesture(event, intent, WORK_BOARD.templateConfirm);
     const record = await load(id);
     if (record.draft) requireTemplate(authorizedScope(record.draft.scope));
     const result = await store!.confirm(id, raw as unknown as WorkflowTemplateConfirmInput, { who: "user", origin: "local-desktop" });

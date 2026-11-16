@@ -915,6 +915,7 @@ export const CHANNEL_GESTURE: Record<string, "required" | "none"> = {
   // A plan's work approval is the user's decision on a host work object ("Work approvals"): the same consumed gesture.
   [WORK_BOARD.decidePlan]: "required",
   [WORK_BOARD.templateConfirm]: "required",
+  [WORK_BOARD.templateAttachSchedule]: "required",
 };
 
 // ─── Approval-mediated external mutation ─────────────────────────────────────
