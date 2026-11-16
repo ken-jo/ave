@@ -14,6 +14,9 @@ import { isInsideRoot, prefixesUnderRoot } from "../../utils/project-path.js";
 import type { AttachTextResult } from "../../preview/composer-targets.js";
 import { coalesceRefresh, notifyWorkspaceFilesChanged, subscribeWorkspaceFilesChanged } from "../../utils/workspace-files-signal.js";
 import type { WorkspaceListDirResult } from "../../../../ipc/domains/workspace.js";
+import { listNavigationTarget, mightProducePrintableCharacter, TypeNavigationController } from "../../utils/list-keyboard-navigation.js";
+import { fileRowActions } from "../files/file-row-actions.js";
+import { FileRowMenu, type FileRowMenuState } from "../files/FileRowMenu.js";
 import { FileViewer } from "./FileViewer.js";
 import { FolderColumn } from "./FolderColumn.js";
 import {
@@ -231,18 +234,58 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
     if (viewing) deferredFocus.current = { row: viewing.path };
   }, [viewing]);
 
+  // The row menu (right-click, Shift+F10 or the menu key) and the place a failed row action is reported.
+  const [rowMenu, setRowMenu] = useState<(FileRowMenuState & { path: string }) | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const openRowMenu = useCallback((columnIndex: number, entry: FolderEntry, at: { x: number; y: number }) => {
+    const parent = state.columns[columnIndex]?.dir ?? projectRoot;
+    setFocusedPath(entry.path);
+    setRowMenu({
+      ...at,
+      name: entry.name,
+      path: entry.path,
+      actions: fileRowActions(
+        { path: entry.path, type: entry.type, outside: entry.outside, parent, root: projectRoot },
+        { attachText: onAttachText, openTerminal: onOpenTerminal, report: setNotice },
+      ),
+    });
+  }, [state.columns, projectRoot, onAttachText, onOpenTerminal]);
+  const closeRowMenu = useCallback(() => setRowMenu(null), []);
+
+  const typeNavigation = useRef<TypeNavigationController | null>(null);
+  typeNavigation.current ??= new TypeNavigationController();
+  useEffect(() => () => typeNavigation.current?.clear(), []);
+
   const onRowKey = useCallback((event: KeyboardEvent<HTMLElement>, columnIndex: number, entry: FolderEntry) => {
-    const intent = folderKeyIntent(event.key);
-    if (!intent) return;
-    event.preventDefault();
     const column = state.columns[columnIndex];
     if (!column) return;
     const at = column.entries.findIndex((each) => each.path === entry.path);
-    if (intent === "up" || intent === "down") {
-      const next = column.entries[at + (intent === "up" ? -1 : 1)];
-      if (next) focusRow(next.path);
+    if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+      event.preventDefault();
+      const rect = event.currentTarget.getBoundingClientRect();
+      openRowMenu(columnIndex, entry, { x: rect.left + 24, y: rect.bottom });
       return;
     }
+    // Typing a name moves to the row that starts with it.
+    if (mightProducePrintableCharacter(event.nativeEvent)) {
+      event.preventDefault();
+      const match = typeNavigation.current?.input(event.key, column.entries.map((each) => each.name), at) ?? -1;
+      focusRow(column.entries[match]?.path);
+      return;
+    }
+    // Arrows, Home, End and the page keys move within the column; a page is the rows the column shows, less one for context.
+    const rowHeight = event.currentTarget.offsetHeight;
+    const viewHeight = event.currentTarget.parentElement?.clientHeight ?? 0;
+    const pageSize = rowHeight > 0 ? Math.floor(viewHeight / rowHeight) - 1 : 1;
+    const target = listNavigationTarget(event.key, at, column.entries.length, pageSize);
+    if (target !== null) {
+      event.preventDefault();
+      focusRow(column.entries[target]?.path);
+      return;
+    }
+    const intent = folderKeyIntent(event.key);
+    if (!intent) return;
+    event.preventDefault();
     if (intent === "back") {
       const parent = state.selected[columnIndex - 1];
       if (parent) focusRow(parent.path);
@@ -257,7 +300,30 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
     if (entry.type === "directory") { select(columnIndex, entry); return; }
     select(columnIndex, entry);
     deferredFocus.current = "viewer";
-  }, [state.columns, state.selected, focusRow, select]);
+  }, [state.columns, state.selected, focusRow, select, openRowMenu]);
+
+  // The search results are a list the arrows walk: ↓ from the box enters it, ↑ from its first row goes back to the box.
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const onSearchResultsKey = useCallback((event: KeyboardEvent<HTMLElement>) => {
+    const options = [...event.currentTarget.querySelectorAll<HTMLElement>("[role='option']")];
+    const at = options.indexOf(document.activeElement as HTMLElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setQuery("");
+      setMatches(null);
+      searchInputRef.current?.focus();
+      return;
+    }
+    if (event.key === "ArrowUp" && at <= 0) {
+      event.preventDefault();
+      searchInputRef.current?.focus();
+      return;
+    }
+    const target = listNavigationTarget(event.key, at, options.length, options.length);
+    if (target === null) return;
+    event.preventDefault();
+    options[target]?.focus();
+  }, []);
 
   const onViewerKey = useCallback((event: KeyboardEvent<HTMLElement>) => {
     if (event.key === "Escape" || (showViewerOnly && event.key === "ArrowLeft" && event.target === viewerRef.current)) {
@@ -362,16 +428,23 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
         </Button>
         <div className="relative w-48 shrink-0">
           <Search aria-hidden="true" className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("folderView.searchPlaceholder")}
+          <Input ref={searchInputRef} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("folderView.searchPlaceholder")}
             aria-label={t("folderView.searchPlaceholder")} className="h-7 pl-7 text-xs" data-testid="folder-search"
-            onKeyDown={(event) => { if (event.key === "Escape") { setQuery(""); setMatches(null); } }} />
+            onKeyDown={(event) => {
+              if (event.key === "Escape") { setQuery(""); setMatches(null); return; }
+              if (event.key !== "ArrowDown" || event.nativeEvent.isComposing) return;
+              const first = event.currentTarget.parentElement?.querySelector<HTMLElement>("[role='option']");
+              if (!first) return;
+              event.preventDefault();
+              first.focus();
+            }} />
           {matches !== null ? (
-            <div role="listbox" aria-label={t("folderView.searchResults")} data-testid="folder-search-results"
+            <div role="listbox" aria-label={t("folderView.searchResults")} data-testid="folder-search-results" onKeyDown={onSearchResultsKey}
               className="absolute right-0 top-8 z-20 max-h-72 w-72 overflow-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
               {matches.length === 0 ? <EmptyState className="px-2 py-1.5" title={t("folderView.searchNone")} />
                 : matches.map((match) => (
-                  <button key={match.path} type="button" role="option" aria-selected={false} onClick={() => reveal(match.path)}
-                    className="flex w-full min-w-0 items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-muted">
+                  <button key={match.path} type="button" role="option" aria-selected={false} tabIndex={-1} onClick={() => reveal(match.path)}
+                    className="flex w-full min-w-0 items-center gap-2 rounded px-2 py-1 text-left text-xs outline-none hover:bg-muted focus-visible:bg-muted focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
                     <FileText aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     <span className="truncate" title={match.path}>{match.relativePath}</span>
                   </button>
@@ -385,6 +458,11 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
           </Button>
         ) : null}
       </div>
+
+      {notice ? (
+        <div role="alert" className="shrink-0 border-b px-3 py-1 text-dense text-destructive" data-testid="folder-view-alert">{t(notice)}</div>
+      ) : null}
+      {rowMenu ? <FileRowMenu menu={rowMenu} onClose={closeRowMenu} focusTarget={() => rows.current.get(rowMenu.path)} /> : null}
 
       <div role="tree" aria-label={t("folderView.treeLabel")} className="flex min-h-0 flex-1" data-testid="folder-body">
         {showViewerOnly ? null : (
@@ -402,6 +480,7 @@ export function FolderView({ projectRoot, onOpenTerminal, onAttachText, onOpenSi
                 onSelect={(entry) => select(index, entry)}
                 onFocusRow={setFocusedPath}
                 onKey={(event, entry) => onRowKey(event, index, entry)}
+                onRowMenu={(entry, at) => openRowMenu(index, entry, at)}
                 onRetry={() => dispatch({ type: "retry", dir: column.dir })}
                 onReveal={() => void window.ave.workspace.reveal(column.dir)}
                 onOpenTerminal={onOpenTerminal ? () => onOpenTerminal(column.dir) : undefined}

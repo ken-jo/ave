@@ -241,6 +241,8 @@ THE SOFTWARE.
   - `src/shared/lcs-diff.ts` (from `src/vs/base/common/diff/diff.ts`,
     `src/vs/base/common/diff/diffChange.ts`, `src/vs/base/common/hash.ts`,
     `src/vs/base/common/uint.ts`)
+  - `src/ui/renderer/utils/list-keyboard-navigation.ts` (from
+    `src/vs/base/browser/ui/list/listWidget.ts`)
 - **Full license text:** reproduced below.
 
 ```text

@@ -17,6 +17,7 @@ function failed(error: string) {
     onSelect: vi.fn(),
     onFocusRow: vi.fn(),
     onKey: vi.fn(),
+    onRowMenu: vi.fn(),
     onRetry: vi.fn(),
     onReveal: vi.fn(),
     registerRow: vi.fn(),

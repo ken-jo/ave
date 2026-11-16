@@ -134,13 +134,12 @@ export function viewerReplacesColumns(width: number): boolean {
   return width < FOLDER_VIEWER_MIN_WIDTH + 2 * FOLDER_COLUMN_WIDTH;
 }
 
-/** What a key does in a column row. Arrow keys and Enter only; anything else is left to the browser. */
-export type FolderKeyIntent = "up" | "down" | "open" | "back" | "preview" | null;
+/** What a key does to the row itself. Moving between rows (arrows, Home, End, page keys, typing a name) is the shared list
+ * navigation's job; anything else is left to the browser. */
+export type FolderKeyIntent = "open" | "back" | "preview" | null;
 
 export function folderKeyIntent(key: string): FolderKeyIntent {
   switch (key) {
-    case "ArrowUp": return "up";
-    case "ArrowDown": return "down";
     case "ArrowRight":
     case "Enter": return "open";
     case "ArrowLeft": return "back";

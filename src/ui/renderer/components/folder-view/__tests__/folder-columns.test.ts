@@ -115,7 +115,7 @@ describe("folder view layout rules", () => {
 
   it("maps the column keys", () => {
     expect(["ArrowUp", "ArrowDown", "ArrowRight", "Enter", "ArrowLeft", " ", "a"].map(folderKeyIntent))
-      .toEqual(["up", "down", "open", "open", "back", "preview", null]);
+      .toEqual([null, null, "open", "open", "back", "preview", null]);
   });
 
   it("collapses the middle of a deep path into one hidden run", () => {
