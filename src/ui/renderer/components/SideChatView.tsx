@@ -21,7 +21,7 @@ import { useAttachmentPicker } from "../hooks/use-attachment-picker.js";
 import { computeComposerPlaceholder } from "../utils/composer-placeholder.js";
 import { composeOutgoing } from "../utils/compose.js";
 import { collectPromptHistory } from "../utils/prompt-history.js";
-import { ATTACH_MAX_COUNT, type Attachment } from "../types/attachments.js";
+import { attachmentSlotsFull, type Attachment } from "../types/attachments.js";
 import type { AveApi } from "../types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
 import { useOptionalChatContext, type ChatContextValue } from "../context/ChatContext.js";
@@ -672,7 +672,7 @@ function SideChatSession({
             <AttachButton
               onAttach={handleAttach}
               disabled={
-                attachments.length >= ATTACH_MAX_COUNT ||
+                attachmentSlotsFull(attachments) ||
                 !attachmentInputsReady ||
                 hasApiKey === false ||
                 (!imagesEnabled && !filesEnabled)

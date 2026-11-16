@@ -35,6 +35,29 @@ describe("ChatView attachment 5-cap (handleAttach)", () => {
     vi.restoreAllMocks();
   });
 
+  it("disables the attach button and shows the reason together when the limit is reached (F11)", async () => {
+    const { container } = await renderApp({ hasApiKey: true });
+    installAttachMock(ATTACH_MAX_COUNT - 1);
+    const attachButton = await waitFor(() => {
+      const el = container.querySelector('[data-testid="iab-attach-button"]');
+      expect(el).not.toBeNull();
+      return el as HTMLButtonElement;
+    });
+
+    await act(async () => { fireEvent.click(attachButton); });
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="chip-count-badge"]')?.textContent).toBe(`${ATTACH_MAX_COUNT - 1}/${ATTACH_MAX_COUNT}`);
+    });
+    // One slot left: the button works and nothing claims the limit was reached.
+    expect(attachButton.disabled).toBe(false);
+    expect(container.querySelector('[data-testid="composer-limit-warning"]')).toBeNull();
+
+    installAttachMock(1);
+    await act(async () => { fireEvent.click(attachButton); });
+    await waitFor(() => { expect(attachButton.disabled).toBe(true); });
+    expect(container.querySelector('[data-testid="composer-limit-warning"]')?.textContent).toContain(String(ATTACH_MAX_COUNT));
+  });
+
   it("commits only the first 5 attachments when a single openFile returns 6 (6th dropped)", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     installAttachMock(6);

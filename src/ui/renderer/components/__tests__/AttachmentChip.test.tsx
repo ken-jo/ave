@@ -103,7 +103,7 @@ describe("AttachmentChip (single)", () => {
 describe("AttachmentChipCollapsed", () => {
   it("renders the stacked trigger with N/MAX", () => {
     const list: Attachment[] = [img1, file2];
-    render(<AttachmentChipCollapsed attachments={list} />);
+    render(<AttachmentChipCollapsed attachments={list} slotsUsed={list.length} />);
     expect(screen.getByTestId("attachment-chip-collapsed")).toBeTruthy();
     const badge = screen.getByTestId("chip-count-badge");
     expect(badge.textContent).toContain("2/5");
@@ -111,7 +111,7 @@ describe("AttachmentChipCollapsed", () => {
 
   it("opens the overlay when the trigger is clicked", () => {
     const list: Attachment[] = [img1, file2, paste3];
-    render(<AttachmentChipCollapsed attachments={list} />);
+    render(<AttachmentChipCollapsed attachments={list} slotsUsed={list.length} />);
     fireEvent.click(screen.getByTestId("attachment-chip-collapsed"));
     expect(screen.getByTestId("attachment-overlay")).toBeTruthy();
     const items = screen.getAllByTestId("overlay-item");
@@ -120,7 +120,7 @@ describe("AttachmentChipCollapsed", () => {
 
   it("marks the badge as full at MAX", () => {
     const list: Attachment[] = [img1, img1, img1, img1, img1];
-    render(<AttachmentChipCollapsed attachments={list} />);
+    render(<AttachmentChipCollapsed attachments={list} slotsUsed={list.length} />);
     const badge = screen.getByTestId("chip-count-badge");
     expect(badge.className).toMatch(/destructive/);
     expect(badge.textContent).toContain("5/5");
@@ -133,7 +133,7 @@ describe("AttachmentChipCollapsed", () => {
         id: `i${i}`,
         n: i + 1,
       }));
-      const { unmount } = render(<AttachmentChipCollapsed attachments={list} />);
+      const { unmount } = render(<AttachmentChipCollapsed attachments={list} slotsUsed={list.length} />);
       const stack = screen.getByTestId("chip-stack");
       expect(stack.getAttribute("data-layers")).toBe(String(count));
       unmount();
@@ -162,7 +162,7 @@ describe("AttachmentChip — single, clickable", () => {
   });
 
   it("shows no text block for attachments that are not pasted text", () => {
-    render(<AttachmentChipCollapsed attachments={[img1, file2]} />);
+    render(<AttachmentChipCollapsed attachments={[img1, file2]} slotsUsed={2} />);
     fireEvent.click(screen.getByTestId("attachment-chip-collapsed"));
     expect(screen.queryByTestId("overlay-paste-text")).toBeNull();
   });

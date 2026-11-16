@@ -4,6 +4,7 @@ import type { FileMentionReference } from "../../../shared/file-mention-referenc
 /** Renderer compatibility name for the shared composer input capacity. The main-process picker and subscription transport
  * consume the same limit. */
 export { MAX_COMPOSER_ATTACHMENT_COUNT as ATTACH_MAX_COUNT } from "../../../shared/composer-image-input.js";
+import { MAX_COMPOSER_ATTACHMENT_COUNT } from "../../../shared/composer-image-input.js";
 
 /** Longest pasted text that goes into the composer verbatim, line breaks and all. Anything longer becomes a pasted-text
  * chip (its marker stays in the body), and the chip shows the original text when opened. */
@@ -86,3 +87,19 @@ export type Attachment =
   | FileAttachment
   | PasteAttachment
   | ResourceAttachment;
+
+/** How many of the composer's ATTACH_MAX_COUNT slots `attachments` take. An image, a file, an `@file` reference and a pasted
+ * text take one each. An MCP resource takes none: it is text under its own per-turn budget, which main enforces apart from
+ * this count. Every place that enforces or shows the limit counts with this function, so they cannot disagree. */
+export function attachmentSlotsUsed(attachments: readonly Attachment[]): number {
+  let used = 0;
+  for (const attachment of attachments) {
+    if (attachment.kind !== "resource") used += 1;
+  }
+  return used;
+}
+
+/** True when no further image, file or pasted text fits. */
+export function attachmentSlotsFull(attachments: readonly Attachment[]): boolean {
+  return attachmentSlotsUsed(attachments) >= MAX_COMPOSER_ATTACHMENT_COUNT;
+}

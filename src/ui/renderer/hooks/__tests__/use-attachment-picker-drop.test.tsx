@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useState } from "react";
 import { useAttachmentPicker } from "../use-attachment-picker.js";
-import type { Attachment } from "../../types/attachments.js";
+import { attachmentSlotsFull, attachmentSlotsUsed, type Attachment, type FileAttachment } from "../../types/attachments.js";
 import type { AttachmentRejection } from "../../../../shared/attachment-rejection.js";
 
 const NOTES = { path: "/ws/notes.txt", name: "notes.txt", ext: "txt", bytes: 5, isImage: false };
@@ -158,5 +158,46 @@ describe("useAttachmentPicker — picker", () => {
     await act(async () => { await result.current.handleAttach(); });
     expect(result.current.attachments).toHaveLength(5);
     expect(onRejected).toHaveBeenCalledWith([{ name: "extra.txt", reason: "too-many" }]);
+  });
+});
+
+describe("attachment slots (F11)", () => {
+  const file = (n: number): FileAttachment => ({ id: `f${n}`, n, kind: "file", path: `/ws/${n}.txt`, name: `${n}.txt`, ext: "txt", bytes: 1 });
+  const resource = (n: number): Attachment => ({
+    id: `r${n}`, n, kind: "resource", serverId: "docs", uri: `doc:${n}`, label: `doc-${n}`, text: "body", truncated: false,
+  });
+  const reference = (n: number): Attachment => ({ ...file(n), reference: true });
+  const paste = (n: number): Attachment => ({ id: `p${n}`, n, kind: "paste", text: "a\nb", lines: 2, chars: 3 });
+
+  it("gives every kind but an MCP resource one slot", () => {
+    expect(attachmentSlotsUsed([file(1), reference(2), paste(3), resource(4), resource(5)])).toBe(3);
+    expect(attachmentSlotsFull([file(1), file(2), file(3), resource(4), resource(5)])).toBe(false);
+    expect(attachmentSlotsFull([file(1), file(2), file(3), reference(4), paste(5), resource(6)])).toBe(true);
+  });
+
+  it("lets the picker add two files beside two resources and three files", async () => {
+    install({
+      openFile: vi.fn(async () => ({
+        canceled: false,
+        files: [NOTES, { ...NOTES, path: "/ws/extra.txt", name: "extra.txt" }, { ...NOTES, path: "/ws/over.txt", name: "over.txt" }],
+        rejected: [],
+      })),
+    });
+    const onRejected = vi.fn();
+    const { result } = renderHook(() => useHarness(onRejected, [resource(1), resource(2), file(3), file(4), file(5)]));
+    await act(async () => { await result.current.handleAttach(); });
+    expect(attachmentSlotsUsed(result.current.attachments)).toBe(5);
+    expect(result.current.attachments).toHaveLength(7);
+    expect(onRejected).toHaveBeenCalledWith([{ name: "over.txt", reason: "too-many" }]);
+  });
+
+  it("lets another surface attach text beside five resources, and refuses it when five slots are taken", () => {
+    const withResources = renderHook(() => useHarness(vi.fn(), [1, 2, 3, 4, 5].map(resource)));
+    let attached = false;
+    act(() => { attached = withResources.result.current.attachPastedText("from a terminal block"); });
+    expect(attached).toBe(true);
+    const full = renderHook(() => useHarness(vi.fn(), [1, 2, 3, 4, 5].map(file)));
+    act(() => { attached = full.result.current.attachPastedText("from a terminal block"); });
+    expect(attached).toBe(false);
   });
 });

@@ -22,6 +22,8 @@ import {
 } from "./AttachmentChip.js";
 import {
   ATTACH_MAX_COUNT,
+  attachmentSlotsFull,
+  attachmentSlotsUsed,
   type Attachment,
   type FileAttachment,
   type ResourceAttachment,
@@ -295,7 +297,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     () => liveAttachments.filter((a) => a.kind === "resource").length,
     [liveAttachments],
   );
-  const chipStripCount = liveAttachments.length - resourceCount;
+  const chipStripCount = attachmentSlotsUsed(liveAttachments);
   const referenceInputRef = useRef({ disabled, filesEnabled, chipStripCount, attachments: liveAttachments });
   referenceInputRef.current = { disabled, filesEnabled, chipStripCount, attachments: liveAttachments };
   const [dropActive, setDropActive] = useState(false);
@@ -405,7 +407,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       && attachment.path === path && attachment.location?.startLine === location?.startLine
       && attachment.location?.endLine === location?.endLine && attachment.location?.turnId === location?.turnId
       && attachment.location?.hunkId === location?.hunkId)) return { inserted: false };
-    if (input.chipStripCount >= ATTACH_MAX_COUNT) {
+    if (attachmentSlotsFull(input.attachments)) {
       onWarning?.(t("composer.attachLimitPasteBlocked", { max: ATTACH_MAX_COUNT }));
       return { inserted: false };
     }
@@ -553,7 +555,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         let imageAttachmentBudgetRejected = false;
         flushSync(() => {
           onAttachmentsChange((prev) => {
-            if (prev.length >= ATTACH_MAX_COUNT) return prev;
+            if (attachmentSlotsFull(prev)) return prev;
             if (candidate.kind === "image") {
               const images = prev
                 .filter((attachment) => attachment.kind === "image")
@@ -827,7 +829,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     ],
   );
 
-  const isFull = chipStripCount >= ATTACH_MAX_COUNT;
+  const isFull = attachmentSlotsFull(liveAttachments);
   const referenceAttachments = liveAttachments.filter((attachment): attachment is FileAttachment => attachment.kind === "file" && attachment.reference === true);
   const ordinaryAttachments = liveAttachments.filter((attachment) => attachment.kind !== "file" || !attachment.reference);
   const ghostText = suggestedReplies?.text ?? null;
@@ -875,7 +877,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       {referenceAttachments.length > 0 && (
         <div data-testid="composer-reference-strip" className="flex min-w-0 flex-wrap gap-1.5 px-3 pt-2 pb-1">
           {referenceAttachments.map((attachment) => (
-            <AttachmentChip key={attachment.id} attachment={attachment} total={liveAttachments.length}
+            <AttachmentChip key={attachment.id} attachment={attachment} total={chipStripCount}
               onRemove={() => removeFileReference(attachment)} />
           ))}
         </div>
@@ -904,7 +906,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           >
             <AttachmentChip
               attachment={ordinaryAttachments[0]}
-              total={liveAttachments.length}
+              total={chipStripCount}
               onOpenExternal={openExternal}
             />
           </div>
@@ -915,6 +917,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           >
             <AttachmentChipCollapsed
               attachments={ordinaryAttachments}
+              slotsUsed={chipStripCount}
               onOpenExternal={openExternal}
             />
           </div>

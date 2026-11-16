@@ -16,7 +16,7 @@ import { Composer, ComposerFrame, type ComposerHandle } from "./Composer.js";
 import { ComposerStatusRow, InputActionBar } from "./InputActionBar.js";
 import { QuestionOverlay } from "./QuestionOverlay.js";
 import { computeComposerPlaceholder } from "../utils/composer-placeholder.js";
-import { ATTACH_MAX_COUNT, type Attachment } from "../types/attachments.js";
+import { attachmentSlotsFull, type Attachment } from "../types/attachments.js";
 import { MessageQueueStore, type MessageQueueItem } from "../state/message-queue-store.js";
 import type { ApprovalRequest, AveApi } from "../types.js";
 import type { UserKeyboardIntentSnapshot } from "../../../shared/chat-origin.js";
@@ -476,7 +476,7 @@ export function ChatComposerDock({
           slashPickerOpen={slashPickerOpen}
           onSlashPickerOpenChange={onSlashPickerOpenChange}
           attachDisabled={
-            attachments.length >= ATTACH_MAX_COUNT ||
+            attachmentSlotsFull(attachments) ||
             !attachmentInputsReady ||
             hasApiKey === false ||
             (!imagesEnabled && !filesEnabled)

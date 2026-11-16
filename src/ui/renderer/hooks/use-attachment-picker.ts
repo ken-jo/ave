@@ -4,6 +4,8 @@ import type { RefObject } from "react";
 import { flushSync } from "react-dom";
 import {
   ATTACH_MAX_COUNT,
+  attachmentSlotsFull,
+  attachmentSlotsUsed,
   PASTE_TEXT_MAX_CHARS,
   type Attachment,
 } from "../types/attachments.js";
@@ -234,7 +236,7 @@ export function useAttachmentPicker({
           : true,
     );
     const capabilityChangedBeforeCommit = currentCandidates.length !== candidates.length;
-    const remaining = Math.max(0, ATTACH_MAX_COUNT - prev.length);
+    const remaining = Math.max(0, ATTACH_MAX_COUNT - attachmentSlotsUsed(prev));
     const accepted: Attachment[] = [];
     for (const candidate of currentCandidates) {
       if (accepted.length >= remaining) {
@@ -353,7 +355,7 @@ export function useAttachmentPicker({
       lines: text.split("\n").length,
       chars: text.length,
     };
-    if (readCommittedAttachments(setAttachments).length >= ATTACH_MAX_COUNT) return false;
+    if (attachmentSlotsFull(readCommittedAttachments(setAttachments))) return false;
     // Same atomic commit as the picker: the chip and its marker land in one flushSync, so Composer's marker-sync effect never
     // sees one without the other. Nothing can run between the two synchronous flushes.
     const marker = `${buildMarkerText(attachment)} `;

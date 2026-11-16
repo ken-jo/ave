@@ -1441,4 +1441,24 @@ describe("Composer — @ resource mention", () => {
     // it either.
     expect(screen.getByTestId("composer-limit-warning")).toBeTruthy();
   });
+
+  it("counts two resources and three images as three slots, on the chip and for the limit (F11)", () => {
+    installMcpApi();
+    const images: Attachment[] = Array.from({ length: 3 }, (_, i) => ({ ...img1, id: `i${i}`, n: i + 1 }));
+    const resources: Attachment[] = Array.from({ length: 2 }, (_, i) => ({
+      id: `r${i}`, n: 100 + i, kind: "resource" as const, serverId: "hr-mcp",
+      uri: `doc:${i}`, label: `doc-${i}.md`, text: FENCE, truncated: false,
+    }));
+    render(
+      <Harness
+        initialText={[...images, ...resources].map((a) => a.kind === "image"
+          ? `[Image #${a.n}]` : `[Resource #${a.n}]`).join(" ")}
+        initialAttachments={[...images, ...resources]}
+      />,
+    );
+    expect(screen.queryByTestId("composer-limit-warning")).toBeNull();
+    // Five chips are stacked, and the badge counts the three that take a slot.
+    expect(screen.getByTestId("chip-stack").getAttribute("data-layers")).toBe("5");
+    expect(screen.getByTestId("chip-count-badge").textContent).toBe("3/5");
+  });
 });

@@ -153,6 +153,7 @@ export function AttachmentChip({
   onRemove,
 }: {
   attachment: Attachment;
+  /** Composer slots in use (`attachmentSlotsUsed`), which the badge counts against the limit. */
   total: number;
   onOpenExternal?: OpenAttachmentExternally;
   onRemove?: () => void;
@@ -228,15 +229,18 @@ export function AttachmentChip({
  */
 export function AttachmentChipCollapsed({
   attachments,
+  slotsUsed,
   onOpenExternal,
 }: {
   attachments: Attachment[];
+  /** Composer slots in use (`attachmentSlotsUsed`), which the badge counts against the limit. */
+  slotsUsed: number;
   onOpenExternal?: OpenAttachmentExternally;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const total = attachments.length;
-  const isFull = total >= ATTACH_MAX_COUNT;
+  const isFull = slotsUsed >= ATTACH_MAX_COUNT;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -249,10 +253,10 @@ export function AttachmentChipCollapsed({
         >
           <StackVisual layers={total} />
           <span
-            className={`max-w-full truncate text-tiny font-mono ${badgeClass(total)}`}
+            className={`max-w-full truncate text-tiny font-mono ${badgeClass(slotsUsed)}`}
             data-testid="chip-count-badge"
           >
-            {total}/{ATTACH_MAX_COUNT}
+            {slotsUsed}/{ATTACH_MAX_COUNT}
             {isFull ? " full" : ""}
           </span>
         </button>
