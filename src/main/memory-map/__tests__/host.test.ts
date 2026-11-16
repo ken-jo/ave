@@ -34,6 +34,20 @@ describe('memory graph publication', () => {
     expect(await host.get(() => f.catalog)).toBeNull();
     expect(JSON.parse(await readFile(join(f.root, 'snapshot.json'), 'utf8')).cache).toEqual({});
   });
+  it('drops a stale question when a newer query completes first', async () => {
+    const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });
+    let started!: () => void; const start = new Promise<void>(resolve => { started = resolve; });
+    const runner: MemoryWorkerRunner = async <T>(folder: string, task: Parameters<MemoryWorkerRunner>[1], signal: AbortSignal) => {
+      if (task.kind === 'build') return f.runWorker<T>(folder, task, signal);
+      if (task.text === 'first') { started(); await wait; }
+      return [1, ...Array<number>(383).fill(0)] as T;
+    };
+    const host = new MemoryMapHost({ namespace: f.namespace, validatedModelPath: async () => 'model', runWorker: runner });
+    const snapshot = await host.build(() => f.catalog);
+    const old = host.retrieve(() => f.catalog, { question: 'first', filters: {}, queryId: 'first', snapshotId: snapshot.snapshotId }); await start;
+    const answer = await host.retrieve(() => f.catalog, { question: 'second', filters: {}, queryId: 'second', snapshotId: snapshot.snapshotId });
+    expect(answer.queryId).toBe('second'); release(); await expect(old).rejects.toThrow('request-stale');
+  });
   it('drops a completed old build on cancellation or scope change', async () => {
     const f = await fixture(); let release!: () => void; const wait = new Promise<void>(resolve => { release = resolve; });
     let started!: () => void; const start = new Promise<void>(resolve => { started = resolve; });

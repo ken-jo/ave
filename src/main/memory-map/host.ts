@@ -1,6 +1,7 @@
+import { retrieveMatches } from './retrieval.js';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { GraphSnapshot, MemoryMapProgress } from '../../shared/memory-map.js';
+import type { GraphSnapshot, MemoryMapProgress, MemoryMapFilters, RetrievalAnswer } from '../../shared/memory-map.js';
 import { openFeatureNamespace, writeFileAtomicAtPathIf, type FeatureNamespaceHandle } from '../storage/feature-namespace.js';
 import { catalogRevision, LOCAL_NAMESPACE, type VectorCache } from './graph.js';
 import { runMemoryWorker, type MemoryWorkerRunner } from './worker-client.js';
@@ -22,11 +23,13 @@ export class MemoryMapHost {
   protected snapshot: GraphSnapshot | null = null;
   protected cache: VectorCache = {};
   private scopeId?: string;
+  private queryGeneration = 0;
+  private queryController?: AbortController;
   constructor(protected readonly options: HostOptions) {
     this.namespace = options.namespace ?? openFeatureNamespace('memory-map');
     this.runWorker = options.runWorker ?? runMemoryWorker;
   }
-  cancel(): void { this.generation++; this.controller?.abort(); }
+  cancel(): void { this.generation++; this.controller?.abort(); this.queryGeneration++; this.queryController?.abort(); }
   protected activate(catalog: MemoryMapCatalog): void {
     if (this.scopeId !== catalog.authorizationScopeId) { this.cancel(); this.snapshot = null; this.cache = {}; this.scopeId = catalog.authorizationScopeId; }
   }
@@ -59,4 +62,18 @@ export class MemoryMapHost {
     this.cache = result.cache; this.snapshot = result.snapshot;
     return result.snapshot;
   }
+  async retrieve(readCatalog: () => MemoryMapCatalog, request: { question: string; filters: MemoryMapFilters; snapshotId: string; queryId: string }): Promise<RetrievalAnswer> {
+    const catalog = readCatalog(); this.activate(catalog);
+    this.queryController?.abort();
+    const queryGeneration = ++this.queryGeneration;
+    const controller = new AbortController(); this.queryController = controller;
+    const snapshot = await this.get(readCatalog);
+    if (!snapshot || snapshot.snapshotId !== request.snapshotId) throw new MemoryMapHostError('graph-stale');
+    const folder = await this.options.validatedModelPath();
+    if (queryGeneration !== this.queryGeneration) throw new MemoryMapHostError('request-stale');
+    const vector = await this.runWorker<number[]>(folder, { kind: 'embed', text: request.question }, controller.signal);
+    if (controller.signal.aborted || queryGeneration !== this.queryGeneration || snapshot !== this.snapshot || catalogRevision(catalog.records) !== catalogRevision(readCatalog().records) || catalog.authorizationScopeId !== readCatalog().authorizationScopeId) throw new MemoryMapHostError('request-stale');
+    return retrieveMatches(catalog.records, this.cache, vector, request.filters, { snapshotId: snapshot.snapshotId, catalogRevision: snapshot.catalogRevision, queryId: request.queryId });
+  }
+
 }
