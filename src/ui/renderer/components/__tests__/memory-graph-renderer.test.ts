@@ -45,6 +45,22 @@ describe('memory graph adapter', () => {
     expect(container.childElementCount).toBe(0);
     mock.config.onPointClick!(0); expect(callbacks.onSelect).not.toHaveBeenCalled();
   });
+  it('shows only real project labels at closer zoom, emphasizes edges and refreshes theme tokens', async () => {
+    const { renderer, snapshot, callbacks } = setup();
+    renderer.update(snapshot, new Set(['a', 'b']), 'a', new Set(['b'])); await Promise.resolve();
+    expect(mock.graph.setLinkWidths).toHaveBeenLastCalledWith(new Float32Array([1.5]));
+    expect(mock.graph.setPointSizes).toHaveBeenLastCalledWith(new Float32Array([9, 9]));
+    mock.graph.getZoomLevel.mockReturnValue(3); mock.config.onZoom!();
+    expect(callbacks.onLabels).toHaveBeenLastCalledWith([{ id: 'project', text: 'Project', x: 12, y: 34 }]);
+    const before = mock.graph.setPointColors.mock.calls.length;
+    document.documentElement.classList.add('dark'); await Promise.resolve();
+    expect(mock.graph.setPointColors.mock.calls.length).toBeGreaterThan(before);
+    renderer.destroy(); const after = mock.graph.setPointColors.mock.calls.length;
+    document.documentElement.classList.remove('dark'); await Promise.resolve();
+    expect(mock.graph.setPointColors).toHaveBeenCalledTimes(after);
+    mock.config.onPointClick!(0); expect(callbacks.onSelect).not.toHaveBeenCalled();
+    mock.graph.getZoomLevel.mockReturnValue(1);
+  });
   it('handles initialization rejection and removes observers and event handlers during teardown', async () => {
     const original = mock.graph.ready;
     let reject!: (error: Error) => void;

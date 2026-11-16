@@ -2,6 +2,13 @@
 import type { MessageCatalogKey } from "./en.js";
 
 export const ko: Record<MessageCatalogKey, string> = {
+  "memoryMap.noMemories": "아직 사용 가능한 메모리가 없습니다. 메모리를 저장한 뒤 지도를 다시 만드세요.",
+  "memoryMap.ask": "메모리에 물어보세요…",
+  "memoryMap.askButton": "질문",
+  "memoryMap.askHint": "현재 필터에 맞는 메모리에서 발췌해 답합니다.",
+  "memoryMap.asking": "메모리 검색 중…",
+  "memoryMap.noMatches": "일치하는 메모리가 없습니다. 다른 질문을 하거나 필터를 변경하세요.",
+  "memoryMap.citation": "소스 {number}: {title}",
   "memoryMap.views": "메모리 보기",
   "memoryMap.map": "지도",
   "memoryMap.cards": "메모리 카드",

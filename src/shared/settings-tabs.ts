@@ -50,6 +50,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
     "chat-processing-display",
     "chat-experimental",
     "chat-privacy",
+    "memory-embeddings",
   ],
   web: ["web-search-engine", "web-api-key", "web-view-flow"],
   startup: [

@@ -1,5 +1,12 @@
 /** English message catalog, grouped by namespace. */
 export const en = {
+  "memoryMap.noMemories": "No eligible memories yet. Save a memory, then rebuild the map.",
+  "memoryMap.ask": "Ask your memory…",
+  "memoryMap.askButton": "Ask",
+  "memoryMap.askHint": "Answers quote matching memories in your current filters.",
+  "memoryMap.asking": "Searching memories…",
+  "memoryMap.noMatches": "No matching memories found. Try another question or change the filters.",
+  "memoryMap.citation": "Source {number}: {title}",
   "memoryMap.views": "Memory views",
   "memoryMap.map": "Map",
   "memoryMap.cards": "Memory cards",

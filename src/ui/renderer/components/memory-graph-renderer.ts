@@ -43,7 +43,7 @@ export function createMemoryGraph(container: HTMLDivElement, callbacks: MemoryGr
   const handleFailure = () => {
     if (disposed || failed) return;
     failed = true;
-    graph?.destroy();
+    try { graph?.destroy(); } catch {}
     callbacks.onHover(null); callbacks.onLabels([]); callbacks.onError();
   };
   const handleContextLoss = (event: Event) => { event.preventDefault(); handleFailure(); };
@@ -88,16 +88,16 @@ export function createMemoryGraph(container: HTMLDivElement, callbacks: MemoryGr
       enableSimulation: false, enableSimulationDuringZoom: false, enableDrag: false,
       rescalePositions: false, transitionDuration: 0, fitViewOnInit: false,
       backgroundColor: [0, 0, 0, 0], renderHoveredPointRing: false, attribution: '',
-      onPointClick: (index: number) => { const point = snapshot?.points[index]; if (point && visible.has(point.memoryId) && !failed) callbacks.onSelect(point.memoryId); },
+      onPointClick: (index: number) => { const point = snapshot?.points[index]; if (point && visible.has(point.memoryId) && !failed && !disposed) callbacks.onSelect(point.memoryId); },
       onPointMouseOver: (index: number) => {
         const point = snapshot?.points[index];
-        if (!point || !visible.has(point.memoryId) || failed) return;
+        if (!point || !visible.has(point.memoryId) || failed || disposed) return;
         hovered = point.memoryId;
         const [x, y] = graph!.spaceToScreenPosition([point.x, point.y]);
         callbacks.onHover({ title: point.title, x, y }); paint();
       },
-      onPointMouseOut: () => { hovered = null; callbacks.onHover(null); paint(); },
-      onZoom: () => { callbacks.onHover(null); publishLabels(); },
+      onPointMouseOut: () => { if (!disposed && !failed) { hovered = null; callbacks.onHover(null); paint(); } },
+      onZoom: () => { if (!disposed && !failed) { callbacks.onHover(null); publishLabels(); } },
     });
     void graph.ready.then(() => { if (!disposed && !failed) { ready = true; paint(); } }).catch(handleFailure);
   } catch { handleFailure(); }

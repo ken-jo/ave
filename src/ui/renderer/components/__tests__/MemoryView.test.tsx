@@ -116,4 +116,74 @@ describe('memory map view', () => {
     expect(screen.getByText('메모리 지도 불러오는 중…')).toBeTruthy();
     expect(await screen.findByText('메모리가 변경되었습니다. 지도를 다시 만드세요.')).toBeTruthy();
   });
+  it('asks within current filters, highlights matches, opens host-numbered citations and clears on filter change', async () => {
+    const { map, props } = setup();
+    map.retrieve.mockImplementation(async request => ({ ok: true, value: {
+      snapshotId: request.snapshotId, catalogRevision: 'catalog', queryId: request.queryId,
+      matches: [{ memoryId: 'a', contentRevision: 'r', excerpt: 'A grounded excerpt', score: 0.9, citation: 7 }],
+      answerParts: [{ text: 'A grounded excerpt', sourceMemoryIds: ['a'], citation: 7 }],
+    } }));
+    render(<MemoryView {...props} project={{ projectRoot: 'C:/workspace/alpha', projectName: 'Alpha' }} />); await ready();
+    fireEvent.click(screen.getByRole('button', { name: '사용자 1' }));
+    const question = screen.getByRole('textbox', { name: '메모리에 물어보세요…' });
+    fireEvent.change(question, { target: { value: 'What did I save?' } });
+    fireEvent.click(screen.getByRole('button', { name: '질문' }));
+    const citation = await screen.findByRole('button', { name: '소스 7: Alpha memory' });
+    expect(map.retrieve.mock.calls[0]![0]).toMatchObject({ question: 'What did I save?', scope: { projectRoot: 'C:/workspace/alpha', projectName: 'Alpha', includeUnscoped: false }, filters: { sources: ['user'] }, snapshotId: 'snapshot' });
+    expect(map.retrieve.mock.calls[0]![0].queryId).toBeTruthy();
+    expect(renderer.update.mock.lastCall![3]).toEqual(new Set(['a']));
+    fireEvent.click(citation); expect(await screen.findByText('Source quote')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '소스 상세 닫기' }));
+    fireEvent.click(screen.getByRole('button', { name: '필터 초기화' }));
+    expect(screen.queryByText('A grounded excerpt')).toBeNull();
+    expect(question).toHaveValue(''); expect(renderer.update.mock.lastCall![3]).toEqual(new Set());
+  });
+  it('marks a live snapshot stale when the host invalidates it and clears open sources', async () => {
+    const { map, props, api } = setup();
+    render(<MemoryView {...props} />); await ready();
+    act(() => renderer.callbacks!.onSelect('a')); await screen.findByText('Source quote');
+    map.get.mockResolvedValue({ ok: true, value: null });
+    map.modelStatus.mockResolvedValue({ ok: true, value: { status: 'ready', receivedBytes: 1, totalBytes: 1, completedFiles: 4, totalFiles: 4 } });
+    const save = vi.mocked(api.onMemorySaveResult).mock.calls[0]![0];
+    act(() => save({} as Parameters<typeof save>[0]));
+    expect(await screen.findByText('메모리가 변경되었습니다. 지도를 다시 만드세요.')).toBeTruthy();
+    expect(screen.queryByText('Source quote')).toBeNull();
+  });
+  it('distinguishes an empty built snapshot and shows counts for a resumed build', async () => {
+    const { map, props } = setup();
+    map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, points: [], edges: [] } });
+    const view = render(<MemoryView {...props} />);
+    expect(await screen.findByText('아직 사용 가능한 메모리가 없습니다. 메모리를 저장한 뒤 지도를 다시 만드세요.')).toBeTruthy();
+    view.unmount();
+    map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'building', coverage: { eligible: 3, embedded: 2, pending: 1, excluded: 0 } } });
+    render(<MemoryView {...props} />);
+    expect(await screen.findByText('임베딩 2 / 3')).toBeTruthy();
+  });
+  it('drops old graph reads when the active scope changes', async () => {
+    const { map, props } = setup();
+    let finish!: (value: Awaited<ReturnType<typeof map.get>>) => void;
+    map.get.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const view = render(<MemoryView {...props} />);
+    map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, snapshotId: 'new-scope' } });
+    view.rerender(<MemoryView {...props} project={{ projectRoot: 'C:/workspace/other', projectName: 'Other' }} />);
+    await waitFor(() => expect(renderer.update.mock.lastCall![0].snapshotId).toBe('new-scope'));
+    await act(async () => finish({ ok: true, value: SNAPSHOT }));
+    expect(renderer.update.mock.lastCall![0].snapshotId).toBe('new-scope');
+  });
+  it('observes the completion of a build that was running when this view mounted', async () => {
+    const { map, props } = setup();
+    map.get.mockResolvedValue({ ok: true, value: { ...SNAPSHOT, status: 'building' } });
+    vi.useFakeTimers();
+    let view: ReturnType<typeof render> | undefined;
+    try {
+      await act(async () => { view = render(<MemoryView {...props} />); });
+      expect(screen.getByText('메모리 지도 만드는 중…')).toBeTruthy();
+      map.get.mockResolvedValue({ ok: true, value: SNAPSHOT });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1500); });
+      expect(screen.getByRole('group', { name: /메모리 지도 —/ })).toBeTruthy();
+      const count = map.get.mock.calls.length;
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(map.get).toHaveBeenCalledTimes(count);
+    } finally { view?.unmount(); vi.useRealTimers(); }
+  });
 });
