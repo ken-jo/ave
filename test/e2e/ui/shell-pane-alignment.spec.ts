@@ -1,5 +1,7 @@
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { writeFileSync } from "node:fs";
+import { MAIN_WINDOW_RESIZE_INSET } from "../../../src/shared/shell-geometry.js";
+import { withPageWindow } from "./renderer-events.js";
 import {
   buildLlmSettings,
   launchSeededElectron,
@@ -15,10 +17,13 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
     (animation) => !(animation instanceof CSSTransition) || animation.playState !== "running",
   ))).toBe(true);
   const geometry = await page.evaluate(() => {
+    const nativeInset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--native-window-inset")) || 0;
     const box = (element: Element) => {
       const { top, right, bottom, left, width, height } = element.getBoundingClientRect();
-      return { top, right, bottom, left, width, height };
+      return { top: top + nativeInset, right: right + nativeInset, bottom: bottom + nativeInset,
+        left: left + nativeInset, width, height };
     };
+    const leadingEdge = (element: Element | null | undefined) => element ? element.getBoundingClientRect().left + nativeInset : null;
     const hit = (element: Element) => {
       const rect = element.getBoundingClientRect();
       return [0.15, 0.5, 0.85].every((fraction) => {
@@ -33,10 +38,17 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
     const handle = document.querySelector('[data-testid="sidebar-resize-handle"]');
     const panes = [...document.querySelectorAll('[data-testid="pane"]')]
       .filter((pane) => pane.getBoundingClientRect().width > 0);
+    const shell = document.querySelector('[data-testid="app-shell"]');
+    if (!shell) throw new Error("Expected app shell");
     return {
-      viewport: { width: innerWidth, height: innerHeight },
+      viewport: { width: innerWidth + nativeInset * 2, height: innerHeight + nativeInset * 2 },
+      rawViewport: { width: innerWidth, height: innerHeight },
+      nativeOrigin: { x: nativeInset, y: nativeInset },
+      shell: box(shell),
+      inset: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-inset")),
+      cardGap: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--shell-card-gap")),
       // Where the band's path row starts: its content edge, past the padding CustomTitleBar computes.
-      bandLead: band ? band.getBoundingClientRect().left + parseFloat(getComputedStyle(band).paddingLeft) : null,
+      bandLead: band ? band.getBoundingClientRect().left + nativeInset + parseFloat(getComputedStyle(band).paddingLeft) : null,
       strip: strip ? box(strip) : null,
       card: card ? box(card) : null,
       rail: rail ? box(rail) : null,
@@ -44,8 +56,8 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
       panes: panes.map((pane) => ({
         ...box(pane),
         // The header row's leading edge: its glyph, then the h2 (DESIGN.md, header band). The band path starts on this line.
-        titleLeft: pane.querySelector('[data-testid="pane-header"] > :first-child')?.getBoundingClientRect().left ?? null,
-        h2Left: pane.querySelector('[data-testid="pane-header"] h2')?.getBoundingClientRect().left ?? null,
+        titleLeft: leadingEdge(pane.querySelector('[data-testid="pane-header"] > :first-child')),
+        h2Left: leadingEdge(pane.querySelector('[data-testid="pane-header"] h2')),
         buttons: [...pane.querySelectorAll('[data-testid="pane-header"] button')]
           .filter((button) => button.getBoundingClientRect().width > 0)
           .map((button) => ({ id: button.getAttribute("data-testid"), hit: hit(button) })),
@@ -60,6 +72,44 @@ async function measureShell(page: Page, testInfo: TestInfo, name: string) {
   return geometry;
 }
 
+for (const [width, height] of [[950, 734], [1440, 900], [360, 734]]) {
+  for (const state of ["expanded", "rail", "hidden"] as const) {
+    test(`${width}x${height} ${state} shares the outside card inset`, async () => {
+      const context = await launchSeededElectron({
+        historyRows: [],
+        settings: { ...buildLlmSettings(), system: { sidebarState: state } },
+      });
+      try {
+        await setWindowSize(context.app, width, height);
+        for (const gap of [8, 12]) {
+          await context.page.evaluate((value) => {
+            document.documentElement.style.setProperty("--chrome-gap", `${value}px`);
+            document.documentElement.style.setProperty("--shell-card-gap", `${value / 2}px`);
+          }, gap);
+          const geometry = await measureShell(context.page, test.info(), `outside-${width}-${state}-${gap}`);
+          expect(geometry.viewport).toEqual({ width, height });
+          expect(geometry.shell).toEqual({ left: 0, top: 0, right: width, bottom: height, width, height });
+          expect(geometry.rawViewport).toEqual({ width: width - geometry.nativeOrigin.x * 2, height: height - geometry.nativeOrigin.y * 2 });
+          const pane = geometry.panes[0];
+          expect((geometry.rail ?? pane).left).toBe(geometry.inset);
+          expect(width - pane.right).toBe(geometry.inset);
+          expect(height - pane.bottom).toBe(geometry.inset);
+          for (const card of [geometry.rail, geometry.card]) {
+            if (card) expect(height - card.bottom).toBe(geometry.inset);
+          }
+          if (geometry.rail && geometry.card) {
+            expect(geometry.card.left - geometry.rail.right).toBe(geometry.cardGap);
+          }
+          const leadingCard = geometry.card ?? geometry.rail;
+          if (leadingCard && !geometry.overlay) expect(pane.left - leadingCard.right).toBe(geometry.cardGap);
+        }
+      } finally {
+        await teardownSeededElectron(context, { terminate: true });
+      }
+    });
+  }
+}
+
 test("empty banner text cannot reserve space above the pane cards", async () => {
   const testInfo = test.info();
   const context = await launchSeededElectron({ historyRows: [], settings: buildLlmSettings() });
@@ -69,6 +119,106 @@ test("empty banner text cannot reserve space above the pane cards", async () => 
     const geometry = await measureShell(context.page, testInfo, "shell-empty-banner");
     if (!geometry.card) throw new Error("Expected sidebar card");
     expect(Math.abs(geometry.panes[0].top - geometry.card.top)).toBeLessThanOrEqual(0.5);
+  } finally {
+    await teardownSeededElectron(context, { terminate: true });
+  }
+});
+
+test("docked and overlay work cards share the inter-card gap", async () => {
+  const context = await launchSeededElectron({ historyRows: [], settings: buildLlmSettings() });
+  try {
+    const { app, page } = context;
+    await setWindowSize(app, 1440, 900);
+    await page.getByTestId("pane-panel-toggle").click();
+    const column = page.getByTestId("chat-side-panel-motion");
+    await expect(column).toHaveAttribute("aria-hidden", "false");
+    for (const [width, mode] of [[1440, "docked"], [950, "overlay"]] as const) {
+      await setWindowSize(app, width, 734);
+      await expect(column).toHaveAttribute("data-panel-mode", mode);
+      for (const gap of [4, 6]) {
+        await page.evaluate((value) => document.documentElement.style.setProperty("--shell-card-gap", `${value}px`), gap);
+        await measureShell(page, test.info(), `work-card-${mode}-${gap}`);
+        const insets = await column.evaluate((element) => {
+          const card = element.querySelector("aside");
+          if (!card) throw new Error("Expected work panel card");
+          const outside = element.getBoundingClientRect();
+          const inside = card.getBoundingClientRect();
+          return [inside.left - outside.left, outside.right - inside.right, inside.top - outside.top, outside.bottom - inside.bottom];
+        });
+        expect(insets).toEqual([gap, gap, gap, gap]);
+      }
+    }
+  } finally {
+    await teardownSeededElectron(context, { terminate: true });
+  }
+});
+
+test("native resize edges stay outside the titlebar drag rectangle", async () => {
+  const context = await launchSeededElectron({ historyRows: [], settings: buildLlmSettings() });
+  try {
+    for (const [width, height] of [[950, 734], [1440, 900]]) {
+      await setWindowSize(context.app, width, height);
+      const nativeFrame = await withPageWindow(context.app, context.page, target => {
+        const view = target.contentView.children.find(child => "webContents" in child && child.webContents === target.webContents);
+        if (!view) throw new Error("Expected main UI child view");
+        return { content: target.getContentSize(), view: view.getBounds(), fullscreen: target.isFullScreen() };
+      });
+      const regions = await context.page.evaluate(() => {
+        const band = document.querySelector('[data-testid^="custom-titlebar"]');
+        const drag = document.querySelector('[data-testid="titlebar-drag-region"]');
+        if (!band || !drag) throw new Error("Expected titlebar regions");
+        const bounds = drag.getBoundingClientRect();
+        const nativeInset = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--native-window-inset")) || 0;
+        const width = innerWidth + nativeInset * 2;
+        const height = innerHeight + nativeInset * 2;
+        // Regions compose in document order; later no-drag boxes exclude earlier drag boxes.
+        // Include pointer-transparent boxes, which still participate in native drag-region collection.
+        const regions = [...document.querySelectorAll("*")].flatMap(element => {
+          const style = getComputedStyle(element);
+          const mode = style.getPropertyValue("-webkit-app-region");
+          const rect = element.getBoundingClientRect();
+          return style.visibility === "visible" && rect.width > 0 && rect.height > 0 && (mode === "drag" || mode === "no-drag")
+            ? [{ mode, left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }] : [];
+        });
+        const canDrag = (x: number, y: number) => regions.reduce((active, region) =>
+          x >= region.left && x < region.right && y >= region.top && y < region.bottom ? region.mode === "drag" : active, false);
+        const viewportPoint = ([x, y]: number[]) => [x - nativeInset, y - nativeInset];
+        const containsPoint = ([x, y]: number[]) => x >= 0 && x < innerWidth && y >= 0 && y < innerHeight;
+        const spacer = document.querySelector('[data-testid="main-toolbar-drag-band"]')?.getBoundingClientRect();
+        const button = band.querySelector("button")?.getBoundingClientRect();
+        if (!spacer || !button) throw new Error("Expected titlebar spacer and control");
+        return {
+          band: getComputedStyle(band).getPropertyValue("-webkit-app-region"),
+          drag: getComputedStyle(drag).getPropertyValue("-webkit-app-region"),
+          inset: parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--chrome-gap-tight")),
+          nativeInset,
+          viewport: { width: innerWidth, height: innerHeight },
+          bounds: { left: bounds.left + nativeInset, top: bounds.top + nativeInset, right: bounds.right + nativeInset },
+          interiorDrags: canDrag(spacer.left + spacer.width / 2, spacer.top + spacer.height / 2),
+          controlDrags: canDrag(button.left + button.width / 2, button.top + button.height / 2),
+          nativeEdgeDrags: [[1, 1], [width / 2, 1], [width - 1, 1], [1, 18], [width - 1, 18]]
+            .map(viewportPoint).map(point => containsPoint(point) && canDrag(point[0], point[1])),
+          edges: [[1, 1], [width / 2, 1], [width - 1, 1], [1, 18], [width - 1, 18],
+            [1, height / 2], [width - 1, height / 2], [width / 2, height - 1]]
+            .map(viewportPoint).map(point => containsPoint(point)
+              ? document.elementsFromPoint(point[0], point[1]).map(element => getComputedStyle(element).getPropertyValue("-webkit-app-region")) : []),
+        };
+      });
+      expect(nativeFrame.fullscreen).toBe(false);
+      expect(nativeFrame.content).toEqual([width, height]);
+      expect(regions.nativeInset).toBe(process.platform === "darwin" ? MAIN_WINDOW_RESIZE_INSET : 0);
+      expect(nativeFrame.view).toEqual({ x: regions.nativeInset, y: regions.nativeInset,
+        width: width - regions.nativeInset * 2, height: height - regions.nativeInset * 2 });
+      expect(regions.viewport).toEqual({ width: nativeFrame.view.width, height: nativeFrame.view.height });
+      expect(regions.band).toBe("none");
+      expect(regions.drag).toBe("drag");
+      expect(regions.bounds).toEqual({ left: regions.inset, top: regions.inset, right: width - regions.inset });
+      expect(regions.edges.every(stack => !stack.includes("drag"))).toBe(true);
+      expect(regions.interiorDrags).toBe(true);
+      expect(regions.controlDrags).toBe(false);
+      expect(regions.nativeEdgeDrags).toEqual([false, false, false, false, false]);
+      await test.info().attach(`resize-regions-${width}.json`, { body: JSON.stringify({ nativeFrame, ...regions }, null, 2), contentType: "application/json" });
+    }
   } finally {
     await teardownSeededElectron(context, { terminate: true });
   }
@@ -109,8 +259,8 @@ for (const width of [1243, 360]) {
         expect(Math.abs(pane.top - 40)).toBeLessThanOrEqual(0.5);
         if (geometry.bandLead === null || pane.titleLeft === null) throw new Error("Expected band and pane header title");
         if (state === "expanded" && !geometry.overlay) {
-          expect(geometry.bandLead).toBe(312);
-          expect(pane.titleLeft).toBe(313);
+          expect(geometry.bandLead).toBe(308);
+          expect(pane.titleLeft).toBe(309);
         } else if (state !== "hidden") {
           const platform = process.platform;
           if (platform !== "darwin" && platform !== "linux" && platform !== "win32") throw new Error("Unsupported window platform");
@@ -135,9 +285,11 @@ for (const width of [1243, 360]) {
         if (geometry.handle && geometry.card && !geometry.overlay) {
           const handle = page.getByTestId("sidebar-resize-handle");
           const before = geometry.card.width;
-          await page.mouse.move(geometry.handle.left + geometry.handle.width / 2, geometry.handle.top + geometry.handle.height / 2);
+          const x = geometry.handle.left + geometry.handle.width / 2 - geometry.nativeOrigin.x;
+          const y = geometry.handle.top + geometry.handle.height / 2 - geometry.nativeOrigin.y;
+          await page.mouse.move(x, y);
           await page.mouse.down();
-          await page.mouse.move(geometry.handle.left + geometry.handle.width / 2 + 20, geometry.handle.top + geometry.handle.height / 2, { steps: 5 });
+          await page.mouse.move(x + 20, y, { steps: 5 });
           await page.mouse.up();
           await expect(handle).toHaveAttribute("aria-valuenow", String(before + 20));
           const resized = await measureShell(page, testInfo, `shell-${width}-${state}-resized`);
@@ -148,8 +300,8 @@ for (const width of [1243, 360]) {
           expect(resized.handle.right).toBe(resized.card.right);
           expect(resized.handle.hit).toBe(true);
           if (resized.bandLead === null || resized.panes[0].titleLeft === null) throw new Error("Expected band and pane header title");
-          expect(resized.bandLead).toBe(332);
-          expect(resized.panes[0].titleLeft).toBe(333);
+          expect(resized.bandLead).toBe(328);
+          expect(resized.panes[0].titleLeft).toBe(329);
           expect(resized.panes[0].buttons.every((button) => button.hit)).toBe(true);
         }
       } finally {
@@ -177,18 +329,55 @@ for (const axis of ["row", "column"] as const) {
       expect(Math.abs(first.left - geometry.card.right - 4)).toBeLessThanOrEqual(0.5);
       if (axis === "row") {
         expect(Math.abs(second.top - first.top)).toBeLessThanOrEqual(0.5);
-        expect(Math.abs(second.left - first.right - 8)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(second.left - first.right - 4)).toBeLessThanOrEqual(0.5);
       } else {
-        expect(Math.abs(second.top - first.bottom - 8)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(second.top - first.bottom - 4)).toBeLessThanOrEqual(0.5);
         expect(Math.abs(second.left - first.left)).toBeLessThanOrEqual(0.5);
         expect(Math.abs(second.right - first.right)).toBeLessThanOrEqual(0.5);
       }
       if (geometry.bandLead === null || first.titleLeft === null || second.titleLeft === null) throw new Error("Expected band and pane header titles");
-      expect(geometry.bandLead).toBe(312);
-      expect(first.titleLeft).toBe(313);
+      expect(geometry.bandLead).toBe(308);
+      expect(first.titleLeft).toBe(309);
       if (axis === "column") expect(Math.abs(second.titleLeft - first.titleLeft)).toBeLessThanOrEqual(0.5);
       expect(geometry.handle.hit).toBe(true);
       expect(geometry.panes.every((pane) => pane.buttons.length > 0 && pane.buttons.every((button) => button.hit))).toBe(true);
+      for (const gap of [4, 6]) {
+        await page.evaluate(value => document.documentElement.style.setProperty("--shell-card-gap", `${value}px`), gap);
+        await measureShell(page, testInfo, `shell-split-${axis}-hit-gap-${gap}`);
+        const targets = await page.evaluate(axis => {
+          const panes = [...document.querySelectorAll('[data-testid="pane"]')];
+          const bar = document.querySelector('[data-testid^="pane-gutter-bar:"]');
+          if (panes.length !== 2 || !bar) throw new Error("Expected split panes and separator");
+          const first = panes[0].getBoundingClientRect();
+          const second = panes[1].getBoundingClientRect();
+          const bounds = bar.getBoundingClientRect();
+          const start = axis === "row" ? first.right : first.bottom;
+          const end = axis === "row" ? second.left : second.top;
+          const cross = axis === "row" ? (first.top + first.bottom) / 2 : (first.left + first.right) / 2;
+          const samples = [-1.5, -1, 0.5, (end - start) / 2, end - start - 0.5, end - start + 1, end - start + 1.5].map(offset => {
+            const x = axis === "row" ? start + offset : cross;
+            const y = axis === "row" ? cross : start + offset;
+            const hit = document.elementFromPoint(x, y);
+            return { x, y, owner: hit && bar.contains(hit) ? "separator" : hit && panes[0].contains(hit) ? "first" : hit && panes[1].contains(hit) ? "second" : "other" };
+          });
+          document.body.dataset.separatorHits = "0";
+          document.addEventListener("pointerdown", event => {
+            if (event.target instanceof Element && event.target.closest('[data-testid^="pane-gutter-bar:"]')) {
+              document.body.dataset.separatorHits = String(Number(document.body.dataset.separatorHits) + 1);
+            }
+          }, { capture: true });
+          return { start, end, barStart: axis === "row" ? bounds.left : bounds.top,
+            barEnd: axis === "row" ? bounds.right : bounds.bottom, barBounds: bounds.toJSON(),
+            parentBounds: bar.parentElement?.getBoundingClientRect().toJSON(), samples };
+        }, axis);
+        await testInfo.attach(`separator-hit-targets-${axis}-${gap}.json`, { body: JSON.stringify(targets, null, 2), contentType: "application/json" });
+        expect(targets.end - targets.start).toBeCloseTo(gap, 4);
+        expect(targets.barStart).toBeCloseTo(targets.start, 4);
+        expect(targets.barEnd).toBeCloseTo(targets.end, 4);
+        expect(targets.samples.map(sample => sample.owner)).toEqual(["first", "first", "separator", "separator", "separator", "second", "second"]);
+        for (const point of [...targets.samples.slice(0, 2), ...targets.samples.slice(-2)]) await page.mouse.click(point.x, point.y);
+        expect(await page.evaluate(() => Number(document.body.dataset.separatorHits))).toBe(0);
+      }
     } finally {
       await teardownSeededElectron(context, { terminate: true });
     }

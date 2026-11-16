@@ -7,7 +7,12 @@ import { MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../src/shared/shell-geometry.
 
 test("session columns push the transcript, restore toggles, and yield at narrow widths", async ({ app, mainWindow: page }, testInfo) => {
   // Both columns appear at a 1064px tile: 320px transcript + 280px thumbnails + 464px panel reserve.
-  const shellReserve = await page.evaluate(() => innerWidth - document.querySelector<HTMLElement>('[data-testid="pane"]')!.getBoundingClientRect().width);
+  const shellReserve = await page.evaluate(() => {
+    const shell = document.querySelector('[data-testid="app-shell"]');
+    const pane = document.querySelector('[data-testid="pane"]');
+    if (!shell || !pane) throw new Error("App shell geometry unavailable");
+    return shell.getBoundingClientRect().width - pane.getBoundingClientRect().width;
+  });
   // This is not a boundary test: leave 8px for fractional layout and display-scale rounding.
   const wideWidth = Math.ceil(shellReserve + MIN_DOCKED_TRANSCRIPT_WIDTH + CHAT_THUMBNAIL_WIDTH + SIDE_PANEL_MIN_RESERVE + 8);
   await setWindowSize(app, wideWidth, 860);

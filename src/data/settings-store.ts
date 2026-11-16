@@ -607,7 +607,7 @@ export interface SystemSettings {
    * Raising it buys a slow plugin or a large unsaved workspace more time to finish writing; lowering it makes quitting feel immediate at the cost of abandoning work still in flight. `AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS` overrides it; see `resolveShutdownCleanupTimeoutMs`. */
   shutdownCleanupTimeoutMs?: number;
   /** Persisted width (px) of the docked ChatSidePanel workspace rail, set by the left-edge drag handle; the card plus its insets
-   * (`SIDE_PANEL_MIN_RESERVE` is the floor). Durable shell-layout preference; bounded by the tile's range at drag time in the renderer. Default 464. */
+   * (`SIDE_PANEL_MIN_RESERVE` is the floor). Durable shell-layout preference; bounded by the tile's range at drag time in the renderer. Default SIDE_PANEL_DEFAULT_WIDTH. */
   sidePanelWidth?: number;
   /** Persisted width (px) of the primary (left) navigation sidebar card, set by the inner-edge drag handle. Durable shell-layout preference;
    * clamped to [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH] at drag time in the renderer. Default 232 (matches the historical expanded rail padding reserve). */

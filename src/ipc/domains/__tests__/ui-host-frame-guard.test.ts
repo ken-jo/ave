@@ -23,6 +23,10 @@ vi.mock("electron", () => ({
 vi.mock("../../../main/app-state.js", () => ({
   mainWindowForContents: (contents: unknown) => registeredUiContents.has(contents) ? fakeWindow : null,
 }));
+vi.mock("../../../main/main-window-host.js", () => ({
+  mainWindowFromNativeWindow: () => null,
+  mainWindowUiOrigin: () => ({ x: 0, y: 0 }),
+}));
 
 vi.mock("../../../i18n/index.js", () => ({ t: (key: string) => key }));
 

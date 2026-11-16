@@ -448,8 +448,8 @@ export async function setWindowSize(
     const workAreaContentLimit = [size.workArea.width - (bounds.width - content.width), size.workArea.height - (bounds.height - content.height)];
     return { workAreaContentLimit };
   }, { w, h, workArea });
-  let actual: { content: number[]; renderer: { width: number; height: number } } | undefined;
-  // Renderer CSS pixels and native content pixels agree only at zoom factor 1.
+  let actual: { content: number[]; ui: { x: number; y: number; width: number; height: number }; renderer: { width: number; height: number; viewportWidth: number; viewportHeight: number; inset: number } } | undefined;
+  // Logical renderer pixels include the native strip outside the UI view, at zoom factor 1.
   try {
     await expect.poll(async () => {
       actual = undefined;
@@ -457,14 +457,18 @@ export async function setWindowSize(
         const chrome = target.webContents;
         if (chrome.isDestroyed()) throw new Error("Main window UI changed during resize");
         const content = target.getContentSize();
+        const ui = target.contentView.children.find(child => "webContents" in child && child.webContents === chrome)?.getBounds()
+          ?? { x: 0, y: 0, width: content[0], height: content[1] };
         let timer: ReturnType<typeof setTimeout> | undefined;
-        const renderer = await Promise.race([
-          chrome.executeJavaScript("({ width: window.innerWidth, height: window.innerHeight })") as Promise<{ width: number; height: number }>,
+        const viewport = await Promise.race([
+          chrome.executeJavaScript("({ width: innerWidth, height: innerHeight })") as Promise<{ width: number; height: number }>,
           new Promise<never>((_resolve, reject) => {
             timer = setTimeout(() => reject(new Error("Renderer size probe timed out")), 1_000);
           }),
         ]).finally(() => clearTimeout(timer));
-        return { content, renderer };
+        const renderer = { width: viewport.width + content[0] - ui.width, height: viewport.height + content[1] - ui.height,
+          viewportWidth: viewport.width, viewportHeight: viewport.height, inset: ui.x };
+        return { content, ui, renderer };
       });
       actual = measured;
       return Math.abs(measured.renderer.width - w) <= 1
@@ -481,6 +485,6 @@ export async function setWindowSize(
       && Math.abs(actual.content[1] - limitedRequest[1]) <= 1;
     const facts = [nativeMismatch && "native mismatch", rendererMismatch && "renderer mismatch", clampedByWorkArea && "clamped by work area"]
       .filter(Boolean).join("; ") || "resize probe failed (no current sample)";
-    throw new Error(`Window resize failed: ${facts}; requested ${w}x${h}; actual content ${actual?.content.join("x") ?? "unavailable"}; renderer ${JSON.stringify(actual?.renderer) ?? "unavailable"}; display work area ${workArea.width}x${workArea.height} at ${workArea.x},${workArea.y}`, { cause });
+    throw new Error(`Window resize failed: ${facts}; requested ${w}x${h}; actual content ${actual?.content.join("x") ?? "unavailable"}; native UI ${JSON.stringify(actual?.ui) ?? "unavailable"}; renderer ${JSON.stringify(actual?.renderer) ?? "unavailable"}; display work area ${workArea.width}x${workArea.height} at ${workArea.x},${workArea.y}`, { cause });
   }
 }

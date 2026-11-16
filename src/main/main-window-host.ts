@@ -1,6 +1,7 @@
 import { configureMainWindowWebviewAttach } from "./webview-attach.js";
 import { createLogger } from "../lib/logger.js";
 import { preloadPreferences } from "./preload-bundles.js";
+import { computeMainWindowUiBounds } from "./main-window-bounds.js";
 import { BaseWindow, WebContentsView, type BaseWindowConstructorOptions, type View, type WebContents, type WebPreferences } from "electron";
 
 export type MainWindow = BaseWindow & {
@@ -11,6 +12,17 @@ export type MainWindow = BaseWindow & {
 
 const log = createLogger("main-window-host");
 const uiViews = new WeakMap<BaseWindow, WebContentsView>();
+const uiLayouts = new WeakMap<BaseWindow, () => void>();
+
+/** UI document coordinates begin inside the native resize strip. Other windows retain their root origin. */
+export function mainWindowUiOrigin(window: BaseWindow): { x: number; y: number } {
+  const bounds = uiViews.get(window)?.getBounds();
+  return { x: bounds?.x ?? 0, y: bounds?.y ?? 0 };
+}
+
+export function refreshMainWindowUiLayout(window: BaseWindow): void {
+  uiLayouts.get(window)?.();
+}
 
 /** Creates the app document above the independent pages it presents. */
 export function createMainWindowHost(options: BaseWindowConstructorOptions, preferences: Pick<WebPreferences, "zoomFactor">): MainWindow {
@@ -37,13 +49,45 @@ export function createMainWindowHost(options: BaseWindowConstructorOptions, pref
   installUiMembers(window, contents);
   uiViews.set(window, ui);
   window.contentView.addChildView(ui);
+  let documentRevision = 0;
+  let stylesheet: string | undefined;
+  let cssInset: number | undefined;
   const resize = (): void => {
-    const { width, height } = window.getContentBounds();
-    ui.setBounds({ x: 0, y: 0, width, height });
+    const bounds = computeMainWindowUiBounds(window.getContentBounds(), process.platform, window.isFullScreen());
+    ui.setBounds(bounds);
+    const inset = bounds.x / contents.getZoomFactor();
+    if (cssInset === inset) return;
+    cssInset = inset;
+    const revision = ++documentRevision;
+    // The shell keeps full-window geometry while its clipped document leaves the native edge uncovered.
+    void contents.insertCSS(`:root { --native-window-inset: ${inset}px; }`).then(async (key) => {
+      if (contents.isDestroyed()) return;
+      if (revision !== documentRevision) { await contents.removeInsertedCSS(key); return; }
+      const previous = stylesheet;
+      stylesheet = key;
+      if (previous) await contents.removeInsertedCSS(previous);
+    }).catch((error: unknown) => {
+      if (revision !== documentRevision || contents.isDestroyed()) return;
+      cssInset = undefined;
+      log.warn({ err: error }, "Could not align main window document");
+    });
   };
+  uiLayouts.set(window, resize);
+  contents.on("dom-ready", () => {
+    stylesheet = undefined;
+    cssInset = undefined;
+    resize();
+  });
   resize();
   window.on("resize", resize);
+  window.on("maximize", resize);
+  window.on("unmaximize", resize);
+  window.on("restore", resize);
+  window.on("enter-full-screen", resize);
+  window.on("leave-full-screen", resize);
   window.on("closed", () => {
+    ++documentRevision;
+    uiLayouts.delete(window);
     uiViews.delete(window);
     if (!contents.isDestroyed()) contents.close();
   });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI } from "../../../shared/ipc-channels.js";
 import { NATIVE_MENU_MAX_ITEMS } from "../../../shared/native-context-menu.js";
 
@@ -9,6 +9,8 @@ const {
   isDestroyedMock,
   getURLMock,
   fromWebContentsMock,
+  composedWindowMock,
+  uiOriginMock,
   auditLogMock,
   menuTemplates,
 } = vi.hoisted(() => ({
@@ -18,6 +20,8 @@ const {
   isDestroyedMock: vi.fn(() => false),
   getURLMock: vi.fn(() => "file:///app/index.html"),
   fromWebContentsMock: vi.fn(),
+  composedWindowMock: vi.fn(),
+  uiOriginMock: vi.fn(),
   auditLogMock: vi.fn(),
   menuTemplates: [] as unknown[],
 }));
@@ -38,6 +42,10 @@ vi.mock("electron", () => ({
     }),
   },
 }));
+vi.mock("../../../main/main-window-host.js", () => ({
+  mainWindowFromNativeWindow: composedWindowMock,
+  mainWindowUiOrigin: uiOriginMock,
+}));
 
 function invoke(channel: string, ...args: unknown[]): unknown {
   const fn = handlers.get(channel);
@@ -52,6 +60,7 @@ function makeEvent(url = "file:///app/index.html") {
       isDestroyed: isDestroyedMock,
       send: sendMock,
       getURL: getURLMock,
+      getZoomFactor: vi.fn(() => 1.5),
     },
     senderFrame: {
       url,
@@ -64,6 +73,8 @@ async function setup() {
   vi.clearAllMocks();
   menuTemplates.length = 0;
   fromWebContentsMock.mockReturnValue({ isDestroyed: vi.fn(() => false) });
+  composedWindowMock.mockReturnValue(null);
+  uiOriginMock.mockReturnValue({ x: 4, y: 4 });
   const { registerUiHandlers } = await import("../ui.js");
   registerUiHandlers({
     auditLogger: { log: auditLogMock },
@@ -88,9 +99,60 @@ function firstTemplate() {
   }>;
 }
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("ui IPC handlers", () => {
   beforeEach(async () => {
     await setup();
+  });
+
+  it("scales renderer menu coordinates before adding the composed UI origin", () => {
+    vi.stubGlobal("process", Object.create(process, { platform: { value: "darwin" } }));
+    const window = { isDestroyed: () => false };
+    fromWebContentsMock.mockReturnValue(window);
+    composedWindowMock.mockReturnValue(window);
+    const event = makeEvent();
+    expect(invoke(UI.nativeContextMenu, event, {
+      requestId: "position", x: 10.4, y: 20.6, kind: "message", commands: ["message.copy"],
+    })).toEqual({ ok: true });
+    expect(popupMock).toHaveBeenLastCalledWith({ window, x: 20, y: 35 });
+    uiOriginMock.mockReturnValue({ x: 0, y: 0 });
+    expect(invoke(UI.dynamicMenu, event, {
+      requestId: "fullscreen-position", x: 12.4, y: 30.6,
+      sections: [{ items: [{ id: "copy", label: "Copy" }] }],
+    })).toEqual({ ok: true });
+    expect(popupMock).toHaveBeenLastCalledWith(expect.objectContaining({ window, x: 19, y: 46 }));
+  });
+
+  it.each(["win32", "linux"])("preserves composed window menu units on %s", platform => {
+    vi.stubGlobal("process", Object.create(process, { platform: { value: platform } }));
+    const window = { isDestroyed: () => false };
+    fromWebContentsMock.mockReturnValue(window);
+    composedWindowMock.mockReturnValue(window);
+    const event = makeEvent();
+    expect(invoke(UI.nativeContextMenu, event, {
+      requestId: "platform-position", x: 10.4, y: 20.6, kind: "message", commands: ["message.copy"],
+    })).toEqual({ ok: true });
+    expect(popupMock).toHaveBeenLastCalledWith({ window, x: 10, y: 21 });
+    expect(invoke(UI.dynamicMenu, event, {
+      requestId: "platform-dynamic-position", x: 12.4, y: 30.6,
+      sections: [{ items: [{ id: "copy", label: "Copy" }] }],
+    })).toEqual({ ok: true });
+    expect(popupMock).toHaveBeenLastCalledWith(expect.objectContaining({ window, x: 12, y: 31 }));
+    expect(event.sender.getZoomFactor).not.toHaveBeenCalled();
+    expect(uiOriginMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps ordinary window menu coordinates in their existing units", () => {
+    const event = makeEvent();
+    expect(invoke(UI.nativeContextMenu, event, {
+      requestId: "ordinary-position", x: 10.4, y: 20.6, kind: "message", commands: ["message.copy"],
+    })).toEqual({ ok: true });
+    expect(popupMock).toHaveBeenLastCalledWith(expect.objectContaining({ x: 10, y: 21 }));
+    expect(event.sender.getZoomFactor).not.toHaveBeenCalled();
+    expect(uiOriginMock).not.toHaveBeenCalled();
   });
 
   it("builds generic native commands in canonical order and emits typed click actions", () => {

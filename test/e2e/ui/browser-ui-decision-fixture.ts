@@ -24,7 +24,7 @@ await request('ui/initialize',{protocolVersion:'2026-01-26',appInfo:{name:'decis
 parent.postMessage({jsonrpc:'2.0',method:'ui/notifications/initialized',params:{}},'*');
 document.getElementById('record').onclick=async event=>{
   decisionState.trusted=event.isTrusted;decisionState.activation=navigator.userActivation.isActive;
-  try{decisionState.result=await request('tools/call',{name:${JSON.stringify(DECISION_TOOL)},arguments:{}})}catch(error){decisionState.error=String(error)}
+  try{decisionState.result=await request('tools/call',{name:${JSON.stringify(DECISION_TOOL)},arguments:{}})}catch(error){decisionState.error=typeof error==='string'?error:JSON.stringify(error)}
 };
 decisionState.ready=true;document.getElementById('status').textContent='Decision app ready';
 </script></body></html>`;
@@ -42,7 +42,7 @@ async function installDecisionPlugin(aveHome: string): Promise<string> {
       { name: DECISION_TOOL, description: "Write the isolated decision record.",
         inputSchema: { type: "object", properties: {}, additionalProperties: false },
         annotations: { readOnlyHint: false }, _meta: { ui: { visibility: ["model", "app"] } } }],
-      uiResources: [{ uri: DECISION_RESOURCE }],
+      uiResources: [{ uri: DECISION_RESOURCE, hostCapabilities: ["serverTools"] }],
     },
     files: { "dist/hostPlugin.js": `import { writeFile } from "node:fs/promises";
 export default function createPlugin() {
@@ -130,12 +130,16 @@ export async function launchDecisionFixture(width: number, options: { withDecisi
         const appView = fixture.page.locator('webview[src^="ave-mcp-app:"]');
         await expect(appView).toHaveCount(1);
         await appView.scrollIntoViewIfNeeded();
-        const readApp = () => fixture.app.evaluate(async ({ webContents }) => {
-          const guests = webContents.getAllWebContents().filter(contents => contents.getURL().startsWith("ave-mcp-app://"));
-          if (guests.length !== 1) throw new Error("Decision app guest unavailable");
-          const [guest] = guests;
-          if (!guest) throw new Error("Decision app guest unavailable");
-          return guest.executeJavaScript(`(() => {
+        const readApp = async () => {
+          const id = await appView.evaluate(element => {
+            try { return (element as unknown as { getWebContentsId(): number }).getWebContentsId(); }
+            catch { return null; }
+          });
+          if (id === null) return null;
+          return fixture.app.evaluate(async ({ webContents }, id) => {
+            const guest = webContents.fromId(id);
+            if (!guest || guest.isDestroyed()) return null;
+            return guest.executeJavaScript(`(() => {
             const frame=document.querySelector('iframe');const state=frame?.contentWindow?.decisionState;
             const button=frame?.contentDocument?.getElementById('record');if(!state||!button)return null;
             const outer=frame.getBoundingClientRect(),inner=button.getBoundingClientRect();
@@ -143,7 +147,8 @@ export async function launchDecisionFixture(width: number, options: { withDecisi
           })()`) as Promise<{ ready: boolean; trusted: boolean; activation: boolean;
             result: { isError?: boolean; content: Array<{ type: string; text?: string }> } | null; error: string | null;
             button: { x: number; y: number } } | null>;
-        });
+          }, id);
+        };
         await expect.poll(async () => (await readApp())?.ready).toBe(true);
         const mode = await fixture.page.evaluate(() => window.ave.permission.setMode("strict"));
         expect(mode.ok).toBe(true);
