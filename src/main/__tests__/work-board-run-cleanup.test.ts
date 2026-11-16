@@ -26,10 +26,12 @@ async function templateItem(store: WorkBoardStore, templateId = "template-1"): P
 async function begin(store: WorkBoardStore, id: number, runId: string, templateId?: string): Promise<void> {
   expect(await store.beginRun(id, runId, "2026-01-01T00:00:00.000Z", start(templateId))).toMatchObject({ status: "updated" });
 }
-/** A whole run: started, then ended. */
+const over = { status: "completed", at: "2026-01-02T00:00:00.000Z" } as const;
+/** A whole run: started, ended on its row, and marked over in its record. */
 async function settled(store: WorkBoardStore, id: number, runId: string, templateId?: string): Promise<void> {
   await begin(store, id, runId, templateId);
   expect(await store.setRunResult(id, { runStatus: "completed" })).toMatchObject({ status: "updated" });
+  expect(await store.updateRun(id, runId, run => ({ ...run, settled: over }))).toMatchObject({ status: "stored" });
 }
 const entries = async (): Promise<{ runId: string }[]> => JSON.parse(await readFile(runsPath, "utf8")).runs;
 const runIds = async (): Promise<string[]> => (await entries()).map(entry => entry.runId);
@@ -48,7 +50,7 @@ it("removes a deleted row's settled runs and leaves every other row's runs", asy
   expect(await store.getRun(kept)).toMatchObject({ status: "found", run: { runId: "kept-2" } });
 });
 
-it("keeps the run of a deleted row while it executes, until the engine releases it", async () => {
+it("keeps the unsettled run of a deleted row until its record says it is over", async () => {
   const store = new WorkBoardStore(boardPath);
   const gone = await templateItem(store);
   const other = await templateItem(store);
@@ -60,7 +62,8 @@ it("keeps the run of a deleted row while it executes, until the engine releases 
   await settled(store, other, "other-1");
   expect(await runIds()).toEqual(["gone-live", "other-1"]);
 
-  await store.releaseRun("gone-live");
+  expect(await store.runs.update("gone-live", run => ({ ...run, settled: { status: "cancelled", at: over.at } }))).toMatchObject({ status: "stored" });
+  await store.pruneSettledRuns();
   expect(await runIds()).toEqual(["other-1"]);
 });
 
@@ -81,17 +84,20 @@ it("prunes on a later write what an earlier cleanup could not remove", async () 
   expect(await runIds()).toEqual(["other-1"]);
 });
 
-it("treats a run left executing by an earlier process as settled once its row is gone", async () => {
+it("never removes a run whose record is not settled, whatever its row showed and whichever process started it", async () => {
   const first = new WorkBoardStore(boardPath);
   const gone = await templateItem(first);
   const other = await templateItem(first);
-  await begin(first, gone, "gone-live");
+  await begin(first, gone, "gone-unsettled");
+  expect(await first.setRunResult(gone, { runStatus: "completed" })).toMatchObject({ status: "updated" });
   await first.remove(gone);
-  expect(await runIds()).toEqual(["gone-live"]);
+  expect(await runIds()).toEqual(["gone-unsettled"]);
 
   const restarted = new WorkBoardStore(boardPath);
   await begin(restarted, other, "other-1");
-  expect(await runIds()).toEqual(["other-1"]);
+  await restarted.pruneSettledRuns();
+  await restarted.removeTemplateRuns("template-1");
+  expect(await runIds()).toEqual(["gone-unsettled", "other-1"]);
 });
 
 it("never removes or rewrites an entry it cannot read", async () => {
@@ -125,7 +131,7 @@ it("keeps the runs a row lists in its history and drops the ones it no longer li
   expect(listed).toHaveLength(20);
   // The newest write judged the board before its own row write, so the run that write evicted goes with the next one.
   expect(await runIds()).toEqual(["run-3", ...listed]);
-  await store.releaseRun("none");
+  await store.pruneSettledRuns();
   expect(await runIds()).toEqual(listed);
 });
 
@@ -136,7 +142,7 @@ it("keeps every run when the board file was emptied, since no row id was issued 
   await writeFile(boardPath, "{");
 
   const restarted = new WorkBoardStore(boardPath);
-  await restarted.releaseRun("none");
+  await restarted.pruneSettledRuns();
   expect(await runIds()).toEqual(["run-1", "run-2"]);
 });
 
@@ -158,7 +164,7 @@ it("removes the run record when the row write after it fails", async () => {
   expect(await runIds()).toEqual(["run-1", "run-retry"]);
 });
 
-it("removes on the next start a run record whose row write never happened", async () => {
+it("keeps a run record whose row write never happened until it is settled", async () => {
   const store = new WorkBoardStore(boardPath);
   const id = await templateItem(store);
   const pin = pinOf("template-1");
@@ -168,10 +174,13 @@ it("removes on the next start a run record whose row write never happened", asyn
   const restarted = new WorkBoardStore(boardPath);
   expect(await restarted.getRun(id)).toEqual({ status: "not-found" });
   await begin(restarted, id, "run-retry");
+  expect(await runIds()).toEqual(["run-orphan", "run-retry"]);
+  expect(await restarted.runs.update("run-orphan", run => ({ ...run, settled: { status: "error", at: over.at } }))).toMatchObject({ status: "stored" });
+  await restarted.pruneSettledRuns();
   expect(await runIds()).toEqual(["run-retry"]);
 });
 
-it("removes a template's settled runs and keeps the ones still executing or awaited by their row", async () => {
+it("removes a template's settled runs and keeps the ones that are not over", async () => {
   const first = new WorkBoardStore(boardPath);
   const waiting = await templateItem(first);
   await begin(first, waiting, "waiting-1");
@@ -189,18 +198,6 @@ it("removes a template's settled runs and keeps the ones still executing or awai
   expect(await runIds()).toEqual(["waiting-1", "live-1", "elsewhere-1"]);
   expect(await store.getRun(done)).toEqual({ status: "not-found" });
   expect((await store.get(done) as { item: object }).item).not.toHaveProperty("templateRunError");
-});
-
-it("keeps the run of a row deleted while its run was active, whichever process started it", async () => {
-  const first = new WorkBoardStore(boardPath);
-  const id = await templateItem(first);
-  await begin(first, id, "run-1");
-
-  const restarted = new WorkBoardStore(boardPath);
-  expect(await restarted.remove(id)).toMatchObject({ status: "deleted" });
-  expect(await runIds()).toEqual(["run-1"]);
-  await restarted.releaseRun("run-1");
-  expect(await runIds()).toEqual([]);
 });
 
 it("refuses a run write that would pass the read limit, so deleting a row still makes room", async () => {

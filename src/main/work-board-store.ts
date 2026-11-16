@@ -123,8 +123,6 @@ const VALID_RUN_STATUSES: readonly WorkItemRunStatus[] = [
   "cancelled",
 ];
 
-const ACTIVE_RUN_STATUSES: ReadonlySet<WorkItemRunStatus> = new Set(["planning", "awaiting_approval", "executing"]);
-
 const UPDATABLE_FIELDS: ReadonlySet<string> = new Set<keyof WorkItemUpdateInput>(["title", "detail", "due_at", "priority"]);
 
 const PLAN_APPROVAL_STATUSES: readonly WorkPlanApprovalStatus[] = ["pending", "approved", "rejected", "changes_requested"];
@@ -404,9 +402,6 @@ export class WorkBoardStore {
   private readonly now: () => number;
   /** Template-run state, keyed by runId, in the covered run file beside `board.json`. */
   readonly runs: WorkflowRunStore;
-  // Template runs that may still be executing: started here and not seen to end, or active on a row when it was deleted. Empty after a
-  // restart, when no run is still executing.
-  private readonly liveRuns = new Set<string>();
 
   /**
    * @param filePath absolute path to `board.json`. Defaults to the
@@ -425,19 +420,17 @@ export class WorkBoardStore {
   private async commit(board: BoardFile): Promise<void> {
     await writeFileAtomic(this.filePath, board);
     this.cache = board;
-    for (const item of board.items) {
-      if (item.runId !== undefined && item.runStatus !== undefined && TERMINAL_RUN_STATUSES.has(item.runStatus)) this.liveRuns.delete(item.runId);
-    }
     this.boardChanged.emit();
   }
 
-  // A stored run may go once nothing can use it: this process is not executing it and the board no longer lists it. A row lists its
-  // current run and its run history. A row id this board never issued (an emptied or replaced board file) proves nothing, so that run stays.
+  // A stored run may go once it is over and the board no longer lists it. Only the run record says a run is over (`settled`); a record
+  // without it is never removed here, whatever its row shows. A row lists its current run and its run history. A row id this board never
+  // issued (an emptied or replaced board file) proves nothing, so that run stays.
   private unlisted(board: BoardFile): (run: WorkflowRunRecord) => boolean {
     const rows = new Map(board.items.map((item) => [item.id, item]));
     const issued = board.nextId;
     return (run) => {
-      if (this.liveRuns.has(run.runId)) return false;
+      if (run.settled === undefined) return false;
       const row = rows.get(run.itemId);
       if (!row) return run.itemId < issued;
       return row.runId !== run.runId && !(Array.isArray(row.runHistory) && row.runHistory.some((entry) => entry.runId === run.runId));
@@ -450,23 +443,20 @@ export class WorkBoardStore {
     catch (error) { log.warn("[work-board-store] run records were not pruned: %s", (error as Error).message); }
   }
 
-  /** For the engine: a run it started has ended while no row showed it (the row was deleted or names a newer run). Its record goes now. */
-  async releaseRun(runId: string): Promise<void> {
+  /** For the engine: remove every settled run no row lists. Call it after settling a run whose row is gone or names a newer run. */
+  async pruneSettledRuns(): Promise<void> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      this.liveRuns.delete(runId);
       await this.pruneRuns(this.unlisted(await readFileOrEmpty(this.filePath)));
     });
   }
 
-  /** A removed template takes its settled runs with it. A run still executing, or one its row still waits on, stays. */
+  /** A removed template takes its settled runs with it, listed by a row or not. A run that is not over stays. */
   async removeTemplateRuns(templateId: string): Promise<void> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
-      const board = await readFileOrEmpty(this.filePath);
-      const unlisted = this.unlisted(board);
-      const awaited = new Set(board.items.filter((item) => item.runStatus !== undefined && ACTIVE_RUN_STATUSES.has(item.runStatus)).map((item) => item.runId));
-      await this.pruneRuns((run) => unlisted(run) || (run.pin.templateId === templateId && !this.liveRuns.has(run.runId) && !awaited.has(run.runId)));
+      const unlisted = this.unlisted(await readFileOrEmpty(this.filePath));
+      await this.pruneRuns((run) => unlisted(run) || (run.settled !== undefined && run.pin.templateId === templateId));
     });
   }
 
@@ -842,11 +832,10 @@ export class WorkBoardStore {
       board.items[idx] = updated;
       try { await this.commit(board); }
       catch (error) {
-        // The row never came to name the run just stored, so that record goes with the same prune.
-        if (pin) await this.pruneRuns(unlisted);
+        // The row never came to name the run just stored and nothing started it, so that record goes with the same prune.
+        if (pin) await this.pruneRuns((run) => run.runId === runId || unlisted(run));
         throw error;
       }
-      if (pin) this.liveRuns.add(runId);
       await appendActivity(this.activity, {
         kind: "run-planned",
         itemId: id,
@@ -1071,10 +1060,7 @@ export class WorkBoardStore {
       }
       board.items = board.items.filter((i) => i.id !== id);
       await this.commit(board);
-      if (item.templateId !== undefined) {
-        if (item.runId !== undefined && item.runStatus !== undefined && ACTIVE_RUN_STATUSES.has(item.runStatus)) this.liveRuns.add(item.runId);
-        await this.pruneRuns(this.unlisted(board));
-      }
+      if (item.templateId !== undefined) await this.pruneRuns(this.unlisted(board));
       await appendActivity(this.activity, {
         kind: "deleted",
         itemId: id,

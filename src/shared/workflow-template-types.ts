@@ -146,6 +146,9 @@ export interface WorkflowRunRecord {
   stageRuns: WorkItemStageRun[];
   stageJoins?: StageJoin[];
   runWorkspace?: RunWorkspace;
+  /** Set by the write that ends the run, together with the final stage states. Absent: the run is not over. The board row's status is
+   * shown from this, never the other way round. */
+  settled?: { status: "completed" | "denied" | "error" | "cancelled"; at: string };
 }
 /** invalid: the stored entry is unreadable and stays untouched. pending-review: the run file awaits home content review. too-large: the write would grow the run file past its read limit. */
 export type WorkflowRunReadResult = { status: "found"; run: WorkflowRunRecord } | { status: "not-found" | "invalid" | "pending-review" };

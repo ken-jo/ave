@@ -135,3 +135,14 @@ it("reports a size-limit refusal as pending review and lets other read errors th
   read.mockRestore();
   expect(await readFile(file, "utf8")).toBe(before);
 });
+
+it("stores how a run ended and refuses a malformed end", async () => {
+  const store = new WorkflowRunStore(file);
+  const settled = { status: "cancelled", at: "2026-01-02T00:00:00.000Z" } as const;
+  expect(await store.put(run())).toMatchObject({ status: "stored" });
+  expect(await store.update("run-1", value => ({ ...value, settled }))).toMatchObject({ status: "stored", run: { settled } });
+  expect(await store.get("run-1")).toMatchObject({ status: "found", run: { settled } });
+  for (const bad of [{ status: "idle", at: settled.at }, { status: "error", at: "never" }, { status: "error" }, { ...settled, by: "user" }]) {
+    await expect(store.update("run-1", value => ({ ...value, settled: bad as never }))).rejects.toMatchObject({ code: "invalid-template-run" });
+  }
+});

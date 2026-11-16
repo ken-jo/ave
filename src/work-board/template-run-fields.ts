@@ -70,7 +70,7 @@ function authority(value: unknown, pin: Record<string, unknown>): boolean {
 /** One entry of the covered run file. Unknown keys are refused, so an entry is either fully understood or left untouched. */
 export function assertWorkflowRunRecord(raw: unknown): asserts raw is WorkflowRunRecord {
   const check = (condition: unknown): void => requireTemplate(condition, "invalid-template-run");
-  check(hasTemplateKeys(raw, ["runId", "itemId", "pin", "runStartedBy", "startedAt", "stageRuns", "stageJoins", "runWorkspace"]));
+  check(hasTemplateKeys(raw, ["runId", "itemId", "pin", "runStartedBy", "startedAt", "stageRuns", "stageJoins", "runWorkspace", "settled"]));
   const run = raw as Record<string, unknown>;
   check(text(run.runId, 256) && Number.isSafeInteger(run.itemId) && (run.itemId as number) > 0 && timestamp(run.startedAt));
   const pin = run.pin;
@@ -78,6 +78,7 @@ export function assertWorkflowRunRecord(raw: unknown): asserts raw is WorkflowRu
   check(stages(run.stageRuns));
   check(authority(run.runStartedBy, pin as Record<string, unknown>));
   check(optional(run, "runWorkspace", value => workspace(value, true)));
+  check(optional(run, "settled", value => hasTemplateKeys(value, ["status", "at"]) && ["completed", "denied", "error", "cancelled"].includes(value.status as string) && timestamp(value.at)));
   if (run.stageJoins !== undefined) {
     check(joins(run.stageJoins));
     const stageIds = new Set((run.stageRuns as { stageId: string }[]).map(stage => stage.stageId));

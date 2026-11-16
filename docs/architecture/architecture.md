@@ -3673,10 +3673,11 @@ with its own owner rule:
   read limit, every board row stays listed, each template row that names a run
   is marked pending review on that read, and no template run is started or
   changed; an entry that does not parse is left in place and marks only its own
-  row. A run record is removed once this process is not executing it and no
-  row lists it as its current run or in its run history: when its row is
-  deleted, when the row write that should have named it failed, and on every
-  later template-run start. Archiving a template removes its settled runs.
+  row. A run record carries `settled` once the run is over, and
+  only a settled record is ever removed: when no row lists it as its current
+  run or in its run history, checked when a row is deleted and on every later
+  template-run start. A record whose row write failed is removed at once.
+  Archiving a template removes its settled runs.
   Entries that do not parse are never removed, and nothing is removed by age.
   A write that would grow the run file past the read limit is refused, so the
   file stays readable and deleting rows makes room again.
