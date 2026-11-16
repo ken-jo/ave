@@ -16,6 +16,7 @@ vi.mock("../../api-client.js", () => ({
 let localeBeforeTest = getLocale();
 
 beforeEach(() => {
+  window.ave = { permission: { updateSecuritySettings: updateSettings } } as never;
   localeBeforeTest = getLocale();
   setLocale("en");
   getSettings.mockResolvedValue({ system: {}, features: {} });

@@ -1476,6 +1476,7 @@ export type AvePermissionApi = {
     | IpcErrorResult
   >;
   /** Read-only: the upstream proxy setting (no credential values) and the effective upstream for https://example.com. */
+  updateSecuritySettings: (patch: import("../../shared/security-settings.js").SecuritySettingsPatch) => Promise<AppSettings | IpcErrorResult>;
   upstreamProxyGet: () => Promise<UpstreamProxyView | IpcErrorResult>;
   /** MUTATING: change the upstream proxy setting; resolves to the new view or a refusal. */
   upstreamProxySet: (patch: UpstreamProxyPatch) => Promise<

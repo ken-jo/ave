@@ -914,7 +914,7 @@ export function PermissionsTab({
     // Clear any stale install outcome whenever a toggle moves.
     setWindowsInstallOutcome(null);
     try {
-      const res = await getApi().updateSettings({
+      const res = await window.ave.permission.updateSecuritySettings({
         features: isShell ? { osToolSandbox: next } : { pluginWorkerConfinement: next },
       });
       if (isIpcErrorResult(res)) {
@@ -946,7 +946,7 @@ export function PermissionsTab({
     const next = !windowsShellLocalNetworkAccess;
     setWindowsShellLocalNetworkBusy(true);
     try {
-      const res = await getApi().updateSettings({ features: { windowsShellLocalNetworkAccess: next } });
+      const res = await window.ave.permission.updateSecuritySettings({ features: { windowsShellLocalNetworkAccess: next } });
       if (isIpcErrorResult(res)) {
         showBanner("error", t("permissionsTab.windowsShellLocalNetworkToggleFailed"));
         return;

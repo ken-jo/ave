@@ -149,6 +149,7 @@ function installApi(
     settings: { features: { osToolSandbox: false } },
     envForcedSettings,
   });
+  Object.assign(ave.permission, { updateSecuritySettings: api.updateSettings });
   api.relaunchApp = ave.relaunchApp;
   return ave;
 }
@@ -1284,6 +1285,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     (globalThis as unknown as { window: typeof window }).window.ave = ave as never;
     // osToolSandbox=true so the component loads into the Windows consent state
     const api = installMockAveApi({ settings: { features: { osToolSandbox: overrides.togglesOff !== true } } });
+    Object.assign(ave.permission, { updateSecuritySettings: api.updateSettings });
     return { ave, updateSettings: api.updateSettings! };
   }
 

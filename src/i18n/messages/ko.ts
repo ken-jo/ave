@@ -6563,4 +6563,6 @@ export const ko: Record<MessageCatalogKey, string> = {
   "auditTab.telemetrySaveFailed": "원격 진단 설정을 저장하지 못했습니다. 이전 선택이 계속 적용됩니다.",
   "auditTab.telemetryLegacyConsent": "이전 동의에 따라 충돌 업로드는 계속 꺼져 있습니다. 충돌 보고를 포함하려면 이 수준에 동의하거나 끔을 선택하세요.",
   "auditTab.telemetryConfirmLevel": "보고 수준에 동의",
+  "permissionsTab.securityAuditFailed": "보안 변경을 감사 로그에 기록하지 못해 이전 설정을 유지했습니다.",
+  "permissionsTab.securityRollbackFailed": "보안 변경 기록과 이전 설정 복원에 실패했습니다. 설정을 다시 불러와 현재 보호 상태를 확인하세요.",
 };

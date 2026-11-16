@@ -1,3 +1,4 @@
+import { containsSecuritySettings } from "../../shared/security-settings.js";
 import { telemetryPatchError } from "../../shared/telemetry-policy.js";
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external */
 import { app, dialog, ipcMain } from "electron";
@@ -607,6 +608,10 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (partial?.telemetry !== undefined) {
       const error = telemetryPatchError(partial.telemetry, { isPackaged: app.isPackaged, allowlistEnv: process.env.AVE_TELEMETRY_ALLOWLIST });
       if (error) return { ok: false, error };
+    }
+    if (containsSecuritySettings(partial)) return { ok: false, error: "security-settings-main-owned" };
+    if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "pluginConfigs")) {
+      return { ok: false, error: "plugin-config-settings-main-owned" };
     }
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "a2aRemote")) {
       return { ok: false, error: "a2a-remote-settings-main-owned" };

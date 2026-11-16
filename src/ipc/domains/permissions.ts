@@ -1,3 +1,6 @@
+import { securitySettingsGestures } from "../security-settings-gesture.js";
+import { isSecuritySettingsPatch } from "../../shared/security-settings.js";
+import { broadcastSettingsSnapshot, rendererSettingsSnapshot } from "./settings.js";
 /** Permissions domain IPC handlers. Covers: ave:permission:*, ave:approval:*, ave:policy:* */
 import { isBrowserSiteChoice } from "../../shared/permissions-events.js";
 import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
@@ -647,6 +650,61 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       removeAveHomeTrustItem(body.snapshotId as string, body.key as string);
       return { ok: true as const, detail: { key: body.key } };
     });
+  });
+
+  let securitySettingsWrite: Promise<unknown> = Promise.resolve();
+  ipcMain.handle(PERMISSIONS.updateSecuritySettings, async (event, payload: unknown) => {
+    if (!validateHostRendererSender(event) || !isNativeApprovalFrame(event)) {
+      auditUnauthorized(auditLogger, PERMISSIONS.updateSecuritySettings, event);
+      return UNAUTHORIZED_FRAME;
+    }
+    const body = payloadRecord(payload);
+    const gesture = hasUserKeyboardIntent(body.intent)
+      ? securitySettingsGestures.consume(event.sender, { channel: PERMISSIONS.updateSecuritySettings, payload: body.patch })
+      : null;
+    if (!gesture) {
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+        input: JSON.stringify({ action: "security_settings_refused", reason: "user-keyboard-required" }) });
+      return { ok: false, error: "user-keyboard-required" };
+    }
+    if (!isSecuritySettingsPatch(body.patch)) return { ok: false, error: "invalid-security-settings" };
+    const patch = body.patch;
+    const write = securitySettingsWrite.then(async () => {
+      const previous = deps.settingsService.getAll();
+      const changes = Object.entries(patch).flatMap(([group, fields]) => Object.entries(fields).map(([key, value]) => ({
+        path: group + "." + key, previous: (previous[group as "features" | "system"] as unknown as Record<string, unknown>)[key], value,
+      })));
+      const record = (phase: string) => auditLogger.append({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+        input: JSON.stringify({ action: "security_settings_changed", phase, changes, gestureSequence: gesture.sequence, gesturePayloadDigest: gesture.payloadDigest }) });
+      try { await record("requested"); } catch (error) {
+        log.warn({ err: error }, "Security settings audit is unavailable");
+        return { ok: false, error: "security-settings-audit-unavailable" };
+      }
+      const updated = await deps.settingsService.patch(patch.system === undefined
+        ? { features: patch.features }
+        : { features: patch.features, system: {
+          closeBehavior: deps.settingsService.getAll().system.closeBehavior,
+          ...patch.system,
+        } });
+      try { await record("committed"); } catch (error) {
+        const rollback = Object.fromEntries(Object.entries(patch).map(([group, fields]) => [group,
+          Object.fromEntries(Object.keys(fields).map((key) => [key, (previous[group as "features" | "system"] as unknown as Record<string, unknown>)[key]])),
+        ]));
+        try { await deps.settingsService.patch(rollback); } catch (rollbackError) {
+          log.error({ err: rollbackError, auditError: error }, "Security settings rollback failed");
+          return { ok: false, error: "security-settings-rollback-failed" };
+        }
+        await deps.refreshSandboxNetworkConfig?.();
+        await broadcastSettingsSnapshot(deps);
+        return { ok: false, error: "security-settings-audit-unavailable" };
+      }
+      await deps.refreshSandboxNetworkConfig?.();
+      await broadcastSettingsSnapshot(deps);
+      return rendererSettingsSnapshot(deps.settingsService, updated);
+    });
+    // Keep later writes runnable while returning this operation's own failure to its caller.
+    securitySettingsWrite = write.catch(() => undefined);
+    return write;
   });
 
   ipcMain.handle(PERMISSIONS.setMode, async (e, payload: unknown) => {

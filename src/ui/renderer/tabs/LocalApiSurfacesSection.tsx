@@ -153,7 +153,7 @@ export function LocalApiSurfacesSection() {
     // Optimistic, then reverted on refusal: the switch is the only feedback the user gets for a change whose effect is a
     // launch away.
     setGates((current) => ({ ...current, [path]: next }));
-    const result = await getApi().updateSettings(patchFor(path, next));
+    const result = await window.ave.permission.updateSecuritySettings(patchFor(path, next));
     if (isIpcErrorResult(result)) {
       setGates((current) => ({ ...current, [path]: !next }));
       setError(result.message ?? t("localApiSurfaces.saveFailed"));

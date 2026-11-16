@@ -6561,6 +6561,8 @@ export const en = {
   "auditTab.telemetrySaveFailed": "Could not save telemetry settings. Your previous choice is still active.",
   "auditTab.telemetryLegacyConsent": "Crash uploads remain off under your previous consent. Confirm this level to include crash reporting, or choose Off.",
   "auditTab.telemetryConfirmLevel": "Confirm reporting level",
+  "permissionsTab.securityAuditFailed": "The security change could not be recorded. Your previous settings were kept.",
+  "permissionsTab.securityRollbackFailed": "The security change could not be recorded or restored. Reload settings and review the current protection state.",
 } as const;
 
 /** Keys shared by the built-in catalogs. */

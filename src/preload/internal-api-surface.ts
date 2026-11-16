@@ -678,6 +678,8 @@ export function buildInternalApiSurface() {
     egressGrantRevoke: async (grant: RevocableEgressGrant) => ipcRenderer.invoke(PERMISSIONS.egressGrantRevoke, { ...grant, intent: ipcUserKeyboardIntent() }),
     /** Read-only: the upstream proxy setting, whether credentials are stored, and the effective upstream. */
     upstreamProxyGet: async () => ipcRenderer.invoke(PERMISSIONS.upstreamProxyGet),
+    updateSecuritySettings: async (patch: import("../shared/security-settings.js").SecuritySettingsPatch) =>
+      ipcRenderer.invoke(PERMISSIONS.updateSecuritySettings, { patch, intent: ipcUserKeyboardIntent() }),
     /** MUTATING: change the upstream proxy setting (user-gesture intent attached). */
     upstreamProxySet: async (patch: {
       mode?: "off" | "system" | "manual";

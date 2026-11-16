@@ -155,6 +155,7 @@ export const PERMISSIONS = {
   upstreamProxyGet: "ave:permissions:upstream-proxy-get",
   // MUTATING (sender-frame-guarded + user-gesture intent): change it. The only writer of `upstreamProxy`; `settings:update` refuses the key.
   upstreamProxySet: "ave:permissions:upstream-proxy-set",
+  updateSecuritySettings: "ave:permissions:update-security-settings",
   // MUTATING (sender-frame-guarded): the ONLY user-consented privilege escalation entry point;
   // triggers ASRT installWindowsSandbox's single self-elevating UAC prompt. Never auto-triggered.
   sandboxWindowsInstall: "ave:permissions:sandbox-windows-install",
