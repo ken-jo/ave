@@ -10,7 +10,7 @@ Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `wait
 
 | # | Finding (verified) | Consequence |
 | --- | --- | --- |
-| F1 | The reviewer breaker is keyed by the root session, and a child of `work-board:<id>` resolves to that origin (`src/permissions/root-session-resolver.ts:19`; calls at `permission-manager.ts:667, 1734, 2019, 2101`). The counter resets only at a depth-0 turn (`engine/turn/query-loop.ts:353`) and is forgotten only by `endSession(root)` (`permission-manager.ts:1063-1066`), which no work-board path calls (callers: `ipc/domains/chat.ts:1677`, `ipc/domains/routines.ts:87`, `boot/steps/workflow-stores.ts:141`). | Today all children of one item share one counter that is never reset in the process. D6 "per session, as for any child today" does not describe the code. WT-5 needs a keying change (§4.3). Open question Q1. |
+| F1 | The reviewer breaker is keyed by the root session, and a child of `work-board:<id>` resolves to that origin (`src/permissions/root-session-resolver.ts:19`; calls at `permission-manager.ts:667, 1734, 2019, 2101`). The counter resets only at a depth-0 turn (`engine/turn/query-loop.ts:353`) and is forgotten only by `endSession(root)` (`permission-manager.ts:1063-1066`), which no work-board path calls (the only caller is `permissions/session-scope-end.ts:16`, reached from chat delete `ipc/domains/chat.ts:1678` and routine removal `ipc/domains/routines.ts:89`, `boot/steps/workflow-stores.ts:143`; repo-wide grep). | Today all children of one item share one counter that is never reset in the process. D6 "per session, as for any child today" does not describe the code. WT-5 needs a keying change (§4.3). Open question Q1. |
 | F2 | "This session" grants are keyed by the requesting session: rules in `permission-manager.ts:579, 982, 1004`; exact approvals in `user-approval-store.ts:202, 429, 452`. | Sibling stage sessions share nothing today. D5 needs a new scope; it cannot reuse the item origin, which would cross runs. |
 | F3 | One visible card is a renderer rule only. The host gate holds any number of pending requests (`permissions/approval-gate.ts:700`); the window FIFO is `lib/approval-queue-reducer.ts` via `ui/renderer/hooks/use-approval.ts:84`; the board draws per item in `components/work-board/use-board-approvals.ts:88-101`. | D4 needs no host change. |
 | F4 | A child's first-turn trust origin is hard-coded (`engine/subagent-runner.ts:3011`), and `SubAgentSpawnResult` (`:224`) reports none. | D7 "taint carries" needs one host-only spawn input and one result field. |
@@ -55,7 +55,7 @@ Stage statuses use the WT-2 names. Mapping to the brief's words: pending = `wait
 | `src/work-board/workflow/stage-run-engine.ts` | new | Event queue, effect runner, `spawnStageChild`, stop, steer. |
 | `src/work-board/workflow/run-authority.ts` | new | `authoriseAttendedRunSource`: the single run-authority function (§2.4). |
 | `src/work-board/workflow/workflow-errors.ts` | new | `WorkflowInvariantError` with a `code`. |
-| `src/core/work-board-engine.ts` | changed | Branch in `runItem`; add `decideStageGate`, `decideStageJoin`, `retryStage`; `steerRun` / `cancelRun` take the template path. |
+| `src/core/work-board-engine.ts` | changed | Branch in `runItem`; add `decideStageGate`, `decideStageJoin`, `retryStage`, `continueRun`; `steerRun` / `cancelRun` take the template path. |
 | `src/main/work-board-store.ts` | changed | Stage-aware reconcile; stage mutators if WT-2 does not ship them (§9). |
 | `src/shared/work-board-types.ts` | changed | Event fields, refusal and result types. |
 | `src/ipc/domains/work-board.ts`, `src/shared/ipc-channels.ts`, `src/preload/internal-api-surface.ts` | changed | `ave:work-board:decide-stage`, `decide-join`, `retry-stage`; `stageId` on steer. |
@@ -109,12 +109,12 @@ type RunEvent =
   | { type: "stage_ended"; stageId: string; attempt: number; ok: boolean; output?: string; taint?: StageTaint; reason?: string; interrupted?: boolean }
   | { type: "gate_evaluated"; stageId: string; attempt: number; passed: boolean; evidence: string; judgedBy: "host" | "model" }
   | { type: "gate_decided"; stageId: string; attempt: number; decision: WorkPlanDecision; note?: string }
-  | { type: "retry_requested"; stageId: string } | { type: "stop_requested" }
+  | { type: "retry_requested"; stageId: string } | { type: "continue_requested" } | { type: "stop_requested" }
   | { type: "join_integrated"; joinId: string } | { type: "join_conflict"; joinId: string; conflict: JoinConflict }
   | { type: "join_decided"; joinId: string; decision: "retry_merge" | "reject" };
 type RunEffect =
   | { type: "spawn"; stageId: string; attempt: number } | { type: "evaluate_gate"; stageId: string; attempt: number }
-  | { type: "interrupt"; stageId: string } | { type: "integrate"; joinId: string; stageIds: string[] }
+  | { type: "interrupt"; stageId: string } | { type: "seal"; stageId: string } | { type: "integrate"; joinId: string; stageIds: string[] }
   | { type: "settle"; runStatus: "completed" | "denied" | "error" | "cancelled" } | { type: "release_workspace"; stageIds: string[] };
 
 // stage-workspace.ts
@@ -124,11 +124,12 @@ interface StageWorkspaceProvider {
   seal(run: RunRef, stageId: string): Promise<void>;                          // after the stage passed
   integrate(run: RunRef, stageIds: readonly string[]): Promise<{ ok: true } | { ok: false; conflict: JoinConflict }>;
   release(run: RunRef, stageIds: readonly string[] | "all"): Promise<void>;
+  sweep(activeRunIds: readonly string[]): Promise<void>;                      // boot; the serial default is a no-op
 }
 type SerialReason = "no-project" | "not-git" | "git-unavailable" | "unsupported-repository";
 ```
 
-Event handling: one promise chain per item. Each event does: read the item → check `runId` → reduce → one store write → run effects. A spawn effect is not awaited inside the chain; the child's end enqueues `stage_ended`. `inFlight` still holds the item from `start` to settle, so a second `runItem` is refused as today.
+Event handling: one promise chain per item. Each event does: read the item → check `runId` → reduce → one store write → run effects. A spawn effect is not awaited inside the chain; the child's end enqueues `stage_ended`. `inFlight` still holds the item from `start` to settle, so a second `runItem` is refused as today. The `spawn` effect calls `prepare` first; `seal` is emitted when a stage becomes `passed`. WT-3 lands both with the serial provider, so WT-4 does not edit `stage-machine.ts`.
 
 ### 2.3 State machine
 
@@ -142,6 +143,7 @@ Event handling: one promise chain per item. Each event does: read the item → c
 | `awaiting_gate` | approve / reject | `passed` / `rejected` | Reject settles the run `denied` once live siblings are interrupted and unwound. |
 | `awaiting_gate` | request changes (note required) | `running`, attempt + 1 | Refused `attempts_exhausted` at attempt 3. Note and prior output go in as fenced data. |
 | `failed` | `retry_requested` | `running`, attempt + 1 | Same inputs; refused at attempt 3. No automatic retry. |
+| `waiting`, ready, run idle after a restart | `continue_requested` | `running`, attempt unchanged | Only legal when no child of the run is live (§2.7). |
 | any non-terminal | `stop_requested` | `cancelled` | Pending gates become `cancelled`. |
 
 Run (item `runStatus`, no new value):
@@ -159,7 +161,7 @@ Run (item `runStatus`, no new value):
 
 Start: `ave:work-board:run` for a template item carries the `(templateId, version, graphHash)` the user saw on `Create and run`. The handler builds `{ kind: "local-create-and-run", pin }` only after a consumed keyboard gesture. `start()` calls `authoriseRunSource`; on `ok` it passes that same tuple to `beginRun` as the run pin. A tuple that differs from the item's `templateId`, from the stored version, or from the recomputed hash refuses the start (`pin-mismatch`, `version-missing`, `graph-mismatch`) and writes nothing. `Run again` is a new `Create and run` with a new tuple.
 
-`authoriseAttendedRunSource` accepts exactly `local-create-and-run`; any other kind returns `source-not-authorised`. The accepted source kind is stored as `runStartedBy` and re-checked from the store at every spawn, so a run whose stored source the function does not accept spawns nothing.
+`authoriseAttendedRunSource` accepts exactly `local-create-and-run`; any other kind returns `source-not-authorised`. The whole accepted source object (not only its kind) is stored as `runStartedBy` and passed back to the function from the store at every spawn, so a later source with extra fields can be re-checked and a run whose stored source the function does not accept spawns nothing. Fail-closed default until Q5 is answered: the tuple must name the template's current confirmed version, and an archived template refuses with `pin-mismatch`.
 
 `spawnStageChild(run, stageId, attempt)` is the only `runner.spawn` call for a template run. It throws `WorkflowInvariantError` unless all hold:
 
@@ -211,7 +213,7 @@ const STAGE_INPUT_MAX_CHARS = 16_000; const STAGE_INPUTS_TOTAL_MAX_CHARS = 48_00
 | stage `waiting` whose inputs all passed | kept `waiting`; nothing starts at boot |
 | item | `awaiting_approval` if a gate is pending and nothing failed, else `executing`; never `error` unless the pin is unreadable |
 
-Nothing spawns at boot. The run continues only on a user decision (gate, join, Retry) or Stop; each of those re-reads the store and starts whatever is ready. A run with only ready-but-unstarted stages is continued by `retryStage` on one of them (attempt stays 1). See Q6.
+Nothing spawns at boot. The run continues only on a user decision (gate, join, Retry) or Stop; each of those re-reads the store and starts whatever is ready. A run with only ready-but-unstarted stages is continued by `continueRun(itemId, { runId }, { approvalSurface })`, a separate user action that enqueues `continue_requested`; it is not a retry and does not consume an attempt. See Q6.
 
 ### 2.8 Invariants (each throws or refuses with the named code)
 
@@ -255,7 +257,7 @@ Commit: `feat(work-board): stage scheduler for template runs`.
 
 ## 3. WT-4 — stage worktrees and the join (W1)
 
-Files: `src/work-board/workflow/stage-worktrees.ts` (the `StageWorkspaceProvider`), `src/work-board/workflow/host-git.ts` (`execFile("git", buildHostGitArgs([...]))`, no shell, timeouts, bounded output), one line in `workflow-engine-extensions.ts`, i18n en/ko for the serial notice and the conflict gate. The join state machine and `decideStageJoin` already exist from WT-3 and are tested there with a fake provider.
+Files: `src/work-board/workflow/stage-worktrees.ts` (the `StageWorkspaceProvider`), `src/work-board/workflow/host-git.ts` (`execFile("git", buildHostGitArgs([...]))`, no shell, timeouts, bounded output), one line in `workflow-engine-extensions.ts`, i18n en/ko for the serial notice and the conflict gate. The join state machine, `decideStageJoin`, the `prepare` / `seal` / `sweep` call sites (boot sweep runs from `workflow-engine-extensions.ts` after reconcile) and the `WorkItemStageRun.workspace` field with its store and board-file validation already exist from WT-3 and are tested there with a fake provider.
 
 ```ts
 interface JoinConflict { conflictHash: string; reason: "merge-conflict" | "dirty-target" | "interrupted";
@@ -272,11 +274,11 @@ function createGitWorktreeProvider(deps: { git: HostGit; worktreesRoot: (project
 | `seal` | After the stage passes its gate: commit everything in its worktree on its branch (host commit, hooks disabled by `buildHostGitArgs`). An empty diff is a no-op. |
 | `integrate` | When every stage of the group has passed: merge each sealed branch into the project's checked-out branch, in stage order. On any failure: `git merge --abort`, return `conflict`. The downstream stages stay `waiting`. |
 | Conflict gate | A join gate (work approval; binds to run + join + `conflictHash`). `retry_merge` runs `integrate` again after the user fixed the tree; `reject` settles the run `denied`. |
-| `release` | Remove the worktree and delete the branch after integration; on any settle remove all of the run's; at boot remove worktrees of runs that are no longer active, then `git worktree prune`. A failed stage's worktree is removed when its retry starts. |
+| `release` | Remove the worktree and delete the branch after integration; on any settle remove all of the run's; at boot remove worktrees of runs that are no longer active, then `git worktree prune`. A failed stage's worktree is removed when its retry starts, which then begins from the base commit. `Request changes` reruns in the same unsealed worktree, so the prior attempt's edits stay (Q17). |
 
 Invariants: a stage child never runs in another stage's worktree (`workspace-mismatch`); `integrate` runs only for groups whose stages are all `passed` and sealed; the host never resolves a conflict itself and never force-merges; every git call uses `buildHostGitArgs`; a worktree path outside `worktreesRoot` is refused; removal only touches paths the provider created (recorded on the stage run).
 
-Tests (`work-board/workflow/__tests__/stage-worktrees.test.ts`, real git in a temp repo under the lane's `ctmp`): `gives each parallel stage its own worktree from the same base`, `merges both stage branches at the join`, `turns a conflicting join into a conflict result naming the files and stages and leaves the tree clean`, `retry merge succeeds after the conflict is resolved`, `falls back to serial for a folder that is not a repository and reports why`, `removes worktrees and branches on settle and after Stop`, `boot cleanup removes a dead run's worktrees only`. Plus `core/__tests__/work-board-stage-run.test.ts`: `serial mode starts one stage at a time`.
+Tests (`work-board/workflow/__tests__/stage-worktrees.test.ts`, real git in a temp repo under the lane's `ctmp`): `gives each parallel stage its own worktree from the same base`, `merges both stage branches at the join`, `turns a conflicting join into a conflict result naming the files and stages and leaves the tree clean`, `retry merge succeeds after the conflict is resolved`, `falls back to serial for a folder that is not a repository and reports why`, `removes worktrees and branches on settle and after Stop`, `boot cleanup removes a dead run's worktrees only`. Plus its own `core/__tests__/work-board-stage-isolation.test.ts`: `serial mode starts one stage at a time`, `request changes reruns in the same worktree`.
 
 Commit: `feat(work-board): stage worktrees and host merge at the join`.
 
@@ -330,7 +332,7 @@ Assumes `TemplateStage.allowSubAgents?: boolean`, part of the graph hash (§9).
 | `tools/agent-spawn.ts` | `:162-165`: allow depth 1 only when the host metadata says `stageSubAgents`; depth ≥ 2 always refuses. |
 | `work-board/workflow/stage-run-engine.ts` | Pass `stageSubAgents` when the pinned stage opted in; register grandchild sessions through `RunScopeHooks`; forward `subAgentSessionId` on progress events so the board claims their cards. |
 
-Rules: the grandchild inherits the approval surface through the registry chain (stage child → `work-board:<id>`); its cards go to the user, never to the stage model (F7); it is a run member (run grant, own breaker count); Stop on the stage interrupts its grandchildren first; `max` is a host constant (Q9).
+Rules: the grandchild inherits the approval surface through the registry chain (stage child → `work-board:<id>`); its cards go to the user, never to the stage model (F7); it is a run member (run grant, own breaker count); Stop on the stage interrupts its grandchildren first; a stage that ends with grandchildren still live has them interrupted before its gate is evaluated; `max` is a host constant (Q9). Unverified: that the existing result delivery to a spawning loop works unchanged when that loop is itself a depth-1 child (Q18).
 
 Invariants: `agent_spawn` at depth 2 is refused with the existing error; a stage without the opt-in never sees `agent_spawn`; a grandchild with non-null approval provenance throws at spawn.
 
@@ -347,11 +349,11 @@ function evaluateModelVerdict(output: string): { passed: boolean; evidence: stri
 // passes only when the stage's final message ends with exactly one fenced JSON object {"verdict":"pass"|"fail","reason":string≤400}
 ```
 
-The host tells the stage, in its instructions, to end with that block. Unparseable, missing, duplicated or oversized = failed gate with evidence `verdict-unreadable`. The stored gate carries `judgedBy: "model"`, and the event and the gate row are labelled as a model judgement. The module imports nothing from `src/permissions`.
+The host tells the stage, in its instructions, to end with that block: a gate registry entry may carry `promptSuffix`, which `stage-prompt.ts` appends as host text. WT-3 lands that field, so WT-7 only fills it in `stage-verdict.ts`. Unparseable, missing, duplicated or oversized = failed gate with evidence `verdict-unreadable`. The stored gate carries `judgedBy: "model"`, and the event and the gate row are labelled as a model judgement. The module imports nothing from `src/permissions`.
 
 Invariants: a verdict never creates, answers or removes an approval request; a `model_verdict` gate cannot be the answer to a human gate; a failed verdict follows the ordinary failed-stage path.
 
-Tests (`work-board/workflow/__tests__/stage-verdict.test.ts`): `passes on a single pass verdict`, `fails on fail, on no block, on two blocks, on prose claiming OK`, `records judgedBy model`; `core/__tests__/work-board-stage-run.test.ts`: `a pass verdict leaves a pending tool approval of a sibling untouched`; an import test `stage-verdict has no permissions import`.
+Tests (`work-board/workflow/__tests__/stage-verdict.test.ts`): `passes on a single pass verdict`, `fails on fail, on no block, on two blocks, on prose claiming OK`, `records judgedBy model`; its own `core/__tests__/work-board-stage-verdict-run.test.ts`: `a pass verdict leaves a pending tool approval of a sibling untouched`, `the stage prompt carries the verdict instruction only for a model_verdict gate`; an import test `stage-verdict has no permissions import`.
 
 Commit: `feat(work-board): model-judged stage pass condition`.
 
@@ -382,13 +384,13 @@ Commits in build order: WT-3 → WT-5 → WT-6, with WT-4 and WT-7 independent a
 | Item | After | Parallel with | Files it owns alone | Shared files it touches |
 | --- | --- | --- | --- | --- |
 | WT-3 (attended runs only) | PR-A (WT-1, WT-2) | — | all of `src/work-board/workflow/*` except the three below; `workflow-engine-extensions.ts` | `work-board-engine.ts`, `work-board-store.ts`, `work-board-types.ts`, `ipc/domains/work-board.ts`, `ipc-channels.ts`, preload, `subagent-runner.ts`, `parent-directive.ts`, `conversation-wiring.ts` |
-| WT-4 | WT-3 | WT-5, WT-7 | `stage-worktrees.ts`, `host-git.ts` | one line in `workflow-engine-extensions.ts`; en/ko |
+| WT-4 | WT-3 | WT-5, WT-7 | `stage-worktrees.ts`, `host-git.ts`, their tests, `work-board-stage-isolation.test.ts` | one line in `workflow-engine-extensions.ts`; en/ko |
 | WT-5 | WT-3 | WT-4, WT-7 | `permissions/run-grants.ts` and the permission files of §4; `use-board-approvals.ts` | one line in `workflow-engine-extensions.ts`; en/ko |
 | WT-6 | WT-3 and WT-5 | WT-4, WT-7 | — | `subagent-runner.ts`, `tools/agent-spawn.ts`, `stage-run-engine.ts` |
-| WT-7 | WT-3 | WT-4, WT-5 | `stage-verdict.ts` | one line in `stage-gates.ts` |
+| WT-7 | WT-3 | WT-4, WT-5 | `stage-verdict.ts`, its tests, `work-board-stage-verdict-run.test.ts` | one line in `stage-gates.ts`; en/ko (the model-judgement label) |
 | WT-8 | WT-14 and WT-3 | blocked | routine files of §7 | `run-authority.ts` (one source), en/ko |
 
-Must be sequential: WT-3 before everything (it owns the seams and the hot files); WT-6 after WT-5 (run membership, breaker key, and both edit the runner's approval path). Same-file touches between parallel lanes are limited to one added line in `workflow-engine-extensions.ts` and added keys in the en/ko message files; they merge mechanically.
+Must be sequential: WT-3 before everything (it owns the seams and the hot files); WT-6 after WT-5 (run membership, breaker key, and both edit the runner's approval path). This holds only because WT-3 pre-lands the seams the parallel lanes would otherwise edit: the `seal` and `prepare` effects, `sweep` and its boot call, the `workspace` field with store and board-file validation, the gate registry's `promptSuffix`, and `RunScopeHooks`. With those in, same-file touches between WT-4, WT-5 and WT-7 are one added line each in `workflow-engine-extensions.ts` (WT-4, WT-5), one in `stage-gates.ts` (WT-7), and added keys in the en/ko message files; no two lanes add cases to the same test file. If WT-3 ships without a seam, the lane that needs it must add it and is no longer parallel-safe on that file.
 
 ## 9. Assumed WT-2 interface
 
@@ -416,9 +418,9 @@ Additions this plan needs beyond notes-r6 (a). Each is optional and engine-writt
 | --- | --- | --- |
 | `store.updateStageRun(id, runId, mutate: (item) => WorkItem \| null)` — one locked read-check-write, refuses on another `runId` | WT-3 | WT-3 |
 | `WorkItemStageRun.failure?: "error" \| "gate" \| "interrupted" \| "denied-tool"`, `.taint?: "file-content" \| "agent-message"`, `.gate.judgedBy?: "host" \| "model"` | WT-3, WT-7 | WT-3 |
-| `WorkItemStageRun.workspace?: { root: string; branch: string; baseCommit: string }` | WT-4 | WT-4 |
+| `WorkItemStageRun.workspace?: { root: string; branch: string; baseCommit: string }` | WT-4 | WT-3 (keeps WT-4 out of the hot type, store and board-file files) |
 | `WorkItem.runIsolation?: { mode: "isolated" \| "serial"; reason?: SerialReason }`, `WorkItem.stageJoins?: { joinId: string; stageIds: string[]; status: "integrating" \| "integrated" \| "conflict" \| "rejected"; conflict?: JoinConflict; decidedAt?: string }[]` | WT-3 (state), WT-4 (content) | WT-3 |
-| `WorkItem.runStartedBy?: string` (a `RunAuthoritySource` kind; WT-3 writes `"local-create-and-run"`) | WT-3 | WT-3 |
+| `WorkItem.runStartedBy?: RunAuthoritySource` (the whole accepted source; WT-3 writes `{ kind: "local-create-and-run", pin }`) | WT-3 | WT-3 |
 | Run IPC payload for a template item: `{ templateId, version, graphHash }` beside `agentName` | WT-3 | WT-3 |
 | `TemplateStage.allowSubAgents?: boolean`, inside the graph hash | WT-6 | WT-2 (a hash change after PR-A would invalidate confirmed versions) |
 | `StageGate` pass kind `{ kind: "model_verdict" }`, inside the graph hash | WT-7 | WT-2 (same reason) |
@@ -432,7 +434,7 @@ Additions this plan needs beyond notes-r6 (a). Each is optional and engine-writt
 | Q2 | Does one attempt counter cover both `Request changes` and `Retry stage` (cap 3 in total), or does each have its own? | One counter. |
 | Q3 | Does a template's plan stage use the shipped `planApproval` object, or the generic stage gate? (Remote decisions of either belong to WT-9.) | Generic stage gate; template runs never write `planApproval`. |
 | Q4 | D7: carrying taint makes a downstream stage start with the existing other-principal treatment that a child gets after its first file read. Is that the intended reading of "taint carries"? | Yes, carried as described. |
-| Q5 | Settled by the lead: `Create and run` binds to the run pin tuple, and unattended start waits for WT-14. Still open: must the tuple be the template's current version, or may the user start an older confirmed version? | Any stored confirmed version whose tuple matches. |
+| Q5 | Settled by the lead: `Create and run` binds to the run pin tuple, and unattended start waits for WT-14. Still open: must the tuple be the template's current version, or may the user start an older confirmed version? | Current version only; an archived template refuses (fail-closed). |
 | Q6 | After a restart, should ready stages start by themselves, or only after a user action (this plan; fail-closed, since no approval surface exists at boot)? | User action only. |
 | Q7 | What bound applies to a stored stage output, and where does the rest go (transcript file)? | 48 000 characters assumed; needs WT-2. |
 | Q8 | `check_exit_zero`: the board's tool step keeps only an 80-character label (`work-board-types.ts:283-297`). May the engine read the child's final transcript entries for the exact command and its exit status? If the host cannot prove it, the gate fails. | Reads `SubAgentSpawnResult.entries`; unverified that they carry an exit status. |
@@ -444,3 +446,5 @@ Additions this plan needs beyond notes-r6 (a). Each is optional and engine-writt
 | Q14 | For WT-14: one item reused per routine or a new item per fire; whether an open main window receives an unattended run's tool cards; which version a binding follows. | Not designed here. |
 | Q15 | D9: is the verdict the judged stage's own structured ending (this plan) or a separate host model call over the output with a stored criterion? | Stage's own ending. |
 | Q16 | Item status while only gates wait: `awaiting_approval` without `planApproval` changes what `work-board-lifecycle.ts:10, 21, 29-30` and the board read. Accept, or keep `executing` and derive Review from `stageRuns`? | `awaiting_approval`. |
+| Q17 | W1: on `Request changes`, does an isolated stage rerun in its existing worktree (this plan; prior edits stay) or restart from the base commit? | Same worktree; `Retry` of a failed stage restarts from base. |
+| Q18 | D2: how a grandchild's result reaches a stage child's loop, and whether a stage may end while grandchildren run. Not verified in code for a depth-1 parent. | Stage end interrupts live grandchildren; delivery assumed unchanged, to be checked first in WT-6. |
